@@ -105,7 +105,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	nc, js, consumer, err := connectNATS(ctx, cfg.NATSURL, cfg.NATSStream, pgStore, log)
+	dlqStore := events.NewPostgresDeadLetterStore(pool)
+	nc, js, consumer, err := connectNATS(ctx, cfg.NATSURL, cfg.NATSStream, pgStore, dlqStore, log)
 	if err != nil {
 		log.Error("failed to start nats consumer", slog.String("error", err.Error()))
 		os.Exit(1)
@@ -209,6 +210,9 @@ func main() {
 
 	healthSrv.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 	stop()
+	if consumer != nil {
+		_ = consumer.Stop()
+	}
 	grpcServer.GracefulStop()
 
 	shCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -289,6 +293,7 @@ func connectNATS(
 	ctx context.Context,
 	natsURL, streamName string,
 	st store.Store,
+	dlqStore events.DeadLetterStore,
 	log *slog.Logger,
 ) (*nats.Conn, nats.JetStreamContext, *events.OrderCompletedConsumer, error) {
 	var nc *nats.Conn
@@ -322,6 +327,9 @@ func connectNATS(
 	}
 
 	consumer := events.NewOrderCompletedConsumer(st, js, streamName, log)
+	if dlqStore != nil {
+		consumer.SetDeadLetterStore(dlqStore)
+	}
 	if err := consumer.Start(ctx); err != nil {
 		nc.Close()
 		return nil, nil, nil, err

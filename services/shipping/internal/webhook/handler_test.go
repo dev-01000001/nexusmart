@@ -51,6 +51,9 @@ func (s *stubRepo) ListWards(_ context.Context, _, _ string) ([]address.Ward, er
 func (s *stubRepo) GetWard(_ context.Context, _ string) (*address.Ward, error) {
 	return nil, store.ErrNotFound
 }
+func (s *stubRepo) GetRepresentativeWard(_ context.Context, _ string) (*address.Ward, error) {
+	return nil, store.ErrNotFound
+}
 func (s *stubRepo) MapLegacyAddress(_ context.Context, _, _, _ string) (*address.LegacyMatch, error) {
 	return &address.LegacyMatch{}, nil
 }
@@ -103,6 +106,31 @@ func (s *stubRepo) CreateShipment(_ context.Context, sh *store.Shipment, _ *stor
 	s.byTracking[cp.TrackingCode] = &cp
 	ret := cp
 	return &ret, false, nil
+}
+func (s *stubRepo) CreateShipmentWithOutbox(ctx context.Context, sh *store.Shipment, initEv *store.ShipmentEvent, _ *store.JobOutboxParams) (*store.Shipment, bool, error) {
+	return s.CreateShipment(ctx, sh, initEv)
+}
+func (s *stubRepo) GetActiveShipmentCreateJob(_ context.Context, _, _ string) (*store.ShipmentCreateJob, error) {
+	return nil, store.ErrNotFound
+}
+func (s *stubRepo) GetShipmentCreateJobByID(_ context.Context, _ string) (*store.ShipmentCreateJob, error) {
+	return nil, store.ErrNotFound
+}
+func (s *stubRepo) EnqueueShipmentCreateJob(_ context.Context, job *store.ShipmentCreateJob) (*store.ShipmentCreateJob, bool, error) {
+	cp := *job
+	return &cp, false, nil
+}
+func (s *stubRepo) CancelActiveShipmentCreateJobs(_ context.Context, _, _, _ string) (int64, error) {
+	return 0, nil
+}
+func (s *stubRepo) ClaimDueShipmentCreateJobs(_ context.Context, _ int, _ time.Duration, _ time.Time) ([]store.ShipmentCreateJob, string, error) {
+	return nil, "", nil
+}
+func (s *stubRepo) CompleteShipmentCreateJob(ctx context.Context, _, _ string, sh *store.Shipment, initEv *store.ShipmentEvent, _ *store.JobOutboxParams) (*store.Shipment, bool, error) {
+	return s.CreateShipment(ctx, sh, initEv)
+}
+func (s *stubRepo) RecordShipmentCreateJobFailure(_ context.Context, _, _, _ string, _ *time.Time, _ bool, _ *store.JobOutboxParams, _ time.Time) (*store.ShipmentCreateJob, bool, error) {
+	return nil, false, nil
 }
 func (s *stubRepo) CancelShipmentByID(_ context.Context, _ string, _ string) (*store.Shipment, error) {
 	return nil, nil

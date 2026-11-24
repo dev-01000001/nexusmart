@@ -11,7 +11,7 @@ import type {
   PaginatedResponse,
 } from "@/lib/gateway-types";
 import { api, getErrorMessage } from "@/lib/api";
-import { formatDateTimeVi, formatVnd } from "@/lib/format";
+import { formatCarrierLabel, formatDateTimeVi, formatVnd } from "@/lib/format";
 import { useCart } from "@/context/CartContext";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconPackage, StateView } from "@/components";
@@ -27,7 +27,6 @@ import {
   type BadgeTone,
   canCancelOrder,
   formatUnpaidGroupCancelWarning,
-  getCarrierLabel,
   getOrderStatusInfo,
   getPaymentMethodLabel,
   getPaymentStatusInfo,
@@ -550,7 +549,9 @@ export function OrdersListClient({
                         </span>
                         {order.tracking_code && (
                           <span className={`${styles.trackingCode} num`}>
-                            {order.carrier_code ? `${getCarrierLabel(order.carrier_code)} · ` : ""}
+                            {order.carrier_code
+                              ? `${formatCarrierLabel(order.carrier_code)} · `
+                              : ""}
                             Vận đơn: {order.tracking_code}
                           </span>
                         )}

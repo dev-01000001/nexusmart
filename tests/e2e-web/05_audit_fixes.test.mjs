@@ -787,9 +787,9 @@ describe("05. Wave 1 business audit fixes (WEB-B1..B9, CAT-B5, PAY-B10, SHP-B2)"
   });
 
   test("5g. [SHP-B2] Seller ship form defaults to the order's chosen carrier_code/service_code (mock_express/STANDARD)", async () => {
-    await ensureRateBudget(35, { label: "5g" });
+    await ensureRateBudget(40, { label: "5g" });
     const buyerClient = new WebClient();
-    const buyer = await registerAndLoginBuyer(buyerClient, "shp-b2-ui");
+    const buyer = await registerAndLoginBuyer(buyerClient, "shp-b2-ui", { verifyPhone: true });
     const { address } = await createBuyerAddress(buyerClient, buyer);
 
     const sellerClient = new WebClient();
@@ -937,7 +937,10 @@ describe("05. Wave 1 business audit fixes (WEB-B1..B9, CAT-B5, PAY-B10, SHP-B2)"
         ],
       },
     });
-    assert.ok(checkoutRes.status === 200 || checkoutRes.status === 201);
+    assert.ok(
+      checkoutRes.status === 200 || checkoutRes.status === 201,
+      `5h VietQR checkout expected 200/201, got ${checkoutRes.status}: ${checkoutRes.text}`
+    );
     const paymentId = checkoutRes.data?.payment_id;
     const orderId = checkoutRes.data?.orders?.[0]?.id;
     assert.ok(paymentId, "expected VietQR payment_id");
@@ -1124,9 +1127,9 @@ describe("05. Wave 1 business audit fixes (WEB-B1..B9, CAT-B5, PAY-B10, SHP-B2)"
   });
 
   test("5j. [Round 3] Cancelling unpaid multi-shop VietQR order confirms full-group cancel and reloads all cancelled sub-orders; COD cancels singly", async () => {
-    await ensureRateBudget(50, { label: "5j" });
+    await ensureRateBudget(55, { label: "5j" });
     const buyerClient = new WebClient();
-    const buyer = await registerAndLoginBuyer(buyerClient, "grp-cancel");
+    const buyer = await registerAndLoginBuyer(buyerClient, "grp-cancel", { verifyPhone: true });
     const { address } = await createBuyerAddress(buyerClient, buyer);
     const [shopA, shopB] = await pickTwoShopSkus(buyerClient, { minStock: 3 });
     assert.notEqual(

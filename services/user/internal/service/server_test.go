@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/logger"
@@ -304,6 +305,38 @@ func (t *memTx) GetUserByIDForUpdate(ctx context.Context, id string) (db.User, e
 	return t.memStore.GetUserByID(ctx, id)
 }
 
+func (t *memTx) UpdateUserProfile(ctx context.Context, arg db.UpdateUserProfileParams) (db.User, error) {
+	t.lockExcl(arg.ID)
+	t.mu.Lock()
+	prev, hadPrev := t.users[arg.ID]
+	t.mu.Unlock()
+	u, err := t.memStore.UpdateUserProfile(ctx, arg)
+	if err == nil && hadPrev {
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			t.users[arg.ID] = prev
+			t.mu.Unlock()
+		})
+	}
+	return u, err
+}
+
+func (t *memTx) MarkUserPhoneVerified(ctx context.Context, arg db.MarkUserPhoneVerifiedParams) (db.User, error) {
+	t.lockExcl(arg.ID)
+	t.mu.Lock()
+	prev, hadPrev := t.users[arg.ID]
+	t.mu.Unlock()
+	u, err := t.memStore.MarkUserPhoneVerified(ctx, arg)
+	if err == nil && hadPrev {
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			t.users[arg.ID] = prev
+			t.mu.Unlock()
+		})
+	}
+	return u, err
+}
+
 func (t *memTx) SupersedePendingOTPShopBankAccounts(ctx context.Context, arg db.SupersedePendingOTPShopBankAccountsParams) error {
 	prev := t.snapshotShopBankAccounts()
 	err := t.memStore.SupersedePendingOTPShopBankAccounts(ctx, arg)
@@ -403,6 +436,13 @@ func (m *memStore) GetUserByIDForUpdate(ctx context.Context, id string) (db.User
 func (m *memStore) CreateUser(_ context.Context, arg db.CreateUserParams) (db.User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if arg.PhoneVerified && arg.Phone != "" {
+		for otherID, other := range m.users {
+			if otherID != arg.ID && other.PhoneVerified && other.Phone == arg.Phone {
+				return db.User{}, &pgconn.PgError{Code: "23505", ConstraintName: "idx_users_phone_verified_unique"}
+			}
+		}
+	}
 	now := time.Now().UTC()
 	u := db.User{
 		ID:            arg.ID,
@@ -445,7 +485,7 @@ func (m *memStore) GetUserByPhone(_ context.Context, phone string) (db.User, err
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, u := range m.users {
-		if phone != "" && u.Phone == phone {
+		if phone != "" && u.PhoneVerified && u.Phone == phone {
 			return u, nil
 		}
 	}
@@ -473,10 +513,38 @@ func (m *memStore) UpdateUserProfile(_ context.Context, arg db.UpdateUserProfile
 	if !ok {
 		return db.User{}, pgx.ErrNoRows
 	}
+	if arg.PhoneVerified && arg.Phone != "" {
+		for otherID, other := range m.users {
+			if otherID != arg.ID && other.PhoneVerified && other.Phone == arg.Phone {
+				return db.User{}, &pgconn.PgError{Code: "23505", ConstraintName: "idx_users_phone_verified_unique"}
+			}
+		}
+	}
 	u.FullName = arg.FullName
 	u.Phone = arg.Phone
 	u.AvatarURL = arg.AvatarURL
 	u.PhoneVerified = arg.PhoneVerified
+	u.UpdatedAt = time.Now().UTC()
+	m.users[u.ID] = u
+	return u, nil
+}
+
+func (m *memStore) MarkUserPhoneVerified(_ context.Context, arg db.MarkUserPhoneVerifiedParams) (db.User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	u, ok := m.users[arg.ID]
+	if !ok {
+		return db.User{}, pgx.ErrNoRows
+	}
+	if arg.Phone != "" {
+		for otherID, other := range m.users {
+			if otherID != arg.ID && other.PhoneVerified && other.Phone == arg.Phone {
+				return db.User{}, &pgconn.PgError{Code: "23505", ConstraintName: "idx_users_phone_verified_unique"}
+			}
+		}
+	}
+	u.Phone = arg.Phone
+	u.PhoneVerified = true
 	u.UpdatedAt = time.Now().UTC()
 	m.users[u.ID] = u
 	return u, nil
@@ -1434,10 +1502,26 @@ type memPwdResetRate struct {
 	expiresAt time.Time
 }
 
+type memPhoneOTP struct {
+	phone        string
+	profilePhone string
+	code         string
+	attempts     int
+	expiresAt    time.Time
+}
+
+type memPhoneRate struct {
+	count     int
+	expiresAt time.Time
+}
+
 type memSecurity struct {
 	mu                   sync.Mutex
 	otps                 map[string]memOTP
 	resends              map[string]int
+	phoneOTPs            map[string]memPhoneOTP
+	phoneCooldowns       map[string]time.Time
+	phoneHourly          map[string]memPhoneRate
 	pwdResetReqs         map[string]memPwdResetRate
 	loginFails           map[string]int
 	loginLocks           map[string]time.Time
@@ -1448,6 +1532,9 @@ type memSecurity struct {
 	setRevokedBeforeErr  error
 	isTokenRevokedErr    error
 	passwordResetRateErr error
+	savePhoneOTPErr      error
+	verifyPhoneOTPErr    error
+	deletePhoneOTPErr    error
 	onGetRevokedBefore   func(userID string)
 }
 
@@ -1455,6 +1542,9 @@ func newMemSecurity() *memSecurity {
 	return &memSecurity{
 		otps:             make(map[string]memOTP),
 		resends:          make(map[string]int),
+		phoneOTPs:        make(map[string]memPhoneOTP),
+		phoneCooldowns:   make(map[string]time.Time),
+		phoneHourly:      make(map[string]memPhoneRate),
 		pwdResetReqs:     make(map[string]memPwdResetRate),
 		loginFails:       make(map[string]int),
 		loginLocks:       make(map[string]time.Time),
@@ -1509,6 +1599,133 @@ func (s *memSecurity) IncrementOTPResend(_ context.Context, email string, maxRes
 	if s.resends[k] > maxResends {
 		return security.ErrOTPResendLimitReached
 	}
+	return nil
+}
+
+func (s *memSecurity) SavePhoneOTP(
+	ctx context.Context,
+	userID, phone, profilePhone, code string,
+	ttl, cooldown time.Duration,
+	maxPerHour int,
+	window time.Duration,
+) (time.Duration, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.savePhoneOTPErr != nil {
+		return 0, s.savePhoneOTPErr
+	}
+	if ttl <= 0 {
+		ttl = 5 * time.Minute
+	}
+	if maxPerHour <= 0 {
+		maxPerHour = 5
+	}
+	if window <= 0 {
+		window = time.Hour
+	}
+	k := strings.TrimSpace(userID)
+	now := s.now()
+	if exp, ok := s.phoneCooldowns[k]; ok && now.Before(exp) {
+		return exp.Sub(now), security.ErrPhoneOTPCooldown
+	}
+	rate, ok := s.phoneHourly[k]
+	if !ok || !now.Before(rate.expiresAt) {
+		rate = memPhoneRate{count: 0, expiresAt: now.Add(window)}
+	}
+	if rate.count >= maxPerHour {
+		return rate.expiresAt.Sub(now), security.ErrPhoneOTPRateLimitReached
+	}
+	rate.count++
+	s.phoneHourly[k] = rate
+	s.phoneOTPs[k] = memPhoneOTP{
+		phone:        strings.TrimSpace(phone),
+		profilePhone: strings.TrimSpace(profilePhone),
+		code:         strings.TrimSpace(code),
+		attempts:     0,
+		expiresAt:    now.Add(ttl),
+	}
+	if cooldown > 0 {
+		s.phoneCooldowns[k] = now.Add(cooldown)
+	}
+	return 0, nil
+}
+
+func (s *memSecurity) VerifyPhoneOTP(ctx context.Context, userID, phone, profilePhone, code string, maxAttempts int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.verifyPhoneOTPErr != nil {
+		return s.verifyPhoneOTPErr
+	}
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
+	k := strings.TrimSpace(userID)
+	now := s.now()
+	rec, ok := s.phoneOTPs[k]
+	if !ok || !now.Before(rec.expiresAt) {
+		delete(s.phoneOTPs, k)
+		return security.ErrOTPNotFound
+	}
+	want := rec.phone + "\x00" + rec.profilePhone + "\x00" + rec.code
+	got := strings.TrimSpace(phone) + "\x00" + strings.TrimSpace(profilePhone) + "\x00" + strings.TrimSpace(code)
+	if subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1 {
+		delete(s.phoneOTPs, k)
+		return nil
+	}
+	rec.attempts++
+	if rec.attempts >= maxAttempts {
+		delete(s.phoneOTPs, k)
+		return security.ErrOTPTooManyAttempts
+	}
+	s.phoneOTPs[k] = rec
+	return security.ErrOTPInvalid
+}
+
+func (s *memSecurity) RollbackPhoneOTP(ctx context.Context, userID, phone, profilePhone, code string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := strings.TrimSpace(userID)
+	rec, ok := s.phoneOTPs[k]
+	if !ok {
+		return nil
+	}
+	want := rec.phone + "\x00" + rec.profilePhone + "\x00" + rec.code
+	got := strings.TrimSpace(phone) + "\x00" + strings.TrimSpace(profilePhone) + "\x00" + strings.TrimSpace(code)
+	if subtle.ConstantTimeCompare([]byte(want), []byte(got)) != 1 {
+		return nil
+	}
+	delete(s.phoneOTPs, k)
+	delete(s.phoneCooldowns, k)
+	if rate, exists := s.phoneHourly[k]; exists {
+		rate.count--
+		if rate.count <= 0 {
+			delete(s.phoneHourly, k)
+		} else {
+			s.phoneHourly[k] = rate
+		}
+	}
+	return nil
+}
+
+func (s *memSecurity) DeletePhoneOTP(ctx context.Context, userID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deletePhoneOTPErr != nil {
+		return s.deletePhoneOTPErr
+	}
+	delete(s.phoneOTPs, strings.TrimSpace(userID))
 	return nil
 }
 
@@ -1629,9 +1846,12 @@ type memPublisher struct {
 	passwordResetRequested  []events.PasswordResetRequestedPayload
 	shopReviewed            []events.ShopReviewedPayload
 	shopBankAccountOTP      []events.ShopBankAccountOTPPayload
+	phoneOTPRequested       []events.PhoneOTPRequestedPayload
 	publishPasswordResetErr error
 	publishBankOTPErr       error
+	publishPhoneOTPErr      error
 	onPublishBankOTP        func(ctx context.Context) error
+	onPublishPhoneOTP       func(ctx context.Context, payload events.PhoneOTPRequestedPayload) error
 }
 
 func (p *memPublisher) PublishUserRegistered(_ context.Context, payload events.UserRegisteredPayload) error {
@@ -1674,6 +1894,25 @@ func (p *memPublisher) PublishShopBankAccountOTP(ctx context.Context, payload ev
 		return pubErr
 	}
 	p.shopBankAccountOTP = append(p.shopBankAccountOTP, payload)
+	return nil
+}
+
+func (p *memPublisher) PublishPhoneOTPRequested(ctx context.Context, payload events.PhoneOTPRequestedPayload) error {
+	p.mu.Lock()
+	hook := p.onPublishPhoneOTP
+	pubErr := p.publishPhoneOTPErr
+	p.mu.Unlock()
+	if hook != nil {
+		if err := hook(ctx, payload); err != nil {
+			return err
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if pubErr != nil {
+		return pubErr
+	}
+	p.phoneOTPRequested = append(p.phoneOTPRequested, payload)
 	return nil
 }
 

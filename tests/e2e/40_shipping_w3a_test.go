@@ -86,6 +86,7 @@ func TestE2E_ShippingWave3a(t *testing.T) {
 	// lease/concurrency/ordering/backoff invariants of D9/D9-bis are covered by real-Postgres tests in services/shipping.
 	t.Run("D9_WebhookOutboxOrderedDeliveryToOrder", func(t *testing.T) {
 		buyer := env.registerVerifyAndLogin(t, "shpw3a-buyer")
+		env.verifyBuyerPhone(t, buyer)
 		addr := env.addAddress(t, buyer)
 		_, sku := env.createApprovedProduct(t, seller1, cat.ID, "ShipW3A Outbox Parcel", 180000, 10, 500)
 		quote := env.calculateShippingQuote(t, buyer.AccessToken, seller1.ShopID, 500, 180000)

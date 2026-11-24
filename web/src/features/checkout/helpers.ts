@@ -1349,31 +1349,56 @@ export function clearCheckoutWarnings(storage?: Pick<Storage, "removeItem"> | nu
   }
 }
 
+export type CodBlockCode =
+  "FLASH_SALE" | "PHONE_NOT_VERIFIED" | "AREA_NOT_SUPPORTED" | "REJECTED_LIMIT" | "AMOUNT_LIMIT";
+
 /**
  * Checks whether COD is allowed for the current checkout payload.
  * Flash sale orders strictly require VietQR (5-minute payment expiry).
+ * Optional `phoneVerified` and `codAreaSupported` default to `true` for backward compatibility.
  */
 export function isCodAllowedForCheckout(input: {
   hasFlashSaleItem: boolean;
   totalPayableVnd: number;
   codRejectedCount: number;
-}): { allowed: boolean; reason: string } {
+  phoneVerified?: boolean;
+  codAreaSupported?: boolean;
+}): { allowed: boolean; reason: string; blockCode?: CodBlockCode } {
   if (input.hasFlashSaleItem) {
     return {
       allowed: false,
+      blockCode: "FLASH_SALE",
       reason:
         "Đơn hàng có sản phẩm Flash sale chỉ hỗ trợ chuyển khoản VietQR (hạn thanh toán 5 phút).",
+    };
+  }
+  if (input.phoneVerified === false) {
+    return {
+      allowed: false,
+      blockCode: "PHONE_NOT_VERIFIED",
+      reason:
+        "Vui lòng xác minh số điện thoại trong mục Tài khoản trước khi đặt hàng thanh toán khi nhận hàng (COD).",
+    };
+  }
+  if (input.codAreaSupported === false) {
+    return {
+      allowed: false,
+      blockCode: "AREA_NOT_SUPPORTED",
+      reason:
+        "Khu vực giao hàng này hiện chưa hỗ trợ thanh toán khi nhận hàng (COD). Vui lòng đổi địa chỉ hoặc chọn chuyển khoản VietQR.",
     };
   }
   if (input.codRejectedCount >= DEFAULT_COD_MAX_REJECTED) {
     return {
       allowed: false,
+      blockCode: "REJECTED_LIMIT",
       reason: `Tài khoản có ${input.codRejectedCount} lần từ chối nhận hàng nên tạm không hỗ trợ COD. Vui lòng chọn VietQR.`,
     };
   }
   if (input.totalPayableVnd > DEFAULT_COD_MAX_VND) {
     return {
       allowed: false,
+      blockCode: "AMOUNT_LIMIT",
       reason: `Đơn hàng vượt hạn mức COD tối đa ${formatVnd(DEFAULT_COD_MAX_VND)}. Vui lòng chọn VietQR.`,
     };
   }

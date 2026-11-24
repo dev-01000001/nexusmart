@@ -56,7 +56,7 @@ func BootstrapAdmin(ctx context.Context, store db.Store, hasher *password.Hasher
 		ID:            userID,
 		FullName:      "NexusMart Super Admin",
 		Email:         email,
-		Phone:         "",
+		Phone:         canonicalizeAccountPhone(""),
 		PasswordHash:  hash,
 		Role:          RoleSuperAdmin,
 		Status:        StatusActive,

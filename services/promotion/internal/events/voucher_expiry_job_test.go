@@ -294,9 +294,6 @@ func TestVoucherExpiryJob_StartAndConsumerRetryLifecycle(t *testing.T) {
 	if err := failC.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if err := failC.Stop(); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
 	badPayloadAck, badPayloadErr := failC.ProcessRawMessage(context.Background(), []byte(`{"event_id":"e1","payload":"bad"}`), map[string]string{"k": "v"}, 1)
 	if !badPayloadAck || badPayloadErr != nil {
 		t.Fatalf("bad payload: ack=%v err=%v", badPayloadAck, badPayloadErr)
@@ -309,6 +306,9 @@ func TestVoucherExpiryJob_StartAndConsumerRetryLifecycle(t *testing.T) {
 	maxAck, maxErr := failC.ProcessRawMessage(context.Background(), validRaw, nil, events.MaxDeliveryAttempts)
 	if !maxAck || maxErr != nil || len(dlq.subjects) != 2 {
 		t.Fatalf("max attempts should DLQ: ack=%v err=%v dlq=%v", maxAck, maxErr, dlq.subjects)
+	}
+	if err := failC.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
 	}
 }
 

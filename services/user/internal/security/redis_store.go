@@ -15,8 +15,136 @@ import (
 
 const (
 	defaultOTPMaxAttempts = 5
+	defaultPhoneOTPTTL    = 5 * time.Minute
+	defaultPhoneOTPMaxHr  = 5
 	resendWindow          = 15 * time.Minute
 )
+
+// savePhoneOTPScript atomically enforces per-user cooldown and hourly send limits,
+// then stores the hashed phone OTP digest and clears prior failed-attempt counters.
+// Returns {code, pttl_ms}:
+//
+//	{ 1, 0 }:       saved
+//	{-1, pttl_ms}:  cooldown active
+//	{-2, pttl_ms}:  hourly limit reached
+const savePhoneOTPScript = `
+local otp_key = KEYS[1]
+local attempts_key = KEYS[2]
+local cooldown_key = KEYS[3]
+local hourly_key = KEYS[4]
+local digest = ARGV[1]
+local otp_ttl_ms = tonumber(ARGV[2])
+local cooldown_ms = tonumber(ARGV[3])
+local max_per_hour = tonumber(ARGV[4])
+local window_ms = tonumber(ARGV[5])
+
+local cooldown_pttl = redis.call('PTTL', cooldown_key)
+if cooldown_pttl > 0 then
+  return { -1, cooldown_pttl }
+end
+
+local count = tonumber(redis.call('GET', hourly_key) or '0')
+if count >= max_per_hour then
+  local window_pttl = redis.call('PTTL', hourly_key)
+  if window_pttl < 0 then
+    redis.call('PEXPIRE', hourly_key, window_ms)
+    window_pttl = window_ms
+  end
+  return { -2, window_pttl }
+end
+
+local new_count = redis.call('INCR', hourly_key)
+if new_count == 1 or redis.call('PTTL', hourly_key) < 0 then
+  redis.call('PEXPIRE', hourly_key, window_ms)
+end
+
+redis.call('SET', otp_key, digest, 'PX', otp_ttl_ms)
+redis.call('DEL', attempts_key)
+if cooldown_ms > 0 then
+  redis.call('SET', cooldown_key, '1', 'PX', cooldown_ms)
+end
+return { 1, 0 }
+`
+
+// verifyPhoneOTPScript atomically verifies a phone OTP digest using a constant-time
+// byte-by-byte comparison (no early exit), increments attempts on mismatch, and deletes
+// the OTP once max_attempts is reached.
+// Returns:
+//
+//	 1: matched (OTP and attempts deleted)
+//	 0: mismatch (attempt incremented, still under limit)
+//	-1: not found / expired
+//	-2: too many invalid attempts (OTP and attempts deleted)
+const verifyPhoneOTPScript = `
+local function ct_eq(a, b)
+  local la = #a
+  local lb = #b
+  local diff = math.abs(la - lb)
+  local n = la
+  if lb < n then
+    n = lb
+  end
+  for i = 1, n do
+    diff = diff + math.abs(string.byte(a, i) - string.byte(b, i))
+  end
+  return diff == 0
+end
+
+local otp_key = KEYS[1]
+local attempts_key = KEYS[2]
+local expected_digest = ARGV[1]
+local max_attempts = tonumber(ARGV[2])
+
+local stored = redis.call('GET', otp_key)
+if not stored then
+  return -1
+end
+if ct_eq(stored, expected_digest) then
+  redis.call('DEL', otp_key, attempts_key)
+  return 1
+end
+local attempts = redis.call('INCR', attempts_key)
+if attempts == 1 or redis.call('PTTL', attempts_key) < 0 then
+  local pttl = redis.call('PTTL', otp_key)
+  if pttl > 0 then
+    redis.call('PEXPIRE', attempts_key, pttl)
+  end
+end
+if attempts >= max_attempts then
+  redis.call('DEL', otp_key, attempts_key)
+  return -2
+end
+return 0
+`
+
+// rollbackPhoneOTPScript removes an undelivered phone OTP, its cooldown, and decrements
+// the hourly send counter only if the stored digest still matches expected_digest.
+const rollbackPhoneOTPScript = `
+local function ct_eq(a, b)
+  local la = #a
+  local lb = #b
+  local diff = math.abs(la - lb)
+  local n = la
+  if lb < n then
+    n = lb
+  end
+  for i = 1, n do
+    diff = diff + math.abs(string.byte(a, i) - string.byte(b, i))
+  end
+  return diff == 0
+end
+
+local stored = redis.call('GET', KEYS[1])
+if stored and ct_eq(stored, ARGV[1]) then
+  redis.call('DEL', KEYS[1], KEYS[2], KEYS[3])
+  local rem = redis.call('DECR', KEYS[4])
+  if rem <= 0 then
+    redis.call('DEL', KEYS[4])
+  end
+  return 1
+end
+return 0
+`
 
 // verifyOTPScript atomically checks OTP digest, increments attempts on failure,
 // and deletes the OTP once max_attempts is reached to prevent concurrent brute-force races.
@@ -61,6 +189,8 @@ var (
 	ErrOTPTooManyAttempts        = errors.New("too many invalid otp attempts")
 	ErrOTPResendLimitReached     = errors.New("otp resend limit exceeded")
 	ErrPasswordResetLimitReached = errors.New("too many password reset requests")
+	ErrPhoneOTPCooldown          = errors.New("phone otp cooldown active")
+	ErrPhoneOTPRateLimitReached  = errors.New("too many phone otp requests")
 )
 
 // Store manages OTP codes, password reset rate limits, login brute-force lockouts, and token revocations.
@@ -69,6 +199,11 @@ type Store interface {
 	VerifyOTP(ctx context.Context, email, code string) error
 	IncrementOTPResend(ctx context.Context, email string, maxResends int) error
 	IncrementPasswordResetRequest(ctx context.Context, email string, maxRequests int, window time.Duration) error
+
+	SavePhoneOTP(ctx context.Context, userID, phone, profilePhone, code string, ttl, cooldown time.Duration, maxPerHour int, window time.Duration) (retryAfter time.Duration, err error)
+	VerifyPhoneOTP(ctx context.Context, userID, phone, profilePhone, code string, maxAttempts int) error
+	RollbackPhoneOTP(ctx context.Context, userID, phone, profilePhone, code string) error
+	DeletePhoneOTP(ctx context.Context, userID string) error
 
 	IsLoginLocked(ctx context.Context, email string) (bool, error)
 	RecordLoginFailure(ctx context.Context, email string, maxAttempts int, lockout time.Duration) (locked bool, attempts int, err error)
@@ -84,17 +219,23 @@ type Store interface {
 
 // RedisStore implements Store backed by Redis.
 type RedisStore struct {
-	client         *redis.Client
-	verifyScript   *redis.Script
-	otpMaxAttempts int
+	client              *redis.Client
+	verifyScript        *redis.Script
+	savePhoneScript     *redis.Script
+	verifyPhoneScript   *redis.Script
+	rollbackPhoneScript *redis.Script
+	otpMaxAttempts      int
 }
 
 // NewRedisStore creates a Redis-backed security store.
 func NewRedisStore(client *redis.Client) *RedisStore {
 	return &RedisStore{
-		client:         client,
-		verifyScript:   redis.NewScript(verifyOTPScript),
-		otpMaxAttempts: defaultOTPMaxAttempts,
+		client:              client,
+		verifyScript:        redis.NewScript(verifyOTPScript),
+		savePhoneScript:     redis.NewScript(savePhoneOTPScript),
+		verifyPhoneScript:   redis.NewScript(verifyPhoneOTPScript),
+		rollbackPhoneScript: redis.NewScript(rollbackPhoneOTPScript),
+		otpMaxAttempts:      defaultOTPMaxAttempts,
 	}
 }
 
@@ -130,9 +271,139 @@ func passwordResetReqKey(email string) string {
 	return "user:pwd_reset_req:" + strings.ToLower(strings.TrimSpace(email))
 }
 
+func phoneOTPKey(userID string) string {
+	return "user:phone_otp:" + strings.TrimSpace(userID)
+}
+
+func phoneOTPAttemptsKey(userID string) string {
+	return "user:phone_otp_attempts:" + strings.TrimSpace(userID)
+}
+
+func phoneOTPCooldownKey(userID string) string {
+	return "user:phone_otp_cooldown:" + strings.TrimSpace(userID)
+}
+
+func phoneOTPHourlyKey(userID string) string {
+	return "user:phone_otp_hourly:" + strings.TrimSpace(userID)
+}
+
 func hashOTP(email, code string) string {
 	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email)) + ":" + strings.TrimSpace(code)))
 	return hex.EncodeToString(sum[:])
+}
+
+func hashPhoneOTP(userID, phone, profilePhone, code string) string {
+	sum := sha256.Sum256([]byte(
+		"phone_otp\x00" +
+			strings.TrimSpace(userID) + "\x00" +
+			strings.TrimSpace(phone) + "\x00" +
+			strings.TrimSpace(profilePhone) + "\x00" +
+			strings.TrimSpace(code),
+	))
+	return hex.EncodeToString(sum[:])
+}
+
+func mapSavePhoneOTPResult(res []int64) (time.Duration, error) {
+	if len(res) < 2 {
+		return 0, fmt.Errorf("unexpected save phone otp lua result len=%d", len(res))
+	}
+	retryAfter := time.Duration(res[1]) * time.Millisecond
+	switch res[0] {
+	case 1:
+		return 0, nil
+	case -1:
+		return retryAfter, ErrPhoneOTPCooldown
+	case -2:
+		return retryAfter, ErrPhoneOTPRateLimitReached
+	default:
+		return 0, fmt.Errorf("unexpected save phone otp lua code=%d", res[0])
+	}
+}
+
+func (s *RedisStore) SavePhoneOTP(
+	ctx context.Context,
+	userID, phone, profilePhone, code string,
+	ttl, cooldown time.Duration,
+	maxPerHour int,
+	window time.Duration,
+) (time.Duration, error) {
+	if ttl <= 0 {
+		ttl = defaultPhoneOTPTTL
+	}
+	if cooldown < 0 {
+		cooldown = 0
+	}
+	if maxPerHour <= 0 {
+		maxPerHour = defaultPhoneOTPMaxHr
+	}
+	if window <= 0 {
+		window = time.Hour
+	}
+
+	res, err := s.savePhoneScript.Run(
+		ctx,
+		s.client,
+		[]string{
+			phoneOTPKey(userID),
+			phoneOTPAttemptsKey(userID),
+			phoneOTPCooldownKey(userID),
+			phoneOTPHourlyKey(userID),
+		},
+		hashPhoneOTP(userID, phone, profilePhone, code),
+		ttl.Milliseconds(),
+		cooldown.Milliseconds(),
+		maxPerHour,
+		window.Milliseconds(),
+	).Int64Slice()
+	if err != nil {
+		return 0, fmt.Errorf("save phone otp lua: %w", err)
+	}
+	return mapSavePhoneOTPResult(res)
+}
+
+func (s *RedisStore) VerifyPhoneOTP(ctx context.Context, userID, phone, profilePhone, code string, maxAttempts int) error {
+	if maxAttempts <= 0 {
+		maxAttempts = s.otpMaxAttempts
+	}
+	res, err := s.verifyPhoneScript.Run(
+		ctx,
+		s.client,
+		[]string{phoneOTPKey(userID), phoneOTPAttemptsKey(userID)},
+		hashPhoneOTP(userID, phone, profilePhone, code),
+		maxAttempts,
+	).Int64()
+	if err != nil {
+		return fmt.Errorf("verify phone otp lua: %w", err)
+	}
+	return mapVerifyOTPResult(res)
+}
+
+func (s *RedisStore) RollbackPhoneOTP(ctx context.Context, userID, phone, profilePhone, code string) error {
+	if _, err := s.rollbackPhoneScript.Run(
+		ctx,
+		s.client,
+		[]string{
+			phoneOTPKey(userID),
+			phoneOTPAttemptsKey(userID),
+			phoneOTPCooldownKey(userID),
+			phoneOTPHourlyKey(userID),
+		},
+		hashPhoneOTP(userID, phone, profilePhone, code),
+	).Int64(); err != nil {
+		return fmt.Errorf("rollback phone otp lua: %w", err)
+	}
+	return nil
+}
+
+func (s *RedisStore) DeletePhoneOTP(ctx context.Context, userID string) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil
+	}
+	if err := s.client.Del(ctx, phoneOTPKey(userID), phoneOTPAttemptsKey(userID)).Err(); err != nil {
+		return fmt.Errorf("delete phone otp: %w", err)
+	}
+	return nil
 }
 
 func (s *RedisStore) SaveOTP(ctx context.Context, email, code string, ttl time.Duration) error {

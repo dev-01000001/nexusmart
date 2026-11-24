@@ -40,6 +40,24 @@ type GHNAdapter struct {
 	shopID       int
 	labelBaseURL string
 	client       *http.Client
+	faults       mockFaultInjector
+}
+
+// SetTestFaultInjectionEnabled toggles test-only fault injection in mock mode (never active in sandbox mode).
+func (g *GHNAdapter) SetTestFaultInjectionEnabled(enabled bool) {
+	if g.mode == "sandbox" {
+		g.faults.setEnabled(false)
+		return
+	}
+	g.faults.setEnabled(enabled)
+}
+
+// InjectCreateFault schedules count simulated HTTP error responses in mock mode for orderID ("" = any order).
+func (g *GHNAdapter) InjectCreateFault(orderID string, statusCode, count int) error {
+	if g.mode == "sandbox" {
+		return errors.New("fault injection unavailable in ghn sandbox mode")
+	}
+	return g.faults.inject(orderID, statusCode, count)
 }
 
 // NewGHNAdapter creates a GHN adapter in mock or sandbox mode.
@@ -141,6 +159,9 @@ func (g *GHNAdapter) CalculateFee(ctx context.Context, req FeeRequest) ([]Quote,
 
 func (g *GHNAdapter) CreateShipment(ctx context.Context, req ShipmentRequest) (*ShipmentResult, error) {
 	if g.mode != "sandbox" {
+		if err := g.faults.consume(CodeGHN, req.OrderID); err != nil {
+			return nil, err
+		}
 		return g.mockCreateShipment(req), nil
 	}
 	return g.sandboxCreateShipment(ctx, req)
@@ -245,6 +266,10 @@ type ghnFeeResponse struct {
 }
 
 func (g *GHNAdapter) sandboxCalculateFee(ctx context.Context, req FeeRequest) ([]Quote, error) {
+	if req.FromDistrictID <= 0 || req.ToDistrictID <= 0 || strings.TrimSpace(req.ToGHNWardCode) == "" {
+		return nil, &NonRetryableError{Err: fmt.Errorf("%w: missing ghn codes (from_district=%d to_district=%d to_ward=%q)",
+			ErrMissingGHNMapping, req.FromDistrictID, req.ToDistrictID, req.ToGHNWardCode)}
+	}
 	weight := req.WeightGrams
 	if weight <= 0 {
 		weight = 500
@@ -309,6 +334,9 @@ type ghnCreateResponse struct {
 }
 
 func (g *GHNAdapter) sandboxCreateShipment(ctx context.Context, req ShipmentRequest) (*ShipmentResult, error) {
+	if req.ToAddress.GHNDistrictID <= 0 || strings.TrimSpace(req.ToAddress.GHNWardCode) == "" {
+		return nil, &NonRetryableError{Err: fmt.Errorf("%w (to_ward_code=%s)", ErrMissingGHNMapping, req.ToAddress.WardCode)}
+	}
 	weight := req.WeightGrams
 	if weight <= 0 {
 		weight = 500

@@ -36,8 +36,9 @@ func TestE2E_MultiShopCheckout_COD(t *testing.T) {
 	platformVoucher := env.createAdminVoucher(t, "PLATFORM", 30000, 200000, 20)
 	freeshipVoucher := env.createAdminVoucher(t, "FREESHIP", 15000, 100000, 20)
 
-	// 4. Buyer registers -> fetches OTP from Mailpit -> verifies -> logs in -> adds 2-level address.
+	// 4. Buyer registers -> fetches OTP from Mailpit -> verifies -> logs in -> adds 2-level address -> verifies phone for COD.
 	buyer := env.registerVerifyAndLogin(t, "buyer-cod")
+	env.verifyBuyerPhone(t, buyer)
 	addr := env.addAddress(t, buyer)
 
 	// 5. Admin credits coins to Buyer and Buyer saves all 3 vouchers.

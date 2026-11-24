@@ -37,6 +37,8 @@ var (
 	ErrMaxRedeliveryExceeded      = errors.New("maximum redelivery attempts exceeded")
 	ErrLegacyNoBuyer              = errors.New("legacy shipment has no buyer_id recorded")
 	ErrBuyerMismatch              = errors.New("buyer does not own this shipment")
+	ErrJobCancelled               = errors.New("shipment creation job was cancelled")
+	ErrStaleClaimToken            = errors.New("shipment creation job claim token is stale")
 )
 
 func isTerminalStatus(status string) bool {
@@ -240,6 +242,7 @@ type Repository interface {
 	GetProvince(ctx context.Context, provinceCode string) (*address.Province, error)
 	ListWards(ctx context.Context, provinceCode, query string) ([]address.Ward, error)
 	GetWard(ctx context.Context, wardCode string) (*address.Ward, error)
+	GetRepresentativeWard(ctx context.Context, provinceCode string) (*address.Ward, error)
 	MapLegacyAddress(ctx context.Context, legacyProv, legacyDist, legacyWard string) (*address.LegacyMatch, error)
 
 	GetShipmentByOrderID(ctx context.Context, orderID, direction string) (*Shipment, error)
@@ -249,11 +252,20 @@ type Repository interface {
 	GetShipmentByTrackingCode(ctx context.Context, trackingCode string) (*Shipment, error)
 	ListShipmentEvents(ctx context.Context, shipmentID string) ([]ShipmentEvent, error)
 	CreateShipment(ctx context.Context, s *Shipment, initialEvent *ShipmentEvent) (*Shipment, bool, error)
+	CreateShipmentWithOutbox(ctx context.Context, s *Shipment, initialEvent *ShipmentEvent, outbox *JobOutboxParams) (*Shipment, bool, error)
 	CancelShipmentByID(ctx context.Context, shipmentID, reason string) (*Shipment, error)
 	CancelShipmentWithEvent(ctx context.Context, eventID, subject, orderID, reason string) (*Shipment, bool, error)
 	RecordRedelivery(ctx context.Context, shipmentID, buyerID string, maxRedelivery int32, preferredDate, note string) (*Shipment, error)
 	ApplyWebhookEvent(ctx context.Context, params WebhookUpdateParams) (*Shipment, WebhookUpdateOutcome, error)
 	ListActiveShipments(ctx context.Context, limit int, afterUpdatedAt *time.Time, afterID string) ([]Shipment, error)
+
+	GetActiveShipmentCreateJob(ctx context.Context, orderID, direction string) (*ShipmentCreateJob, error)
+	GetShipmentCreateJobByID(ctx context.Context, jobID string) (*ShipmentCreateJob, error)
+	EnqueueShipmentCreateJob(ctx context.Context, job *ShipmentCreateJob) (*ShipmentCreateJob, bool, error)
+	CancelActiveShipmentCreateJobs(ctx context.Context, orderID, direction, reason string) (int64, error)
+	ClaimDueShipmentCreateJobs(ctx context.Context, limit int, lease time.Duration, now time.Time) ([]ShipmentCreateJob, string, error)
+	CompleteShipmentCreateJob(ctx context.Context, jobID, claimToken string, sh *Shipment, initialEvent *ShipmentEvent, outbox *JobOutboxParams) (*Shipment, bool, error)
+	RecordShipmentCreateJobFailure(ctx context.Context, jobID, claimToken, errMsg string, nextRetryAt *time.Time, terminal bool, outbox *JobOutboxParams, now time.Time) (*ShipmentCreateJob, bool, error)
 
 	GetShopShippingSettings(ctx context.Context, shopID string) (*ShopShippingSettings, error)
 	UpsertShopShippingSettings(ctx context.Context, settings *ShopShippingSettings) (*ShopShippingSettings, error)
@@ -488,61 +500,154 @@ func (s *PGStore) MigrateAndSeed(ctx context.Context) error {
 	return s.seedAddressCatalog(ctx, conn)
 }
 
+const addressCatalogMetaKey = "vn_admin_2025"
+
 func (s *PGStore) seedAddressCatalog(ctx context.Context, conn *pgxpool.Conn) error {
+	wantChecksum := address.CatalogChecksum()
+	var existingChecksum string
+	err := conn.QueryRow(ctx, `SELECT checksum FROM address_catalog_meta WHERE key = $1`, addressCatalogMetaKey).Scan(&existingChecksum)
+	if err == nil && existingChecksum == wantChecksum {
+		return nil
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("read address_catalog_meta: %w", err)
+	}
+
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin seed tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	for _, p := range address.Provinces() {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO provinces (code, name, name_norm, region, ghn_province_id)
-			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (code) DO UPDATE
-			SET name = EXCLUDED.name,
-			    name_norm = EXCLUDED.name_norm,
-			    region = EXCLUDED.region,
-			    ghn_province_id = EXCLUDED.ghn_province_id
-		`, p.Code, p.Name, address.StripDiacritics(p.Name), p.Region, p.GHNProvinceID); err != nil {
-			return fmt.Errorf("seed province %s: %w", p.Code, err)
-		}
+	provinces := address.Provinces()
+	pCodes := make([]string, len(provinces))
+	pNames := make([]string, len(provinces))
+	pNorms := make([]string, len(provinces))
+	pRegions := make([]string, len(provinces))
+	pGHNIDs := make([]int32, len(provinces))
+	for i, p := range provinces {
+		pCodes[i] = p.Code
+		pNames[i] = p.Name
+		pNorms[i] = address.StripDiacritics(p.Name)
+		pRegions[i] = p.Region
+		pGHNIDs[i] = int32(p.GHNProvinceID)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO provinces (code, name, name_norm, region, ghn_province_id)
+		SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::int[])
+		ON CONFLICT (code) DO UPDATE
+		SET name = EXCLUDED.name,
+		    name_norm = EXCLUDED.name_norm,
+		    region = EXCLUDED.region,
+		    ghn_province_id = EXCLUDED.ghn_province_id
+	`, pCodes, pNames, pNorms, pRegions, pGHNIDs); err != nil {
+		return fmt.Errorf("batch seed provinces: %w", err)
 	}
 
-	for _, w := range address.Wards() {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO wards (code, province_code, name, name_norm, ghn_district_id, ghn_ward_code)
-			VALUES ($1, $2, $3, $4, $5, $6)
-			ON CONFLICT (code) DO UPDATE
-			SET province_code = EXCLUDED.province_code,
-			    name = EXCLUDED.name,
-			    name_norm = EXCLUDED.name_norm,
-			    ghn_district_id = EXCLUDED.ghn_district_id,
-			    ghn_ward_code = EXCLUDED.ghn_ward_code
-		`, w.Code, w.ProvinceCode, w.Name, address.StripDiacritics(w.Name), w.GHNDistrictID, w.GHNWardCode); err != nil {
-			return fmt.Errorf("seed ward %s: %w", w.Code, err)
-		}
+	wards := address.Wards()
+	wCodes := make([]string, len(wards))
+	wProvs := make([]string, len(wards))
+	wNames := make([]string, len(wards))
+	wNorms := make([]string, len(wards))
+	wGHNDists := make([]int32, len(wards))
+	wGHNWards := make([]string, len(wards))
+	wCODs := make([]bool, len(wards))
+	for i, w := range wards {
+		wCodes[i] = w.Code
+		wProvs[i] = w.ProvinceCode
+		wNames[i] = w.Name
+		wNorms[i] = address.StripDiacritics(w.Name)
+		wGHNDists[i] = int32(w.GHNDistrictID)
+		wGHNWards[i] = w.GHNWardCode
+		wCODs[i] = w.CODSupported
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO wards (code, province_code, name, name_norm, ghn_district_id, ghn_ward_code, cod_supported, is_active)
+		SELECT code, province_code, name, name_norm, ghn_district_id, ghn_ward_code, cod_supported, TRUE
+		FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::int[], $6::text[], $7::boolean[])
+			AS t(code, province_code, name, name_norm, ghn_district_id, ghn_ward_code, cod_supported)
+		ON CONFLICT (code) DO UPDATE
+		SET province_code = EXCLUDED.province_code,
+		    name = EXCLUDED.name,
+		    name_norm = EXCLUDED.name_norm,
+		    ghn_district_id = EXCLUDED.ghn_district_id,
+		    ghn_ward_code = EXCLUDED.ghn_ward_code,
+		    cod_supported = EXCLUDED.cod_supported,
+		    is_active = TRUE
+	`, wCodes, wProvs, wNames, wNorms, wGHNDists, wGHNWards, wCODs); err != nil {
+		return fmt.Errorf("batch seed wards: %w", err)
 	}
 
-	for _, m := range address.LegacyMappings() {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO legacy_address_mappings (
-				legacy_province, legacy_province_norm,
-				legacy_district, legacy_district_norm,
-				legacy_ward, legacy_ward_norm,
-				province_code, ward_code,
-				legacy_province_code, legacy_district_code, legacy_ward_code
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-			ON CONFLICT (legacy_province_norm, legacy_district_norm, legacy_ward_norm) DO NOTHING
-		`,
-			m.LegacyProvince, address.NormalizeName(m.LegacyProvince),
-			m.LegacyDistrict, address.NormalizeName(m.LegacyDistrict),
-			m.LegacyWard, address.NormalizeName(m.LegacyWard),
-			m.ProvinceCode, m.WardCode,
-			m.LegacyProvinceCode, m.LegacyDistrictCode, m.LegacyWardCode,
-		); err != nil {
-			return fmt.Errorf("seed legacy mapping %s: %w", m.LegacyProvince, err)
-		}
+	// E15: Never delete legacy sample ward rows; mark absent codes inactive so they are
+	// excluded from ListWards while remaining resolvable by GetWard for saved addresses.
+	if _, err := tx.Exec(ctx, `
+		UPDATE wards
+		SET is_active = FALSE
+		WHERE code <> ALL($1::text[])
+		  AND is_active = TRUE
+	`, wCodes); err != nil {
+		return fmt.Errorf("deactivate legacy wards: %w", err)
+	}
+
+	mappings := address.LegacyMappings()
+	mLP := make([]string, len(mappings))
+	mLPN := make([]string, len(mappings))
+	mLD := make([]string, len(mappings))
+	mLDN := make([]string, len(mappings))
+	mLW := make([]string, len(mappings))
+	mLWN := make([]string, len(mappings))
+	mPC := make([]string, len(mappings))
+	mWC := make([]string, len(mappings))
+	mLPC := make([]string, len(mappings))
+	mLDC := make([]string, len(mappings))
+	mLWC := make([]string, len(mappings))
+	for i, m := range mappings {
+		mLP[i] = m.LegacyProvince
+		mLPN[i] = address.NormalizeName(m.LegacyProvince)
+		mLD[i] = m.LegacyDistrict
+		mLDN[i] = address.NormalizeName(m.LegacyDistrict)
+		mLW[i] = m.LegacyWard
+		mLWN[i] = address.NormalizeName(m.LegacyWard)
+		mPC[i] = m.ProvinceCode
+		mWC[i] = m.WardCode
+		mLPC[i] = m.LegacyProvinceCode
+		mLDC[i] = m.LegacyDistrictCode
+		mLWC[i] = m.LegacyWardCode
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO legacy_address_mappings (
+			legacy_province, legacy_province_norm,
+			legacy_district, legacy_district_norm,
+			legacy_ward, legacy_ward_norm,
+			province_code, ward_code,
+			legacy_province_code, legacy_district_code, legacy_ward_code
+		)
+		SELECT * FROM UNNEST(
+			$1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[],
+			$7::text[], $8::text[], $9::text[], $10::text[], $11::text[]
+		)
+		ON CONFLICT (legacy_province_norm, legacy_district_norm, legacy_ward_norm) DO UPDATE
+		SET legacy_province = EXCLUDED.legacy_province,
+		    legacy_district = EXCLUDED.legacy_district,
+		    legacy_ward = EXCLUDED.legacy_ward,
+		    province_code = EXCLUDED.province_code,
+		    ward_code = EXCLUDED.ward_code,
+		    legacy_province_code = EXCLUDED.legacy_province_code,
+		    legacy_district_code = EXCLUDED.legacy_district_code,
+		    legacy_ward_code = EXCLUDED.legacy_ward_code
+	`, mLP, mLPN, mLD, mLDN, mLW, mLWN, mPC, mWC, mLPC, mLDC, mLWC); err != nil {
+		return fmt.Errorf("batch seed legacy mappings: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO address_catalog_meta (key, checksum, ward_count, updated_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (key) DO UPDATE
+		SET checksum = EXCLUDED.checksum,
+		    ward_count = EXCLUDED.ward_count,
+		    updated_at = NOW()
+	`, addressCatalogMetaKey, wantChecksum, len(wards)); err != nil {
+		return fmt.Errorf("update address_catalog_meta: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -615,18 +720,19 @@ func (s *PGStore) ListWards(ctx context.Context, provinceCode, query string) ([]
 	)
 	if q == "" {
 		rows, err = s.pool.Query(ctx, `
-			SELECT code, province_code, name, ghn_district_id, ghn_ward_code
+			SELECT code, province_code, name, ghn_district_id, ghn_ward_code, cod_supported, is_active
 			FROM wards
-			WHERE province_code = $1
+			WHERE province_code = $1 AND is_active = TRUE
 			ORDER BY code ASC
 		`, provinceCode)
 	} else {
 		qNorm := address.StripDiacritics(q)
 		qAlias := address.NormalizeName(q)
 		rows, err = s.pool.Query(ctx, `
-			SELECT code, province_code, name, ghn_district_id, ghn_ward_code
+			SELECT code, province_code, name, ghn_district_id, ghn_ward_code, cod_supported, is_active
 			FROM wards
 			WHERE province_code = $1
+			  AND is_active = TRUE
 			  AND (
 				name ILIKE '%' || $2 || '%'
 				OR ($3 <> '' AND name_norm LIKE '%' || $3 || '%')
@@ -644,7 +750,7 @@ func (s *PGStore) ListWards(ctx context.Context, provinceCode, query string) ([]
 	var result []address.Ward
 	for rows.Next() {
 		var w address.Ward
-		if err := rows.Scan(&w.Code, &w.ProvinceCode, &w.Name, &w.GHNDistrictID, &w.GHNWardCode); err != nil {
+		if err := rows.Scan(&w.Code, &w.ProvinceCode, &w.Name, &w.GHNDistrictID, &w.GHNWardCode, &w.CODSupported, &w.IsActive); err != nil {
 			return nil, fmt.Errorf("scan ward: %w", err)
 		}
 		result = append(result, w)
@@ -658,15 +764,38 @@ func (s *PGStore) GetWard(ctx context.Context, wardCode string) (*address.Ward, 
 	}
 	var w address.Ward
 	err := s.pool.QueryRow(ctx, `
-		SELECT code, province_code, name, ghn_district_id, ghn_ward_code
+		SELECT code, province_code, name, ghn_district_id, ghn_ward_code, cod_supported, is_active
 		FROM wards
 		WHERE code = $1
-	`, wardCode).Scan(&w.Code, &w.ProvinceCode, &w.Name, &w.GHNDistrictID, &w.GHNWardCode)
+	`, wardCode).Scan(&w.Code, &w.ProvinceCode, &w.Name, &w.GHNDistrictID, &w.GHNWardCode, &w.CODSupported, &w.IsActive)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("get ward: %w", err)
+	}
+	return &w, nil
+}
+
+// GetRepresentativeWard returns a deterministic active ward for provinceCode (preferring COD-supported
+// mainland wards) for public province-only shipping fee estimates (E17).
+func (s *PGStore) GetRepresentativeWard(ctx context.Context, provinceCode string) (*address.Ward, error) {
+	if strings.TrimSpace(provinceCode) == "" {
+		return nil, ErrNotFound
+	}
+	var w address.Ward
+	err := s.pool.QueryRow(ctx, `
+		SELECT code, province_code, name, ghn_district_id, ghn_ward_code, cod_supported, is_active
+		FROM wards
+		WHERE province_code = $1 AND is_active = TRUE
+		ORDER BY cod_supported DESC, code ASC
+		LIMIT 1
+	`, provinceCode).Scan(&w.Code, &w.ProvinceCode, &w.Name, &w.GHNDistrictID, &w.GHNWardCode, &w.CODSupported, &w.IsActive)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get representative ward: %w", err)
 	}
 	return &w, nil
 }

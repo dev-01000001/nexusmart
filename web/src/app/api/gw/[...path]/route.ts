@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyCsrfOrigin } from "@/lib/server/csrf";
 import { sanitizeGatewayError } from "@/lib/server/gateway";
 import {
-  MAX_BFF_BODY_BYTES,
   PAYLOAD_TOO_LARGE_BODY,
   applyProxySecurityHeaders,
   readBoundedBody,
+  resolveMaxBffBodyBytes,
 } from "@/lib/server/proxy-security";
 import {
   ACCESS_COOKIE,
@@ -18,7 +18,21 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const DEFAULT_PROXY_TIMEOUT_MS = 15_000;
+const COD_IMPORT_PROXY_TIMEOUT_MS = 120_000;
+const RESCAN_PROXY_TIMEOUT_MS = 60_000;
 const BLOCKED_ROOT_SEGMENTS = new Set(["webhooks", "auth"]);
+
+function resolveProxyTimeoutMs(method: string, segments: string[]): number {
+  if (method !== "POST") return DEFAULT_PROXY_TIMEOUT_MS;
+  const joined = segments.join("/").toLowerCase();
+  if (joined === "admin/reconciliation/cod/import") {
+    return COD_IMPORT_PROXY_TIMEOUT_MS;
+  }
+  if (joined === "admin/banned-keywords/rescan") {
+    return RESCAN_PROXY_TIMEOUT_MS;
+  }
+  return DEFAULT_PROXY_TIMEOUT_MS;
+}
 const UNAVAILABLE_BODY = {
   error: {
     code: "UNAVAILABLE",
@@ -117,6 +131,11 @@ async function handleProxy(
   const lastEventId = req.headers.get("last-event-id");
   if (lastEventId) upstreamHeaders.set("Last-Event-ID", lastEventId);
 
+  for (const extraHeader of ["x-carrier-code", "x-run-date", "x-file-name"]) {
+    const val = req.headers.get(extraHeader);
+    if (val) upstreamHeaders.set(extraHeader, val);
+  }
+
   applyClientIpHeader(upstreamHeaders, extractClientIp(req.headers));
 
   const accessToken = req.cookies.get(ACCESS_COOKIE)?.value;
@@ -127,7 +146,8 @@ async function handleProxy(
   const sse = isSseRequest(req, segments);
   let body: ArrayBuffer | undefined;
   if (req.method !== "GET" && req.method !== "HEAD") {
-    const bounded = await readBoundedBody(req, MAX_BFF_BODY_BYTES);
+    const maxBodyBytes = resolveMaxBffBodyBytes(req.method, segments, contentType);
+    const bounded = await readBoundedBody(req, maxBodyBytes);
     if (!bounded.ok) {
       return jsonWithSecurity(PAYLOAD_TOO_LARGE_BODY, 413);
     }
@@ -139,9 +159,8 @@ async function handleProxy(
     }
   }
 
-  const signal = sse
-    ? req.signal
-    : AbortSignal.any([req.signal, AbortSignal.timeout(DEFAULT_PROXY_TIMEOUT_MS)]);
+  const timeoutMs = resolveProxyTimeoutMs(req.method, segments);
+  const signal = sse ? req.signal : AbortSignal.any([req.signal, AbortSignal.timeout(timeoutMs)]);
 
   let upstream: Response;
   try {

@@ -1,6 +1,9 @@
 package address
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestProvincesCountAndIntegrity(t *testing.T) {
 	provinces := Provinces()
@@ -20,14 +23,27 @@ func TestProvincesCountAndIntegrity(t *testing.T) {
 	}
 
 	wards := Wards()
+	if len(wards) != 3321 {
+		t.Fatalf("E15: expected exactly 3321 official wards per QD 19/2025/QD-TTg, got %d", len(wards))
+	}
 	wardByProv := make(map[string]int)
 	wardMap := make(map[string]Ward, len(wards))
+	codDisabled := make(map[string]string)
 	for _, w := range wards {
 		if _, ok := provMap[w.ProvinceCode]; !ok {
 			t.Fatalf("ward %s references unknown province %s", w.Code, w.ProvinceCode)
 		}
 		if _, dup := wardMap[w.Code]; dup {
 			t.Fatalf("duplicate ward code: %s", w.Code)
+		}
+		if strings.ContainsAny(w.Name, "\r\n") || strings.TrimSpace(w.Name) == "" {
+			t.Fatalf("ward %s has unclean name: %q", w.Code, w.Name)
+		}
+		if !w.IsActive {
+			t.Fatalf("official ward %s (%s) must have IsActive=true", w.Code, w.Name)
+		}
+		if !w.CODSupported {
+			codDisabled[w.Code] = w.Name
 		}
 		wardMap[w.Code] = w
 		wardByProv[w.ProvinceCode]++
@@ -37,6 +53,32 @@ func TestProvincesCountAndIntegrity(t *testing.T) {
 		if wardByProv[p.Code] == 0 {
 			t.Fatalf("province %s (%s) has no seeded wards", p.Code, p.Name)
 		}
+	}
+
+	// E16: Only Hoang Sa (20333) and Truong Sa (22736) have cod_supported=false.
+	if len(codDisabled) != 2 || codDisabled["20333"] == "" || codDisabled["22736"] == "" {
+		t.Fatalf("E16: expected cod_supported=false exclusively for Hoang Sa (20333) and Truong Sa (22736), got %v", codDisabled)
+	}
+
+	// Key GHN sandbox mappings preserved on official codes.
+	for code, want := range map[string]struct {
+		dist int
+		ward string
+	}{
+		"00070": {1489, "1A0606"}, // Hoan Kiem
+		"26740": {1442, "20101"},  // Sai Gon
+		"26743": {1442, "20102"},  // Ben Thanh
+		"20242": {1526, "40101"},  // Hai Chau
+		"31135": {1572, "550101"}, // Ninh Kieu
+	} {
+		w, ok := wardMap[code]
+		if !ok || w.GHNDistrictID != want.dist || w.GHNWardCode != want.ward {
+			t.Fatalf("expected GHN mapping preserved for %s: got %+v, want dist=%d ward=%s", code, w, want.dist, want.ward)
+		}
+	}
+
+	if chk := CatalogChecksum(); len(chk) != 64 {
+		t.Fatalf("E15: CatalogChecksum() = %q, want 64-hex SHA256", chk)
 	}
 
 	legacyProvCodes := make(map[string]bool)

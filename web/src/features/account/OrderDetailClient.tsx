@@ -6,22 +6,36 @@ import { useRouter } from "next/navigation";
 import { PRODUCTS } from "@/data";
 import type {
   GatewayOrder,
+  GatewayOrderReviewsResponse,
   GatewayOrderTimelineEvent,
+  GatewayProductReview,
   GatewayPublicShop,
   GatewayRefund,
   GatewayReturnRequest,
   GatewayShipmentResponse,
   PaginatedResponse,
 } from "@/lib/gateway-types";
-import { api, getErrorMessage } from "@/lib/api";
-import { formatDateTimeVi, formatSignedVnd, formatVnDayKey, formatVnd } from "@/lib/format";
+import { ApiError, api, getErrorMessage } from "@/lib/api";
+import {
+  formatCarrierLabel,
+  formatDateTimeVi,
+  formatSignedVnd,
+  formatVnDayKey,
+  formatVnd,
+} from "@/lib/format";
 import { useCart } from "@/context/CartContext";
 import { useMockStore } from "@/mock/MockStoreContext";
-import { Button, IconPackage, StateView } from "@/components";
+import { Button, IconPackage, IconStar, StateView } from "@/components";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
 import { RetryPaymentBox } from "@/features/commerce/RetryPaymentBox";
 import { useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import { clearCheckoutWarnings, readCheckoutWarnings } from "@/features/checkout/helpers";
+import {
+  MAX_REVIEW_COMMENT_LEN,
+  MAX_REVIEW_IMAGES,
+  canReviewOrderStatus,
+  validateReviewImageUrls,
+} from "@/features/product/reviewHelpers";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "@/app/(shop)/don-hang/[id]/page.module.css";
 import type { OrderVisualLookup } from "./types";
@@ -37,7 +51,6 @@ import {
   canRequestRedelivery,
   canRequestReturn,
   formatUnpaidGroupCancelWarning,
-  getCarrierLabel,
   getOrderStatusInfo,
   getPaymentMethodLabel,
   getPaymentStatusInfo,
@@ -63,6 +76,7 @@ export interface OrderDetailClientProps {
   initialReturnRequest?: GatewayReturnRequest | null;
   initialReturnShipment?: GatewayShipmentResponse | null;
   initialRefunds?: GatewayRefund[];
+  initialReviews?: GatewayProductReview[];
   shop: GatewayPublicShop | null;
   visuals: OrderVisualLookup;
   orderId: string;
@@ -200,6 +214,7 @@ export function OrderDetailClient({
   initialReturnRequest = null,
   initialReturnShipment = null,
   initialRefunds = [],
+  initialReviews = [],
   shop,
   visuals,
   orderId,
@@ -222,6 +237,13 @@ export function OrderDetailClient({
     initialReturnShipment
   );
   const [refunds, setRefunds] = useState<GatewayRefund[]>(initialRefunds);
+  const [orderReviews, setOrderReviews] = useState<GatewayProductReview[]>(initialReviews);
+  const [reviewingItemId, setReviewingItemId] = useState<string | null>(null);
+  const [reviewRating, setReviewRating] = useState<number>(5);
+  const [reviewComment, setReviewComment] = useState<string>("");
+  const [reviewImageUrls, setReviewImageUrls] = useState<string[]>([""]);
+  const [submittingReview, setSubmittingReview] = useState<boolean>(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
   const [groupOrders, setGroupOrders] = useState<GatewayOrder[]>(initialGroupOrders);
   const [checkoutWarnings, setCheckoutWarnings] = useState<string[]>([]);
 
@@ -318,6 +340,14 @@ export function OrderDetailClient({
         } else if (Array.isArray(orderRes.order.timeline)) {
           setTimeline(orderRes.order.timeline);
         }
+        if (canReviewOrderStatus(orderRes.order.status)) {
+          const revRes = await api<GatewayOrderReviewsResponse>(`/orders/${id}/reviews`).catch(
+            () => null
+          );
+          if (revRes && Array.isArray(revRes.reviews)) {
+            setOrderReviews(revRes.reviews);
+          }
+        }
       }
       if (shipRes?.shipment) {
         setShipmentData(shipRes);
@@ -335,6 +365,66 @@ export function OrderDetailClient({
       router.refresh();
     }
   }, [orderId, router]);
+
+  const handleOpenReviewForm = (itemId: string) => {
+    setReviewingItemId((cur) => (cur === itemId ? null : itemId));
+    setReviewRating(5);
+    setReviewComment("");
+    setReviewImageUrls([""]);
+    setReviewError(null);
+  };
+
+  const handleSubmitReview = async (e: React.FormEvent, itemId: string) => {
+    e.preventDefault();
+    if (!order || !canReviewOrderStatus(order.status) || submittingReview) return;
+    if (reviewRating < 1 || reviewRating > 5) {
+      setReviewError("Vui lòng chọn số sao đánh giá từ 1 đến 5.");
+      return;
+    }
+    const cleanComment = reviewComment.trim();
+    if (cleanComment.length > MAX_REVIEW_COMMENT_LEN) {
+      setReviewError(`Nội dung đánh giá tối đa ${MAX_REVIEW_COMMENT_LEN} ký tự.`);
+      return;
+    }
+    const { urls, error: imgErr } = validateReviewImageUrls(reviewImageUrls);
+    if (imgErr) {
+      setReviewError(imgErr);
+      return;
+    }
+
+    setReviewError(null);
+    setSubmittingReview(true);
+    try {
+      const res = await api<{ review: GatewayProductReview }>(
+        `/orders/${encodeURIComponent(order.id)}/reviews`,
+        {
+          method: "POST",
+          json: {
+            order_item_id: itemId,
+            rating: reviewRating,
+            comment: cleanComment,
+            image_urls: urls,
+          },
+        }
+      );
+      if (res?.review) {
+        setOrderReviews((prev) => [...prev.filter((r) => r.order_item_id !== itemId), res.review]);
+      }
+      setReviewingItemId(null);
+      setReviewComment("");
+      setReviewImageUrls([""]);
+      showToast("Đã gửi đánh giá sản phẩm thành công.");
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setReviewError("Bạn đã đánh giá sản phẩm này trong đơn hàng.");
+        void refreshOrder();
+      } else {
+        setReviewError(getErrorMessage(err, "Không thể gửi đánh giá lúc này. Vui lòng thử lại."));
+      }
+    } finally {
+      setSubmittingReview(false);
+    }
+  };
 
   const handleReorder = async () => {
     if (!order || reordering || order.items.length === 0) return;
@@ -1054,7 +1144,7 @@ export function OrderDetailClient({
                     <div className={styles.shipmentMetaItem}>
                       <dt className={styles.shipmentKey}>Đơn vị vận chuyển</dt>
                       <dd className={styles.shipmentVal}>
-                        {getCarrierLabel(shipment.carrier_code)}
+                        {formatCarrierLabel(shipment.carrier_code)}
                       </dd>
                     </div>
                     <div className={styles.shipmentMetaItem}>
@@ -1349,7 +1439,7 @@ export function OrderDetailClient({
                           </span>
                         </div>
                         <p className={`${styles.sideMuted} num`}>
-                          {getCarrierLabel(returnShipment.carrier_code)} · Mã vận đơn:{" "}
+                          {formatCarrierLabel(returnShipment.carrier_code)} · Mã vận đơn:{" "}
                           <strong>{returnShipment.tracking_code}</strong>
                         </p>
                         {returnShipmentEvents.length > 0 && (
@@ -1754,69 +1844,249 @@ export function OrderDetailClient({
                     const effectivePrice = item.effective_unit_price_vnd || item.unit_price_vnd;
                     const hasFlashDiscount =
                       item.unit_price_vnd > 0 && effectivePrice < item.unit_price_vnd;
+                    const reviewEligible = canReviewOrderStatus(order.status) && Boolean(item.id);
+                    const existingReview = reviewEligible
+                      ? orderReviews.find((r) => r.order_item_id === item.id)
+                      : undefined;
+                    const isReviewOpen = reviewEligible && reviewingItemId === item.id;
 
                     return (
-                      <div key={item.id || item.sku_id} className={styles.itemRow} data-reveal="">
-                        {productHref ? (
-                          <Link href={productHref} className={styles.itemThumbLink}>
-                            {thumbUrl ? (
-                              <img
-                                src={thumbUrl}
-                                alt={item.product_name}
-                                width={896}
-                                height={1200}
-                                className={styles.itemThumb}
-                              />
+                      <div key={item.id || item.sku_id} data-reveal="">
+                        <div className={styles.itemRow}>
+                          {productHref ? (
+                            <Link href={productHref} className={styles.itemThumbLink}>
+                              {thumbUrl ? (
+                                <img
+                                  src={thumbUrl}
+                                  alt={item.product_name}
+                                  width={896}
+                                  height={1200}
+                                  className={styles.itemThumb}
+                                />
+                              ) : (
+                                <span className={styles.itemThumbPlaceholder} aria-hidden="true">
+                                  <IconPackage size={24} />
+                                </span>
+                              )}
+                            </Link>
+                          ) : (
+                            <div className={styles.itemThumbLink}>
+                              {thumbUrl ? (
+                                <img
+                                  src={thumbUrl}
+                                  alt={item.product_name}
+                                  width={896}
+                                  height={1200}
+                                  className={styles.itemThumb}
+                                />
+                              ) : (
+                                <span className={styles.itemThumbPlaceholder} aria-hidden="true">
+                                  <IconPackage size={24} />
+                                </span>
+                              )}
+                            </div>
+                          )}
+
+                          <div className={styles.itemInfo}>
+                            {productHref ? (
+                              <Link href={productHref} className={styles.itemName}>
+                                {item.product_name}
+                              </Link>
                             ) : (
-                              <span className={styles.itemThumbPlaceholder} aria-hidden="true">
-                                <IconPackage size={24} />
-                              </span>
+                              <span className={styles.itemName}>{item.product_name}</span>
                             )}
-                          </Link>
-                        ) : (
-                          <div className={styles.itemThumbLink}>
-                            {thumbUrl ? (
-                              <img
-                                src={thumbUrl}
-                                alt={item.product_name}
-                                width={896}
-                                height={1200}
-                                className={styles.itemThumb}
-                              />
-                            ) : (
-                              <span className={styles.itemThumbPlaceholder} aria-hidden="true">
-                                <IconPackage size={24} />
-                              </span>
+                            {item.sku_name && (
+                              <span className={styles.itemMeta}>{item.sku_name}</span>
                             )}
+                            <span className={`${styles.itemMeta} num`}>
+                              {formatVnd(effectivePrice)} × {item.quantity}
+                              {hasFlashDiscount && (
+                                <>
+                                  {" "}
+                                  <span className={styles.priceOriginal}>
+                                    {formatVnd(item.unit_price_vnd)}
+                                  </span>
+                                </>
+                              )}
+                            </span>
+                            {reviewEligible && (
+                              <div className={shared.formActions}>
+                                {existingReview ? (
+                                  <span className={`${shared.statusTag} ${shared.tonePos}`}>
+                                    Đã đánh giá ({existingReview.rating}/5 sao)
+                                  </span>
+                                ) : (
+                                  <Button
+                                    type="button"
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={() => handleOpenReviewForm(item.id)}
+                                  >
+                                    {isReviewOpen ? "Đóng form đánh giá" : "Viết đánh giá"}
+                                  </Button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          <span className={`${styles.itemAmount} num`}>
+                            {formatVnd(item.line_total_vnd)}
+                          </span>
+                        </div>
+
+                        {existingReview && existingReview.comment && (
+                          <div className={styles.returnSubPanel} style={{ marginBottom: 12 }}>
+                            <p className={styles.sideMuted}>
+                              Nhận xét của bạn: {existingReview.comment}
+                            </p>
                           </div>
                         )}
 
-                        <div className={styles.itemInfo}>
-                          {productHref ? (
-                            <Link href={productHref} className={styles.itemName}>
-                              {item.product_name}
-                            </Link>
-                          ) : (
-                            <span className={styles.itemName}>{item.product_name}</span>
-                          )}
-                          {item.sku_name && (
-                            <span className={styles.itemMeta}>{item.sku_name}</span>
-                          )}
-                          <span className={`${styles.itemMeta} num`}>
-                            {formatVnd(effectivePrice)} × {item.quantity}
-                            {hasFlashDiscount && (
-                              <>
-                                {" "}
-                                <span className={styles.priceOriginal}>
-                                  {formatVnd(item.unit_price_vnd)}
-                                </span>
-                              </>
+                        {isReviewOpen && (
+                          <form
+                            className={styles.returnSubPanel}
+                            style={{ marginBottom: 16 }}
+                            noValidate
+                            onSubmit={(e) => void handleSubmitReview(e, item.id)}
+                          >
+                            <div className={shared.field}>
+                              <span className={shared.fieldLabel}>
+                                Đánh giá cho {item.product_name}
+                                {item.sku_name ? ` (${item.sku_name})` : ""}
+                              </span>
+                              <div
+                                className={shared.formActions}
+                                role="group"
+                                aria-label="Chọn số sao đánh giá"
+                              >
+                                {[1, 2, 3, 4, 5].map((star) => (
+                                  <button
+                                    key={star}
+                                    type="button"
+                                    className={`${shared.modeBtn} ${reviewRating === star ? shared.modeBtnActive : ""}`}
+                                    aria-pressed={reviewRating === star}
+                                    onClick={() => setReviewRating(star)}
+                                  >
+                                    <IconStar size={14} filled={star <= reviewRating} /> {star} sao
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div className={shared.field}>
+                              <label
+                                htmlFor={`review-comment-${item.id}`}
+                                className={shared.fieldLabel}
+                              >
+                                Nhận xét (không bắt buộc, tối đa {MAX_REVIEW_COMMENT_LEN} ký tự)
+                              </label>
+                              <textarea
+                                id={`review-comment-${item.id}`}
+                                className={shared.textarea}
+                                rows={3}
+                                maxLength={MAX_REVIEW_COMMENT_LEN}
+                                value={reviewComment}
+                                onChange={(e) => {
+                                  setReviewComment(e.target.value);
+                                  if (reviewError) setReviewError(null);
+                                }}
+                                placeholder="Chia sẻ cảm nhận thực tế về chất liệu, đường may và đóng gói..."
+                                disabled={submittingReview}
+                              />
+                            </div>
+
+                            <div className={shared.field}>
+                              <span className={shared.fieldLabel}>
+                                Liên kết ảnh đính kèm (tối đa {MAX_REVIEW_IMAGES} liên kết https://
+                                hoặc /products/...)
+                              </span>
+                              <div className={styles.evidenceList}>
+                                {reviewImageUrls.map((urlVal, idx) => (
+                                  <div
+                                    key={`${item.id}-rimg-${idx}`}
+                                    className={styles.evidenceRow}
+                                  >
+                                    <input
+                                      id={`review-img-${item.id}-${idx}`}
+                                      type="url"
+                                      className={shared.input}
+                                      value={urlVal}
+                                      onChange={(e) => {
+                                        const next = [...reviewImageUrls];
+                                        next[idx] = e.target.value;
+                                        setReviewImageUrls(next);
+                                        if (reviewError) setReviewError(null);
+                                      }}
+                                      placeholder="https://... hoặc /products/..."
+                                      aria-label={`Liên kết ảnh đánh giá ${idx + 1}`}
+                                      disabled={submittingReview}
+                                    />
+                                    {reviewImageUrls.length > 1 && (
+                                      <Button
+                                        type="button"
+                                        variant="secondary"
+                                        size="sm"
+                                        disabled={submittingReview}
+                                        onClick={() =>
+                                          setReviewImageUrls((prev) =>
+                                            prev.filter((_, i) => i !== idx)
+                                          )
+                                        }
+                                      >
+                                        Xóa
+                                      </Button>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                              {reviewImageUrls.length < MAX_REVIEW_IMAGES && (
+                                <div className={shared.formActions}>
+                                  <Button
+                                    type="button"
+                                    variant="secondary"
+                                    size="sm"
+                                    disabled={submittingReview}
+                                    onClick={() =>
+                                      setReviewImageUrls((prev) =>
+                                        prev.length < MAX_REVIEW_IMAGES ? [...prev, ""] : prev
+                                      )
+                                    }
+                                  >
+                                    Thêm liên kết ảnh ({reviewImageUrls.length}/{MAX_REVIEW_IMAGES})
+                                  </Button>
+                                </div>
+                              )}
+                            </div>
+
+                            {reviewError && (
+                              <p className={shared.fieldError} role="alert">
+                                {reviewError}
+                              </p>
                             )}
-                          </span>
-                        </div>
-                        <span className={`${styles.itemAmount} num`}>
-                          {formatVnd(item.line_total_vnd)}
-                        </span>
+
+                            <div className={shared.formActions}>
+                              <Button
+                                type="submit"
+                                variant="primary"
+                                size="md"
+                                disabled={submittingReview}
+                              >
+                                {submittingReview ? "Đang gửi đánh giá..." : "Gửi đánh giá"}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                size="md"
+                                disabled={submittingReview}
+                                onClick={() => {
+                                  setReviewingItemId(null);
+                                  setReviewError(null);
+                                }}
+                              >
+                                Hủy
+                              </Button>
+                            </div>
+                          </form>
+                        )}
                       </div>
                     );
                   })}
@@ -2064,7 +2334,7 @@ export function OrderDetailClient({
 
                 {order.carrier_code && (
                   <p className={styles.sideMuted}>
-                    Đơn vị giao: <strong>{getCarrierLabel(order.carrier_code)}</strong>
+                    Đơn vị giao: <strong>{formatCarrierLabel(order.carrier_code)}</strong>
                   </p>
                 )}
                 {order.tracking_code && (

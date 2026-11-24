@@ -15,14 +15,15 @@ import (
 )
 
 type userFixture struct {
-	UserID       string
-	Email        string
-	Phone        string
-	Password     string
-	AccessToken  string
-	RefreshToken string
-	AddressID    string
-	User         UserDTO
+	UserID        string
+	Email         string
+	Phone         string
+	Password      string
+	AccessToken   string
+	RefreshToken  string
+	AddressID     string
+	PhoneVerified bool
+	User          UserDTO
 }
 
 type sellerFixture struct {
@@ -180,6 +181,12 @@ func (e *testEnv) ensureProvinceAndWard(t *testing.T) (ProvinceDTO, WardDTO) {
 	}
 
 	chosenWard := wardOut.Wards[0]
+	for _, w := range wardOut.Wards {
+		if w.CODSupported {
+			chosenWard = w
+			break
+		}
+	}
 	e.mu.Lock()
 	e.province = chosenProv
 	e.ward = chosenWard
@@ -277,14 +284,67 @@ func (e *testEnv) registerVerifyAndLogin(t *testing.T, label string) *userFixtur
 	}
 
 	return &userFixture{
-		UserID:       userID,
-		Email:        email,
-		Phone:        phone,
-		Password:     password,
-		AccessToken:  loginOut.AccessToken,
-		RefreshToken: loginOut.RefreshToken,
-		User:         loginOut.User,
+		UserID:        userID,
+		Email:         email,
+		Phone:         phone,
+		Password:      password,
+		AccessToken:   loginOut.AccessToken,
+		RefreshToken:  loginOut.RefreshToken,
+		PhoneVerified: loginOut.User.PhoneVerified,
+		User:          loginOut.User,
 	}
+}
+
+// verifyBuyerPhone completes real phone OTP verification via Mailpit once per account (E19).
+// Subsequent calls for the same userFixture are no-ops so rate limits and Mailpit traffic stay minimal.
+func (e *testEnv) verifyBuyerPhone(t *testing.T, u *userFixture) {
+	t.Helper()
+	if u == nil {
+		t.Fatalf("verifyBuyerPhone called with nil userFixture")
+	}
+	if u.PhoneVerified {
+		return
+	}
+
+	seen, err := e.mailpit.SnapshotRecipientMessageIDs(e.ctx(t), u.Email)
+	if err != nil {
+		t.Fatalf("snapshot Mailpit messages for %s before phone OTP: %v", u.Email, err)
+	}
+
+	otpReqResp := e.mustDoJSON(t, http.MethodPost, "/api/v1/users/me/phone/otp", u.AccessToken, nil, map[string]any{}, http.StatusOK)
+	var otpReqOut struct {
+		Sent              bool   `json:"sent"`
+		ExpiresInSeconds  int32  `json:"expires_in_seconds"`
+		RetryAfterSeconds int32  `json:"retry_after_seconds"`
+		PhoneMasked       string `json:"phone_masked"`
+	}
+	if err := DecodeJSON(otpReqResp, &otpReqOut); err != nil {
+		t.Fatalf("decode request phone otp (%s): %v", u.Email, err)
+	}
+	if !otpReqOut.Sent {
+		t.Fatalf("request phone otp (%s) returned sent=false: %s", u.Email, string(otpReqResp.Body))
+	}
+
+	_, otp, err := e.mailpit.WaitForNewOTPMessage(e.ctx(t), u.Email, seen, e.cfg.PollTimeout)
+	if err != nil {
+		t.Fatalf("wait phone OTP from Mailpit for %s: %v", u.Email, err)
+	}
+
+	verifyResp := e.mustDoJSON(t, http.MethodPost, "/api/v1/users/me/phone/verify", u.AccessToken, nil, map[string]any{
+		"otp": otp,
+	}, http.StatusOK)
+	var verifyOut struct {
+		Verified bool    `json:"verified"`
+		User     UserDTO `json:"user"`
+	}
+	if err := DecodeJSON(verifyResp, &verifyOut); err != nil {
+		t.Fatalf("decode verify phone otp (%s): %v", u.Email, err)
+	}
+	if !verifyOut.Verified || !verifyOut.User.PhoneVerified {
+		t.Fatalf("verify phone otp (%s) expected verified=true and user.phone_verified=true, got body=%s", u.Email, string(verifyResp.Body))
+	}
+	u.PhoneVerified = true
+	u.User = verifyOut.User
 }
 
 func (e *testEnv) addAddress(t *testing.T, u *userFixture) AddressDTO {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -23,12 +24,17 @@ import (
 )
 
 const (
-	defaultMaxRedelivery  = int32(3)
-	defaultConfigCacheTTL = 30 * time.Second
-	defaultWeightGrams    = int32(500)
-	defaultLengthCM       = int32(20)
-	defaultWidthCM        = int32(15)
-	defaultHeightCM       = int32(10)
+	defaultMaxRedelivery        = int32(3)
+	defaultConfigCacheTTL       = 30 * time.Second
+	defaultWeightGrams          = int32(500)
+	defaultLengthCM             = int32(20)
+	defaultWidthCM              = int32(15)
+	defaultHeightCM             = int32(10)
+	defaultCreateRetryMax       = int32(8)
+	defaultCreateRetryBase      = 2 * time.Second
+	defaultCreateRetryMaxBackof = 5 * time.Minute
+	defaultCreateJobLease       = 30 * time.Second
+	defaultCreateJobExecTimeout = 15 * time.Second
 )
 
 var (
@@ -80,21 +86,74 @@ type AdminUpdateCarrierInput struct {
 
 // ShippingService orchestrates address lookup, carrier quoting, shipment lifecycle, returns, redelivery, settings, and webhooks.
 type ShippingService struct {
-	repo          store.Repository
-	aggregator    *carrier.Aggregator
-	quoteCache    cache.QuoteCache
-	outboxWake    OutboxNotifier
-	shopPickup    ShopPickupResolver
-	tokenCipher   *secretbox.Box
-	maxRedelivery int32
-	logger        *slog.Logger
-	nowFn         func() time.Time
+	repo                  store.Repository
+	aggregator            *carrier.Aggregator
+	quoteCache            cache.QuoteCache
+	outboxWake            OutboxNotifier
+	shopPickup            ShopPickupResolver
+	tokenCipher           *secretbox.Box
+	maxRedelivery         int32
+	createRetryMax        int32
+	createRetryBase       time.Duration
+	createRetryMaxBackoff time.Duration
+	jobLease              time.Duration
+	jobExecTimeout        time.Duration
+	logger                *slog.Logger
+	nowFn                 func() time.Time
 
 	cfgMu          sync.RWMutex
 	cfgTTL         time.Duration
 	cfgExpiresAt   time.Time
 	cachedCarriers []store.CarrierConfig
 	cachedRates    []store.FallbackRate
+}
+
+// SetCreateRetryPolicy configures async shipment creation retry limits and backoff bounds (E18).
+func (s *ShippingService) SetCreateRetryPolicy(maxAttempts int32, baseBackoff, maxBackoff time.Duration) {
+	if maxAttempts > 0 {
+		s.createRetryMax = maxAttempts
+	}
+	if baseBackoff > 0 {
+		s.createRetryBase = baseBackoff
+	}
+	if maxBackoff > 0 {
+		s.createRetryMaxBackoff = maxBackoff
+	}
+	if s.createRetryMaxBackoff < s.createRetryBase {
+		s.createRetryMaxBackoff = s.createRetryBase
+	}
+}
+
+// SetJobLease configures the processing lease duration for shipment_create_jobs workers (E18).
+func (s *ShippingService) SetJobLease(d time.Duration) {
+	if d > 0 {
+		s.jobLease = d
+	}
+}
+
+// SetJobExecTimeout configures the per-job execution timeout (always clamped strictly below jobLease).
+func (s *ShippingService) SetJobExecTimeout(d time.Duration) {
+	if d > 0 {
+		s.jobExecTimeout = d
+	}
+}
+
+func (s *ShippingService) effectiveJobExecTimeout() time.Duration {
+	lease := s.jobLease
+	if lease <= 0 {
+		lease = defaultCreateJobLease
+	}
+	t := s.jobExecTimeout
+	if t <= 0 {
+		t = defaultCreateJobExecTimeout
+	}
+	if t >= lease {
+		t = lease / 2
+		if t <= 0 {
+			t = time.Millisecond
+		}
+	}
+	return t
 }
 
 // SetShopPickupResolver configures the resolver used when CalculateFee receives shop_id without origin codes.
@@ -134,14 +193,19 @@ func NewShippingService(
 		logger = slog.Default()
 	}
 	return &ShippingService{
-		repo:          repo,
-		aggregator:    aggregator,
-		quoteCache:    quoteCache,
-		outboxWake:    outboxWake,
-		maxRedelivery: defaultMaxRedelivery,
-		cfgTTL:        defaultConfigCacheTTL,
-		logger:        logger,
-		nowFn:         func() time.Time { return time.Now().UTC() },
+		repo:                  repo,
+		aggregator:            aggregator,
+		quoteCache:            quoteCache,
+		outboxWake:            outboxWake,
+		maxRedelivery:         defaultMaxRedelivery,
+		createRetryMax:        defaultCreateRetryMax,
+		createRetryBase:       defaultCreateRetryBase,
+		createRetryMaxBackoff: defaultCreateRetryMaxBackof,
+		jobLease:              defaultCreateJobLease,
+		jobExecTimeout:        defaultCreateJobExecTimeout,
+		cfgTTL:                defaultConfigCacheTTL,
+		logger:                logger,
+		nowFn:                 func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -335,12 +399,18 @@ func (s *ShippingService) MapLegacyAddress(ctx context.Context, legacyProv, lega
 	return s.repo.MapLegacyAddress(ctx, legacyProv, legacyDist, legacyWard)
 }
 
-// CalculateFee validates input and service area, applies shop default weight (when configured) and
-// platform ∩ shop enabled carrier filtering (UC-SHIP06/UC-A12), resolves shop pickup when origin is omitted,
-// checks Redis quote cache keyed by active carriers + real origin/destination, then fans out to eligible carriers.
-// Returned quotes always carry raw pre-freeship carrier fees (Ship); shop and platform freeship discounts are
-// calculated by order/promotion from GetShopShippingSettings.
+// CalculateFee validates input and service area and returns raw pre-freeship carrier quotes.
 func (s *ShippingService) CalculateFee(ctx context.Context, req carrier.FeeRequest) ([]carrier.Quote, error) {
+	quotes, _, err := s.CalculateFeeWithEstimate(ctx, req)
+	return quotes, err
+}
+
+// CalculateFeeWithEstimate validates input and service area, applies shop default weight (including
+// fallback_weight_item_qty for anonymous PDP requests) and platform ∩ shop enabled carrier filtering,
+// resolves shop pickup internally without exposing warehouse codes, picks a representative active ward
+// when to_ward_code is omitted (setting isEstimated=true), stamps ward cod_supported on every quote
+// (including cache hits and fallback quotes), and caches live quotes briefly by route + weight (E16/E17).
+func (s *ShippingService) CalculateFeeWithEstimate(ctx context.Context, req carrier.FeeRequest) ([]carrier.Quote, bool, error) {
 	req.ShopID = strings.TrimSpace(req.ShopID)
 	req.FromProvinceCode = strings.TrimSpace(req.FromProvinceCode)
 	req.FromWardCode = strings.TrimSpace(req.FromWardCode)
@@ -348,72 +418,96 @@ func (s *ShippingService) CalculateFee(ctx context.Context, req carrier.FeeReque
 	req.ToWardCode = strings.TrimSpace(req.ToWardCode)
 
 	if req.WeightGrams < 0 {
-		return nil, fmt.Errorf("%w: weight_grams must be > 0", ErrInvalidArgument)
+		return nil, false, fmt.Errorf("%w: weight_grams must be > 0", ErrInvalidArgument)
+	}
+	if req.FallbackWeightItemQty < 0 {
+		return nil, false, fmt.Errorf("%w: fallback_weight_item_qty must be >= 0", ErrInvalidArgument)
 	}
 	if req.CODAmountVND < 0 {
-		return nil, fmt.Errorf("%w: cod_amount_vnd must be >= 0", ErrInvalidArgument)
+		return nil, false, fmt.Errorf("%w: cod_amount_vnd must be >= 0", ErrInvalidArgument)
 	}
 
-	// Load shop shipping settings once if shop_id is provided (UC-SHIP06).
+	// Load shop shipping settings once if shop_id is provided (UC-SHIP06 / E17).
 	var shopSettings *store.ShopShippingSettings
 	if req.ShopID != "" {
 		st, err := s.repo.GetShopShippingSettings(ctx, req.ShopID)
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
-			return nil, fmt.Errorf("load shop shipping settings: %w", err)
+			return nil, false, fmt.Errorf("load shop shipping settings: %w", err)
 		}
 		shopSettings = st
 	}
 
-	// Apply configured shop default_weight_grams when weight_grams is omitted (0);
-	// otherwise reject <= 0 to keep SHP-B7 validation intact.
-	if req.WeightGrams == 0 {
+	// Apply shop default_weight_grams internally for fallback_weight_item_qty (anonymous PDP) or omitted weight_grams.
+	shopDefWeight := defaultWeightGrams
+	if shopSettings != nil && shopSettings.DefaultWeightGrams > 0 {
+		shopDefWeight = shopSettings.DefaultWeightGrams
+	}
+	if req.FallbackWeightItemQty > 0 {
+		extra := int64(shopDefWeight) * int64(req.FallbackWeightItemQty)
+		total := int64(req.WeightGrams) + extra
+		if total <= 0 || total > math.MaxInt32 {
+			return nil, false, fmt.Errorf("%w: total weight exceeds maximum supported value", ErrInvalidArgument)
+		}
+		req.WeightGrams = int32(total)
+	} else if req.WeightGrams == 0 {
 		if shopSettings != nil && shopSettings.DefaultWeightGrams > 0 {
 			req.WeightGrams = shopSettings.DefaultWeightGrams
 		} else {
-			return nil, fmt.Errorf("%w: weight_grams must be > 0", ErrInvalidArgument)
+			return nil, false, fmt.Errorf("%w: weight_grams must be > 0", ErrInvalidArgument)
 		}
 	}
 
 	// Resolve origin from ward or shop pickup address when from_province_code is omitted (SHP-B1).
+	originFromShop := false
 	if req.FromProvinceCode == "" {
 		if req.FromWardCode != "" {
 			w, err := s.repo.GetWard(ctx, req.FromWardCode)
 			if err != nil {
 				if errors.Is(err, store.ErrNotFound) {
-					return nil, fmt.Errorf("%w: unsupported origin ward_code %q", ErrOutOfServiceArea, req.FromWardCode)
+					return nil, false, fmt.Errorf("%w: unsupported origin ward_code %q", ErrOutOfServiceArea, req.FromWardCode)
 				}
-				return nil, err
+				return nil, false, err
 			}
 			req.FromProvinceCode = w.ProvinceCode
 		} else if req.ShopID != "" {
 			if s.shopPickup == nil {
-				return nil, fmt.Errorf("shop pickup resolver not configured")
+				return nil, false, fmt.Errorf("shop pickup resolver not configured")
 			}
 			prov, ward, err := s.shopPickup.GetShopPickupCodes(ctx, req.ShopID)
 			if err != nil {
 				switch status.Code(err) {
 				case codes.NotFound:
-					return nil, fmt.Errorf("%w: shop %s not found", store.ErrNotFound, req.ShopID)
+					return nil, false, fmt.Errorf("%w: shop %s not found", store.ErrNotFound, req.ShopID)
 				case codes.InvalidArgument:
-					return nil, fmt.Errorf("%w: %w", ErrInvalidArgument, err)
+					return nil, false, fmt.Errorf("%w: %w", ErrInvalidArgument, err)
 				default:
-					return nil, fmt.Errorf("resolve shop pickup address: %w", err)
+					return nil, false, fmt.Errorf("resolve shop pickup address: %w", err)
 				}
 			}
 			if strings.TrimSpace(prov) == "" {
-				return nil, fmt.Errorf("%w: shop %s has no pickup address configured", ErrInvalidArgument, req.ShopID)
+				return nil, false, fmt.Errorf("%w: shop %s has no pickup address configured", ErrInvalidArgument, req.ShopID)
 			}
 			req.FromProvinceCode = strings.TrimSpace(prov)
 			req.FromWardCode = strings.TrimSpace(ward)
+			originFromShop = true
 		} else {
-			return nil, fmt.Errorf("%w: from_province_code or shop_id is required", ErrInvalidArgument)
+			return nil, false, fmt.Errorf("%w: from_province_code or shop_id is required", ErrInvalidArgument)
 		}
 	}
 
 	// Validate origin province & ward against 34-province catalog and enrich GHN codes (SHP-B7).
-	fromDistrictID, fromGHNWard, err := s.validateAndEnrichAddress(ctx, "origin", req.FromProvinceCode, req.FromWardCode)
+	// Never echo shop pickup province/ward codes back to callers when origin came from shop settings (E17).
+	fromDistrictID, fromGHNWard, _, err := s.validateAndEnrichAddress(ctx, "origin", req.FromProvinceCode, req.FromWardCode)
 	if err != nil {
-		return nil, err
+		if originFromShop {
+			if errors.Is(err, ErrOutOfServiceArea) {
+				return nil, false, fmt.Errorf("%w: shop pickup address is outside service area", ErrOutOfServiceArea)
+			}
+			if errors.Is(err, ErrInvalidArgument) {
+				return nil, false, fmt.Errorf("%w: shop pickup address configuration is invalid", ErrInvalidArgument)
+			}
+		}
+		return nil, false, err
 	}
 	req.FromDistrictID = fromDistrictID
 	req.FromGHNWardCode = fromGHNWard
@@ -423,26 +517,50 @@ func (s *ShippingService) CalculateFee(ctx context.Context, req carrier.FeeReque
 		w, wErr := s.repo.GetWard(ctx, req.ToWardCode)
 		if wErr != nil {
 			if errors.Is(wErr, store.ErrNotFound) {
-				return nil, fmt.Errorf("%w: unsupported destination ward_code %q", ErrOutOfServiceArea, req.ToWardCode)
+				return nil, false, fmt.Errorf("%w: unsupported destination ward_code %q", ErrOutOfServiceArea, req.ToWardCode)
 			}
-			return nil, wErr
+			return nil, false, wErr
 		}
 		req.ToProvinceCode = w.ProvinceCode
 	}
 	if req.ToProvinceCode == "" {
-		return nil, fmt.Errorf("%w: to_province_code is required", ErrInvalidArgument)
+		return nil, false, fmt.Errorf("%w: to_province_code is required", ErrInvalidArgument)
 	}
-	toDistrictID, toGHNWard, err := s.validateAndEnrichAddress(ctx, "destination", req.ToProvinceCode, req.ToWardCode)
-	if err != nil {
-		return nil, err
+
+	isEstimated := false
+	var toCODSupported bool
+	if req.ToWardCode == "" {
+		// E17: Public province-only estimate picks a deterministic active representative ward
+		// (preferring COD-supported mainland wards) and flags is_estimated=true.
+		if _, _, _, err := s.validateAndEnrichAddress(ctx, "destination", req.ToProvinceCode, ""); err != nil {
+			return nil, false, err
+		}
+		repWard, repErr := s.repo.GetRepresentativeWard(ctx, req.ToProvinceCode)
+		if repErr != nil {
+			if errors.Is(repErr, store.ErrNotFound) {
+				return nil, false, fmt.Errorf("%w: no active wards found for destination province %q", ErrOutOfServiceArea, req.ToProvinceCode)
+			}
+			return nil, false, repErr
+		}
+		req.ToWardCode = repWard.Code
+		req.ToDistrictID = repWard.GHNDistrictID
+		req.ToGHNWardCode = repWard.GHNWardCode
+		toCODSupported = repWard.CODSupported
+		isEstimated = true
+	} else {
+		toDistrictID, toGHNWard, codSupported, err := s.validateAndEnrichAddress(ctx, "destination", req.ToProvinceCode, req.ToWardCode)
+		if err != nil {
+			return nil, false, err
+		}
+		req.ToDistrictID = toDistrictID
+		req.ToGHNWardCode = toGHNWard
+		toCODSupported = codSupported
 	}
-	req.ToDistrictID = toDistrictID
-	req.ToGHNWardCode = toGHNWard
 
 	// Determine eligible carriers: platform-enabled ∩ shop-enabled (UC-SHIP06, UC-A12).
 	platformEnabled, platformMap, err := s.platformEnabledCarriers(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("load platform carrier configs: %w", err)
+		return nil, false, fmt.Errorf("load platform carrier configs: %w", err)
 	}
 	eligible := platformEnabled
 	if shopSettings != nil {
@@ -458,14 +576,19 @@ func (s *ShippingService) CalculateFee(ctx context.Context, req carrier.FeeReque
 		eligible = filtered
 	}
 	if len(eligible) == 0 {
-		return nil, fmt.Errorf("%w: no shipping carriers available for this shop", ErrNoEnabledCarriers)
+		return nil, false, fmt.Errorf("%w: no shipping carriers available for this shop", ErrNoEnabledCarriers)
 	}
 	req.AllowedCarriers = eligible
 
-	// Check cache ONLY after resolving origin/destination and eligible carrier set.
+	// Check cache ONLY after resolving real origin/destination (incl. representative ward) and eligible carriers.
 	if s.quoteCache != nil {
 		if cached, ok := s.quoteCache.Get(ctx, req); ok {
-			return cached, nil
+			out := make([]carrier.Quote, len(cached))
+			copy(out, cached)
+			for i := range out {
+				out[i].CODSupported = toCODSupported
+			}
+			return out, isEstimated, nil
 		}
 	}
 
@@ -473,44 +596,47 @@ func (s *ShippingService) CalculateFee(ctx context.Context, req carrier.FeeReque
 	quotes, isFallback, err := s.aggregator.CalculateFeeForCarriers(ctx, req, eligible, fallbackRates)
 	if err != nil {
 		if errors.Is(err, carrier.ErrRouteOutOfServiceArea) {
-			return nil, fmt.Errorf("%w: %w", ErrOutOfServiceArea, err)
+			return nil, false, fmt.Errorf("%w: %w", ErrOutOfServiceArea, err)
 		}
 		if errors.Is(err, carrier.ErrNoEnabledCarriers) {
-			return nil, fmt.Errorf("%w: %w", ErrNoEnabledCarriers, err)
+			return nil, false, fmt.Errorf("%w: %w", ErrNoEnabledCarriers, err)
 		}
-		return nil, err
+		return nil, false, err
+	}
+	for i := range quotes {
+		quotes[i].CODSupported = toCODSupported
 	}
 	if !isFallback && s.quoteCache != nil {
 		s.quoteCache.Set(ctx, req, quotes)
 	}
-	return quotes, nil
+	return quotes, isEstimated, nil
 }
 
-func (s *ShippingService) validateAndEnrichAddress(ctx context.Context, role, provinceCode, wardCode string) (int, string, error) {
+func (s *ShippingService) validateAndEnrichAddress(ctx context.Context, role, provinceCode, wardCode string) (int, string, bool, error) {
 	prov, err := s.repo.GetProvince(ctx, provinceCode)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return 0, "", fmt.Errorf("%w: unsupported %s province_code %q", ErrOutOfServiceArea, role, provinceCode)
+			return 0, "", false, fmt.Errorf("%w: unsupported %s province_code %q", ErrOutOfServiceArea, role, provinceCode)
 		}
-		return 0, "", err
+		return 0, "", false, err
 	}
 	if !isSupportedRegion(prov.Region) {
-		return 0, "", fmt.Errorf("%w: %s province %q is outside service area", ErrOutOfServiceArea, role, provinceCode)
+		return 0, "", false, fmt.Errorf("%w: %s province %q is outside service area", ErrOutOfServiceArea, role, provinceCode)
 	}
 	if wardCode == "" {
-		return 0, "", nil
+		return 0, "", true, nil
 	}
 	w, err := s.repo.GetWard(ctx, wardCode)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return 0, "", fmt.Errorf("%w: unsupported %s ward_code %q", ErrOutOfServiceArea, role, wardCode)
+			return 0, "", false, fmt.Errorf("%w: unsupported %s ward_code %q", ErrOutOfServiceArea, role, wardCode)
 		}
-		return 0, "", err
+		return 0, "", false, err
 	}
 	if w.ProvinceCode != provinceCode {
-		return 0, "", fmt.Errorf("%w: %s ward_code %q does not belong to province_code %q", ErrInvalidArgument, role, wardCode, provinceCode)
+		return 0, "", false, fmt.Errorf("%w: %s ward_code %q does not belong to province_code %q", ErrInvalidArgument, role, wardCode, provinceCode)
 	}
-	return w.GHNDistrictID, w.GHNWardCode, nil
+	return w.GHNDistrictID, w.GHNWardCode, w.CODSupported, nil
 }
 
 func isSupportedRegion(region string) bool {
@@ -532,125 +658,14 @@ type CreateShipmentInput struct {
 }
 
 // CreateShipment creates a FORWARD carrier shipment idempotently keyed by active (order_id, FORWARD) (UC-SHIP03).
+// For gRPC/API callers that support async retry queueing on transient 5xx/timeout/circuit-open errors (E18),
+// use CreateShipmentWithQueue.
 func (s *ShippingService) CreateShipment(ctx context.Context, in CreateShipmentInput) (*store.Shipment, bool, error) {
-	in.OrderID = strings.TrimSpace(in.OrderID)
-	in.ShopID = strings.TrimSpace(in.ShopID)
-	in.BuyerID = strings.TrimSpace(in.BuyerID)
-	if in.OrderID == "" {
-		return nil, false, fmt.Errorf("%w: order_id is required", ErrInvalidArgument)
-	}
-	if in.ShopID == "" {
-		return nil, false, fmt.Errorf("%w: shop_id is required", ErrInvalidArgument)
-	}
-	if in.WeightGrams <= 0 {
-		in.WeightGrams = s.resolveDefaultWeight(ctx, in.ShopID)
-	}
-
-	// Fast-path idempotency check only matches active (non-cancelled) FORWARD shipment.
-	if existing, err := s.repo.GetActiveShipmentByOrderID(ctx, in.OrderID, store.DirectionForward); err == nil && existing != nil {
-		return existing, true, nil
-	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return nil, false, fmt.Errorf("check existing shipment: %w", err)
-	}
-
-	// Serialize check -> carrier create -> DB insert per (order_id, FORWARD) across replicas
-	// without holding a DB transaction during external carrier calls.
-	unlock, err := s.repo.AcquireOrderDirectionLock(ctx, in.OrderID, store.DirectionForward)
+	out, err := s.createForwardShipment(ctx, in, false)
 	if err != nil {
-		return nil, false, fmt.Errorf("%w: lock forward shipment creation: %w", ErrCarrierUnavailable, err)
+		return nil, false, err
 	}
-	defer unlock()
-
-	// Re-check under advisory lock so a concurrent caller returns the shipment created by the first caller.
-	if existing, err := s.repo.GetActiveShipmentByOrderID(ctx, in.OrderID, store.DirectionForward); err == nil && existing != nil {
-		return existing, true, nil
-	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return nil, false, fmt.Errorf("recheck existing shipment: %w", err)
-	}
-
-	// Refresh carrier tokens across replicas when cache TTL elapses.
-	_, _, _ = s.loadCachedConfigs(ctx)
-
-	// Per UC-A12, disabling a carrier only applies to NEW orders (filtered in CalculateFee).
-	// Existing orders that already selected a carrier MUST still be able to create their FORWARD shipment.
-	var provider carrier.Carrier
-	reqCarrier := strings.ToLower(strings.TrimSpace(in.CarrierCode))
-	if reqCarrier != "" && reqCarrier != carrier.CodeFallback {
-		var ok bool
-		provider, ok = s.aggregator.Get(reqCarrier)
-		if !ok {
-			return nil, false, fmt.Errorf("%w: %s", ErrUnknownCarrier, reqCarrier)
-		}
-	} else {
-		provider, err = s.defaultEnabledCarrier(ctx)
-		if err != nil {
-			return nil, false, err
-		}
-	}
-
-	inactiveCount, err := s.repo.CountInactiveShipmentsByOrder(ctx, in.OrderID, store.DirectionForward)
-	if err != nil {
-		return nil, false, fmt.Errorf("count inactive forward shipments: %w", err)
-	}
-	clientOrderCode := in.OrderID
-	if inactiveCount > 0 {
-		clientOrderCode = fmt.Sprintf("%s-R%d", in.OrderID, inactiveCount)
-	}
-
-	s.enrichGHNAddress(ctx, &in.FromAddress)
-	s.enrichGHNAddress(ctx, &in.ToAddress)
-
-	res, err := provider.CreateShipment(ctx, carrier.ShipmentRequest{
-		OrderID:         in.OrderID,
-		ClientOrderCode: clientOrderCode,
-		ShopID:          in.ShopID,
-		ServiceCode:     in.ServiceCode,
-		CODAmountVND:    in.CODAmountVND,
-		WeightGrams:     in.WeightGrams,
-		FromAddress:     in.FromAddress,
-		ToAddress:       in.ToAddress,
-		ItemsSummary:    in.ItemsSummary,
-	})
-	if err != nil {
-		return nil, false, s.classifyCarrierCreateError(ctx, provider.Code(), err)
-	}
-
-	now := s.nowFn()
-	sh := &store.Shipment{
-		ID:               uuid.NewString(),
-		OrderID:          in.OrderID,
-		ShopID:           in.ShopID,
-		BuyerID:          in.BuyerID,
-		Direction:        store.DirectionForward,
-		CarrierCode:      res.CarrierCode,
-		ServiceCode:      res.ServiceCode,
-		TrackingCode:     res.TrackingCode,
-		LabelURL:         res.LabelURL,
-		Status:           carrier.StatusCreated,
-		FeeVND:           res.FeeVND,
-		CODAmountVND:     in.CODAmountVND,
-		WeightGrams:      in.WeightGrams,
-		FromProvinceCode: in.FromAddress.ProvinceCode,
-		FromWardCode:     in.FromAddress.WardCode,
-		ToProvinceCode:   in.ToAddress.ProvinceCode,
-		ToWardCode:       in.ToAddress.WardCode,
-		CreatedAt:        now,
-		UpdatedAt:        now,
-	}
-	initEv := &store.ShipmentEvent{
-		ID:          uuid.NewString(),
-		ShipmentID:  sh.ID,
-		Status:      carrier.StatusCreated,
-		RawStatus:   carrier.StatusCreated,
-		Description: carrier.StatusDescriptionVI(carrier.StatusCreated),
-		OccurredAt:  now.Truncate(time.Second),
-	}
-
-	saved, alreadyExisted, err := s.repo.CreateShipment(ctx, sh, initEv)
-	if err != nil {
-		return nil, false, fmt.Errorf("persist shipment: %w", err)
-	}
-	return saved, alreadyExisted, nil
+	return out.Shipment, out.AlreadyExisted, nil
 }
 
 // CreateReturnShipmentInput represents a RETURN shipment creation request (UC-SHIP08, SHP-B4).
@@ -936,6 +951,15 @@ func (s *ShippingService) CancelShipment(ctx context.Context, orderID, direction
 	dir, err := parseDirection(direction)
 	if err != nil {
 		return nil, err
+	}
+
+	// E18: For FORWARD cancellations (including order compensation RPC when order.cancelled raced
+	// ahead of job enqueue), cancel any active shipment_create_jobs FIRST before looking up the shipment,
+	// preserving all existing return codes (no shipment still returns store.ErrNotFound).
+	if dir == store.DirectionForward {
+		if _, cancelJobErr := s.repo.CancelActiveShipmentCreateJobs(ctx, orderID, store.DirectionForward, reason); cancelJobErr != nil {
+			return nil, fmt.Errorf("cancel active shipment create jobs: %w", cancelJobErr)
+		}
 	}
 
 	sh, err := s.repo.GetShipmentByOrderID(ctx, orderID, dir)
@@ -1485,7 +1509,9 @@ func (s *ShippingService) HandleWebhook(ctx context.Context, in WebhookInput) (*
 				OrderID:         sh.OrderID,
 				ShopID:          sh.ShopID,
 				CarrierCode:     sh.CarrierCode,
+				ServiceCode:     sh.ServiceCode,
 				TrackingCode:    sh.TrackingCode,
+				LabelURL:        sh.LabelURL,
 				Status:          internalStatus,
 				RawStatus:       strings.TrimSpace(in.RawStatus),
 				Description:     descVI,
@@ -1507,8 +1533,15 @@ func (s *ShippingService) HandleWebhook(ctx context.Context, in WebhookInput) (*
 	return updated, outcome, nil
 }
 
-// HandleOrderCancelled handles an async order.cancelled NATS event idempotently for the active FORWARD shipment (UC-SHIP07).
+// HandleOrderCancelled handles an async order.cancelled NATS event idempotently for the active FORWARD shipment
+// and cancels any pending/processing async shipment creation retry job (UC-SHIP07, E18).
 func (s *ShippingService) HandleOrderCancelled(ctx context.Context, eventID, orderID, reason string) error {
+	// Cancel active shipment_create_jobs FIRST so any concurrent retry worker finishing a carrier call
+	// observes status='cancelled' inside CompleteShipmentCreateJob and runs compensating CancelShipment.
+	if _, err := s.repo.CancelActiveShipmentCreateJobs(ctx, orderID, store.DirectionForward, reason); err != nil {
+		return fmt.Errorf("cancel active shipment create jobs: %w", err)
+	}
+
 	sh, err := s.repo.GetActiveShipmentByOrderID(ctx, orderID, store.DirectionForward)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -1607,6 +1640,13 @@ func (s *ShippingService) classifyCarrierCreateError(ctx context.Context, carrie
 			slog.String("error", err.Error()),
 		)
 		return fmt.Errorf("%w: lỗi cấu hình kết nối hãng vận chuyển, vui lòng liên hệ quản trị viên", ErrCarrierUnavailable)
+	}
+	if errors.Is(err, carrier.ErrMissingGHNMapping) {
+		s.logger.WarnContext(ctx, "ghn sandbox ward missing GHN mapping during shipment creation",
+			slog.String("carrier", carrierCode),
+			slog.String("error", err.Error()),
+		)
+		return fmt.Errorf("%w: phường chưa có mã GHN, chọn hãng khác", ErrCarrierRejected)
 	}
 	if carrier.IsNonRetryable(err) {
 		s.logger.WarnContext(ctx, "carrier rejected shipment creation (non-retryable)",

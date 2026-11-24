@@ -145,11 +145,19 @@ func ClientIPFromContext(ctx context.Context) string {
 	return v
 }
 
-// OutgoingContext creates a timed context forwarding the user's Authorization Bearer token
-// (services trust identity only from the verified JWT), the resolved x-client-ip metadata,
-// and optional extra key/value metadata pairs.
+// OutgoingContext creates a timed context using c.Timeout (default 10s), forwarding the user's
+// Authorization Bearer token (services trust identity only from the verified JWT), the resolved
+// x-client-ip metadata, and optional extra key/value metadata pairs.
 func (c *Clients) OutgoingContext(ctx context.Context, extraPairs ...string) (context.Context, context.CancelFunc) {
-	timeout := c.Timeout
+	return c.OutgoingContextWithTimeout(ctx, c.Timeout, extraPairs...)
+}
+
+// OutgoingContextWithTimeout behaves like OutgoingContext with an explicit per-call timeout.
+// If timeout <= 0, it falls back to c.Timeout (or 10s when unset).
+func (c *Clients) OutgoingContextWithTimeout(ctx context.Context, timeout time.Duration, extraPairs ...string) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		timeout = c.Timeout
+	}
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}

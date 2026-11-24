@@ -21,7 +21,8 @@ const (
 	SubjectPaymentExpired   = "payment.expired"
 	SubjectPaymentRefunded  = "payment.refunded"
 
-	SubjectShipmentUpdated = "shipment.updated"
+	SubjectShipmentUpdated      = "shipment.updated"
+	SubjectShipmentCreateFailed = "shipment.create_failed"
 
 	DLQStreamName = "NEXUSMART_DLQ"
 )
@@ -76,12 +77,13 @@ type OrderShippedPayload struct {
 	TrackingCode string `json:"tracking_code"`
 }
 
-// OrderDeliveredPayload matches docs/contracts.md Section 5.
+// OrderDeliveredPayload matches docs/contracts.md Section 5 (E20).
 type OrderDeliveredPayload struct {
 	OrderID      string `json:"order_id"`
 	OrderCode    string `json:"order_code"`
 	BuyerID      string `json:"buyer_id"`
 	ShopID       string `json:"shop_id"`
+	CarrierCode  string `json:"carrier_code"`
 	TrackingCode string `json:"tracking_code"`
 }
 
@@ -159,13 +161,15 @@ type PaymentRefundedPayload struct {
 	IsPostSettlement *bool  `json:"is_post_settlement,omitempty"`
 }
 
-// ShipmentUpdatedPayload matches shipment.updated events.
+// ShipmentUpdatedPayload matches shipment.updated events (E18).
 type ShipmentUpdatedPayload struct {
 	ShipmentID      string `json:"shipment_id"`
 	OrderID         string `json:"order_id"`
 	ShopID          string `json:"shop_id"`
 	CarrierCode     string `json:"carrier_code"`
+	ServiceCode     string `json:"service_code"`
 	TrackingCode    string `json:"tracking_code"`
+	LabelURL        string `json:"label_url"`
 	Status          string `json:"status"`
 	RawStatus       string `json:"raw_status"`
 	Description     string `json:"description"`
@@ -173,4 +177,16 @@ type ShipmentUpdatedPayload struct {
 	Direction       string `json:"direction"`
 	ReturnRequestID string `json:"return_request_id"`
 	RedeliveryCount int32  `json:"redelivery_count"`
+}
+
+// ShipmentCreateFailedPayload matches shipment.create_failed events (E18).
+type ShipmentCreateFailedPayload struct {
+	JobID        string `json:"job_id"`
+	OrderID      string `json:"order_id"`
+	ShopID       string `json:"shop_id"`
+	CarrierCode  string `json:"carrier_code"`
+	ServiceCode  string `json:"service_code"`
+	Attempts     int32  `json:"attempts"`
+	ErrorMessage string `json:"error_message"`
+	OccurredAt   string `json:"occurred_at"`
 }

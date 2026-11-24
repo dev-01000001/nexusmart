@@ -15,6 +15,7 @@ func TestE2E_OrderIdempotency(t *testing.T) {
 	cat, seller1, _ := env.ensureBaseMarketplace(t)
 	prod, sku := env.createApprovedProduct(t, seller1, cat.ID, "Idempotent SSD E2E", 150000, 50, 300)
 	buyer := env.registerVerifyAndLogin(t, "buyer-idem")
+	env.verifyBuyerPhone(t, buyer)
 	addr := env.addAddress(t, buyer)
 	quote := env.calculateShippingQuote(t, buyer.AccessToken, seller1.ShopID, 600, 300000)
 

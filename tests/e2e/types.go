@@ -154,6 +154,7 @@ type CreateCategoryRequest struct {
 	ParentID          string `json:"parent_id,omitempty"`
 	CommissionRateBps int32  `json:"commission_rate_bps"`
 	SortOrder         int32  `json:"sort_order"`
+	IsProhibited      bool   `json:"is_prohibited,omitempty"`
 }
 
 type CategoryDTO struct {
@@ -161,6 +162,7 @@ type CategoryDTO struct {
 	Name              string `json:"name"`
 	Slug              string `json:"slug"`
 	CommissionRateBps int32  `json:"commission_rate_bps"`
+	IsProhibited      bool   `json:"is_prohibited"`
 }
 
 type CategoryResponse struct {
@@ -206,15 +208,19 @@ type CreateProductRequest struct {
 }
 
 type ProductDTO struct {
-	ID          string   `json:"id"`
-	ShopID      string   `json:"shop_id"`
-	CategoryID  string   `json:"category_id"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Status      string   `json:"status"`
-	MinPriceVND int64    `json:"min_price_vnd"`
-	MaxPriceVND int64    `json:"max_price_vnd"`
-	SKUs        []SKUDTO `json:"skus"`
+	ID              string   `json:"id"`
+	ShopID          string   `json:"shop_id"`
+	CategoryID      string   `json:"category_id"`
+	Name            string   `json:"name"`
+	Slug            string   `json:"slug"`
+	Description     string   `json:"description"`
+	Status          string   `json:"status"`
+	MinPriceVND     int64    `json:"min_price_vnd"`
+	MaxPriceVND     int64    `json:"max_price_vnd"`
+	SKUs            []SKUDTO `json:"skus"`
+	RatingAvgX100   int32    `json:"rating_avg_x100"`
+	ReviewCount     int32    `json:"review_count"`
+	FlaggedKeywords []string `json:"flagged_keywords"`
 }
 
 type ProductResponse struct {
@@ -229,15 +235,18 @@ type AddCartItemRequest struct {
 }
 
 type CartItemDTO struct {
-	SKUID          string `json:"sku_id"`
-	ProductID      string `json:"product_id"`
-	ShopID         string `json:"shop_id"`
-	ProductName    string `json:"product_name"`
-	SKUName        string `json:"sku_name"`
-	PriceVND       int64  `json:"price_vnd"`
-	Quantity       int32  `json:"quantity"`
-	AvailableStock int32  `json:"available_stock"`
-	WeightGrams    int32  `json:"weight_grams"`
+	SKUID             string `json:"sku_id"`
+	ProductID         string `json:"product_id"`
+	ShopID            string `json:"shop_id"`
+	ProductName       string `json:"product_name"`
+	SKUName           string `json:"sku_name"`
+	PriceVND          int64  `json:"price_vnd"`
+	Quantity          int32  `json:"quantity"`
+	AvailableStock    int32  `json:"available_stock"`
+	WeightGrams       int32  `json:"weight_grams"`
+	Selected          bool   `json:"selected"`
+	Unavailable       bool   `json:"unavailable"`
+	UnavailableReason string `json:"unavailable_reason"`
 }
 
 type CartShopGroupDTO struct {
@@ -437,6 +446,7 @@ type WardDTO struct {
 	Code         string `json:"code"`
 	ProvinceCode string `json:"province_code"`
 	Name         string `json:"name"`
+	CODSupported bool   `json:"cod_supported"`
 }
 
 type WardsResponse struct {
@@ -461,10 +471,12 @@ type CarrierQuoteDTO struct {
 	FeeVND        int64  `json:"fee_vnd"`
 	EstimatedDays int32  `json:"estimated_days"`
 	IsFallback    bool   `json:"is_fallback"`
+	CODSupported  bool   `json:"cod_supported"`
 }
 
 type CalculateFeeResponse struct {
-	Quotes []CarrierQuoteDTO `json:"quotes"`
+	Quotes      []CarrierQuoteDTO `json:"quotes"`
+	IsEstimated bool              `json:"is_estimated"`
 }
 
 type ShippingWebhookPayload struct {
@@ -553,6 +565,7 @@ type OrderDTO struct {
 	ServiceCode              string                  `json:"service_code"`
 	TrackingCode             string                  `json:"tracking_code"`
 	LabelURL                 string                  `json:"label_url"`
+	ShipmentJobStatus        string                  `json:"shipment_job_status"`
 	Items                    []OrderItemDTO          `json:"items"`
 	Timeline                 []OrderTimelineEventDTO `json:"timeline"`
 }
@@ -592,9 +605,11 @@ type SellerShipRequest struct {
 }
 
 type SellerShipResponse struct {
-	Order        OrderDTO `json:"order"`
-	TrackingCode string   `json:"tracking_code"`
-	LabelURL     string   `json:"label_url"`
+	Order         OrderDTO `json:"order"`
+	TrackingCode  string   `json:"tracking_code"`
+	LabelURL      string   `json:"label_url"`
+	Queued        bool     `json:"queued"`
+	ShipmentJobID string   `json:"shipment_job_id"`
 }
 
 // --- Payments, Webhooks & Ledger ---

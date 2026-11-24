@@ -43,6 +43,7 @@ type Querier interface {
 	GetUserByID(ctx context.Context, id string) (User, error)
 	GetUserByIDForShare(ctx context.Context, id string) (User, error)
 	GetUserByIDForUpdate(ctx context.Context, id string) (User, error)
+	// E19-bis: looks up the verified owner of a canonical non-empty phone number.
 	GetUserByPhone(ctx context.Context, phone string) (User, error)
 	GetUserPlatformCounts(ctx context.Context) (GetUserPlatformCountsRow, error)
 	GetVerifiedShopBankAccountByShopID(ctx context.Context, shopID string) (ShopBankAccount, error)
@@ -60,6 +61,7 @@ type Querier interface {
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
 	MarkPasswordResetUsed(ctx context.Context, arg MarkPasswordResetUsedParams) (int64, error)
 	MarkShopBankAccountPublishFailed(ctx context.Context, arg MarkShopBankAccountPublishFailedParams) error
+	MarkUserPhoneVerified(ctx context.Context, arg MarkUserPhoneVerifiedParams) (User, error)
 	RecordShopBankAccountOTPFailure(ctx context.Context, arg RecordShopBankAccountOTPFailureParams) (ShopBankAccount, error)
 	ResubmitShop(ctx context.Context, arg ResubmitShopParams) (Shop, error)
 	RevokeAllUserRefreshTokens(ctx context.Context, userID string) error

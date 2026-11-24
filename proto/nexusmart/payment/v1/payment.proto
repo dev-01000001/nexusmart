@@ -35,6 +35,8 @@ enum ReconciliationStatus {
   RECONCILIATION_STATUS_MISSING_LOCAL = 2;
   RECONCILIATION_STATUS_MISSING_PROVIDER = 3;
   RECONCILIATION_STATUS_AMOUNT_MISMATCH = 4;
+  RECONCILIATION_STATUS_ALREADY_RECONCILED = 5;
+  RECONCILIATION_STATUS_NOT_DELIVERED = 6;
 }
 
 enum ReconciliationAction {
@@ -111,6 +113,9 @@ message ReconciliationItem {
   int64 provider_amount_vnd = 4;
   ReconciliationStatus status = 5;
   string note = 6;
+  string tracking_code = 7;
+  string order_id = 8;
+  int32 line_number = 9;
 }
 
 message ReconciliationQueueItem {
@@ -127,6 +132,9 @@ message ReconciliationQueueItem {
   string notes = 11;
   google.protobuf.Timestamp created_at = 12;
   google.protobuf.Timestamp resolved_at = 13;
+  // Origin of queue entry (e.g. "webhook", "reconciliation", "cod_file") (E20).
+  string source_type = 14;
+  string tracking_code = 15;
 }
 
 message CreatePaymentRequest {
@@ -350,6 +358,58 @@ message ListSellerLedgerResponse {
   int64 total = 2;
 }
 
+message CodReconciliationRow {
+  int32 line_number = 1;
+  string tracking_code = 2;
+  int64 cod_amount_vnd = 3;
+  string delivered_at = 4;
+  // Optional fallback used ONLY when the COD allocation does not yet store tracking_code (E20).
+  string order_code = 5;
+}
+
+message ReconciliationRunSummary {
+  string run_id = 1;
+  string run_type = 2;
+  string provider = 3;
+  string run_date = 4;
+  string file_name = 5;
+  int32 total_rows = 6;
+  int32 matched_count = 7;
+  int32 already_reconciled_count = 8;
+  int32 missing_local_count = 9;
+  int32 missing_provider_count = 10;
+  int32 amount_mismatch_count = 11;
+  int64 total_matched_vnd = 12;
+  string status = 13;
+  string created_by = 14;
+  google.protobuf.Timestamp created_at = 15;
+  int32 not_delivered_count = 16;
+}
+
+message ImportCodReconciliationRequest {
+  string carrier_code = 1;
+  string file_name = 2;
+  string file_sha256 = 3;
+  repeated CodReconciliationRow rows = 4;
+  string run_date = 5;
+}
+
+message ImportCodReconciliationResponse {
+  ReconciliationRunSummary run = 1;
+  repeated ReconciliationItem items = 2;
+}
+
+message ListReconciliationRunsRequest {
+  string run_type = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message ListReconciliationRunsResponse {
+  repeated ReconciliationRunSummary runs = 1;
+  int64 total = 2;
+}
+
 service PaymentService {
   rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentResponse);
   rpc GetPayment(GetPaymentRequest) returns (GetPaymentResponse);
@@ -367,4 +427,6 @@ service PaymentService {
   rpc GetFeeConfig(GetFeeConfigRequest) returns (GetFeeConfigResponse);
   rpc SetFeeConfig(SetFeeConfigRequest) returns (SetFeeConfigResponse);
   rpc ListSellerLedger(ListSellerLedgerRequest) returns (ListSellerLedgerResponse);
+  rpc ImportCodReconciliation(ImportCodReconciliationRequest) returns (ImportCodReconciliationResponse);
+  rpc ListReconciliationRuns(ListReconciliationRunsRequest) returns (ListReconciliationRunsResponse);
 }

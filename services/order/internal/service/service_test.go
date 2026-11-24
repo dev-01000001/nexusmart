@@ -43,6 +43,8 @@ type authCallSnapshot struct {
 type mockUserClient struct {
 	mu                sync.Mutex
 	codRejectedCount  int32
+	phoneVerified     bool
+	validateUserErr   error
 	userStatus        userv1.UserStatus
 	userValid         bool
 	addresses         map[string]*userv1.Address
@@ -57,6 +59,7 @@ func newMockUserClient() *mockUserClient {
 	return &mockUserClient{
 		userStatus:     userv1.UserStatus_USER_STATUS_ACTIVE,
 		userValid:      true,
+		phoneVerified:  true,
 		getAddressAuth: make(map[string]authCallSnapshot),
 		addresses: map[string]*userv1.Address{
 			"addr-buyer-1": {
@@ -112,10 +115,14 @@ func newMockUserClient() *mockUserClient {
 func (m *mockUserClient) ValidateUser(_ context.Context, _ *userv1.ValidateUserRequest, _ ...grpc.CallOption) (*userv1.ValidateUserResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.validateUserErr != nil {
+		return nil, m.validateUserErr
+	}
 	return &userv1.ValidateUserResponse{
 		Valid:            m.userValid,
 		Role:             userv1.UserRole_USER_ROLE_BUYER,
 		Status:           m.userStatus,
+		PhoneVerified:    m.phoneVerified,
 		CodRejectedCount: m.codRejectedCount,
 	}, nil
 }
@@ -720,37 +727,40 @@ func (m *mockPaymentClient) GetFeeConfig(ctx context.Context, req *paymentv1.Get
 }
 
 type mockShippingClient struct {
-	mu                     sync.Mutex
-	quotes                 []*shippingv1.CarrierQuote
-	shopSettings           map[string]*shippingv1.ShopShippingSettings
-	getShopSettingsErr     error
-	getShopSettingsCalls   []*shippingv1.GetShopShippingSettingsRequest
-	getShopSettingsAuth    []authCallSnapshot
-	createShipCalls        []*shippingv1.CreateShipmentRequest
-	onCreateShipment       func(req *shippingv1.CreateShipmentRequest) (*shippingv1.CreateShipmentResponse, error)
-	createReturnShipCalls  []*shippingv1.CreateReturnShipmentRequest
-	createReturnShipAuth   []authCallSnapshot
-	createReturnShipErr    error
-	onCreateReturnShipment func(req *shippingv1.CreateReturnShipmentRequest) (*shippingv1.CreateReturnShipmentResponse, error)
-	cancelShipCalls        []*shippingv1.CancelShipmentRequest
-	cancelShipAuth         []authCallSnapshot
-	cancelShipErr          error
-	onCancelShipment       func(req *shippingv1.CancelShipmentRequest) error
-	getShipCalls           []*shippingv1.GetShipmentRequest
-	getShipAuth            []authCallSnapshot
-	getShipResp            *shippingv1.GetShipmentResponse
-	getShipErr             error
-	onGetShipment          func(req *shippingv1.GetShipmentRequest) (*shippingv1.GetShipmentResponse, error)
-	calculateFeeReqs       []*shippingv1.CalculateFeeRequest
-	calculateFeeCall       int
-	forwardTrackings       map[string]string
+	mu                      sync.Mutex
+	quotes                  []*shippingv1.CarrierQuote
+	shopSettings            map[string]*shippingv1.ShopShippingSettings
+	getShopSettingsErr      error
+	getShopSettingsCalls    []*shippingv1.GetShopShippingSettingsRequest
+	getShopSettingsAuth     []authCallSnapshot
+	createShipCalls         []*shippingv1.CreateShipmentRequest
+	onCreateShipment        func(req *shippingv1.CreateShipmentRequest) (*shippingv1.CreateShipmentResponse, error)
+	createReturnShipCalls   []*shippingv1.CreateReturnShipmentRequest
+	createReturnShipAuth    []authCallSnapshot
+	createReturnShipErr     error
+	onCreateReturnShipment  func(req *shippingv1.CreateReturnShipmentRequest) (*shippingv1.CreateReturnShipmentResponse, error)
+	cancelShipCalls         []*shippingv1.CancelShipmentRequest
+	cancelShipAuth          []authCallSnapshot
+	cancelShipErr           error
+	onCancelShipment        func(req *shippingv1.CancelShipmentRequest) error
+	getShipCalls            []*shippingv1.GetShipmentRequest
+	getShipAuth             []authCallSnapshot
+	getShipResp             *shippingv1.GetShipmentResponse
+	getShipErr              error
+	onGetShipment           func(req *shippingv1.GetShipmentRequest) (*shippingv1.GetShipmentResponse, error)
+	calculateFeeReqs        []*shippingv1.CalculateFeeRequest
+	calculateFeeCall        int
+	calculateFeeErr         error
+	calculateFeeIsEstimated bool
+	onCalculateFee          func(req *shippingv1.CalculateFeeRequest) (*shippingv1.CalculateFeeResponse, error)
+	forwardTrackings        map[string]string
 }
 
 func newMockShippingClient() *mockShippingClient {
 	return &mockShippingClient{
 		quotes: []*shippingv1.CarrierQuote{
-			{CarrierCode: "ghn", CarrierName: "GHN", ServiceCode: "standard", FeeVnd: 30000, EstimatedDays: 3},
-			{CarrierCode: "mock_express", CarrierName: "MockExpress", ServiceCode: "fast", FeeVnd: 45000, EstimatedDays: 1},
+			{CarrierCode: "ghn", CarrierName: "GHN", ServiceCode: "standard", FeeVnd: 30000, EstimatedDays: 3, CodSupported: true},
+			{CarrierCode: "mock_express", CarrierName: "MockExpress", ServiceCode: "fast", FeeVnd: 45000, EstimatedDays: 1, CodSupported: true},
 		},
 		forwardTrackings: make(map[string]string),
 	}
@@ -761,7 +771,13 @@ func (m *mockShippingClient) CalculateFee(_ context.Context, req *shippingv1.Cal
 	defer m.mu.Unlock()
 	m.calculateFeeCall++
 	m.calculateFeeReqs = append(m.calculateFeeReqs, req)
-	return &shippingv1.CalculateFeeResponse{Quotes: m.quotes}, nil
+	if m.onCalculateFee != nil {
+		return m.onCalculateFee(req)
+	}
+	if m.calculateFeeErr != nil {
+		return nil, m.calculateFeeErr
+	}
+	return &shippingv1.CalculateFeeResponse{Quotes: m.quotes, IsEstimated: m.calculateFeeIsEstimated}, nil
 }
 
 func (m *mockShippingClient) CreateShipment(_ context.Context, req *shippingv1.CreateShipmentRequest, _ ...grpc.CallOption) (*shippingv1.CreateShipmentResponse, error) {
@@ -954,6 +970,9 @@ func newTestHarness() *testHarness {
 		ServiceName:               "order",
 		CODMaxVND:                 5000000,
 		CODMaxRejectedCount:       3,
+		CODRequirePhoneVerified:   true,
+		CODMinOrdersForRate:       3,
+		CODMaxRejectRateBPS:       3000,
 		PaymentExpiryMinutes:      15,
 		FlashPaymentExpiryMinutes: 5,
 		RewardCoinsBPS:            100,

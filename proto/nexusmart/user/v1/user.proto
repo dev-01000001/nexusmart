@@ -518,6 +518,27 @@ message GetShopBankAccountForPayoutResponse {
   ShopBankAccount bank_account = 1;
 }
 
+message RequestPhoneOTPRequest {
+  string phone = 1;
+}
+
+message RequestPhoneOTPResponse {
+  bool sent = 1;
+  int32 expires_in_seconds = 2;
+  int32 retry_after_seconds = 3;
+  string phone_masked = 4;
+}
+
+message VerifyPhoneOTPRequest {
+  string phone = 1;
+  string otp = 2;
+}
+
+message VerifyPhoneOTPResponse {
+  bool verified = 1;
+  User user = 2;
+}
+
 service UserService {
   rpc Register(RegisterRequest) returns (RegisterResponse);
   rpc VerifyOTP(VerifyOTPRequest) returns (VerifyOTPResponse);
@@ -552,4 +573,6 @@ service UserService {
   rpc AdminReviewShopBankAccount(AdminReviewShopBankAccountRequest) returns (AdminReviewShopBankAccountResponse);
   rpc GetPlatformUserStats(GetPlatformUserStatsRequest) returns (GetPlatformUserStatsResponse);
   rpc GetShopBankAccountForPayout(GetShopBankAccountForPayoutRequest) returns (GetShopBankAccountForPayoutResponse);
+  rpc RequestPhoneOTP(RequestPhoneOTPRequest) returns (RequestPhoneOTPResponse);
+  rpc VerifyPhoneOTP(VerifyPhoneOTPRequest) returns (VerifyPhoneOTPResponse);
 }

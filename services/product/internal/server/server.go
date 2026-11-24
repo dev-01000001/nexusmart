@@ -21,6 +21,7 @@ import (
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/telemetry"
 	"github.com/nexusmart/core/services/product/internal/events"
+	"github.com/nexusmart/core/services/product/internal/resilience"
 	"github.com/nexusmart/core/services/product/internal/store"
 )
 
@@ -35,11 +36,16 @@ const (
 // Server implements productv1.ProductServiceServer.
 type Server struct {
 	productv1.UnimplementedProductServiceServer
-	store         store.Store
-	logger        *slog.Logger
-	clockMu       sync.RWMutex
-	nowFn         func() time.Time
-	outboxTrigger chan struct{}
+	store           store.Store
+	logger          *slog.Logger
+	orderClient     OrderClient
+	userClient      UserClient
+	orderBreaker    *resilience.CircuitBreaker
+	userBreaker     *resilience.CircuitBreaker
+	upstreamTimeout time.Duration
+	clockMu         sync.RWMutex
+	nowFn           func() time.Time
+	outboxTrigger   chan struct{}
 }
 
 // New constructs a ProductService gRPC server.
@@ -48,10 +54,13 @@ func New(st store.Store, logger *slog.Logger) *Server {
 		logger = slog.Default()
 	}
 	return &Server{
-		store:         st,
-		logger:        logger,
-		nowFn:         func() time.Time { return time.Now().UTC() },
-		outboxTrigger: make(chan struct{}, 1),
+		store:           st,
+		logger:          logger,
+		orderBreaker:    resilience.NewCircuitBreaker(5, 15*time.Second),
+		userBreaker:     resilience.NewCircuitBreaker(5, 15*time.Second),
+		upstreamTimeout: defaultUpstreamTimeout,
+		nowFn:           func() time.Time { return time.Now().UTC() },
+		outboxTrigger:   make(chan struct{}, 1),
 	}
 }
 
@@ -156,6 +165,7 @@ func (s *Server) CreateCategory(ctx context.Context, req *productv1.CreateCatego
 			ParentID:          parentID,
 			CommissionRateBps: req.GetCommissionRateBps(),
 			SortOrder:         req.GetSortOrder(),
+			IsProhibited:      req.GetIsProhibited(),
 		})
 		if createErr != nil {
 			return createErr
@@ -275,6 +285,11 @@ func (s *Server) UpdateCategory(ctx context.Context, req *productv1.UpdateCatego
 			sortOrder = req.GetSortOrder()
 		}
 
+		isProhibited := existing.IsProhibited
+		if req.GetHasIsProhibited() || req.GetIsProhibited() {
+			isProhibited = req.GetIsProhibited()
+		}
+
 		cat, updErr := q.UpdateCategory(ctx, store.Category{
 			ID:                id,
 			Name:              name,
@@ -282,6 +297,7 @@ func (s *Server) UpdateCategory(ctx context.Context, req *productv1.UpdateCatego
 			ParentID:          parentID,
 			CommissionRateBps: commissionRateBps,
 			SortOrder:         sortOrder,
+			IsProhibited:      isProhibited,
 		})
 		if updErr != nil {
 			return updErr
@@ -571,6 +587,16 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 		}
 	}
 
+	desc := strings.TrimSpace(req.GetDescription())
+	modRes, err := s.checkProductModeration(ctx, s.store, categoryID, name, desc, productModerationSlug{
+		Name:    name,
+		Slug:    explicitSlug,
+		RawSlug: rawSlug,
+	}, toModerationSKUsFromInputs(skuInputs))
+	if err != nil {
+		return nil, err
+	}
+
 	var (
 		createdProd store.Product
 		createdSKUs []store.SKU
@@ -597,16 +623,17 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 		}
 
 		p, createErr := q.CreateProduct(ctx, store.Product{
-			ID:          prodID,
-			ShopID:      shopID,
-			CategoryID:  categoryID,
-			Name:        name,
-			Slug:        prodSlug,
-			Description: strings.TrimSpace(req.GetDescription()),
-			Images:      req.GetImages(),
-			Status:      store.ProductStatusPending,
-			MinPriceVND: minPrice,
-			MaxPriceVND: maxPrice,
+			ID:              prodID,
+			ShopID:          shopID,
+			CategoryID:      categoryID,
+			Name:            name,
+			Slug:            prodSlug,
+			Description:     desc,
+			Images:          req.GetImages(),
+			Status:          store.ProductStatusPending,
+			MinPriceVND:     minPrice,
+			MaxPriceVND:     maxPrice,
+			FlaggedKeywords: modRes.FlaggedTerms,
 		})
 		if createErr != nil {
 			return createErr
@@ -669,7 +696,7 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 	}
 
 	return &productv1.CreateProductResponse{
-		Product: toProtoProduct(createdProd, createdSKUs),
+		Product: toProtoProduct(createdProd, createdSKUs, true),
 	}, nil
 }
 
@@ -684,92 +711,164 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 		return nil, status.Error(codes.InvalidArgument, "product id is required")
 	}
 
-	now := s.now()
-	ctx = store.WithAsOf(ctx, now)
-
-	existing, err := s.store.GetProductByID(ctx, id)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, status.Error(codes.NotFound, "product not found")
-		}
-		return nil, status.Errorf(codes.Internal, "get product: %v", err)
-	}
-	if !isAdmin && existing.ShopID != shopID {
-		return nil, status.Error(codes.PermissionDenied, "cannot update product belonging to another shop")
-	}
-
-	categoryID := strings.TrimSpace(req.GetCategoryId())
-	if categoryID == "" {
-		categoryID = existing.CategoryID
-	}
-	cat, err := s.store.GetCategoryByID(ctx, categoryID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, status.Error(codes.NotFound, "category not found")
-		}
-		return nil, status.Errorf(codes.Internal, "lookup category: %v", err)
-	}
-
-	name := strings.TrimSpace(req.GetName())
-	if name == "" {
-		name = existing.Name
-	}
-	prodSlug := existing.Slug
-	if rawSlug := strings.TrimSpace(req.GetSlug()); rawSlug != "" {
-		normalized := normalizeSlug(rawSlug)
-		if normalized == "" {
+	rawSlug := strings.TrimSpace(req.GetSlug())
+	var normalizedReqSlug string
+	if rawSlug != "" {
+		normalizedReqSlug = normalizeSlug(rawSlug)
+		if normalizedReqSlug == "" {
 			return nil, status.Error(codes.InvalidArgument, "slug must contain letters or digits")
 		}
-		prodSlug = normalized
-	}
-	if prodSlug == "" {
-		prodSlug = slugify(name, "prod-"+id[:min(8, len(id))])
-	}
-	desc := existing.Description
-	if req.GetDescription() != "" {
-		desc = strings.TrimSpace(req.GetDescription())
-	}
-	images := existing.Images
-	if len(req.GetImages()) > 0 {
-		images = req.GetImages()
 	}
 
-	nextStatus, err := resolveUpdatedProductStatus(existing.Status, req.GetStatus(), isAdmin)
-	if err != nil {
-		return nil, err
-	}
-
-	var skuInputs []normalizedSKUInput
-	minPrice := existing.MinPriceVND
-	maxPrice := existing.MaxPriceVND
+	var (
+		skuInputs   []normalizedSKUInput
+		reqMinPrice int64
+		reqMaxPrice int64
+	)
 	if len(req.GetSkus()) > 0 {
-		skuInputs, minPrice, maxPrice, err = validateSKUInputs(req.GetSkus())
+		skuInputs, reqMinPrice, reqMaxPrice, err = validateSKUInputs(req.GetSkus())
 		if err != nil {
 			return nil, err
 		}
 	}
+
+	now := s.now()
+	ctx = store.WithAsOf(ctx, now)
 
 	var (
 		updatedProd store.Product
 		resultSKUs  []store.SKU
 	)
 
+	// Lock order: products (FOR UPDATE) -> skus -> stock_history / sku_price_history.
+	// Reading product + SKUs, verifying ownership, computing nextStatus/isHideOnly, running moderation,
+	// and writing SKUs + product all happen inside the same transaction to eliminate TOCTOU races.
 	err = s.store.WithTx(ctx, func(q store.Queries) error {
+		existing, getErr := q.GetProductByIDForUpdate(ctx, id)
+		if getErr != nil {
+			if errors.Is(getErr, store.ErrNotFound) {
+				return status.Error(codes.NotFound, "product not found")
+			}
+			return status.Errorf(codes.Internal, "get product: %v", getErr)
+		}
+		if !isAdmin && existing.ShopID != shopID {
+			return status.Error(codes.PermissionDenied, "cannot update product belonging to another shop")
+		}
+
+		categoryID := strings.TrimSpace(req.GetCategoryId())
+		if categoryID == "" {
+			categoryID = existing.CategoryID
+		}
+		cat, catErr := q.GetCategoryByID(ctx, categoryID)
+		if catErr != nil {
+			if errors.Is(catErr, store.ErrNotFound) {
+				return status.Error(codes.NotFound, "category not found")
+			}
+			return status.Errorf(codes.Internal, "lookup category: %v", catErr)
+		}
+
+		name := strings.TrimSpace(req.GetName())
+		if name == "" {
+			name = existing.Name
+		}
+		prodSlug := existing.Slug
+		if normalizedReqSlug != "" {
+			prodSlug = normalizedReqSlug
+		}
+		if prodSlug == "" {
+			prodSlug = slugify(name, "prod-"+id[:min(8, len(id))])
+		}
+		desc := existing.Description
+		if req.GetDescription() != "" {
+			desc = strings.TrimSpace(req.GetDescription())
+		}
+		images := existing.Images
+		if len(req.GetImages()) > 0 {
+			images = req.GetImages()
+		}
+
+		nextStatus, statusErr := resolveUpdatedProductStatus(existing.Status, req.GetStatus(), isAdmin)
+		if statusErr != nil {
+			return statusErr
+		}
+
+		minPrice := existing.MinPriceVND
+		maxPrice := existing.MaxPriceVND
 		if len(skuInputs) > 0 {
-			allSKUs, listErr := q.ListAllSKUsByProductID(ctx, id)
+			minPrice = reqMinPrice
+			maxPrice = reqMaxPrice
+		}
+
+		var (
+			allSKUs         []store.SKU
+			activeByID      map[string]store.SKU
+			inactiveByCode  map[string]store.SKU
+			existingModSKUs []moderationSKU
+			incomingModSKUs []moderationSKU
+		)
+		if len(skuInputs) > 0 {
+			var listErr error
+			allSKUs, listErr = q.ListAllSKUsByProductID(ctx, id)
 			if listErr != nil {
 				return listErr
 			}
-			activeByID := make(map[string]store.SKU, len(allSKUs))
-			inactiveByCode := make(map[string]store.SKU)
+			activeByID = make(map[string]store.SKU, len(allSKUs))
+			inactiveByCode = make(map[string]store.SKU)
+			activeSKUs := make([]store.SKU, 0, len(allSKUs))
 			for _, sk := range allSKUs {
 				if sk.Status == store.SKUStatusInactive {
 					inactiveByCode[sk.SKUCode] = sk
 				} else {
 					activeByID[sk.ID] = sk
+					activeSKUs = append(activeSKUs, sk)
 				}
 			}
+			existingModSKUs = toModerationSKUsFromStore(activeSKUs)
+			incomingModSKUs = toModerationSKUsFromInputs(skuInputs)
+		} else {
+			curSKUs, listErr := q.ListSKUsByProductIDs(ctx, []string{id})
+			if listErr != nil {
+				return status.Errorf(codes.Internal, "list product skus: %v", listErr)
+			}
+			existingModSKUs = toModerationSKUsFromStore(curSKUs)
+			incomingModSKUs = existingModSKUs
+		}
 
+		// Item 7 / B: hiding a violating product is permitted when nextStatus == HIDDEN, category is unchanged,
+		// and the canonical set of moderated fields (name, description, slug, SKU names + SKU attributes) is unchanged.
+		isHideOnly := nextStatus == store.ProductStatusHidden &&
+			categoryID == existing.CategoryID &&
+			moderationContentUnchanged(existing, existingModSKUs, name, desc, prodSlug, incomingModSKUs)
+
+		flaggedKeywords := existing.FlaggedKeywords
+		if !isHideOnly {
+			modRes, modErr := s.checkProductModeration(ctx, q, categoryID, name, desc, productModerationSlug{
+				ProductID:   id,
+				Name:        name,
+				Slug:        prodSlug,
+				RawSlug:     rawSlug,
+				PrevSlug:    existing.Slug,
+				HasPrevSlug: true,
+			}, incomingModSKUs)
+			if modErr != nil {
+				return modErr
+			}
+			if nextStatus == store.ProductStatusHidden {
+				// A: Never record unapproved REVIEW keywords as pre-approved while hiding or editing under HIDDEN;
+				// retain only the intersection with existing.FlaggedKeywords so unhiding still triggers PENDING.
+				flaggedKeywords = intersectFlaggedKeywords(existing.FlaggedKeywords, modRes.FlaggedTerms)
+			} else {
+				flaggedKeywords = modRes.FlaggedTerms
+				// Item 3 & E10: demote APPROVED/OUT_OF_STOCK to PENDING only when a NEW REVIEW keyword
+				// (not already present in existing.FlaggedKeywords) matches; subsets preserve status.
+				if hasNewFlaggedKeywords(existing.FlaggedKeywords, modRes.FlaggedTerms) &&
+					(nextStatus == store.ProductStatusApproved || nextStatus == store.ProductStatusOutOfStock) {
+					nextStatus = store.ProductStatusPending
+				}
+			}
+		}
+
+		if len(skuInputs) > 0 {
 			keptIDs := make(map[string]bool, len(skuInputs))
 			for _, in := range skuInputs {
 				if in.ID != "" {
@@ -962,6 +1061,7 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 			RejectionReason: rejectionReason,
 			MinPriceVND:     minPrice,
 			MaxPriceVND:     maxPrice,
+			FlaggedKeywords: flaggedKeywords,
 		})
 		if updErr != nil {
 			return updErr
@@ -998,7 +1098,7 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 	}
 
 	return &productv1.UpdateProductResponse{
-		Product: toProtoProduct(updatedProd, resultSKUs),
+		Product: toProtoProduct(updatedProd, resultSKUs, true),
 	}, nil
 }
 
@@ -1015,18 +1115,15 @@ func (s *Server) DeleteProduct(ctx context.Context, req *productv1.DeleteProduct
 	now := s.now()
 	ctx = store.WithAsOf(ctx, now)
 
-	existing, err := s.store.GetProductByID(ctx, id)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, status.Error(codes.NotFound, "product not found")
-		}
-		return nil, status.Errorf(codes.Internal, "get product: %v", err)
-	}
-	if !isAdmin && existing.ShopID != shopID {
-		return nil, status.Error(codes.PermissionDenied, "cannot delete product belonging to another shop")
-	}
-
+	// Lock order: products (FOR UPDATE) -> skus (deactivate).
 	err = s.store.WithTx(ctx, func(q store.Queries) error {
+		existing, getErr := q.GetProductByIDForUpdate(ctx, id)
+		if getErr != nil {
+			return getErr
+		}
+		if !isAdmin && existing.ShopID != shopID {
+			return status.Error(codes.PermissionDenied, "cannot delete product belonging to another shop")
+		}
 		deleted, delErr := q.SoftDeleteProduct(ctx, id)
 		if delErr != nil {
 			return delErr
@@ -1037,6 +1134,9 @@ func (s *Server) DeleteProduct(ctx context.Context, req *productv1.DeleteProduct
 		return q.DeactivateSKUsByProduct(ctx, id)
 	})
 	if err != nil {
+		if _, ok := status.FromError(err); ok {
+			return nil, err
+		}
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, status.Error(codes.NotFound, "product not found")
 		}
@@ -1103,7 +1203,19 @@ func (s *Server) AdminReviewProduct(ctx context.Context, req *productv1.AdminRev
 				return nil
 			}
 
-			p, updErr := q.UpdateProductReview(ctx, productID, store.ProductStatusApproved, "")
+			// E10 & P1-1: AdminReviewProduct(APPROVE) blocks prohibited categories and content BLOCK keywords
+			// (name/description/SKUs), while permitting REVIEW-flagged and slug-only BLOCK products after
+			// moderator inspection using the same evaluation as RescanProductsForBannedContent.
+			loadedSKUs, skuErr := q.ListSKUsByProductIDs(ctx, []string{productID})
+			if skuErr != nil {
+				return skuErr
+			}
+			modMatch, modErr := s.checkStoredProductApprovalModeration(ctx, q, cur, toModerationSKUsFromStore(loadedSKUs))
+			if modErr != nil {
+				return modErr
+			}
+
+			p, updErr := q.UpdateProductReview(ctx, productID, store.ProductStatusApproved, "", modMatch.effectiveReviewTerms)
 			if updErr != nil {
 				return updErr
 			}
@@ -1116,6 +1228,10 @@ func (s *Server) AdminReviewProduct(ctx context.Context, req *productv1.AdminRev
 				return refErr
 			}
 			p = refreshed
+			refreshedSKUs, skuErr := q.ListSKUsByProductIDs(ctx, []string{productID})
+			if skuErr != nil {
+				return skuErr
+			}
 
 			payloadBytes, mErr := json.Marshal(events.ProductReviewedPayload{
 				ProductID:   p.ID,
@@ -1139,12 +1255,8 @@ func (s *Server) AdminReviewProduct(ctx context.Context, req *productv1.AdminRev
 			}); obErr != nil {
 				return obErr
 			}
-			loadedSKUs, skuErr := q.ListSKUsByProductIDs(ctx, []string{productID})
-			if skuErr != nil {
-				return skuErr
-			}
 			updated = p
-			skus = loadedSKUs
+			skus = refreshedSKUs
 			emittedOutbox = true
 			return nil
 		}
@@ -1161,7 +1273,7 @@ func (s *Server) AdminReviewProduct(ctx context.Context, req *productv1.AdminRev
 			return nil
 		}
 
-		p, updErr := q.UpdateProductReview(ctx, productID, store.ProductStatusRejected, reason)
+		p, updErr := q.UpdateProductReview(ctx, productID, store.ProductStatusRejected, reason, cur.FlaggedKeywords)
 		if updErr != nil {
 			return updErr
 		}
@@ -1211,7 +1323,7 @@ func (s *Server) AdminReviewProduct(ctx context.Context, req *productv1.AdminRev
 	}
 
 	return &productv1.AdminReviewProductResponse{
-		Product: toProtoProduct(updated, skus),
+		Product: toProtoProduct(updated, skus, true),
 	}, nil
 }
 
@@ -1234,11 +1346,38 @@ func (s *Server) GetProduct(ctx context.Context, req *productv1.GetProductReques
 	}
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
+			// E13: Previously-approved soft-deleted products return a discontinued stub (no name, no SKUs/price) on slug lookup.
+			if slug != "" && req.GetIncludeDiscontinuedStub() {
+				delProd, delErr := s.store.GetDeletedApprovedProductBySlug(ctx, slug)
+				if delErr == nil {
+					return &productv1.GetProductResponse{
+						Discontinued:           true,
+						DiscontinuedCategoryId: delProd.CategoryID,
+					}, nil
+				}
+				if !errors.Is(delErr, store.ErrNotFound) {
+					return nil, status.Errorf(codes.Internal, "get discontinued product: %v", delErr)
+				}
+			}
 			return nil, status.Error(codes.NotFound, "product not found")
 		}
 		return nil, status.Errorf(codes.Internal, "get product: %v", err)
 	}
 	if !canViewProduct(ctx, prod) {
+		// E13: Previously-approved HIDDEN/REJECTED products return a discontinued stub on public slug lookup;
+		// discontinued_name is populated ONLY when current status is HIDDEN. Never-approved products still 404.
+		if slug != "" && req.GetIncludeDiscontinuedStub() && prod.FirstApprovedAt != nil &&
+			(prod.Status == store.ProductStatusHidden || prod.Status == store.ProductStatusRejected) {
+			discontinuedName := ""
+			if prod.Status == store.ProductStatusHidden {
+				discontinuedName = prod.Name
+			}
+			return &productv1.GetProductResponse{
+				Discontinued:           true,
+				DiscontinuedCategoryId: prod.CategoryID,
+				DiscontinuedName:       discontinuedName,
+			}, nil
+		}
 		return nil, status.Error(codes.NotFound, "product not found")
 	}
 	skus, err := s.store.ListSKUsByProductIDs(ctx, []string{prod.ID})
@@ -1246,7 +1385,7 @@ func (s *Server) GetProduct(ctx context.Context, req *productv1.GetProductReques
 		return nil, status.Errorf(codes.Internal, "list product skus: %v", err)
 	}
 	return &productv1.GetProductResponse{
-		Product: toProtoProduct(prod, skus),
+		Product: toProtoProduct(prod, skus, canViewModerationDetails(ctx, prod)),
 	}, nil
 }
 
@@ -1338,7 +1477,7 @@ func (s *Server) ListProducts(ctx context.Context, req *productv1.ListProductsRe
 
 	out := make([]*productv1.Product, 0, len(prods))
 	for _, p := range prods {
-		out = append(out, toProtoProduct(p, skusByProd[p.ID]))
+		out = append(out, toProtoProduct(p, skusByProd[p.ID], canViewModerationDetails(ctx, p)))
 	}
 	return &productv1.ListProductsResponse{
 		Products: out,
@@ -1406,16 +1545,25 @@ func (s *Server) UpdateStock(ctx context.Context, req *productv1.UpdateStockRequ
 
 	ctx = store.WithAsOf(ctx, s.now())
 	var updatedSKU store.SKU
+	// Lock order: products (FOR UPDATE) -> skus -> stock_history, matching UpdateProduct/AdminReview/Rescan.
 	err = s.store.WithTx(ctx, func(q store.Queries) error {
-		cur, getErr := q.GetSKUWithContext(ctx, skuID)
+		lookup, getErr := q.GetSKUWithContext(ctx, skuID)
 		if getErr != nil {
 			return getErr
 		}
-		if cur.ProductDeleted {
+		if lookup.ProductDeleted {
 			return store.ErrNotFound
 		}
-		if !isAdmin && cur.ShopID != shopID {
+		prod, lockErr := q.GetProductByIDForUpdate(ctx, lookup.ProductID)
+		if lockErr != nil {
+			return lockErr
+		}
+		if !isAdmin && prod.ShopID != shopID {
 			return status.Error(codes.PermissionDenied, "cannot update stock of another shop's SKU")
+		}
+		cur, getErr := q.GetSKUWithContext(ctx, skuID)
+		if getErr != nil {
+			return getErr
 		}
 
 		upd, stockErr := applySKUStockChange(ctx, q, cur, req.GetNewStock(), req.GetExpectedVersion(), claims.UserID(), "seller manual stock update")
@@ -1423,7 +1571,7 @@ func (s *Server) UpdateStock(ctx context.Context, req *productv1.UpdateStockRequ
 			return stockErr
 		}
 
-		if syncErr := syncProductStockStatus(ctx, q, cur.ProductID, cur.ProductStatus, upd.Stock); syncErr != nil {
+		if syncErr := syncProductStockStatus(ctx, q, prod.ID, prod.Status, upd.Stock); syncErr != nil {
 			return syncErr
 		}
 
@@ -1772,6 +1920,34 @@ func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRe
 				return status.Error(codes.FailedPrecondition, "stock reservation is not in RESERVED state")
 			}
 
+			// Lock owning products in sorted product_id order BEFORE updating SKUs so lock order stays
+			// products -> skus -> stock_history (eliminating AB-BA deadlocks with UpdateProduct/UpdateStock).
+			skuIDs := make([]string, 0, len(reservedRows))
+			for _, r := range reservedRows {
+				skuIDs = append(skuIDs, r.SKUID)
+			}
+			batchSKUs, batchErr := q.GetSKUsBatch(ctx, skuIDs)
+			if batchErr != nil {
+				return batchErr
+			}
+			lockedProdStatus := make(map[string]string, len(batchSKUs))
+			prodIDSet := make(map[string]struct{}, len(batchSKUs))
+			for _, sk := range batchSKUs {
+				prodIDSet[sk.ProductID] = struct{}{}
+			}
+			sortedProdIDs := make([]string, 0, len(prodIDSet))
+			for pid := range prodIDSet {
+				sortedProdIDs = append(sortedProdIDs, pid)
+			}
+			sort.Strings(sortedProdIDs)
+			for _, pid := range sortedProdIDs {
+				if p, lockErr := q.GetProductByIDForUpdateAny(ctx, pid); lockErr == nil {
+					lockedProdStatus[pid] = p.Status
+				} else if !errors.Is(lockErr, store.ErrNotFound) {
+					return lockErr
+				}
+			}
+
 			touchedProducts := make(map[string]string)
 			for _, r := range reservedRows {
 				changed, trErr := q.TransitionStockReservation(ctx, r.ID, store.ReservationStatusConfirmed, store.ReservationStatusReserved)
@@ -1791,7 +1967,11 @@ func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRe
 				if optErr != nil {
 					return optErr
 				}
-				touchedProducts[sku.ProductID] = sku.ProductStatus
+				if st, ok := lockedProdStatus[sku.ProductID]; ok {
+					touchedProducts[sku.ProductID] = st
+				} else {
+					touchedProducts[sku.ProductID] = sku.ProductStatus
+				}
 
 				if histErr := q.InsertStockHistory(ctx, store.StockHistoryEntry{
 					ID:             uuid.NewString(),
@@ -1809,9 +1989,11 @@ func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRe
 				}
 			}
 
-			for prodID, prodStatus := range touchedProducts {
-				if syncErr := syncProductStockStatus(ctx, q, prodID, prodStatus, 0); syncErr != nil {
-					return syncErr
+			for _, prodID := range sortedProdIDs {
+				if prodStatus, ok := touchedProducts[prodID]; ok {
+					if syncErr := syncProductStockStatus(ctx, q, prodID, prodStatus, 0); syncErr != nil {
+						return syncErr
+					}
 				}
 			}
 
@@ -1858,6 +2040,33 @@ func (s *Server) RestockOrderItems(ctx context.Context, req *productv1.RestockOr
 
 	var restockedCount int
 	err = s.store.WithTx(ctx, func(q store.Queries) error {
+		// Lock owning products in sorted product_id order BEFORE locking SKUs (products -> skus -> stock_history).
+		skuIDs := make([]string, 0, len(items))
+		for _, item := range items {
+			skuIDs = append(skuIDs, item.skuID)
+		}
+		batchSKUs, batchErr := q.GetSKUsBatch(ctx, skuIDs)
+		if batchErr != nil {
+			return batchErr
+		}
+		lockedProdStatus := make(map[string]string, len(batchSKUs))
+		prodIDSet := make(map[string]struct{}, len(batchSKUs))
+		for _, sk := range batchSKUs {
+			prodIDSet[sk.ProductID] = struct{}{}
+		}
+		sortedProdIDs := make([]string, 0, len(prodIDSet))
+		for pid := range prodIDSet {
+			sortedProdIDs = append(sortedProdIDs, pid)
+		}
+		sort.Strings(sortedProdIDs)
+		for _, pid := range sortedProdIDs {
+			if p, lockErr := q.GetProductByIDForUpdateAny(ctx, pid); lockErr == nil {
+				lockedProdStatus[pid] = p.Status
+			} else if !errors.Is(lockErr, store.ErrNotFound) {
+				return lockErr
+			}
+		}
+
 		type productSync struct {
 			status      string
 			latestStock int32
@@ -1901,7 +2110,11 @@ func (s *Server) RestockOrderItems(ctx context.Context, req *productv1.RestockOr
 
 			if updated.Status != store.SKUStatusInactive {
 				ps := touchedProducts[sku.ProductID]
-				ps.status = sku.ProductStatus
+				if st, ok := lockedProdStatus[sku.ProductID]; ok {
+					ps.status = st
+				} else {
+					ps.status = sku.ProductStatus
+				}
 				if updated.Stock > ps.latestStock {
 					ps.latestStock = updated.Stock
 				}
@@ -1988,6 +2201,22 @@ func canViewHiddenSKU(ctx context.Context, sk store.SKU) bool {
 		return true
 	}
 	if auth.HasRole(claims, "seller") && strings.TrimSpace(claims.ShopID) != "" && claims.ShopID == sk.ShopID {
+		return true
+	}
+	return false
+}
+
+// canViewModerationDetails reports whether the caller is allowed to see flagged_keywords (E10-bis:
+// owning shop seller and admin/super_admin only; public/buyer/other-seller responses leave it empty).
+func canViewModerationDetails(ctx context.Context, prod store.Product) bool {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return false
+	}
+	if auth.HasRole(claims, "admin", "super_admin") {
+		return true
+	}
+	if auth.HasRole(claims, "seller") && strings.TrimSpace(claims.ShopID) != "" && claims.ShopID == prod.ShopID {
 		return true
 	}
 	return false
@@ -2265,6 +2494,7 @@ func toProtoCategory(c store.Category) *productv1.Category {
 		ParentId:          c.ParentID,
 		CommissionRateBps: c.CommissionRateBps,
 		SortOrder:         c.SortOrder,
+		IsProhibited:      c.IsProhibited,
 		CreatedAt:         timestamppb.New(c.CreatedAt),
 		UpdatedAt:         timestamppb.New(c.UpdatedAt),
 	}
@@ -2325,7 +2555,7 @@ func toProtoSKU(s store.SKU) *productv1.SKU {
 	}
 }
 
-func toProtoProduct(p store.Product, skus []store.SKU) *productv1.Product {
+func toProtoProduct(p store.Product, skus []store.SKU, includeModeration bool) *productv1.Product {
 	minPrice := p.MinPriceVND
 	maxPrice := p.MaxPriceVND
 	protoSKUs := make([]*productv1.SKU, 0, len(skus))
@@ -2341,6 +2571,12 @@ func toProtoProduct(p store.Product, skus []store.SKU) *productv1.Product {
 	imgs := make([]string, len(p.Images))
 	copy(imgs, p.Images)
 
+	var flagged []string
+	if includeModeration && len(p.FlaggedKeywords) > 0 {
+		flagged = make([]string, len(p.FlaggedKeywords))
+		copy(flagged, p.FlaggedKeywords)
+	}
+
 	return &productv1.Product{
 		Id:              p.ID,
 		ShopId:          p.ShopID,
@@ -2354,6 +2590,9 @@ func toProtoProduct(p store.Product, skus []store.SKU) *productv1.Product {
 		MinPriceVnd:     minPrice,
 		MaxPriceVnd:     maxPrice,
 		Skus:            protoSKUs,
+		RatingAvgX100:   p.RatingAvgX100(),
+		ReviewCount:     p.ReviewCount,
+		FlaggedKeywords: flagged,
 		CreatedAt:       timestamppb.New(p.CreatedAt),
 		UpdatedAt:       timestamppb.New(p.UpdatedAt),
 	}

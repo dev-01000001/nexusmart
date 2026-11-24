@@ -159,7 +159,7 @@ func (s *trustDownstreamStub) CalculateFee(ctx context.Context, _ *shippingv1.Ca
 		return nil, status.Error(codes.PermissionDenied, "end-user JWT required")
 	}
 	return &shippingv1.CalculateFeeResponse{
-		Quotes: []*shippingv1.CarrierQuote{{CarrierCode: "ghn", ServiceCode: "standard", FeeVnd: 30000}},
+		Quotes: []*shippingv1.CarrierQuote{{CarrierCode: "ghn", ServiceCode: "standard", FeeVnd: 30000, CodSupported: true}},
 	}, nil
 }
 
@@ -260,7 +260,7 @@ func (s *trustDownstreamStub) ValidateUser(ctx context.Context, _ *userv1.Valida
 	if c, ok := auth.ClaimsFromContext(ctx); !ok || c.Service != "" {
 		return nil, status.Error(codes.PermissionDenied, "end-user JWT required")
 	}
-	return &userv1.ValidateUserResponse{Valid: true, Status: userv1.UserStatus_USER_STATUS_ACTIVE}, nil
+	return &userv1.ValidateUserResponse{Valid: true, Status: userv1.UserStatus_USER_STATUS_ACTIVE, PhoneVerified: true}, nil
 }
 
 func (s *trustDownstreamStub) GetShop(ctx context.Context, req *userv1.GetShopRequest) (*userv1.GetShopResponse, error) {
@@ -376,6 +376,9 @@ func TestGRPCTrust_OrderJobsAndConsumersRealAuthInterceptor(t *testing.T) {
 		GRPCCallTimeout:          5 * time.Second,
 		CODMaxVND:                20000000,
 		CODMaxRejectedCount:      3,
+		CODRequirePhoneVerified:  true,
+		CODMinOrdersForRate:      3,
+		CODMaxRejectRateBPS:      3000,
 		RewardCoinsBPS:           100,
 		ReturnSellerResponseDays: 2,
 		ReturnShipDays:           5,

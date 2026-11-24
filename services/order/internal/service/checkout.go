@@ -52,6 +52,7 @@ type shopCheckoutPlan struct {
 	carrierCode             string
 	serviceCode             string
 	shippingFeeVND          int64
+	codSupported            bool
 	flashSaleDiscountVND    int64
 	shopProgramDiscountVND  int64
 	shopVoucherDiscount     int64
@@ -140,10 +141,14 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	}
 
 	// Step A: Validate buyer & resolve shipping address.
+	if s.clients.User == nil {
+		failGroupBeforePersist("USER_VALIDATION_FAILED")
+		return nil, status.Error(codes.Unavailable, "user service is unavailable")
+	}
 	valResp, err := s.clients.User.ValidateUser(ctx, &userv1.ValidateUserRequest{UserId: buyerID})
 	if err != nil {
 		failGroupBeforePersist("USER_VALIDATION_FAILED")
-		return nil, err
+		return nil, wrapDownstreamError("validate buyer account", err)
 	}
 	if !valResp.GetValid() || valResp.GetStatus() != userv1.UserStatus_USER_STATUS_ACTIVE {
 		failGroupBeforePersist("USER_NOT_ACTIVE")
@@ -156,7 +161,7 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	})
 	if err != nil {
 		failGroupBeforePersist("ADDRESS_LOOKUP_FAILED")
-		return nil, err
+		return nil, wrapDownstreamError("load shipping address", err)
 	}
 	addr := addrResp.GetAddress()
 	if addr == nil {
@@ -166,6 +171,11 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	if addr.GetUserId() != "" && addr.GetUserId() != buyerID {
 		failGroupBeforePersist("ADDRESS_OWNERSHIP_DENIED")
 		return nil, status.Error(codes.PermissionDenied, "shipping address does not belong to buyer")
+	}
+	// E17: Public fee estimates may omit ward_code, but checkout strictly requires a destination ward.
+	if strings.TrimSpace(addr.GetProvinceCode()) == "" || strings.TrimSpace(addr.GetWardCode()) == "" {
+		failGroupBeforePersist("ADDRESS_WARD_REQUIRED")
+		return nil, status.Error(codes.FailedPrecondition, "ADDRESS_WARD_REQUIRED: shipping address must specify both province_code and ward_code")
 	}
 
 	addrSnapshot := &orderv1.OrderAddressSnapshot{
@@ -257,7 +267,7 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		return nil, err
 	}
 
-	// Step D: Early COD risk checks (UC-PAY02).
+	// Step D: Early COD risk checks (UC-PAY02 / E19) before any stock or promotion reservation.
 	hasPromotions := len(req.GetShopVoucherIds()) > 0 ||
 		strings.TrimSpace(req.GetPlatformVoucherId()) != "" ||
 		strings.TrimSpace(req.GetFreeshipVoucherId()) != "" ||
@@ -274,29 +284,9 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	}
 
 	if req.GetPaymentMethod() == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {
-		if valResp.GetCodRejectedCount() >= s.cfg.CODMaxRejectedCount {
-			failGroupBeforePersist("COD_REJECTED_LIMIT_EXCEEDED")
-			return nil, status.Errorf(
-				codes.FailedPrecondition,
-				"COD_REJECTED_LIMIT_EXCEEDED: account has %d rejected COD deliveries (limit %d)",
-				valResp.GetCodRejectedCount(),
-				s.cfg.CODMaxRejectedCount,
-			)
-		}
-		if !hasPromotions && !hasShopFreeship {
-			var preTotal int64
-			for _, p := range plans {
-				preTotal += p.subtotalVND + p.shippingFeeVND
-			}
-			if preTotal > s.cfg.CODMaxVND {
-				failGroupBeforePersist("COD_LIMIT_EXCEEDED")
-				return nil, status.Errorf(
-					codes.FailedPrecondition,
-					"COD_LIMIT_EXCEEDED: order total %d VND exceeds COD maximum %d VND",
-					preTotal,
-					s.cfg.CODMaxVND,
-				)
-			}
+		if failReason, codErr := s.checkCODEligibility(ctx, buyerID, valResp, plans, hasPromotions, hasShopFreeship); codErr != nil {
+			failGroupBeforePersist(failReason)
+			return nil, codErr
 		}
 	}
 
@@ -1244,10 +1234,13 @@ func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string
 		anySelected := false
 		for _, grp := range cart.GetShopGroups() {
 			for _, ci := range grp.GetItems() {
-				if ci.GetSelected() {
+				if ci.GetQuantity() > 0 && ci.GetSelected() {
 					anySelected = true
 					break
 				}
+			}
+			if anySelected {
+				break
 			}
 		}
 
@@ -1263,6 +1256,13 @@ func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string
 				if skuID == "" {
 					continue
 				}
+				// E4: Never silently drop a selected unavailable item to place the rest.
+				if ci.GetUnavailable() {
+					if ci.GetSelected() {
+						return nil, status.Errorf(codes.FailedPrecondition, "SKU_INACTIVE: SKU %s is not available for purchase", skuID)
+					}
+					continue
+				}
 				if prev, ok := merged[skuID]; ok {
 					prev.Quantity += ci.GetQuantity()
 				} else {
@@ -1273,6 +1273,9 @@ func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string
 					}
 				}
 			}
+		}
+		if len(merged) == 0 {
+			return nil, status.Error(codes.FailedPrecondition, "shopping cart is empty")
 		}
 	} else {
 		for _, it := range req.GetItems() {
@@ -1410,27 +1413,29 @@ func (s *OrderService) calculateShippingFees(
 		}
 	}
 
+	if s.clients.Shipping == nil {
+		return status.Error(codes.Unavailable, "shipping service is unavailable")
+	}
+
 	for _, plan := range plans {
 		// Wave 2b: Fetch shop shipping settings using a service token (default_weight_grams + shop freeship).
 		defaultWeight := int32(500)
-		if s.clients.Shipping != nil {
-			settingsResp, sErr := s.clients.Shipping.GetShopShippingSettings(
-				clients.WithInternalAdminContext(ctx),
-				&shippingv1.GetShopShippingSettingsRequest{ShopId: plan.shopID},
-			)
-			if sErr != nil {
-				if status.Code(sErr) != codes.NotFound {
-					return fmt.Errorf("load shipping settings for shop %s: %w", plan.shopID, sErr)
-				}
-			} else if st := settingsResp.GetSettings(); st != nil {
-				if st.GetDefaultWeightGrams() > 0 {
-					defaultWeight = st.GetDefaultWeightGrams()
-				}
-				if st.GetFreeShipEnabled() && st.GetFreeShipMaxVnd() > 0 && st.GetFreeShipMinOrderVnd() >= 0 {
-					plan.freeShipEnabled = true
-					plan.freeShipMinOrderVND = st.GetFreeShipMinOrderVnd()
-					plan.freeShipMaxVND = st.GetFreeShipMaxVnd()
-				}
+		settingsResp, sErr := s.clients.Shipping.GetShopShippingSettings(
+			clients.WithInternalAdminContext(ctx),
+			&shippingv1.GetShopShippingSettingsRequest{ShopId: plan.shopID},
+		)
+		if sErr != nil {
+			if status.Code(sErr) != codes.NotFound {
+				return wrapDownstreamError(fmt.Sprintf("load shipping settings for shop %s", plan.shopID), sErr)
+			}
+		} else if st := settingsResp.GetSettings(); st != nil {
+			if st.GetDefaultWeightGrams() > 0 {
+				defaultWeight = st.GetDefaultWeightGrams()
+			}
+			if st.GetFreeShipEnabled() && st.GetFreeShipMaxVnd() > 0 && st.GetFreeShipMinOrderVnd() >= 0 {
+				plan.freeShipEnabled = true
+				plan.freeShipMinOrderVND = st.GetFreeShipMinOrderVnd()
+				plan.freeShipMaxVND = st.GetFreeShipMaxVnd()
 			}
 		}
 		plan.defaultWeightGrams = defaultWeight
@@ -1468,19 +1473,119 @@ func (s *OrderService) calculateShippingFees(
 			CodAmountVnd:     codEstimate,
 		})
 		if err != nil {
-			return fmt.Errorf("calculate shipping fee for shop %s: %w", plan.shopID, err)
+			return wrapDownstreamError(fmt.Sprintf("calculate shipping fee for shop %s", plan.shopID), err)
+		}
+		if feeResp.GetIsEstimated() {
+			return status.Errorf(codes.FailedPrecondition, "ADDRESS_WARD_REQUIRED: checkout requires a specific destination ward for shop %s", plan.shopID)
 		}
 		quotes := feeResp.GetQuotes()
 		if len(quotes) == 0 {
 			return status.Errorf(codes.FailedPrecondition, "no shipping quotes available for shop %s", plan.shopID)
 		}
 
-		chosen := pickShippingQuote(quotes, choiceByShop[plan.shopID])
+		chosen := pickShippingQuote(quotes, choiceByShop[plan.shopID], paymentMethod)
 		plan.carrierCode = chosen.GetCarrierCode()
 		plan.serviceCode = chosen.GetServiceCode()
 		plan.shippingFeeVND = chosen.GetFeeVnd()
+		plan.codSupported = chosen.GetCodSupported()
 	}
 	return nil
+}
+
+// checkCODEligibility enforces all E19 COD eligibility rules before reserving stock or promotions:
+//  1. Verified buyer phone when ORDER_COD_REQUIRE_PHONE_VERIFIED=true (COD_PHONE_NOT_VERIFIED).
+//  2. Destination ward and chosen carrier quote support COD for every shop (COD_AREA_NOT_SUPPORTED).
+//  3. Cumulative user cod_rejected_count < ORDER_COD_MAX_REJECTED_COUNT (COD_REJECTED_LIMIT_EXCEEDED).
+//  4. Single indexed terminal COD rejection rate: total >= ORDER_COD_MIN_ORDERS_FOR_RATE and
+//     rejected*10000 >= total*ORDER_COD_MAX_REJECT_RATE_BPS (COD_REJECTED_LIMIT_EXCEEDED).
+//  5. Pre-promotion COD order total ceiling when no promotions/shop freeship apply (COD_LIMIT_EXCEEDED).
+//
+// Shared across every path placing or switching an order to COD (CreateCheckout including D11 retries;
+// RetryPayment explicitly rejects switching to COD).
+func (s *OrderService) checkCODEligibility(
+	ctx context.Context,
+	buyerID string,
+	valResp *userv1.ValidateUserResponse,
+	plans []*shopCheckoutPlan,
+	hasPromotions, hasShopFreeship bool,
+) (string, error) {
+	if valResp == nil {
+		return "USER_VALIDATION_FAILED", status.Error(codes.Unavailable, "user validation response unavailable for COD check")
+	}
+	if s.cfg.CODRequirePhoneVerified && !valResp.GetPhoneVerified() {
+		return "COD_PHONE_NOT_VERIFIED", status.Error(
+			codes.FailedPrecondition,
+			"COD_PHONE_NOT_VERIFIED: vui lòng xác minh số điện thoại trước khi đặt hàng thanh toán khi nhận hàng (COD)",
+		)
+	}
+	for _, p := range plans {
+		if !p.codSupported {
+			return "COD_AREA_NOT_SUPPORTED", status.Errorf(
+				codes.FailedPrecondition,
+				"COD_AREA_NOT_SUPPORTED: khu vực giao hàng hoặc đơn vị vận chuyển của shop %s không hỗ trợ thanh toán khi nhận hàng (COD)",
+				p.shopID,
+			)
+		}
+	}
+	maxRejected := s.codMaxRejectedCount()
+	if valResp.GetCodRejectedCount() >= maxRejected {
+		return "COD_REJECTED_LIMIT_EXCEEDED", status.Errorf(
+			codes.FailedPrecondition,
+			"COD_REJECTED_LIMIT_EXCEEDED: account has %d rejected COD deliveries (limit %d)",
+			valResp.GetCodRejectedCount(),
+			maxRejected,
+		)
+	}
+	codStats, err := s.store.GetBuyerTerminalCODStats(ctx, buyerID)
+	if err != nil {
+		return "COD_RISK_CHECK_UNAVAILABLE", status.Errorf(
+			codes.Unavailable,
+			"COD_RISK_CHECK_UNAVAILABLE: failed to evaluate COD order history: %v",
+			err,
+		)
+	}
+	minOrders := s.codMinOrdersForRate()
+	maxRateBPS := s.codMaxRejectRateBPS()
+	if codStats.TotalTerminal >= minOrders && codStats.RejectedCount*10000 >= codStats.TotalTerminal*maxRateBPS {
+		return "COD_REJECTED_LIMIT_EXCEEDED", status.Errorf(
+			codes.FailedPrecondition,
+			"COD_REJECTED_LIMIT_EXCEEDED: account COD delivery rejection rate (%d/%d) exceeds allowed limit (%d bps)",
+			codStats.RejectedCount,
+			codStats.TotalTerminal,
+			maxRateBPS,
+		)
+	}
+	if !hasPromotions && !hasShopFreeship {
+		var preTotal int64
+		for _, p := range plans {
+			preTotal += p.subtotalVND + p.shippingFeeVND
+		}
+		if preTotal > s.cfg.CODMaxVND {
+			return "COD_LIMIT_EXCEEDED", status.Errorf(
+				codes.FailedPrecondition,
+				"COD_LIMIT_EXCEEDED: order total %d VND exceeds COD maximum %d VND",
+				preTotal,
+				s.cfg.CODMaxVND,
+			)
+		}
+	}
+	return "", nil
+}
+
+func wrapDownstreamError(prefix string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return status.Errorf(codes.DeadlineExceeded, "%s: %v", prefix, err)
+	}
+	if errors.Is(err, context.Canceled) {
+		return status.Errorf(codes.Canceled, "%s: %v", prefix, err)
+	}
+	if st, ok := status.FromError(err); ok {
+		return status.Errorf(st.Code(), "%s: %s", prefix, st.Message())
+	}
+	return status.Errorf(codes.Unavailable, "%s: %v", prefix, err)
 }
 
 func (s *OrderService) lookupPaymentFeeBPS(ctx context.Context, method orderv1.OrderPaymentMethod, atTime time.Time) (int32, error) {
@@ -1517,7 +1622,7 @@ func (s *OrderService) lookupPaymentFeeBPS(ctx context.Context, method orderv1.O
 	)
 }
 
-func pickShippingQuote(quotes []*shippingv1.CarrierQuote, choice *orderv1.ShopShippingChoice) *shippingv1.CarrierQuote {
+func pickShippingQuote(quotes []*shippingv1.CarrierQuote, choice *orderv1.ShopShippingChoice, paymentMethod orderv1.OrderPaymentMethod) *shippingv1.CarrierQuote {
 	if choice != nil && choice.GetCarrierCode() != "" {
 		for _, q := range quotes {
 			if strings.EqualFold(q.GetCarrierCode(), choice.GetCarrierCode()) {
@@ -1530,6 +1635,21 @@ func pickShippingQuote(quotes []*shippingv1.CarrierQuote, choice *orderv1.ShopSh
 			if strings.EqualFold(q.GetCarrierCode(), choice.GetCarrierCode()) {
 				return q
 			}
+		}
+	}
+
+	if paymentMethod == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD {
+		var cheapestCOD *shippingv1.CarrierQuote
+		for _, q := range quotes {
+			if !q.GetCodSupported() {
+				continue
+			}
+			if cheapestCOD == nil || q.GetFeeVnd() < cheapestCOD.GetFeeVnd() {
+				cheapestCOD = q
+			}
+		}
+		if cheapestCOD != nil {
+			return cheapestCOD
 		}
 	}
 

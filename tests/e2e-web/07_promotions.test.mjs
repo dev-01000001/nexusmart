@@ -4,12 +4,11 @@ import { describe, test } from "node:test";
 import {
   WebClient,
   calculateShippingQuote,
-  config,
   createBuyerAddress,
   ensureRateBudget,
-  extractOtp,
-  pollUntil,
   registerAndLoginBuyer,
+  snapshotMailpitIds,
+  waitForRecentOtp,
 } from "./helpers.mjs";
 
 const SELLER_EMAIL = process.env.E2E_SELLER_EMAIL || "seller.bachdang@nexusmart.local";
@@ -24,65 +23,6 @@ async function loginAccount(email, password) {
   });
   assert.equal(res.status, 200, `login ${email} expected 200, got ${res.status}: ${res.text}`);
   return { client, user: res.data?.user };
-}
-
-async function snapshotMailpitIds(email) {
-  const target = email.trim().toLowerCase();
-  const seen = new Set();
-  const listRes = await fetch(`${config.mailpitUrl}/api/v1/messages?limit=100`, {
-    signal: AbortSignal.timeout(config.requestTimeoutMs),
-  });
-  if (!listRes.ok) return seen;
-  const list = await listRes.json();
-  for (const summary of list?.messages ?? []) {
-    const recipients = Array.isArray(summary?.To) ? summary.To : [];
-    if (recipients.some((r) => String(r?.Address ?? "").trim().toLowerCase() === target)) {
-      if (summary?.ID) seen.add(summary.ID);
-    }
-  }
-  return seen;
-}
-
-async function waitForRecentOtp(email, seenIds = new Set()) {
-  const target = email.trim().toLowerCase();
-  return pollUntil(
-    async () => {
-      const listRes = await fetch(`${config.mailpitUrl}/api/v1/messages?limit=100`, {
-        signal: AbortSignal.timeout(config.requestTimeoutMs),
-      });
-      if (!listRes.ok) {
-        return { done: false, detail: `mailpit list HTTP ${listRes.status}` };
-      }
-      const list = await listRes.json();
-      const messages = Array.isArray(list?.messages) ? list.messages : [];
-      for (const summary of messages) {
-        if (summary?.ID && seenIds.has(summary.ID)) continue;
-        const recipients = Array.isArray(summary?.To) ? summary.To : [];
-        const matched = recipients.some(
-          (r) => String(r?.Address ?? "").trim().toLowerCase() === target
-        );
-        if (!matched) continue;
-
-        const msgRes = await fetch(
-          `${config.mailpitUrl}/api/v1/message/${encodeURIComponent(summary.ID)}`,
-          { signal: AbortSignal.timeout(config.requestTimeoutMs) }
-        );
-        if (!msgRes.ok) continue;
-        const full = await msgRes.json();
-        const otp = extractOtp(full?.Subject, full?.Text, full?.HTML, summary?.Snippet);
-        if (otp) {
-          if (summary?.ID) seenIds.add(summary.ID);
-          return { done: true, value: otp };
-        }
-      }
-      return { done: false, detail: `no new OTP email for ${target}` };
-    },
-    {
-      timeoutMs: config.pollTimeoutMs,
-      intervalMs: config.pollIntervalMs,
-      label: `new OTP email for ${target}`,
-    }
-  );
 }
 
 function formatVndDots(amount) {
@@ -211,7 +151,7 @@ describe("Wave 2b Web E2E — Promotions, Reports/CSV, Bank OTP, Real 404 & Favi
   });
 
   test("2. Shop discount program lifecycle: create -> PDP shows real strikethrough -> checkout computes exact discounted VND -> end program", async () => {
-    await ensureRateBudget(35, { label: "w2b-shop-discount-lifecycle" });
+    await ensureRateBudget(40, { label: "w2b-shop-discount-lifecycle" });
     const { client: seller } = await loginAccount(SELLER_EMAIL, SELLER_PASSWORD);
     const { client: admin } = await loginAccount(ADMIN_EMAIL, ADMIN_PASSWORD);
     const shopMeRes = await seller.json("GET", "/api/gw/shops/me");
@@ -306,7 +246,7 @@ describe("Wave 2b Web E2E — Promotions, Reports/CSV, Bank OTP, Real 404 & Favi
       );
 
       // Register fresh buyer, add SKU to cart, preview & full-cart checkout (server resolves shop discount)
-      const buyerAcct = await registerAndLoginBuyer(buyer, "w2b-shopdisc");
+      const buyerAcct = await registerAndLoginBuyer(buyer, "w2b-shopdisc", { verifyPhone: true });
       const { address, province, ward } = await createBuyerAddress(buyer, buyerAcct);
       const quote = await calculateShippingQuote(buyer, {
         shopId: product.shop_id,
@@ -391,7 +331,7 @@ describe("Wave 2b Web E2E — Promotions, Reports/CSV, Bank OTP, Real 404 & Favi
   });
 
   test("3. Flash sale in cart & checkout: live slot price, COD disallowed, VietQR succeeds with 5m expiry", async () => {
-    await ensureRateBudget(40, { label: "w2b-flash-sale" });
+    await ensureRateBudget(45, { label: "w2b-flash-sale" });
     const { client: admin } = await loginAccount(ADMIN_EMAIL, ADMIN_PASSWORD);
     const { client: seller } = await loginAccount(SELLER_EMAIL, SELLER_PASSWORD);
 
@@ -475,7 +415,7 @@ describe("Wave 2b Web E2E — Promotions, Reports/CSV, Bank OTP, Real 404 & Favi
 
     // Buyer adds to cart & previews
     const buyer = new WebClient();
-    const buyerAcct = await registerAndLoginBuyer(buyer, "w2b-flash");
+    const buyerAcct = await registerAndLoginBuyer(buyer, "w2b-flash", { verifyPhone: true });
     const { address, province, ward } = await createBuyerAddress(buyer, buyerAcct);
     const quote = await calculateShippingQuote(buyer, {
       shopId: product.shop_id,
@@ -746,7 +686,7 @@ describe("Wave 2b Web E2E — Promotions, Reports/CSV, Bank OTP, Real 404 & Favi
   });
 
   test("6. Shop discount program per_user_limit exhausted -> preview excludes applied_shop_program_item_ids -> second order succeeds at regular price", async () => {
-    await ensureRateBudget(40, { label: "w2b-shop-disc-limit" });
+    await ensureRateBudget(45, { label: "w2b-shop-disc-limit" });
     const { client: seller } = await loginAccount(SELLER_EMAIL, SELLER_PASSWORD);
     const { client: admin } = await loginAccount(ADMIN_EMAIL, ADMIN_PASSWORD);
     const { product, sku } = await createApprovedSellerProduct(seller, admin, "disclimit");
@@ -781,7 +721,7 @@ describe("Wave 2b Web E2E — Promotions, Reports/CSV, Bank OTP, Real 404 & Favi
       assert.ok(programId && programItemId);
 
       const buyer = new WebClient();
-      const buyerAcct = await registerAndLoginBuyer(buyer, "w2b-disclimit");
+      const buyerAcct = await registerAndLoginBuyer(buyer, "w2b-disclimit", { verifyPhone: true });
       const { address, province, ward } = await createBuyerAddress(buyer, buyerAcct);
       // Calculate real shop-origin shipping fee (omitting from_province_code, matching CheckoutClient)
       const feeRes = await buyer.json("POST", "/api/gw/shipping/calculate-fee", {
@@ -916,7 +856,7 @@ describe("Wave 2b Web E2E — Promotions, Reports/CSV, Bank OTP, Real 404 & Favi
   });
 
   test("7. Flash sale per_user_limit exhausted -> flash checkout rejected -> opt-out to regular price (COD unlocked & succeeds)", async () => {
-    await ensureRateBudget(45, { label: "w2b-flash-limit-optout" });
+    await ensureRateBudget(50, { label: "w2b-flash-limit-optout" });
     const { client: seller } = await loginAccount(SELLER_EMAIL, SELLER_PASSWORD);
     const { client: admin } = await loginAccount(ADMIN_EMAIL, ADMIN_PASSWORD);
     const { product, sku } = await createApprovedSellerProduct(seller, admin, "flashlimit");
@@ -960,7 +900,7 @@ describe("Wave 2b Web E2E — Promotions, Reports/CSV, Bank OTP, Real 404 & Favi
     assert.equal(appRes.status, 200, `approve flash failed: ${appRes.text}`);
 
     const buyer = new WebClient();
-    const buyerAcct = await registerAndLoginBuyer(buyer, "w2b-flashlim");
+    const buyerAcct = await registerAndLoginBuyer(buyer, "w2b-flashlim", { verifyPhone: true });
     const { address, province, ward } = await createBuyerAddress(buyer, buyerAcct);
     const quote = await calculateShippingQuote(buyer, {
       shopId: product.shop_id,

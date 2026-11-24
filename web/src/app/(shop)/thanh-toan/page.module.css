@@ -716,6 +716,22 @@
   line-height: 1.45;
 }
 
+.codRecoveryBar {
+  margin-top: var(--space-3);
+  padding: 12px 14px;
+  background: var(--pill-warning-bg);
+  border-left: 3px solid var(--amber-ink);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.codRecoveryText {
+  font-size: var(--step-small);
+  color: var(--amber-ink);
+  line-height: 1.45;
+}
+
 .linePromoNotice {
   margin-top: var(--space-1);
   display: flex;

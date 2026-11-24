@@ -157,6 +157,31 @@ func FormatShopBankAccountOTPEmail(to, fullName, otp, expiresAt, bankCode, accou
 	}
 }
 
+// FormatPhoneOTPEmail formats a Vietnamese SMS-mock phone verification OTP email without leaking OTP in Subject.
+func FormatPhoneOTPEmail(to, fullName, phoneMasked, otp, expiresAt string) Message {
+	name := strings.TrimSpace(fullName)
+	if name == "" {
+		name = "Quý khách"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Xin chào %s,\n\n", name)
+	b.WriteString("Bạn vừa yêu cầu xác minh số điện thoại cho tài khoản NexusMart (tin nhắn SMS mô phỏng).\n")
+	if masked := strings.TrimSpace(phoneMasked); masked != "" {
+		fmt.Fprintf(&b, "Số điện thoại: %s\n", masked)
+	}
+	fmt.Fprintf(&b, "Mã xác thực OTP của bạn là: %s\n", strings.TrimSpace(otp))
+	if exp := formatOTPExpiry(expiresAt); exp != "" {
+		fmt.Fprintf(&b, "Mã có hiệu lực đến: %s\n", exp)
+	}
+	b.WriteString("\nVui lòng không chia sẻ mã này cho bất kỳ ai. Nếu bạn không thực hiện yêu cầu này, hãy bỏ qua thông báo này.\n")
+
+	return Message{
+		To:      to,
+		Subject: "Mã xác minh số điện thoại NexusMart (SMS mô phỏng)",
+		Body:    b.String(),
+	}
+}
+
 func formatOTPExpiry(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {

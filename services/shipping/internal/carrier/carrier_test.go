@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -625,10 +626,12 @@ func TestReview_GHNSandboxCreateClientOrderCodeAndBody400NonRetryable(t *testing
 	})
 
 	// Explicit ClientOrderCode must be sent as client_order_code in GHN create JSON.
+	mappedTo := Address{ProvinceCode: "01", WardCode: "00070", GHNDistrictID: 1489, GHNWardCode: "1A0606"}
 	res, err := adapter.CreateShipment(context.Background(), ShipmentRequest{
 		OrderID:         "ord-100",
 		ClientOrderCode: "ord-100-R1",
 		WeightGrams:     500,
+		ToAddress:       mappedTo,
 	})
 	if err != nil || res.TrackingCode != "GHN-SB-ord-100-R1" {
 		t.Fatalf("expected GHN-SB-ord-100-R1, got res=%+v err=%v", res, err)
@@ -643,11 +646,14 @@ func TestReview_GHNSandboxCreateClientOrderCodeAndBody400NonRetryable(t *testing
 		OrderID:         "ord-100",
 		ClientOrderCode: "RET-rr-1",
 		WeightGrams:     500,
+		ToAddress:       mappedTo,
 	})
 	if err == nil || !IsNonRetryable(err) {
 		t.Fatalf("expected NonRetryableError for HTTP 200 code=400 create, got %v", err)
 	}
-	if _, err := adapter.CalculateFee(context.Background(), FeeRequest{WeightGrams: 500}); err == nil || !IsNonRetryable(err) {
+	if _, err := adapter.CalculateFee(context.Background(), FeeRequest{
+		FromDistrictID: 1442, ToDistrictID: 1489, ToGHNWardCode: "1A0606", WeightGrams: 500,
+	}); err == nil || !IsNonRetryable(err) {
 		t.Fatalf("expected NonRetryableError for HTTP 200 code=400 fee, got %v", err)
 	}
 
@@ -702,7 +708,10 @@ func TestReview2_GHNStatusCodeClassification(t *testing.T) {
 				CBMaxFailures:  5,
 				Logger:         discardLogger(),
 			})
-			res, err := rc.CreateShipment(context.Background(), ShipmentRequest{OrderID: "ord-retry", WeightGrams: 500})
+			res, err := rc.CreateShipment(context.Background(), ShipmentRequest{
+				OrderID: "ord-retry", WeightGrams: 500,
+				ToAddress: Address{ProvinceCode: "01", WardCode: "00070", GHNDistrictID: 1489, GHNWardCode: "1A0606"},
+			})
 			srv.Close()
 			if err != nil || res.TrackingCode != "GHN-RETRY-OK" || attempts.Load() != 2 {
 				t.Fatalf("HTTP %d must retry transiently and succeed on attempt 2, got res=%+v err=%v attempts=%d", statusCode, res, err, attempts.Load())
@@ -718,7 +727,10 @@ func TestReview2_GHNStatusCodeClassification(t *testing.T) {
 			adapter := NewGHNAdapter(GHNConfig{
 				Mode: "sandbox", BaseURL: srv.URL, Token: "valid-tok", HTTPClient: srv.Client(),
 			})
-			_, err := adapter.CreateShipment(context.Background(), ShipmentRequest{OrderID: "ord-body-retry", WeightGrams: 500})
+			_, err := adapter.CreateShipment(context.Background(), ShipmentRequest{
+				OrderID: "ord-body-retry", WeightGrams: 500,
+				ToAddress: Address{ProvinceCode: "01", WardCode: "00070", GHNDistrictID: 1489, GHNWardCode: "1A0606"},
+			})
 			srv.Close()
 			if err == nil || IsNonRetryable(err) {
 				t.Fatalf("body code %d must be retryable (not NonRetryable), got err=%v", bodyCode, err)
@@ -735,7 +747,10 @@ func TestReview2_GHNStatusCodeClassification(t *testing.T) {
 			adapter := NewGHNAdapter(GHNConfig{
 				Mode: "sandbox", BaseURL: srv.URL, Token: "expired-tok", HTTPClient: srv.Client(),
 			})
-			_, createErr := adapter.CreateShipment(context.Background(), ShipmentRequest{OrderID: "ord-auth", WeightGrams: 500})
+			_, createErr := adapter.CreateShipment(context.Background(), ShipmentRequest{
+				OrderID: "ord-auth", WeightGrams: 500,
+				ToAddress: Address{ProvinceCode: "01", WardCode: "00070", GHNDistrictID: 1489, GHNWardCode: "1A0606"},
+			})
 			if !errors.Is(createErr, ErrInvalidCarrierToken) {
 				srv.Close()
 				t.Fatalf("HTTP %d CreateShipment must wrap ErrInvalidCarrierToken, got %v", statusCode, createErr)
@@ -743,7 +758,9 @@ func TestReview2_GHNStatusCodeClassification(t *testing.T) {
 
 			agg := NewAggregator(discardLogger(), adapter)
 			quotes, isFallback, feeErr := agg.CalculateFeeForCarriers(context.Background(), FeeRequest{
-				FromProvinceCode: "79", ToProvinceCode: "01", WeightGrams: 500,
+				FromProvinceCode: "79", FromDistrictID: 1442,
+				ToProvinceCode: "01", ToDistrictID: 1489, ToGHNWardCode: "1A0606",
+				WeightGrams: 500,
 			}, []string{CodeGHN}, nil)
 			srv.Close()
 			if feeErr != nil || !isFallback || len(quotes) == 0 {
@@ -844,6 +861,7 @@ func TestReview4_MockDeterministicTrackingAndGHNDuplicateClientOrderCode(t *test
 				})
 				res, err := adapter.CreateShipment(context.Background(), ShipmentRequest{
 					OrderID: "ord-dup", ClientOrderCode: "RET-rr-dup", WeightGrams: 500,
+					ToAddress: Address{ProvinceCode: "01", WardCode: "00070", GHNDistrictID: 1489, GHNWardCode: "1A0606"},
 				})
 				if err != nil {
 					t.Fatalf("duplicate client_order_code must recover via detail-by-client-code, got err=%v", err)
@@ -878,6 +896,7 @@ func TestReview4_MockDeterministicTrackingAndGHNDuplicateClientOrderCode(t *test
 		})
 		_, err := adapter.CreateShipment(context.Background(), ShipmentRequest{
 			OrderID: "ord-dup-fail", ClientOrderCode: "RET-rr-dup-fail", WeightGrams: 500,
+			ToAddress: Address{ProvinceCode: "01", WardCode: "00070", GHNDistrictID: 1489, GHNWardCode: "1A0606"},
 		})
 		if err == nil {
 			t.Fatalf("expected error when lookup fails")
@@ -886,4 +905,150 @@ func TestReview4_MockDeterministicTrackingAndGHNDuplicateClientOrderCode(t *test
 			t.Fatalf("duplicate client_order_code error must NOT be NonRetryable (would trigger fallback to another carrier), got %v", err)
 		}
 	})
+}
+
+func TestMockCarrier_E18_TestEnvGatedFaultInjection(t *testing.T) {
+	mock := NewMockExpressAdapter()
+	// Disabled by default: injecting fault must fail and CreateShipment must succeed.
+	if err := mock.InjectCreateFault("ord-fault-1", http.StatusServiceUnavailable, 3); err == nil {
+		t.Fatalf("expected error when fault injection is disabled")
+	}
+	if res, err := mock.CreateShipment(context.Background(), ShipmentRequest{
+		OrderID: "ord-fault-1", ClientOrderCode: "ord-fault-1", WeightGrams: 500,
+	}); err != nil || res == nil {
+		t.Fatalf("disabled fault injector must not fail CreateShipment: res=%+v err=%v", res, err)
+	}
+
+	// Enabled via test env flag: fails 503 exactly 3 times (retryable), then succeeds on attempt 4.
+	mock.SetTestFaultInjectionEnabled(true)
+	if err := mock.InjectCreateFault("ord-fault-2", http.StatusServiceUnavailable, 3); err != nil {
+		t.Fatalf("InjectCreateFault(503): %v", err)
+	}
+	for i := 1; i <= 3; i++ {
+		_, err := mock.CreateShipment(context.Background(), ShipmentRequest{
+			OrderID: "ord-fault-2", ClientOrderCode: "ord-fault-2", WeightGrams: 500,
+		})
+		if err == nil || IsNonRetryable(err) {
+			t.Fatalf("attempt %d: expected retryable 503 error, got %v", i, err)
+		}
+	}
+	res, err := mock.CreateShipment(context.Background(), ShipmentRequest{
+		OrderID: "ord-fault-2", ClientOrderCode: "ord-fault-2", WeightGrams: 500,
+	})
+	if err != nil || res == nil || res.TrackingCode == "" {
+		t.Fatalf("attempt 4 after 3 injected 503s must succeed, got res=%+v err=%v", res, err)
+	}
+
+	// 400 injection must return NonRetryableError.
+	if err := mock.InjectCreateFault("ord-fault-400", http.StatusBadRequest, 1); err != nil {
+		t.Fatalf("InjectCreateFault(400): %v", err)
+	}
+	_, err = mock.CreateShipment(context.Background(), ShipmentRequest{
+		OrderID: "ord-fault-400", ClientOrderCode: "ord-fault-400", WeightGrams: 500,
+	})
+	if err == nil || !IsNonRetryable(err) {
+		t.Fatalf("injected 400 must be NonRetryableError, got %v", err)
+	}
+}
+
+func TestGHNSandbox_MissingWardMapping_ZeroHTTPRequests(t *testing.T) {
+	var httpCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		httpCalls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	adapter := NewGHNAdapter(GHNConfig{
+		Mode:       "sandbox",
+		BaseURL:    srv.URL,
+		Token:      "valid-sandbox-token",
+		ShopID:     12345,
+		HTTPClient: srv.Client(),
+	})
+	rc := NewResilientCarrier(adapter, ResilienceConfig{
+		AttemptTimeout: 500 * time.Millisecond,
+		MaxAttempts:    3,
+		BaseBackoff:    5 * time.Millisecond,
+		MaxBackoff:     10 * time.Millisecond,
+		CBMaxFailures:  1,
+		CBOpenTimeout:  30 * time.Second,
+		Logger:         discardLogger(),
+	})
+	agg := NewAggregator(discardLogger(), rc)
+
+	// 1. CalculateFee with missing destination GHN mapping: 0 HTTP calls, fallback quotes (NOT ErrRouteOutOfServiceArea), CB stays Closed.
+	quotes, isFallback, err := agg.CalculateFeeForCarriers(context.Background(), FeeRequest{
+		FromProvinceCode: "79",
+		FromWardCode:     "26740",
+		FromDistrictID:   1442,
+		FromGHNWardCode:  "20101",
+		ToProvinceCode:   "96",
+		ToWardCode:       "31825",
+		ToDistrictID:     0,
+		ToGHNWardCode:    "",
+		WeightGrams:      500,
+	}, []string{CodeGHN}, nil)
+	if err != nil {
+		t.Fatalf("GHN sandbox CalculateFee on unmapped ward must fall back (not error): got err=%v", err)
+	}
+	if !isFallback || len(quotes) == 0 || quotes[0].CarrierCode != CodeFallback {
+		t.Fatalf("expected fallback quotes on unmapped GHN ward, got isFallback=%v quotes=%+v", isFallback, quotes)
+	}
+	if httpCalls.Load() != 0 {
+		t.Fatalf("GHN sandbox must send 0 HTTP requests for unmapped destination ward, got %d", httpCalls.Load())
+	}
+	if rc.State() != gobreaker.StateClosed {
+		t.Fatalf("missing GHN mapping must NOT trip circuit breaker, got state=%s", rc.State())
+	}
+
+	// 2. CalculateFee with missing origin GHN district: 0 HTTP calls, fallback quotes.
+	quotesOrig, isFallbackOrig, err := agg.CalculateFeeForCarriers(context.Background(), FeeRequest{
+		FromProvinceCode: "96",
+		FromWardCode:     "31825",
+		FromDistrictID:   0,
+		FromGHNWardCode:  "",
+		ToProvinceCode:   "79",
+		ToWardCode:       "26740",
+		ToDistrictID:     1442,
+		ToGHNWardCode:    "20101",
+		WeightGrams:      500,
+	}, []string{CodeGHN}, nil)
+	if err != nil || !isFallbackOrig || len(quotesOrig) == 0 {
+		t.Fatalf("GHN sandbox CalculateFee on unmapped origin must fall back, got quotes=%+v fallback=%v err=%v", quotesOrig, isFallbackOrig, err)
+	}
+	if httpCalls.Load() != 0 {
+		t.Fatalf("GHN sandbox must send 0 HTTP requests for unmapped origin ward, got %d", httpCalls.Load())
+	}
+
+	// 3. CreateShipment with missing destination GHN mapping: 0 HTTP calls, NonRetryableError with clear Vietnamese message.
+	_, createErr := rc.CreateShipment(context.Background(), ShipmentRequest{
+		OrderID:         "ord-ghn-unmapped",
+		ClientOrderCode: "ord-ghn-unmapped",
+		WeightGrams:     500,
+		FromAddress:     Address{ProvinceCode: "79", WardCode: "26740", GHNDistrictID: 1442, GHNWardCode: "20101"},
+		ToAddress:       Address{ProvinceCode: "96", WardCode: "31825", GHNDistrictID: 0, GHNWardCode: ""},
+	})
+	if createErr == nil || !IsNonRetryable(createErr) {
+		t.Fatalf("GHN sandbox CreateShipment on unmapped ward must return NonRetryableError, got %v", createErr)
+	}
+	if !strings.Contains(createErr.Error(), "phường chưa có mã GHN, chọn hãng khác") {
+		t.Fatalf("unexpected missing GHN mapping error message: %q", createErr.Error())
+	}
+	if httpCalls.Load() != 0 {
+		t.Fatalf("GHN sandbox CreateShipment must send 0 HTTP requests for unmapped ward, got %d", httpCalls.Load())
+	}
+
+	// 4. Mock mode remains unaffected even with GHNDistrictID=0.
+	mockGHN := NewGHNAdapter(GHNConfig{Mode: "mock"})
+	if mq, mErr := mockGHN.CalculateFee(context.Background(), FeeRequest{
+		FromProvinceCode: "79", ToProvinceCode: "96", WeightGrams: 500,
+	}); mErr != nil || len(mq) == 0 {
+		t.Fatalf("GHN mock CalculateFee must still work with GHNDistrictID=0, got mq=%+v err=%v", mq, mErr)
+	}
+	if ms, mErr := mockGHN.CreateShipment(context.Background(), ShipmentRequest{
+		OrderID: "ord-ghn-mock-ok", ClientOrderCode: "ord-ghn-mock-ok", WeightGrams: 500,
+	}); mErr != nil || ms == nil {
+		t.Fatalf("GHN mock CreateShipment must still work with GHNDistrictID=0, got ms=%+v err=%v", ms, mErr)
+	}
 }

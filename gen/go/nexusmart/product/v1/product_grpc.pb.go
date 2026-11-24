@@ -19,25 +19,34 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ProductService_CreateCategory_FullMethodName           = "/nexusmart.product.v1.ProductService/CreateCategory"
-	ProductService_UpdateCategory_FullMethodName           = "/nexusmart.product.v1.ProductService/UpdateCategory"
-	ProductService_DeleteCategory_FullMethodName           = "/nexusmart.product.v1.ProductService/DeleteCategory"
-	ProductService_ListCategories_FullMethodName           = "/nexusmart.product.v1.ProductService/ListCategories"
-	ProductService_GetCategoryDescendants_FullMethodName   = "/nexusmart.product.v1.ProductService/GetCategoryDescendants"
-	ProductService_SetCategoryFeeSchedule_FullMethodName   = "/nexusmart.product.v1.ProductService/SetCategoryFeeSchedule"
-	ProductService_ListCategoryFeeSchedules_FullMethodName = "/nexusmart.product.v1.ProductService/ListCategoryFeeSchedules"
-	ProductService_CreateProduct_FullMethodName            = "/nexusmart.product.v1.ProductService/CreateProduct"
-	ProductService_UpdateProduct_FullMethodName            = "/nexusmart.product.v1.ProductService/UpdateProduct"
-	ProductService_DeleteProduct_FullMethodName            = "/nexusmart.product.v1.ProductService/DeleteProduct"
-	ProductService_AdminReviewProduct_FullMethodName       = "/nexusmart.product.v1.ProductService/AdminReviewProduct"
-	ProductService_GetProduct_FullMethodName               = "/nexusmart.product.v1.ProductService/GetProduct"
-	ProductService_ListProducts_FullMethodName             = "/nexusmart.product.v1.ProductService/ListProducts"
-	ProductService_GetSKUsBatch_FullMethodName             = "/nexusmart.product.v1.ProductService/GetSKUsBatch"
-	ProductService_UpdateStock_FullMethodName              = "/nexusmart.product.v1.ProductService/UpdateStock"
-	ProductService_ReserveStock_FullMethodName             = "/nexusmart.product.v1.ProductService/ReserveStock"
-	ProductService_ReleaseStock_FullMethodName             = "/nexusmart.product.v1.ProductService/ReleaseStock"
-	ProductService_ConfirmStock_FullMethodName             = "/nexusmart.product.v1.ProductService/ConfirmStock"
-	ProductService_RestockOrderItems_FullMethodName        = "/nexusmart.product.v1.ProductService/RestockOrderItems"
+	ProductService_CreateCategory_FullMethodName                 = "/nexusmart.product.v1.ProductService/CreateCategory"
+	ProductService_UpdateCategory_FullMethodName                 = "/nexusmart.product.v1.ProductService/UpdateCategory"
+	ProductService_DeleteCategory_FullMethodName                 = "/nexusmart.product.v1.ProductService/DeleteCategory"
+	ProductService_ListCategories_FullMethodName                 = "/nexusmart.product.v1.ProductService/ListCategories"
+	ProductService_GetCategoryDescendants_FullMethodName         = "/nexusmart.product.v1.ProductService/GetCategoryDescendants"
+	ProductService_SetCategoryFeeSchedule_FullMethodName         = "/nexusmart.product.v1.ProductService/SetCategoryFeeSchedule"
+	ProductService_ListCategoryFeeSchedules_FullMethodName       = "/nexusmart.product.v1.ProductService/ListCategoryFeeSchedules"
+	ProductService_CreateProduct_FullMethodName                  = "/nexusmart.product.v1.ProductService/CreateProduct"
+	ProductService_UpdateProduct_FullMethodName                  = "/nexusmart.product.v1.ProductService/UpdateProduct"
+	ProductService_DeleteProduct_FullMethodName                  = "/nexusmart.product.v1.ProductService/DeleteProduct"
+	ProductService_AdminReviewProduct_FullMethodName             = "/nexusmart.product.v1.ProductService/AdminReviewProduct"
+	ProductService_GetProduct_FullMethodName                     = "/nexusmart.product.v1.ProductService/GetProduct"
+	ProductService_ListProducts_FullMethodName                   = "/nexusmart.product.v1.ProductService/ListProducts"
+	ProductService_GetSKUsBatch_FullMethodName                   = "/nexusmart.product.v1.ProductService/GetSKUsBatch"
+	ProductService_UpdateStock_FullMethodName                    = "/nexusmart.product.v1.ProductService/UpdateStock"
+	ProductService_ReserveStock_FullMethodName                   = "/nexusmart.product.v1.ProductService/ReserveStock"
+	ProductService_ReleaseStock_FullMethodName                   = "/nexusmart.product.v1.ProductService/ReleaseStock"
+	ProductService_ConfirmStock_FullMethodName                   = "/nexusmart.product.v1.ProductService/ConfirmStock"
+	ProductService_RestockOrderItems_FullMethodName              = "/nexusmart.product.v1.ProductService/RestockOrderItems"
+	ProductService_CreateReview_FullMethodName                   = "/nexusmart.product.v1.ProductService/CreateReview"
+	ProductService_ListProductReviews_FullMethodName             = "/nexusmart.product.v1.ProductService/ListProductReviews"
+	ProductService_ListOrderReviews_FullMethodName               = "/nexusmart.product.v1.ProductService/ListOrderReviews"
+	ProductService_ListBannedKeywords_FullMethodName             = "/nexusmart.product.v1.ProductService/ListBannedKeywords"
+	ProductService_CreateBannedKeyword_FullMethodName            = "/nexusmart.product.v1.ProductService/CreateBannedKeyword"
+	ProductService_UpdateBannedKeyword_FullMethodName            = "/nexusmart.product.v1.ProductService/UpdateBannedKeyword"
+	ProductService_DeleteBannedKeyword_FullMethodName            = "/nexusmart.product.v1.ProductService/DeleteBannedKeyword"
+	ProductService_PreviewBannedKeyword_FullMethodName           = "/nexusmart.product.v1.ProductService/PreviewBannedKeyword"
+	ProductService_RescanProductsForBannedContent_FullMethodName = "/nexusmart.product.v1.ProductService/RescanProductsForBannedContent"
 )
 
 // ProductServiceClient is the client API for ProductService service.
@@ -63,6 +72,15 @@ type ProductServiceClient interface {
 	ReleaseStock(ctx context.Context, in *ReleaseStockRequest, opts ...grpc.CallOption) (*ReleaseStockResponse, error)
 	ConfirmStock(ctx context.Context, in *ConfirmStockRequest, opts ...grpc.CallOption) (*ConfirmStockResponse, error)
 	RestockOrderItems(ctx context.Context, in *RestockOrderItemsRequest, opts ...grpc.CallOption) (*RestockOrderItemsResponse, error)
+	CreateReview(ctx context.Context, in *CreateReviewRequest, opts ...grpc.CallOption) (*CreateReviewResponse, error)
+	ListProductReviews(ctx context.Context, in *ListProductReviewsRequest, opts ...grpc.CallOption) (*ListProductReviewsResponse, error)
+	ListOrderReviews(ctx context.Context, in *ListOrderReviewsRequest, opts ...grpc.CallOption) (*ListOrderReviewsResponse, error)
+	ListBannedKeywords(ctx context.Context, in *ListBannedKeywordsRequest, opts ...grpc.CallOption) (*ListBannedKeywordsResponse, error)
+	CreateBannedKeyword(ctx context.Context, in *CreateBannedKeywordRequest, opts ...grpc.CallOption) (*CreateBannedKeywordResponse, error)
+	UpdateBannedKeyword(ctx context.Context, in *UpdateBannedKeywordRequest, opts ...grpc.CallOption) (*UpdateBannedKeywordResponse, error)
+	DeleteBannedKeyword(ctx context.Context, in *DeleteBannedKeywordRequest, opts ...grpc.CallOption) (*DeleteBannedKeywordResponse, error)
+	PreviewBannedKeyword(ctx context.Context, in *PreviewBannedKeywordRequest, opts ...grpc.CallOption) (*PreviewBannedKeywordResponse, error)
+	RescanProductsForBannedContent(ctx context.Context, in *RescanProductsForBannedContentRequest, opts ...grpc.CallOption) (*RescanProductsForBannedContentResponse, error)
 }
 
 type productServiceClient struct {
@@ -263,6 +281,96 @@ func (c *productServiceClient) RestockOrderItems(ctx context.Context, in *Restoc
 	return out, nil
 }
 
+func (c *productServiceClient) CreateReview(ctx context.Context, in *CreateReviewRequest, opts ...grpc.CallOption) (*CreateReviewResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateReviewResponse)
+	err := c.cc.Invoke(ctx, ProductService_CreateReview_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *productServiceClient) ListProductReviews(ctx context.Context, in *ListProductReviewsRequest, opts ...grpc.CallOption) (*ListProductReviewsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListProductReviewsResponse)
+	err := c.cc.Invoke(ctx, ProductService_ListProductReviews_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *productServiceClient) ListOrderReviews(ctx context.Context, in *ListOrderReviewsRequest, opts ...grpc.CallOption) (*ListOrderReviewsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListOrderReviewsResponse)
+	err := c.cc.Invoke(ctx, ProductService_ListOrderReviews_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *productServiceClient) ListBannedKeywords(ctx context.Context, in *ListBannedKeywordsRequest, opts ...grpc.CallOption) (*ListBannedKeywordsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListBannedKeywordsResponse)
+	err := c.cc.Invoke(ctx, ProductService_ListBannedKeywords_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *productServiceClient) CreateBannedKeyword(ctx context.Context, in *CreateBannedKeywordRequest, opts ...grpc.CallOption) (*CreateBannedKeywordResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateBannedKeywordResponse)
+	err := c.cc.Invoke(ctx, ProductService_CreateBannedKeyword_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *productServiceClient) UpdateBannedKeyword(ctx context.Context, in *UpdateBannedKeywordRequest, opts ...grpc.CallOption) (*UpdateBannedKeywordResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateBannedKeywordResponse)
+	err := c.cc.Invoke(ctx, ProductService_UpdateBannedKeyword_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *productServiceClient) DeleteBannedKeyword(ctx context.Context, in *DeleteBannedKeywordRequest, opts ...grpc.CallOption) (*DeleteBannedKeywordResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteBannedKeywordResponse)
+	err := c.cc.Invoke(ctx, ProductService_DeleteBannedKeyword_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *productServiceClient) PreviewBannedKeyword(ctx context.Context, in *PreviewBannedKeywordRequest, opts ...grpc.CallOption) (*PreviewBannedKeywordResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PreviewBannedKeywordResponse)
+	err := c.cc.Invoke(ctx, ProductService_PreviewBannedKeyword_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *productServiceClient) RescanProductsForBannedContent(ctx context.Context, in *RescanProductsForBannedContentRequest, opts ...grpc.CallOption) (*RescanProductsForBannedContentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RescanProductsForBannedContentResponse)
+	err := c.cc.Invoke(ctx, ProductService_RescanProductsForBannedContent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ProductServiceServer is the server API for ProductService service.
 // All implementations must embed UnimplementedProductServiceServer
 // for forward compatibility.
@@ -286,6 +394,15 @@ type ProductServiceServer interface {
 	ReleaseStock(context.Context, *ReleaseStockRequest) (*ReleaseStockResponse, error)
 	ConfirmStock(context.Context, *ConfirmStockRequest) (*ConfirmStockResponse, error)
 	RestockOrderItems(context.Context, *RestockOrderItemsRequest) (*RestockOrderItemsResponse, error)
+	CreateReview(context.Context, *CreateReviewRequest) (*CreateReviewResponse, error)
+	ListProductReviews(context.Context, *ListProductReviewsRequest) (*ListProductReviewsResponse, error)
+	ListOrderReviews(context.Context, *ListOrderReviewsRequest) (*ListOrderReviewsResponse, error)
+	ListBannedKeywords(context.Context, *ListBannedKeywordsRequest) (*ListBannedKeywordsResponse, error)
+	CreateBannedKeyword(context.Context, *CreateBannedKeywordRequest) (*CreateBannedKeywordResponse, error)
+	UpdateBannedKeyword(context.Context, *UpdateBannedKeywordRequest) (*UpdateBannedKeywordResponse, error)
+	DeleteBannedKeyword(context.Context, *DeleteBannedKeywordRequest) (*DeleteBannedKeywordResponse, error)
+	PreviewBannedKeyword(context.Context, *PreviewBannedKeywordRequest) (*PreviewBannedKeywordResponse, error)
+	RescanProductsForBannedContent(context.Context, *RescanProductsForBannedContentRequest) (*RescanProductsForBannedContentResponse, error)
 	mustEmbedUnimplementedProductServiceServer()
 }
 
@@ -352,6 +469,33 @@ func (UnimplementedProductServiceServer) ConfirmStock(context.Context, *ConfirmS
 }
 func (UnimplementedProductServiceServer) RestockOrderItems(context.Context, *RestockOrderItemsRequest) (*RestockOrderItemsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RestockOrderItems not implemented")
+}
+func (UnimplementedProductServiceServer) CreateReview(context.Context, *CreateReviewRequest) (*CreateReviewResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateReview not implemented")
+}
+func (UnimplementedProductServiceServer) ListProductReviews(context.Context, *ListProductReviewsRequest) (*ListProductReviewsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListProductReviews not implemented")
+}
+func (UnimplementedProductServiceServer) ListOrderReviews(context.Context, *ListOrderReviewsRequest) (*ListOrderReviewsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListOrderReviews not implemented")
+}
+func (UnimplementedProductServiceServer) ListBannedKeywords(context.Context, *ListBannedKeywordsRequest) (*ListBannedKeywordsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListBannedKeywords not implemented")
+}
+func (UnimplementedProductServiceServer) CreateBannedKeyword(context.Context, *CreateBannedKeywordRequest) (*CreateBannedKeywordResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateBannedKeyword not implemented")
+}
+func (UnimplementedProductServiceServer) UpdateBannedKeyword(context.Context, *UpdateBannedKeywordRequest) (*UpdateBannedKeywordResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateBannedKeyword not implemented")
+}
+func (UnimplementedProductServiceServer) DeleteBannedKeyword(context.Context, *DeleteBannedKeywordRequest) (*DeleteBannedKeywordResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeleteBannedKeyword not implemented")
+}
+func (UnimplementedProductServiceServer) PreviewBannedKeyword(context.Context, *PreviewBannedKeywordRequest) (*PreviewBannedKeywordResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PreviewBannedKeyword not implemented")
+}
+func (UnimplementedProductServiceServer) RescanProductsForBannedContent(context.Context, *RescanProductsForBannedContentRequest) (*RescanProductsForBannedContentResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RescanProductsForBannedContent not implemented")
 }
 func (UnimplementedProductServiceServer) mustEmbedUnimplementedProductServiceServer() {}
 func (UnimplementedProductServiceServer) testEmbeddedByValue()                        {}
@@ -716,6 +860,168 @@ func _ProductService_RestockOrderItems_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ProductService_CreateReview_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateReviewRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).CreateReview(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_CreateReview_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).CreateReview(ctx, req.(*CreateReviewRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ProductService_ListProductReviews_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListProductReviewsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).ListProductReviews(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_ListProductReviews_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).ListProductReviews(ctx, req.(*ListProductReviewsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ProductService_ListOrderReviews_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListOrderReviewsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).ListOrderReviews(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_ListOrderReviews_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).ListOrderReviews(ctx, req.(*ListOrderReviewsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ProductService_ListBannedKeywords_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListBannedKeywordsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).ListBannedKeywords(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_ListBannedKeywords_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).ListBannedKeywords(ctx, req.(*ListBannedKeywordsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ProductService_CreateBannedKeyword_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateBannedKeywordRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).CreateBannedKeyword(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_CreateBannedKeyword_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).CreateBannedKeyword(ctx, req.(*CreateBannedKeywordRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ProductService_UpdateBannedKeyword_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateBannedKeywordRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).UpdateBannedKeyword(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_UpdateBannedKeyword_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).UpdateBannedKeyword(ctx, req.(*UpdateBannedKeywordRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ProductService_DeleteBannedKeyword_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteBannedKeywordRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).DeleteBannedKeyword(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_DeleteBannedKeyword_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).DeleteBannedKeyword(ctx, req.(*DeleteBannedKeywordRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ProductService_PreviewBannedKeyword_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PreviewBannedKeywordRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).PreviewBannedKeyword(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_PreviewBannedKeyword_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).PreviewBannedKeyword(ctx, req.(*PreviewBannedKeywordRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ProductService_RescanProductsForBannedContent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RescanProductsForBannedContentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).RescanProductsForBannedContent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_RescanProductsForBannedContent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).RescanProductsForBannedContent(ctx, req.(*RescanProductsForBannedContentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ProductService_ServiceDesc is the grpc.ServiceDesc for ProductService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -798,6 +1104,42 @@ var ProductService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RestockOrderItems",
 			Handler:    _ProductService_RestockOrderItems_Handler,
+		},
+		{
+			MethodName: "CreateReview",
+			Handler:    _ProductService_CreateReview_Handler,
+		},
+		{
+			MethodName: "ListProductReviews",
+			Handler:    _ProductService_ListProductReviews_Handler,
+		},
+		{
+			MethodName: "ListOrderReviews",
+			Handler:    _ProductService_ListOrderReviews_Handler,
+		},
+		{
+			MethodName: "ListBannedKeywords",
+			Handler:    _ProductService_ListBannedKeywords_Handler,
+		},
+		{
+			MethodName: "CreateBannedKeyword",
+			Handler:    _ProductService_CreateBannedKeyword_Handler,
+		},
+		{
+			MethodName: "UpdateBannedKeyword",
+			Handler:    _ProductService_UpdateBannedKeyword_Handler,
+		},
+		{
+			MethodName: "DeleteBannedKeyword",
+			Handler:    _ProductService_DeleteBannedKeyword_Handler,
+		},
+		{
+			MethodName: "PreviewBannedKeyword",
+			Handler:    _ProductService_PreviewBannedKeyword_Handler,
+		},
+		{
+			MethodName: "RescanProductsForBannedContent",
+			Handler:    _ProductService_RescanProductsForBannedContent_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

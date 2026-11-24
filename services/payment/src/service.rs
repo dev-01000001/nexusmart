@@ -10,21 +10,25 @@ use uuid::Uuid;
 
 use crate::config::{Config, VietQrMode};
 use crate::domain::{
-    allocation_buyer_payable_vnd, compute_capped_escrow_release_vnd,
+    allocation_buyer_payable_vnd, cod_reconcile_mismatch_provider_tx_id,
+    cod_reconcile_provider_tx_id, compute_capped_escrow_release_vnd,
     compute_post_settlement_clawback, compute_reconciliation_assign_split,
-    compute_settlement_split, compute_suborder_refund_amount, decide_reconciliation_match_action,
-    decide_return_allocation_action, format_seller_ledger_description,
-    format_settlement_note_with_masked_account, is_payment_already_cancelled_terminal,
-    late_payment_refund_key, order_cancel_refund_key, order_expiry_candidate_indices,
-    plan_initial_payment, reconciliation_overpay_key, reconciliation_refund_key,
-    resolve_cod_payment_status, select_payment_for_group_action, utc_to_vn_date,
-    validate_allocations_sum, validate_group_can_create_payment,
+    compute_settlement_split, compute_suborder_refund_amount, decide_cod_allocation_reconciliation,
+    decide_reconciliation_match_action, decide_return_allocation_action, find_cod_carrier_mismatch,
+    format_seller_ledger_description, format_settlement_note_with_masked_account,
+    is_payment_already_cancelled_terminal, late_payment_refund_key, normalize_cod_carrier_code,
+    order_cancel_refund_key, order_expiry_candidate_indices, plan_initial_payment,
+    reconciliation_overpay_key, reconciliation_refund_key, resolve_cod_payment_status,
+    select_payment_for_group_action, utc_to_vn_date, validate_allocations_sum,
+    validate_cod_reconciliation_rows, validate_group_can_create_payment,
     validate_payment_idempotency_match, validate_reconciliation_provider_tx_accountable,
     validate_refund_bank_account, validate_refund_eligibility, validate_refund_idempotency_match,
     validate_resolve_reconciliation_idempotency_match, validate_set_fee_config,
     validate_settle_refund_idempotency_match, validate_suborder_refund_cap, vn_day_utc_bounds,
-    vn_today, AssignAmountSplit, CreatePaymentInput, CreateRefundInput, CreateRefundOutput,
-    GetFeeConfigFilter, GetFeeConfigResult, GroupPaymentSelection, ListReconciliationQueueResult,
+    vn_today, AssignAmountSplit, CodAllocationMatchDecision, CodReconciliationRowInput,
+    CreatePaymentInput, CreateRefundInput, CreateRefundOutput, GetFeeConfigFilter,
+    GetFeeConfigResult, GroupPaymentSelection, ImportCodReconciliationInput,
+    ListReconciliationQueueResult, ListReconciliationRunsFilter, ListReconciliationRunsResult,
     ListRefundsFilter, ListRefundsResult, ListSellerLedgerFilter, ListSellerLedgerResult,
     PaymentFeeConfigRecord, PaymentMethod, PaymentRecord, PaymentSseEvent, PaymentWithAllocations,
     ProviderTxAccountingState, ReconciliationActionKind, ReconciliationDecision,
@@ -36,10 +40,10 @@ use crate::domain::{
 };
 use crate::error::{PaymentError, Result};
 use crate::ledger::{
-    self, build_cod_collect_tx, build_escrow_release_tx, build_escrow_settle_tx,
-    build_late_payment_refund_tx, build_post_settlement_refund_tx, build_reconciliation_refund_tx,
-    build_refund_settle_tx, build_refund_tx, build_seller_payout_tx, build_vietqr_confirm_tx,
-    LedgerSummary, SellerBalance,
+    self, build_cod_collect_tx, build_cod_reconcile_tx, build_escrow_release_tx,
+    build_escrow_settle_tx, build_late_payment_refund_tx, build_post_settlement_refund_tx,
+    build_reconciliation_refund_tx, build_refund_settle_tx, build_refund_tx,
+    build_seller_payout_tx, build_vietqr_confirm_tx, LedgerSummary, SellerBalance,
 };
 use crate::metrics::Metrics;
 use crate::telemetry::mask_bank_account;
@@ -79,6 +83,10 @@ SELECT id, seq, payment_method, fee_bps, effective_from, created_by, note, creat
 FROM payment_fee_configs
 ORDER BY effective_from DESC, seq DESC
 "#;
+
+/// Timeout (10 minutes) after which a `cod_file` reconciliation run still in `'running'`
+/// state is considered stranded (e.g. abrupt process shutdown) and swept to `'failed'`.
+pub const STALE_COD_RECONCILIATION_RUN_TIMEOUT_SECS: i64 = 600;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookProcessResult {
@@ -886,6 +894,8 @@ impl PaymentService {
                     payload.amount_vnd,
                     reason,
                     webhook_occurred_at,
+                    "webhook",
+                    None,
                 )
                 .await?;
 
@@ -2527,6 +2537,13 @@ impl PaymentService {
         validate_reconciliation_provider_tx_accountable(&item.provider_tx_id, acct)?;
 
         match input.action {
+            ReconciliationActionKind::Assign | ReconciliationActionKind::Refund
+                if item.source_type == "cod_file" =>
+            {
+                Err(PaymentError::Conflict(
+                    "COD file reconciliation items cannot be resolved via VietQR ASSIGN/REFUND; re-import carrier file after fixing or use SUSPEND".to_string(),
+                ))
+            }
             ReconciliationActionKind::Suspend => {
                 // P1-5: Validate optional payment_id against payments before writing FK column.
                 if let Some(pid) = input.payment_id {
@@ -3041,6 +3058,8 @@ impl PaymentService {
                     provider_tx.amount_vnd,
                     "expired_amount_mismatch",
                     Some(provider_tx.occurred_at),
+                    "reconciliation",
+                    None,
                 )
                 .await?;
                 tx.commit().await?;
@@ -3143,8 +3162,8 @@ impl PaymentService {
         let provider_name = self.vietqr.mode().as_str().to_string();
         let run_id: Uuid = sqlx::query_scalar(
             r#"
-            INSERT INTO reconciliation_runs (provider, run_date, status)
-            VALUES ($1, $2, 'running')
+            INSERT INTO reconciliation_runs (provider, run_date, status, run_type)
+            VALUES ($1, $2, 'running', 'vietqr')
             RETURNING id
             "#,
         )
@@ -3344,6 +3363,8 @@ impl PaymentService {
                             ptx.amount_vnd,
                             "reconciliation_missing_local",
                             Some(ptx.occurred_at),
+                            "reconciliation",
+                            None,
                         )
                         .await?;
                     }
@@ -3453,6 +3474,8 @@ impl PaymentService {
                                 ptx.amount_vnd,
                                 "reconciliation_amount_mismatch",
                                 Some(ptx.occurred_at),
+                                "reconciliation",
+                                None,
                             )
                             .await?;
                         }
@@ -3565,6 +3588,15 @@ impl PaymentService {
             }
         }
 
+        let total_rows =
+            matched_count + missing_local_count + missing_provider_count + amount_mismatch_count;
+        let total_matched_vnd: i64 = items
+            .iter()
+            .filter(|it| it.classification == "matched")
+            .fold(0_i64, |acc, it| {
+                acc.saturating_add(it.provider_amount_vnd.or(it.local_amount_vnd).unwrap_or(0))
+            });
+
         let run = sqlx::query_as::<_, ReconciliationRunRecord>(
             r#"
             UPDATE reconciliation_runs
@@ -3573,9 +3605,11 @@ impl PaymentService {
                 missing_provider_count = $3,
                 amount_mismatch_count = $4,
                 auto_healed_count = $5,
+                total_rows = $6,
+                total_matched_vnd = $7,
                 status = 'completed',
                 completed_at = NOW()
-            WHERE id = $6
+            WHERE id = $8
             RETURNING *
             "#,
         )
@@ -3584,6 +3618,8 @@ impl PaymentService {
         .bind(missing_provider_count)
         .bind(amount_mismatch_count)
         .bind(auto_healed_count)
+        .bind(total_rows)
+        .bind(total_matched_vnd)
         .bind(run_id)
         .fetch_one(&mut *tx)
         .await?;
@@ -3672,6 +3708,797 @@ impl PaymentService {
         Ok(out)
     }
 
+    /// Imports a carrier COD settlement CSV batch row-by-row (E20 / E20-bis):
+    /// - Records a `reconciliation_runs` row with `run_type = 'cod_file'` and `file_sha256`
+    ///   (NEVER skips re-importing based on `file_sha256`: re-uploading after `order.delivered`
+    ///   must reconcile previously `not_delivered` rows and auto-close their queue entries).
+    /// - Processes each row in its OWN short transaction serialized via
+    ///   `lock_provider_tx_xact("cod:<carrier>:<tracking>")` + `FOR UPDATE` on matching COD
+    ///   `payment_shop_allocations` so one bad row never blocks others and concurrent imports
+    ///   of the same file post strictly one ledger transaction per `(payment_id, order_id, shop_id)`.
+    /// - Does NOT alter the `order.completed -> seller_pending` settlement flow.
+    pub async fn import_cod_reconciliation(
+        &self,
+        input: ImportCodReconciliationInput,
+    ) -> Result<ReconciliationReport> {
+        let carrier_code = normalize_cod_carrier_code(&input.carrier_code)?;
+        validate_cod_reconciliation_rows(&input.rows)?;
+        let today_vn = vn_today(Utc::now());
+        if input.run_date > today_vn {
+            return Err(PaymentError::Validation(format!(
+                "reconciliation date {} cannot be in the future (today in Asia/Ho_Chi_Minh is {today_vn})",
+                input.run_date
+            )));
+        }
+
+        let file_name = input.file_name.trim();
+        let file_sha256 = input.file_sha256.trim();
+        let created_by = input.created_by.trim();
+        let total_rows = input.rows.len() as i32;
+
+        let (run_id, run_created_at): (Uuid, DateTime<Utc>) = sqlx::query_as(
+            r#"
+            INSERT INTO reconciliation_runs (
+                provider, run_date, status, run_type, file_sha256, file_name,
+                total_rows, created_by
+            )
+            VALUES ($1, $2, 'running', 'cod_file', $3, $4, $5, $6)
+            RETURNING id, created_at
+            "#,
+        )
+        .bind(&carrier_code)
+        .bind(input.run_date)
+        .bind(file_sha256)
+        .bind(file_name)
+        .bind(total_rows)
+        .bind(created_by)
+        .fetch_one(&self.pool)
+        .await?;
+
+        // Run row processing in a detached-safe Tokio task so client/gateway cancellation
+        // (dropping the tonic RPC future) never strands `reconciliation_runs.status = 'running'`.
+        let svc = self.clone();
+        let rows = input.rows;
+        let handle = tokio::spawn(async move {
+            svc.execute_cod_reconciliation_run(
+                run_id,
+                run_created_at,
+                carrier_code,
+                total_rows,
+                rows,
+            )
+            .await
+        });
+
+        match handle.await {
+            Ok(res) => res,
+            Err(join_err) => {
+                let _ = sqlx::query(
+                    "UPDATE reconciliation_runs SET status = 'failed', completed_at = NOW() WHERE id = $1 AND status = 'running'",
+                )
+                .bind(run_id)
+                .execute(&self.pool)
+                .await;
+                Err(PaymentError::Internal(format!(
+                    "COD reconciliation task failed: {join_err}"
+                )))
+            }
+        }
+    }
+
+    async fn execute_cod_reconciliation_run(
+        &self,
+        run_id: Uuid,
+        run_created_at: DateTime<Utc>,
+        carrier_code: String,
+        total_rows: i32,
+        rows: Vec<CodReconciliationRowInput>,
+    ) -> Result<ReconciliationReport> {
+        let mut matched_count = 0_i32;
+        let mut already_reconciled_count = 0_i32;
+        let mut missing_local_count = 0_i32;
+        let mut amount_mismatch_count = 0_i32;
+        let mut not_delivered_count = 0_i32;
+        let mut total_matched_vnd = 0_i64;
+        let mut items = Vec::with_capacity(rows.len());
+
+        for (idx, row) in rows.iter().enumerate() {
+            let line_number = if row.line_number > 0 {
+                row.line_number
+            } else {
+                (idx as i32) + 1
+            };
+            match self
+                .process_single_cod_reconciliation_row(
+                    run_id,
+                    run_created_at,
+                    &carrier_code,
+                    line_number,
+                    row,
+                )
+                .await
+            {
+                Ok(CodRowOutcome::Matched { item, matched_vnd }) => {
+                    matched_count += 1;
+                    total_matched_vnd = total_matched_vnd.saturating_add(matched_vnd);
+                    items.push(item);
+                }
+                Ok(CodRowOutcome::AlreadyReconciled(item)) => {
+                    already_reconciled_count += 1;
+                    items.push(item);
+                }
+                Ok(CodRowOutcome::MissingLocal(item)) => {
+                    missing_local_count += 1;
+                    items.push(item);
+                }
+                Ok(CodRowOutcome::AmountMismatch(item)) => {
+                    amount_mismatch_count += 1;
+                    items.push(item);
+                }
+                Ok(CodRowOutcome::NotDelivered(item)) => {
+                    not_delivered_count += 1;
+                    items.push(item);
+                }
+                Err(row_err) => {
+                    warn!(
+                        run_id = %run_id,
+                        carrier = %carrier_code,
+                        line_number = line_number,
+                        tracking_code = %row.tracking_code.trim(),
+                        error = %row_err,
+                        "isolated COD reconciliation row error; continuing remaining rows"
+                    );
+                    missing_local_count += 1;
+                    let fallback_tx_id =
+                        format!("cod:{carrier_code}:row-error:{run_id}:{line_number}");
+                    let details = format!("row processing error: {row_err}");
+                    if let Ok(mut err_tx) = self.pool.begin().await {
+                        let _ = enqueue_cod_reconciliation_item_tx(
+                            &mut err_tx,
+                            &carrier_code,
+                            &fallback_tx_id,
+                            row.tracking_code.trim(),
+                            None,
+                            (!row.order_code.trim().is_empty()).then_some(row.order_code.trim()),
+                            None,
+                            row.cod_amount_vnd,
+                            "cod_row_error",
+                            None,
+                        )
+                        .await;
+                        if let Ok(rec) = insert_reconciliation_item_ext(
+                            &mut err_tx,
+                            run_id,
+                            "missing_local",
+                            None,
+                            Some(&fallback_tx_id),
+                            None,
+                            Some(row.cod_amount_vnd),
+                            &details,
+                            row.tracking_code.trim(),
+                            row.order_code.trim(),
+                            line_number,
+                        )
+                        .await
+                        {
+                            if err_tx.commit().await.is_ok() {
+                                items.push(rec);
+                                continue;
+                            }
+                        }
+                    }
+                    // If DB itself failed even to record the fallback error item, mark run failed.
+                    let _ = sqlx::query(
+                        "UPDATE reconciliation_runs SET status = 'failed', completed_at = NOW() WHERE id = $1 AND status = 'running'",
+                    )
+                    .bind(run_id)
+                    .execute(&self.pool)
+                    .await;
+                    return Err(row_err);
+                }
+            }
+        }
+
+        let run = match sqlx::query_as::<_, ReconciliationRunRecord>(
+            r#"
+            UPDATE reconciliation_runs
+            SET matched_count = $1,
+                already_reconciled_count = $2,
+                missing_local_count = $3,
+                missing_provider_count = 0,
+                amount_mismatch_count = $4,
+                not_delivered_count = $5,
+                total_rows = $6,
+                total_matched_vnd = $7,
+                status = 'completed',
+                completed_at = NOW()
+            WHERE id = $8
+              AND status = 'running'
+            RETURNING *
+            "#,
+        )
+        .bind(matched_count)
+        .bind(already_reconciled_count)
+        .bind(missing_local_count)
+        .bind(amount_mismatch_count)
+        .bind(not_delivered_count)
+        .bind(total_rows)
+        .bind(total_matched_vnd)
+        .bind(run_id)
+        .fetch_optional(&self.pool)
+        .await
+        {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                warn!(
+                    run_id = %run_id,
+                    carrier = %carrier_code,
+                    total_rows = total_rows,
+                    matched = matched_count,
+                    already_reconciled = already_reconciled_count,
+                    missing_local = missing_local_count,
+                    amount_mismatch = amount_mismatch_count,
+                    not_delivered = not_delivered_count,
+                    total_matched_vnd = total_matched_vnd,
+                    "COD reconciliation run was no longer 'running' at finalization (likely timed out to 'failed'); skipping overwrite to 'completed'"
+                );
+                let existing = sqlx::query_as::<_, ReconciliationRunRecord>(
+                    "SELECT * FROM reconciliation_runs WHERE id = $1",
+                )
+                .bind(run_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or_else(|| {
+                    PaymentError::NotFound(format!("reconciliation run {run_id} not found"))
+                })?;
+                return Ok(ReconciliationReport {
+                    run: existing,
+                    items,
+                });
+            }
+            Err(err) => {
+                let _ = sqlx::query(
+                    "UPDATE reconciliation_runs SET status = 'failed', completed_at = NOW() WHERE id = $1 AND status = 'running'",
+                )
+                .bind(run_id)
+                .execute(&self.pool)
+                .await;
+                return Err(err.into());
+            }
+        };
+
+        info!(
+            run_id = %run.id,
+            carrier = %carrier_code,
+            total_rows = run.total_rows,
+            matched = run.matched_count,
+            already_reconciled = run.already_reconciled_count,
+            missing_local = run.missing_local_count,
+            amount_mismatch = run.amount_mismatch_count,
+            not_delivered = run.not_delivered_count,
+            total_matched_vnd = run.total_matched_vnd,
+            "COD file reconciliation run completed"
+        );
+
+        Ok(ReconciliationReport { run, items })
+    }
+
+    async fn process_single_cod_reconciliation_row(
+        &self,
+        run_id: Uuid,
+        run_created_at: DateTime<Utc>,
+        carrier_code: &str,
+        line_number: i32,
+        row: &CodReconciliationRowInput,
+    ) -> Result<CodRowOutcome> {
+        let tracking_code = row.tracking_code.trim();
+        let order_code = row.order_code.trim();
+        let delivered_at_raw = row.delivered_at.trim();
+        let delivered_at = (!delivered_at_raw.is_empty())
+            .then(|| parse_provider_timestamp(delivered_at_raw))
+            .flatten();
+
+        if tracking_code.is_empty() {
+            let mut tx = self.pool.begin().await?;
+            let invalid_tx_id = format!("cod:{carrier_code}:invalid:{run_id}:{line_number}");
+            enqueue_cod_reconciliation_item_tx(
+                &mut tx,
+                carrier_code,
+                &invalid_tx_id,
+                "",
+                None,
+                (!order_code.is_empty()).then_some(order_code),
+                None,
+                row.cod_amount_vnd,
+                "cod_invalid_row",
+                delivered_at,
+            )
+            .await?;
+            let item = insert_reconciliation_item_ext(
+                &mut tx,
+                run_id,
+                "missing_local",
+                None,
+                Some(&invalid_tx_id),
+                None,
+                Some(row.cod_amount_vnd),
+                "invalid row: tracking_code is empty",
+                "",
+                order_code,
+                line_number,
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(CodRowOutcome::MissingLocal(item));
+        }
+
+        let cod_tx_id = cod_reconcile_provider_tx_id(carrier_code, tracking_code);
+        let mut tx = self.pool.begin().await?;
+
+        // Serialize concurrent imports / queue resolutions for this (carrier, tracking_code)
+        // BEFORE locking payment_shop_allocations so the global lock order remains strictly acyclic.
+        lock_provider_tx_xact(&mut tx, &cod_tx_id).await?;
+
+        // Primary lookup strictly by tracking_code on live COD allocations.
+        let mut allocs = sqlx::query_as::<_, ShopAllocationRecord>(
+            r#"
+            SELECT a.*
+            FROM payment_shop_allocations a
+            JOIN payments p ON p.id = a.payment_id
+            WHERE p.method = 'COD'
+              AND p.status <> 'superseded'
+              AND a.tracking_code = $1
+            ORDER BY a.id ASC
+            FOR UPDATE OF a
+            "#,
+        )
+        .bind(tracking_code)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        // E20 fallback: `order_code` is used ONLY when the COD allocation does not yet store a tracking_code.
+        if allocs.is_empty() && !order_code.is_empty() {
+            allocs = sqlx::query_as::<_, ShopAllocationRecord>(
+                r#"
+                SELECT a.*
+                FROM payment_shop_allocations a
+                JOIN payments p ON p.id = a.payment_id
+                WHERE p.method = 'COD'
+                  AND p.status <> 'superseded'
+                  AND COALESCE(BTRIM(a.tracking_code), '') = ''
+                  AND (a.order_id = $1 OR a.order_code = $1)
+                ORDER BY a.id ASC
+                FOR UPDATE OF a
+                "#,
+            )
+            .bind(order_code)
+            .fetch_all(&mut *tx)
+            .await?;
+        }
+
+        if allocs.is_empty() {
+            enqueue_cod_reconciliation_item_tx(
+                &mut tx,
+                carrier_code,
+                &cod_tx_id,
+                tracking_code,
+                None,
+                (!order_code.is_empty()).then_some(order_code),
+                None,
+                row.cod_amount_vnd,
+                "cod_missing_local",
+                delivered_at,
+            )
+            .await?;
+            let item = insert_reconciliation_item_ext(
+                &mut tx,
+                run_id,
+                "missing_local",
+                None,
+                Some(&cod_tx_id),
+                None,
+                Some(row.cod_amount_vnd),
+                "tracking_code not found in local COD allocations",
+                tracking_code,
+                order_code,
+                line_number,
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(CodRowOutcome::MissingLocal(item));
+        }
+
+        let mut expected_payable_vnd = 0_i64;
+        for alloc in &allocs {
+            let sub_payable = allocation_buyer_payable_vnd(alloc)?;
+            expected_payable_vnd =
+                expected_payable_vnd
+                    .checked_add(sub_payable)
+                    .ok_or_else(|| {
+                        PaymentError::LedgerInvariant("COD expected payable overflow".to_string())
+                    })?;
+        }
+        let primary_payment_id = allocs[0].payment_id;
+        let primary_order_id = allocs[0].order_id.clone();
+
+        // Reject carrier mismatch when the allocation already records a non-empty `carrier_code`
+        // differing from the uploaded file's carrier (applies to both tracking_code and order_code).
+        let stored_carriers: Vec<Option<&str>> =
+            allocs.iter().map(|a| a.carrier_code.as_deref()).collect();
+        if let Some(alloc_carrier) = find_cod_carrier_mismatch(&stored_carriers, carrier_code) {
+            let details = format!(
+                "carrier mismatch: allocation carrier='{alloc_carrier}' vs file carrier='{carrier_code}'"
+            );
+            enqueue_cod_reconciliation_item_tx(
+                &mut tx,
+                carrier_code,
+                &cod_tx_id,
+                tracking_code,
+                Some(primary_payment_id),
+                Some(&primary_order_id),
+                Some(expected_payable_vnd),
+                row.cod_amount_vnd,
+                "cod_carrier_mismatch",
+                delivered_at,
+            )
+            .await?;
+            let item = insert_reconciliation_item_ext(
+                &mut tx,
+                run_id,
+                "missing_local",
+                Some(primary_payment_id),
+                Some(&cod_tx_id),
+                Some(expected_payable_vnd),
+                Some(row.cod_amount_vnd),
+                &details,
+                tracking_code,
+                &primary_order_id,
+                line_number,
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(CodRowOutcome::MissingLocal(item));
+        }
+
+        let escrow_statuses: Vec<&str> = allocs.iter().map(|a| a.escrow_status.as_str()).collect();
+        let all_already_reconciled = allocs.iter().all(|a| a.cod_reconciled_at.is_some());
+
+        match decide_cod_allocation_reconciliation(
+            &escrow_statuses,
+            expected_payable_vnd,
+            row.cod_amount_vnd,
+            all_already_reconciled,
+        ) {
+            CodAllocationMatchDecision::NotDelivered { cancelled } => {
+                let (reason, details) = if cancelled {
+                    (
+                        "cod_order_cancelled",
+                        "COD order allocation is cancelled; cannot reconcile",
+                    )
+                } else {
+                    (
+                        "cod_not_delivered",
+                        "COD order not yet delivered (awaiting_collection)",
+                    )
+                };
+                enqueue_cod_reconciliation_item_tx(
+                    &mut tx,
+                    carrier_code,
+                    &cod_tx_id,
+                    tracking_code,
+                    Some(primary_payment_id),
+                    Some(&primary_order_id),
+                    Some(expected_payable_vnd),
+                    row.cod_amount_vnd,
+                    reason,
+                    delivered_at,
+                )
+                .await?;
+                let item = insert_reconciliation_item_ext(
+                    &mut tx,
+                    run_id,
+                    "not_delivered",
+                    Some(primary_payment_id),
+                    Some(&cod_tx_id),
+                    Some(expected_payable_vnd),
+                    Some(row.cod_amount_vnd),
+                    details,
+                    tracking_code,
+                    &primary_order_id,
+                    line_number,
+                )
+                .await?;
+                tx.commit().await?;
+                Ok(CodRowOutcome::NotDelivered(item))
+            }
+            CodAllocationMatchDecision::AmountMismatch => {
+                // Always key `cod_amount_mismatch` with the reported amount so multiple distinct
+                // mismatch amounts for the same tracking_code never overwrite each other, while
+                // keeping replays idempotent and deduplicating any legacy open base-key mismatch row.
+                let mismatch_tx_id = cod_reconcile_mismatch_provider_tx_id(
+                    carrier_code,
+                    tracking_code,
+                    row.cod_amount_vnd,
+                );
+                let has_legacy_open_same_amount: bool = sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS(
+                        SELECT 1
+                        FROM reconciliation_queue
+                        WHERE provider_tx_id = $1
+                          AND reason = 'cod_amount_mismatch'
+                          AND actual_amount_vnd = $2
+                          AND resolution_status IN ('pending', 'suspended')
+                    )
+                    "#,
+                )
+                .bind(&cod_tx_id)
+                .bind(row.cod_amount_vnd)
+                .fetch_one(&mut *tx)
+                .await?;
+                let queue_tx_id = if has_legacy_open_same_amount {
+                    &cod_tx_id
+                } else {
+                    &mismatch_tx_id
+                };
+                let details = format!(
+                    "COD amount mismatch: local={} VND vs carrier={} VND",
+                    expected_payable_vnd, row.cod_amount_vnd
+                );
+                enqueue_cod_reconciliation_item_tx(
+                    &mut tx,
+                    carrier_code,
+                    queue_tx_id,
+                    tracking_code,
+                    Some(primary_payment_id),
+                    Some(&primary_order_id),
+                    Some(expected_payable_vnd),
+                    row.cod_amount_vnd,
+                    "cod_amount_mismatch",
+                    delivered_at,
+                )
+                .await?;
+                let item = insert_reconciliation_item_ext(
+                    &mut tx,
+                    run_id,
+                    "amount_mismatch",
+                    Some(primary_payment_id),
+                    Some(queue_tx_id),
+                    Some(expected_payable_vnd),
+                    Some(row.cod_amount_vnd),
+                    &details,
+                    tracking_code,
+                    &primary_order_id,
+                    line_number,
+                )
+                .await?;
+                tx.commit().await?;
+                Ok(CodRowOutcome::AmountMismatch(item))
+            }
+            CodAllocationMatchDecision::AlreadyReconciled => {
+                // Only auto-close stale pre-delivery / missing_local queue entries created BEFORE
+                // this run; NEVER close `cod_amount_mismatch` or `cod_carrier_mismatch` rows.
+                auto_close_cod_reconciliation_queue_tx(
+                    &mut tx,
+                    carrier_code,
+                    &cod_tx_id,
+                    tracking_code,
+                    primary_payment_id,
+                    expected_payable_vnd,
+                    "auto_closed:cod_already_reconciled",
+                    Some(&["cod_not_delivered", "cod_missing_local"]),
+                    run_created_at,
+                )
+                .await?;
+                let item = insert_reconciliation_item_ext(
+                    &mut tx,
+                    run_id,
+                    "already_reconciled",
+                    Some(primary_payment_id),
+                    Some(&cod_tx_id),
+                    Some(expected_payable_vnd),
+                    Some(row.cod_amount_vnd),
+                    "COD allocation already reconciled previously",
+                    tracking_code,
+                    &primary_order_id,
+                    line_number,
+                )
+                .await?;
+                tx.commit().await?;
+                Ok(CodRowOutcome::AlreadyReconciled(item))
+            }
+            CodAllocationMatchDecision::MatchAndPost => {
+                // Aggregate per `(payment_id, order_id, shop_id)` so multi-shop COD orders post
+                // deterministic `cod-reconcile:{payment_id}:{order_id}:{shop_id}` entries without collisions.
+                let mut grouped: Vec<(Uuid, String, String, i64)> = Vec::new();
+                for alloc in &allocs {
+                    let sub_payable = allocation_buyer_payable_vnd(alloc)?;
+                    if let Some(entry) = grouped.iter_mut().find(|(pid, oid, sid, _)| {
+                        *pid == alloc.payment_id && oid == &alloc.order_id && sid == &alloc.shop_id
+                    }) {
+                        entry.3 = entry.3.checked_add(sub_payable).ok_or_else(|| {
+                            PaymentError::LedgerInvariant("COD reconcile overflow".to_string())
+                        })?;
+                    } else {
+                        grouped.push((
+                            alloc.payment_id,
+                            alloc.order_id.clone(),
+                            alloc.shop_id.clone(),
+                            sub_payable,
+                        ));
+                    }
+                }
+
+                let mut posted_any = false;
+                let mut posted_vnd = 0_i64;
+                for (pid, oid, sid, amt_vnd) in &grouped {
+                    if *amt_vnd > 0 {
+                        let draft = build_cod_reconcile_tx(*pid, oid, sid, *amt_vnd);
+                        if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
+                            self.metrics.record_ledger_tx("cod_reconcile");
+                            posted_any = true;
+                            posted_vnd = posted_vnd.saturating_add(*amt_vnd);
+                        }
+                    }
+                }
+
+                for alloc in &allocs {
+                    sqlx::query(
+                        r#"
+                        UPDATE payment_shop_allocations
+                        SET cod_reconciled_at = COALESCE(cod_reconciled_at, NOW()),
+                            cod_reconciliation_run_id = COALESCE(cod_reconciliation_run_id, $1),
+                            tracking_code = COALESCE(NULLIF(BTRIM(tracking_code), ''), $2),
+                            carrier_code = COALESCE(NULLIF(BTRIM(carrier_code), ''), $3)
+                        WHERE id = $4
+                        "#,
+                    )
+                    .bind(run_id)
+                    .bind(tracking_code)
+                    .bind(carrier_code)
+                    .bind(alloc.id)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+
+                // E20-bis: automatically close open COD queue rows for this (carrier, tracking_code)
+                // created strictly BEFORE the current run (rows emitted by earlier lines of the
+                // same file stay `pending`, and `cod_carrier_mismatch` is never auto-closed).
+                let close_reasons: Option<&[&str]> = if posted_any {
+                    None
+                } else {
+                    Some(&["cod_not_delivered", "cod_missing_local"])
+                };
+                auto_close_cod_reconciliation_queue_tx(
+                    &mut tx,
+                    carrier_code,
+                    &cod_tx_id,
+                    tracking_code,
+                    primary_payment_id,
+                    expected_payable_vnd,
+                    if posted_any {
+                        "auto_closed:cod_file_matched"
+                    } else {
+                        "auto_closed:cod_already_reconciled"
+                    },
+                    close_reasons,
+                    run_created_at,
+                )
+                .await?;
+
+                if posted_any {
+                    let item = insert_reconciliation_item_ext(
+                        &mut tx,
+                        run_id,
+                        "matched",
+                        Some(primary_payment_id),
+                        Some(&cod_tx_id),
+                        Some(expected_payable_vnd),
+                        Some(row.cod_amount_vnd),
+                        "matched and cleared cod_receivable into gateway_clearing",
+                        tracking_code,
+                        &primary_order_id,
+                        line_number,
+                    )
+                    .await?;
+                    tx.commit().await?;
+                    Ok(CodRowOutcome::Matched {
+                        item,
+                        matched_vnd: posted_vnd,
+                    })
+                } else {
+                    let item = insert_reconciliation_item_ext(
+                        &mut tx,
+                        run_id,
+                        "already_reconciled",
+                        Some(primary_payment_id),
+                        Some(&cod_tx_id),
+                        Some(expected_payable_vnd),
+                        Some(row.cod_amount_vnd),
+                        "COD ledger entry already posted previously",
+                        tracking_code,
+                        &primary_order_id,
+                        line_number,
+                    )
+                    .await?;
+                    tx.commit().await?;
+                    Ok(CodRowOutcome::AlreadyReconciled(item))
+                }
+            }
+        }
+    }
+
+    /// Lists paginated reconciliation runs filtered optionally by `run_type` (`"vietqr"` | `"cod_file"`).
+    pub async fn list_reconciliation_runs(
+        &self,
+        filter: ListReconciliationRunsFilter,
+    ) -> Result<ListReconciliationRunsResult> {
+        let page = filter.page.max(1);
+        let page_size = if filter.page_size <= 0 {
+            20
+        } else {
+            filter.page_size.min(100)
+        };
+        let offset = i64::from(page - 1) * i64::from(page_size);
+
+        let total: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)::BIGINT
+            FROM reconciliation_runs
+            WHERE ($1::TEXT IS NULL OR run_type = $1)
+            "#,
+        )
+        .bind(filter.run_type.as_deref())
+        .fetch_one(&self.pool)
+        .await?;
+
+        let runs = sqlx::query_as::<_, ReconciliationRunRecord>(
+            r#"
+            SELECT *
+            FROM reconciliation_runs
+            WHERE ($1::TEXT IS NULL OR run_type = $1)
+            ORDER BY created_at DESC, id DESC
+            LIMIT $2 OFFSET $3
+            "#,
+        )
+        .bind(filter.run_type.as_deref())
+        .bind(i64::from(page_size))
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(ListReconciliationRunsResult { runs, total })
+    }
+
+    /// Marks stale `cod_file` reconciliation runs stuck in `'running'` longer than `stale_after`
+    /// (e.g. after an abrupt process shutdown) as `'failed'` with `completed_at = NOW()`.
+    pub async fn fail_stale_cod_reconciliation_runs(&self, stale_after: Duration) -> Result<u64> {
+        let timeout_secs = stale_after.num_seconds().max(0) as f64;
+        let res = sqlx::query(
+            r#"
+            UPDATE reconciliation_runs
+            SET status = 'failed',
+                completed_at = NOW()
+            WHERE run_type = 'cod_file'
+              AND status = 'running'
+              AND created_at <= NOW() - make_interval(secs => $1)
+            "#,
+        )
+        .bind(timeout_secs)
+        .execute(&self.pool)
+        .await?;
+
+        let affected = res.rows_affected();
+        if affected > 0 {
+            warn!(
+                stale_runs_failed = affected,
+                timeout_secs = stale_after.num_seconds().max(0),
+                "marked stale running COD reconciliation runs as failed"
+            );
+        }
+        Ok(affected)
+    }
+
     /// Atomically claims `event_id` in `processed_nats_events` and settles `order.completed`
     /// escrow to `seller_pending:<shop_id>` in the SAME PostgreSQL transaction (docs/contracts.md:269).
     /// review2-P P1-2: because `order.completed` is only emitted after `DELIVERED -> COMPLETED`,
@@ -3689,9 +4516,15 @@ impl PaymentService {
             return Ok(false);
         }
 
-        let cod_sse =
-            collect_cod_order_allocations_tx(&mut tx, order_id, None, trace_id, &self.metrics)
-                .await?;
+        let cod_sse = collect_cod_order_allocations_tx(
+            &mut tx,
+            order_id,
+            None,
+            None,
+            trace_id,
+            &self.metrics,
+        )
+        .await?;
         let _ = settle_order_to_pending_tx(&mut tx, order_id, None, &self.metrics).await?;
         tx.commit().await?;
         if let Some(ref u) = cod_sse {
@@ -3701,15 +4534,19 @@ impl PaymentService {
     }
 
     /// Atomically claims `event_id` in `processed_nats_events` and records COD cash collection
-    /// on `order.delivered` (R2 / PAY-B4):
+    /// on `order.delivered` (R2 / PAY-B4), while persisting `tracking_code`, `carrier_code`,
+    /// and `order_code` onto `payment_shop_allocations` for E20 COD carrier reconciliation:
     /// - Posts Debit `cod_receivable` / Credit `escrow_liability` for this sub-order's `P`.
     /// - Transitions this sub-order's allocation `awaiting_collection -> held`.
     /// - Emits `payment.succeeded` for the delivered sub-order.
     /// - Transitions parent COD payment to `'succeeded'` once all active allocations are collected.
-    pub async fn process_order_delivered_event(
+    pub async fn process_order_delivered_event_with_shipping(
         &self,
         event_id: &str,
         order_id: &str,
+        tracking_code: Option<&str>,
+        carrier_code: Option<&str>,
+        order_code: Option<&str>,
         trace_id: &str,
     ) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
@@ -3718,9 +4555,16 @@ impl PaymentService {
             return Ok(false);
         }
 
-        let sse_updated =
-            collect_cod_order_allocations_tx(&mut tx, order_id, None, trace_id, &self.metrics)
-                .await?;
+        let shipping_meta = CodShippingMeta::from_opts(tracking_code, carrier_code, order_code);
+        let sse_updated = collect_cod_order_allocations_tx(
+            &mut tx,
+            order_id,
+            None,
+            shipping_meta.as_ref(),
+            trace_id,
+            &self.metrics,
+        )
+        .await?;
 
         tx.commit().await?;
         if let Some(ref u) = sse_updated {
@@ -3881,9 +4725,15 @@ impl PaymentService {
         }
 
         if need_cod_collect {
-            sse_updated =
-                collect_cod_order_allocations_tx(&mut tx, order_id, None, trace_id, &self.metrics)
-                    .await?;
+            sse_updated = collect_cod_order_allocations_tx(
+                &mut tx,
+                order_id,
+                None,
+                None,
+                trace_id,
+                &self.metrics,
+            )
+            .await?;
         }
         if cancelled_any {
             if payment.method == "COD" && payment.status == "pending" {
@@ -4489,14 +5339,67 @@ async fn sync_cod_payment_status_tx(
     Ok(Some(updated))
 }
 
+enum CodRowOutcome {
+    Matched {
+        item: ReconciliationItemRecord,
+        matched_vnd: i64,
+    },
+    AlreadyReconciled(ReconciliationItemRecord),
+    MissingLocal(ReconciliationItemRecord),
+    AmountMismatch(ReconciliationItemRecord),
+    NotDelivered(ReconciliationItemRecord),
+}
+
+struct CodShippingMeta {
+    tracking_code: Option<String>,
+    carrier_code: Option<String>,
+    order_code: Option<String>,
+}
+
+impl CodShippingMeta {
+    fn from_opts(
+        tracking_code: Option<&str>,
+        carrier_code: Option<&str>,
+        order_code: Option<&str>,
+    ) -> Option<Self> {
+        let tracking_code = tracking_code
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+        let carrier_code = carrier_code
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_ascii_lowercase());
+        let order_code = order_code
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+        if tracking_code.is_none() && carrier_code.is_none() && order_code.is_none() {
+            None
+        } else {
+            Some(Self {
+                tracking_code,
+                carrier_code,
+                order_code,
+            })
+        }
+    }
+}
+
 /// Idempotently collects COD funds (`Debit cod_receivable / Credit escrow_liability`) for
 /// `awaiting_collection` allocations matching `order_id` (and optional `shop_filter`), transitions
-/// allocations to `held`, emits `payment.succeeded`, and syncs parent COD payment status.
-/// Shared by `process_order_delivered_event` and `release_escrow` (P0-1).
+/// allocations to `held`, persists optional shipping tracking metadata (`E20`), emits
+/// `payment.succeeded`, and syncs parent COD payment status.
+/// Shared by `process_order_delivered_event_with_shipping`, `process_order_completed_event`,
+/// `process_order_returned_event`, and `release_escrow` (P0-1).
+/// Also accepts `payments.status = 'refunded'` purely to backfill shipping tracking metadata
+/// when a delayed `order.delivered` arrives after a COD order was already returned & fully refunded,
+/// without posting any collection ledger entry or `payment.succeeded` outbox event.
 async fn collect_cod_order_allocations_tx(
     tx: &mut Transaction<'_, Postgres>,
     order_id: &str,
     shop_filter: Option<&str>,
+    shipping_meta: Option<&CodShippingMeta>,
     trace_id: &str,
     metrics: &Metrics,
 ) -> Result<Option<PaymentRecord>> {
@@ -4507,7 +5410,7 @@ async fn collect_cod_order_allocations_tx(
         LEFT JOIN payment_shop_allocations a ON a.payment_id = p.id
         WHERE (a.order_id = $1 OR p.order_id = $1 OR p.order_group_id = $1)
           AND p.method = 'COD'
-          AND p.status IN ('pending', 'succeeded')
+          AND p.status IN ('pending', 'succeeded', 'refunded')
         ORDER BY p.created_at DESC
         LIMIT 1
         "#,
@@ -4525,31 +5428,68 @@ async fn collect_cod_order_allocations_tx(
     let Some(payment) = group.into_iter().find(|p| {
         p.id == target_pid
             && p.method == "COD"
-            && matches!(p.status.as_str(), "pending" | "succeeded")
+            && matches!(p.status.as_str(), "pending" | "succeeded" | "refunded")
     }) else {
         return Ok(None);
     };
 
-    let awaiting_allocs = sqlx::query_as::<_, ShopAllocationRecord>(
-        r#"
-        SELECT * FROM payment_shop_allocations
-        WHERE payment_id = $1
-          AND (order_id = $2 OR $2 = $3 OR $2 = $4)
-          AND ($5::TEXT IS NULL OR shop_id = $5)
-          AND escrow_status = 'awaiting_collection'
-        ORDER BY id ASC
-        FOR UPDATE
-        "#,
-    )
-    .bind(payment.id)
-    .bind(order_id)
-    .bind(&payment.order_id)
-    .bind(&payment.order_group_id)
-    .bind(shop_filter)
-    .fetch_all(&mut **tx)
-    .await?;
+    let track_opt = shipping_meta.and_then(|m| m.tracking_code.as_deref());
+    let carrier_opt = shipping_meta.and_then(|m| m.carrier_code.as_deref());
+    let order_code_opt = shipping_meta.and_then(|m| m.order_code.as_deref());
+
+    // Never collect additional cash or emit `payment.succeeded` when the payment is already
+    // fully refunded; only allow shipping metadata backfill below.
+    let awaiting_allocs = if payment.status == "refunded" {
+        Vec::new()
+    } else {
+        sqlx::query_as::<_, ShopAllocationRecord>(
+            r#"
+            SELECT * FROM payment_shop_allocations
+            WHERE payment_id = $1
+              AND (order_id = $2 OR $2 = $3 OR $2 = $4)
+              AND ($5::TEXT IS NULL OR shop_id = $5)
+              AND escrow_status = 'awaiting_collection'
+            ORDER BY id ASC
+            FOR UPDATE
+            "#,
+        )
+        .bind(payment.id)
+        .bind(order_id)
+        .bind(&payment.order_id)
+        .bind(&payment.order_group_id)
+        .bind(shop_filter)
+        .fetch_all(&mut **tx)
+        .await?
+    };
 
     if awaiting_allocs.is_empty() {
+        // E20: Even if allocation was already collected (e.g. `order.completed` arrived before
+        // `order.delivered` or 0-VND COD), still persist tracking_code/carrier_code/order_code.
+        if shipping_meta.is_some() {
+            sqlx::query(
+                r#"
+                UPDATE payment_shop_allocations
+                SET tracking_code = COALESCE(NULLIF(BTRIM($6), ''), tracking_code),
+                    carrier_code = COALESCE(NULLIF(BTRIM($7), ''), carrier_code),
+                    order_code = COALESCE(NULLIF(BTRIM($8), ''), order_code)
+                WHERE payment_id = $1
+                  AND (order_id = $2 OR $2 = $3 OR $2 = $4)
+                  AND ($5::TEXT IS NULL OR shop_id = $5)
+                  AND escrow_status IN ('held', 'pending_release', 'released', 'refunded')
+                "#,
+            )
+            .bind(payment.id)
+            .bind(order_id)
+            .bind(&payment.order_id)
+            .bind(&payment.order_group_id)
+            .bind(shop_filter)
+            .bind(track_opt)
+            .bind(carrier_opt)
+            .bind(order_code_opt)
+            .execute(&mut **tx)
+            .await?;
+        }
+
         // Legacy single-order COD without shop_allocations rows
         let total_allocs: i64 = sqlx::query_scalar(
             "SELECT COUNT(*)::BIGINT FROM payment_shop_allocations WHERE payment_id = $1",
@@ -4607,11 +5547,17 @@ async fn collect_cod_order_allocations_tx(
         sqlx::query(
             r#"
             UPDATE payment_shop_allocations
-            SET escrow_status = 'held'
+            SET escrow_status = 'held',
+                tracking_code = COALESCE(NULLIF(BTRIM($2), ''), tracking_code),
+                carrier_code = COALESCE(NULLIF(BTRIM($3), ''), carrier_code),
+                order_code = COALESCE(NULLIF(BTRIM($4), ''), order_code)
             WHERE id = $1
             "#,
         )
         .bind(alloc.id)
+        .bind(track_opt)
+        .bind(carrier_opt)
+        .bind(order_code_opt)
         .execute(&mut **tx)
         .await?;
 
@@ -4818,14 +5764,18 @@ async fn enqueue_reconciliation_item_tx(
     actual_amount_vnd: i64,
     reason: &str,
     occurred_at: Option<DateTime<Utc>>,
+    source_type: &str,
+    tracking_code: Option<&str>,
 ) -> Result<()> {
+    let tracking = tracking_code.map(str::trim).unwrap_or("");
     sqlx::query(
         r#"
         INSERT INTO reconciliation_queue (
             webhook_event_id, provider, provider_tx_id, expected_payment_id,
-            order_ref, expected_amount_vnd, actual_amount_vnd, reason, occurred_at
+            order_ref, expected_amount_vnd, actual_amount_vnd, reason, occurred_at,
+            source_type, tracking_code
         )
-        SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9
+        SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
         WHERE NOT EXISTS (
             SELECT 1 FROM reconciliation_queue WHERE provider_tx_id = $3
         )
@@ -4841,6 +5791,146 @@ async fn enqueue_reconciliation_item_tx(
     .bind(actual_amount_vnd)
     .bind(reason)
     .bind(occurred_at)
+    .bind(source_type)
+    .bind(tracking)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// E20 / E20-bis COD file queue upsert helper:
+/// - If an open (`pending`/`suspended`) row already exists for `provider_tx_id`, refreshes
+///   its reason/amounts/order_ref in place (idempotent across file re-uploads).
+/// - If a finalized (`assigned`/`refunded`/`ignored`) row already occupies `provider_tx_id`,
+///   leaves it closed without duplicating.
+/// - Otherwise inserts a new `pending` queue row with `source_type = 'cod_file'`.
+#[allow(clippy::too_many_arguments)]
+async fn enqueue_cod_reconciliation_item_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    carrier_code: &str,
+    provider_tx_id: &str,
+    tracking_code: &str,
+    expected_payment_id: Option<Uuid>,
+    order_ref: Option<&str>,
+    expected_amount_vnd: Option<i64>,
+    actual_amount_vnd: i64,
+    reason: &str,
+    occurred_at: Option<DateTime<Utc>>,
+) -> Result<()> {
+    let existing_status: Option<String> = sqlx::query_scalar(
+        "SELECT resolution_status FROM reconciliation_queue WHERE provider_tx_id = $1 LIMIT 1",
+    )
+    .bind(provider_tx_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    match existing_status.as_deref() {
+        Some("pending" | "suspended") => {
+            sqlx::query(
+                r#"
+                UPDATE reconciliation_queue
+                SET expected_payment_id = COALESCE($1, expected_payment_id),
+                    order_ref = COALESCE($2, order_ref),
+                    expected_amount_vnd = COALESCE($3, expected_amount_vnd),
+                    actual_amount_vnd = $4,
+                    reason = $5,
+                    occurred_at = COALESCE($6, occurred_at),
+                    source_type = 'cod_file',
+                    tracking_code = COALESCE(NULLIF(BTRIM($7), ''), tracking_code)
+                WHERE provider_tx_id = $8
+                  AND resolution_status IN ('pending', 'suspended')
+                "#,
+            )
+            .bind(expected_payment_id)
+            .bind(order_ref)
+            .bind(expected_amount_vnd)
+            .bind(actual_amount_vnd)
+            .bind(reason)
+            .bind(occurred_at)
+            .bind(tracking_code)
+            .bind(provider_tx_id)
+            .execute(&mut **tx)
+            .await?;
+            Ok(())
+        }
+        Some(_) => Ok(()),
+        None => {
+            enqueue_reconciliation_item_tx(
+                tx,
+                None,
+                carrier_code,
+                provider_tx_id,
+                expected_payment_id,
+                order_ref,
+                expected_amount_vnd,
+                actual_amount_vnd,
+                reason,
+                occurred_at,
+                "cod_file",
+                Some(tracking_code),
+            )
+            .await
+        }
+    }
+}
+
+/// E20-bis: Auto-closes open (`pending`/`suspended`) COD reconciliation queue entries for
+/// `(carrier_code, tracking_code)` created strictly BEFORE `created_before` (`run_created_at`)
+/// inside the SAME transaction when the row matches.
+/// - Items created by the current run (`created_at >= created_before`) stay `pending`.
+/// - `cod_carrier_mismatch` is NEVER auto-closed, and the `tracking_code` branch strictly filters
+///   by `LOWER(BTRIM(provider)) = carrier_code` so one carrier's match never closes another carrier's queue item.
+/// - When `only_reasons` is `Some(reasons)`, restricts closing strictly to those `reason` values.
+#[allow(clippy::too_many_arguments)]
+async fn auto_close_cod_reconciliation_queue_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    carrier_code: &str,
+    cod_provider_tx_id: &str,
+    tracking_code: &str,
+    payment_id: Uuid,
+    expected_amount_vnd: i64,
+    source_note: &str,
+    only_reasons: Option<&[&str]>,
+    created_before: DateTime<Utc>,
+) -> Result<()> {
+    let reason_filter: Option<Vec<String>> =
+        only_reasons.map(|list| list.iter().map(|s| (*s).to_string()).collect());
+    sqlx::query(
+        r#"
+        UPDATE reconciliation_queue
+        SET resolution_status = 'assigned',
+            expected_payment_id = COALESCE(expected_payment_id, $1),
+            expected_amount_vnd = COALESCE(expected_amount_vnd, $2),
+            resolution_action = 'ASSIGN',
+            resolution_payment_id = COALESCE(resolution_payment_id, $1),
+            notes = CASE
+                WHEN COALESCE(BTRIM(notes), '') = '' THEN $3
+                ELSE notes || ' | ' || $3
+            END,
+            resolved_at = NOW()
+        WHERE resolution_status IN ('pending', 'suspended')
+          AND created_at < $7
+          AND reason <> 'cod_carrier_mismatch'
+          AND (
+              provider_tx_id = $4
+              OR (
+                  source_type = 'cod_file'
+                  AND LOWER(BTRIM(provider)) = $8
+                  AND tracking_code <> ''
+                  AND tracking_code = $5
+              )
+          )
+          AND ($6::TEXT[] IS NULL OR reason = ANY($6))
+        "#,
+    )
+    .bind(payment_id)
+    .bind(expected_amount_vnd)
+    .bind(source_note)
+    .bind(cod_provider_tx_id)
+    .bind(tracking_code)
+    .bind(reason_filter)
+    .bind(created_before)
+    .bind(carrier_code)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -5435,13 +6525,44 @@ async fn insert_reconciliation_item(
     provider_amount_vnd: Option<i64>,
     details: &str,
 ) -> Result<ReconciliationItemRecord> {
+    insert_reconciliation_item_ext(
+        tx,
+        run_id,
+        classification,
+        payment_id,
+        provider_tx_id,
+        local_amount_vnd,
+        provider_amount_vnd,
+        details,
+        "",
+        "",
+        0,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn insert_reconciliation_item_ext(
+    tx: &mut Transaction<'_, Postgres>,
+    run_id: Uuid,
+    classification: &str,
+    payment_id: Option<Uuid>,
+    provider_tx_id: Option<&str>,
+    local_amount_vnd: Option<i64>,
+    provider_amount_vnd: Option<i64>,
+    details: &str,
+    tracking_code: &str,
+    order_id: &str,
+    line_number: i32,
+) -> Result<ReconciliationItemRecord> {
     let rec = sqlx::query_as::<_, ReconciliationItemRecord>(
         r#"
         INSERT INTO reconciliation_items (
             run_id, classification, payment_id, provider_tx_id,
-            local_amount_vnd, provider_amount_vnd, details
+            local_amount_vnd, provider_amount_vnd, details,
+            tracking_code, order_id, line_number
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING *
         "#,
     )
@@ -5452,6 +6573,9 @@ async fn insert_reconciliation_item(
     .bind(local_amount_vnd)
     .bind(provider_amount_vnd)
     .bind(details)
+    .bind(tracking_code)
+    .bind(order_id)
+    .bind(line_number)
     .fetch_one(&mut **tx)
     .await?;
     Ok(rec)

@@ -53,10 +53,14 @@ func (f *fakeProductClient) setPrice(skuID string, priceVND int64) {
 }
 
 type fakeUserClient struct {
-	shops map[string]string
+	shops      map[string]string
+	emptyCalls atomic.Int32
 }
 
 func (f *fakeUserClient) GetShop(_ context.Context, in *userv1.GetShopRequest, _ ...grpc.CallOption) (*userv1.GetShopResponse, error) {
+	if in.GetShopId() == "" {
+		f.emptyCalls.Add(1)
+	}
 	name, ok := f.shops[in.GetShopId()]
 	if !ok {
 		return nil, status.Error(codes.NotFound, "shop not found")
@@ -163,7 +167,8 @@ func TestCartMultiShopGroupingAndPriceChangeDetection(t *testing.T) {
 		t.Fatalf("expected updated live total_vnd=590000, got %d", getResp.Cart.TotalVnd)
 	}
 
-	// Deactivate/soft-delete sku-a2 -> GetCart must skip inactive SKUs from groups and totals
+	// Deactivate/soft-delete sku-a2 -> GetCart returns it as unavailable (E3) with price=0,
+	// preserving stored selected=true, while excluding it from subtotal/weight/total_items/total_vnd.
 	prod.mu.Lock()
 	prod.skus["sku-a2"].IsActive = false
 	prod.mu.Unlock()
@@ -175,12 +180,20 @@ func TestCartMultiShopGroupingAndPriceChangeDetection(t *testing.T) {
 	if len(afterDeact.Cart.ShopGroups) != 2 {
 		t.Fatalf("expected 2 shop groups, got %d", len(afterDeact.Cart.ShopGroups))
 	}
-	if len(afterDeact.Cart.ShopGroups[0].Items) != 1 || afterDeact.Cart.ShopGroups[0].Items[0].SkuId != "sku-a1" {
-		t.Fatalf("expected inactive sku-a2 excluded from shop-a, got %+v", afterDeact.Cart.ShopGroups[0].Items)
+	if len(afterDeact.Cart.ShopGroups[0].Items) != 2 ||
+		afterDeact.Cart.ShopGroups[0].Items[0].SkuId != "sku-a1" ||
+		afterDeact.Cart.ShopGroups[0].Items[0].Unavailable ||
+		afterDeact.Cart.ShopGroups[0].Items[1].SkuId != "sku-a2" ||
+		!afterDeact.Cart.ShopGroups[0].Items[1].Unavailable ||
+		afterDeact.Cart.ShopGroups[0].Items[1].UnavailableReason != "SKU_INACTIVE" ||
+		afterDeact.Cart.ShopGroups[0].Items[1].PriceVnd != 0 ||
+		!afterDeact.Cart.ShopGroups[0].Items[1].Selected {
+		t.Fatalf("expected sku-a2 returned as unavailable SKU_INACTIVE in shop-a, got %+v", afterDeact.Cart.ShopGroups[0].Items)
 	}
-	// Shop A: 2*150000 = 300000; Shop B: 240000; Total: 540000, TotalItems: 5
-	if afterDeact.Cart.ShopGroups[0].SubtotalVnd != 300000 || afterDeact.Cart.TotalItems != 5 || afterDeact.Cart.TotalVnd != 540000 {
-		t.Fatalf("unexpected cart totals after excluding inactive sku: %+v", afterDeact.Cart)
+	// Shop A: 2*150000 = 300000, weight 2*500 = 1000; Shop B: 240000; Total: 540000, TotalItems: 5
+	if afterDeact.Cart.ShopGroups[0].SubtotalVnd != 300000 || afterDeact.Cart.ShopGroups[0].TotalWeightGrams != 1000 ||
+		afterDeact.Cart.TotalItems != 5 || afterDeact.Cart.TotalVnd != 540000 {
+		t.Fatalf("unexpected cart totals with unavailable sku: %+v", afterDeact.Cart)
 	}
 }
 
@@ -615,29 +628,41 @@ func TestCartWithRedactedHiddenSKUs(t *testing.T) {
 		t.Fatalf("UpdateItemQty redacted SKU: want FailedPrecondition SKU_NOT_ACTIVE, got %v", err)
 	}
 
-	// 4. GetCart / buildCart skips redacted SKU without error, omits its empty shop group, and never shows price 0.
+	// 4. GetCart / buildCart returns redacted SKU marked unavailable=true (SKU_INACTIVE, price=0, selected preserved)
+	// without counting it in subtotal_vnd, total_weight_grams, total_items, or total_vnd (E3).
 	gotCart, err := srv.GetCart(ctx, &cartv1.GetCartRequest{})
 	if err != nil {
 		t.Fatalf("GetCart with redacted SKU failed: %v", err)
 	}
-	if len(gotCart.Cart.ShopGroups) != 1 || gotCart.Cart.ShopGroups[0].ShopId != "shop-a" ||
+	if len(gotCart.Cart.ShopGroups) != 2 ||
+		gotCart.Cart.ShopGroups[0].ShopId != "shop-a" ||
+		gotCart.Cart.ShopGroups[1].ShopId != "shop-b" ||
 		gotCart.Cart.TotalItems != 2 || gotCart.Cart.TotalVnd != 300000 {
 		t.Fatalf("unexpected cart with redacted SKU: %+v", gotCart.Cart)
 	}
+	hiddenGroup := gotCart.Cart.ShopGroups[1]
+	if hiddenGroup.SubtotalVnd != 0 || hiddenGroup.TotalWeightGrams != 0 || len(hiddenGroup.Items) != 1 {
+		t.Fatalf("unexpected shop-b group for redacted SKU: %+v", hiddenGroup)
+	}
+	hiddenItem := hiddenGroup.Items[0]
+	if !hiddenItem.Unavailable || hiddenItem.UnavailableReason != "SKU_INACTIVE" ||
+		hiddenItem.PriceVnd != 0 || !hiddenItem.Selected || hiddenItem.ProductName != "Soon Hidden Jacket" {
+		t.Fatalf("unexpected redacted cart item: %+v", hiddenItem)
+	}
 	for _, g := range gotCart.Cart.ShopGroups {
 		for _, it := range g.Items {
-			if it.PriceVnd <= 0 {
-				t.Fatalf("cart item leaked non-positive price: %+v", it)
+			if !it.Unavailable && it.PriceVnd <= 0 {
+				t.Fatalf("available cart item leaked non-positive price: %+v", it)
 			}
 		}
 	}
 
-	// 5. Adding another unit of active SKU while redacted SKU is still in Redis succeeds cleanly without 0-price items.
+	// 5. Adding another unit of active SKU while redacted SKU is still in Redis succeeds cleanly without counting redacted SKU.
 	addAgain, err := srv.AddItem(ctx, &cartv1.AddItemRequest{SkuId: "sku-active-1", Quantity: 1})
 	if err != nil {
 		t.Fatalf("AddItem active while redacted SKU in cart: %v", err)
 	}
-	if addAgain.Cart.TotalItems != 3 || addAgain.Cart.TotalVnd != 450000 || len(addAgain.Cart.ShopGroups) != 1 {
+	if addAgain.Cart.TotalItems != 3 || addAgain.Cart.TotalVnd != 450000 || len(addAgain.Cart.ShopGroups) != 2 {
 		t.Fatalf("unexpected cart after AddItem alongside redacted SKU: %+v", addAgain.Cart)
 	}
 
@@ -649,7 +674,7 @@ func TestCartWithRedactedHiddenSKUs(t *testing.T) {
 		t.Fatalf("expected sku-will-hide removed from Redis on qty=0")
 	}
 
-	// 7. When ALL items in cart become redacted, GetCart returns empty cart (so from_cart checkout never sees price 0).
+	// 7. When ALL items in cart become redacted, GetCart returns the unavailable item with price=0, selected preserved, and 0 totals.
 	prod.mu.Lock()
 	prod.skus["sku-active-1"] = redactedSKU("sku-active-1", "p-1", "shop-a", "Active Shirt", "M")
 	prod.mu.Unlock()
@@ -657,16 +682,23 @@ func TestCartWithRedactedHiddenSKUs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCart when all SKUs redacted failed: %v", err)
 	}
-	if len(allRedacted.Cart.ShopGroups) != 0 || allRedacted.Cart.TotalItems != 0 || allRedacted.Cart.TotalVnd != 0 {
-		t.Fatalf("expected empty cart when all SKUs redacted, got %+v", allRedacted.Cart)
+	if len(allRedacted.Cart.ShopGroups) != 1 || allRedacted.Cart.TotalItems != 0 || allRedacted.Cart.TotalVnd != 0 ||
+		len(allRedacted.Cart.ShopGroups[0].Items) != 1 || !allRedacted.Cart.ShopGroups[0].Items[0].Unavailable ||
+		allRedacted.Cart.ShopGroups[0].Items[0].UnavailableReason != "SKU_INACTIVE" ||
+		allRedacted.Cart.ShopGroups[0].Items[0].PriceVnd != 0 || !allRedacted.Cart.ShopGroups[0].Items[0].Selected {
+		t.Fatalf("expected single unavailable item with 0 totals when all SKUs redacted, got %+v", allRedacted.Cart)
 	}
-	// RemoveItem on redacted SKU also works cleanly.
-	if _, err := srv.RemoveItem(ctx, &cartv1.RemoveItemRequest{SkuId: "sku-active-1"}); err != nil {
+	// RemoveItem on redacted SKU also works cleanly and empties the cart.
+	remRedacted, err := srv.RemoveItem(ctx, &cartv1.RemoveItemRequest{SkuId: "sku-active-1"})
+	if err != nil {
 		t.Fatalf("RemoveItem redacted SKU failed: %v", err)
+	}
+	if len(remRedacted.Cart.ShopGroups) != 0 || remRedacted.Cart.TotalItems != 0 || remRedacted.Cart.TotalVnd != 0 {
+		t.Fatalf("expected empty cart after removing sole redacted SKU, got %+v", remRedacted.Cart)
 	}
 
 	// 8. Defensive price<=0 guard: even if upstream returns is_active=true with price_vnd=0,
-	// AddItem and UpdateItemQty reject it and buildCart never emits a 0-price item.
+	// AddItem and UpdateItemQty reject it and buildCart emits it as unavailable (never purchasable at 0 VND).
 	if _, err := srv.AddItem(ctx, &cartv1.AddItemRequest{SkuId: "sku-zero-price", Quantity: 1}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("AddItem price=0 SKU: want FailedPrecondition, got %v", err)
 	}
@@ -678,7 +710,367 @@ func TestCartWithRedactedHiddenSKUs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCart with zero-price SKU failed: %v", err)
 	}
-	if len(zeroCart.Cart.ShopGroups) != 0 || zeroCart.Cart.TotalItems != 0 || zeroCart.Cart.TotalVnd != 0 {
-		t.Fatalf("zero-price SKU must never appear in cart, got %+v", zeroCart.Cart)
+	if len(zeroCart.Cart.ShopGroups) != 1 || zeroCart.Cart.TotalItems != 0 || zeroCart.Cart.TotalVnd != 0 ||
+		len(zeroCart.Cart.ShopGroups[0].Items) != 1 || !zeroCart.Cart.ShopGroups[0].Items[0].Unavailable ||
+		zeroCart.Cart.ShopGroups[0].Items[0].UnavailableReason != "SKU_INACTIVE" ||
+		zeroCart.Cart.ShopGroups[0].Items[0].PriceVnd != 0 {
+		t.Fatalf("zero-price SKU must be marked unavailable with 0 totals, got %+v", zeroCart.Cart)
+	}
+}
+
+type writeCountingStore struct {
+	inner  store.Store
+	writes atomic.Int32
+}
+
+func (s *writeCountingStore) GetAll(ctx context.Context, userID string) (map[string]store.Item, error) {
+	return s.inner.GetAll(ctx, userID)
+}
+
+func (s *writeCountingStore) Get(ctx context.Context, userID, skuID string) (store.Item, bool, error) {
+	return s.inner.Get(ctx, userID, skuID)
+}
+
+func (s *writeCountingStore) Set(ctx context.Context, userID, skuID string, item store.Item) error {
+	s.writes.Add(1)
+	return s.inner.Set(ctx, userID, skuID, item)
+}
+
+func (s *writeCountingStore) Delete(ctx context.Context, userID string, skuIDs ...string) error {
+	s.writes.Add(1)
+	return s.inner.Delete(ctx, userID, skuIDs...)
+}
+
+func (s *writeCountingStore) ClearAll(ctx context.Context, userID string) error {
+	s.writes.Add(1)
+	return s.inner.ClearAll(ctx, userID)
+}
+
+func (s *writeCountingStore) Ping(ctx context.Context) error {
+	return s.inner.Ping(ctx)
+}
+
+func TestCartBuildUnavailableSKUInactivePreservesSelectedAndExcludesTotals(t *testing.T) {
+	prod := &fakeProductClient{
+		skus: map[string]*productv1.SKU{
+			"sku-a1": {
+				Id: "sku-a1", ProductId: "p-1", ShopId: "shop-a",
+				ProductName: "Active Coffee", Name: "500g", ImageUrl: "https://cdn.local/a1.jpg",
+				PriceVnd: 150000, AvailableStock: 10, WeightGrams: 500, IsActive: true,
+			},
+			// Redacted hidden SKU shape (D2 for buyer callers: price/stock/weight=0, is_active=false).
+			"sku-a2": {
+				Id: "sku-a2", ProductId: "p-2", ShopId: "shop-a",
+				ProductName: "Hidden Filter", Name: "100pcs", ImageUrl: "https://cdn.local/a2.jpg",
+				IsActive: false,
+			},
+			"sku-b1": {
+				Id: "sku-b1", ProductId: "p-3", ShopId: "shop-b",
+				ProductName: "Active Mug", Name: "Blue", ImageUrl: "https://cdn.local/b1.jpg",
+				PriceVnd: 80000, AvailableStock: 5, WeightGrams: 350, IsActive: true,
+			},
+			// Unredacted inactive SKU (e.g. D2 when caller is admin or owning seller):
+			// cart MUST still force price_vnd=0, available_stock=0, weight_grams=0, price_changed=false.
+			"sku-c1": {
+				Id: "sku-c1", ProductId: "p-4", ShopId: "shop-c",
+				ProductName: "Owner Hidden Jacket", Name: "L", ImageUrl: "https://cdn.local/c1.jpg",
+				PriceVnd: 200000, AvailableStock: 7, WeightGrams: 400, IsActive: false,
+			},
+		},
+	}
+	usr := &fakeUserClient{
+		shops: map[string]string{
+			"shop-a": "Shop Alpha",
+			"shop-b": "Shop Beta",
+			"shop-c": "Shop Gamma",
+		},
+	}
+
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	spy := &writeCountingStore{inner: store.NewRedisStore(rdb)}
+	srv := New(spy, prod, usr, nil)
+
+	const uid = "buyer-e3-inactive"
+	rawA1 := `{"quantity":2,"added_price_vnd":150000,"selected":true}`
+	rawA2 := `{"quantity":3,"added_price_vnd":50000,"selected":true}`
+	rawB1 := `{"quantity":1,"added_price_vnd":80000,"selected":true}`
+	rawC1 := `{"quantity":2,"added_price_vnd":180000,"selected":false}`
+	mr.HSet("cart:"+uid, "sku-a1", rawA1)
+	mr.HSet("cart:"+uid, "sku-a2", rawA2)
+	mr.HSet("cart:"+uid, "sku-b1", rawB1)
+	mr.HSet("cart:"+uid, "sku-c1", rawC1)
+
+	resp, err := srv.GetCart(buyerCtx(uid), &cartv1.GetCartRequest{})
+	if err != nil {
+		t.Fatalf("GetCart failed: %v", err)
+	}
+	cart := resp.GetCart()
+	if len(cart.ShopGroups) != 3 {
+		t.Fatalf("expected 3 shop groups, got %d (%+v)", len(cart.ShopGroups), cart.ShopGroups)
+	}
+
+	// Totals MUST count only available items: sku-a1 (2 * 150000) + sku-b1 (1 * 80000).
+	if cart.TotalItems != 3 || cart.TotalVnd != 380000 {
+		t.Fatalf("totals = (items=%d, vnd=%d), want (3, 380000)", cart.TotalItems, cart.TotalVnd)
+	}
+
+	// shop-a: 1 available + 1 unavailable (selected=true preserved).
+	grpA := cart.ShopGroups[0]
+	if grpA.ShopId != "shop-a" || grpA.ShopName != "Shop Alpha" || grpA.SubtotalVnd != 300000 || grpA.TotalWeightGrams != 1000 {
+		t.Fatalf("unexpected shop-a group: %+v", grpA)
+	}
+	if len(grpA.Items) != 2 {
+		t.Fatalf("expected 2 items in shop-a, got %+v", grpA.Items)
+	}
+	itA1, itA2 := grpA.Items[0], grpA.Items[1]
+	if itA1.SkuId != "sku-a1" || itA1.Unavailable || itA1.UnavailableReason != "" || itA1.PriceVnd != 150000 || !itA1.Selected {
+		t.Fatalf("unexpected available item sku-a1: %+v", itA1)
+	}
+	if itA2.SkuId != "sku-a2" || !itA2.Unavailable || itA2.UnavailableReason != "SKU_INACTIVE" ||
+		itA2.PriceVnd != 0 || itA2.AddedPriceVnd != 50000 || itA2.PriceChanged ||
+		itA2.Quantity != 3 || itA2.AvailableStock != 0 || itA2.WeightGrams != 0 || !itA2.Selected ||
+		itA2.ProductId != "p-2" || itA2.ShopId != "shop-a" || itA2.ProductName != "Hidden Filter" ||
+		itA2.SkuName != "100pcs" || itA2.ImageUrl != "https://cdn.local/a2.jpg" {
+		t.Fatalf("unexpected unavailable item sku-a2: %+v", itA2)
+	}
+
+	// shop-b: available only.
+	grpB := cart.ShopGroups[1]
+	if grpB.ShopId != "shop-b" || grpB.SubtotalVnd != 80000 || grpB.TotalWeightGrams != 350 || len(grpB.Items) != 1 {
+		t.Fatalf("unexpected shop-b group: %+v", grpB)
+	}
+
+	// shop-c: only unavailable item with unredacted upstream price/stock/weight and selected=false preserved.
+	grpC := cart.ShopGroups[2]
+	if grpC.ShopId != "shop-c" || grpC.ShopName != "Shop Gamma" || grpC.SubtotalVnd != 0 || grpC.TotalWeightGrams != 0 || len(grpC.Items) != 1 {
+		t.Fatalf("unexpected shop-c group: %+v", grpC)
+	}
+	itC1 := grpC.Items[0]
+	if itC1.SkuId != "sku-c1" || !itC1.Unavailable || itC1.UnavailableReason != "SKU_INACTIVE" ||
+		itC1.PriceVnd != 0 || itC1.AddedPriceVnd != 180000 || itC1.PriceChanged ||
+		itC1.Quantity != 2 || itC1.AvailableStock != 0 || itC1.WeightGrams != 0 || itC1.Selected {
+		t.Fatalf("unexpected unredacted-inactive item sku-c1: %+v", itC1)
+	}
+
+	// Strictly read-only on Redis: 0 store write calls and raw JSON intact.
+	if spy.writes.Load() != 0 {
+		t.Fatalf("GetCart must be read-only on Redis, got %d write calls", spy.writes.Load())
+	}
+	if mr.HGet("cart:"+uid, "sku-a1") != rawA1 || mr.HGet("cart:"+uid, "sku-a2") != rawA2 ||
+		mr.HGet("cart:"+uid, "sku-b1") != rawB1 || mr.HGet("cart:"+uid, "sku-c1") != rawC1 {
+		t.Fatalf("Redis cart hash was mutated by GetCart")
+	}
+}
+
+func TestCartBuildUnavailableSKUNotFound(t *testing.T) {
+	prod := &fakeProductClient{
+		skus: map[string]*productv1.SKU{
+			"sku-live": {
+				Id: "sku-live", ProductId: "p-1", ShopId: "shop-a",
+				ProductName: "Live Tea", Name: "250g", ImageUrl: "https://cdn.local/live.jpg",
+				PriceVnd: 100000, AvailableStock: 8, WeightGrams: 250, IsActive: true,
+			},
+			// sku-missing-1 and sku-missing-2 are intentionally absent from product response.
+		},
+	}
+	usr := &fakeUserClient{
+		shops: map[string]string{
+			"shop-a": "Shop Alpha",
+		},
+	}
+
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	spy := &writeCountingStore{inner: store.NewRedisStore(rdb)}
+	srv := New(spy, prod, usr, nil)
+
+	const uid = "buyer-e3-missing"
+	rawLive := `{"quantity":2,"added_price_vnd":100000,"selected":true}`
+	rawMissing1 := `{"quantity":4,"added_price_vnd":75000,"selected":true}`
+	rawMissing2 := `{"quantity":1,"added_price_vnd":30000,"selected":false}`
+	mr.HSet("cart:"+uid, "sku-live", rawLive)
+	mr.HSet("cart:"+uid, "sku-missing-1", rawMissing1)
+	mr.HSet("cart:"+uid, "sku-missing-2", rawMissing2)
+
+	resp, err := srv.GetCart(buyerCtx(uid), &cartv1.GetCartRequest{})
+	if err != nil {
+		t.Fatalf("GetCart with missing SKUs failed: %v", err)
+	}
+	cart := resp.GetCart()
+	if len(cart.ShopGroups) != 2 {
+		t.Fatalf("expected 2 shop groups (shop-a + unknown shop), got %d (%+v)", len(cart.ShopGroups), cart.ShopGroups)
+	}
+	if cart.TotalItems != 2 || cart.TotalVnd != 200000 {
+		t.Fatalf("totals = (items=%d, vnd=%d), want (2, 200000)", cart.TotalItems, cart.TotalVnd)
+	}
+
+	// Real shop appears before unknown-shop group.
+	grpA := cart.ShopGroups[0]
+	if grpA.ShopId != "shop-a" || grpA.SubtotalVnd != 200000 || grpA.TotalWeightGrams != 500 || len(grpA.Items) != 1 {
+		t.Fatalf("unexpected shop-a group: %+v", grpA)
+	}
+
+	grpMissing := cart.ShopGroups[1]
+	if grpMissing.ShopId != "" || grpMissing.ShopName != "" || grpMissing.SubtotalVnd != 0 || grpMissing.TotalWeightGrams != 0 {
+		t.Fatalf("unexpected unknown-shop group: %+v", grpMissing)
+	}
+	if len(grpMissing.Items) != 2 {
+		t.Fatalf("expected 2 SKU_NOT_FOUND items, got %+v", grpMissing.Items)
+	}
+	m1, m2 := grpMissing.Items[0], grpMissing.Items[1]
+	if m1.SkuId != "sku-missing-1" || !m1.Unavailable || m1.UnavailableReason != "SKU_NOT_FOUND" ||
+		m1.PriceVnd != 0 || m1.AddedPriceVnd != 75000 || m1.PriceChanged ||
+		m1.Quantity != 4 || m1.AvailableStock != 0 || m1.WeightGrams != 0 || !m1.Selected {
+		t.Fatalf("unexpected sku-missing-1: %+v", m1)
+	}
+	if m2.SkuId != "sku-missing-2" || !m2.Unavailable || m2.UnavailableReason != "SKU_NOT_FOUND" ||
+		m2.PriceVnd != 0 || m2.AddedPriceVnd != 30000 || m2.PriceChanged ||
+		m2.Quantity != 1 || m2.AvailableStock != 0 || m2.WeightGrams != 0 || m2.Selected {
+		t.Fatalf("unexpected sku-missing-2: %+v", m2)
+	}
+
+	if usr.emptyCalls.Load() != 0 {
+		t.Fatalf("must not query userClient.GetShop for empty shop_id, got %d calls", usr.emptyCalls.Load())
+	}
+	if spy.writes.Load() != 0 {
+		t.Fatalf("GetCart must be read-only on Redis, got %d write calls", spy.writes.Load())
+	}
+	if mr.HGet("cart:"+uid, "sku-missing-1") != rawMissing1 || mr.HGet("cart:"+uid, "sku-missing-2") != rawMissing2 {
+		t.Fatalf("Redis cart hash was mutated by GetCart")
+	}
+}
+
+func TestCartRemoveUnavailableItems(t *testing.T) {
+	prod := &fakeProductClient{
+		skus: map[string]*productv1.SKU{
+			"sku-active": {
+				Id: "sku-active", ProductId: "p-1", ShopId: "shop-a",
+				ProductName: "Active Item", Name: "Std", PriceVnd: 120000,
+				AvailableStock: 10, WeightGrams: 200, IsActive: true,
+			},
+			"sku-inactive": {
+				Id: "sku-inactive", ProductId: "p-2", ShopId: "shop-b",
+				ProductName: "Hidden Item", Name: "Std", IsActive: false,
+			},
+			// sku-missing omitted from product service.
+		},
+	}
+
+	srv, mr := newTestCartServer(t, prod, nil)
+	const uid = "buyer-e3-remove"
+	ctx := buyerCtx(uid)
+	mr.HSet("cart:"+uid, "sku-active", `{"quantity":2,"added_price_vnd":120000,"selected":true}`)
+	mr.HSet("cart:"+uid, "sku-inactive", `{"quantity":1,"added_price_vnd":90000,"selected":true}`)
+	mr.HSet("cart:"+uid, "sku-missing", `{"quantity":3,"added_price_vnd":50000,"selected":true}`)
+
+	// 1. RemoveItem deletes inactive SKU cleanly and leaves active + missing.
+	rem1, err := srv.RemoveItem(ctx, &cartv1.RemoveItemRequest{SkuId: "sku-inactive"})
+	if err != nil {
+		t.Fatalf("RemoveItem sku-inactive failed: %v", err)
+	}
+	if mr.HGet("cart:"+uid, "sku-inactive") != "" {
+		t.Fatalf("expected sku-inactive deleted from Redis")
+	}
+	if rem1.Cart.TotalItems != 2 || rem1.Cart.TotalVnd != 240000 || len(rem1.Cart.ShopGroups) != 2 {
+		t.Fatalf("unexpected cart after removing sku-inactive: %+v", rem1.Cart)
+	}
+
+	// 2. UpdateItemQty(0) deletes missing SKU cleanly and leaves only active SKU.
+	rem2, err := srv.UpdateItemQty(ctx, &cartv1.UpdateItemQtyRequest{SkuId: "sku-missing", Quantity: 0})
+	if err != nil {
+		t.Fatalf("UpdateItemQty(0) sku-missing failed: %v", err)
+	}
+	if mr.HGet("cart:"+uid, "sku-missing") != "" {
+		t.Fatalf("expected sku-missing deleted from Redis")
+	}
+	if rem2.Cart.TotalItems != 2 || rem2.Cart.TotalVnd != 240000 || len(rem2.Cart.ShopGroups) != 1 || rem2.Cart.ShopGroups[0].ShopId != "shop-a" {
+		t.Fatalf("unexpected cart after removing sku-missing: %+v", rem2.Cart)
+	}
+
+	// 3. RemoveItem on the sole missing SKU in cart returns an empty cart cleanly.
+	mr.HSet("cart:buyer-only-missing", "sku-missing", `{"quantity":1,"added_price_vnd":50000,"selected":true}`)
+	rem3, err := srv.RemoveItem(buyerCtx("buyer-only-missing"), &cartv1.RemoveItemRequest{SkuId: "sku-missing"})
+	if err != nil {
+		t.Fatalf("RemoveItem sole missing SKU failed: %v", err)
+	}
+	if len(rem3.Cart.ShopGroups) != 0 || rem3.Cart.TotalItems != 0 || rem3.Cart.TotalVnd != 0 {
+		t.Fatalf("expected empty cart after removing sole missing SKU, got %+v", rem3.Cart)
+	}
+}
+
+func TestCartProductUnavailableReturnsErrorWithoutMarkingUnavailableOrMutatingRedis(t *testing.T) {
+	prod := &fakeProductClient{
+		skus: map[string]*productv1.SKU{
+			"sku-1": {
+				Id: "sku-1", ProductId: "p-1", ShopId: "shop-a",
+				ProductName: "Item 1", Name: "Std", PriceVnd: 100000,
+				AvailableStock: 5, WeightGrams: 100, IsActive: true,
+			},
+			"sku-2": {
+				Id: "sku-2", ProductId: "p-2", ShopId: "shop-b",
+				ProductName: "Item 2", Name: "Std", PriceVnd: 200000,
+				AvailableStock: 5, WeightGrams: 200, IsActive: true,
+			},
+		},
+	}
+
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	spy := &writeCountingStore{inner: store.NewRedisStore(rdb)}
+	srv := New(spy, prod, nil, nil)
+
+	const uid = "buyer-e3-prod-down"
+	ctx := buyerCtx(uid)
+	raw1 := `{"quantity":2,"added_price_vnd":100000,"selected":true}`
+	raw2 := `{"quantity":1,"added_price_vnd":200000,"selected":false}`
+	mr.HSet("cart:"+uid, "sku-1", raw1)
+	mr.HSet("cart:"+uid, "sku-2", raw2)
+
+	// Exhaust all 3 retries with codes.Unavailable -> GetCart MUST return Unavailable error, NOT unavailable items.
+	prod.failAttempts.Store(10)
+	resp, err := srv.GetCart(ctx, &cartv1.GetCartRequest{})
+	if status.Code(err) != codes.Unavailable || resp != nil {
+		t.Fatalf("expected Unavailable error with nil response when product fails, got resp=%+v err=%v", resp, err)
+	}
+
+	// Second call trips the circuit breaker (5 consecutive failures); third call hits open breaker -> still Unavailable.
+	if resp2, err2 := srv.GetCart(ctx, &cartv1.GetCartRequest{}); status.Code(err2) != codes.Unavailable || resp2 != nil {
+		t.Fatalf("expected Unavailable on 2nd failure, got resp=%+v err=%v", resp2, err2)
+	}
+	if resp3, err3 := srv.GetCart(ctx, &cartv1.GetCartRequest{}); status.Code(err3) != codes.Unavailable || resp3 != nil {
+		t.Fatalf("expected Unavailable when circuit breaker open, got resp=%+v err=%v", resp3, err3)
+	}
+
+	// Zero Redis writes and stored payloads completely intact.
+	if spy.writes.Load() != 0 {
+		t.Fatalf("GetCart must not write Redis on product failure, got %d writes", spy.writes.Load())
+	}
+	if mr.HGet("cart:"+uid, "sku-1") != raw1 || mr.HGet("cart:"+uid, "sku-2") != raw2 {
+		t.Fatalf("Redis cart was mutated during product outage")
+	}
+
+	// After product recovers (fresh server/closed breaker), items are back as available with original selected flags.
+	prod.failAttempts.Store(0)
+	recoveredSrv := New(spy, prod, nil, nil)
+	okResp, err := recoveredSrv.GetCart(ctx, &cartv1.GetCartRequest{})
+	if err != nil {
+		t.Fatalf("GetCart after recovery failed: %v", err)
+	}
+	if okResp.Cart.TotalItems != 3 || okResp.Cart.TotalVnd != 400000 || len(okResp.Cart.ShopGroups) != 2 {
+		t.Fatalf("unexpected cart after recovery: %+v", okResp.Cart)
+	}
+	for _, g := range okResp.Cart.ShopGroups {
+		for _, it := range g.Items {
+			if it.Unavailable || it.UnavailableReason != "" {
+				t.Fatalf("recovered item must not be unavailable: %+v", it)
+			}
+		}
+	}
+	if !okResp.Cart.ShopGroups[0].Items[0].Selected || okResp.Cart.ShopGroups[1].Items[0].Selected {
+		t.Fatalf("selected flags not preserved across outage: %+v", okResp.Cart.ShopGroups)
 	}
 }

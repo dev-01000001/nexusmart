@@ -40,6 +40,10 @@ export interface CatalogProduct extends Omit<Product, "skus"> {
   status: string;
   minPriceVnd: number;
   maxPriceVnd: number;
+  /** Integer average rating scaled by 100 (0..500), from ProductService. */
+  ratingAvgX100: number;
+  /** Total verified buyer review count from ProductService. */
+  reviewCount: number;
   skus: CatalogSku[];
   /** Optional editorial product ID matched by slug (used only for mock reviews/Q&A/bundles). */
   editorialProductId?: string;
@@ -80,6 +84,7 @@ export interface CatalogCategory {
   name: string;
   parentId: string;
   sortOrder: number;
+  isProhibited?: boolean;
   description: string;
   subtitle: string;
   featuredImage: string;

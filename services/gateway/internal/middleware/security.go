@@ -73,11 +73,22 @@ func SecurityHeaders() func(http.Handler) http.Handler {
 // MaxBodyBytes rejects requests whose Content-Length exceeds limit with 413 PAYLOAD_TOO_LARGE
 // and wraps r.Body with http.MaxBytesReader so chunked/unknown-length bodies also fail with 413.
 func MaxBodyBytes(limit int64) func(http.Handler) http.Handler {
+	return MaxBodyBytesFunc(func(*http.Request) int64 { return limit })
+}
+
+// MaxBodyBytesFunc enforces a per-request maximum body size returned by limitFn.
+// Returning <= 0 disables the limit for that request.
+func MaxBodyBytesFunc(limitFn func(*http.Request) int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		if limit <= 0 {
+		if limitFn == nil {
 			return next
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			limit := limitFn(r)
+			if limit <= 0 {
+				next.ServeHTTP(w, r)
+				return
+			}
 			if r.ContentLength > limit {
 				httpx.WriteError(w, r, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", "request body too large")
 				return

@@ -35,6 +35,8 @@ const (
 	PaymentService_GetFeeConfig_FullMethodName              = "/nexusmart.payment.v1.PaymentService/GetFeeConfig"
 	PaymentService_SetFeeConfig_FullMethodName              = "/nexusmart.payment.v1.PaymentService/SetFeeConfig"
 	PaymentService_ListSellerLedger_FullMethodName          = "/nexusmart.payment.v1.PaymentService/ListSellerLedger"
+	PaymentService_ImportCodReconciliation_FullMethodName   = "/nexusmart.payment.v1.PaymentService/ImportCodReconciliation"
+	PaymentService_ListReconciliationRuns_FullMethodName    = "/nexusmart.payment.v1.PaymentService/ListReconciliationRuns"
 )
 
 // PaymentServiceClient is the client API for PaymentService service.
@@ -57,6 +59,8 @@ type PaymentServiceClient interface {
 	GetFeeConfig(ctx context.Context, in *GetFeeConfigRequest, opts ...grpc.CallOption) (*GetFeeConfigResponse, error)
 	SetFeeConfig(ctx context.Context, in *SetFeeConfigRequest, opts ...grpc.CallOption) (*SetFeeConfigResponse, error)
 	ListSellerLedger(ctx context.Context, in *ListSellerLedgerRequest, opts ...grpc.CallOption) (*ListSellerLedgerResponse, error)
+	ImportCodReconciliation(ctx context.Context, in *ImportCodReconciliationRequest, opts ...grpc.CallOption) (*ImportCodReconciliationResponse, error)
+	ListReconciliationRuns(ctx context.Context, in *ListReconciliationRunsRequest, opts ...grpc.CallOption) (*ListReconciliationRunsResponse, error)
 }
 
 type paymentServiceClient struct {
@@ -227,6 +231,26 @@ func (c *paymentServiceClient) ListSellerLedger(ctx context.Context, in *ListSel
 	return out, nil
 }
 
+func (c *paymentServiceClient) ImportCodReconciliation(ctx context.Context, in *ImportCodReconciliationRequest, opts ...grpc.CallOption) (*ImportCodReconciliationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ImportCodReconciliationResponse)
+	err := c.cc.Invoke(ctx, PaymentService_ImportCodReconciliation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) ListReconciliationRuns(ctx context.Context, in *ListReconciliationRunsRequest, opts ...grpc.CallOption) (*ListReconciliationRunsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListReconciliationRunsResponse)
+	err := c.cc.Invoke(ctx, PaymentService_ListReconciliationRuns_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PaymentServiceServer is the server API for PaymentService service.
 // All implementations must embed UnimplementedPaymentServiceServer
 // for forward compatibility.
@@ -247,6 +271,8 @@ type PaymentServiceServer interface {
 	GetFeeConfig(context.Context, *GetFeeConfigRequest) (*GetFeeConfigResponse, error)
 	SetFeeConfig(context.Context, *SetFeeConfigRequest) (*SetFeeConfigResponse, error)
 	ListSellerLedger(context.Context, *ListSellerLedgerRequest) (*ListSellerLedgerResponse, error)
+	ImportCodReconciliation(context.Context, *ImportCodReconciliationRequest) (*ImportCodReconciliationResponse, error)
+	ListReconciliationRuns(context.Context, *ListReconciliationRunsRequest) (*ListReconciliationRunsResponse, error)
 	mustEmbedUnimplementedPaymentServiceServer()
 }
 
@@ -304,6 +330,12 @@ func (UnimplementedPaymentServiceServer) SetFeeConfig(context.Context, *SetFeeCo
 }
 func (UnimplementedPaymentServiceServer) ListSellerLedger(context.Context, *ListSellerLedgerRequest) (*ListSellerLedgerResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListSellerLedger not implemented")
+}
+func (UnimplementedPaymentServiceServer) ImportCodReconciliation(context.Context, *ImportCodReconciliationRequest) (*ImportCodReconciliationResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ImportCodReconciliation not implemented")
+}
+func (UnimplementedPaymentServiceServer) ListReconciliationRuns(context.Context, *ListReconciliationRunsRequest) (*ListReconciliationRunsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListReconciliationRuns not implemented")
 }
 func (UnimplementedPaymentServiceServer) mustEmbedUnimplementedPaymentServiceServer() {}
 func (UnimplementedPaymentServiceServer) testEmbeddedByValue()                        {}
@@ -614,6 +646,42 @@ func _PaymentService_ListSellerLedger_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PaymentService_ImportCodReconciliation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ImportCodReconciliationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).ImportCodReconciliation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_ImportCodReconciliation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).ImportCodReconciliation(ctx, req.(*ImportCodReconciliationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_ListReconciliationRuns_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListReconciliationRunsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).ListReconciliationRuns(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_ListReconciliationRuns_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).ListReconciliationRuns(ctx, req.(*ListReconciliationRunsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PaymentService_ServiceDesc is the grpc.ServiceDesc for PaymentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -684,6 +752,14 @@ var PaymentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListSellerLedger",
 			Handler:    _PaymentService_ListSellerLedger_Handler,
+		},
+		{
+			MethodName: "ImportCodReconciliation",
+			Handler:    _PaymentService_ImportCodReconciliation_Handler,
+		},
+		{
+			MethodName: "ListReconciliationRuns",
+			Handler:    _PaymentService_ListReconciliationRuns_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

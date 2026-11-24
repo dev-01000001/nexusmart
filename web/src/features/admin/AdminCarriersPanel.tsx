@@ -10,7 +10,7 @@ import type {
 import { api, getErrorMessage } from "@/lib/api";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, StateView } from "@/components";
-import { formatDateTimeVi, formatVnd } from "@/lib/format";
+import { formatCarrierLabel, formatDateTimeVi, formatVnd } from "@/lib/format";
 import { SHIPPING_REGION_LABELS } from "./types";
 import { StatusPill } from "./StatusPill";
 import { ToggleSwitch } from "./ToggleSwitch";
@@ -42,9 +42,9 @@ function normalizeFallbackRates(rates?: GatewayFallbackRate[]): GatewayFallbackR
     }
     return {
       region,
-      base_fee_vnd: region === "SAME_PROVINCE" ? 18000 : region === "SAME_REGION" ? 25000 : 32000,
+      base_fee_vnd: 0,
       base_weight_grams: 1000,
-      extra_fee_vnd_per_500g: 5000,
+      extra_fee_vnd_per_500g: 0,
     };
   });
 }
@@ -170,7 +170,7 @@ export function AdminCarriersPanel() {
         setCarriers((prev) => prev.map((c) => (c.carrier_code === code ? res.carrier : c)));
         setDrafts((prev) => ({ ...prev, [code]: buildDraft(res.carrier) }));
       }
-      showToast(`Đã lưu cấu hình hãng vận chuyển ${carrier.name || code}.`);
+      showToast(`Đã lưu cấu hình hãng vận chuyển ${formatCarrierLabel(code, carrier.name)}.`);
     } catch (err) {
       setRowErrors((prev) => ({
         ...prev,
@@ -192,10 +192,9 @@ export function AdminCarriersPanel() {
         { method: "POST" }
       );
       setTestResults((prev) => ({ ...prev, [code]: res }));
+      const displayName = formatCarrierLabel(code, carrier.name);
       showToast(
-        res.ok
-          ? `Kết nối ${carrier.name || code} thành công.`
-          : `Kiểm tra ${carrier.name || code} chưa thành công.`
+        res.ok ? `Kết nối ${displayName} thành công.` : `Kiểm tra ${displayName} chưa thành công.`
       );
     } catch (err) {
       const msg = getErrorMessage(err, "Không thể kiểm tra kết nối hãng vận chuyển lúc này.");
@@ -252,6 +251,7 @@ export function AdminCarriersPanel() {
     <div className={styles.sectionList}>
       {carriers.map((carrier) => {
         const code = carrier.carrier_code;
+        const displayName = formatCarrierLabel(code, carrier.name);
         const draft = drafts[code] ?? buildDraft(carrier);
         const testRes = testResults[code];
         const rowErr = rowErrors[code];
@@ -267,7 +267,7 @@ export function AdminCarriersPanel() {
             <div className={styles.labelCol}>
               <div className={styles.switchTitleLine}>
                 <h2 id={`carrier-heading-${code}`} className={styles.sectionTitle}>
-                  {carrier.name || code.toUpperCase()}
+                  {displayName}
                 </h2>
                 <StatusPill
                   label={draft.enabled ? "Đang bật" : "Đang tắt"}
@@ -313,7 +313,7 @@ export function AdminCarriersPanel() {
               <div className={styles.switchRow}>
                 <div className={styles.switchCopy}>
                   <label htmlFor={`carrier-enable-${code}`} className={styles.switchTitle}>
-                    Cho phép gian hàng và người mua sử dụng {carrier.name || code}
+                    Cho phép gian hàng và người mua sử dụng {displayName}
                   </label>
                   <p className={styles.switchDesc}>
                     Khi tắt, hãng này sẽ không còn xuất hiện trong danh sách chọn vận chuyển khi đặt
@@ -323,7 +323,7 @@ export function AdminCarriersPanel() {
                 <ToggleSwitch
                   id={`carrier-enable-${code}`}
                   checked={draft.enabled}
-                  label={`Bật hoặc tắt ${carrier.name || code}`}
+                  label={`Bật hoặc tắt ${displayName}`}
                   onChange={(next) => updateDraft(code, (prev) => ({ ...prev, enabled: next }))}
                 />
               </div>
@@ -379,7 +379,7 @@ export function AdminCarriersPanel() {
                               onChange={(e) =>
                                 updateRateField(code, regionKey, "base_fee_vnd", e.target.value)
                               }
-                              aria-label={`Cước cơ bản ${SHIPPING_REGION_LABELS[rate.region] ?? rate.region} của ${carrier.name}`}
+                              aria-label={`Cước cơ bản ${SHIPPING_REGION_LABELS[rate.region] ?? rate.region} của ${displayName}`}
                               disabled={isSaving}
                             />
                           </td>
@@ -398,7 +398,7 @@ export function AdminCarriersPanel() {
                                   e.target.value
                                 )
                               }
-                              aria-label={`Mốc khối lượng ${SHIPPING_REGION_LABELS[rate.region] ?? rate.region} của ${carrier.name}`}
+                              aria-label={`Mốc khối lượng ${SHIPPING_REGION_LABELS[rate.region] ?? rate.region} của ${displayName}`}
                               disabled={isSaving}
                             />
                           </td>
@@ -417,7 +417,7 @@ export function AdminCarriersPanel() {
                                   e.target.value
                                 )
                               }
-                              aria-label={`Phụ phí mỗi 500g ${SHIPPING_REGION_LABELS[rate.region] ?? rate.region} của ${carrier.name}`}
+                              aria-label={`Phụ phí mỗi 500g ${SHIPPING_REGION_LABELS[rate.region] ?? rate.region} của ${displayName}`}
                               disabled={isSaving}
                             />
                           </td>

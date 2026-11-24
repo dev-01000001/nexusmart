@@ -111,7 +111,7 @@ func shpW2AddAddress(t *testing.T, env *testEnv, u *userFixture, provCode, provN
 func shpW2CreateSeller(t *testing.T, env *testEnv, label string) *sellerFixture {
 	t.Helper()
 	u := env.registerVerifyAndLogin(t, label)
-	addr := shpW2AddAddress(t, env, u, "79", "Thành phố Hồ Chí Minh", "79001", "Phường Sài Gòn")
+	addr := shpW2AddAddress(t, env, u, "79", "Thành phố Hồ Chí Minh", "26740", "Phường Sài Gòn")
 
 	shopName := fmt.Sprintf("ShipW2Shop-%s-%s-%d", label, env.runID, env.nextSeq())
 	shopResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/shops/register", u.AccessToken, nil, RegisterShopRequest{
@@ -237,7 +237,8 @@ func TestE2E_ShippingW2AOps(t *testing.T) {
 	_, sku := env.createApprovedProduct(t, seller, cat.ID, "ShipW2 Jacket", 250000, 50, 400)
 
 	buyer := env.registerVerifyAndLogin(t, "shpw2-buyer1")
-	buyerAddr := shpW2AddAddress(t, env, buyer, "79", "Thành phố Hồ Chí Minh", "79001", "Phường Sài Gòn")
+	env.verifyBuyerPhone(t, buyer)
+	buyerAddr := shpW2AddAddress(t, env, buyer, "79", "Thành phố Hồ Chí Minh", "26740", "Phường Sài Gòn")
 	otherBuyer := env.registerVerifyAndLogin(t, "shpw2-buyer2")
 
 	t.Run("AccentInsensitiveSearch", func(t *testing.T) {
@@ -264,13 +265,13 @@ func TestE2E_ShippingW2AOps(t *testing.T) {
 		}
 		foundBT := false
 		for _, w := range wardOut.Wards {
-			if w.Code == "79002" {
+			if w.Code == "26743" {
 				foundBT = true
 				break
 			}
 		}
 		if !foundBT {
-			t.Fatalf("SHP-B8: expected Phuong Ben Thanh (79002) in accent-insensitive ward search, got %+v", wardOut.Wards)
+			t.Fatalf("SHP-B8: expected Phuong Ben Thanh (26743) in accent-insensitive ward search, got %+v", wardOut.Wards)
 		}
 	})
 
@@ -483,7 +484,7 @@ func TestE2E_ShippingW2AOps(t *testing.T) {
 		qResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/shipping/calculate-fee", buyer.AccessToken, nil, CalculateFeeRequest{
 			ShopID:         shopSeller.ShopID,
 			ToProvinceCode: "79",
-			ToWardCode:     "79001",
+			ToWardCode:     "26740",
 			WeightGrams:    500,
 		}, http.StatusOK)
 		var qOut CalculateFeeResponse
@@ -538,7 +539,7 @@ func TestE2E_ShippingW2AOps(t *testing.T) {
 		qResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/shipping/calculate-fee", buyer.AccessToken, nil, CalculateFeeRequest{
 			ShopID:         freshSeller.ShopID,
 			ToProvinceCode: "79",
-			ToWardCode:     "79001",
+			ToWardCode:     "26740",
 			WeightGrams:    500,
 		}, http.StatusOK)
 		var qOut CalculateFeeResponse

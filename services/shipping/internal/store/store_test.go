@@ -22,8 +22,8 @@ func TestEmbeddedMigrationsPresentAndIdempotentGuards(t *testing.T) {
 	for _, e := range entries {
 		found[e.Name()] = true
 	}
-	if !found["000001_init.sql"] || !found["000002_shipping_ops.sql"] || !found["000003_return_recreate_index.sql"] || !found["000004_shop_freeship_settings.sql"] || !found["000005_outbox_lease.sql"] {
-		t.Fatalf("expected 000001..000005 migrations, got %v", found)
+	if !found["000001_init.sql"] || !found["000002_shipping_ops.sql"] || !found["000003_return_recreate_index.sql"] || !found["000004_shop_freeship_settings.sql"] || !found["000005_outbox_lease.sql"] || !found["000006_w3b_wards_and_shipment_jobs.sql"] {
+		t.Fatalf("expected 000001..000006 migrations, got %v", found)
 	}
 
 	raw, err := fs.ReadFile(migrations.FS, "000002_shipping_ops.sql")
@@ -104,6 +104,24 @@ func TestEmbeddedMigrationsPresentAndIdempotentGuards(t *testing.T) {
 	} {
 		if !strings.Contains(sql5, mustContain) {
 			t.Fatalf("000005_outbox_lease.sql missing %q", mustContain)
+		}
+	}
+
+	raw6, err := fs.ReadFile(migrations.FS, "000006_w3b_wards_and_shipment_jobs.sql")
+	if err != nil {
+		t.Fatalf("read 000006_w3b_wards_and_shipment_jobs.sql: %v", err)
+	}
+	sql6 := string(raw6)
+	for _, mustContain := range []string{
+		"ADD COLUMN IF NOT EXISTS cod_supported",
+		"ADD COLUMN IF NOT EXISTS is_active",
+		"CREATE TABLE IF NOT EXISTS address_catalog_meta",
+		"CREATE TABLE IF NOT EXISTS shipment_create_jobs",
+		"uq_shipment_create_jobs_order_direction_active",
+		"idx_shipment_create_jobs_claimable",
+	} {
+		if !strings.Contains(sql6, mustContain) {
+			t.Fatalf("000006_w3b_wards_and_shipment_jobs.sql missing %q", mustContain)
 		}
 	}
 }
@@ -211,8 +229,8 @@ func TestPGStoreMigrateAndSeedIdempotent(t *testing.T) {
 		t.Fatalf("PGStore ListProvinces('Ha Noi') = (%+v, %v), want code 01", provs, err)
 	}
 	wards, err := st.ListWards(ctx, "79", "Ben Thanh")
-	if err != nil || len(wards) == 0 || wards[0].Code != "79002" {
-		t.Fatalf("PGStore ListWards('79', 'Ben Thanh') = (%+v, %v), want code 79002", wards, err)
+	if err != nil || len(wards) == 0 || wards[0].Code != "26743" {
+		t.Fatalf("PGStore ListWards('79', 'Ben Thanh') = (%+v, %v), want official QD 19/2025 code 26743", wards, err)
 	}
 
 	// Verify CountInactiveShipmentsByOrder, RETURN recreate after returned, and RecordRedelivery 1-per-failed-attempt on real Postgres.

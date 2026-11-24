@@ -311,6 +311,12 @@ export function AdminProductModerationTab({ initialQuery = "", onPendingCountCha
                             <div className={shared.cellSub}>
                               {prod.created_at ? formatDateTimeVi(prod.created_at) : prod.id}
                             </div>
+                            {Array.isArray(prod.flagged_keywords) &&
+                              prod.flagged_keywords.length > 0 && (
+                                <div className={shared.priorityText}>
+                                  Từ khoá gắn cờ: {prod.flagged_keywords.join(", ")}
+                                </div>
+                              )}
                           </div>
                         </div>
                       </td>
@@ -364,6 +370,9 @@ export function AdminProductModerationTab({ initialQuery = "", onPendingCountCha
                   <div className={shared.mobileLine2}>
                     <span className={shared.mobileMetaText}>
                       {formatInt(prod.skus?.length ?? 0)} SKU
+                      {Array.isArray(prod.flagged_keywords) && prod.flagged_keywords.length > 0
+                        ? ` · Gắn cờ: ${prod.flagged_keywords.join(", ")}`
+                        : ""}
                     </span>
                     <button
                       type="button"
@@ -428,6 +437,15 @@ export function AdminProductModerationTab({ initialQuery = "", onPendingCountCha
                       {inspected.description || "Không có mô tả."}
                     </span>
                   </div>
+                  {Array.isArray(inspected.flagged_keywords) &&
+                    inspected.flagged_keywords.length > 0 && (
+                      <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+                        <span className={shared.detailKey}>Từ khoá bị gắn cờ cần rà soát</span>
+                        <span className={shared.priorityText}>
+                          {inspected.flagged_keywords.join(", ")}
+                        </span>
+                      </div>
+                    )}
                   {inspected.rejection_reason && (
                     <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
                       <span className={shared.detailKey}>Lý do từ chối gần nhất</span>

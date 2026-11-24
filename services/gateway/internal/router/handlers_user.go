@@ -635,6 +635,63 @@ func (h *handler) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"user": mapUser(resp.GetUser())})
 }
 
+func (h *handler) handleRequestPhoneOTP(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Phone string `json:"phone"`
+	}
+	if err := httpx.DecodeOptionalJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.RequestPhoneOTP(ctx, &userv1.RequestPhoneOTPRequest{
+		Phone: strings.TrimSpace(body.Phone),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"sent":                resp.GetSent(),
+		"expires_in_seconds":  resp.GetExpiresInSeconds(),
+		"retry_after_seconds": resp.GetRetryAfterSeconds(),
+		"phone_masked":        resp.GetPhoneMasked(),
+	})
+}
+
+func (h *handler) handleVerifyPhoneOTP(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Phone string `json:"phone"`
+		OTP   string `json:"otp"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	otp := strings.TrimSpace(body.OTP)
+	if otp == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "otp is required")
+		return
+	}
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.User.VerifyPhoneOTP(ctx, &userv1.VerifyPhoneOTPRequest{
+		Phone: strings.TrimSpace(body.Phone),
+		Otp:   otp,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"verified": resp.GetVerified(),
+		"user":     mapUser(resp.GetUser()),
+	})
+}
+
 func (h *handler) handleListAddresses(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()

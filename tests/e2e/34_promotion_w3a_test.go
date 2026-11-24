@@ -45,6 +45,7 @@ func TestE2E_PromotionW3A_D3_ReserveOrderServiceOnly_AndCheckoutWithVoucher(t *t
 	adminTok := env.adminLogin(t)
 	cat, seller1, _ := env.ensureBaseMarketplace(t)
 	buyer := env.registerVerifyAndLogin(t, "buyer-prm3a")
+	env.verifyBuyerPhone(t, buyer)
 	addr := env.addAddress(t, buyer)
 
 	const (

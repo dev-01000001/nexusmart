@@ -45,6 +45,9 @@ func (h *shutdownTestHandler) HandlePaymentRefunded(_ context.Context, _ string,
 func (h *shutdownTestHandler) HandleShipmentUpdated(_ context.Context, _ string, _ ShipmentUpdatedPayload) error {
 	return nil
 }
+func (h *shutdownTestHandler) HandleShipmentCreateFailed(_ context.Context, _ string, _ ShipmentCreateFailedPayload) error {
+	return nil
+}
 
 type stubDLQStore struct {
 	mu      sync.Mutex

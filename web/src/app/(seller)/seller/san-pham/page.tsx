@@ -16,12 +16,7 @@ import { Button, IconPlus, IconSearch, StateView } from "@/components";
 import { formatInt, formatVnd } from "@/lib/format";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { SellerShopGate } from "@/features/seller/SellerContext";
-import {
-  getProductAvailableStock,
-  getProductCoverImage,
-  getProductStatusMeta,
-  getProductTotalStock,
-} from "@/features/seller/types";
+import { getProductCoverImage, getProductStatusMeta } from "@/features/seller/types";
 import { parseUiState } from "@/features/seller/sellerStore";
 import common from "@/features/seller/SellerCommon.module.css";
 import styles from "./page.module.css";
@@ -404,9 +399,15 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                     </thead>
                     <tbody>
                       {filteredProducts.map((p) => {
-                        const activeSkus = (p.skus ?? []).filter((s) => s.is_active);
-                        const availStock = getProductAvailableStock(p);
-                        const totalStock = getProductTotalStock(p);
+                        const allSkus = p.skus ?? [];
+                        const availStock = allSkus.reduce(
+                          (sum, s) => sum + Math.max(0, s.available_stock),
+                          0
+                        );
+                        const totalStock = allSkus.reduce(
+                          (sum, s) => sum + Math.max(0, s.stock),
+                          0
+                        );
                         const stMeta = getProductStatusMeta(p.status);
                         const isExpanded = Boolean(expandedProductIds[p.id]);
                         const catName = categoryNameById.get(p.category_id) ?? "Chưa phân loại";
@@ -432,7 +433,7 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                                       {p.name}
                                     </Link>
                                     <span className={styles.prodSub}>
-                                      {formatInt(activeSkus.length)} biến thể SKU
+                                      {formatInt(allSkus.length)} biến thể SKU
                                       {p.slug ? ` · /${p.slug}` : ""}
                                     </span>
                                     {p.status === "REJECTED" && p.rejection_reason && (
@@ -505,12 +506,12 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                               <tr>
                                 <td colSpan={6} className={styles.skuDrawerCell}>
                                   <div className={styles.skuDrawerList}>
-                                    {activeSkus.length === 0 ? (
+                                    {allSkus.length === 0 ? (
                                       <span className={styles.prodSub}>
-                                        Sản phẩm chưa có SKU đang hoạt động.
+                                        Sản phẩm chưa có biến thể SKU.
                                       </span>
                                     ) : (
-                                      activeSkus.map((sku) => {
+                                      allSkus.map((sku) => {
                                         const draftVal = stockDrafts[sku.id] ?? String(sku.stock);
                                         const isSaving = savingSkuId === sku.id;
                                         return (
@@ -569,8 +570,11 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
 
                 <div className={common.mobileList}>
                   {filteredProducts.map((p) => {
-                    const activeSkus = (p.skus ?? []).filter((s) => s.is_active);
-                    const availStock = getProductAvailableStock(p);
+                    const allSkus = p.skus ?? [];
+                    const availStock = allSkus.reduce(
+                      (sum, s) => sum + Math.max(0, s.available_stock),
+                      0
+                    );
                     const stMeta = getProductStatusMeta(p.status);
                     const isExpanded = Boolean(expandedProductIds[p.id]);
                     const cover = getProductCoverImage(p);
@@ -590,8 +594,7 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                                 {p.name}
                               </Link>
                               <span className={styles.prodSub}>
-                                Khả dụng {formatInt(availStock)} · {formatInt(activeSkus.length)}{" "}
-                                SKU
+                                Khả dụng {formatInt(availStock)} · {formatInt(allSkus.length)} SKU
                               </span>
                               {p.status === "REJECTED" && p.rejection_reason && (
                                 <span className={styles.rejectionNote}>
@@ -617,9 +620,9 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                             </Link>
                           </div>
                         </div>
-                        {isExpanded && activeSkus.length > 0 && (
+                        {isExpanded && allSkus.length > 0 && (
                           <div className={styles.mobileSkuBox}>
-                            {activeSkus.map((sku) => {
+                            {allSkus.map((sku) => {
                               const draftVal = stockDrafts[sku.id] ?? String(sku.stock);
                               const isSaving = savingSkuId === sku.id;
                               return (

@@ -3,6 +3,8 @@ import type {
   GatewayCategory,
   GatewayFlashSale,
   GatewayProduct,
+  GatewayProductReviewsResponse,
+  GatewayProductSlugResponse,
   GatewayProvince,
   GatewayPublicShop,
   GatewayVoucher,
@@ -160,18 +162,51 @@ export async function fetchRawProducts(
   };
 }
 
-export async function fetchRawProductBySlug(slug: string): Promise<GatewayProduct | null> {
+export type ProductSlugLookupResult =
+  | { kind: "active"; product: GatewayProduct }
+  | { kind: "discontinued"; categoryId: string; name: string }
+  | { kind: "not_found" };
+
+export async function fetchProductSlugLookup(slug: string): Promise<ProductSlugLookupResult> {
   try {
-    const res = await publicGatewayFetch<{ product: GatewayProduct }>(
+    const res = await publicGatewayFetch<GatewayProductSlugResponse>(
       `/products/slug/${encodeURIComponent(slug)}`,
       { optionalAuth: true }
     );
-    return res?.product ?? null;
+    if (res?.discontinued) {
+      return {
+        kind: "discontinued",
+        categoryId: (res.category_id ?? "").trim(),
+        name: (res.name ?? "").trim(),
+      };
+    }
+    if (res?.product) {
+      return { kind: "active", product: res.product };
+    }
+    return { kind: "not_found" };
   } catch (err) {
     if (err instanceof GatewayError && err.status === 404) {
-      return null;
+      return { kind: "not_found" };
     }
     throw err;
+  }
+}
+
+export async function fetchRawProductBySlug(slug: string): Promise<GatewayProduct | null> {
+  const res = await fetchProductSlugLookup(slug);
+  return res.kind === "active" ? res.product : null;
+}
+
+export async function fetchProductReviews(
+  productId: string,
+  pageSize = 10
+): Promise<GatewayProductReviewsResponse | null> {
+  try {
+    return await publicGatewayFetch<GatewayProductReviewsResponse>(
+      `/products/${encodeURIComponent(productId)}/reviews?page=1&page_size=${Math.max(1, Math.min(50, Math.trunc(pageSize)))}`
+    );
+  } catch {
+    return null;
   }
 }
 
@@ -483,11 +518,20 @@ export async function loadCatalogExplorerData(
   }
 }
 
+export interface DiscontinuedProductNotice {
+  categoryId: string;
+  name: string;
+  categoryName: string;
+  categorySlug: string;
+}
+
 export interface ProductDetailData {
   notFound: boolean;
+  discontinued: DiscontinuedProductNotice | null;
   error: string | null;
   product: CatalogProduct | null;
   shop: CatalogShop | null;
+  initialReviews: GatewayProductReviewsResponse | null;
   shopVouchers: CatalogVoucher[];
   platformVouchers: CatalogVoucher[];
   sameShopProducts: CatalogProduct[];
@@ -502,9 +546,11 @@ export interface ProductDetailData {
 export async function loadProductDetailData(slug: string): Promise<ProductDetailData> {
   const empty: ProductDetailData = {
     notFound: false,
+    discontinued: null,
     error: null,
     product: null,
     shop: null,
+    initialReviews: null,
     shopVouchers: [],
     platformVouchers: [],
     sameShopProducts: [],
@@ -517,12 +563,76 @@ export async function loadProductDetailData(slug: string): Promise<ProductDetail
   };
 
   try {
-    const rawProduct = await fetchRawProductBySlug(slug);
-    if (!rawProduct) {
+    const lookup = await fetchProductSlugLookup(slug);
+    if (lookup.kind === "not_found") {
       return { ...empty, notFound: true };
     }
 
     const nowMs = Date.now();
+    if (lookup.kind === "discontinued") {
+      const [categories, publicShops, catProductsPage, rawFlashSales] = await Promise.all([
+        fetchCategories().catch(() => [] as CatalogCategory[]),
+        fetchPublicShops().catch(() => [] as CatalogShop[]),
+        lookup.categoryId
+          ? fetchRawProducts({ categoryId: lookup.categoryId, page: 1, pageSize: 8 }).catch(() => ({
+              items: [] as GatewayProduct[],
+              page: 1,
+              page_size: 8,
+              total: 0,
+            }))
+          : Promise.resolve({ items: [] as GatewayProduct[], page: 1, page_size: 8, total: 0 }),
+        fetchRawFlashSales(true).catch(() => [] as GatewayFlashSale[]),
+      ]);
+
+      const rawCandidates =
+        catProductsPage.items.length > 0
+          ? catProductsPage.items
+          : (
+              await fetchRawProducts({ page: 1, pageSize: 8 }).catch(() => ({
+                items: [] as GatewayProduct[],
+                page: 1,
+                page_size: 8,
+                total: 0,
+              }))
+            ).items;
+      const skuIds = collectProductSkuIds(rawCandidates);
+      const activeShopDiscounts =
+        skuIds.length > 0
+          ? await fetchActiveShopDiscounts({ skuIds }).catch(
+              () => [] as GatewayActiveShopDiscount[]
+            )
+          : [];
+
+      const categoriesById = new Map(categories.map((c) => [c.id, c]));
+      const shopsById = new Map(publicShops.map((s) => [s.id, s]));
+      const liveFlashItemsBySkuId = buildLiveFlashItemsBySkuId(rawFlashSales, nowMs);
+      const activeShopDiscountsBySkuId = buildActiveShopDiscountsMap(activeShopDiscounts);
+
+      const similarProducts = rawCandidates.slice(0, 8).map((p) =>
+        mapGatewayProduct(p, {
+          categoriesById,
+          shopsById,
+          flashSkuIds: new Set(liveFlashItemsBySkuId.keys()),
+          liveFlashItemsBySkuId,
+          activeShopDiscountsBySkuId,
+        })
+      );
+      const matchedCat = categoriesById.get(lookup.categoryId);
+
+      return {
+        ...empty,
+        discontinued: {
+          categoryId: lookup.categoryId,
+          name: lookup.name,
+          categoryName: matchedCat?.name ?? "",
+          categorySlug: matchedCat?.slug ?? "",
+        },
+        similarProducts,
+      };
+    }
+
+    const rawProduct = lookup.product;
+
     // Public shop detail fetched directly from GET /shops/{id} (Requirement 6).
     const [
       shopFromId,
@@ -534,6 +644,7 @@ export async function loadProductDetailData(slug: string): Promise<ProductDetail
       allProductsPage,
       rawFlashSales,
       provinces,
+      initialReviews,
     ] = await Promise.all([
       fetchShopById(rawProduct.shop_id),
       fetchCategories(),
@@ -556,6 +667,7 @@ export async function loadProductDetailData(slug: string): Promise<ProductDetail
       })),
       fetchRawFlashSales(true).catch(() => [] as GatewayFlashSale[]),
       fetchShippingProvinces(),
+      fetchProductReviews(rawProduct.id, 10),
     ]);
 
     // P3-2: Same-shop cards only display the first 4 non-self items (price-independent), whereas
@@ -662,9 +774,11 @@ export async function loadProductDetailData(slug: string): Promise<ProductDetail
 
     return {
       notFound: false,
+      discontinued: null,
       error: null,
       product,
       shop: fallbackShop,
+      initialReviews,
       shopVouchers,
       platformVouchers,
       sameShopProducts,

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -32,6 +34,7 @@ import (
 	"github.com/nexusmart/core/services/shipping/internal/store"
 	"github.com/nexusmart/core/services/shipping/internal/userclient"
 	"github.com/nexusmart/core/services/shipping/internal/webhook"
+	"github.com/nexusmart/core/services/shipping/internal/worker"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -123,6 +126,15 @@ func run() error {
 		LabelBaseURL: cfg.LabelBaseURL,
 	})
 	mockExp := carrier.NewMockExpressAdapterWithLabelBase(cfg.LabelBaseURL)
+	if cfg.TestFaultInjection {
+		mockExp.SetTestFaultInjectionEnabled(true)
+		ghn.SetTestFaultInjectionEnabled(true)
+		if cfg.TestFailCreateCount > 0 {
+			_ = mockExp.InjectCreateFault("", http.StatusServiceUnavailable, cfg.TestFailCreateCount)
+			_ = ghn.InjectCreateFault("", http.StatusServiceUnavailable, cfg.TestFailCreateCount)
+		}
+		log.Warn("test carrier fault injection enabled via SHIPPING_TEST_FAULT_INJECTION")
+	}
 	enabledCarriers := []carrier.Carrier{
 		carrier.NewResilientCarrier(ghn, resCfg),
 		carrier.NewResilientCarrier(mockExp, resCfg),
@@ -154,6 +166,7 @@ func run() error {
 	svc := service.NewShippingService(pgStore, agg, quoteCache, outboxRelay, log)
 	svc.SetTokenCipher(tokenCipher)
 	svc.SetMaxRedelivery(cfg.MaxRedelivery)
+	svc.SetCreateRetryPolicy(cfg.CreateRetryMax, cfg.CreateRetryBase, cfg.CreateRetryMaxBackoff)
 
 	if err := svc.InitCarrierConfigs(ctx, map[string]string{
 		carrier.CodeGHN: cfg.GHNToken,
@@ -179,12 +192,13 @@ func run() error {
 	defer func() { _ = consumer.Close() }()
 
 	statusPoller := poller.New(svc, cfg.PollInterval, log)
+	createRetryWorker := worker.NewCreateRetryWorker(svc, cfg.CreateWorkerInterval, log)
 	var bgWG sync.WaitGroup
 	defer func() {
 		stop()
 		bgWG.Wait()
 	}()
-	bgWG.Add(2)
+	bgWG.Add(3)
 	go func() {
 		defer bgWG.Done()
 		outboxRelay.Run(ctx)
@@ -192,6 +206,10 @@ func run() error {
 	go func() {
 		defer bgWG.Done()
 		statusPoller.Run(ctx)
+	}()
+	go func() {
+		defer bgWG.Done()
+		createRetryWorker.Run(ctx)
 	}()
 
 	// Start gRPC server on :50057.
@@ -244,6 +262,42 @@ func run() error {
 	router.Handle("/readyz", opsHandler)
 	router.Handle("/metrics", opsHandler)
 	router.Post("/webhooks/shipping/{carrier}", whHandler.ServeHTTP)
+	if cfg.TestFaultInjection {
+		router.Post("/internal/test/carrier-fault", func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				CarrierCode string `json:"carrier_code"`
+				OrderID     string `json:"order_id"`
+				StatusCode  int    `json:"status_code"`
+				Count       int    `json:"count"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+				http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+				return
+			}
+			if body.StatusCode == 0 {
+				body.StatusCode = http.StatusServiceUnavailable
+			}
+			var injectErr error
+			switch strings.ToLower(strings.TrimSpace(body.CarrierCode)) {
+			case "", carrier.CodeMockExpress:
+				injectErr = mockExp.InjectCreateFault(body.OrderID, body.StatusCode, body.Count)
+			case carrier.CodeGHN:
+				injectErr = ghn.InjectCreateFault(body.OrderID, body.StatusCode, body.Count)
+			default:
+				http.Error(w, `{"error":"unknown carrier"}`, http.StatusBadRequest)
+				return
+			}
+			if injectErr != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": injectErr.Error()})
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		})
+	}
 	router.Group(func(authed chi.Router) {
 		authed.Use(auth.HTTPMiddleware(jwtMgr, true))
 		authed.Get("/labels/{tracking_code}", labelHandler.ServeHTTP)

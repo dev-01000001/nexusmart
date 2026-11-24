@@ -473,6 +473,11 @@ select.toolbarSelect {
   min-width: 0;
 }
 
+.detailField select.toolbarSelect {
+  width: 100%;
+  max-width: 100%;
+}
+
 .detailFieldWide {
   grid-column: 1 / -1;
 }

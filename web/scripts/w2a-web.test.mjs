@@ -718,10 +718,13 @@ describe("Wave 2a web features — unit tests", () => {
       nextCfgSrc.includes("/dat-lai-mat-khau") && nextCfgSrc.includes("no-referrer"),
       "next.config.ts must set Referrer-Policy: no-referrer on /dat-lai-mat-khau"
     );
-    assert.equal(
-      nextCfgSrc.includes("Content-Security-Policy"),
-      false,
-      "next.config.ts must NOT add site-wide Content-Security-Policy in Wave 2a"
+    assert.ok(
+      nextCfgSrc.includes("Content-Security-Policy") &&
+        nextCfgSrc.includes("object-src 'none'") &&
+        nextCfgSrc.includes("frame-ancestors 'none'") &&
+        nextCfgSrc.includes("form-action 'self'") &&
+        nextCfgSrc.includes("img-src 'self' https: data: blob:"),
+      "next.config.ts must set minimal safe Content-Security-Policy (Wave 3b-1)"
     );
 
     const resetSrc = readFileSync(

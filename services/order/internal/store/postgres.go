@@ -1782,6 +1782,201 @@ func (s *PostgresStore) QueryOrderReport(ctx context.Context, params OrderReport
 	return data, nil
 }
 
+func (s *PostgresStore) GetBuyerTerminalCODStats(ctx context.Context, buyerID string) (BuyerCODStats, error) {
+	row, err := s.queries.GetBuyerTerminalCODStats(ctx, buyerID)
+	if err != nil {
+		return BuyerCODStats{}, err
+	}
+	return BuyerCODStats{
+		TotalTerminal: row.TotalTerminal,
+		RejectedCount: row.RejectedCount,
+	}, nil
+}
+
+func (s *PostgresStore) MarkOrderShipmentQueued(ctx context.Context, params QueueShipmentParams) (*QueueShipmentOutcome, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin mark shipment queued tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := s.queries.WithTx(tx)
+	ord, err := q.GetOrderByIDForUpdate(ctx, params.OrderID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	now := params.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	curStatus := statemachine.StringToStatus(ord.Status)
+	if curStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
+		// Order cancelled while CreateShipment queued a job: set pending_shipment_cancel so any
+		// shipment created in-flight is cancelled by immediate compensation or watchdog.
+		if err := q.SetOrderPendingShipmentCancel(ctx, db.SetOrderPendingShipmentCancelParams{
+			ID:                    ord.ID,
+			PendingShipmentCancel: true,
+			MarkedAt:              now,
+			Token:                 "",
+		}); err != nil {
+			return nil, err
+		}
+		if err := q.ClearOrderShipmentJobStatus(ctx, ord.ID); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return nil, ErrOrphanShipmentNeedsCancel
+	}
+
+	// Race guard: async worker already created the shipment and shipment.updated(created) attached tracking_code
+	// before CreateShipment returned queued=true. Never overwrite back to QUEUED.
+	if strings.TrimSpace(ord.TrackingCode) != "" {
+		if ord.PendingShipmentCancel &&
+			(params.ExpectedCreatingToken == "" || ord.PendingShipmentCancelToken == params.ExpectedCreatingToken) {
+			if err := q.SetOrderPendingShipmentCancel(ctx, db.SetOrderPendingShipmentCancelParams{
+				ID:                    ord.ID,
+				PendingShipmentCancel: false,
+				MarkedAt:              time.Time{},
+				Token:                 "",
+			}); err != nil {
+				return nil, err
+			}
+		}
+		if ord.ShipmentJobStatus != "" {
+			if err := q.ClearOrderShipmentJobStatus(ctx, ord.ID); err != nil {
+				return nil, err
+			}
+		}
+		agg, err := loadOrderAggregate(ctx, q, ord.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return &QueueShipmentOutcome{Order: agg, AlreadyAttached: true}, nil
+	}
+
+	if curStatus != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED && curStatus != orderv1.OrderStatus_ORDER_STATUS_PREPARING {
+		return nil, fmt.Errorf("%w: cannot queue shipment from status %s", statemachine.ErrInvalidTransition, statemachine.StatusToString(curStatus))
+	}
+	if params.ExpectedCreatingToken != "" && ord.PendingShipmentCancelToken != params.ExpectedCreatingToken {
+		return nil, ErrStaleShipmentAttempt
+	}
+
+	wasQueued := strings.EqualFold(strings.TrimSpace(ord.ShipmentJobStatus), "QUEUED")
+	if _, err := q.SetOrderShipmentQueued(ctx, ord.ID); err != nil {
+		return nil, err
+	}
+	if !wasQueued {
+		note := strings.TrimSpace(params.Note)
+		if note == "" {
+			note = "Shipment creation queued for async retry"
+		}
+		if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+			ID:         uuid.NewString(),
+			OrderID:    ord.ID,
+			FromStatus: ord.Status,
+			ToStatus:   ord.Status,
+			ActorID:    params.ActorID,
+			ActorRole:  params.ActorRole,
+			Note:       note,
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	agg, err := loadOrderAggregate(ctx, q, ord.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &QueueShipmentOutcome{Order: agg, AlreadyAttached: false}, nil
+}
+
+func (s *PostgresStore) MarkOrderShipmentJobFailedIfQueued(ctx context.Context, orderID string) (bool, error) {
+	rows, err := s.queries.MarkOrderShipmentJobFailedIfQueued(ctx, orderID)
+	return rows > 0, err
+}
+
+func (s *PostgresStore) ApplyShipmentCreateFailed(ctx context.Context, params ShipmentCreateFailedParams) (*ShipmentCreateFailedOutcome, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin shipment create failed tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := s.queries.WithTx(tx)
+	if params.EventID != "" {
+		inserted, err := q.TryMarkEventProcessed(ctx, db.TryMarkEventProcessedParams{
+			EventID:   params.EventID,
+			EventType: params.EventType,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if inserted == 0 {
+			return &ShipmentCreateFailedOutcome{AlreadyProcessed: true}, nil
+		}
+	}
+
+	ord, err := q.GetOrderByIDForUpdate(ctx, params.OrderID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			if err := tx.Commit(ctx); err != nil {
+				return nil, err
+			}
+			return &ShipmentCreateFailedOutcome{NotFound: true}, nil
+		}
+		return nil, err
+	}
+
+	outcome := &ShipmentCreateFailedOutcome{}
+	curStatus := statemachine.StringToStatus(ord.Status)
+	// E18: Only mark shipment_job_status=FAILED when no tracking_code exists yet, the order is still
+	// CONFIRMED or PREPARING, and no newer synchronous SellerShipOrder attempt is actively in flight.
+	if strings.TrimSpace(ord.TrackingCode) == "" &&
+		!ord.PendingShipmentCancel &&
+		(curStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED || curStatus == orderv1.OrderStatus_ORDER_STATUS_PREPARING) {
+		if _, err := q.SetOrderShipmentJobFailed(ctx, ord.ID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		} else if err == nil {
+			note := fmt.Sprintf("Async shipment creation failed after %d attempts", params.Attempts)
+			if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+				ID:         uuid.NewString(),
+				OrderID:    ord.ID,
+				FromStatus: ord.Status,
+				ToStatus:   ord.Status,
+				ActorID:    "shipping-service",
+				ActorRole:  "system",
+				Note:       note,
+			}); err != nil {
+				return nil, err
+			}
+			outcome.Updated = true
+		}
+	}
+
+	agg, err := loadOrderAggregate(ctx, q, ord.ID)
+	if err != nil {
+		return nil, err
+	}
+	outcome.Order = agg
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return outcome, nil
+}
+
 func (s *PostgresStore) TransitionOrderPreparedForShipment(ctx context.Context, params ShipOrderParams) (*OrderAggregate, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -1812,6 +2007,11 @@ func (s *PostgresStore) TransitionOrderPreparedForShipment(ctx context.Context, 
 			Token:                 "",
 		}); err != nil {
 			return nil, err
+		}
+		if ord.ShipmentJobStatus != "" {
+			if err := q.ClearOrderShipmentJobStatus(ctx, ord.ID); err != nil {
+				return nil, err
+			}
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return nil, err
@@ -1859,6 +2059,11 @@ func (s *PostgresStore) TransitionOrderPreparedForShipment(ctx context.Context, 
 				MarkedAt:              time.Time{},
 				Token:                 "",
 			}); err != nil {
+				return nil, err
+			}
+		}
+		if ord.ShipmentJobStatus != "" {
+			if err := q.ClearOrderShipmentJobStatus(ctx, ord.ID); err != nil {
 				return nil, err
 			}
 		}
@@ -2096,10 +2301,12 @@ func transitionOrderToShippingInTx(
 	ctx context.Context,
 	q *db.Queries,
 	ord db.Order,
-	trackingCode, note, traceID, traceparent string,
+	carrierCode, serviceCode, trackingCode, note, traceID, traceparent string,
 ) (db.Order, error) {
 	updated, err := q.UpdateOrderShippedFromWebhook(ctx, db.UpdateOrderShippedFromWebhookParams{
 		ID:           ord.ID,
+		CarrierCode:  strings.TrimSpace(carrierCode),
+		ServiceCode:  strings.TrimSpace(serviceCode),
 		TrackingCode: trackingCode,
 	})
 	if err != nil {
@@ -2181,6 +2388,10 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 		return nil, err
 	}
 
+	now := params.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 	curStatus := statemachine.StringToStatus(ord.Status)
 	shipStatus := strings.ToLower(strings.TrimSpace(params.ShipmentStatus))
 	note := strings.TrimSpace(params.Description)
@@ -2190,9 +2401,51 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 
 	outcome := &ShipmentUpdateOutcome{}
 
-	// P1-5: Match tracking_code when the order already has one assigned (ignore stale replaced shipments).
 	curTracking := strings.TrimSpace(ord.TrackingCode)
 	evTracking := strings.TrimSpace(params.TrackingCode)
+	evCarrier := strings.TrimSpace(params.CarrierCode)
+	evService := strings.TrimSpace(params.ServiceCode)
+	evLabel := strings.TrimSpace(params.LabelURL)
+
+	// E18: Cancelled order with no recorded tracking_code receiving any active forward shipment event
+	// (created/picking/picked/in_transit/delivering/delivered/etc., anything except "cancelled") — or a
+	// newly created shipment with a different tracking_code — must trigger compensating CancelShipment
+	// (and flag orphan_shipment_needs_manual_review if the carrier already picked up).
+	// Skip once orphan_shipment_needs_manual_review is already set so repeated events cannot loop.
+	// Do not insert a timeline row here: clean/NotFound cancels leave the cancelled order's timeline
+	// untouched (preserving P1-5), while FailedPrecondition records MANUAL_REVIEW_REQUIRED.
+	if curStatus == orderv1.OrderStatus_ORDER_STATUS_CANCELLED &&
+		shipStatus != "" &&
+		shipStatus != "cancelled" &&
+		(curTracking == "" || (shipStatus == "created" && evTracking != "" && !strings.EqualFold(evTracking, curTracking))) {
+		if !ord.OrphanShipmentNeedsManualReview {
+			if err := q.SetOrderPendingShipmentCancel(ctx, db.SetOrderPendingShipmentCancelParams{
+				ID:                    ord.ID,
+				PendingShipmentCancel: true,
+				MarkedAt:              now,
+				Token:                 "",
+			}); err != nil {
+				return nil, err
+			}
+			if ord.ShipmentJobStatus != "" {
+				if err := q.ClearOrderShipmentJobStatus(ctx, ord.ID); err != nil {
+					return nil, err
+				}
+			}
+			outcome.NeedsOrphanShipmentCancel = true
+		}
+		agg, err := loadOrderAggregate(ctx, q, ord.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		outcome.Order = agg
+		return outcome, nil
+	}
+
+	// P1-5: Match tracking_code when the order already has one assigned (ignore stale replaced shipments).
 	if curTracking != "" && (evTracking == "" || !strings.EqualFold(evTracking, curTracking)) {
 		if err := tx.Commit(ctx); err != nil {
 			return nil, err
@@ -2221,13 +2474,83 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 	}
 
 	switch shipStatus {
+	case "created":
+		if evTracking == "" {
+			break
+		}
+		carrierCode := evCarrier
+		if carrierCode == "" {
+			carrierCode = ord.CarrierCode
+		}
+		serviceCode := evService
+		if serviceCode == "" {
+			serviceCode = ord.ServiceCode
+		}
+		labelURL := evLabel
+		if labelURL == "" {
+			labelURL = ord.LabelURL
+		}
+		if curStatus == orderv1.OrderStatus_ORDER_STATUS_SHIPPING {
+			// Out-of-order created event after delivering already advanced the order to SHIPPING:
+			// fill label/carrier metadata and clear job/pending flags without downgrading status.
+			if _, err := q.UpdateOrderShippingLabel(ctx, db.UpdateOrderShippingLabelParams{
+				ID:          ord.ID,
+				CarrierCode: carrierCode,
+				ServiceCode: serviceCode,
+				LabelURL:    labelURL,
+			}); err != nil {
+				return nil, err
+			}
+		} else if curStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED || curStatus == orderv1.OrderStatus_ORDER_STATUS_PREPARING {
+			if curStatus == orderv1.OrderStatus_ORDER_STATUS_PREPARING && curTracking != "" && strings.EqualFold(curTracking, evTracking) {
+				// Idempotent replay: tracking already attached on PREPARING order.
+				if (labelURL != "" && ord.LabelURL != labelURL) || ord.ShipmentJobStatus != "" || ord.PendingShipmentCancel {
+					if _, err := q.UpdateOrderShippingLabel(ctx, db.UpdateOrderShippingLabelParams{
+						ID:          ord.ID,
+						CarrierCode: carrierCode,
+						ServiceCode: serviceCode,
+						LabelURL:    labelURL,
+					}); err != nil {
+						return nil, err
+					}
+				}
+			} else {
+				if _, err := q.UpdateOrderPreparingWithShipment(ctx, db.UpdateOrderPreparingWithShipmentParams{
+					ID:           ord.ID,
+					CarrierCode:  carrierCode,
+					ServiceCode:  serviceCode,
+					TrackingCode: evTracking,
+					LabelURL:     labelURL,
+				}); err != nil {
+					return nil, err
+				}
+				createdNote := fmt.Sprintf("Shipment created asynchronously via %s (tracking: %s)", carrierCode, evTracking)
+				if strings.TrimSpace(params.Description) != "" {
+					createdNote = strings.TrimSpace(params.Description)
+				}
+				if _, err := q.InsertTimelineEvent(ctx, db.InsertTimelineEventParams{
+					ID:         uuid.NewString(),
+					OrderID:    ord.ID,
+					FromStatus: ord.Status,
+					ToStatus:   statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_PREPARING),
+					ActorID:    "shipping-service",
+					ActorRole:  "system",
+					Note:       createdNote,
+				}); err != nil {
+					return nil, err
+				}
+				outcome.TransitionedFrom = curStatus
+				outcome.TransitionedTo = orderv1.OrderStatus_ORDER_STATUS_PREPARING
+			}
+		}
+
 	case "delivering", "failed", "returning":
 		if curStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED || curStatus == orderv1.OrderStatus_ORDER_STATUS_PREPARING {
 			shipNote := note
 			if shipStatus != "delivering" {
 				shipNote = "Shipment in transit (" + shipStatus + ")"
 			}
-			updated, err := transitionOrderToShippingInTx(ctx, q, ord, params.TrackingCode, shipNote, params.TraceID, params.Traceparent)
+			updated, err := transitionOrderToShippingInTx(ctx, q, ord, evCarrier, evService, params.TrackingCode, shipNote, params.TraceID, params.Traceparent)
 			if err != nil {
 				return nil, err
 			}
@@ -2272,7 +2595,7 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 
 	case "delivered":
 		if curStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED || curStatus == orderv1.OrderStatus_ORDER_STATUS_PREPARING {
-			updated, err := transitionOrderToShippingInTx(ctx, q, ord, params.TrackingCode, "Shipment picked up and in transit", params.TraceID, params.Traceparent)
+			updated, err := transitionOrderToShippingInTx(ctx, q, ord, evCarrier, evService, params.TrackingCode, "Shipment picked up and in transit", params.TraceID, params.Traceparent)
 			if err != nil {
 				return nil, err
 			}
@@ -2286,6 +2609,7 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 			}
 			updated, err := q.UpdateOrderDelivered(ctx, db.UpdateOrderDeliveredParams{
 				ID:           ord.ID,
+				CarrierCode:  evCarrier,
 				TrackingCode: params.TrackingCode,
 			})
 			if err != nil {
@@ -2302,11 +2626,16 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 			}); err != nil {
 				return nil, err
 			}
+			deliveredCarrier := strings.TrimSpace(updated.CarrierCode)
+			if deliveredCarrier == "" {
+				deliveredCarrier = evCarrier
+			}
 			payloadBytes, err := json.Marshal(events.OrderDeliveredPayload{
 				OrderID:      updated.ID,
 				OrderCode:    updated.OrderCode,
 				BuyerID:      updated.BuyerID,
 				ShopID:       updated.ShopID,
+				CarrierCode:  deliveredCarrier,
 				TrackingCode: updated.TrackingCode,
 			})
 			if err != nil {
@@ -2327,7 +2656,7 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 
 	case "returned":
 		if curStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED || curStatus == orderv1.OrderStatus_ORDER_STATUS_PREPARING {
-			updated, err := transitionOrderToShippingInTx(ctx, q, ord, params.TrackingCode, "Shipment picked up and in transit", params.TraceID, params.Traceparent)
+			updated, err := transitionOrderToShippingInTx(ctx, q, ord, evCarrier, evService, params.TrackingCode, "Shipment picked up and in transit", params.TraceID, params.Traceparent)
 			if err != nil {
 				return nil, err
 			}

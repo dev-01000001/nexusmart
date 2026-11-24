@@ -142,7 +142,7 @@ func (a *Aggregator) CalculateFeeForCarriers(
 					slog.String("carrier", provider.Code()),
 					slog.String("error", err.Error()),
 				)
-				if IsNonRetryable(err) && !errors.Is(err, ErrInvalidCarrierToken) {
+				if IsNonRetryable(err) && !errors.Is(err, ErrInvalidCarrierToken) && !errors.Is(err, ErrMissingGHNMapping) {
 					mu.Lock()
 					nonRetryableFailures++
 					mu.Unlock()

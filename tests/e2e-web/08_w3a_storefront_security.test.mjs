@@ -4,14 +4,13 @@ import { describe, test } from "node:test";
 import {
   WebClient,
   calculateShippingQuote,
-  config,
   createBuyerAddress,
   ensureRateBudget,
-  extractOtp,
   listCatalogProducts,
   pickSingleShopSku,
-  pollUntil,
   registerAndLoginBuyer,
+  snapshotMailpitIds,
+  waitForRecentOtp,
 } from "./helpers.mjs";
 
 const SELLER_EMAIL = process.env.E2E_SELLER_EMAIL || "seller.bachdang@nexusmart.local";
@@ -49,65 +48,6 @@ function hasObjectKeyDeep(value, targetKey) {
     if (hasObjectKeyDeep(v, targetKey)) return true;
   }
   return false;
-}
-
-async function snapshotMailpitIds(email) {
-  const target = email.trim().toLowerCase();
-  const seen = new Set();
-  const listRes = await fetch(`${config.mailpitUrl}/api/v1/messages?limit=100`, {
-    signal: AbortSignal.timeout(config.requestTimeoutMs),
-  });
-  if (!listRes.ok) return seen;
-  const list = await listRes.json();
-  for (const summary of list?.messages ?? []) {
-    const recipients = Array.isArray(summary?.To) ? summary.To : [];
-    if (recipients.some((r) => String(r?.Address ?? "").trim().toLowerCase() === target)) {
-      if (summary?.ID) seen.add(summary.ID);
-    }
-  }
-  return seen;
-}
-
-async function waitForRecentOtp(email, seenIds = new Set()) {
-  const target = email.trim().toLowerCase();
-  return pollUntil(
-    async () => {
-      const listRes = await fetch(`${config.mailpitUrl}/api/v1/messages?limit=100`, {
-        signal: AbortSignal.timeout(config.requestTimeoutMs),
-      });
-      if (!listRes.ok) {
-        return { done: false, detail: `mailpit list HTTP ${listRes.status}` };
-      }
-      const list = await listRes.json();
-      const messages = Array.isArray(list?.messages) ? list.messages : [];
-      for (const summary of messages) {
-        if (summary?.ID && seenIds.has(summary.ID)) continue;
-        const recipients = Array.isArray(summary?.To) ? summary.To : [];
-        const matched = recipients.some(
-          (r) => String(r?.Address ?? "").trim().toLowerCase() === target
-        );
-        if (!matched) continue;
-
-        const msgRes = await fetch(
-          `${config.mailpitUrl}/api/v1/message/${encodeURIComponent(summary.ID)}`,
-          { signal: AbortSignal.timeout(config.requestTimeoutMs) }
-        );
-        if (!msgRes.ok) continue;
-        const full = await msgRes.json();
-        const otp = extractOtp(full?.Subject, full?.Text, full?.HTML, summary?.Snippet);
-        if (otp) {
-          if (summary?.ID) seenIds.add(summary.ID);
-          return { done: true, value: otp };
-        }
-      }
-      return { done: false, detail: `no new OTP email for ${target}` };
-    },
-    {
-      timeoutMs: config.pollTimeoutMs,
-      intervalMs: config.pollIntervalMs,
-      label: `new OTP email for ${target}`,
-    }
-  );
 }
 
 async function createApprovedSellerProduct(
@@ -1094,9 +1034,9 @@ describe("08. Wave 3a storefront, >100 products flash sale, D1/D6/D8/D11 & promo
   });
 
   test("6. D11 & P2-6: Pre-persist failure retries same key, completed-key conflict returns sanitized 409, and cancelled-order replay returns CANCELLED status", async () => {
-    await ensureRateBudget(35, { label: "w3a-d11-checkout" });
+    await ensureRateBudget(40, { label: "w3a-d11-checkout" });
     const buyer = new WebClient();
-    const buyerAcct = await registerAndLoginBuyer(buyer, "w3a-d11-buyer");
+    const buyerAcct = await registerAndLoginBuyer(buyer, "w3a-d11-buyer", { verifyPhone: true });
     const { address, province, ward } = await createBuyerAddress(buyer, buyerAcct);
     const picked = await pickSingleShopSku(buyer, { minStock: 2 });
     const quote = await calculateShippingQuote(buyer, {

@@ -29,8 +29,9 @@ WHERE LOWER(email) = LOWER($1)
 LIMIT 1;
 
 -- name: GetUserByPhone :one
+-- E19-bis: looks up the verified owner of a canonical non-empty phone number.
 SELECT * FROM users
-WHERE phone = $1 AND phone <> ''
+WHERE phone = $1 AND phone <> '' AND phone_verified = TRUE
 LIMIT 1;
 
 -- name: ActivateUser :one
@@ -47,6 +48,14 @@ SET full_name = $2,
     phone = $3,
     avatar_url = $4,
     phone_verified = $5,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: MarkUserPhoneVerified :one
+UPDATE users
+SET phone = $2,
+    phone_verified = TRUE,
     updated_at = NOW()
 WHERE id = $1
 RETURNING *;

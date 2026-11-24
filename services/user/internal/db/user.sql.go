@@ -1155,10 +1155,11 @@ func (q *Queries) GetUserByIDForUpdate(ctx context.Context, id string) (User, er
 
 const getUserByPhone = `-- name: GetUserByPhone :one
 SELECT id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason FROM users
-WHERE phone = $1 AND phone <> ''
+WHERE phone = $1 AND phone <> '' AND phone_verified = TRUE
 LIMIT 1
 `
 
+// E19-bis: looks up the verified owner of a canonical non-empty phone number.
 func (q *Queries) GetUserByPhone(ctx context.Context, phone string) (User, error) {
 	row := q.db.QueryRow(ctx, getUserByPhone, phone)
 	var i User
@@ -1759,6 +1760,42 @@ type MarkShopBankAccountPublishFailedParams struct {
 func (q *Queries) MarkShopBankAccountPublishFailed(ctx context.Context, arg MarkShopBankAccountPublishFailedParams) error {
 	_, err := q.db.Exec(ctx, markShopBankAccountPublishFailed, arg.ID, arg.UpdatedAt)
 	return err
+}
+
+const markUserPhoneVerified = `-- name: MarkUserPhoneVerified :one
+UPDATE users
+SET phone = $2,
+    phone_verified = TRUE,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, full_name, email, phone, password_hash, role, status, shop_id, phone_verified, cod_rejected_count, avatar_url, created_at, updated_at, lock_reason
+`
+
+type MarkUserPhoneVerifiedParams struct {
+	ID    string `json:"id"`
+	Phone string `json:"phone"`
+}
+
+func (q *Queries) MarkUserPhoneVerified(ctx context.Context, arg MarkUserPhoneVerifiedParams) (User, error) {
+	row := q.db.QueryRow(ctx, markUserPhoneVerified, arg.ID, arg.Phone)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.FullName,
+		&i.Email,
+		&i.Phone,
+		&i.PasswordHash,
+		&i.Role,
+		&i.Status,
+		&i.ShopID,
+		&i.PhoneVerified,
+		&i.CODRejectedCount,
+		&i.AvatarURL,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LockReason,
+	)
+	return i, err
 }
 
 const recordShopBankAccountOTPFailure = `-- name: RecordShopBankAccountOTPFailure :one

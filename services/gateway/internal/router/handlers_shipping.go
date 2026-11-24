@@ -26,6 +26,7 @@ type wardDTO struct {
 	Code         string `json:"code"`
 	ProvinceCode string `json:"province_code"`
 	Name         string `json:"name"`
+	CODSupported bool   `json:"cod_supported"`
 }
 
 type carrierQuoteDTO struct {
@@ -36,6 +37,7 @@ type carrierQuoteDTO struct {
 	FeeVND        int64  `json:"fee_vnd"`
 	EstimatedDays int32  `json:"estimated_days"`
 	IsFallback    bool   `json:"is_fallback"`
+	CODSupported  bool   `json:"cod_supported"`
 }
 
 type shipmentDTO struct {
@@ -112,6 +114,8 @@ func shipmentStatusString(st shippingv1.ShipmentStatus) string {
 		return "RETURNED"
 	case shippingv1.ShipmentStatus_SHIPMENT_STATUS_CANCELLED:
 		return "CANCELLED"
+	case shippingv1.ShipmentStatus_SHIPMENT_STATUS_QUEUED:
+		return "QUEUED"
 	default:
 		return ""
 	}
@@ -272,6 +276,7 @@ func (h *handler) handleListWards(w http.ResponseWriter, r *http.Request) {
 			Code:         wd.GetCode(),
 			ProvinceCode: wd.GetProvinceCode(),
 			Name:         wd.GetName(),
+			CODSupported: wd.GetCodSupported(),
 		})
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"wards": wards})
@@ -354,6 +359,9 @@ func (h *handler) handleCalculateShippingFee(w http.ResponseWriter, r *http.Requ
 	shopID := strings.TrimSpace(body.ShopID)
 	weightGrams := body.WeightGrams
 	codAmountVND := body.CODAmountVND
+	var fallbackWeightItemQty int32
+
+	_, authenticated := auth.ClaimsFromContext(r.Context())
 
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
@@ -429,18 +437,21 @@ func (h *handler) handleCalculateShippingFee(w http.ResponseWriter, r *http.Requ
 		}
 
 		defaultWeight := defaultShopWeightGrams
-		st, err := h.fetchShopShippingSettings(ctx, shopID)
-		if err != nil {
-			if status.Code(err) != codes.NotFound {
-				httpx.WriteGRPCError(w, r, err)
-				return
+		if authenticated {
+			st, err := h.fetchShopShippingSettings(ctx, shopID)
+			if err != nil {
+				if status.Code(err) != codes.NotFound {
+					httpx.WriteGRPCError(w, r, err)
+					return
+				}
+			} else if st != nil && st.GetDefaultWeightGrams() > 0 {
+				defaultWeight = int64(st.GetDefaultWeightGrams())
 			}
-		} else if st != nil && st.GetDefaultWeightGrams() > 0 {
-			defaultWeight = int64(st.GetDefaultWeightGrams())
 		}
 
 		var (
 			totalWeightGrams int64
+			fallbackQty      int64
 			subtotalVND      int64
 		)
 		for _, skuID := range skuIDs {
@@ -449,18 +460,30 @@ func (h *handler) handleCalculateShippingFee(w http.ResponseWriter, r *http.Requ
 
 			unitWeight := int64(sk.GetWeightGrams())
 			if unitWeight <= 0 {
-				unitWeight = defaultWeight
+				if !authenticated {
+					// Anonymous callers never query GetShopShippingSettings (E17): defer default_weight_grams
+					// multiplication to ShippingService via fallback_weight_item_qty.
+					if fallbackQty > math.MaxInt32-qty {
+						httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "total item quantity exceeds maximum supported value")
+						return
+					}
+					fallbackQty += qty
+				} else {
+					unitWeight = defaultWeight
+				}
 			}
-			if qty > math.MaxInt64/unitWeight {
-				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "total weight exceeds maximum supported value")
-				return
+			if unitWeight > 0 {
+				if qty > math.MaxInt64/unitWeight {
+					httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "total weight exceeds maximum supported value")
+					return
+				}
+				lineWeight := unitWeight * qty
+				if totalWeightGrams > math.MaxInt64-lineWeight {
+					httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "total weight exceeds maximum supported value")
+					return
+				}
+				totalWeightGrams += lineWeight
 			}
-			lineWeight := unitWeight * qty
-			if totalWeightGrams > math.MaxInt64-lineWeight {
-				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "total weight exceeds maximum supported value")
-				return
-			}
-			totalWeightGrams += lineWeight
 
 			unitPrice := sk.GetPriceVnd()
 			if unitPrice > 0 && qty > math.MaxInt64/unitPrice {
@@ -474,7 +497,7 @@ func (h *handler) handleCalculateShippingFee(w http.ResponseWriter, r *http.Requ
 			}
 			subtotalVND += lineSubtotal
 		}
-		if totalWeightGrams <= 0 {
+		if authenticated && totalWeightGrams <= 0 {
 			totalWeightGrams = defaultWeight
 		}
 		if totalWeightGrams > math.MaxInt32 {
@@ -482,6 +505,7 @@ func (h *handler) handleCalculateShippingFee(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		weightGrams = int32(totalWeightGrams)
+		fallbackWeightItemQty = int32(fallbackQty)
 		if isCOD {
 			codAmountVND = subtotalVND
 		} else {
@@ -490,13 +514,14 @@ func (h *handler) handleCalculateShippingFee(w http.ResponseWriter, r *http.Requ
 	}
 
 	resp, err := h.clients.Shipping.CalculateFee(ctx, &shippingv1.CalculateFeeRequest{
-		ShopId:           shopID,
-		FromProvinceCode: body.FromProvinceCode,
-		FromWardCode:     body.FromWardCode,
-		ToProvinceCode:   body.ToProvinceCode,
-		ToWardCode:       body.ToWardCode,
-		WeightGrams:      weightGrams,
-		CodAmountVnd:     codAmountVND,
+		ShopId:                shopID,
+		FromProvinceCode:      body.FromProvinceCode,
+		FromWardCode:          body.FromWardCode,
+		ToProvinceCode:        body.ToProvinceCode,
+		ToWardCode:            body.ToWardCode,
+		WeightGrams:           weightGrams,
+		CodAmountVnd:          codAmountVND,
+		FallbackWeightItemQty: fallbackWeightItemQty,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
@@ -512,9 +537,13 @@ func (h *handler) handleCalculateShippingFee(w http.ResponseWriter, r *http.Requ
 			FeeVND:        q.GetFeeVnd(),
 			EstimatedDays: q.GetEstimatedDays(),
 			IsFallback:    q.GetIsFallback(),
+			CODSupported:  q.GetCodSupported(),
 		})
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"quotes": quotes})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"quotes":       quotes,
+		"is_estimated": resp.GetIsEstimated(),
+	})
 }
 
 func (h *handler) handleGetShipment(w http.ResponseWriter, r *http.Request) {

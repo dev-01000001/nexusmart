@@ -30,9 +30,29 @@ func TestQuoteCacheKeyRequiresRealOriginAndDestination(t *testing.T) {
 		WeightGrams:      250,
 		CODAmountVND:     200000,
 	})
-	want := "shipping:quotes:v2:all:79:79001:79:79001:300:1"
+	want := "shipping:quotes:v2:all:79:79001:79:79001:300:200000"
 	if validKey != want {
 		t.Fatalf("quoteCacheKey() = %q, want %q", validKey, want)
+	}
+
+	// Distinct COD amounts must produce distinct cache keys (GHN insurance fee depends on COD amount).
+	kCOD0 := quoteCacheKey(carrier.FeeRequest{
+		FromProvinceCode: "79", FromWardCode: "26740",
+		ToProvinceCode: "01", ToWardCode: "00070",
+		WeightGrams: 500, CODAmountVND: 0,
+	})
+	kCOD200k := quoteCacheKey(carrier.FeeRequest{
+		FromProvinceCode: "79", FromWardCode: "26740",
+		ToProvinceCode: "01", ToWardCode: "00070",
+		WeightGrams: 500, CODAmountVND: 200000,
+	})
+	kCOD500k := quoteCacheKey(carrier.FeeRequest{
+		FromProvinceCode: "79", FromWardCode: "26740",
+		ToProvinceCode: "01", ToWardCode: "00070",
+		WeightGrams: 500, CODAmountVND: 500000,
+	})
+	if kCOD0 == kCOD200k || kCOD200k == kCOD500k || kCOD0 == kCOD500k {
+		t.Fatalf("distinct COD amounts must not collide in quote cache: k0=%q k200k=%q k500k=%q", kCOD0, kCOD200k, kCOD500k)
 	}
 
 	// AllowedCarriers must be order-independent and isolate distinct carrier subsets.

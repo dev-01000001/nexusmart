@@ -721,6 +721,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		seller := env.createApprovedSeller(t, "ordw2b-s3")
 		otherSeller := env.createApprovedSeller(t, "ordw2b-s3-other")
 		buyer := env.registerVerifyAndLogin(t, "ordw2b-b3")
+		env.verifyBuyerPhone(t, buyer)
 		addr := env.addAddress(t, buyer)
 
 		prodA, skuA := env.createApprovedProduct(t, seller, cat.ID, "OrdW2B Report ProdA", 200000, 20, 500)
@@ -899,6 +900,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 	t.Run("4_AdminManualReviewQueue_RBAC_AndVisibility", func(t *testing.T) {
 		seller := env.createApprovedSeller(t, "ordw2b-s4")
 		buyer := env.registerVerifyAndLogin(t, "ordw2b-b4")
+		env.verifyBuyerPhone(t, buyer)
 		addr := env.addAddress(t, buyer)
 		_, sku := env.createApprovedProduct(t, seller, cat.ID, "OrdW2B Review Item", 120000, 10, 300)
 		quote := env.calculateShippingQuote(t, buyer.AccessToken, seller.ShopID, 300, 120000)
@@ -1236,6 +1238,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 	t.Run("8_ConcurrentCheckout_SameIdempotencyKey_NoAborted", func(t *testing.T) {
 		seller := env.createApprovedSeller(t, "ordw2b-s8")
 		buyer := env.registerVerifyAndLogin(t, "ordw2b-b8")
+		env.verifyBuyerPhone(t, buyer)
 		addr := env.addAddress(t, buyer)
 		prod, sku := env.createApprovedProduct(t, seller, cat.ID, "OrdW2B Concurrent Idem", 180000, 20, 400)
 		quote := env.calculateShippingQuote(t, buyer.AccessToken, seller.ShopID, 400, 180000)

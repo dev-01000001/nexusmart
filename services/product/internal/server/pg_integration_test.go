@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -25,7 +26,9 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
 	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
+	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/jetstream"
 	"github.com/nexusmart/core/services/product/internal/events"
 	"github.com/nexusmart/core/services/product/internal/store"
@@ -1606,7 +1609,7 @@ func TestPGStore_W2BIntegration(t *testing.T) {
 			}
 			var preFiles []string
 			for _, e := range entries {
-				if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") && !strings.HasPrefix(e.Name(), "000007_") {
+				if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") && e.Name() < "000007_" {
 					preFiles = append(preFiles, e.Name())
 				}
 			}
@@ -1686,6 +1689,720 @@ func TestPGStore_W2BIntegration(t *testing.T) {
 			}
 		})
 	})
+
+	// 9. W3B (E5–E14, E6-bis, E10-bis): real Postgres reviews race (10 goroutines), ratings, moderation, prohibited category tree, rescan, E13 backfill & stubs.
+	t.Run("W3B_Reviews_Moderation_Discontinued_RealPG", func(t *testing.T) {
+		t.Run("CreateReview_10GoroutineRace_And_RatingsConsistency", func(t *testing.T) {
+			srv := New(pgStore, nil)
+			cat, err := srv.CreateCategory(adminCtx, &productv1.CreateCategoryRequest{
+				Name: "PG W3B Rev Cat " + runPrefix, Slug: runPrefix + "-w3b-rev", CommissionRateBps: 500,
+			})
+			if err != nil {
+				t.Fatalf("CreateCategory: %v", err)
+			}
+			prod, err := srv.CreateProduct(sellerCtx, &productv1.CreateProductRequest{
+				CategoryId: cat.GetCategory().GetId(),
+				Name:       "PG W3B Reviewed Product " + runPrefix,
+				Slug:       runPrefix + "-w3b-reviewed",
+				Skus:       []*productv1.SKUInput{{SkuCode: runPrefix + "-REV-1", Name: "L / Đen", PriceVnd: 250000, Stock: 20}},
+			})
+			if err != nil {
+				t.Fatalf("CreateProduct: %v", err)
+			}
+			prodID := prod.GetProduct().GetId()
+			skuID := prod.GetProduct().GetSkus()[0].GetId()
+			if _, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
+				ProductId: prodID,
+				Decision:  productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_APPROVE,
+			}); err != nil {
+				t.Fatalf("Approve: %v", err)
+			}
+			var updatedAtBefore time.Time
+			if err := pool.QueryRow(ctx, `SELECT updated_at FROM products WHERE id = $1`, prodID).Scan(&updatedAtBefore); err != nil {
+				t.Fatalf("query products.updated_at before review: %v", err)
+			}
+
+			raceOrderID := runPrefix + "-ord-race"
+			raceItemID := runPrefix + "-oi-race"
+			secondOrderID := runPrefix + "-ord-second"
+			secondItemID := runPrefix + "-oi-second"
+			thirdItemID := runPrefix + "-oi-third"
+
+			srv.SetOrderClient(&fakeOrderClient{
+				fn: func(_ context.Context, req *orderv1.GetOrderRequest) (*orderv1.GetOrderResponse, error) {
+					switch req.GetOrderId() {
+					case raceOrderID:
+						return &orderv1.GetOrderResponse{Order: &orderv1.Order{
+							Id: raceOrderID, BuyerId: "pg-buyer-1", ShopId: "pg-shop-1",
+							Status: orderv1.OrderStatus_ORDER_STATUS_COMPLETED,
+							Items:  []*orderv1.OrderItem{{Id: raceItemID, OrderId: raceOrderID, ProductId: prodID, SkuId: skuID, SkuName: "L / Đen"}},
+						}}, nil
+					case secondOrderID:
+						return &orderv1.GetOrderResponse{Order: &orderv1.Order{
+							Id: secondOrderID, BuyerId: "pg-buyer-2", ShopId: "pg-shop-1",
+							Status: orderv1.OrderStatus_ORDER_STATUS_COMPLETED,
+							Items: []*orderv1.OrderItem{
+								{Id: secondItemID, OrderId: secondOrderID, ProductId: prodID, SkuId: skuID, SkuName: "L / Đen"},
+								{Id: thirdItemID, OrderId: secondOrderID, ProductId: prodID, SkuId: skuID, SkuName: "L / Đen"},
+							},
+						}}, nil
+					default:
+						return nil, status.Error(codes.NotFound, "not found")
+					}
+				},
+			})
+			srv.SetUserClient(&fakeUserClient{
+				fn: func(_ context.Context, req *userv1.GetProfileRequest) (*userv1.GetProfileResponse, error) {
+					if req.GetUserId() == "pg-buyer-1" {
+						return &userv1.GetProfileResponse{User: &userv1.User{Id: "pg-buyer-1", FullName: "Nguyễn Minh Linh"}}, nil
+					}
+					return nil, status.Error(codes.Unavailable, "user svc down")
+				},
+			})
+
+			// 10 goroutines race on the EXACT same order_item_id on real Postgres -> 1 OK, 9 AlreadyExists, review_count +1, 1 outbox!
+			buyer1Ctx := ctxWithRoleAndToken("pg-buyer-1", "buyer", "", "Bearer pg-b1")
+			const workers = 10
+			var okCnt, dupCnt atomic.Int32
+			otherErrCh := make(chan error, workers)
+			start := make(chan struct{})
+			var wg sync.WaitGroup
+			wg.Add(workers)
+			for i := 0; i < workers; i++ {
+				go func(idx int) {
+					defer wg.Done()
+					<-start
+					_, rErr := srv.CreateReview(buyer1Ctx, &productv1.CreateReviewRequest{
+						OrderId:     raceOrderID,
+						OrderItemId: raceItemID,
+						Rating:      5,
+						Comment:     fmt.Sprintf("Rất tốt #%d", idx),
+						ImageUrls:   []string{"https://cdn.example.com/ok.jpg"},
+					})
+					if rErr == nil {
+						okCnt.Add(1)
+					} else if status.Code(rErr) == codes.AlreadyExists {
+						dupCnt.Add(1)
+					} else {
+						otherErrCh <- rErr
+					}
+				}(i)
+			}
+			close(start)
+			wg.Wait()
+			close(otherErrCh)
+			for e := range otherErrCh {
+				t.Fatalf("unexpected concurrent CreateReview error: %v", e)
+			}
+			if okCnt.Load() != 1 || dupCnt.Load() != 9 {
+				t.Fatalf("10-goroutine CreateReview race: ok=%d alreadyExists=%d, want 1 and 9", okCnt.Load(), dupCnt.Load())
+			}
+
+			var dbReviewCount int32
+			var dbRatingSum int64
+			var updatedAtAfter time.Time
+			if err := pool.QueryRow(ctx, `SELECT review_count, rating_sum, updated_at FROM products WHERE id = $1`, prodID).Scan(&dbReviewCount, &dbRatingSum, &updatedAtAfter); err != nil {
+				t.Fatalf("query products rating: %v", err)
+			}
+			if dbReviewCount != 1 || dbRatingSum != 5 {
+				t.Fatalf("after race: review_count=%d rating_sum=%d, want 1 and 5", dbReviewCount, dbRatingSum)
+			}
+			if !updatedAtAfter.Equal(updatedAtBefore) {
+				t.Fatalf("PG IncrementProductRating mutated products.updated_at: before=%v after=%v", updatedAtBefore, updatedAtAfter)
+			}
+			var outboxCnt int64
+			if err := pool.QueryRow(ctx,
+				`SELECT COUNT(*) FROM outbox_events WHERE event_type = 'review.created' AND payload_json->>'order_item_id' = $1`,
+				raceItemID,
+			).Scan(&outboxCnt); err != nil {
+				t.Fatalf("count review.created outbox: %v", err)
+			}
+			if outboxCnt != 1 {
+				t.Fatalf("expected EXACTLY 1 review.created outbox row for %s, got %d", raceItemID, outboxCnt)
+			}
+
+			// Add 2 concurrent reviews (ratings 5 and 4) on different order items of the same product -> sum=14, count=3, avg_x100=467.
+			buyer2Ctx := ctxWithRoleAndToken("pg-buyer-2", "buyer", "", "Bearer pg-b2")
+			start2 := make(chan struct{})
+			var wg2 sync.WaitGroup
+			errCh2 := make(chan error, 2)
+			wg2.Add(2)
+			go func() {
+				defer wg2.Done()
+				<-start2
+				_, e := srv.CreateReview(buyer2Ctx, &productv1.CreateReviewRequest{
+					OrderId: secondOrderID, OrderItemId: secondItemID, Rating: 5, Comment: "Chuẩn size",
+				})
+				if e != nil {
+					errCh2 <- e
+				}
+			}()
+			go func() {
+				defer wg2.Done()
+				<-start2
+				_, e := srv.CreateReview(buyer2Ctx, &productv1.CreateReviewRequest{
+					OrderId: secondOrderID, OrderItemId: thirdItemID, Rating: 4, Comment: "Giao hơi lâu",
+				})
+				if e != nil {
+					errCh2 <- e
+				}
+			}()
+			close(start2)
+			wg2.Wait()
+			close(errCh2)
+			for e := range errCh2 {
+				t.Fatalf("concurrent distinct-item review failed: %v", e)
+			}
+
+			// Verify all public Product read paths + ListProductReviews agree (rating_avg_x100=467, review_count=3) and E6-bis redaction holds.
+			gp, err := srv.GetProduct(ctx, &productv1.GetProductRequest{Slug: runPrefix + "-w3b-reviewed"})
+			if err != nil || gp.GetProduct().GetReviewCount() != 3 || gp.GetProduct().GetRatingAvgX100() != 467 {
+				t.Fatalf("PG GetProduct rating = %d/%d err=%v, want 3/467", gp.GetProduct().GetReviewCount(), gp.GetProduct().GetRatingAvgX100(), err)
+			}
+			lp, err := srv.ListProducts(ctx, &productv1.ListProductsRequest{SkuIds: []string{skuID}})
+			if err != nil || len(lp.GetProducts()) != 1 || lp.GetProducts()[0].GetReviewCount() != 3 || lp.GetProducts()[0].GetRatingAvgX100() != 467 {
+				t.Fatalf("PG ListProducts(sku_ids) rating = %+v err=%v", lp.GetProducts(), err)
+			}
+			pubRevs, err := srv.ListProductReviews(ctx, &productv1.ListProductReviewsRequest{ProductId: prodID, Page: 1, PageSize: 10})
+			if err != nil || pubRevs.GetTotal() != 3 || pubRevs.GetReviewCount() != 3 || pubRevs.GetRatingAvgX100() != 467 {
+				t.Fatalf("PG ListProductReviews = total:%d count:%d avg:%d err=%v", pubRevs.GetTotal(), pubRevs.GetReviewCount(), pubRevs.GetRatingAvgX100(), err)
+			}
+			for _, r := range pubRevs.GetReviews() {
+				if r.GetBuyerId() != "" || r.GetOrderId() != "" || r.GetOrderItemId() != "" || r.GetSkuId() != "" {
+					t.Fatalf("PG E6-bis leaked private review fields: %+v", r)
+				}
+			}
+			ordRevs, err := srv.ListOrderReviews(buyer1Ctx, &productv1.ListOrderReviewsRequest{OrderId: raceOrderID})
+			if err != nil || len(ordRevs.GetReviews()) != 1 || ordRevs.GetReviews()[0].GetOrderItemId() != raceItemID || ordRevs.GetReviews()[0].GetBuyerName() != "N. Linh" {
+				t.Fatalf("PG ListOrderReviews = %+v err=%v", ordRevs.GetReviews(), err)
+			}
+		})
+
+		t.Run("Moderation_ProhibitedTree_Rescan_And_Discontinued_RealPG", func(t *testing.T) {
+			srv := New(pgStore, nil)
+
+			parentCat, err := srv.CreateCategory(adminCtx, &productv1.CreateCategoryRequest{
+				Name: "PG Prohib Parent " + runPrefix, Slug: runPrefix + "-prohib-p", CommissionRateBps: 500, IsProhibited: true,
+			})
+			if err != nil {
+				t.Fatalf("CreateCategory prohib parent: %v", err)
+			}
+			childCat, err := srv.CreateCategory(adminCtx, &productv1.CreateCategoryRequest{
+				Name: "PG Prohib Child " + runPrefix, Slug: runPrefix + "-prohib-c", ParentId: parentCat.GetCategory().GetId(), CommissionRateBps: 500,
+			})
+			if err != nil {
+				t.Fatalf("CreateCategory prohib child: %v", err)
+			}
+			if _, err := srv.CreateProduct(sellerCtx, &productv1.CreateProductRequest{
+				CategoryId: childCat.GetCategory().GetId(),
+				Name:       "PG Child Prohib Product",
+				Skus:       []*productv1.SKUInput{{SkuCode: runPrefix + "-PRH", PriceVnd: 100000, Stock: 5}},
+			}); status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "PROHIBITED_CATEGORY") {
+				t.Fatalf("PG CreateProduct in prohibited child: want PROHIBITED_CATEGORY, got %v", err)
+			}
+
+			normCat, err := srv.CreateCategory(adminCtx, &productv1.CreateCategoryRequest{
+				Name: "PG Mod Norm " + runPrefix, Slug: runPrefix + "-mod-norm", CommissionRateBps: 500,
+			})
+			if err != nil {
+				t.Fatalf("CreateCategory norm: %v", err)
+			}
+			normCatID := normCat.GetCategory().GetId()
+
+			// Seed 2 APPROVED products BEFORE creating banned keywords.
+			pBlock, err := srv.CreateProduct(sellerCtx, &productv1.CreateProductRequest{
+				CategoryId: normCatID,
+				Name:       "PG Rescan " + runPrefix + " độc hại xyz",
+				Slug:       runPrefix + "-rescan-block",
+				Skus:       []*productv1.SKUInput{{SkuCode: runPrefix + "-RSB", PriceVnd: 100000, Stock: 5}},
+			})
+			if err != nil {
+				t.Fatalf("CreateProduct pBlock: %v", err)
+			}
+			pReview, err := srv.CreateProduct(sellerCtx, &productv1.CreateProductRequest{
+				CategoryId: normCatID,
+				Name:       "PG Rescan " + runPrefix + " bảo hành trọn đời xyz",
+				Slug:       runPrefix + "-rescan-review",
+				Skus:       []*productv1.SKUInput{{SkuCode: runPrefix + "-RSR", PriceVnd: 100000, Stock: 5}},
+			})
+			if err != nil {
+				t.Fatalf("CreateProduct pReview: %v", err)
+			}
+			for _, pid := range []string{pBlock.GetProduct().GetId(), pReview.GetProduct().GetId()} {
+				if _, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
+					ProductId: pid, Decision: productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_APPROVE,
+				}); err != nil {
+					t.Fatalf("Approve %s: %v", pid, err)
+				}
+			}
+
+			// Create unique-scoped keywords so other tests' products are unaffected.
+			kwBlk, err := srv.CreateBannedKeyword(adminCtx, &productv1.CreateBannedKeywordRequest{
+				Term: runPrefix + " độc hại xyz", Action: productv1.BannedKeywordAction_BANNED_KEYWORD_ACTION_BLOCK,
+			})
+			if err != nil {
+				t.Fatalf("CreateBannedKeyword BLOCK: %v", err)
+			}
+			if _, err := srv.CreateBannedKeyword(adminCtx, &productv1.CreateBannedKeywordRequest{
+				Term: strings.ToUpper(runPrefix) + "   ĐỘC HẠI XYZ", Action: productv1.BannedKeywordAction_BANNED_KEYWORD_ACTION_BLOCK,
+			}); status.Code(err) != codes.AlreadyExists {
+				t.Fatalf("PG duplicate normalized_term: want AlreadyExists, got %v", err)
+			}
+			kwRev, err := srv.CreateBannedKeyword(adminCtx, &productv1.CreateBannedKeywordRequest{
+				Term: runPrefix + " bảo hành trọn đời xyz", Action: productv1.BannedKeywordAction_BANNED_KEYWORD_ACTION_REVIEW,
+			})
+			if err != nil {
+				t.Fatalf("CreateBannedKeyword REVIEW: %v", err)
+			}
+
+			// Preview finds pBlock.
+			prev, err := srv.PreviewBannedKeyword(adminCtx, &productv1.PreviewBannedKeywordRequest{Term: runPrefix + " độc hại xyz"})
+			if err != nil || prev.GetAffectedCount() != 1 {
+				t.Fatalf("PG PreviewBannedKeyword: affected=%d err=%v, want 1", prev.GetAffectedCount(), err)
+			}
+
+			// Rescan scoped to these 2 keyword IDs (loop cursor until has_more=false).
+			kwIDs := []string{kwBlk.GetKeyword().GetId(), kwRev.GetKeyword().GetId()}
+			var blockedTot, flaggedTot int32
+			cursor := ""
+			for {
+				res, rErr := srv.RescanProductsForBannedContent(adminCtx, &productv1.RescanProductsForBannedContentRequest{
+					KeywordIds: kwIDs, Cursor: cursor, Limit: 500,
+				})
+				if rErr != nil {
+					t.Fatalf("PG Rescan: %v", rErr)
+				}
+				blockedTot += res.GetBlockedCount()
+				flaggedTot += res.GetFlaggedCount()
+				if !res.GetHasMore() {
+					break
+				}
+				cursor = res.GetNextCursor()
+			}
+			if blockedTot != 1 || flaggedTot != 1 {
+				t.Fatalf("PG Rescan totals: blocked=%d flagged=%d, want 1 and 1", blockedTot, flaggedTot)
+			}
+
+			// Verify 1 REJECT product.reviewed outbox event for pBlock; re-run emits 0 more!
+			var rejOutbox int64
+			if err := pool.QueryRow(ctx,
+				`SELECT COUNT(*) FROM outbox_events WHERE event_type = 'product.reviewed' AND payload_json->>'product_id' = $1 AND payload_json->>'decision' = 'REJECT'`,
+				pBlock.GetProduct().GetId(),
+			).Scan(&rejOutbox); err != nil {
+				t.Fatalf("count REJECT outbox: %v", err)
+			}
+			if rejOutbox != 1 {
+				t.Fatalf("PG Rescan REJECT outbox count = %d, want 1", rejOutbox)
+			}
+			cursor = ""
+			for {
+				res, rErr := srv.RescanProductsForBannedContent(adminCtx, &productv1.RescanProductsForBannedContentRequest{
+					KeywordIds: kwIDs, Cursor: cursor, Limit: 500,
+				})
+				if rErr != nil {
+					t.Fatalf("PG Rescan rerun: %v", rErr)
+				}
+				if res.GetBlockedCount() != 0 || res.GetFlaggedCount() != 0 {
+					t.Fatalf("PG Rescan rerun not idempotent: blocked=%d flagged=%d", res.GetBlockedCount(), res.GetFlaggedCount())
+				}
+				if !res.GetHasMore() {
+					break
+				}
+				cursor = res.GetNextCursor()
+			}
+			var rejOutboxAfter int64
+			_ = pool.QueryRow(ctx,
+				`SELECT COUNT(*) FROM outbox_events WHERE event_type = 'product.reviewed' AND payload_json->>'product_id' = $1 AND payload_json->>'decision' = 'REJECT'`,
+				pBlock.GetProduct().GetId(),
+			).Scan(&rejOutboxAfter)
+			if rejOutboxAfter != 1 {
+				t.Fatalf("PG Rescan rerun emitted duplicate REJECT outbox: %d", rejOutboxAfter)
+			}
+			// Item 9 on real Postgres: Vietnamese rejection_reason recorded on product & outbox.
+			pBlockAfter, _ := srv.GetProduct(adminCtx, &productv1.GetProductRequest{Id: pBlock.GetProduct().GetId()})
+			wantVietReason := "Nội dung chứa từ khoá cấm: " + runPrefix + " độc hại xyz"
+			if pBlockAfter.GetProduct().GetRejectionReason() != wantVietReason {
+				t.Fatalf("PG Rescan rejection_reason = %q, want %q", pBlockAfter.GetProduct().GetRejectionReason(), wantVietReason)
+			}
+
+			// E13 on real Postgres: pBlock was previously approved and is now REJECTED -> discontinued stub with EMPTY name!
+			stubRej, err := srv.GetProduct(ctx, &productv1.GetProductRequest{
+				Slug: runPrefix + "-rescan-block", IncludeDiscontinuedStub: true,
+			})
+			if err != nil || !stubRej.GetDiscontinued() || stubRej.GetProduct() != nil || stubRej.GetDiscontinuedCategoryId() != normCatID || stubRej.GetDiscontinuedName() != "" {
+				t.Fatalf("PG E13 REJECTED stub = %+v err=%v", stubRej, err)
+			}
+			// Soft-delete pBlock -> still discontinued stub with EMPTY name!
+			if _, err := srv.DeleteProduct(sellerCtx, &productv1.DeleteProductRequest{Id: pBlock.GetProduct().GetId()}); err != nil {
+				t.Fatalf("DeleteProduct pBlock: %v", err)
+			}
+			stubDel, err := srv.GetProduct(ctx, &productv1.GetProductRequest{
+				Slug: runPrefix + "-rescan-block", IncludeDiscontinuedStub: true,
+			})
+			if err != nil || !stubDel.GetDiscontinued() || stubDel.GetProduct() != nil || stubDel.GetDiscontinuedCategoryId() != normCatID || stubDel.GetDiscontinuedName() != "" {
+				t.Fatalf("PG E13 deleted stub = %+v err=%v", stubDel, err)
+			}
+		})
+
+		// Verify 000008 migration backfill of first_approved_at on an isolated pre-000008 DB (E13 DB evidence).
+		t.Run("Migration000008_FirstApprovedAt_Backfill_RealPG", func(t *testing.T) {
+			u, err := url.Parse(dsn)
+			if err != nil {
+				t.Fatalf("parse dsn: %v", err)
+			}
+			adminURL := *u
+			adminURL.Path = "/postgres"
+			dbName := "product_mig0008_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+
+			adminConn, err := pgx.Connect(ctx, adminURL.String())
+			if err != nil {
+				t.Fatalf("connect admin postgres: %v", err)
+			}
+			if _, err := adminConn.Exec(ctx, "CREATE DATABASE "+dbName); err != nil {
+				_ = adminConn.Close(ctx)
+				t.Fatalf("CREATE DATABASE %s: %v", dbName, err)
+			}
+			_ = adminConn.Close(ctx)
+
+			testURL := *u
+			testURL.Path = "/" + dbName
+			migPool, err := pgxpool.New(ctx, testURL.String())
+			if err != nil {
+				t.Fatalf("pgxpool.New(%s): %v", dbName, err)
+			}
+			t.Cleanup(func() {
+				migPool.Close()
+				dropCtx, dropCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer dropCancel()
+				if dc, dErr := pgx.Connect(dropCtx, adminURL.String()); dErr == nil {
+					_, _ = dc.Exec(dropCtx, "DROP DATABASE IF EXISTS "+dbName+" WITH (FORCE)")
+					_ = dc.Close(dropCtx)
+				}
+			})
+
+			// Apply 000001..000007 manually so migrations.Apply runs ONLY 000008.
+			if _, err := migPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`); err != nil {
+				t.Fatalf("create schema_migrations: %v", err)
+			}
+			migDir := filepath.Join("..", "..", "migrations")
+			entries, err := os.ReadDir(migDir)
+			if err != nil {
+				t.Fatalf("ReadDir migrations: %v", err)
+			}
+			var preFiles []string
+			for _, e := range entries {
+				if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") && e.Name() < "000008_" {
+					preFiles = append(preFiles, e.Name())
+				}
+			}
+			sort.Strings(preFiles)
+			for _, fname := range preFiles {
+				raw, rErr := os.ReadFile(filepath.Join(migDir, fname))
+				if rErr != nil {
+					t.Fatalf("read %s: %v", fname, rErr)
+				}
+				if _, eErr := migPool.Exec(ctx, string(raw)); eErr != nil {
+					t.Fatalf("apply %s: %v", fname, eErr)
+				}
+				if _, iErr := migPool.Exec(ctx, `INSERT INTO schema_migrations (filename) VALUES ($1)`, fname); iErr != nil {
+					t.Fatalf("record %s: %v", fname, iErr)
+				}
+			}
+
+			// Seed pre-000008 data:
+			// 1) prod-seeded-live: APPROVED live (no outbox row) -> must backfill first_approved_at != NULL.
+			// 2) prod-hidden-was-approved: HIDDEN with historical APPROVE outbox row -> must backfill first_approved_at != NULL -> stub WITH name!
+			// 3) prod-hidden-never-approved: HIDDEN with NO APPROVE outbox row -> first_approved_at MUST stay NULL -> 404!
+			// 4) prod-pending: PENDING -> first_approved_at MUST stay NULL -> 404!
+			if _, err := migPool.Exec(ctx, `INSERT INTO categories (id, name, slug, commission_rate_bps, sort_order) VALUES ('cat-m8', 'M8', 'm8', 500, 0)`); err != nil {
+				t.Fatalf("seed category: %v", err)
+			}
+			if _, err := migPool.Exec(ctx, `
+				INSERT INTO products (id, shop_id, category_id, name, description, images, status, min_price_vnd, max_price_vnd, slug, search_text)
+				VALUES
+					('prod-seeded-live', 's1', 'cat-m8', 'Live Seeded', '', '[]'::jsonb, 'APPROVED', 100000, 100000, 'live-seeded', 'live seeded'),
+					('prod-hidden-was-approved', 's1', 'cat-m8', 'Hidden Was Live', '', '[]'::jsonb, 'HIDDEN', 100000, 100000, 'hidden-was-live', 'hidden was live'),
+					('prod-hidden-never-approved', 's1', 'cat-m8', 'Hidden Never Live', '', '[]'::jsonb, 'HIDDEN', 100000, 100000, 'hidden-never-live', 'hidden never live'),
+					('prod-pending', 's1', 'cat-m8', 'Draft Pending', '', '[]'::jsonb, 'PENDING', 100000, 100000, 'draft-m8', 'draft m8')
+			`); err != nil {
+				t.Fatalf("seed pre-000008 products: %v", err)
+			}
+			appPayload, _ := json.Marshal(events.ProductReviewedPayload{
+				ProductID: "prod-hidden-was-approved", ProductName: "Hidden Was Live", ShopID: "s1", Decision: "APPROVE", OccurredAt: "2026-11-20T00:00:00Z",
+			})
+			if _, err := migPool.Exec(ctx, `
+				INSERT INTO outbox_events (id, event_type, aggregate_id, payload_json, created_at)
+				VALUES ('ev-m8-app', 'product.reviewed', 'prod-hidden-was-approved', $1::jsonb, '2026-11-20T00:00:00Z')
+			`, string(appPayload)); err != nil {
+				t.Fatalf("seed approve outbox: %v", err)
+			}
+
+			if err := migrations.Apply(ctx, migPool); err != nil {
+				t.Fatalf("migrations.Apply(000008): %v", err)
+			}
+
+			migSrv := New(store.NewPgStore(migPool), nil)
+			// prod-hidden-was-approved -> 200 discontinued stub WITH name!
+			stub, err := migSrv.GetProduct(ctx, &productv1.GetProductRequest{Slug: "hidden-was-live", IncludeDiscontinuedStub: true})
+			if err != nil || !stub.GetDiscontinued() || stub.GetDiscontinuedCategoryId() != "cat-m8" || stub.GetDiscontinuedName() != "Hidden Was Live" {
+				t.Fatalf("backfilled hidden-was-live stub = %+v err=%v", stub, err)
+			}
+			// prod-hidden-never-approved & prod-pending -> 404 NotFound (proving DB evidence, never inferred from HIDDEN status!).
+			if _, err := migSrv.GetProduct(ctx, &productv1.GetProductRequest{Slug: "hidden-never-live", IncludeDiscontinuedStub: true}); status.Code(err) != codes.NotFound {
+				t.Fatalf("hidden-never-live: want NotFound, got %v", err)
+			}
+			if _, err := migSrv.GetProduct(ctx, &productv1.GetProductRequest{Slug: "draft-m8", IncludeDiscontinuedStub: true}); status.Code(err) != codes.NotFound {
+				t.Fatalf("draft-m8: want NotFound, got %v", err)
+			}
+			// prod-seeded-live has first_approved_at populated -> hiding it later yields discontinued stub!
+			var liveFirstApproved *time.Time
+			if err := migPool.QueryRow(ctx, `SELECT first_approved_at FROM products WHERE id = 'prod-seeded-live'`).Scan(&liveFirstApproved); err != nil || liveFirstApproved == nil {
+				t.Fatalf("prod-seeded-live first_approved_at = %v err=%v, want non-nil", liveFirstApproved, err)
+			}
+		})
+
+		// RevB P1-2: Real-Postgres TOCTOU concurrency tests for UpdateProduct.
+		// Uses a store wrapper hook to deterministically interleave between pre-tx read (buggy old code)
+		// and tx row lock (fixed code), proving zero reliance on timing luck.
+		t.Run("RevB_P1_2_UpdateProduct_TOCTOU_RealPG", func(t *testing.T) {
+			cat, err := New(pgStore, nil).CreateCategory(adminCtx, &productv1.CreateCategoryRequest{
+				Name: "PG TOCTOU Cat " + runPrefix, Slug: runPrefix + "-toctou", CommissionRateBps: 500,
+			})
+			if err != nil {
+				t.Fatalf("CreateCategory: %v", err)
+			}
+			catID := cat.GetCategory().GetId()
+
+			// (a) Admin REJECT interleaves during Seller UpdateProduct -> final status MUST NOT be APPROVED!
+			t.Run("AdminRejectInterleavesSellerUpdate_NeverEndsApproved", func(t *testing.T) {
+				baseSrv := New(pgStore, nil)
+				prod, err := baseSrv.CreateProduct(sellerCtx, &productv1.CreateProductRequest{
+					CategoryId: catID,
+					Name:       "PG TOCTOU Reject " + runPrefix,
+					Slug:       runPrefix + "-toctou-rej",
+					Skus:       []*productv1.SKUInput{{SkuCode: runPrefix + "-TR1", Name: "M", PriceVnd: 100000, Stock: 10}},
+				})
+				if err != nil {
+					t.Fatalf("CreateProduct: %v", err)
+				}
+				prodID := prod.GetProduct().GetId()
+				if _, err := baseSrv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
+					ProductId: prodID, Decision: productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_APPROVE,
+				}); err != nil {
+					t.Fatalf("Approve: %v", err)
+				}
+
+				readReached := make(chan struct{})
+				releaseSeller := make(chan struct{})
+				hookStore := &pgTOCTOUStore{
+					Store:        pgStore,
+					targetID:     prodID,
+					afterPreRead: func() { close(readReached); <-releaseSeller },
+					afterRowLock: func() { close(readReached); <-releaseSeller },
+				}
+				sellerSrv := New(hookStore, nil)
+
+				var sellerWG sync.WaitGroup
+				sellerWG.Add(1)
+				go func() {
+					defer sellerWG.Done()
+					_, _ = sellerSrv.UpdateProduct(sellerCtx, &productv1.UpdateProductRequest{
+						Id:          prodID,
+						Description: "Seller concurrent edit",
+					})
+				}()
+
+				<-readReached
+				adminDone := make(chan error, 1)
+				go func() {
+					_, aErr := baseSrv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
+						ProductId: prodID,
+						Decision:  productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_REJECT,
+						Reason:    "admin takedown during update",
+					})
+					adminDone <- aErr
+				}()
+				// If old code paused outside tx, admin finishes immediately before releaseSeller;
+				// if new code holds FOR UPDATE, admin blocks until seller commits then applies REJECT.
+				select {
+				case aErr := <-adminDone:
+					if aErr != nil {
+						t.Fatalf("AdminReviewProduct(REJECT): %v", aErr)
+					}
+					close(releaseSeller)
+					sellerWG.Wait()
+				case <-time.After(120 * time.Millisecond):
+					// New code path: admin is legitimately waiting on Postgres FOR UPDATE lock held by seller.
+					close(releaseSeller)
+					sellerWG.Wait()
+					if aErr := <-adminDone; aErr != nil {
+						t.Fatalf("AdminReviewProduct(REJECT) after seller lock: %v", aErr)
+					}
+				}
+
+				var finalStatus string
+				if err := pool.QueryRow(ctx, `SELECT status FROM products WHERE id = $1`, prodID).Scan(&finalStatus); err != nil {
+					t.Fatalf("query final status: %v", err)
+				}
+				if finalStatus == store.ProductStatusApproved {
+					t.Fatalf("TOCTOU bug: product ended APPROVED after concurrent AdminReviewProduct(REJECT)")
+				}
+			})
+
+			// (b) Two concurrent UpdateProduct calls: Req1 adds REVIEW keyword to SKU attributes,
+			// Req2 edits description WITHOUT sending skus -> MUST NEVER end APPROVED with unapproved REVIEW in SKU!
+			t.Run("ConcurrentUpdateSKURuleVsNoSKUs_NeverEndsApprovedWithUnapprovedReview", func(t *testing.T) {
+				baseSrv := New(pgStore, nil)
+				reviewTerm := runPrefix + " toctou cam kết"
+				if _, err := baseSrv.CreateBannedKeyword(adminCtx, &productv1.CreateBannedKeywordRequest{
+					Term:   reviewTerm,
+					Action: productv1.BannedKeywordAction_BANNED_KEYWORD_ACTION_REVIEW,
+				}); err != nil {
+					t.Fatalf("CreateBannedKeyword: %v", err)
+				}
+
+				prod, err := baseSrv.CreateProduct(sellerCtx, &productv1.CreateProductRequest{
+					CategoryId: catID,
+					Name:       "PG TOCTOU Review " + runPrefix,
+					Slug:       runPrefix + "-toctou-rev",
+					Skus:       []*productv1.SKUInput{{SkuCode: runPrefix + "-TV1", Name: "M", PriceVnd: 100000, Stock: 10}},
+				})
+				if err != nil {
+					t.Fatalf("CreateProduct: %v", err)
+				}
+				prodID := prod.GetProduct().GetId()
+				skuID := prod.GetProduct().GetSkus()[0].GetId()
+				if _, err := baseSrv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
+					ProductId: prodID, Decision: productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_APPROVE,
+				}); err != nil {
+					t.Fatalf("Approve: %v", err)
+				}
+
+				readReached := make(chan struct{})
+				releaseReq2 := make(chan struct{})
+				hookStore := &pgTOCTOUStore{
+					Store:            pgStore,
+					targetID:         prodID,
+					afterPreReadSKUs: func() { close(readReached); <-releaseReq2 },
+					afterRowLock:     func() { close(readReached); <-releaseReq2 },
+				}
+				req2Srv := New(hookStore, nil)
+
+				var req2WG sync.WaitGroup
+				req2WG.Add(1)
+				go func() {
+					defer req2WG.Done()
+					_, _ = req2Srv.UpdateProduct(sellerCtx, &productv1.UpdateProductRequest{
+						Id:          prodID,
+						Description: "Mô tả sạch cập nhật song song",
+					})
+				}()
+
+				<-readReached
+				req1Done := make(chan error, 1)
+				go func() {
+					_, uErr := baseSrv.UpdateProduct(sellerCtx, &productv1.UpdateProductRequest{
+						Id: prodID,
+						Skus: []*productv1.SKUInput{{
+							Id:         skuID,
+							SkuCode:    runPrefix + "-TV1",
+							Name:       "M",
+							Attributes: map[string]string{"note": reviewTerm},
+							PriceVnd:   100000,
+							Stock:      10,
+						}},
+					})
+					req1Done <- uErr
+				}()
+				select {
+				case uErr := <-req1Done:
+					if uErr != nil {
+						t.Fatalf("Req1 UpdateProduct(SKU REVIEW): %v", uErr)
+					}
+					close(releaseReq2)
+					req2WG.Wait()
+				case <-time.After(120 * time.Millisecond):
+					close(releaseReq2)
+					req2WG.Wait()
+					if uErr := <-req1Done; uErr != nil {
+						t.Fatalf("Req1 UpdateProduct(SKU REVIEW) after Req2 lock: %v", uErr)
+					}
+				}
+
+				var finalStatus string
+				var flaggedJSON []byte
+				var skuAttrsJSON []byte
+				if err := pool.QueryRow(ctx, `SELECT status, flagged_keywords FROM products WHERE id = $1`, prodID).Scan(&finalStatus, &flaggedJSON); err != nil {
+					t.Fatalf("query final product: %v", err)
+				}
+				if err := pool.QueryRow(ctx, `SELECT attributes FROM skus WHERE id = $1`, skuID).Scan(&skuAttrsJSON); err != nil {
+					t.Fatalf("query final sku: %v", err)
+				}
+				if !strings.Contains(string(skuAttrsJSON), reviewTerm) {
+					t.Fatalf("expected SKU to contain review term %q, got %s", reviewTerm, string(skuAttrsJSON))
+				}
+				if finalStatus == store.ProductStatusApproved {
+					t.Fatalf("TOCTOU bug: product ended APPROVED with unapproved REVIEW keyword in SKU! flagged=%s attrs=%s",
+						string(flaggedJSON), string(skuAttrsJSON))
+				}
+			})
+		})
+
+		t.Run("R11_AdminReviewResponseSKUIsActive_RealPG", func(t *testing.T) {
+			pgSrv := New(pgStore, nil)
+			cat, err := pgSrv.CreateCategory(adminCtx, &productv1.CreateCategoryRequest{
+				Name: "PG R11 Cat " + runPrefix, Slug: runPrefix + "-r11-cat", CommissionRateBps: 500,
+			})
+			if err != nil {
+				t.Fatalf("CreateCategory: %v", err)
+			}
+			assertAdminReviewSKUActiveLifecycle(t, pgSrv, "pg-shop-1", cat.GetCategory().GetId(), "PG-"+runPrefix)
+		})
+	})
+}
+
+type pgTOCTOUStore struct {
+	store.Store
+	targetID         string
+	afterPreRead     func()
+	afterPreReadSKUs func()
+	afterRowLock     func()
+	fired            atomic.Bool
+}
+
+type pgTOCTOUTx struct {
+	store.Queries
+	parent *pgTOCTOUStore
+}
+
+func (s *pgTOCTOUStore) GetProductByID(ctx context.Context, id string) (store.Product, error) {
+	p, err := s.Store.GetProductByID(ctx, id)
+	if err == nil && id == s.targetID && s.afterPreRead != nil && s.fired.CompareAndSwap(false, true) {
+		s.afterPreRead()
+	}
+	return p, err
+}
+
+func (s *pgTOCTOUStore) ListSKUsByProductIDs(ctx context.Context, productIDs []string) ([]store.SKU, error) {
+	skus, err := s.Store.ListSKUsByProductIDs(ctx, productIDs)
+	if err == nil && s.afterPreReadSKUs != nil && slices.Contains(productIDs, s.targetID) && s.fired.CompareAndSwap(false, true) {
+		s.afterPreReadSKUs()
+	}
+	return skus, err
+}
+
+func (s *pgTOCTOUStore) WithTx(ctx context.Context, fn func(q store.Queries) error) error {
+	return s.Store.WithTx(ctx, func(q store.Queries) error {
+		return fn(&pgTOCTOUTx{Queries: q, parent: s})
+	})
+}
+
+func (q *pgTOCTOUTx) GetProductByIDForUpdate(ctx context.Context, id string) (store.Product, error) {
+	p, err := q.Queries.GetProductByIDForUpdate(ctx, id)
+	if err == nil && id == q.parent.targetID && q.parent.afterRowLock != nil && q.parent.fired.CompareAndSwap(false, true) {
+		q.parent.afterRowLock()
+	}
+	return p, err
 }
 
 type pgErrPublisher struct {

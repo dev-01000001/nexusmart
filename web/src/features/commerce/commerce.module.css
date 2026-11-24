@@ -400,6 +400,28 @@ a.wrapBtn {
   color: var(--band-dark-ink);
 }
 
+/* Legacy 3-level address mapping panel & keyboard-navigable ward listbox (E15/E16) */
+.legacyMapBox {
+  background: var(--surface);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.legacyMapGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 768px) {
+  .legacyMapGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Flat progress bar (freeship, membership tier) */
 .progressBlock {
   display: flex;

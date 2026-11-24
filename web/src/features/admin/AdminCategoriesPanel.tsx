@@ -7,6 +7,7 @@ import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, StateView } from "@/components";
 import { formatInt } from "@/lib/format";
 import { formatCommissionBps } from "./types";
+import { StatusPill } from "./StatusPill";
 import shared from "./adminShared.module.css";
 
 function slugify(raw: string): string {
@@ -31,6 +32,8 @@ export function AdminCategoriesPanel() {
   const [newParentId, setNewParentId] = useState("");
   const [newBps, setNewBps] = useState("500");
   const [newSortOrder, setNewSortOrder] = useState("10");
+  const [newIsProhibited, setNewIsProhibited] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
   // Inline edit state
@@ -40,6 +43,8 @@ export function AdminCategoriesPanel() {
   const [editParentId, setEditParentId] = useState("");
   const [editBps, setEditBps] = useState("500");
   const [editSortOrder, setEditSortOrder] = useState("0");
+  const [editIsProhibited, setEditIsProhibited] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
@@ -67,9 +72,10 @@ export function AdminCategoriesPanel() {
     const bps = Math.max(0, Math.min(5000, Math.trunc(Number(newBps) || 0)));
     const sortOrder = Math.trunc(Number(newSortOrder) || 0);
     if (!cleanName || !cleanSlug) {
-      showToast("Vui lòng nhập tên và đường dẫn danh mục.");
+      setCreateError("Vui lòng nhập tên và đường dẫn danh mục.");
       return;
     }
+    setCreateError(null);
     setCreating(true);
     try {
       await api<{ category: GatewayCategory }>("admin/categories", {
@@ -80,16 +86,20 @@ export function AdminCategoriesPanel() {
           parent_id: newParentId || "",
           commission_rate_bps: bps,
           sort_order: sortOrder,
+          is_prohibited: newIsProhibited,
         },
       });
       setNewName("");
       setNewSlug("");
       setNewParentId("");
       setNewBps("500");
+      setNewIsProhibited(false);
       await loadCategories();
       showToast(`Đã tạo danh mục "${cleanName}".`);
     } catch (err) {
-      showToast(getErrorMessage(err, "Không thể tạo danh mục mới."));
+      const msg = getErrorMessage(err, "Không thể tạo danh mục mới.");
+      setCreateError(msg);
+      showToast(msg);
     } finally {
       setCreating(false);
     }
@@ -102,6 +112,8 @@ export function AdminCategoriesPanel() {
     setEditParentId(cat.parent_id || "");
     setEditBps(String(cat.commission_rate_bps ?? 0));
     setEditSortOrder(String(cat.sort_order));
+    setEditIsProhibited(Boolean(cat.is_prohibited));
+    setEditError(null);
   };
 
   const handleSaveEdit = async (catId: string) => {
@@ -110,9 +122,10 @@ export function AdminCategoriesPanel() {
     const bps = Math.max(0, Math.min(5000, Math.trunc(Number(editBps) || 0)));
     const sortOrder = Math.trunc(Number(editSortOrder) || 0);
     if (!cleanName || !cleanSlug) {
-      showToast("Tên và đường dẫn danh mục không được bỏ trống.");
+      setEditError("Tên và đường dẫn danh mục không được bỏ trống.");
       return;
     }
+    setEditError(null);
     setSavingId(catId);
     try {
       await api<{ category: GatewayCategory }>(`admin/categories/${catId}`, {
@@ -123,13 +136,16 @@ export function AdminCategoriesPanel() {
           parent_id: editParentId || "",
           commission_rate_bps: bps,
           sort_order: sortOrder,
+          is_prohibited: editIsProhibited,
         },
       });
       setEditingId(null);
       await loadCategories();
       showToast(`Đã cập nhật danh mục "${cleanName}".`);
     } catch (err) {
-      showToast(getErrorMessage(err, "Không thể cập nhật danh mục."));
+      const msg = getErrorMessage(err, "Không thể cập nhật danh mục.");
+      setEditError(msg);
+      showToast(msg);
     } finally {
       setSavingId(null);
     }
@@ -182,7 +198,7 @@ export function AdminCategoriesPanel() {
           <span className={shared.panelMeta}>100 bps = 1,0% hoa hồng sàn</span>
         </div>
 
-        <form onSubmit={(e) => void handleCreate(e)} className={shared.detailGrid}>
+        <form onSubmit={(e) => void handleCreate(e)} noValidate className={shared.detailGrid}>
           <div className={shared.detailField}>
             <label htmlFor="cat-new-name" className={shared.fieldLabel}>
               Tên danh mục
@@ -256,6 +272,34 @@ export function AdminCategoriesPanel() {
               onChange={(e) => setNewSortOrder(e.target.value)}
             />
           </div>
+          <div className={shared.detailField}>
+            <span className={shared.fieldLabel}>Chính sách kinh doanh</span>
+            <label
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                minHeight: 38,
+                fontSize: 14,
+                cursor: "pointer",
+              }}
+            >
+              <input
+                id="cat-new-prohibited"
+                type="checkbox"
+                checked={newIsProhibited}
+                onChange={(e) => setNewIsProhibited(e.target.checked)}
+              />
+              <span>Danh mục hàng cấm</span>
+            </label>
+          </div>
+          {createError && (
+            <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+              <p className={shared.validationError} role="alert">
+                {createError}
+              </p>
+            </div>
+          )}
           <div className={shared.detailField} style={{ justifyContent: "flex-end" }}>
             <Button type="submit" variant="primary" size="sm" shape="app" disabled={creating}>
               {creating ? "Đang tạo..." : "Thêm danh mục"}
@@ -274,11 +318,18 @@ export function AdminCategoriesPanel() {
           </Button>
         </div>
 
+        {editError && (
+          <p className={shared.validationError} role="alert" style={{ marginBottom: 10 }}>
+            {editError}
+          </p>
+        )}
+
         <div className={shared.tableWrap}>
           <table className={shared.dataTable}>
             <thead>
               <tr>
                 <th>Tên danh mục & đường dẫn</th>
+                <th>Trạng thái</th>
                 <th className={shared.colNum}>Hoa hồng</th>
                 <th className={shared.colNum}>Thứ tự</th>
                 <th className={shared.colAction}>Thao tác</th>
@@ -315,6 +366,30 @@ export function AdminCategoriesPanel() {
                           <div className={shared.cellPrimary}>{cat.name}</div>
                           <div className={shared.cellSub}>/{cat.slug}</div>
                         </>
+                      )}
+                    </td>
+                    <td>
+                      {isEditing ? (
+                        <label
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 6,
+                            fontSize: 13,
+                            cursor: "pointer",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={editIsProhibited}
+                            onChange={(e) => setEditIsProhibited(e.target.checked)}
+                          />
+                          <span>Danh mục hàng cấm</span>
+                        </label>
+                      ) : cat.is_prohibited ? (
+                        <StatusPill label="Danh mục hàng cấm" tone="negative" />
+                      ) : (
+                        <StatusPill label="Cho phép bán" tone="positive" />
                       )}
                     </td>
                     <td className={shared.colNum}>
@@ -475,11 +550,38 @@ export function AdminCategoriesPanel() {
                       <input
                         id={`m-cat-order-${cat.id}`}
                         type="number"
+                        step={1}
                         className={shared.textInput}
                         value={editSortOrder}
                         onChange={(e) => setEditSortOrder(e.target.value)}
                       />
                     </div>
+                    <div className={shared.detailField}>
+                      <label
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 8,
+                          minHeight: 36,
+                          fontSize: 14,
+                          cursor: "pointer",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={editIsProhibited}
+                          onChange={(e) => setEditIsProhibited(e.target.checked)}
+                        />
+                        <span>Danh mục hàng cấm</span>
+                      </label>
+                    </div>
+                    {editError && (
+                      <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+                        <p className={shared.validationError} role="alert">
+                          {editError}
+                        </p>
+                      </div>
+                    )}
                     <div className={shared.detailButtons}>
                       <Button
                         variant="primary"
@@ -494,7 +596,10 @@ export function AdminCategoriesPanel() {
                         variant="outline"
                         size="sm"
                         shape="app"
-                        onClick={() => setEditingId(null)}
+                        onClick={() => {
+                          setEditingId(null);
+                          setEditError(null);
+                        }}
                       >
                         Hủy
                       </Button>
@@ -513,6 +618,9 @@ export function AdminCategoriesPanel() {
                         /{cat.slug} · {cat.commission_rate_bps ?? 0} bps · Thứ tự{" "}
                         {formatInt(cat.sort_order)}
                       </span>
+                      {cat.is_prohibited && (
+                        <StatusPill label="Danh mục hàng cấm" tone="negative" />
+                      )}
                     </div>
                     <div className={shared.mobileLine2}>
                       <span className={shared.mobileMetaText} />

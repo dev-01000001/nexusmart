@@ -18,33 +18,14 @@ import { ApiError, api, getErrorMessage } from "@/lib/api";
 import { useSession } from "@/context/SessionContext";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { shouldClearUserClientState } from "@/features/checkout/helpers";
+import {
+  type CartItem,
+  type CartShopGroup,
+  computeCartSummary,
+  mapGatewayCartGroups,
+} from "@/features/cart/cartHelpers";
 
-export interface CartItem {
-  skuId: string;
-  productId: string;
-  shopId: string;
-  shopName: string;
-  productName: string;
-  skuName: string;
-  imageUrl: string;
-  priceVnd: number;
-  addedPriceVnd: number;
-  priceChanged: boolean;
-  quantity: number;
-  availableStock: number;
-  weightGrams: number;
-  selected: boolean;
-}
-
-export interface CartShopGroup {
-  shopId: string;
-  shopName: string;
-  items: CartItem[];
-  subtotalVnd: number;
-  selectedSubtotalVnd: number;
-  totalWeightGrams: number;
-  selectedWeightGrams: number;
-}
+export type { CartItem, CartShopGroup };
 
 export interface AddToCartInput {
   skuId: string;
@@ -212,92 +193,29 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
 
   const shopGroups = useMemo<CartShopGroup[]>(() => {
     if (!rawCart?.shop_groups) return [];
-    return rawCart.shop_groups
-      .filter((g) => Array.isArray(g.items) && g.items.length > 0)
-      .map((g) => {
-        const items: CartItem[] = g.items.map((it) => {
-          const inStock = it.available_stock > 0;
-          const selected = inStock && !deselectedSkuIds.has(it.sku_id);
-          return {
-            skuId: it.sku_id,
-            productId: it.product_id,
-            shopId: it.shop_id,
-            shopName: g.shop_name || "Gian hàng NexusMart",
-            productName: it.product_name,
-            skuName: it.sku_name,
-            imageUrl: it.image_url || "/products/ao-thun-cotton-trang.png",
-            priceVnd: it.price_vnd,
-            addedPriceVnd: it.added_price_vnd,
-            priceChanged: Boolean(it.price_changed),
-            quantity: it.quantity,
-            availableStock: it.available_stock,
-            weightGrams: it.weight_grams,
-            selected,
-          };
-        });
-
-        let selectedSubtotalVnd = 0;
-        let selectedWeightGrams = 0;
-        for (const item of items) {
-          if (item.selected) {
-            selectedSubtotalVnd += item.priceVnd * item.quantity;
-            selectedWeightGrams += Math.max(0, Math.trunc(item.weightGrams || 0)) * item.quantity;
-          }
-        }
-
-        return {
-          shopId: g.shop_id,
-          shopName: g.shop_name || "Gian hàng NexusMart",
-          items,
-          subtotalVnd: g.subtotal_vnd,
-          selectedSubtotalVnd,
-          totalWeightGrams: g.total_weight_grams,
-          selectedWeightGrams,
-        };
-      });
+    const prevSelected: Record<string, boolean> = {};
+    for (const g of rawCart.shop_groups) {
+      for (const it of g.items ?? []) {
+        prevSelected[it.sku_id] = !deselectedSkuIds.has(it.sku_id);
+      }
+    }
+    return mapGatewayCartGroups(rawCart.shop_groups, prevSelected);
   }, [rawCart, deselectedSkuIds]);
 
-  const cartItems = useMemo<CartItem[]>(() => shopGroups.flatMap((g) => g.items), [shopGroups]);
-
-  const selectedItems = useMemo<CartItem[]>(
-    () => cartItems.filter((it) => it.selected && it.availableStock > 0 && it.quantity > 0),
-    [cartItems]
-  );
-
-  const selectedShopGroups = useMemo<CartShopGroup[]>(() => {
-    return shopGroups
-      .map((g) => {
-        const activeItems = g.items.filter(
-          (it) => it.selected && it.availableStock > 0 && it.quantity > 0
-        );
-        if (activeItems.length === 0) return null;
-        return {
-          ...g,
-          items: activeItems,
-        };
-      })
-      .filter((g): g is CartShopGroup => g !== null);
-  }, [shopGroups]);
-
-  const cartCount = useMemo(
-    () => cartItems.reduce((sum, item) => sum + item.quantity, 0),
-    [cartItems]
-  );
-
+  const cartSummary = useMemo(() => computeCartSummary(shopGroups), [shopGroups]);
+  const cartItems = cartSummary.items;
+  const selectedItems = cartSummary.selectedItems;
+  const selectedShopGroups = cartSummary.selectedShopGroups;
+  const cartCount = cartSummary.availableItemCount;
   const totalVnd = useMemo(
-    () => cartItems.reduce((sum, item) => sum + item.priceVnd * item.quantity, 0),
+    () =>
+      cartItems
+        .filter((it) => !it.unavailable)
+        .reduce((sum, item) => sum + item.priceVnd * item.quantity, 0),
     [cartItems]
   );
-
-  const selectedCount = useMemo(
-    () => selectedItems.reduce((sum, item) => sum + item.quantity, 0),
-    [selectedItems]
-  );
-
-  const selectedSubtotalVnd = useMemo(
-    () => selectedItems.reduce((sum, item) => sum + item.priceVnd * item.quantity, 0),
-    [selectedItems]
-  );
+  const selectedCount = cartSummary.selectedCount;
+  const selectedSubtotalVnd = cartSummary.selectedSubtotalVnd;
 
   const addToCart = useCallback(
     async (input: AddToCartInput): Promise<AddToCartResult> => {
@@ -459,17 +377,22 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     [applyCartSnapshot, isAuthenticated, refreshCart, showToast, user?.id]
   );
 
-  const toggleCartItemSelected = useCallback((skuId: string) => {
-    setDeselectedSkuIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(skuId)) {
-        next.delete(skuId);
-      } else {
-        next.add(skuId);
-      }
-      return next;
-    });
-  }, []);
+  const toggleCartItemSelected = useCallback(
+    (skuId: string) => {
+      const target = cartItems.find((it) => it.skuId === skuId);
+      if (!target || target.unavailable || target.availableStock <= 0) return;
+      setDeselectedSkuIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(skuId)) {
+          next.delete(skuId);
+        } else {
+          next.add(skuId);
+        }
+        return next;
+      });
+    },
+    [cartItems]
+  );
 
   const toggleShopSelected = useCallback(
     (shopId: string, selected: boolean) => {
@@ -478,7 +401,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       setDeselectedSkuIds((prev) => {
         const next = new Set(prev);
         for (const item of group.items) {
-          if (selected && item.availableStock > 0) {
+          if (selected && !item.unavailable && item.availableStock > 0) {
             next.delete(item.skuId);
           } else if (!selected) {
             next.add(item.skuId);

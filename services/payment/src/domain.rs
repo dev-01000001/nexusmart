@@ -132,6 +132,16 @@ pub struct ShopAllocationRecord {
     pub escrow_status: String,
     pub settled_at: Option<DateTime<Utc>>,
     pub released_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub tracking_code: Option<String>,
+    #[serde(default)]
+    pub carrier_code: Option<String>,
+    #[serde(default)]
+    pub order_code: Option<String>,
+    #[serde(default)]
+    pub cod_reconciled_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub cod_reconciliation_run_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -337,6 +347,10 @@ pub struct ReconciliationQueueItem {
     pub resolution_payment_id: Option<Uuid>,
     #[serde(default)]
     pub occurred_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub source_type: String,
+    #[serde(default)]
+    pub tracking_code: String,
     pub created_at: DateTime<Utc>,
     pub resolved_at: Option<DateTime<Utc>>,
 }
@@ -352,6 +366,22 @@ pub struct ReconciliationRunRecord {
     pub amount_mismatch_count: i32,
     pub auto_healed_count: i32,
     pub status: String,
+    #[serde(default)]
+    pub run_type: String,
+    #[serde(default)]
+    pub file_sha256: String,
+    #[serde(default)]
+    pub file_name: String,
+    #[serde(default)]
+    pub total_rows: i32,
+    #[serde(default)]
+    pub total_matched_vnd: i64,
+    #[serde(default)]
+    pub already_reconciled_count: i32,
+    #[serde(default)]
+    pub not_delivered_count: i32,
+    #[serde(default)]
+    pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
 }
@@ -366,6 +396,12 @@ pub struct ReconciliationItemRecord {
     pub local_amount_vnd: Option<i64>,
     pub provider_amount_vnd: Option<i64>,
     pub details: Option<String>,
+    #[serde(default)]
+    pub tracking_code: String,
+    #[serde(default)]
+    pub order_id: String,
+    #[serde(default)]
+    pub line_number: i32,
     pub created_at: DateTime<Utc>,
 }
 
@@ -373,6 +409,176 @@ pub struct ReconciliationItemRecord {
 pub struct ReconciliationReport {
     pub run: ReconciliationRunRecord,
     pub items: Vec<ReconciliationItemRecord>,
+}
+
+/// Maximum number of CSV rows accepted by a single `ImportCodReconciliation` RPC (E20).
+pub const MAX_COD_RECONCILIATION_ROWS: usize = 5000;
+
+#[derive(Debug, Clone)]
+pub struct CodReconciliationRowInput {
+    pub line_number: i32,
+    pub tracking_code: String,
+    pub cod_amount_vnd: i64,
+    pub delivered_at: String,
+    pub order_code: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportCodReconciliationInput {
+    pub carrier_code: String,
+    pub file_name: String,
+    pub file_sha256: String,
+    pub run_date: NaiveDate,
+    pub created_by: String,
+    pub rows: Vec<CodReconciliationRowInput>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ListReconciliationRunsFilter {
+    pub run_type: Option<String>,
+    pub page: i32,
+    pub page_size: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ListReconciliationRunsResult {
+    pub runs: Vec<ReconciliationRunRecord>,
+    pub total: i64,
+}
+
+/// Validates and normalizes `ListReconciliationRunsRequest.run_type` filter:
+/// allows `""`, `"vietqr"`, or `"cod_file"`.
+pub fn parse_reconciliation_run_type_filter(raw: &str) -> Result<Option<String>> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" => Ok(None),
+        "vietqr" => Ok(Some("vietqr".to_string())),
+        "cod_file" => Ok(Some("cod_file".to_string())),
+        other => Err(PaymentError::Validation(format!(
+            "invalid run_type '{other}'; expected '', 'vietqr', or 'cod_file'"
+        ))),
+    }
+}
+
+/// Validates and normalizes `carrier_code` for COD carrier CSV imports (E20).
+pub fn normalize_cod_carrier_code(raw: &str) -> Result<String> {
+    let norm = raw.trim().to_ascii_lowercase();
+    if norm.is_empty() {
+        return Err(PaymentError::Validation(
+            "carrier_code is required".to_string(),
+        ));
+    }
+    if norm.chars().count() > 64 {
+        return Err(PaymentError::Validation(
+            "carrier_code must not exceed 64 characters".to_string(),
+        ));
+    }
+    Ok(norm)
+}
+
+/// Validates request-level row count bounds for `ImportCodReconciliation` (1..=5000, E20).
+pub fn validate_cod_reconciliation_rows(rows: &[CodReconciliationRowInput]) -> Result<()> {
+    if rows.is_empty() {
+        return Err(PaymentError::Validation(
+            "rows must contain at least 1 row".to_string(),
+        ));
+    }
+    if rows.len() > MAX_COD_RECONCILIATION_ROWS {
+        return Err(PaymentError::Validation(format!(
+            "rows exceeds maximum of {MAX_COD_RECONCILIATION_ROWS} rows (got {})",
+            rows.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Canonical `provider_tx_id` for a COD reconciliation row, namespaced under `cod:` so it never
+/// collides with VietQR bank transfer IDs in `reconciliation_queue` or advisory locks.
+pub fn cod_reconcile_provider_tx_id(carrier_code: &str, tracking_code: &str) -> String {
+    format!(
+        "cod:{}:{}",
+        carrier_code.trim().to_ascii_lowercase(),
+        tracking_code.trim()
+    )
+}
+
+/// Disambiguated `provider_tx_id` used only when enqueuing a subsequent `amount_mismatch` for a
+/// tracking code whose base `cod:<carrier>:<tracking>` queue row was already finalized (`assigned`).
+pub fn cod_reconcile_mismatch_provider_tx_id(
+    carrier_code: &str,
+    tracking_code: &str,
+    actual_amount_vnd: i64,
+) -> String {
+    format!(
+        "cod:{}:{}:mismatch:{actual_amount_vnd}",
+        carrier_code.trim().to_ascii_lowercase(),
+        tracking_code.trim()
+    )
+}
+
+/// Pure E20 / E20-bis classification decision for a matched COD allocation set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodAllocationMatchDecision {
+    /// Delivered/completed, exact amount, not yet reconciled -> post ledger + close open queue.
+    MatchAndPost,
+    /// Delivered/completed, exact amount, already reconciled -> 0 ledger entries.
+    AlreadyReconciled,
+    /// Allocation not yet delivered (`awaiting_collection`) or cancelled -> 0 ledger entries, queue.
+    NotDelivered { cancelled: bool },
+    /// Delivered/completed but `cod_amount_vnd != expected_payable_vnd` (even 1 VND) -> 0 ledger entries, queue.
+    AmountMismatch,
+}
+
+/// Pure E20 / E20-bis decision function for a located COD allocation group:
+/// - `awaiting_collection` or `cancelled` -> `NotDelivered` (never posts ledger).
+/// - `cod_amount_vnd != expected_payable_vnd` (checked BEFORE `already_reconciled` per E20-bis so
+///   a duplicate tracking code with a wrong amount in the same or later file surfaces as
+///   `amount_mismatch`) -> `AmountMismatch`.
+/// - `already_reconciled` -> `AlreadyReconciled`.
+/// - Otherwise -> `MatchAndPost`.
+pub fn decide_cod_allocation_reconciliation(
+    escrow_statuses: &[&str],
+    expected_payable_vnd: i64,
+    cod_amount_vnd: i64,
+    all_already_reconciled: bool,
+) -> CodAllocationMatchDecision {
+    if escrow_statuses.is_empty() {
+        return CodAllocationMatchDecision::NotDelivered { cancelled: false };
+    }
+    if escrow_statuses.contains(&"cancelled") {
+        return CodAllocationMatchDecision::NotDelivered { cancelled: true };
+    }
+    if escrow_statuses
+        .iter()
+        .any(|s| !matches!(*s, "held" | "pending_release" | "released" | "refunded"))
+    {
+        return CodAllocationMatchDecision::NotDelivered { cancelled: false };
+    }
+    if cod_amount_vnd <= 0 || expected_payable_vnd <= 0 || cod_amount_vnd != expected_payable_vnd {
+        return CodAllocationMatchDecision::AmountMismatch;
+    }
+    if all_already_reconciled {
+        return CodAllocationMatchDecision::AlreadyReconciled;
+    }
+    CodAllocationMatchDecision::MatchAndPost
+}
+
+/// Checks whether any located COD allocation already records a non-empty `carrier_code` that
+/// differs (case-insensitively) from the imported CSV file's `carrier_code`.
+/// Allocations with empty/NULL `carrier_code` remain eligible to match.
+pub fn find_cod_carrier_mismatch(
+    stored_carriers: &[Option<&str>],
+    file_carrier_code: &str,
+) -> Option<String> {
+    let expected = file_carrier_code.trim().to_ascii_lowercase();
+    for raw in stored_carriers {
+        if let Some(stored) = raw.map(str::trim).filter(|s| !s.is_empty()) {
+            let norm = stored.to_ascii_lowercase();
+            if norm != expected {
+                return Some(norm);
+            }
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -2642,6 +2848,8 @@ mod tests {
             resolution_action: Some("REFUND".into()),
             resolution_payment_id: Some(p1),
             occurred_at: Some(now),
+            source_type: "webhook".into(),
+            tracking_code: String::new(),
             created_at: now,
             resolved_at: Some(now),
         };
@@ -2993,5 +3201,107 @@ mod tests {
         assert_eq!(split_r0.escrow_debit_vnd, 30_000);
         assert_eq!(split_r0.seller_net_vnd, 0);
         assert_eq!(split_r0.shipping_fee_vnd, 30_000);
+    }
+
+    #[test]
+    fn test_w3b_e20_cod_reconciliation_classification_and_validators() {
+        // run_type filter validation
+        assert_eq!(parse_reconciliation_run_type_filter("").unwrap(), None);
+        assert_eq!(parse_reconciliation_run_type_filter("  ").unwrap(), None);
+        assert_eq!(
+            parse_reconciliation_run_type_filter("VIETQR").unwrap(),
+            Some("vietqr".to_string())
+        );
+        assert_eq!(
+            parse_reconciliation_run_type_filter("cod_file").unwrap(),
+            Some("cod_file".to_string())
+        );
+        assert!(parse_reconciliation_run_type_filter("unknown").is_err());
+
+        // carrier_code validation
+        assert_eq!(normalize_cod_carrier_code(" GHN ").unwrap(), "ghn");
+        assert!(normalize_cod_carrier_code("   ").is_err());
+        assert!(normalize_cod_carrier_code(&"a".repeat(65)).is_err());
+
+        // row count validation (1..=5000)
+        assert!(validate_cod_reconciliation_rows(&[]).is_err());
+        let one = vec![CodReconciliationRowInput {
+            line_number: 1,
+            tracking_code: "TRK-1".into(),
+            cod_amount_vnd: 100_000,
+            delivered_at: String::new(),
+            order_code: String::new(),
+        }];
+        assert!(validate_cod_reconciliation_rows(&one).is_ok());
+        let too_many = vec![one[0].clone(); MAX_COD_RECONCILIATION_ROWS + 1];
+        assert!(validate_cod_reconciliation_rows(&too_many).is_err());
+
+        // Provider tx keys
+        assert_eq!(
+            cod_reconcile_provider_tx_id("GHN", " TRK-1 "),
+            "cod:ghn:TRK-1"
+        );
+        assert_eq!(
+            cod_reconcile_mismatch_provider_tx_id("GHN", "TRK-1", 99_999),
+            "cod:ghn:TRK-1:mismatch:99999"
+        );
+
+        // Classification decisions (E20 & E20-bis)
+        assert_eq!(
+            decide_cod_allocation_reconciliation(&["awaiting_collection"], 200_000, 200_000, false),
+            CodAllocationMatchDecision::NotDelivered { cancelled: false }
+        );
+        assert_eq!(
+            decide_cod_allocation_reconciliation(&["cancelled"], 200_000, 200_000, false),
+            CodAllocationMatchDecision::NotDelivered { cancelled: true }
+        );
+        for st in ["held", "pending_release", "released", "refunded"] {
+            assert_eq!(
+                decide_cod_allocation_reconciliation(&[st], 200_000, 200_000, false),
+                CodAllocationMatchDecision::MatchAndPost,
+                "status={st}"
+            );
+            assert_eq!(
+                decide_cod_allocation_reconciliation(&[st], 200_000, 200_000, true),
+                CodAllocationMatchDecision::AlreadyReconciled,
+                "status={st}"
+            );
+            // 1 VND off -> AmountMismatch even if already reconciled (E20-bis)
+            assert_eq!(
+                decide_cod_allocation_reconciliation(&[st], 200_000, 199_999, true),
+                CodAllocationMatchDecision::AmountMismatch,
+                "status={st}"
+            );
+            assert_eq!(
+                decide_cod_allocation_reconciliation(&[st], 200_000, 200_001, false),
+                CodAllocationMatchDecision::AmountMismatch,
+                "status={st}"
+            );
+            assert_eq!(
+                decide_cod_allocation_reconciliation(&[st], 200_000, 0, false),
+                CodAllocationMatchDecision::AmountMismatch,
+                "status={st}"
+            );
+            assert_eq!(
+                decide_cod_allocation_reconciliation(&[st], 200_000, -100, false),
+                CodAllocationMatchDecision::AmountMismatch,
+                "status={st}"
+            );
+        }
+
+        // Carrier mismatch helper (empty/NULL carrier still matches; differing carrier mismatches)
+        assert_eq!(
+            find_cod_carrier_mismatch(&[None, Some(""), Some("  ")], "ghn"),
+            None
+        );
+        assert_eq!(find_cod_carrier_mismatch(&[Some("GHN")], "ghn"), None);
+        assert_eq!(
+            find_cod_carrier_mismatch(&[Some("ghn")], "ghtk"),
+            Some("ghn".to_string())
+        );
+        assert_eq!(
+            find_cod_carrier_mismatch(&[None, Some(" VTP ")], "ghn"),
+            Some("vtp".to_string())
+        );
     }
 }

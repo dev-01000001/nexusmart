@@ -199,6 +199,31 @@ func (q *Queries) CountActiveInStockSKUsByProduct(ctx context.Context, productID
 	return cnt, err
 }
 
+const countBannedKeywords = `-- name: CountBannedKeywords :one
+SELECT COUNT(*)::bigint AS cnt
+FROM banned_keywords
+WHERE ($1::bool OR is_active = TRUE)
+  AND ($2::text = '' OR action = $2::text)
+  AND (
+      $3::text = ''
+      OR LOWER(term) LIKE '%' || $3::text || '%' ESCAPE '\'
+      OR normalized_term LIKE '%' || $3::text || '%' ESCAPE '\'
+  )
+`
+
+type CountBannedKeywordsParams struct {
+	IncludeInactive bool
+	ActionFilter    string
+	Query           string
+}
+
+func (q *Queries) CountBannedKeywords(ctx context.Context, arg CountBannedKeywordsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countBannedKeywords, arg.IncludeInactive, arg.ActionFilter, arg.Query)
+	var cnt int64
+	err := row.Scan(&cnt)
+	return cnt, err
+}
+
 const countCategoryFeeSchedules = `-- name: CountCategoryFeeSchedules :one
 SELECT COUNT(*)::bigint AS cnt
 FROM category_fee_schedules
@@ -220,6 +245,28 @@ WHERE parent_id = $1
 
 func (q *Queries) CountChildCategories(ctx context.Context, parentID pgtype.Text) (int64, error) {
 	row := q.db.QueryRow(ctx, countChildCategories, parentID)
+	var cnt int64
+	err := row.Scan(&cnt)
+	return cnt, err
+}
+
+const countProductReviews = `-- name: CountProductReviews :one
+SELECT COUNT(*)::bigint AS cnt
+FROM product_reviews
+WHERE product_id = $1::text
+  AND status = 'PUBLISHED'
+  AND ($2::int <= 0 OR rating = $2::int)
+  AND (NOT $3::bool OR jsonb_array_length(image_urls) > 0)
+`
+
+type CountProductReviewsParams struct {
+	ProductID    string
+	RatingFilter int32
+	HasImages    bool
+}
+
+func (q *Queries) CountProductReviews(ctx context.Context, arg CountProductReviewsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countProductReviews, arg.ProductID, arg.RatingFilter, arg.HasImages)
 	var cnt int64
 	err := row.Scan(&cnt)
 	return cnt, err
@@ -362,10 +409,57 @@ func (q *Queries) CountProductsInCategory(ctx context.Context, categoryID string
 	return i, err
 }
 
+const createBannedKeyword = `-- name: CreateBannedKeyword :one
+
+INSERT INTO banned_keywords (
+    id, term, normalized_term, category, action, is_active, created_by, created_at, updated_at
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+RETURNING id, term, normalized_term, category, action, is_active, created_by, created_at, updated_at
+`
+
+type CreateBannedKeywordParams struct {
+	ID             string
+	Term           string
+	NormalizedTerm string
+	Category       string
+	Action         string
+	IsActive       bool
+	CreatedBy      string
+	CreatedAt      time.Time
+}
+
+// Banned Keywords (E9/E10/E11)
+func (q *Queries) CreateBannedKeyword(ctx context.Context, arg CreateBannedKeywordParams) (BannedKeyword, error) {
+	row := q.db.QueryRow(ctx, createBannedKeyword,
+		arg.ID,
+		arg.Term,
+		arg.NormalizedTerm,
+		arg.Category,
+		arg.Action,
+		arg.IsActive,
+		arg.CreatedBy,
+		arg.CreatedAt,
+	)
+	var i BannedKeyword
+	err := row.Scan(
+		&i.ID,
+		&i.Term,
+		&i.NormalizedTerm,
+		&i.Category,
+		&i.Action,
+		&i.IsActive,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createCategory = `-- name: CreateCategory :one
-INSERT INTO categories (id, name, slug, parent_id, commission_rate_bps, sort_order)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at
+INSERT INTO categories (id, name, slug, parent_id, commission_rate_bps, sort_order, is_prohibited)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, name, slug, parent_id, commission_rate_bps, sort_order, is_prohibited, created_at, updated_at
 `
 
 type CreateCategoryParams struct {
@@ -375,9 +469,22 @@ type CreateCategoryParams struct {
 	ParentID          pgtype.Text
 	CommissionRateBps int32
 	SortOrder         int32
+	IsProhibited      bool
 }
 
-func (q *Queries) CreateCategory(ctx context.Context, arg CreateCategoryParams) (Category, error) {
+type CreateCategoryRow struct {
+	ID                string
+	Name              string
+	Slug              string
+	ParentID          pgtype.Text
+	CommissionRateBps int32
+	SortOrder         int32
+	IsProhibited      bool
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+func (q *Queries) CreateCategory(ctx context.Context, arg CreateCategoryParams) (CreateCategoryRow, error) {
 	row := q.db.QueryRow(ctx, createCategory,
 		arg.ID,
 		arg.Name,
@@ -385,8 +492,9 @@ func (q *Queries) CreateCategory(ctx context.Context, arg CreateCategoryParams) 
 		arg.ParentID,
 		arg.CommissionRateBps,
 		arg.SortOrder,
+		arg.IsProhibited,
 	)
-	var i Category
+	var i CreateCategoryRow
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
@@ -394,6 +502,7 @@ func (q *Queries) CreateCategory(ctx context.Context, arg CreateCategoryParams) 
 		&i.ParentID,
 		&i.CommissionRateBps,
 		&i.SortOrder,
+		&i.IsProhibited,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -404,11 +513,12 @@ const createProduct = `-- name: CreateProduct :one
 
 INSERT INTO products (
     id, shop_id, category_id, name, description, images, status,
-    rejection_reason, min_price_vnd, max_price_vnd, slug, search_text
+    rejection_reason, min_price_vnd, max_price_vnd, slug, search_text, flagged_keywords
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
 `
 
 type CreateProductParams struct {
@@ -424,6 +534,7 @@ type CreateProductParams struct {
 	MaxPriceVnd     int64
 	Slug            string
 	SearchText      string
+	FlaggedKeywords []byte
 }
 
 // Products
@@ -441,6 +552,7 @@ func (q *Queries) CreateProduct(ctx context.Context, arg CreateProductParams) (P
 		arg.MaxPriceVnd,
 		arg.Slug,
 		arg.SearchText,
+		arg.FlaggedKeywords,
 	)
 	var i Product
 	err := row.Scan(
@@ -459,6 +571,77 @@ func (q *Queries) CreateProduct(ctx context.Context, arg CreateProductParams) (P
 		&i.UpdatedAt,
 		&i.Slug,
 		&i.SearchText,
+		&i.RatingSum,
+		&i.ReviewCount,
+		&i.FlaggedKeywords,
+		&i.FirstApprovedAt,
+	)
+	return i, err
+}
+
+const createProductReview = `-- name: CreateProductReview :one
+
+INSERT INTO product_reviews (
+    id, product_id, shop_id, order_id, order_item_id, sku_id, sku_name,
+    buyer_id, buyer_name, rating, comment, image_urls, status, created_at, updated_at
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
+RETURNING id, product_id, shop_id, order_id, order_item_id, sku_id, sku_name,
+          buyer_id, buyer_name, rating, comment, image_urls, status, created_at, updated_at
+`
+
+type CreateProductReviewParams struct {
+	ID          string
+	ProductID   string
+	ShopID      string
+	OrderID     string
+	OrderItemID string
+	SkuID       string
+	SkuName     string
+	BuyerID     string
+	BuyerName   string
+	Rating      int16
+	Comment     string
+	ImageUrls   []byte
+	Status      string
+	CreatedAt   time.Time
+}
+
+// Product Reviews (E5/E6/E7/E8)
+func (q *Queries) CreateProductReview(ctx context.Context, arg CreateProductReviewParams) (ProductReview, error) {
+	row := q.db.QueryRow(ctx, createProductReview,
+		arg.ID,
+		arg.ProductID,
+		arg.ShopID,
+		arg.OrderID,
+		arg.OrderItemID,
+		arg.SkuID,
+		arg.SkuName,
+		arg.BuyerID,
+		arg.BuyerName,
+		arg.Rating,
+		arg.Comment,
+		arg.ImageUrls,
+		arg.Status,
+		arg.CreatedAt,
+	)
+	var i ProductReview
+	err := row.Scan(
+		&i.ID,
+		&i.ProductID,
+		&i.ShopID,
+		&i.OrderID,
+		&i.OrderItemID,
+		&i.SkuID,
+		&i.SkuName,
+		&i.BuyerID,
+		&i.BuyerName,
+		&i.Rating,
+		&i.Comment,
+		&i.ImageUrls,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -581,6 +764,19 @@ func (q *Queries) DeactivateSKUsByProduct(ctx context.Context, productID string)
 	return err
 }
 
+const deleteBannedKeyword = `-- name: DeleteBannedKeyword :execrows
+DELETE FROM banned_keywords
+WHERE id = $1
+`
+
+func (q *Queries) DeleteBannedKeyword(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteBannedKeyword, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteCategory = `-- name: DeleteCategory :execrows
 DELETE FROM categories
 WHERE id = $1
@@ -592,6 +788,29 @@ func (q *Queries) DeleteCategory(ctx context.Context, id string) (int64, error) 
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const getBannedKeywordByID = `-- name: GetBannedKeywordByID :one
+SELECT id, term, normalized_term, category, action, is_active, created_by, created_at, updated_at
+FROM banned_keywords
+WHERE id = $1
+`
+
+func (q *Queries) GetBannedKeywordByID(ctx context.Context, id string) (BannedKeyword, error) {
+	row := q.db.QueryRow(ctx, getBannedKeywordByID, id)
+	var i BannedKeyword
+	err := row.Scan(
+		&i.ID,
+		&i.Term,
+		&i.NormalizedTerm,
+		&i.Category,
+		&i.Action,
+		&i.IsActive,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const getCategoryByID = `-- name: GetCategoryByID :one
@@ -608,7 +827,7 @@ SELECT
         ),
         c.commission_rate_bps
     )::int AS commission_rate_bps,
-    c.sort_order, c.created_at, c.updated_at
+    c.sort_order, c.is_prohibited, c.created_at, c.updated_at
 FROM categories c
 WHERE c.id = $2::text
 `
@@ -625,6 +844,7 @@ type GetCategoryByIDRow struct {
 	ParentID          pgtype.Text
 	CommissionRateBps int32
 	SortOrder         int32
+	IsProhibited      bool
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -639,6 +859,7 @@ func (q *Queries) GetCategoryByID(ctx context.Context, arg GetCategoryByIDParams
 		&i.ParentID,
 		&i.CommissionRateBps,
 		&i.SortOrder,
+		&i.IsProhibited,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -646,14 +867,26 @@ func (q *Queries) GetCategoryByID(ctx context.Context, arg GetCategoryByIDParams
 }
 
 const getCategoryBySlug = `-- name: GetCategoryBySlug :one
-SELECT id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at
+SELECT id, name, slug, parent_id, commission_rate_bps, sort_order, is_prohibited, created_at, updated_at
 FROM categories
 WHERE slug = $1
 `
 
-func (q *Queries) GetCategoryBySlug(ctx context.Context, slug string) (Category, error) {
+type GetCategoryBySlugRow struct {
+	ID                string
+	Name              string
+	Slug              string
+	ParentID          pgtype.Text
+	CommissionRateBps int32
+	SortOrder         int32
+	IsProhibited      bool
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+func (q *Queries) GetCategoryBySlug(ctx context.Context, slug string) (GetCategoryBySlugRow, error) {
 	row := q.db.QueryRow(ctx, getCategoryBySlug, slug)
-	var i Category
+	var i GetCategoryBySlugRow
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
@@ -661,6 +894,7 @@ func (q *Queries) GetCategoryBySlug(ctx context.Context, slug string) (Category,
 		&i.ParentID,
 		&i.CommissionRateBps,
 		&i.SortOrder,
+		&i.IsProhibited,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -701,9 +935,49 @@ func (q *Queries) GetCategoryDescendants(ctx context.Context, categoryIds []stri
 	return items, nil
 }
 
+const getDeletedApprovedProductBySlug = `-- name: GetDeletedApprovedProductBySlug :one
+SELECT id, shop_id, category_id, name, description, images, status,
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+FROM products
+WHERE slug = $1
+  AND deleted_at IS NOT NULL
+  AND first_approved_at IS NOT NULL
+ORDER BY deleted_at DESC, id DESC
+LIMIT 1
+`
+
+func (q *Queries) GetDeletedApprovedProductBySlug(ctx context.Context, slug string) (Product, error) {
+	row := q.db.QueryRow(ctx, getDeletedApprovedProductBySlug, slug)
+	var i Product
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.CategoryID,
+		&i.Name,
+		&i.Description,
+		&i.Images,
+		&i.Status,
+		&i.RejectionReason,
+		&i.MinPriceVnd,
+		&i.MaxPriceVnd,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Slug,
+		&i.SearchText,
+		&i.RatingSum,
+		&i.ReviewCount,
+		&i.FlaggedKeywords,
+		&i.FirstApprovedAt,
+	)
+	return i, err
+}
+
 const getProductByID = `-- name: GetProductByID :one
 SELECT id, shop_id, category_id, name, description, images, status,
-       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
 FROM products
 WHERE id = $1 AND deleted_at IS NULL
 `
@@ -727,13 +1001,18 @@ func (q *Queries) GetProductByID(ctx context.Context, id string) (Product, error
 		&i.UpdatedAt,
 		&i.Slug,
 		&i.SearchText,
+		&i.RatingSum,
+		&i.ReviewCount,
+		&i.FlaggedKeywords,
+		&i.FirstApprovedAt,
 	)
 	return i, err
 }
 
 const getProductByIDForUpdate = `-- name: GetProductByIDForUpdate :one
 SELECT id, shop_id, category_id, name, description, images, status,
-       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
 FROM products
 WHERE id = $1 AND deleted_at IS NULL
 FOR UPDATE
@@ -758,13 +1037,54 @@ func (q *Queries) GetProductByIDForUpdate(ctx context.Context, id string) (Produ
 		&i.UpdatedAt,
 		&i.Slug,
 		&i.SearchText,
+		&i.RatingSum,
+		&i.ReviewCount,
+		&i.FlaggedKeywords,
+		&i.FirstApprovedAt,
+	)
+	return i, err
+}
+
+const getProductByIDForUpdateAny = `-- name: GetProductByIDForUpdateAny :one
+SELECT id, shop_id, category_id, name, description, images, status,
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+FROM products
+WHERE id = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetProductByIDForUpdateAny(ctx context.Context, id string) (Product, error) {
+	row := q.db.QueryRow(ctx, getProductByIDForUpdateAny, id)
+	var i Product
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.CategoryID,
+		&i.Name,
+		&i.Description,
+		&i.Images,
+		&i.Status,
+		&i.RejectionReason,
+		&i.MinPriceVnd,
+		&i.MaxPriceVnd,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Slug,
+		&i.SearchText,
+		&i.RatingSum,
+		&i.ReviewCount,
+		&i.FlaggedKeywords,
+		&i.FirstApprovedAt,
 	)
 	return i, err
 }
 
 const getProductBySlug = `-- name: GetProductBySlug :one
 SELECT id, shop_id, category_id, name, description, images, status,
-       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
 FROM products
 WHERE slug = $1 AND deleted_at IS NULL
 `
@@ -788,8 +1108,45 @@ func (q *Queries) GetProductBySlug(ctx context.Context, slug string) (Product, e
 		&i.UpdatedAt,
 		&i.Slug,
 		&i.SearchText,
+		&i.RatingSum,
+		&i.ReviewCount,
+		&i.FlaggedKeywords,
+		&i.FirstApprovedAt,
 	)
 	return i, err
+}
+
+const getProductReviewRatingCounts = `-- name: GetProductReviewRatingCounts :many
+SELECT rating::int AS rating, COUNT(*)::int AS cnt
+FROM product_reviews
+WHERE product_id = $1
+  AND status = 'PUBLISHED'
+GROUP BY rating
+`
+
+type GetProductReviewRatingCountsRow struct {
+	Rating int32
+	Cnt    int32
+}
+
+func (q *Queries) GetProductReviewRatingCounts(ctx context.Context, productID string) ([]GetProductReviewRatingCountsRow, error) {
+	rows, err := q.db.Query(ctx, getProductReviewRatingCounts, productID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetProductReviewRatingCountsRow{}
+	for rows.Next() {
+		var i GetProductReviewRatingCountsRow
+		if err := rows.Scan(&i.Rating, &i.Cnt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getSKUWithContext = `-- name: GetSKUWithContext :one
@@ -1117,6 +1474,31 @@ func (q *Queries) HasStockReleaseTombstone(ctx context.Context, orderID string) 
 	return exists, err
 }
 
+const incrementProductRating = `-- name: IncrementProductRating :one
+UPDATE products
+SET rating_sum = rating_sum + $1::bigint,
+    review_count = review_count + 1
+WHERE id = $2::text
+RETURNING rating_sum, review_count
+`
+
+type IncrementProductRatingParams struct {
+	RatingDelta int64
+	ID          string
+}
+
+type IncrementProductRatingRow struct {
+	RatingSum   int64
+	ReviewCount int32
+}
+
+func (q *Queries) IncrementProductRating(ctx context.Context, arg IncrementProductRatingParams) (IncrementProductRatingRow, error) {
+	row := q.db.QueryRow(ctx, incrementProductRating, arg.RatingDelta, arg.ID)
+	var i IncrementProductRatingRow
+	err := row.Scan(&i.RatingSum, &i.ReviewCount)
+	return i, err
+}
+
 const insertCategoryFeeSchedule = `-- name: InsertCategoryFeeSchedule :one
 
 INSERT INTO category_fee_schedules (
@@ -1271,6 +1653,65 @@ func (q *Queries) InsertStockReleaseTombstone(ctx context.Context, orderID strin
 	return result.RowsAffected(), nil
 }
 
+const isCategoryProhibited = `-- name: IsCategoryProhibited :one
+WITH RECURSIVE ancestors AS (
+    SELECT c.id, c.parent_id, c.is_prohibited
+    FROM categories c
+    WHERE c.id = $1::text
+    UNION
+    SELECT p.id, p.parent_id, p.is_prohibited
+    FROM categories p
+    JOIN ancestors a ON p.id = a.parent_id
+)
+SELECT EXISTS (
+    SELECT 1 FROM ancestors WHERE is_prohibited = TRUE
+)::bool AS is_prohibited
+`
+
+func (q *Queries) IsCategoryProhibited(ctx context.Context, categoryID string) (bool, error) {
+	row := q.db.QueryRow(ctx, isCategoryProhibited, categoryID)
+	var is_prohibited bool
+	err := row.Scan(&is_prohibited)
+	return is_prohibited, err
+}
+
+const listActiveBannedKeywords = `-- name: ListActiveBannedKeywords :many
+SELECT id, term, normalized_term, category, action, is_active, created_by, created_at, updated_at
+FROM banned_keywords
+WHERE is_active = TRUE
+ORDER BY id ASC
+`
+
+func (q *Queries) ListActiveBannedKeywords(ctx context.Context) ([]BannedKeyword, error) {
+	rows, err := q.db.Query(ctx, listActiveBannedKeywords)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BannedKeyword{}
+	for rows.Next() {
+		var i BannedKeyword
+		if err := rows.Scan(
+			&i.ID,
+			&i.Term,
+			&i.NormalizedTerm,
+			&i.Category,
+			&i.Action,
+			&i.IsActive,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAllCategories = `-- name: ListAllCategories :many
 SELECT
     c.id, c.name, c.slug, c.parent_id,
@@ -1285,7 +1726,7 @@ SELECT
         ),
         c.commission_rate_bps
     )::int AS commission_rate_bps,
-    c.sort_order, c.created_at, c.updated_at
+    c.sort_order, c.is_prohibited, c.created_at, c.updated_at
 FROM categories c
 ORDER BY c.sort_order ASC, c.name ASC, c.id ASC
 `
@@ -1297,6 +1738,7 @@ type ListAllCategoriesRow struct {
 	ParentID          pgtype.Text
 	CommissionRateBps int32
 	SortOrder         int32
+	IsProhibited      bool
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -1317,6 +1759,7 @@ func (q *Queries) ListAllCategories(ctx context.Context, asOf time.Time) ([]List
 			&i.ParentID,
 			&i.CommissionRateBps,
 			&i.SortOrder,
+			&i.IsProhibited,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -1443,6 +1886,65 @@ func (q *Queries) ListAllSKUsByProductID(ctx context.Context, arg ListAllSKUsByP
 	return items, nil
 }
 
+const listBannedKeywords = `-- name: ListBannedKeywords :many
+SELECT id, term, normalized_term, category, action, is_active, created_by, created_at, updated_at
+FROM banned_keywords
+WHERE ($1::bool OR is_active = TRUE)
+  AND ($2::text = '' OR action = $2::text)
+  AND (
+      $3::text = ''
+      OR LOWER(term) LIKE '%' || $3::text || '%' ESCAPE '\'
+      OR normalized_term LIKE '%' || $3::text || '%' ESCAPE '\'
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT $5::int
+OFFSET $4::int
+`
+
+type ListBannedKeywordsParams struct {
+	IncludeInactive bool
+	ActionFilter    string
+	Query           string
+	OffsetVal       int32
+	LimitVal        int32
+}
+
+func (q *Queries) ListBannedKeywords(ctx context.Context, arg ListBannedKeywordsParams) ([]BannedKeyword, error) {
+	rows, err := q.db.Query(ctx, listBannedKeywords,
+		arg.IncludeInactive,
+		arg.ActionFilter,
+		arg.Query,
+		arg.OffsetVal,
+		arg.LimitVal,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BannedKeyword{}
+	for rows.Next() {
+		var i BannedKeyword
+		if err := rows.Scan(
+			&i.ID,
+			&i.Term,
+			&i.NormalizedTerm,
+			&i.Category,
+			&i.Action,
+			&i.IsActive,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCategoriesByParent = `-- name: ListCategoriesByParent :many
 SELECT
     c.id, c.name, c.slug, c.parent_id,
@@ -1457,7 +1959,7 @@ SELECT
         ),
         c.commission_rate_bps
     )::int AS commission_rate_bps,
-    c.sort_order, c.created_at, c.updated_at
+    c.sort_order, c.is_prohibited, c.created_at, c.updated_at
 FROM categories c
 WHERE c.parent_id = $2
 ORDER BY c.sort_order ASC, c.name ASC, c.id ASC
@@ -1475,6 +1977,7 @@ type ListCategoriesByParentRow struct {
 	ParentID          pgtype.Text
 	CommissionRateBps int32
 	SortOrder         int32
+	IsProhibited      bool
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -1495,6 +1998,7 @@ func (q *Queries) ListCategoriesByParent(ctx context.Context, arg ListCategories
 			&i.ParentID,
 			&i.CommissionRateBps,
 			&i.SortOrder,
+			&i.IsProhibited,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -1552,6 +2056,69 @@ func (q *Queries) ListCategoryFeeSchedules(ctx context.Context, arg ListCategory
 	return items, nil
 }
 
+const listProductReviews = `-- name: ListProductReviews :many
+SELECT id, product_id, shop_id, order_id, order_item_id, sku_id, sku_name,
+       buyer_id, buyer_name, rating, comment, image_urls, status, created_at, updated_at
+FROM product_reviews
+WHERE product_id = $1::text
+  AND status = 'PUBLISHED'
+  AND ($2::int <= 0 OR rating = $2::int)
+  AND (NOT $3::bool OR jsonb_array_length(image_urls) > 0)
+ORDER BY created_at DESC, id DESC
+LIMIT $5::int
+OFFSET $4::int
+`
+
+type ListProductReviewsParams struct {
+	ProductID    string
+	RatingFilter int32
+	HasImages    bool
+	OffsetVal    int32
+	LimitVal     int32
+}
+
+func (q *Queries) ListProductReviews(ctx context.Context, arg ListProductReviewsParams) ([]ProductReview, error) {
+	rows, err := q.db.Query(ctx, listProductReviews,
+		arg.ProductID,
+		arg.RatingFilter,
+		arg.HasImages,
+		arg.OffsetVal,
+		arg.LimitVal,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProductReview{}
+	for rows.Next() {
+		var i ProductReview
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProductID,
+			&i.ShopID,
+			&i.OrderID,
+			&i.OrderItemID,
+			&i.SkuID,
+			&i.SkuName,
+			&i.BuyerID,
+			&i.BuyerName,
+			&i.Rating,
+			&i.Comment,
+			&i.ImageUrls,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProductsBySKUIDs = `-- name: ListProductsBySKUIDs :many
 WITH RECURSIVE cat_tree AS (
     SELECT c.id
@@ -1569,7 +2136,8 @@ matched_products AS (
       AND s.status <> 'INACTIVE'
 )
 SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
-       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at, p.slug, p.search_text
+       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at,
+       p.slug, p.search_text, p.rating_sum, p.review_count, p.flagged_keywords, p.first_approved_at
 FROM matched_products mp
 JOIN products p ON p.id = mp.product_id
 WHERE p.deleted_at IS NULL
@@ -1648,6 +2216,10 @@ func (q *Queries) ListProductsBySKUIDs(ctx context.Context, arg ListProductsBySK
 			&i.UpdatedAt,
 			&i.Slug,
 			&i.SearchText,
+			&i.RatingSum,
+			&i.ReviewCount,
+			&i.FlaggedKeywords,
+			&i.FirstApprovedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1670,7 +2242,8 @@ WITH RECURSIVE cat_tree AS (
     JOIN cat_tree ct ON child.parent_id = ct.id
 )
 SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
-       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at, p.slug, p.search_text
+       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at,
+       p.slug, p.search_text, p.rating_sum, p.review_count, p.flagged_keywords, p.first_approved_at
 FROM products p
 WHERE p.deleted_at IS NULL
   AND ($1::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
@@ -1748,10 +2321,105 @@ func (q *Queries) ListProductsFiltered(ctx context.Context, arg ListProductsFilt
 			&i.UpdatedAt,
 			&i.Slug,
 			&i.SearchText,
+			&i.RatingSum,
+			&i.ReviewCount,
+			&i.FlaggedKeywords,
+			&i.FirstApprovedAt,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProductsForModerationScan = `-- name: ListProductsForModerationScan :many
+SELECT id, shop_id, category_id, name, description, images, status,
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+FROM products
+WHERE deleted_at IS NULL
+  AND ($1::text = '' OR id > $1::text)
+ORDER BY id ASC
+LIMIT $2::int
+`
+
+type ListProductsForModerationScanParams struct {
+	CursorID string
+	LimitVal int32
+}
+
+func (q *Queries) ListProductsForModerationScan(ctx context.Context, arg ListProductsForModerationScanParams) ([]Product, error) {
+	rows, err := q.db.Query(ctx, listProductsForModerationScan, arg.CursorID, arg.LimitVal)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Product{}
+	for rows.Next() {
+		var i Product
+		if err := rows.Scan(
+			&i.ID,
+			&i.ShopID,
+			&i.CategoryID,
+			&i.Name,
+			&i.Description,
+			&i.Images,
+			&i.Status,
+			&i.RejectionReason,
+			&i.MinPriceVnd,
+			&i.MaxPriceVnd,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Slug,
+			&i.SearchText,
+			&i.RatingSum,
+			&i.ReviewCount,
+			&i.FlaggedKeywords,
+			&i.FirstApprovedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProhibitedCategoryIDs = `-- name: ListProhibitedCategoryIDs :many
+WITH RECURSIVE prohibited_tree AS (
+    SELECT c.id
+    FROM categories c
+    WHERE c.is_prohibited = TRUE
+    UNION
+    SELECT child.id
+    FROM categories child
+    JOIN prohibited_tree pt ON child.parent_id = pt.id
+)
+SELECT id::text AS id
+FROM prohibited_tree
+ORDER BY id ASC
+`
+
+func (q *Queries) ListProhibitedCategoryIDs(ctx context.Context) ([]string, error) {
+	rows, err := q.db.Query(ctx, listProhibitedCategoryIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1832,6 +2500,56 @@ func (q *Queries) ListReservationsByOrderIDForUpdate(ctx context.Context, orderI
 	return items, nil
 }
 
+const listReviewsByOrderAndBuyer = `-- name: ListReviewsByOrderAndBuyer :many
+SELECT id, product_id, shop_id, order_id, order_item_id, sku_id, sku_name,
+       buyer_id, buyer_name, rating, comment, image_urls, status, created_at, updated_at
+FROM product_reviews
+WHERE order_id = $1
+  AND buyer_id = $2
+ORDER BY created_at ASC, id ASC
+`
+
+type ListReviewsByOrderAndBuyerParams struct {
+	OrderID string
+	BuyerID string
+}
+
+func (q *Queries) ListReviewsByOrderAndBuyer(ctx context.Context, arg ListReviewsByOrderAndBuyerParams) ([]ProductReview, error) {
+	rows, err := q.db.Query(ctx, listReviewsByOrderAndBuyer, arg.OrderID, arg.BuyerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProductReview{}
+	for rows.Next() {
+		var i ProductReview
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProductID,
+			&i.ShopID,
+			&i.OrderID,
+			&i.OrderItemID,
+			&i.SkuID,
+			&i.SkuName,
+			&i.BuyerID,
+			&i.BuyerName,
+			&i.Rating,
+			&i.Comment,
+			&i.ImageUrls,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRootCategories = `-- name: ListRootCategories :many
 SELECT
     c.id, c.name, c.slug, c.parent_id,
@@ -1846,7 +2564,7 @@ SELECT
         ),
         c.commission_rate_bps
     )::int AS commission_rate_bps,
-    c.sort_order, c.created_at, c.updated_at
+    c.sort_order, c.is_prohibited, c.created_at, c.updated_at
 FROM categories c
 WHERE c.parent_id IS NULL
 ORDER BY c.sort_order ASC, c.name ASC, c.id ASC
@@ -1859,6 +2577,7 @@ type ListRootCategoriesRow struct {
 	ParentID          pgtype.Text
 	CommissionRateBps int32
 	SortOrder         int32
+	IsProhibited      bool
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -1879,6 +2598,7 @@ func (q *Queries) ListRootCategories(ctx context.Context, asOf time.Time) ([]Lis
 			&i.ParentID,
 			&i.CommissionRateBps,
 			&i.SortOrder,
+			&i.IsProhibited,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -2388,6 +3108,51 @@ func (q *Queries) TryInsertRestockHistory(ctx context.Context, arg TryInsertRest
 	return result.RowsAffected(), nil
 }
 
+const updateBannedKeyword = `-- name: UpdateBannedKeyword :one
+UPDATE banned_keywords
+SET term = $2,
+    normalized_term = $3,
+    category = $4,
+    action = $5,
+    is_active = $6,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, term, normalized_term, category, action, is_active, created_by, created_at, updated_at
+`
+
+type UpdateBannedKeywordParams struct {
+	ID             string
+	Term           string
+	NormalizedTerm string
+	Category       string
+	Action         string
+	IsActive       bool
+}
+
+func (q *Queries) UpdateBannedKeyword(ctx context.Context, arg UpdateBannedKeywordParams) (BannedKeyword, error) {
+	row := q.db.QueryRow(ctx, updateBannedKeyword,
+		arg.ID,
+		arg.Term,
+		arg.NormalizedTerm,
+		arg.Category,
+		arg.Action,
+		arg.IsActive,
+	)
+	var i BannedKeyword
+	err := row.Scan(
+		&i.ID,
+		&i.Term,
+		&i.NormalizedTerm,
+		&i.Category,
+		&i.Action,
+		&i.IsActive,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateCategory = `-- name: UpdateCategory :one
 UPDATE categories
 SET name = $2,
@@ -2395,9 +3160,10 @@ SET name = $2,
     parent_id = $4,
     commission_rate_bps = $5,
     sort_order = $6,
+    is_prohibited = $7,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at
+RETURNING id, name, slug, parent_id, commission_rate_bps, sort_order, is_prohibited, created_at, updated_at
 `
 
 type UpdateCategoryParams struct {
@@ -2407,9 +3173,22 @@ type UpdateCategoryParams struct {
 	ParentID          pgtype.Text
 	CommissionRateBps int32
 	SortOrder         int32
+	IsProhibited      bool
 }
 
-func (q *Queries) UpdateCategory(ctx context.Context, arg UpdateCategoryParams) (Category, error) {
+type UpdateCategoryRow struct {
+	ID                string
+	Name              string
+	Slug              string
+	ParentID          pgtype.Text
+	CommissionRateBps int32
+	SortOrder         int32
+	IsProhibited      bool
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+func (q *Queries) UpdateCategory(ctx context.Context, arg UpdateCategoryParams) (UpdateCategoryRow, error) {
 	row := q.db.QueryRow(ctx, updateCategory,
 		arg.ID,
 		arg.Name,
@@ -2417,8 +3196,9 @@ func (q *Queries) UpdateCategory(ctx context.Context, arg UpdateCategoryParams) 
 		arg.ParentID,
 		arg.CommissionRateBps,
 		arg.SortOrder,
+		arg.IsProhibited,
 	)
-	var i Category
+	var i UpdateCategoryRow
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
@@ -2426,6 +3206,7 @@ func (q *Queries) UpdateCategory(ctx context.Context, arg UpdateCategoryParams) 
 		&i.ParentID,
 		&i.CommissionRateBps,
 		&i.SortOrder,
+		&i.IsProhibited,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -2461,10 +3242,16 @@ SET category_id = $2,
     max_price_vnd = $9,
     slug = $10,
     search_text = $11,
+    flagged_keywords = $12,
+    first_approved_at = CASE
+        WHEN $6 IN ('APPROVED', 'OUT_OF_STOCK') AND first_approved_at IS NULL THEN NOW()
+        ELSE first_approved_at
+    END,
     updated_at = NOW()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
 `
 
 type UpdateProductParams struct {
@@ -2479,6 +3266,7 @@ type UpdateProductParams struct {
 	MaxPriceVnd     int64
 	Slug            string
 	SearchText      string
+	FlaggedKeywords []byte
 }
 
 func (q *Queries) UpdateProduct(ctx context.Context, arg UpdateProductParams) (Product, error) {
@@ -2494,6 +3282,7 @@ func (q *Queries) UpdateProduct(ctx context.Context, arg UpdateProductParams) (P
 		arg.MaxPriceVnd,
 		arg.Slug,
 		arg.SearchText,
+		arg.FlaggedKeywords,
 	)
 	var i Product
 	err := row.Scan(
@@ -2512,6 +3301,10 @@ func (q *Queries) UpdateProduct(ctx context.Context, arg UpdateProductParams) (P
 		&i.UpdatedAt,
 		&i.Slug,
 		&i.SearchText,
+		&i.RatingSum,
+		&i.ReviewCount,
+		&i.FlaggedKeywords,
+		&i.FirstApprovedAt,
 	)
 	return i, err
 }
@@ -2520,20 +3313,32 @@ const updateProductReview = `-- name: UpdateProductReview :one
 UPDATE products
 SET status = $2,
     rejection_reason = $3,
+    flagged_keywords = $4,
+    first_approved_at = CASE
+        WHEN $2 IN ('APPROVED', 'OUT_OF_STOCK') AND first_approved_at IS NULL THEN NOW()
+        ELSE first_approved_at
+    END,
     updated_at = NOW()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
 `
 
 type UpdateProductReviewParams struct {
 	ID              string
 	Status          string
 	RejectionReason string
+	FlaggedKeywords []byte
 }
 
 func (q *Queries) UpdateProductReview(ctx context.Context, arg UpdateProductReviewParams) (Product, error) {
-	row := q.db.QueryRow(ctx, updateProductReview, arg.ID, arg.Status, arg.RejectionReason)
+	row := q.db.QueryRow(ctx, updateProductReview,
+		arg.ID,
+		arg.Status,
+		arg.RejectionReason,
+		arg.FlaggedKeywords,
+	)
 	var i Product
 	err := row.Scan(
 		&i.ID,
@@ -2551,6 +3356,10 @@ func (q *Queries) UpdateProductReview(ctx context.Context, arg UpdateProductRevi
 		&i.UpdatedAt,
 		&i.Slug,
 		&i.SearchText,
+		&i.RatingSum,
+		&i.ReviewCount,
+		&i.FlaggedKeywords,
+		&i.FirstApprovedAt,
 	)
 	return i, err
 }

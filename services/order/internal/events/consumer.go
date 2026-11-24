@@ -29,6 +29,7 @@ type EventHandler interface {
 	HandlePaymentExpired(ctx context.Context, eventID string, payload PaymentFailedPayload) error
 	HandlePaymentRefunded(ctx context.Context, eventID string, payload PaymentRefundedPayload) error
 	HandleShipmentUpdated(ctx context.Context, eventID string, payload ShipmentUpdatedPayload) error
+	HandleShipmentCreateFailed(ctx context.Context, eventID string, payload ShipmentCreateFailedPayload) error
 }
 
 // DeadLetterStore records dead-lettered messages locally alongside NATS DLQ stream publishing.
@@ -315,6 +316,13 @@ func (c *Consumer) dispatch(ctx context.Context, eventType, eventID string, rawP
 			return fmt.Errorf("unmarshal shipment.updated payload: %w", err)
 		}
 		return c.handler.HandleShipmentUpdated(ctx, eventID, p)
+
+	case SubjectShipmentCreateFailed:
+		var p ShipmentCreateFailedPayload
+		if err := json.Unmarshal(rawPayload, &p); err != nil {
+			return fmt.Errorf("unmarshal shipment.create_failed payload: %w", err)
+		}
+		return c.handler.HandleShipmentCreateFailed(ctx, eventID, p)
 
 	default:
 		// Ignore unrelated subjects on payment.> / shipment.> safely.

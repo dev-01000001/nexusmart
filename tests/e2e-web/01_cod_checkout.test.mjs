@@ -16,11 +16,11 @@ import {
 } from "./helpers.mjs";
 
 test("01. Buyer flow via BFF: register -> OTP -> login -> 2-shop cart -> NEXUS10 preview -> COD checkout -> orders", async () => {
-  await ensureRateBudget(30, { label: "01-cod" });
+  await ensureRateBudget(35, { label: "01-cod" });
   const client = new WebClient();
 
-  // 1. Register -> Mailpit OTP -> Verify OTP -> Login via BFF.
-  const buyer = await registerAndLoginBuyer(client, "cod");
+  // 1. Register -> Mailpit OTP -> Verify OTP -> Login -> Verify phone OTP for COD (E19).
+  const buyer = await registerAndLoginBuyer(client, "cod", { verifyPhone: true });
 
   // Login response must NOT expose tokens in JSON body; tokens live only in HttpOnly host-only cookies.
   assert.equal(buyer.loginRes.data?.user?.email, buyer.email);

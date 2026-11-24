@@ -226,7 +226,13 @@ func TestW2A_USRB8_AntiEnumerationAndLockedLoginReason(t *testing.T) {
 		t.Fatalf("Register pending: %v", err)
 	}
 
-	// Register duplicate email/phone retains 409 AlreadyExists (explicit brief decision).
+	// Register duplicate email retains 409 AlreadyExists; duplicate phone returns 409 AlreadyExists when phone_verified=true (E19-bis).
+	store.mu.Lock()
+	actUser := store.users[activeID]
+	actUser.PhoneVerified = true
+	store.users[activeID] = actUser
+	store.mu.Unlock()
+
 	if _, err := srv.Register(ctx, &userv1.RegisterRequest{
 		FullName: "Dup Email",
 		Email:    "w2a-active@example.com",
@@ -241,7 +247,7 @@ func TestW2A_USRB8_AntiEnumerationAndLockedLoginReason(t *testing.T) {
 		Phone:    "0901000010",
 		Password: "Password123!",
 	}); status.Code(err) != codes.AlreadyExists {
-		t.Fatalf("duplicate phone Register: want AlreadyExists, got %v", err)
+		t.Fatalf("duplicate verified phone Register: want AlreadyExists, got %v", err)
 	}
 
 	// ResendOTP: unknown email and active email must both return Sent=true without emitting events.

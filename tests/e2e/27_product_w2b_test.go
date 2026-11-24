@@ -507,6 +507,7 @@ func TestE2E_ProductW2B_OutboxCategoriesPriceHistoryAndFeeSchedule(t *testing.T)
 
 		// Place COD Order 1 while commission is 500 bps -> commission_vnd = 250,000 * 500 / 10000 = 12,500.
 		buyer := env.registerVerifyAndLogin(t, "prodw2b-buyer")
+		env.verifyBuyerPhone(t, buyer)
 		env.addAddress(t, buyer)
 		order1 := prodW2BCreateCODOrder(t, env, buyer, seller1, sku)
 		// Wave 2b buyer fee privacy: buyer checkout masks fees to 0; read seller order for authoritative commission.

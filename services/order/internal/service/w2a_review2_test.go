@@ -717,7 +717,7 @@ func TestReview2_P2_And_P3_Fixes(t *testing.T) {
 	t.Run("P3_1c_FallbackCarrierUpdatedWhenDeliveringWebhookBeatsSellerShipOrder", func(t *testing.T) {
 		h := newTestHarness()
 		h.shipping.quotes = []*shippingv1.CarrierQuote{
-			{CarrierCode: "fallback", CarrierName: "Fallback", ServiceCode: "standard", FeeVnd: 30000, IsFallback: true},
+			{CarrierCode: "fallback", CarrierName: "Fallback", ServiceCode: "standard", FeeVnd: 30000, IsFallback: true, CodSupported: true},
 		}
 		co, _ := h.svc.CreateCheckout(buyerCtx, &orderv1.CreateCheckoutRequest{
 			IdempotencyKey: "r2-p31c-fb",

@@ -291,6 +291,7 @@ const stats = {
   sellers: { created: 0, existing: 0 },
   shops: { created: 0, existing: 0 },
   buyer: { created: 0, existing: 0 },
+  buyerPhoneVerified: { created: 0, existing: 0 },
   addresses: { created: 0, existing: 0 },
   coins: { created: 0, existing: 0 },
   categories: { created: 0, existing: 0, updated: 0 },
@@ -583,31 +584,30 @@ function extractOtp(...parts) {
   return generic ? generic[1] : "";
 }
 
-async function waitForOtp(email, sinceMs, timeoutMs = 20000) {
+async function listMailpitForEmail(email) {
   const target = email.trim().toLowerCase();
+  const res = await fetch(`${MAILPIT_URL}/api/v1/messages?limit=50`);
+  if (!res.ok) throw new Error(`Mailpit list returned HTTP ${res.status}`);
+  const messages = (await res.json())?.messages;
+  return (Array.isArray(messages) ? messages : []).filter((m) =>
+    (Array.isArray(m.To) ? m.To : []).some((r) => String(r?.Address || "").trim().toLowerCase() === target)
+  );
+}
+
+async function listOtpMailIds(email) {
+  return new Set((await listMailpitForEmail(email)).map((m) => m.ID).filter(Boolean));
+}
+
+async function waitForOtp(email, sinceMs, timeoutMs = 20000, seenIds = new Set()) {
   const deadline = Date.now() + timeoutMs;
   let lastErr = null;
 
   while (Date.now() < deadline) {
     try {
-      const listRes = await fetch(`${MAILPIT_URL}/api/v1/messages?limit=50`);
-      if (!listRes.ok) {
-        throw new Error(`Mailpit list returned HTTP ${listRes.status}`);
-      }
-      const listData = await listRes.json();
-      const messages = Array.isArray(listData?.messages) ? listData.messages : [];
-
-      for (const summary of messages) {
-        const recipients = Array.isArray(summary.To) ? summary.To : [];
-        const matched = recipients.some(
-          (r) => String(r?.Address || "").trim().toLowerCase() === target
-        );
-        if (!matched) continue;
-
+      for (const summary of await listMailpitForEmail(email)) {
+        if (seenIds.has(summary.ID)) continue;
         const createdMs = Date.parse(summary.Created || "");
-        if (Number.isFinite(createdMs) && createdMs < sinceMs - 5000) {
-          continue;
-        }
+        if (Number.isFinite(createdMs) && createdMs < sinceMs - 5000) continue;
 
         const msgRes = await fetch(`${MAILPIT_URL}/api/v1/message/${summary.ID}`);
         if (!msgRes.ok) continue;
@@ -626,6 +626,30 @@ async function waitForOtp(email, sinceMs, timeoutMs = 20000) {
       lastErr ? ` (last error: ${lastErr.message})` : ""
     }`
   );
+}
+
+export async function ensureBuyerPhoneVerified({
+  buyerToken,
+  buyerEmail,
+  apiFn = apiRequest,
+  waitForOtpFn = waitForOtp,
+  listSeenFn = listOtpMailIds,
+}) {
+  const meRes = await apiFn("GET", "/api/v1/users/me", { token: buyerToken });
+  if (meRes.data?.user?.phone_verified === true) return "existing";
+
+  const seenIds = await listSeenFn(buyerEmail);
+  const beforeOtp = Date.now();
+  await apiFn("POST", "/api/v1/users/me/phone/otp", { token: buyerToken, body: {} });
+  const otp = await waitForOtpFn(buyerEmail, beforeOtp, 20000, seenIds);
+  const verifyRes = await apiFn("POST", "/api/v1/users/me/phone/verify", {
+    token: buyerToken,
+    body: { otp },
+  });
+  if (verifyRes.data?.verified !== true) {
+    throw new Error("POST /api/v1/users/me/phone/verify did not return verified=true");
+  }
+  return "created";
 }
 
 async function login(email, password) {
@@ -1881,6 +1905,13 @@ async function main() {
     }
   }
 
+  // 9b. Verify demo buyer phone via real OTP flow before COD demo orders (E19).
+  const phoneStatus = await ensureBuyerPhoneVerified({
+    buyerToken: buyerSession.token,
+    buyerEmail: DEMO_USER.email,
+  });
+  stats.buyerPhoneVerified[phoneStatus] += 1;
+
   // 10. Sample Orders in multiple states via real Gateway REST + signed webhooks (zero DB writes).
   const demoOrderResult = await seedDemoOrders({
     buyerToken: buyerSession.token,
@@ -1914,6 +1945,7 @@ async function main() {
     ["Sellers", stats.sellers],
     ["Shops", stats.shops],
     ["Demo buyer", stats.buyer],
+    ["Buyer phone verified", stats.buyerPhoneVerified],
     ["Addresses", stats.addresses],
     ["Buyer initial coins", stats.coins],
     ["Root categories", stats.categories],
@@ -1945,7 +1977,7 @@ async function main() {
   console.log("| --- | --- | --- |");
   console.log(`| admin | ${ADMIN_EMAIL} | Bootstrap admin |`);
   console.log(
-    `| buyer | ${DEMO_USER.email} | ${DEMO_USER.fullName} (${initialCoins} xu, default address, ${demoOrderResult.orders.length} demo orders) |`
+    `| buyer | ${DEMO_USER.email} | ${DEMO_USER.fullName} (phone verified, ${initialCoins} xu, default address, ${demoOrderResult.orders.length} demo orders) |`
   );
   for (const staticShop of SHOPS) {
     const entry = sellerByStaticShopId.get(staticShop.id);

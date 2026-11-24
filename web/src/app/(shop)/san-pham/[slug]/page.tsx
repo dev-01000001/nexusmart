@@ -1,7 +1,8 @@
-import React, { Suspense } from "react";
+import React, { Suspense, cache } from "react";
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { SizeCode } from "@/data";
-import { StateView } from "@/components";
+import { Button, ProductCard, StateView } from "@/components";
 import { loadProductDetailData } from "@/lib/catalog";
 import { ProductDetailClient } from "./ProductDetailClient";
 import styles from "./page.module.css";
@@ -13,9 +14,36 @@ interface ProductDetailPageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
+const getProductDetailData = cache(loadProductDetailData);
+
 function readParam(val: string | string[] | undefined): string | null {
   if (Array.isArray(val)) return val[0] ?? null;
   return val ?? null;
+}
+
+export async function generateMetadata({ params }: ProductDetailPageProps): Promise<Metadata> {
+  const { slug } = await params;
+  const data = await getProductDetailData(slug);
+
+  if (data.discontinued) {
+    const title = data.discontinued.name
+      ? `${data.discontinued.name} — Sản phẩm đã ngừng kinh doanh`
+      : "Sản phẩm đã ngừng kinh doanh";
+    return {
+      title,
+      robots: { index: false, follow: true },
+    };
+  }
+
+  if (data.product) {
+    return {
+      title: data.product.name,
+    };
+  }
+
+  return {
+    title: "Chi tiết sản phẩm",
+  };
 }
 
 export default async function ProductDetailPage({ params, searchParams }: ProductDetailPageProps) {
@@ -60,10 +88,56 @@ export default async function ProductDetailPage({ params, searchParams }: Produc
     );
   }
 
-  const data = await loadProductDetailData(slug);
+  const data = await getProductDetailData(slug);
 
   if (data.notFound) {
     notFound();
+  }
+
+  if (data.discontinued) {
+    const categoryHref = data.discontinued.categorySlug
+      ? `/danh-muc?cat=${encodeURIComponent(data.discontinued.categorySlug)}`
+      : "/danh-muc";
+    return (
+      <div className={styles.page}>
+        <section className={styles.discontinuedBanner} aria-labelledby="discontinued-heading">
+          <p className={styles.discontinuedEyebrow}>Thông báo sản phẩm</p>
+          <h1 id="discontinued-heading" className={styles.discontinuedTitle}>
+            Sản phẩm đã ngừng kinh doanh
+          </h1>
+          {data.discontinued.name && (
+            <p className={styles.discontinuedName}>{data.discontinued.name}</p>
+          )}
+          <p className={styles.discontinuedDesc}>
+            Sản phẩm này hiện không còn mở bán trên sàn. Bạn có thể tham khảo các lựa chọn tương tự
+            đang sẵn hàng bên dưới.
+          </p>
+          <div className={styles.discontinuedActions}>
+            <Button variant="ink" size="md" href={categoryHref}>
+              {data.discontinued.categoryName
+                ? `Xem danh mục ${data.discontinued.categoryName}`
+                : "Xem tất cả sản phẩm"}
+            </Button>
+            <Button variant="secondary" size="md" href="/">
+              Về trang chủ
+            </Button>
+          </div>
+        </section>
+
+        {data.similarProducts.length > 0 && (
+          <section className={styles.discontinuedSimilar} aria-labelledby="discontinued-similar-hd">
+            <h2 id="discontinued-similar-hd" className={styles.discontinuedSectionTitle}>
+              Sản phẩm tương tự
+            </h2>
+            <div className={styles.discontinuedGrid}>
+              {data.similarProducts.map((item) => (
+                <ProductCard key={item.id} product={item} showSpec={true} />
+              ))}
+            </div>
+          </section>
+        )}
+      </div>
+    );
   }
 
   if (data.error || !data.product || !data.shop) {
@@ -94,6 +168,7 @@ export default async function ProductDetailPage({ params, searchParams }: Produc
         key={data.product.id}
         product={data.product}
         shop={data.shop}
+        initialReviews={data.initialReviews}
         shopVouchers={data.shopVouchers}
         platformVouchers={data.platformVouchers}
         sameShopProducts={data.sameShopProducts}

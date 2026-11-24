@@ -63,12 +63,24 @@ type ShopBankAccountOTPPayload struct {
 	AccountNumberMasked string `json:"account_number_masked"`
 }
 
+// PhoneOTPRequestedPayload is emitted on `user.phone_otp_requested`.
+// SECURITY: OTP must never be logged by publisher or consumer.
+type PhoneOTPRequestedPayload struct {
+	UserID      string `json:"user_id"`
+	Email       string `json:"email"`
+	FullName    string `json:"full_name"`
+	PhoneMasked string `json:"phone_masked"`
+	OTP         string `json:"otp"`
+	ExpiresAt   string `json:"expires_at"`
+}
+
 // Publisher publishes domain events to NATS JetStream.
 type Publisher interface {
 	PublishUserRegistered(ctx context.Context, payload UserRegisteredPayload) error
 	PublishPasswordResetRequested(ctx context.Context, payload PasswordResetRequestedPayload) error
 	PublishShopReviewed(ctx context.Context, payload ShopReviewedPayload) error
 	PublishShopBankAccountOTP(ctx context.Context, payload ShopBankAccountOTPPayload) error
+	PublishPhoneOTPRequested(ctx context.Context, payload PhoneOTPRequestedPayload) error
 }
 
 // NATSPublisher implements Publisher using NATS JetStream.
@@ -111,6 +123,10 @@ func (p *NATSPublisher) PublishShopReviewed(ctx context.Context, payload ShopRev
 
 func (p *NATSPublisher) PublishShopBankAccountOTP(ctx context.Context, payload ShopBankAccountOTPPayload) error {
 	return p.publish(ctx, "user.shop_bank_account_otp", payload)
+}
+
+func (p *NATSPublisher) PublishPhoneOTPRequested(ctx context.Context, payload PhoneOTPRequestedPayload) error {
+	return p.publish(ctx, "user.phone_otp_requested", payload)
 }
 
 func (p *NATSPublisher) publish(ctx context.Context, subject string, payload any) error {

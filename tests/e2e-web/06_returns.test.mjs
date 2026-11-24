@@ -6,7 +6,6 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { describe, test } from "node:test";
-import { fileURLToPath } from "node:url";
 import {
   ACCESS_COOKIE,
   COD_SAFE_SUBTOTAL_CAP_VND,
@@ -20,46 +19,18 @@ import {
   createApprovedCodProduct,
   createBuyerAddress,
   ensureRateBudget,
-  fetchWith429Retry,
   normalizeStatus,
   parseRetryAfterMs,
   pollUntil,
   postSignedPaymentWebhook,
+  postSignedShippingWebhook,
   registerAndLoginBuyer,
 } from "./helpers.mjs";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, "..", "..");
-
-function readDotEnvKey(name, fallback = "") {
-  if (process.env[name]) return process.env[name];
-  const envPath = path.join(REPO_ROOT, ".env");
-  if (!fs.existsSync(envPath)) return fallback;
-  const lines = fs.readFileSync(envPath, "utf8").split(/\r?\n/);
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const eq = line.indexOf("=");
-    if (eq <= 0) continue;
-    const k = line.slice(0, eq).trim();
-    if (k !== name) continue;
-    let v = line.slice(eq + 1).trim();
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-      v = v.slice(1, -1);
-    }
-    return v || fallback;
-  }
-  return fallback;
-}
 
 const SELLER_EMAIL = process.env.E2E_SELLER_EMAIL || "seller.bachdang@nexusmart.local";
 const SELLER_PASSWORD = process.env.E2E_SELLER_PASSWORD || "SellerDevPassword123!";
 const ADMIN_EMAIL = process.env.E2E_ADMIN_EMAIL || "admin@nexusmart.local";
 const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD || "AdminDevPassword123!";
-const SHIPPING_WEBHOOK_SECRET = readDotEnvKey(
-  "SHIPPING_WEBHOOK_SECRET",
-  "dev-only-shipping-webhook-hmac-secret"
-);
 
 function normalizeReturnStatus(raw) {
   return String(raw ?? "")
@@ -73,39 +44,6 @@ function normalizeRefundStatus(raw) {
     .trim()
     .toUpperCase()
     .replace(/^REFUND_STATUS_/, "");
-}
-
-async function postSignedShippingWebhook(carrier, payload) {
-  const rawBody = JSON.stringify(payload);
-  const signature = crypto
-    .createHmac("sha256", SHIPPING_WEBHOOK_SECRET)
-    .update(rawBody, "utf8")
-    .digest("hex");
-  const timestamp = String(Math.floor(Date.now() / 1000));
-
-  const res = await fetchWith429Retry(
-    `${config.gatewayUrl}/webhooks/shipping/${encodeURIComponent(carrier || "ghn")}`,
-    () => ({
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Signature": signature,
-        "X-Timestamp": timestamp,
-      },
-      body: rawBody,
-      signal: AbortSignal.timeout(config.requestTimeoutMs),
-    })
-  );
-  const text = await res.text();
-  let data = null;
-  if (text) {
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = null;
-    }
-  }
-  return { status: res.status, text, data };
 }
 
 async function waitForPasswordResetToken(email, options = {}) {
@@ -980,11 +918,11 @@ describe("06. Wave 2a returns, refund settlement, forgot password, and 390px lay
   });
 
   test("6d. 390px mobile horizontal overflow check across new and updated Wave 2a pages", async () => {
-    await ensureRateBudget(60, { label: "6d" });
+    await ensureRateBudget(65, { label: "6d" });
     const { client: seller } = await loginSeededAccount(SELLER_EMAIL, SELLER_PASSWORD, "seller");
     const { client: admin } = await loginSeededAccount(ADMIN_EMAIL, ADMIN_PASSWORD, "admin");
     const buyer = new WebClient();
-    const buyerProfile = await registerAndLoginBuyer(buyer, "overflow-390");
+    const buyerProfile = await registerAndLoginBuyer(buyer, "overflow-390", { verifyPhone: true });
 
     // Create a real order owned by this exact buyer so /don-hang/[id] renders the actual order detail page (not 404).
     const { order: ownedOrder } = await createSellerShopOrder(seller, buyer, buyerProfile, {
@@ -1146,10 +1084,10 @@ describe("06. Wave 2a returns, refund settlement, forgot password, and 390px lay
   });
 
   test("6f. Real Chromium opens sandboxed BFF shipping label without CSP style violations and prints to PDF via CDP Page.printToPDF", async () => {
-    await ensureRateBudget(25, { label: "6f" });
+    await ensureRateBudget(30, { label: "6f" });
     const { client: seller } = await loginSeededAccount(SELLER_EMAIL, SELLER_PASSWORD, "seller");
     const buyerClient = new WebClient();
-    const buyer = await registerAndLoginBuyer(buyerClient, "label-6f");
+    const buyer = await registerAndLoginBuyer(buyerClient, "label-6f", { verifyPhone: true });
 
     // Create a self-contained COD order + shipment so 6f does not depend on 6a state.
     const { quote, order } = await createSellerShopOrder(seller, buyerClient, buyer, {

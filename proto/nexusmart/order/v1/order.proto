@@ -138,6 +138,8 @@ message Order {
   int32 payment_fee_bps = 36;
   // Populated only for admin/super_admin callers; always false for buyers and sellers.
   bool needs_manual_review = 37;
+  // Async shipment creation job status: "", "QUEUED", or "FAILED" (E18).
+  string shipment_job_status = 38;
 }
 
 message ReturnEvent {
@@ -277,6 +279,9 @@ message SellerShipOrderResponse {
   Order order = 1;
   string tracking_code = 2;
   string label_url = 3;
+  // True when shipment creation was queued for async retry due to transient carrier error (E18).
+  bool queued = 4;
+  string shipment_job_id = 5;
 }
 
 message BuyerConfirmReceivedRequest {

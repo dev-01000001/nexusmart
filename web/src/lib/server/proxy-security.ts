@@ -1,4 +1,26 @@
 export const MAX_BFF_BODY_BYTES = 2 * 1024 * 1024; // 2 MiB (PLT-B6)
+export const COD_IMPORT_MULTIPART_OVERHEAD_BYTES = 64 * 1024; // +64 KiB for multipart/form-data envelope on cod/import
+
+/**
+ * Resolves the body byte limit for BFF proxy requests:
+ * - Default: 2 MiB (`MAX_BFF_BODY_BYTES`).
+ * - `POST /admin/reconciliation/cod/import` with `multipart/form-data`: 2 MiB + 64 KiB
+ *   so a valid <= 2 MiB CSV file is never rejected due to multipart boundaries/headers.
+ */
+export function resolveMaxBffBodyBytes(
+  method: string,
+  segments: readonly string[],
+  contentType: string | null | undefined
+): number {
+  if (
+    method.toUpperCase() === "POST" &&
+    segments.join("/").toLowerCase() === "admin/reconciliation/cod/import" &&
+    (contentType ?? "").toLowerCase().includes("multipart/form-data")
+  ) {
+    return MAX_BFF_BODY_BYTES + COD_IMPORT_MULTIPART_OVERHEAD_BYTES;
+  }
+  return MAX_BFF_BODY_BYTES;
+}
 
 export const FALLBACK_HTML_SANDBOX_CSP =
   "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'";

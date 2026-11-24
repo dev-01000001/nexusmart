@@ -197,7 +197,8 @@ function ProductFormInner({ mode, productId, shop }: ProductFormViewProps & { sh
           }
         }
       } else if (cats.length > 0) {
-        setCategoryId((prev) => prev || cats[0].id);
+        const firstAllowed = cats.find((c) => !c.is_prohibited) ?? cats[0];
+        setCategoryId((prev) => prev || firstAllowed.id);
       }
     } catch (err) {
       setLoadError(getErrorMessage(err, "Không thể tải danh mục và thông tin sản phẩm."));
@@ -605,6 +606,17 @@ function ProductFormInner({ mode, productId, shop }: ProductFormViewProps & { sh
         </div>
       )}
 
+      {Array.isArray(loadedProduct?.flagged_keywords) &&
+        loadedProduct.flagged_keywords.length > 0 && (
+          <div className={common.card} role="status">
+            <p className={common.fieldHint}>
+              Sản phẩm đang được gắn cờ kiểm duyệt thủ công do chứa từ khoá:{" "}
+              <strong>{loadedProduct.flagged_keywords.join(", ")}</strong>. Bạn nên rà soát lại tên
+              và mô tả sản phẩm.
+            </p>
+          </div>
+        )}
+
       {errorMsg && (
         <div className={common.card} role="alert">
           <p className={common.fieldError}>{errorMsg}</p>
@@ -652,11 +664,12 @@ function ProductFormInner({ mode, productId, shop }: ProductFormViewProps & { sh
                   required
                 >
                   {categories.map((cat) => (
-                    <option key={cat.id} value={cat.id}>
+                    <option key={cat.id} value={cat.id} disabled={Boolean(cat.is_prohibited)}>
                       {typeof cat.commission_rate_bps === "number" &&
                       Number.isFinite(cat.commission_rate_bps)
                         ? `${cat.name} (Hoa hồng ${(cat.commission_rate_bps / 100).toFixed(1)}%)`
                         : cat.name}
+                      {cat.is_prohibited ? " — Danh mục cấm" : ""}
                     </option>
                   ))}
                 </select>

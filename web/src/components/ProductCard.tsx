@@ -4,13 +4,7 @@ import React, { useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import {
-  BADGE_LABELS,
-  computeReviewSummary,
-  getShopById,
-  type Product,
-  type SizeCode,
-} from "@/data";
+import { BADGE_LABELS, getShopById, type Product, type SizeCode } from "@/data";
 import { resolveGatewaySkuId } from "@/lib/api";
 import {
   findProductSku,
@@ -18,7 +12,7 @@ import {
   isCatalogSku,
   type CatalogProduct,
 } from "@/lib/catalog-types";
-import { formatDiscountPercent } from "@/lib/format";
+import { formatDiscountPercent, formatRatingFromX100 } from "@/lib/format";
 import { useCart } from "@/context/CartContext";
 import { useSession } from "@/context/SessionContext";
 import { useMockStore } from "@/mock/MockStoreContext";
@@ -86,7 +80,7 @@ export function ProductCard({
   const pathname = usePathname();
   const { isAuthenticated } = useSession();
   const { addToCart } = useCart();
-  const { toggleWishlist, isWishlisted, reviews, showToast } = useMockStore();
+  const { toggleWishlist, isWishlisted, showToast } = useMockStore();
 
   const [selectedColorCode, setSelectedColorCode] = useState<string>(product.colors[0]?.code ?? "");
   const [addedSize, setAddedSize] = useState<SizeCode | null>(null);
@@ -135,21 +129,14 @@ export function ProductCard({
   const isDirectFlashCheckout = Boolean(isFlashSaleItem && flashSaleItemId && flashSaleSkuId);
 
   const ratingInfo = useMemo(() => {
-    // Only show real reviews submitted for this product — never fabricate sample ratings on real catalog cards.
-    if (catalogProduct) {
-      const realSummary = computeReviewSummary(
-        reviews.filter((r) => !r.isSampleData),
-        product.id
-      );
-      return realSummary.count > 0
-        ? { average: realSummary.average, count: realSummary.count }
-        : null;
-    }
-    const realSummary = computeReviewSummary(reviews, product.id);
-    return realSummary.count > 0
-      ? { average: realSummary.average, count: realSummary.count }
-      : null;
-  }, [reviews, product.id, catalogProduct]);
+    if (!catalogProduct) return null;
+    const count = Math.max(0, Math.trunc(catalogProduct.reviewCount ?? 0));
+    const avgX100 = Math.max(0, Math.min(500, Math.trunc(catalogProduct.ratingAvgX100 ?? 0)));
+    return {
+      count,
+      formatted: formatRatingFromX100(avgX100),
+    };
+  }, [catalogProduct]);
 
   const productHref =
     activeColor && activeColor.code !== product.colors[0]?.code
@@ -424,17 +411,20 @@ export function ProductCard({
             </div>
           )}
 
-          {showRating && ratingInfo && (
-            <span
-              className={`${styles.ratingText} num`}
-              title="Điểm đánh giá mẫu minh họa giao diện"
-              aria-label={`Đánh giá ${ratingInfo.average.toFixed(1)} trên 5 từ ${ratingInfo.count} nhận xét mẫu`}
-            >
-              <IconStar size={13} filled className={styles.ratingStar} />
-              <span>{ratingInfo.average.toFixed(1).replace(".", ",")}</span>
-              <span className={styles.ratingCount}>({ratingInfo.count})</span>
-            </span>
-          )}
+          {showRating &&
+            ratingInfo &&
+            (ratingInfo.count > 0 ? (
+              <span
+                className={`${styles.ratingText} num`}
+                aria-label={`Đánh giá ${ratingInfo.formatted} trên 5 từ ${ratingInfo.count} đánh giá`}
+              >
+                <IconStar size={13} filled className={styles.ratingStar} />
+                <span>{ratingInfo.formatted}</span>
+                <span className={styles.ratingCount}>({ratingInfo.count})</span>
+              </span>
+            ) : (
+              <span className={styles.ratingCount}>Chưa có đánh giá</span>
+            ))}
         </div>
 
         <Link href={productHref} className={styles.titleLink}>

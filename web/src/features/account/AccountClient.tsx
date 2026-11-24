@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { PRODUCTS } from "@/data";
@@ -12,8 +12,10 @@ import type {
   GatewayNotificationsResponse,
   GatewayOrder,
   GatewayPublicShop,
+  GatewayRequestPhoneOTPResponse,
   GatewayShop,
   GatewayUser,
+  GatewayVerifyPhoneOTPResponse,
   GatewayVoucher,
 } from "@/lib/gateway-types";
 import { ApiError, api, getErrorMessage } from "@/lib/api";
@@ -174,6 +176,44 @@ export function AccountClient({
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
 
+  // Real phone OTP verification state (E19)
+  const [phoneOtpOpen, setPhoneOtpOpen] = useState(false);
+  const [otpPhoneInput, setOtpPhoneInput] = useState(initialUser.phone ?? "");
+  const [otpCode, setOtpCode] = useState("");
+  const [otpSending, setOtpSending] = useState(false);
+  const [otpVerifying, setOtpVerifying] = useState(false);
+  const [otpSentMasked, setOtpSentMasked] = useState<string | null>(null);
+  const [otpCooldownSec, setOtpCooldownSec] = useState(0);
+  const [otpExpiresSec, setOtpExpiresSec] = useState(0);
+  const [otpError, setOtpError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (otpCooldownSec <= 0) return;
+    const timer = window.setInterval(() => {
+      setOtpCooldownSec((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [otpCooldownSec]);
+
+  useEffect(() => {
+    if (otpExpiresSec <= 0) return;
+    const timer = window.setInterval(() => {
+      setOtpExpiresSec((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [otpExpiresSec]);
+
+  useEffect(() => {
+    if (
+      typeof window !== "undefined" &&
+      window.location.hash === "#xac-minh-sdt" &&
+      !profileUser.phone_verified
+    ) {
+      setActiveTab("tong-quan");
+      setPhoneOtpOpen(true);
+    }
+  }, [profileUser.phone_verified]);
+
   // Real addresses state
   const [addresses, setAddresses] = useState<GatewayAddress[]>(initialAddresses);
   const [addrFetchError, setAddrFetchError] = useState<string | null>(addressesError ?? null);
@@ -275,15 +315,17 @@ export function AccountClient({
     e.preventDefault();
     if (savingProfile) return;
     const cleanName = profileName.trim();
-    const cleanPhone = profilePhone.replace(/\s+/g, "").trim();
+    const cleanPhone = normalizeVietnamesePhone(profilePhone);
     const cleanAvatar = profileAvatarUrl.trim();
 
     if (cleanName.length < 2) {
       setProfileError("Vui lòng nhập họ và tên đầy đủ (tối thiểu 2 ký tự).");
       return;
     }
-    if (cleanPhone && !/^0\d{9,10}$/.test(cleanPhone)) {
-      setProfileError("Số điện thoại cần gồm 10 hoặc 11 chữ số và bắt đầu bằng số 0.");
+    if (cleanPhone && !isValidVietnamesePhone(cleanPhone)) {
+      setProfileError(
+        "Vui lòng nhập số điện thoại Việt Nam hợp lệ (ví dụ: 0912345678 hoặc +84912345678)."
+      );
       return;
     }
 
@@ -304,6 +346,11 @@ export function AccountClient({
         setProfileName(res.user.full_name);
         setProfilePhone(res.user.phone);
         setProfileAvatarUrl(res.user.avatar_url ?? "");
+        setOtpPhoneInput(res.user.phone ?? "");
+        setOtpSentMasked(null);
+        setOtpCode("");
+        setOtpExpiresSec(0);
+        setOtpError(null);
       }
       setEditingProfile(false);
       showToast("Đã cập nhật thông tin hồ sơ cá nhân.");
@@ -315,6 +362,73 @@ export function AccountClient({
       }
     } finally {
       setSavingProfile(false);
+    }
+  };
+
+  const handleRequestPhoneOtp = async () => {
+    if (otpSending || otpCooldownSec > 0) return;
+    const cleanPhone = normalizeVietnamesePhone(otpPhoneInput || profileUser.phone || "");
+    if (!isValidVietnamesePhone(cleanPhone)) {
+      setOtpError("Vui lòng nhập số điện thoại Việt Nam hợp lệ (ví dụ: 0912345678).");
+      return;
+    }
+    setOtpError(null);
+    setOtpSending(true);
+    try {
+      const res = await api<GatewayRequestPhoneOTPResponse>("users/me/phone/otp", {
+        method: "POST",
+        json: { phone: cleanPhone },
+      });
+      setOtpPhoneInput(cleanPhone);
+      setOtpSentMasked(res?.phone_masked || cleanPhone);
+      setOtpCooldownSec(Math.max(1, Math.trunc(res?.retry_after_seconds ?? 60)));
+      setOtpExpiresSec(Math.max(1, Math.trunc(res?.expires_in_seconds ?? 300)));
+      showToast(`Đã gửi mã OTP 6 chữ số tới ${res?.phone_masked || cleanPhone}.`);
+    } catch (err) {
+      setOtpError(getErrorMessage(err, "Chưa thể gửi mã OTP lúc này. Vui lòng thử lại sau."));
+    } finally {
+      setOtpSending(false);
+    }
+  };
+
+  const handleVerifyPhoneOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (otpVerifying) return;
+    const cleanPhone = normalizeVietnamesePhone(otpPhoneInput || profileUser.phone || "");
+    const cleanOtp = otpCode.replace(/\s+/g, "").trim();
+    if (!isValidVietnamesePhone(cleanPhone)) {
+      setOtpError("Số điện thoại không hợp lệ.");
+      return;
+    }
+    if (!/^\d{6}$/.test(cleanOtp)) {
+      setOtpError("Vui lòng nhập đúng mã OTP gồm 6 chữ số.");
+      return;
+    }
+    setOtpError(null);
+    setOtpVerifying(true);
+    try {
+      const res = await api<GatewayVerifyPhoneOTPResponse>("users/me/phone/verify", {
+        method: "POST",
+        json: { phone: cleanPhone, otp: cleanOtp },
+      });
+      if (res?.user) {
+        setProfileUser(res.user);
+        setSessionUser(res.user);
+        setProfilePhone(res.user.phone);
+      } else {
+        const updated = { ...profileUser, phone: cleanPhone, phone_verified: true };
+        setProfileUser(updated);
+        setSessionUser(updated);
+      }
+      setOtpCode("");
+      setOtpSentMasked(null);
+      setOtpExpiresSec(0);
+      setPhoneOtpOpen(false);
+      showToast("Đã xác minh số điện thoại thành công. Bạn đã có thể sử dụng thanh toán COD.");
+    } catch (err) {
+      setOtpError(getErrorMessage(err, "Mã OTP chưa đúng hoặc đã hết hạn. Vui lòng kiểm tra lại."));
+    } finally {
+      setOtpVerifying(false);
     }
   };
 
@@ -903,6 +1017,14 @@ export function AccountClient({
                           placeholder="0912486305"
                           disabled={savingProfile}
                         />
+                        {profileUser.phone_verified &&
+                          profilePhone.replace(/\s+/g, "").trim() !==
+                            (profileUser.phone ?? "").replace(/\s+/g, "").trim() && (
+                            <span className={shared.fieldHint}>
+                              Lưu ý: thay đổi số điện thoại sẽ cần xác minh lại OTP trước khi đặt
+                              đơn COD.
+                            </span>
+                          )}
                       </div>
                       <div className={`${shared.field} ${shared.formFull}`}>
                         <label htmlFor="profile-avatar" className={shared.fieldLabel}>
@@ -955,10 +1077,17 @@ export function AccountClient({
                       <dt className={styles.profileKey}>Địa chỉ email</dt>
                       <dd className={styles.profileVal}>{profileUser.email}</dd>
                     </div>
-                    <div className={styles.profileItem}>
+                    <div className={styles.profileItem} id="xac-minh-sdt">
                       <dt className={styles.profileKey}>Số điện thoại</dt>
                       <dd className={`${styles.profileVal} num`}>
-                        {profileUser.phone || "Chưa cập nhật"}
+                        <span>{profileUser.phone || "Chưa cập nhật"}</span>{" "}
+                        <span
+                          className={`${shared.statusTag} ${
+                            profileUser.phone_verified ? shared.tonePos : shared.toneWarn
+                          }`}
+                        >
+                          {profileUser.phone_verified ? "Đã xác minh" : "Chưa xác minh"}
+                        </span>
                       </dd>
                     </div>
                     <div className={styles.profileItem}>
@@ -968,6 +1097,119 @@ export function AccountClient({
                       </dd>
                     </div>
                   </dl>
+                )}
+
+                {!editingProfile && !profileUser.phone_verified && (
+                  <div className={styles.yirPanel} style={{ marginTop: 14 }}>
+                    <div className={styles.addressHead}>
+                      <p className={styles.retentionTitle}>Xác minh số điện thoại cho COD</p>
+                      <Button
+                        type="button"
+                        variant="ink"
+                        size="sm"
+                        onClick={() => {
+                          setPhoneOtpOpen((v) => !v);
+                          setOtpPhoneInput(profileUser.phone || "");
+                          setOtpError(null);
+                        }}
+                      >
+                        {phoneOtpOpen ? "Đóng xác minh" : "Xác minh SĐT"}
+                      </Button>
+                    </div>
+                    <p className={styles.bodyCopy}>
+                      Xác minh số điện thoại bằng mã OTP 6 chữ số để bật phương thức thanh toán khi
+                      nhận hàng (COD).
+                    </p>
+
+                    {phoneOtpOpen && (
+                      <form onSubmit={(e) => void handleVerifyPhoneOtp(e)} noValidate>
+                        <div className={shared.formGrid}>
+                          <div className={shared.field}>
+                            <label htmlFor="otp-phone-input" className={shared.fieldLabel}>
+                              Số điện thoại xác minh
+                            </label>
+                            <div className={shared.codeInputRow}>
+                              <input
+                                id="otp-phone-input"
+                                type="tel"
+                                className={shared.input}
+                                value={otpPhoneInput}
+                                onChange={(e) => {
+                                  setOtpPhoneInput(e.target.value);
+                                  setOtpSentMasked(null);
+                                  setOtpCode("");
+                                  setOtpExpiresSec(0);
+                                  if (otpError) setOtpError(null);
+                                }}
+                                placeholder="0912345678"
+                                disabled={otpSending || otpVerifying}
+                              />
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                size="md"
+                                disabled={otpSending || otpVerifying || otpCooldownSec > 0}
+                                onClick={() => void handleRequestPhoneOtp()}
+                              >
+                                {otpSending
+                                  ? "Đang gửi..."
+                                  : otpCooldownSec > 0
+                                    ? `Gửi lại (${otpCooldownSec}s)`
+                                    : otpSentMasked
+                                      ? "Gửi lại OTP"
+                                      : "Gửi mã OTP"}
+                              </Button>
+                            </div>
+                            {otpSentMasked && (
+                              <span className={shared.fieldHint} aria-live="polite">
+                                {otpExpiresSec > 0
+                                  ? `Mã OTP gồm 6 chữ số đã được gửi tới ${otpSentMasked} (SMS mô phỏng, xem trong email tài khoản — còn hiệu lực ${Math.floor(otpExpiresSec / 60)}:${String(otpExpiresSec % 60).padStart(2, "0")}).`
+                                  : `Mã OTP gửi tới ${otpSentMasked} đã hết hạn. Vui lòng bấm Gửi lại OTP.`}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className={shared.field}>
+                            <label htmlFor="otp-code-input" className={shared.fieldLabel}>
+                              Mã OTP (6 chữ số)
+                            </label>
+                            <input
+                              id="otp-code-input"
+                              type="text"
+                              inputMode="numeric"
+                              autoComplete="one-time-code"
+                              maxLength={6}
+                              className={`${shared.input} num`}
+                              value={otpCode}
+                              onChange={(e) => {
+                                setOtpCode(e.target.value.replace(/[^\d]/g, "").slice(0, 6));
+                                if (otpError) setOtpError(null);
+                              }}
+                              placeholder="Nhập 6 chữ số"
+                              disabled={otpVerifying}
+                            />
+                          </div>
+                        </div>
+
+                        {otpError && (
+                          <p className={shared.fieldError} role="alert" style={{ marginTop: 8 }}>
+                            {otpError}
+                          </p>
+                        )}
+
+                        <div className={shared.formActions}>
+                          <Button
+                            type="submit"
+                            variant="primary"
+                            size="md"
+                            disabled={otpVerifying || otpCode.length !== 6}
+                          >
+                            {otpVerifying ? "Đang xác minh..." : "Xác nhận OTP"}
+                          </Button>
+                        </div>
+                      </form>
+                    )}
+                  </div>
                 )}
               </div>
 

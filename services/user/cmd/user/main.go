@@ -160,6 +160,9 @@ func run() error {
 		LoginLockoutDuration:   cfg.LoginLockoutDuration,
 		BankPayoutLockDuration: cfg.BankPayoutLockDuration,
 		BankAccountBox:         bankBox,
+		PhoneOTPTTL:            cfg.PhoneOTPTTL,
+		PhoneOTPCooldown:       cfg.PhoneOTPCooldown,
+		PhoneOTPMaxPerHour:     cfg.PhoneOTPMaxPerHour,
 		AddressCatalog:         addrCatalog,
 	})
 	userv1.RegisterUserServiceServer(grpcSrv, userSrv)

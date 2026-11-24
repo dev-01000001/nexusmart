@@ -339,9 +339,10 @@ function CartPageContent() {
     effectiveSubtotalByShop,
   ]);
 
-  // Load real live flash sales & active shop discount programs for SKUs in cart (batched <= 200)
+  // Load real live flash sales & active shop discount programs for available SKUs in cart (batched <= 200)
   const cartSkuIds = useMemo(
-    () => Array.from(new Set(cartItems.map((it) => it.skuId))).sort(),
+    () =>
+      Array.from(new Set(cartItems.filter((it) => !it.unavailable).map((it) => it.skuId))).sort(),
     [cartItems]
   );
   const cartSkuIdsKey = cartSkuIds.join(",");
@@ -664,7 +665,10 @@ function CartPageContent() {
     }
   };
 
-  const inStockItems = useMemo(() => cartItems.filter((it) => it.availableStock > 0), [cartItems]);
+  const inStockItems = useMemo(
+    () => cartItems.filter((it) => !it.unavailable && it.availableStock > 0),
+    [cartItems]
+  );
   const allSelected = inStockItems.length > 0 && inStockItems.every((i) => i.selected);
 
   const estimatedShippingTotal = useMemo(
@@ -849,7 +853,7 @@ function CartPageContent() {
                     onChange={(e) => toggleSelectAllCart(e.target.checked)}
                   />
                   <span>
-                    Chọn tất cả (<strong className="num">{cartItems.length}</strong> mặt hàng)
+                    Chọn tất cả (<strong className="num">{inStockItems.length}</strong> mặt hàng)
                   </span>
                 </label>
 
@@ -892,7 +896,9 @@ function CartPageContent() {
                 const shopMeta = shopMetaById[group.shopId];
                 const shopName = shopMeta?.name || group.shopName;
                 const shopVouchers = shopVouchersByShop[group.shopId] ?? [];
-                const selectableItems = group.items.filter((it) => it.availableStock > 0);
+                const selectableItems = group.items.filter(
+                  (it) => !it.unavailable && it.availableStock > 0
+                );
                 const shopAllSelected =
                   selectableItems.length > 0 && selectableItems.every((it) => it.selected);
                 const chosenShopCode = selectedShopVouchers[group.shopId] ?? null;
@@ -971,16 +977,17 @@ function CartPageContent() {
                         const effectiveUnit = linePricing.effectiveUnitPriceVnd;
                         const originalUnit = linePricing.originalUnitPriceVnd;
                         const lineTotal = linePricing.lineTotalVnd;
-                        const outOfStock = item.availableStock <= 0;
+                        const isUnavailable = Boolean(item.unavailable);
+                        const outOfStock = !isUnavailable && item.availableStock <= 0;
                         const isBusy = Boolean(busySkuIds[item.skuId]);
                         const clampedNote = clampedSkuNotices[item.skuId];
                         const slug = productSlugById[item.productId];
-                        const productHref = slug ? `/san-pham/${slug}` : null;
+                        const productHref = !isUnavailable && slug ? `/san-pham/${slug}` : null;
 
                         return (
                           <li
                             key={item.skuId}
-                            className={styles.itemRow}
+                            className={`${styles.itemRow} ${isUnavailable ? styles.itemRowUnavailable : ""}`}
                             data-rise=""
                             style={{ "--i": Math.min(itemIdx + 3, 6) } as React.CSSProperties}
                           >
@@ -988,8 +995,8 @@ function CartPageContent() {
                               <input
                                 type="checkbox"
                                 className={shared.checkbox}
-                                checked={item.selected}
-                                disabled={outOfStock}
+                                checked={!isUnavailable && item.selected}
+                                disabled={isUnavailable || outOfStock}
                                 onChange={() => toggleCartItemSelected(item.skuId)}
                                 aria-label={`Chọn ${item.productName}`}
                               />
@@ -1031,17 +1038,23 @@ function CartPageContent() {
                               )}
 
                               <div className={styles.itemTags}>
+                                {isUnavailable && (
+                                  <span className={`${shared.statusTag} ${shared.toneNeg}`}>
+                                    Không còn bán
+                                  </span>
+                                )}
                                 {outOfStock && (
                                   <span className={`${shared.statusTag} ${shared.toneNeg}`}>
                                     Hết hàng
                                   </span>
                                 )}
-                                {skuPromoInfo?.promo.kind === "flash" && (
+                                {!isUnavailable && skuPromoInfo?.promo.kind === "flash" && (
                                   <span className={`${shared.statusTag} ${shared.tonePos}`}>
                                     Flash sale · Chỉ VietQR (hạn 5 phút)
                                   </span>
                                 )}
-                                {skuPromoInfo?.promo.kind === "flash" &&
+                                {!isUnavailable &&
+                                  skuPromoInfo?.promo.kind === "flash" &&
                                   flashEval?.needsRegularPriceChoice && (
                                     <div className={styles.promoActionNotice} role="status">
                                       <span className={`${shared.statusTag} ${shared.toneWarn}`}>
@@ -1058,36 +1071,39 @@ function CartPageContent() {
                                       </button>
                                     </div>
                                   )}
-                                {skuPromoInfo?.optedOutFlash && skuPromoInfo.liveFlash && (
-                                  <div className={styles.promoActionNotice}>
-                                    <span className={`${shared.statusTag} ${shared.toneNeutral}`}>
-                                      {isShopDisc && !shopProgramLimitExceeded
-                                        ? "Đang áp dụng giá chương trình gian hàng (đã bỏ suất Flash sale)"
-                                        : "Đang chọn mua giá thường (bỏ suất Flash sale)"}
-                                    </span>
-                                    <button
-                                      type="button"
-                                      className={styles.regularPriceBtn}
-                                      onClick={() => restoreFlashForSku(item.skuId)}
-                                    >
-                                      Dùng lại giá Flash
-                                    </button>
-                                  </div>
-                                )}
-                                {isShopDisc && !shopProgramLimitExceeded && (
+                                {!isUnavailable &&
+                                  skuPromoInfo?.optedOutFlash &&
+                                  skuPromoInfo.liveFlash && (
+                                    <div className={styles.promoActionNotice}>
+                                      <span className={`${shared.statusTag} ${shared.toneNeutral}`}>
+                                        {isShopDisc && !shopProgramLimitExceeded
+                                          ? "Đang áp dụng giá chương trình gian hàng (đã bỏ suất Flash sale)"
+                                          : "Đang chọn mua giá thường (bỏ suất Flash sale)"}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        className={styles.regularPriceBtn}
+                                        onClick={() => restoreFlashForSku(item.skuId)}
+                                      >
+                                        Dùng lại giá Flash
+                                      </button>
+                                    </div>
+                                  )}
+                                {!isUnavailable && isShopDisc && !shopProgramLimitExceeded && (
                                   <span className={`${shared.statusTag} ${shared.tonePos}`}>
                                     {linePricing.shopProgramName ||
                                       skuPromoInfo?.promo.programName ||
                                       "Giảm giá gian hàng"}
                                   </span>
                                 )}
-                                {shopProgramLimitExceeded && (
+                                {!isUnavailable && shopProgramLimitExceeded && (
                                   <span className={`${shared.statusTag} ${shared.toneWarn}`}>
                                     Vượt giới hạn chương trình giảm giá của gian hàng — áp dụng giá
                                     thường.
                                   </span>
                                 )}
-                                {skuPromoInfo?.promo.kind === "none" &&
+                                {!isUnavailable &&
+                                  skuPromoInfo?.promo.kind === "none" &&
                                   !skuPromoInfo.optedOutFlash &&
                                   (skuPromoInfo.flashInspect.state === "sold_out" ||
                                     skuPromoInfo.flashInspect.state === "upcoming") && (
@@ -1095,34 +1111,42 @@ function CartPageContent() {
                                       {skuPromoInfo.flashInspect.message}
                                     </span>
                                   )}
-                                {item.priceChanged && (
+                                {!isUnavailable && item.priceChanged && (
                                   <span className={`${shared.statusTag} ${shared.toneWarn}`}>
                                     Giá vừa cập nhật (trước đó {formatVnd(item.addedPriceVnd)})
                                   </span>
                                 )}
-                                {clampedNote && (
+                                {!isUnavailable && clampedNote && (
                                   <span className={`${shared.statusTag} ${shared.toneWarn}`}>
                                     {clampedNote}
                                   </span>
                                 )}
                               </div>
 
-                              <div className={styles.priceChangedRow}>
-                                <Price
-                                  amount={effectiveUnit}
-                                  originalAmount={originalUnit}
-                                  size="sm"
-                                  showDiscount={Boolean(originalUnit)}
-                                />
-                                {!originalUnit && item.priceChanged && item.addedPriceVnd > 0 && (
-                                  <span className={`${styles.oldPriceStrike} num`}>
-                                    {formatVnd(item.addedPriceVnd)}
-                                  </span>
-                                )}
-                              </div>
+                              {!isUnavailable && (
+                                <div className={styles.priceChangedRow}>
+                                  <Price
+                                    amount={effectiveUnit}
+                                    originalAmount={originalUnit}
+                                    size="sm"
+                                    showDiscount={Boolean(originalUnit)}
+                                  />
+                                  {!originalUnit && item.priceChanged && item.addedPriceVnd > 0 && (
+                                    <span className={`${styles.oldPriceStrike} num`}>
+                                      {formatVnd(item.addedPriceVnd)}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
 
                               <p className={styles.itemStock}>
-                                {outOfStock ? (
+                                {isUnavailable ? (
+                                  item.unavailableReason === "SKU_NOT_FOUND" ? (
+                                    "Sản phẩm đã bị xóa hoặc không còn tồn tại. Vui lòng xóa khỏi giỏ hàng."
+                                  ) : (
+                                    "Sản phẩm hiện không còn bán. Vui lòng xóa khỏi giỏ hàng để tiếp tục đặt các mặt hàng khác."
+                                  )
+                                ) : outOfStock ? (
                                   "Phân loại này tạm hết hàng, vui lòng xóa hoặc chọn phân loại khác."
                                 ) : (
                                   <>
@@ -1134,47 +1158,53 @@ function CartPageContent() {
                               </p>
                             </div>
 
-                            <div className={styles.itemActionsCol}>
-                              <span className={`${styles.lineSubtotal} num`}>
-                                {formatVnd(lineTotal)}
-                              </span>
+                            <div
+                              className={`${styles.itemActionsCol} ${isUnavailable ? styles.itemActionsColUnavailable : ""}`}
+                            >
+                              {!isUnavailable && (
+                                <>
+                                  <span className={`${styles.lineSubtotal} num`}>
+                                    {formatVnd(lineTotal)}
+                                  </span>
 
-                              <div className={styles.stepper} aria-label="Điều chỉnh số lượng">
-                                <button
-                                  type="button"
-                                  className={styles.stepBtn}
-                                  disabled={isBusy}
-                                  onClick={() =>
-                                    void handleQtyChange(item.skuId, item.quantity - 1)
-                                  }
-                                  aria-label="Giảm 1 sản phẩm"
-                                >
-                                  <IconMinus size={14} />
-                                </button>
-                                <span className={`${styles.stepQty} num`}>{item.quantity}</span>
-                                <button
-                                  type="button"
-                                  className={styles.stepBtn}
-                                  disabled={
-                                    isBusy || outOfStock || item.quantity >= item.availableStock
-                                  }
-                                  onClick={() =>
-                                    void handleQtyChange(item.skuId, item.quantity + 1)
-                                  }
-                                  aria-label="Tăng 1 sản phẩm"
-                                >
-                                  <IconPlus size={14} />
-                                </button>
-                              </div>
+                                  <div className={styles.stepper} aria-label="Điều chỉnh số lượng">
+                                    <button
+                                      type="button"
+                                      className={styles.stepBtn}
+                                      disabled={isBusy}
+                                      onClick={() =>
+                                        void handleQtyChange(item.skuId, item.quantity - 1)
+                                      }
+                                      aria-label="Giảm 1 sản phẩm"
+                                    >
+                                      <IconMinus size={14} />
+                                    </button>
+                                    <span className={`${styles.stepQty} num`}>{item.quantity}</span>
+                                    <button
+                                      type="button"
+                                      className={styles.stepBtn}
+                                      disabled={
+                                        isBusy || outOfStock || item.quantity >= item.availableStock
+                                      }
+                                      onClick={() =>
+                                        void handleQtyChange(item.skuId, item.quantity + 1)
+                                      }
+                                      aria-label="Tăng 1 sản phẩm"
+                                    >
+                                      <IconPlus size={14} />
+                                    </button>
+                                  </div>
+                                </>
+                              )}
 
                               <button
                                 type="button"
-                                className={styles.removeBtn}
+                                className={`${styles.removeBtn} ${isUnavailable ? styles.removeBtnUnavailable : ""}`}
                                 disabled={isBusy}
                                 onClick={() => void handleRemove(item.skuId)}
                               >
                                 <IconTrash size={14} />
-                                <span>Xóa</span>
+                                <span>{isUnavailable ? "Xóa khỏi giỏ" : "Xóa"}</span>
                               </button>
                             </div>
                           </li>

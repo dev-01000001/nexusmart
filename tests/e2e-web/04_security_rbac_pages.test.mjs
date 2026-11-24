@@ -40,12 +40,12 @@ async function throwIfAnonymousRenderDueTo429(label) {
 
 describe("04. Security, RBAC, CSRF, session guards, token rotation & public SSR pages", () => {
   test("4a. Cross-buyer isolation: buyer A cannot read buyer B's order API or leak data via /don-hang/<id>", async () => {
-    await ensureRateBudget(30, { label: "4a" });
+    await ensureRateBudget(35, { label: "4a" });
     const clientB = new WebClient();
     const clientA = new WebClient();
 
     const [buyerB, buyerA] = await Promise.all([
-      registerAndLoginBuyer(clientB, "owner-b"),
+      registerAndLoginBuyer(clientB, "owner-b", { verifyPhone: true }),
       registerAndLoginBuyer(clientA, "intruder-a"),
     ]);
 
@@ -452,11 +452,11 @@ describe("04. Security, RBAC, CSRF, session guards, token rotation & public SSR 
   });
 
   test("4i. [B1 account] /don-hang/<id> renders real order_code for owner and returns strict 404 for another buyer", async () => {
-    await ensureRateBudget(30, { label: "4i" });
+    await ensureRateBudget(35, { label: "4i" });
     const clientB = new WebClient();
     const clientA = new WebClient();
     const [buyerB] = await Promise.all([
-      registerAndLoginBuyer(clientB, "ssr-owner"),
+      registerAndLoginBuyer(clientB, "ssr-owner", { verifyPhone: true }),
       registerAndLoginBuyer(clientA, "ssr-other"),
     ]);
     const { address, province, ward } = await createBuyerAddress(clientB, buyerB);
@@ -484,8 +484,12 @@ describe("04. Security, RBAC, CSRF, session guards, token rotation & public SSR 
         ],
       },
     });
+    assert.ok(
+      checkoutRes.status === 200 || checkoutRes.status === 201,
+      `4i COD checkout expected 200/201, got ${checkoutRes.status}: ${checkoutRes.text}`
+    );
     const orderB = checkoutRes.data?.orders?.[0];
-    assert.ok(orderB?.id && orderB?.order_code);
+    assert.ok(orderB?.id && orderB?.order_code, `4i missing order id/code: ${checkoutRes.text}`);
 
     const ownerPage = await clientB.page(`/don-hang/${encodeURIComponent(orderB.id)}`);
     assert.equal(ownerPage.status, 200);

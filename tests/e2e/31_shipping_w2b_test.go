@@ -109,7 +109,7 @@ func shpW2BAddAddress(t *testing.T, env *testEnv, u *userFixture, provCode, prov
 func shpW2BCreateSeller(t *testing.T, env *testEnv, label string) *sellerFixture {
 	t.Helper()
 	u := env.registerVerifyAndLogin(t, label)
-	addr := shpW2BAddAddress(t, env, u, "79", "Thành phố Hồ Chí Minh", "79001", "Phường Sài Gòn")
+	addr := shpW2BAddAddress(t, env, u, "79", "Thành phố Hồ Chí Minh", "26740", "Phường Sài Gòn")
 
 	shopName := fmt.Sprintf("ShipW2BShop-%s-%s-%d", label, env.runID, env.nextSeq())
 	shopResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/shops/register", u.AccessToken, nil, RegisterShopRequest{
@@ -353,7 +353,7 @@ func TestE2E_ShippingW2BFreeshipSettings(t *testing.T) {
 		respBase1 := env.mustDoJSON(t, http.MethodPost, "/api/v1/shipping/calculate-fee", buyer.AccessToken, nil, CalculateFeeRequest{
 			ShopID:         seller.ShopID,
 			ToProvinceCode: "01",
-			ToWardCode:     "01001",
+			ToWardCode:     "00070",
 			WeightGrams:    1000,
 		}, http.StatusOK)
 		var base1Out CalculateFeeResponse
@@ -364,7 +364,7 @@ func TestE2E_ShippingW2BFreeshipSettings(t *testing.T) {
 		respBaseDef := env.mustDoJSON(t, http.MethodPost, "/api/v1/shipping/calculate-fee", buyer.AccessToken, nil, CalculateFeeRequest{
 			ShopID:         seller.ShopID,
 			ToProvinceCode: "79",
-			ToWardCode:     "79001",
+			ToWardCode:     "26740",
 			WeightGrams:    0,
 		}, http.StatusOK)
 		var baseDefOut CalculateFeeResponse
@@ -390,7 +390,7 @@ func TestE2E_ShippingW2BFreeshipSettings(t *testing.T) {
 		respAfter1 := env.mustDoJSON(t, http.MethodPost, "/api/v1/shipping/calculate-fee", buyer.AccessToken, nil, CalculateFeeRequest{
 			ShopID:         seller.ShopID,
 			ToProvinceCode: "01",
-			ToWardCode:     "01001",
+			ToWardCode:     "00070",
 			WeightGrams:    1000,
 		}, http.StatusOK)
 		var after1Out CalculateFeeResponse
@@ -411,7 +411,7 @@ func TestE2E_ShippingW2BFreeshipSettings(t *testing.T) {
 		respAfterDef := env.mustDoJSON(t, http.MethodPost, "/api/v1/shipping/calculate-fee", buyer.AccessToken, nil, CalculateFeeRequest{
 			ShopID:         seller.ShopID,
 			ToProvinceCode: "79",
-			ToWardCode:     "79001",
+			ToWardCode:     "26740",
 			WeightGrams:    0,
 		}, http.StatusOK)
 		var afterDefOut CalculateFeeResponse
@@ -429,7 +429,7 @@ func TestE2E_ShippingW2BFreeshipSettings(t *testing.T) {
 		respUncached := env.mustDoJSON(t, http.MethodPost, "/api/v1/shipping/calculate-fee", buyer.AccessToken, nil, CalculateFeeRequest{
 			ShopID:         seller.ShopID,
 			ToProvinceCode: "48",
-			ToWardCode:     "48001",
+			ToWardCode:     "20242",
 			WeightGrams:    1350,
 		}, http.StatusOK)
 		var uncachedOut CalculateFeeResponse

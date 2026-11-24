@@ -18,6 +18,11 @@ message CartItem {
   int32 available_stock = 11;
   int32 weight_grams = 12;
   bool selected = 13;
+  // True when the SKU is inactive/hidden/deleted or missing in product service (E3).
+  // Unavailable items return price_vnd = 0, preserve their stored selected flag, and are excluded from total_items/subtotal_vnd/total_vnd.
+  bool unavailable = 14;
+  // Reason when unavailable = true: "SKU_INACTIVE" or "SKU_NOT_FOUND" (empty when available).
+  string unavailable_reason = 15;
 }
 
 message CartShopGroup {

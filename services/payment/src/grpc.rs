@@ -11,12 +11,15 @@ use crate::auth::{
     GrpcAuth, PaymentViewScope,
 };
 use crate::domain::{
-    parse_and_validate_reconciliation_date, parse_seller_ledger_account_filter, CreatePaymentInput,
-    CreateRefundInput, GetFeeConfigFilter, ListRefundsFilter, ListSellerLedgerFilter,
+    normalize_cod_carrier_code, parse_and_validate_reconciliation_date,
+    parse_reconciliation_run_type_filter, parse_seller_ledger_account_filter,
+    validate_cod_reconciliation_rows, CodReconciliationRowInput, CreatePaymentInput,
+    CreateRefundInput, GetFeeConfigFilter, ImportCodReconciliationInput,
+    ListReconciliationRunsFilter, ListRefundsFilter, ListSellerLedgerFilter,
     PaymentFeeConfigRecord, PaymentMethod as DomainMethod, PaymentWithAllocations,
     ReconciliationActionKind, ReconciliationItemRecord, ReconciliationQueueItem as DomainQueueItem,
-    RefundRecord, ResolveReconciliationInput, SellerLedgerEntryRecord, SetFeeConfigInput,
-    SettleRefundInput, ShopAllocationInput, SubmitRefundBankAccountInput,
+    ReconciliationRunRecord, RefundRecord, ResolveReconciliationInput, SellerLedgerEntryRecord,
+    SetFeeConfigInput, SettleRefundInput, ShopAllocationInput, SubmitRefundBankAccountInput,
 };
 use crate::service::PaymentService;
 use crate::telemetry::{attach_parent_context, extract_context_from_grpc};
@@ -32,14 +35,17 @@ use pb::{
     CreatePaymentResponse, CreateRefundRequest, CreateRefundResponse, GetFeeConfigRequest,
     GetFeeConfigResponse, GetLedgerSummaryRequest, GetLedgerSummaryResponse, GetPaymentRequest,
     GetPaymentResponse, GetSellerBalanceRequest, GetSellerBalanceResponse,
-    ListReconciliationQueueRequest, ListReconciliationQueueResponse, ListRefundsRequest,
-    ListRefundsResponse, ListSellerLedgerRequest, ListSellerLedgerResponse, Payment,
-    PaymentFeeConfigItem, PaymentMethod, PaymentStatus, ReconciliationAction, ReconciliationItem,
-    ReconciliationQueueItem, ReconciliationStatus, Refund, RefundStatus, ReleaseEscrowRequest,
-    ReleaseEscrowResponse, ResolveReconciliationItemRequest, ResolveReconciliationItemResponse,
-    RunReconciliationRequest, RunReconciliationResponse, SellerLedgerEntry, SetFeeConfigRequest,
-    SetFeeConfigResponse, SettleRefundRequest, SettleRefundResponse, ShopAllocation,
-    SubmitRefundBankAccountRequest, SubmitRefundBankAccountResponse,
+    ImportCodReconciliationRequest, ImportCodReconciliationResponse,
+    ListReconciliationQueueRequest, ListReconciliationQueueResponse, ListReconciliationRunsRequest,
+    ListReconciliationRunsResponse, ListRefundsRequest, ListRefundsResponse,
+    ListSellerLedgerRequest, ListSellerLedgerResponse, Payment, PaymentFeeConfigItem,
+    PaymentMethod, PaymentStatus, ReconciliationAction, ReconciliationItem,
+    ReconciliationQueueItem, ReconciliationRunSummary, ReconciliationStatus, Refund, RefundStatus,
+    ReleaseEscrowRequest, ReleaseEscrowResponse, ResolveReconciliationItemRequest,
+    ResolveReconciliationItemResponse, RunReconciliationRequest, RunReconciliationResponse,
+    SellerLedgerEntry, SetFeeConfigRequest, SetFeeConfigResponse, SettleRefundRequest,
+    SettleRefundResponse, ShopAllocation, SubmitRefundBankAccountRequest,
+    SubmitRefundBankAccountResponse,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -946,6 +952,107 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         self.finish_rpc(&span, "ListSellerLedger", start, &trace_id, &result);
         result
     }
+
+    async fn import_cod_reconciliation(
+        &self,
+        request: Request<ImportCodReconciliationRequest>,
+    ) -> Result<Response<ImportCodReconciliationResponse>, Status> {
+        let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("ImportCodReconciliation", &request);
+        let caller = CallerAuth::from_request(&self.auth, &request, "ImportCodReconciliation");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            caller.require_admin("ImportCodReconciliation")?;
+
+            let carrier_code =
+                normalize_cod_carrier_code(&req.carrier_code).map_err(|e| e.to_tonic_status())?;
+            let run_date = parse_and_validate_reconciliation_date(&req.run_date, Utc::now())
+                .map_err(|e| e.to_tonic_status())?;
+            let rows: Vec<CodReconciliationRowInput> = req
+                .rows
+                .into_iter()
+                .map(|r| CodReconciliationRowInput {
+                    line_number: r.line_number,
+                    tracking_code: r.tracking_code,
+                    cod_amount_vnd: r.cod_amount_vnd,
+                    delivered_at: r.delivered_at,
+                    order_code: r.order_code,
+                })
+                .collect();
+            validate_cod_reconciliation_rows(&rows).map_err(|e| e.to_tonic_status())?;
+
+            let report = self
+                .service
+                .import_cod_reconciliation(ImportCodReconciliationInput {
+                    carrier_code,
+                    file_name: req.file_name,
+                    file_sha256: req.file_sha256,
+                    run_date,
+                    created_by: caller.caller.user_id,
+                    rows,
+                })
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            Ok(Response::new(ImportCodReconciliationResponse {
+                run: Some(to_proto_reconciliation_run_summary(report.run)),
+                items: report
+                    .items
+                    .into_iter()
+                    .map(to_proto_reconciliation_item)
+                    .collect(),
+            }))
+        }
+        .instrument(span.clone())
+        .await;
+
+        self.finish_rpc(&span, "ImportCodReconciliation", start, &trace_id, &result);
+        result
+    }
+
+    async fn list_reconciliation_runs(
+        &self,
+        request: Request<ListReconciliationRunsRequest>,
+    ) -> Result<Response<ListReconciliationRunsResponse>, Status> {
+        let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("ListReconciliationRuns", &request);
+        let caller = CallerAuth::from_request(&self.auth, &request, "ListReconciliationRuns");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            caller.require_admin("ListReconciliationRuns")?;
+
+            let run_type = parse_reconciliation_run_type_filter(&req.run_type)
+                .map_err(|e| e.to_tonic_status())?;
+
+            let out = self
+                .service
+                .list_reconciliation_runs(ListReconciliationRunsFilter {
+                    run_type,
+                    page: req.page,
+                    page_size: req.page_size,
+                })
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            Ok(Response::new(ListReconciliationRunsResponse {
+                runs: out
+                    .runs
+                    .into_iter()
+                    .map(to_proto_reconciliation_run_summary)
+                    .collect(),
+                total: out.total,
+            }))
+        }
+        .instrument(span.clone())
+        .await;
+
+        self.finish_rpc(&span, "ListReconciliationRuns", start, &trace_id, &result);
+        result
+    }
 }
 
 // =============================================================================
@@ -1286,6 +1393,34 @@ fn to_proto_reconciliation_queue_item(item: DomainQueueItem) -> ReconciliationQu
         notes: item.notes.unwrap_or_default(),
         created_at: Some(chrono_to_proto(item.created_at)),
         resolved_at: item.resolved_at.map(chrono_to_proto),
+        source_type: item.source_type,
+        tracking_code: item.tracking_code,
+    }
+}
+
+fn to_proto_reconciliation_run_summary(run: ReconciliationRunRecord) -> ReconciliationRunSummary {
+    let run_type = if run.run_type.is_empty() {
+        "vietqr".to_string()
+    } else {
+        run.run_type
+    };
+    ReconciliationRunSummary {
+        run_id: run.id.to_string(),
+        run_type,
+        provider: run.provider,
+        run_date: run.run_date.format("%Y-%m-%d").to_string(),
+        file_name: run.file_name,
+        total_rows: run.total_rows,
+        matched_count: run.matched_count,
+        already_reconciled_count: run.already_reconciled_count,
+        missing_local_count: run.missing_local_count,
+        missing_provider_count: run.missing_provider_count,
+        amount_mismatch_count: run.amount_mismatch_count,
+        total_matched_vnd: run.total_matched_vnd,
+        status: run.status,
+        created_by: run.created_by,
+        created_at: Some(chrono_to_proto(run.created_at)),
+        not_delivered_count: run.not_delivered_count,
     }
 }
 
@@ -1295,6 +1430,8 @@ fn to_proto_reconciliation_item(item: ReconciliationItemRecord) -> Reconciliatio
         "missing_local" => ReconciliationStatus::MissingLocal as i32,
         "missing_provider" => ReconciliationStatus::MissingProvider as i32,
         "amount_mismatch" => ReconciliationStatus::AmountMismatch as i32,
+        "already_reconciled" => ReconciliationStatus::AlreadyReconciled as i32,
+        "not_delivered" => ReconciliationStatus::NotDelivered as i32,
         _ => ReconciliationStatus::Unspecified as i32,
     };
 
@@ -1305,6 +1442,9 @@ fn to_proto_reconciliation_item(item: ReconciliationItemRecord) -> Reconciliatio
         provider_amount_vnd: item.provider_amount_vnd.unwrap_or(0),
         status,
         note: item.details.unwrap_or_default(),
+        tracking_code: item.tracking_code,
+        order_id: item.order_id,
+        line_number: item.line_number,
     }
 }
 
@@ -1320,8 +1460,10 @@ mod tests {
 
     fn test_grpc_server() -> (PaymentGrpcServer, Metrics) {
         crate::telemetry::init_test_tracing();
-        let cfg = Config::from_env();
+        let mut cfg = Config::from_env();
+        cfg.database_url = "postgres://unit:unit@127.0.0.1:1/unit_test_db".to_string();
         let pool = PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(200))
             .connect_lazy(&cfg.database_url)
             .expect("lazy pool");
         let metrics = Metrics::new();
@@ -2319,6 +2461,11 @@ mod tests {
                     escrow_status: "held".into(),
                     settled_at: Some(now),
                     released_at: None,
+                    tracking_code: None,
+                    carrier_code: None,
+                    order_code: None,
+                    cod_reconciled_at: None,
+                    cod_reconciliation_run_id: None,
                     created_at: now,
                 },
                 ShopAllocationRecord {
@@ -2333,6 +2480,11 @@ mod tests {
                     escrow_status: "held".into(),
                     settled_at: Some(now),
                     released_at: None,
+                    tracking_code: None,
+                    carrier_code: None,
+                    order_code: None,
+                    cod_reconciled_at: None,
+                    cod_reconciliation_run_id: None,
                     created_at: now,
                 },
             ],
@@ -2673,5 +2825,224 @@ mod tests {
         assert_ne!(err.code(), tonic::Code::Unauthenticated);
         assert_ne!(err.code(), tonic::Code::PermissionDenied);
         assert_ne!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn test_w3b_e20_import_cod_reconciliation_and_list_runs_rbac_and_validation() {
+        let (server, metrics) = test_grpc_server();
+
+        let sample_import_req = || ImportCodReconciliationRequest {
+            carrier_code: "ghn".into(),
+            file_name: "cod_20261124.csv".into(),
+            file_sha256: "abc123".into(),
+            rows: vec![pb::CodReconciliationRow {
+                line_number: 1,
+                tracking_code: "TRK-001".into(),
+                cod_amount_vnd: 250_000,
+                delivered_at: "2026-11-24T08:00:00Z".into(),
+                order_code: String::new(),
+            }],
+            run_date: "2026-11-24".into(),
+        };
+
+        // 1. Missing JWT (even with spoofed x-user-role) -> Unauthenticated
+        let mut unauth_import = Request::new(sample_import_req());
+        unauth_import
+            .metadata_mut()
+            .insert("x-user-role", MetadataValue::from_static("admin"));
+        assert_eq!(
+            server
+                .import_cod_reconciliation(unauth_import)
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::Unauthenticated
+        );
+        let mut unauth_list = Request::new(ListReconciliationRunsRequest {
+            run_type: String::new(),
+            page: 1,
+            page_size: 20,
+        });
+        unauth_list
+            .metadata_mut()
+            .insert("x-user-role", MetadataValue::from_static("admin"));
+        assert_eq!(
+            server
+                .list_reconciliation_runs(unauth_list)
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::Unauthenticated
+        );
+
+        // 2. Buyer and seller JWTs -> PermissionDenied
+        for (role, uid, sid) in [("buyer", "buyer-1", ""), ("seller", "seller-1", "shop-1")] {
+            assert_eq!(
+                server
+                    .import_cod_reconciliation(with_auth(sample_import_req(), role, uid, sid))
+                    .await
+                    .unwrap_err()
+                    .code(),
+                tonic::Code::PermissionDenied,
+                "ImportCodReconciliation role={role}"
+            );
+            assert_eq!(
+                server
+                    .list_reconciliation_runs(with_auth(
+                        ListReconciliationRunsRequest {
+                            run_type: "cod_file".into(),
+                            page: 1,
+                            page_size: 20,
+                        },
+                        role,
+                        uid,
+                        sid,
+                    ))
+                    .await
+                    .unwrap_err()
+                    .code(),
+                tonic::Code::PermissionDenied,
+                "ListReconciliationRuns role={role}"
+            );
+        }
+
+        // 3. Service token -> PermissionDenied (not in SERVICE_METHODS)
+        let svc_tok = crate::auth::sign_hs256(
+            "grpc-test-service-key",
+            serde_json::json!({
+                "sub": "order-service",
+                "role": "admin",
+                "service": "order-service",
+                "exp": Utc::now().timestamp() + 60,
+            }),
+        );
+        let mut svc_import = Request::new(sample_import_req());
+        svc_import.metadata_mut().insert(
+            "authorization",
+            MetadataValue::try_from(format!("Bearer {svc_tok}")).unwrap(),
+        );
+        assert_eq!(
+            server
+                .import_cod_reconciliation(svc_import)
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        let mut svc_list = Request::new(ListReconciliationRunsRequest {
+            run_type: String::new(),
+            page: 1,
+            page_size: 20,
+        });
+        svc_list.metadata_mut().insert(
+            "authorization",
+            MetadataValue::try_from(format!("Bearer {svc_tok}")).unwrap(),
+        );
+        assert_eq!(
+            server
+                .list_reconciliation_runs(svc_list)
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+
+        // 4. Admin validation before DB: empty rows, >5000 rows, future run_date, bad run_type
+        let mut empty_rows = sample_import_req();
+        empty_rows.rows.clear();
+        assert_eq!(
+            server
+                .import_cod_reconciliation(with_auth(empty_rows, "admin", "admin-1", ""))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::InvalidArgument
+        );
+
+        let mut too_many = sample_import_req();
+        too_many.rows = (1..=5001)
+            .map(|n| pb::CodReconciliationRow {
+                line_number: n,
+                tracking_code: format!("TRK-{n}"),
+                cod_amount_vnd: 100_000,
+                delivered_at: String::new(),
+                order_code: String::new(),
+            })
+            .collect();
+        assert_eq!(
+            server
+                .import_cod_reconciliation(with_auth(too_many, "admin", "admin-1", ""))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::InvalidArgument
+        );
+
+        let mut future_date = sample_import_req();
+        future_date.run_date = "2099-12-31".into();
+        assert_eq!(
+            server
+                .import_cod_reconciliation(with_auth(future_date, "admin", "admin-1", ""))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::InvalidArgument
+        );
+
+        assert_eq!(
+            server
+                .list_reconciliation_runs(with_auth(
+                    ListReconciliationRunsRequest {
+                        run_type: "invalid_type".into(),
+                        page: 1,
+                        page_size: 20,
+                    },
+                    "admin",
+                    "admin-1",
+                    "",
+                ))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::InvalidArgument
+        );
+
+        // 5. Admin & super_admin pass RBAC and validation (hit lazy DB, NOT Unimplemented/Auth/InvalidArgument)
+        for role in ["admin", "super_admin"] {
+            let err_imp = server
+                .import_cod_reconciliation(with_auth(sample_import_req(), role, "a-1", ""))
+                .await
+                .unwrap_err();
+            assert_ne!(err_imp.code(), tonic::Code::Unimplemented, "role={role}");
+            assert_ne!(err_imp.code(), tonic::Code::Unauthenticated, "role={role}");
+            assert_ne!(err_imp.code(), tonic::Code::PermissionDenied, "role={role}");
+            assert_ne!(err_imp.code(), tonic::Code::InvalidArgument, "role={role}");
+
+            let err_list = server
+                .list_reconciliation_runs(with_auth(
+                    ListReconciliationRunsRequest {
+                        run_type: "cod_file".into(),
+                        page: 1,
+                        page_size: 10,
+                    },
+                    role,
+                    "a-1",
+                    "",
+                ))
+                .await
+                .unwrap_err();
+            assert_ne!(err_list.code(), tonic::Code::Unimplemented, "role={role}");
+            assert_ne!(err_list.code(), tonic::Code::Unauthenticated, "role={role}");
+            assert_ne!(
+                err_list.code(),
+                tonic::Code::PermissionDenied,
+                "role={role}"
+            );
+            assert_ne!(err_list.code(), tonic::Code::InvalidArgument, "role={role}");
+        }
+
+        let prom = metrics.render_prometheus();
+        assert!(prom.contains("method=\"ImportCodReconciliation\""));
+        assert!(prom.contains("method=\"ListReconciliationRuns\""));
     }
 }

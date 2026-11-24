@@ -18,18 +18,14 @@ import {
   INITIAL_CHAT_THREADS,
   INITIAL_MEMBERSHIP_STATE,
   SAMPLE_QAS,
-  SAMPLE_REVIEWS,
   getTierBySpend,
 } from "@/data";
 import type {
   ChatThread,
-  FitFeedback,
   GiftCardItem,
   MembershipProfileState,
   MembershipTier,
   ProductQA,
-  ProductReview,
-  SizeCode,
 } from "@/data";
 import { formatVnd } from "@/lib/format";
 import { DEFAULT_BODY_PROFILE, type BodyProfile } from "@/lib/sizing";
@@ -97,19 +93,6 @@ export interface SubmitSupportTicketInput {
   isVulnerablePriority?: boolean;
 }
 
-export interface SubmitReviewInput {
-  productId: string;
-  authorName?: string;
-  rating: number;
-  fitFeedback: FitFeedback;
-  buyerHeightCm: number;
-  buyerWeightKg: number;
-  purchasedSize: SizeCode;
-  colorName: string;
-  comment: string;
-  images?: string[];
-}
-
 export interface SubmitQAInput {
   productId: string;
   askerName?: string;
@@ -134,9 +117,7 @@ export interface MockStoreContextValue {
   subscribeBackInStock: (input: Omit<BackInStockAlert, "id" | "createdAt">) => BackInStockAlert;
   hasBackInStockAlert: (skuCode: string) => boolean;
 
-  // Reviews, Q&As & Support tickets
-  reviews: ProductReview[];
-  submitReview: (input: SubmitReviewInput) => ProductReview;
+  // Q&As & Support tickets
   productQAs: ProductQA[];
   submitProductQA: (input: SubmitQAInput) => ProductQA;
   supportTickets: SupportTicket[];
@@ -207,7 +188,6 @@ export function MockStoreProvider({ children }: { children: React.ReactNode }) {
   const [wishlist, setWishlist] = useState<WishlistEntry[]>(INITIAL_WISHLIST_ENTRIES);
   const [recentlyViewed, setRecentlyViewed] = useState<string[]>(INITIAL_RECENTLY_VIEWED);
   const [backInStockAlerts, setBackInStockAlerts] = useState<BackInStockAlert[]>([]);
-  const [reviews, setReviews] = useState<ProductReview[]>(SAMPLE_REVIEWS);
   const [productQAs, setProductQAs] = useState<ProductQA[]>(SAMPLE_QAS);
   const [supportTickets, setSupportTickets] = useState<SupportTicket[]>(INITIAL_SUPPORT_TICKETS);
 
@@ -400,32 +380,7 @@ export function MockStoreProvider({ children }: { children: React.ReactNode }) {
     [backInStockAlerts]
   );
 
-  // Reviews, Q&A & Support tickets
-  const submitReview = useCallback(
-    (input: SubmitReviewInput): ProductReview => {
-      const created: ProductReview = {
-        id: `rev-${Date.now()}`,
-        productId: input.productId,
-        authorName: input.authorName?.trim() || sessionUser?.full_name || "Khách hàng",
-        rating: Math.max(1, Math.min(5, Math.round(input.rating))),
-        fitFeedback: input.fitFeedback,
-        buyerHeightCm: input.buyerHeightCm,
-        buyerWeightKg: input.buyerWeightKg,
-        purchasedSize: input.purchasedSize,
-        colorName: input.colorName,
-        comment: input.comment.trim(),
-        createdAt: new Date().toISOString(),
-        images: input.images ?? [],
-        verifiedPurchase: true,
-        isSampleData: false,
-      };
-      setReviews((prev) => [created, ...prev]);
-      showToast("Đã gửi đánh giá sản phẩm thành công.");
-      return created;
-    },
-    [showToast, sessionUser?.full_name]
-  );
-
+  // Q&A & Support tickets
   const submitProductQA = useCallback(
     (input: SubmitQAInput): ProductQA => {
       const created: ProductQA = {
@@ -653,8 +608,6 @@ export function MockStoreProvider({ children }: { children: React.ReactNode }) {
     backInStockAlerts,
     subscribeBackInStock,
     hasBackInStockAlert,
-    reviews,
-    submitReview,
     productQAs,
     submitProductQA,
     supportTickets,

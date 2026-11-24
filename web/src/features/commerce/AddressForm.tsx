@@ -1,12 +1,25 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import type { GatewayAddress, GatewayProvince, GatewayWard } from "@/lib/gateway-types";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type {
+  GatewayAddress,
+  GatewayMapLegacyAddressResponse,
+  GatewayProvince,
+  GatewayWard,
+} from "@/lib/gateway-types";
 import { ApiError, api, getErrorMessage } from "@/lib/api";
 import { normalizeVietnamese } from "@/lib/search";
 import { useSession } from "@/context/SessionContext";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button } from "@/components/Button";
+import {
+  type MappedLegacyAddressCodes,
+  filterPreparedWards,
+  prepareSearchableWards,
+  reconcileWardAfterFilter,
+  resolveLegacyCodesForPayload,
+  resolveLoadedWardSelection,
+} from "./addressHelpers";
 import styles from "./commerce.module.css";
 
 export interface AddressFormProps {
@@ -47,6 +60,17 @@ export function AddressForm({ initial, onSaved, onCancel, submitLabel }: Address
   const [streetAddress, setStreetAddress] = useState(initial?.street_address ?? "");
   const [isDefault, setIsDefault] = useState(initial ? initial.is_default : true);
 
+  // Legacy 3-level address mapping state (E15/E16)
+  const [legacyPanelOpen, setLegacyPanelOpen] = useState(false);
+  const [legacyProvince, setLegacyProvince] = useState("");
+  const [legacyDistrict, setLegacyDistrict] = useState("");
+  const [legacyWard, setLegacyWard] = useState("");
+  const [mappedLegacyCodes, setMappedLegacyCodes] = useState<MappedLegacyAddressCodes | null>(null);
+  const [mappingLegacy, setMappingLegacy] = useState(false);
+  const [legacyMapError, setLegacyMapError] = useState<string | null>(null);
+  const [legacyMapNotice, setLegacyMapNotice] = useState<string | null>(null);
+  const pendingMappedWardRef = useRef<string | null>(null);
+
   const [provinces, setProvinces] = useState<GatewayProvince[]>([]);
   const [loadingProvinces, setLoadingProvinces] = useState(true);
   const [provincesError, setProvincesError] = useState<string | null>(null);
@@ -57,6 +81,8 @@ export function AddressForm({ initial, onSaved, onCancel, submitLabel }: Address
 
   const [provinceQuery, setProvinceQuery] = useState("");
   const [wardQuery, setWardQuery] = useState("");
+  const [legacyWardInactiveNotice, setLegacyWardInactiveNotice] = useState<string | null>(null);
+  const [wardFilterClearedNotice, setWardFilterClearedNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -64,7 +90,9 @@ export function AddressForm({ initial, onSaved, onCancel, submitLabel }: Address
     setLoadingProvinces(true);
     setProvincesError(null);
     try {
-      const data = await api<{ provinces: GatewayProvince[] }>("/shipping/provinces");
+      const data = await api<{ provinces: GatewayProvince[] }>("/shipping/provinces", {
+        retryOn401: false,
+      });
       const list = Array.isArray(data?.provinces) ? data.provinces : [];
       setProvinces(list);
       setProvinceCode((prev) => {
@@ -103,22 +131,31 @@ export function AddressForm({ initial, onSaved, onCancel, submitLabel }: Address
       setWardsError(null);
       try {
         const data = await api<{ wards: GatewayWard[] }>(
-          `/shipping/provinces/${encodeURIComponent(provinceCode)}/wards`
+          `/shipping/provinces/${encodeURIComponent(provinceCode)}/wards`,
+          { retryOn401: false }
         );
         if (cancelled) return;
         const list = Array.isArray(data?.wards) ? data.wards : [];
         setWards(list);
+        const mappedWard = pendingMappedWardRef.current;
+        pendingMappedWardRef.current = null;
         setWardCode((prev) => {
-          if (prev && list.some((w) => w.code === prev)) return prev;
-          if (
-            initial?.ward_code &&
-            initial.province_code === provinceCode &&
-            list.some((w) => w.code === initial.ward_code)
-          ) {
-            return initial.ward_code;
-          }
-          return list[0]?.code ?? "";
+          const resolved = resolveLoadedWardSelection({
+            wards: list,
+            mappedWardCode: mappedWard,
+            currentWardCode: prev,
+            initialProvinceCode: initial?.province_code,
+            initialWardCode: initial?.ward_code,
+            provinceCode,
+          });
+          setLegacyWardInactiveNotice(
+            resolved.legacyWardInactive
+              ? "Phường/xã cũ không còn trong danh mục mới, chọn lại."
+              : null
+          );
+          return resolved.wardCode;
         });
+        setWardFilterClearedNotice(null);
       } catch (err) {
         if (cancelled) return;
         setWards([]);
@@ -152,19 +189,104 @@ export function AddressForm({ initial, onSaved, onCancel, submitLabel }: Address
     if (!q) return [];
     return provinces
       .filter((p) => normalizeVietnamese(`${p.name} ${p.code}`).includes(q))
-      .slice(0, 6);
+      .slice(0, 8);
   }, [provinceQuery, provinces]);
 
-  const wardSuggestions = useMemo(() => {
-    const q = normalizeVietnamese(wardQuery);
-    if (!q) return [];
-    return wards.filter((w) => normalizeVietnamese(w.name).includes(q)).slice(0, 6);
-  }, [wardQuery, wards]);
+  const preparedWards = useMemo(() => prepareSearchableWards(wards), [wards]);
+  const filteredWards = useMemo(
+    () => filterPreparedWards(preparedWards, wardQuery),
+    [preparedWards, wardQuery]
+  );
 
   const handleProvinceChange = (nextCode: string) => {
+    pendingMappedWardRef.current = null;
+    setMappedLegacyCodes(null);
     setProvinceCode(nextCode);
     setWardCode("");
     setWardQuery("");
+    setLegacyWardInactiveNotice(null);
+    setWardFilterClearedNotice(null);
+  };
+
+  const handleWardQueryChange = (nextQuery: string) => {
+    setWardQuery(nextQuery);
+    const nextFiltered = filterPreparedWards(preparedWards, nextQuery);
+    const reconciled = reconcileWardAfterFilter(nextFiltered, wardCode);
+    if (reconciled.clearedByFilter) {
+      setMappedLegacyCodes(null);
+      setWardCode("");
+      setWardFilterClearedNotice(
+        "Phường/xã đang chọn không nằm trong kết quả lọc mới — vui lòng chọn lại phường/xã bên dưới."
+      );
+    } else if (wardFilterClearedNotice && nextFiltered.length > 0 && !nextQuery.trim()) {
+      setWardFilterClearedNotice(null);
+    }
+  };
+
+  const handleMapLegacyAddress = async () => {
+    const cleanProv = legacyProvince.trim();
+    const cleanDist = legacyDistrict.trim();
+    const cleanWard = legacyWard.trim();
+    if (!cleanProv || !cleanWard) {
+      setLegacyMapError("Vui lòng nhập ít nhất Tỉnh/Thành phố cũ và Phường/Xã cũ để quy đổi.");
+      setLegacyMapNotice(null);
+      return;
+    }
+
+    setLegacyMapError(null);
+    setLegacyMapNotice(null);
+    setMappingLegacy(true);
+    try {
+      const res = await api<GatewayMapLegacyAddressResponse>("shipping/addresses/map-legacy", {
+        method: "POST",
+        json: {
+          legacy_province: cleanProv,
+          legacy_district: cleanDist,
+          legacy_ward: cleanWard,
+        },
+        retryOn401: false,
+      });
+
+      if (!res?.found || !res.province_code || !res.ward_code) {
+        setMappedLegacyCodes(null);
+        setLegacyMapError(
+          "Chưa tìm thấy địa chỉ tương ứng trong bảng quy đổi. Vui lòng chọn trực tiếp Tỉnh/Thành phố và Phường/Xã mới bên dưới."
+        );
+        return;
+      }
+
+      setMappedLegacyCodes({
+        provinceCode: (res.legacy_province_code ?? "").trim(),
+        districtCode: (res.legacy_district_code ?? "").trim(),
+        wardCode: (res.legacy_ward_code ?? "").trim(),
+        targetProvinceCode: res.province_code,
+        targetWardCode: res.ward_code,
+      });
+      pendingMappedWardRef.current = res.ward_code;
+      setWardQuery("");
+      setLegacyWardInactiveNotice(null);
+      setWardFilterClearedNotice(null);
+      if (res.province_code === provinceCode) {
+        setWardCode(res.ward_code);
+        pendingMappedWardRef.current = null;
+      } else {
+        setProvinceCode(res.province_code);
+      }
+      setLegacyMapNotice(
+        `Đã quy đổi sang địa chỉ mới: ${res.ward_name}, ${res.province_name}. Bạn có thể kiểm tra lại trước khi lưu.`
+      );
+      showToast(`Đã quy đổi sang ${res.ward_name}, ${res.province_name}.`);
+    } catch (err) {
+      setMappedLegacyCodes(null);
+      setLegacyMapError(
+        getErrorMessage(
+          err,
+          "Không thể tra cứu quy đổi địa chỉ cũ lúc này. Vui lòng chọn trực tiếp Tỉnh/Phường mới."
+        )
+      );
+    } finally {
+      setMappingLegacy(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -195,6 +317,12 @@ export function AddressForm({ initial, onSaved, onCancel, submitLabel }: Address
     setError(null);
     setSubmitting(true);
 
+    const legacyCodesPayload = resolveLegacyCodesForPayload(
+      mappedLegacyCodes,
+      selectedProvince.code,
+      selectedWard.code
+    );
+
     const payload = {
       recipient_name: cleanName,
       recipient_phone: cleanPhone,
@@ -204,6 +332,7 @@ export function AddressForm({ initial, onSaved, onCancel, submitLabel }: Address
       ward_name: selectedWard.name,
       street_address: cleanStreet,
       is_default: isDefault,
+      ...legacyCodesPayload,
     };
 
     try {
@@ -271,9 +400,102 @@ export function AddressForm({ initial, onSaved, onCancel, submitLabel }: Address
           />
         </div>
 
+        <div className={`${styles.field} ${styles.formFull}`}>
+          <div className={styles.formActions} style={{ marginTop: 0 }}>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={submitting}
+              onClick={() => {
+                setLegacyPanelOpen((v) => !v);
+                setLegacyMapError(null);
+              }}
+            >
+              {legacyPanelOpen
+                ? "Ẩn công cụ quy đổi địa chỉ cũ"
+                : "Quy đổi địa chỉ cũ (3 cấp Tỉnh / Quận / Phường)"}
+            </Button>
+          </div>
+
+          {legacyPanelOpen && (
+            <div className={styles.legacyMapBox}>
+              <p className={styles.fieldHint}>
+                Nhập địa chỉ hành chính cũ (trước sáp nhập 34 tỉnh/thành) để hệ thống tự điền
+                Tỉnh/Thành phố và Phường/Xã mới.
+              </p>
+              <div className={styles.legacyMapGrid}>
+                <div className={styles.field}>
+                  <label htmlFor="addr-legacy-province" className={styles.fieldLabel}>
+                    Tỉnh / Thành phố cũ
+                  </label>
+                  <input
+                    id="addr-legacy-province"
+                    type="text"
+                    className={styles.input}
+                    value={legacyProvince}
+                    onChange={(e) => setLegacyProvince(e.target.value)}
+                    placeholder="Ví dụ: TP. Hồ Chí Minh, Bình Dương..."
+                    disabled={mappingLegacy || submitting}
+                  />
+                </div>
+                <div className={styles.field}>
+                  <label htmlFor="addr-legacy-district" className={styles.fieldLabel}>
+                    Quận / Huyện cũ
+                  </label>
+                  <input
+                    id="addr-legacy-district"
+                    type="text"
+                    className={styles.input}
+                    value={legacyDistrict}
+                    onChange={(e) => setLegacyDistrict(e.target.value)}
+                    placeholder="Ví dụ: Quận 1, Thành phố Thủ Đức..."
+                    disabled={mappingLegacy || submitting}
+                  />
+                </div>
+                <div className={styles.field}>
+                  <label htmlFor="addr-legacy-ward" className={styles.fieldLabel}>
+                    Phường / Xã cũ
+                  </label>
+                  <input
+                    id="addr-legacy-ward"
+                    type="text"
+                    className={styles.input}
+                    value={legacyWard}
+                    onChange={(e) => setLegacyWard(e.target.value)}
+                    placeholder="Ví dụ: Phường Bến Nghé..."
+                    disabled={mappingLegacy || submitting}
+                  />
+                </div>
+              </div>
+              {legacyMapError && (
+                <p className={styles.fieldError} role="alert">
+                  {legacyMapError}
+                </p>
+              )}
+              {legacyMapNotice && (
+                <p className={`${styles.feedbackBox} ${styles.feedbackSuccess}`} role="status">
+                  {legacyMapNotice}
+                </p>
+              )}
+              <div className={styles.formActions} style={{ marginTop: 0 }}>
+                <Button
+                  type="button"
+                  variant="ink"
+                  size="sm"
+                  disabled={mappingLegacy || submitting}
+                  onClick={() => void handleMapLegacyAddress()}
+                >
+                  {mappingLegacy ? "Đang quy đổi..." : "Quy đổi sang địa chỉ mới"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+
         <div className={styles.field}>
           <label htmlFor="addr-province-search" className={styles.fieldLabel}>
-            Tỉnh / Thành phố
+            Tỉnh / Thành phố ({provinces.length > 0 ? `${provinces.length} tỉnh/thành` : "mới"})
           </label>
           <input
             id="addr-province-search"
@@ -335,58 +557,69 @@ export function AddressForm({ initial, onSaved, onCancel, submitLabel }: Address
 
         <div className={styles.field}>
           <label htmlFor="addr-ward-search" className={styles.fieldLabel}>
-            Phường / Xã
+            Phường / Xã {wards.length > 0 ? `(${wards.length} đơn vị)` : ""}
           </label>
           <input
             id="addr-ward-search"
             type="search"
             className={styles.input}
             value={wardQuery}
-            onChange={(e) => setWardQuery(e.target.value)}
+            onChange={(e) => handleWardQueryChange(e.target.value)}
             placeholder={
               selectedProvince
-                ? `Tìm nhanh trong ${selectedProvince.name}...`
+                ? `Lọc nhanh phường/xã trong ${selectedProvince.name}...`
                 : "Chọn Tỉnh/Thành phố trước..."
             }
             disabled={loadingWards || wards.length === 0 || submitting}
           />
-          {wardSuggestions.length > 0 && (
-            <div className={styles.quickSuggestList} role="list" aria-label="Gợi ý phường xã">
-              {wardSuggestions.map((w) => (
-                <button
-                  key={w.code}
-                  type="button"
-                  className={`${styles.quickSuggestChip} ${
-                    w.code === wardCode ? styles.quickSuggestChipActive : ""
-                  }`}
-                  onClick={() => {
-                    setWardCode(w.code);
-                    setWardQuery("");
-                  }}
-                >
-                  {w.name}
-                </button>
-              ))}
-            </div>
-          )}
           <select
             id="addr-ward"
             aria-label="Chọn Phường hoặc Xã"
             className={styles.select}
             value={wardCode}
-            onChange={(e) => setWardCode(e.target.value)}
+            onChange={(e) => {
+              setMappedLegacyCodes(null);
+              setWardCode(e.target.value);
+              if (e.target.value) {
+                setLegacyWardInactiveNotice(null);
+                setWardFilterClearedNotice(null);
+              }
+            }}
             disabled={loadingWards || wards.length === 0 || submitting}
+            required
           >
-            {loadingWards && <option value="">Đang tải Phường/Xã...</option>}
-            {!loadingWards && wards.length === 0 && (
+            {loadingWards ? (
+              <option value="">Đang tải Phường/Xã...</option>
+            ) : wards.length === 0 ? (
               <option value="">Chưa có dữ liệu Phường/Xã</option>
+            ) : (
+              <option value="">Chọn phường/xã</option>
             )}
-            {wards.map((ward) => (
+            {filteredWards.map((ward) => (
               <option key={ward.code} value={ward.code}>
-                {ward.name}
+                {ward.cod_supported === false ? `${ward.name} (Chưa hỗ trợ COD)` : ward.name}
               </option>
             ))}
           </select>
+          {!loadingWards && wards.length > 0 && (
+            <span className={styles.fieldHint} aria-live="polite">
+              {wardQuery.trim()
+                ? filteredWards.length === 0
+                  ? `Không tìm thấy phường/xã khớp "${wardQuery.trim()}".`
+                  : `Tìm thấy ${filteredWards.length}/${wards.length} phường/xã phù hợp.`
+                : `${wards.length} phường/xã sẵn có.`}
+            </span>
+          )}
+          {legacyWardInactiveNotice && (
+            <span className={styles.fieldError} role="alert">
+              {legacyWardInactiveNotice}
+            </span>
+          )}
+          {wardFilterClearedNotice && (
+            <span className={styles.fieldError} role="alert">
+              {wardFilterClearedNotice}
+            </span>
+          )}
           {wardsError && (
             <span className={styles.fieldError} role="alert">
               {wardsError}
@@ -409,7 +642,8 @@ export function AddressForm({ initial, onSaved, onCancel, submitLabel }: Address
             required
           />
           <span className={styles.fieldHint}>
-            Chọn trực tiếp Tỉnh/Thành phố và Phường/Xã nhận hàng, không cần nhập quận/huyện.
+            Chọn trực tiếp Tỉnh/Thành phố và Phường/Xã theo danh mục hành chính 2 cấp mới (hoặc dùng
+            công cụ quy đổi địa chỉ cũ phía trên).
           </span>
         </div>
 
@@ -420,7 +654,11 @@ export function AddressForm({ initial, onSaved, onCancel, submitLabel }: Address
                 Khu vực giao nhận: <strong>{selectedWard.name}</strong>,{" "}
                 <strong>{selectedProvince.name}</strong>
               </span>
-              <span>Phí giao hàng sẽ được tính chính xác khi đặt đơn</span>
+              <span>
+                {selectedWard.cod_supported === false
+                  ? "Khu vực này hiện chỉ hỗ trợ thanh toán VietQR (chưa hỗ trợ COD)"
+                  : "Phí giao hàng sẽ được tính chính xác khi đặt đơn"}
+              </span>
             </div>
           </div>
         )}

@@ -50,9 +50,9 @@ func quoteCacheKey(req carrier.FeeRequest) string {
 	}
 	// Bucket weight in 100g increments to maximize cache hit ratio for identical routes.
 	weightBucket := ((req.WeightGrams + 99) / 100) * 100
-	codFlag := 0
-	if req.CODAmountVND > 0 {
-		codFlag = 1
+	codAmount := req.CODAmountVND
+	if codAmount < 0 {
+		codAmount = 0
 	}
 	carriersPart := "all"
 	if len(req.AllowedCarriers) > 0 {
@@ -74,7 +74,7 @@ func quoteCacheKey(req carrier.FeeRequest) string {
 		toProv,
 		strings.TrimSpace(req.ToWardCode),
 		weightBucket,
-		codFlag,
+		codAmount,
 	)
 }
 

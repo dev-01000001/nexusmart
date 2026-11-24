@@ -22,6 +22,7 @@ func TestE2E_CancelConfirmedCODOrder_RestocksSKU(t *testing.T) {
 	prod, sku := env.createApprovedProduct(t, seller1, cat.ID, "Cancel Restock Keyboard E2E", 180000, initialStock, 600)
 
 	buyer := env.registerVerifyAndLogin(t, "buyer-cancel-restock")
+	env.verifyBuyerPhone(t, buyer)
 	addr := env.addAddress(t, buyer)
 	quote := env.calculateShippingQuote(t, buyer.AccessToken, seller1.ShopID, 1800, 540000)
 

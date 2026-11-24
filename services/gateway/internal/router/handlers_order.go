@@ -80,6 +80,7 @@ type orderDTO struct {
 	PaymentFeeVND              int64                    `json:"payment_fee_vnd"`
 	PaymentFeeBps              int32                    `json:"payment_fee_bps"`
 	NeedsManualReview          bool                     `json:"needs_manual_review"`
+	ShipmentJobStatus          string                   `json:"shipment_job_status,omitempty"`
 	TotalPayableVND            int64                    `json:"total_payable_vnd"`
 	CarrierCode                string                   `json:"carrier_code"`
 	ServiceCode                string                   `json:"service_code"`
@@ -161,8 +162,9 @@ func mapOrderForAdmin(o *orderv1.Order) *orderDTO {
 }
 
 // mapOrderForCaller applies role-scoped visibility on shared order endpoints:
-// admins see fees + manual-review flag; the selling shop owner sees fees only;
-// buyers (including sellers purchasing from another shop) get 0 for platform/seller fee fields.
+// admins see fees, manual-review flag, and shipment job status; the selling shop owner
+// sees fees and shipment job status; buyers (including sellers purchasing from another shop)
+// get zero values for platform/seller fee fields and internal operational flags.
 func mapOrderForCaller(ctx context.Context, o *orderv1.Order) *orderDTO {
 	claims, _ := auth.ClaimsFromContext(ctx)
 	isAdmin := auth.HasRole(claims, "admin", "super_admin")
@@ -215,6 +217,10 @@ func mapOrderView(o *orderv1.Order, showFees, isAdmin bool) *orderDTO {
 	}
 	var commVND, payFeeVND int64
 	var payFeeBps int32
+	var shipmentJobStatus string
+	if showFees || isAdmin {
+		shipmentJobStatus = o.GetShipmentJobStatus()
+	}
 	if showFees {
 		commVND = o.GetCommissionVnd()
 		payFeeVND = o.GetPaymentFeeVnd()
@@ -243,6 +249,7 @@ func mapOrderView(o *orderv1.Order, showFees, isAdmin bool) *orderDTO {
 		PaymentFeeVND:              payFeeVND,
 		PaymentFeeBps:              payFeeBps,
 		NeedsManualReview:          isAdmin && o.GetNeedsManualReview(),
+		ShipmentJobStatus:          shipmentJobStatus,
 		TotalPayableVND:            o.GetTotalPayableVnd(),
 		CarrierCode:                o.GetCarrierCode(),
 		ServiceCode:                o.GetServiceCode(),
@@ -793,9 +800,11 @@ func (h *handler) handleSellerShipOrder(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"order":         mapOrderForSeller(resp.GetOrder()),
-		"tracking_code": resp.GetTrackingCode(),
-		"label_url":     resp.GetLabelUrl(),
+		"order":           mapOrderForSeller(resp.GetOrder()),
+		"tracking_code":   resp.GetTrackingCode(),
+		"label_url":       resp.GetLabelUrl(),
+		"queued":          resp.GetQueued(),
+		"shipment_job_id": resp.GetShipmentJobId(),
 	})
 }
 

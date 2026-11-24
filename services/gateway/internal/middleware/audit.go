@@ -46,6 +46,33 @@ type AdminAuditConfig struct {
 	MaxPendingRetries   int
 }
 
+type auditSummaryHolder struct {
+	targetID string
+	summary  map[string]any
+}
+
+type auditSummaryContextKey struct{}
+
+// SetAuditSummary attaches a compact handler-provided target ID and structured summary
+// to the current request context for AdminAudit. AdminAudit prioritizes this summary over
+// raw request/response capture so large (>4 KiB) responses never lose target_id or after_json
+// and never log file contents or PII.
+func SetAuditSummary(ctx context.Context, targetID string, summary map[string]any) {
+	if ctx == nil {
+		return
+	}
+	holder, ok := ctx.Value(auditSummaryContextKey{}).(*auditSummaryHolder)
+	if !ok || holder == nil {
+		return
+	}
+	if tid := strings.TrimSpace(targetID); tid != "" {
+		holder.targetID = tid
+	}
+	if len(summary) > 0 {
+		holder.summary = summary
+	}
+}
+
 type auditResponseWriter struct {
 	http.ResponseWriter
 	status      int
@@ -160,6 +187,9 @@ func AdminAudit(cfg AdminAuditConfig) func(http.Handler) http.Handler {
 				r.Body = reqCapture
 			}
 
+			holder := &auditSummaryHolder{}
+			r = r.WithContext(context.WithValue(r.Context(), auditSummaryContextKey{}, holder))
+
 			aw := &auditResponseWriter{ResponseWriter: w, status: http.StatusOK}
 			next.ServeHTTP(aw, r)
 
@@ -190,14 +220,19 @@ func AdminAudit(cfg AdminAuditConfig) func(http.Handler) http.Handler {
 				reqTrunc = reqCapture.truncated
 			}
 
+			targetID := holder.targetID
+			if targetID == "" {
+				targetID = auditTargetID(r, aw.capture.Bytes(), routePattern)
+			}
+
 			auditReq := &userv1.WriteAuditLogRequest{
 				ActorId:    claims.UserID(),
 				ActorRole:  claims.Role,
 				Action:     action,
 				TargetType: auditTargetType(routePattern),
-				TargetId:   auditTargetID(r, aw.capture.Bytes(), routePattern),
+				TargetId:   targetID,
 				BeforeJson: "{}",
-				AfterJson:  buildAuditAfterJSON(reqBytes, reqTrunc, aw.capture.Bytes(), aw.truncated),
+				AfterJson:  buildAuditAfterJSON(reqBytes, reqTrunc, aw.capture.Bytes(), aw.truncated, holder.summary),
 				IpAddress:  cfg.TrustedProxies.ClientIP(r),
 			}
 
@@ -289,6 +324,8 @@ func auditTargetType(routePattern string) string {
 		return "category_fee_schedule"
 	case strings.HasPrefix(trimmed, "fees/payment"):
 		return "payment_fee_config"
+	case strings.HasPrefix(trimmed, "reconciliation/cod"):
+		return "reconciliation_run"
 	}
 	seg, _, _ := strings.Cut(trimmed, "/")
 	switch seg {
@@ -296,6 +333,8 @@ func auditTargetType(routePattern string) string {
 		return "product"
 	case "categories":
 		return "category"
+	case "banned-keywords":
+		return "banned_keyword"
 	case "vouchers":
 		return "voucher"
 	case "flash-sales":
@@ -364,9 +403,9 @@ func extractTargetIDFromJSON(raw []byte) string {
 			return strings.TrimSpace(s)
 		}
 	}
-	for _, nestedKey := range []string{"category", "voucher", "flash_sale", "product", "item", "refund", "return_request", "carrier", "bank_account", "schedule", "config", "order"} {
+	for _, nestedKey := range []string{"category", "voucher", "flash_sale", "product", "item", "refund", "return_request", "carrier", "bank_account", "schedule", "config", "order", "keyword", "run"} {
 		if nested, ok := obj[nestedKey].(map[string]any); ok {
-			for _, idKey := range []string{"id", "refund_id", "carrier_code"} {
+			for _, idKey := range []string{"id", "run_id", "refund_id", "carrier_code"} {
 				if s, ok := nested[idKey].(string); ok && strings.TrimSpace(s) != "" {
 					return strings.TrimSpace(s)
 				}
@@ -444,6 +483,12 @@ func sanitizeAuditValue(v any) any {
 			out[i] = sanitizeAuditValue(item)
 		}
 		return out
+	case []string:
+		out := make([]string, len(val))
+		for i, item := range val {
+			out[i] = logger.ScrubSecrets(item)
+		}
+		return out
 	case string:
 		return logger.ScrubSecrets(val)
 	default:
@@ -464,7 +509,14 @@ func parseAndSanitizeJSON(raw []byte, truncated bool) (any, bool) {
 	return sanitizeAuditValue(parsed), true
 }
 
-func buildAuditAfterJSON(reqRaw []byte, reqTrunc bool, respRaw []byte, respTrunc bool) string {
+func buildAuditAfterJSON(reqRaw []byte, reqTrunc bool, respRaw []byte, respTrunc bool, summary map[string]any) string {
+	if len(summary) > 0 {
+		encoded, err := json.Marshal(sanitizeAuditValue(summary))
+		if err != nil {
+			return "{}"
+		}
+		return string(encoded)
+	}
 	payload := make(map[string]any, 2)
 	if reqVal, ok := parseAndSanitizeJSON(reqRaw, reqTrunc); ok {
 		payload["request"] = reqVal

@@ -275,10 +275,17 @@ func (s *OrderService) cancelOrderInternal(ctx context.Context, agg *store.Order
 	var (
 		cancelledTracking  string
 		knownTracking      = strings.TrimSpace(agg.Order.TrackingCode)
+		knownQueued        = store.IsOrderShipmentQueued(agg.Order)
+		knownQueuedAt      *time.Time
 		lastCancelNotFound bool
 		hasCalledCancel    bool
+		cancelledQueuedJob bool
 	)
-	if knownTracking != "" || agg.Order.PendingShipmentCancel {
+	if knownQueued {
+		t := agg.Order.UpdatedAt
+		knownQueuedAt = &t
+	}
+	if knownTracking != "" || agg.Order.PendingShipmentCancel || knownQueued {
 		trk, nf, err := s.cancelForwardShipment(ctx, agg.Order.ID, reason)
 		if err != nil {
 			return nil, err
@@ -286,10 +293,11 @@ func (s *OrderService) cancelOrderInternal(ctx context.Context, agg *store.Order
 		cancelledTracking = trk
 		lastCancelNotFound = nf
 		hasCalledCancel = true
+		cancelledQueuedJob = true
 	}
 
 	traceID, traceparent := traceMetaFromContext(ctx)
-	runTransition := func(requireNoTracking bool, canTrk, knownTrk string, lastNF, clearPending bool) (*store.OrderTransitionResult, error) {
+	runTransition := func(requireNoTracking bool, canTrk, knownTrk string, kQueued bool, kQueuedAt *time.Time, lastNF, clearPending bool) (*store.OrderTransitionResult, error) {
 		return s.store.TransitionOrderStatus(ctx, store.SingleOrderTransitionParams{
 			OrderID:                    agg.Order.ID,
 			ExpectedStatus:             opts.expectedStatus,
@@ -305,6 +313,8 @@ func (s *OrderService) cancelOrderInternal(ctx context.Context, agg *store.Order
 			VerifyShipmentCancel:       s.clients.Shipping != nil,
 			CancelledTrackingCode:      canTrk,
 			KnownTrackingBeforeCancel:  knownTrk,
+			KnownShipmentQueued:        kQueued,
+			KnownQueuedUpdatedAt:       kQueuedAt,
 			LastCancelNotFound:         lastNF,
 			ClearPendingShipmentCancel: clearPending,
 			Now:                        s.nowFn(),
@@ -336,18 +346,25 @@ func (s *OrderService) cancelOrderInternal(ctx context.Context, agg *store.Order
 	var res *store.OrderTransitionResult
 	var err error
 	for attempt := 0; attempt < maxCancelShipmentAttempts; attempt++ {
-		res, err = runTransition(!hasCalledCancel, cancelledTracking, knownTracking, lastCancelNotFound, hasCalledCancel && cancelledTracking != "")
+		res, err = runTransition(!hasCalledCancel, cancelledTracking, knownTracking, knownQueued, knownQueuedAt, lastCancelNotFound, hasCalledCancel && cancelledTracking != "")
 		if !errors.Is(err, store.ErrOrderHasTracking) {
 			break
 		}
 		if attempt == maxCancelShipmentAttempts-1 {
 			return nil, status.Error(codes.FailedPrecondition, "vận đơn đang được tạo, thử lại")
 		}
-		// Refresh observed tracking before retrying CancelShipment so we detect newly attached tracking codes.
+		// Refresh observed tracking/queued state before retrying CancelShipment.
 		if latest, gErr := s.store.GetOrderWithDetails(ctx, agg.Order.ID); gErr == nil {
 			knownTracking = strings.TrimSpace(latest.Order.TrackingCode)
+			knownQueued = store.IsOrderShipmentQueued(latest.Order)
+			if knownQueued {
+				t := latest.Order.UpdatedAt
+				knownQueuedAt = &t
+			} else {
+				knownQueuedAt = nil
+			}
 		}
-		// Concurrent SellerShipOrder is creating or attached a tracking code before our FOR UPDATE lock.
+		// Concurrent SellerShipOrder is creating, queued, or attached a tracking code before our FOR UPDATE lock.
 		trk, nf, cErr := s.cancelForwardShipment(ctx, agg.Order.ID, reason)
 		if cErr != nil {
 			return nil, cErr
@@ -355,8 +372,21 @@ func (s *OrderService) cancelOrderInternal(ctx context.Context, agg *store.Order
 		cancelledTracking = trk
 		lastCancelNotFound = nf
 		hasCalledCancel = true
+		cancelledQueuedJob = true
 	}
 	if err != nil {
+		// E18: Shipping.CancelShipment already cancelled any pending async retry job in shipping,
+		// but transitioning the order to CANCELLED failed (order stays alive). Flip any lingering
+		// QUEUED status (with empty tracking and no active creating flag) to FAILED so the order is
+		// never left stuck QUEUED without a backing job and the seller can retry SellerShipOrder.
+		if cancelledQueuedJob {
+			cleanupCtx, cleanupCancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+			defer cleanupCancel()
+			if _, mErr := s.store.MarkOrderShipmentJobFailedIfQueued(cleanupCtx, agg.Order.ID); mErr != nil {
+				s.logger.WarnContext(ctx, "failed to clear aborted-cancel QUEUED shipment job status to FAILED",
+					"order_id", agg.Order.ID, "error", mErr)
+			}
+		}
 		return nil, mapStoreError(err)
 	}
 
@@ -714,6 +744,47 @@ func (s *OrderService) SellerShipOrder(ctx context.Context, req *orderv1.SellerS
 			_ = s.store.ClearOrderPendingShipmentCancelByToken(clearCtx, agg.Order.ID, creatingToken)
 		}
 		return nil, err
+	}
+
+	// E18: Transient carrier failure (5xx/timeout/circuit-open) queued an async retry job in shipping.
+	// Record shipment_job_status="QUEUED" without advancing order status (CONFIRMED stays CONFIRMED).
+	if shipResp.GetQueued() {
+		jobID := strings.TrimSpace(shipResp.GetJobId())
+		s.logger.InfoContext(ctx, "shipment creation queued for async retry",
+			"order_id", agg.Order.ID,
+			"job_id", jobID,
+		)
+		note := "Shipment creation queued for async retry"
+		qCtx, qCancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+		defer qCancel()
+		qOut, qErr := s.store.MarkOrderShipmentQueued(qCtx, store.QueueShipmentParams{
+			OrderID:               agg.Order.ID,
+			JobID:                 jobID,
+			ExpectedCreatingToken: creatingToken,
+			ActorID:               fallbackStr(caller.UserID, req.GetSellerUserId()),
+			ActorRole:             fallbackStr(caller.Role, "seller"),
+			Note:                  note,
+			Now:                   s.nowFn(),
+		})
+		if qErr != nil {
+			if errors.Is(qErr, store.ErrOrphanShipmentNeedsCancel) {
+				s.compensateOrphanForwardShipment(ctx, agg.Order.ID, "order cancelled concurrently while queueing shipment")
+			}
+			return nil, mapStoreError(qErr)
+		}
+		if qOut.AlreadyAttached {
+			return &orderv1.SellerShipOrderResponse{
+				Order:        aggregateToProtoForCaller(*qOut.Order, caller),
+				TrackingCode: qOut.Order.Order.TrackingCode,
+				LabelUrl:     qOut.Order.Order.LabelURL,
+				Queued:       false,
+			}, nil
+		}
+		return &orderv1.SellerShipOrderResponse{
+			Order:         aggregateToProtoForCaller(*qOut.Order, caller),
+			Queued:        true,
+			ShipmentJobId: jobID,
+		}, nil
 	}
 
 	shipment := shipResp.GetShipment()

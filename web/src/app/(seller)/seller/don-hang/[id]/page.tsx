@@ -13,7 +13,7 @@ import type {
 import { ApiError, api, getErrorMessage } from "@/lib/api";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconCheck, IconFileText, IconPackage, IconTruck, StateView } from "@/components";
-import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
+import { formatCarrierLabel, formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import { buildShippingLabelHref, localizeTimelineNote } from "@/features/account/orderMeta";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { SellerShopGate, useSellerContext } from "@/features/seller/SellerContext";
@@ -168,6 +168,8 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
         order: GatewayOrder;
         tracking_code?: string;
         label_url?: string;
+        queued?: boolean;
+        shipment_job_id?: string;
       }>(`seller/orders/${order.id}/ship`, {
         method: "POST",
         json: {
@@ -177,11 +179,17 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
       });
       setShowShipPanel(false);
       await Promise.all([loadOrderDetail(), refreshPendingOrders()]);
-      showToast(
-        res.tracking_code
-          ? `Đã tạo vận đơn ${res.tracking_code}. Đơn chuyển sang trạng thái Chờ hãng lấy hàng.`
-          : `Đã tạo vận đơn cho đơn ${order.order_code}. Trạng thái: Chờ hãng lấy hàng.`
-      );
+      if (res.queued) {
+        showToast(
+          "Hãng vận chuyển đang tạm gián đoạn. Đơn chuyển sang Đang chờ tạo lại với hãng — bạn có thể bấm Thử tạo lại ngay nếu cần."
+        );
+      } else {
+        showToast(
+          res.tracking_code
+            ? `Đã tạo vận đơn ${res.tracking_code}. Đơn chuyển sang trạng thái Chờ hãng lấy hàng.`
+            : `Đã tạo vận đơn cho đơn ${order.order_code}. Trạng thái: Chờ hãng lấy hàng.`
+        );
+      }
     } catch (err) {
       showToast(translateSellerShipError(err));
     } finally {
@@ -272,6 +280,9 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
   const totalQty = (order.items ?? []).reduce((s, i) => s + i.quantity, 0);
   const totalDeductions = computeOrderDeductionsVnd(order);
   const canConfirm = canSellerConfirmOrder(order.status);
+  const shipmentJobStatus = (order.shipment_job_status ?? "").trim().toUpperCase();
+  const isShipmentQueued = !order.tracking_code && shipmentJobStatus === "QUEUED";
+  const isShipmentFailed = !order.tracking_code && shipmentJobStatus === "FAILED";
   const canShip = canSellerShipOrder(order.status, order.tracking_code);
   const canCancel = canSellerCancelOrder(order.status);
   const shipment = shipmentData?.shipment ?? null;
@@ -385,7 +396,15 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
               }}
             >
               <IconTruck size={14} />
-              <span>{showShipPanel ? "Đóng form vận đơn" : "Tạo vận đơn"}</span>
+              <span>
+                {showShipPanel
+                  ? "Đóng form vận đơn"
+                  : isShipmentQueued
+                    ? "Thử tạo lại ngay"
+                    : isShipmentFailed
+                      ? "Thử tạo lại vận đơn"
+                      : "Tạo vận đơn"}
+              </span>
             </button>
           )}
           {labelHref && (
@@ -410,6 +429,43 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
           )}
         </div>
       </header>
+
+      {isShipmentQueued && (
+        <div className={common.card} role="status">
+          <div className={common.cardHeader}>
+            <h2 className={common.cardTitle}>Đang chờ tạo lại với hãng</h2>
+            <div className={common.headerActions}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                shape="app"
+                onClick={() => void loadOrderDetail()}
+              >
+                Làm mới trạng thái
+              </Button>
+            </div>
+          </div>
+          <p className={common.fieldHint}>
+            Hãng vận chuyển đang tạm gián đoạn nên hệ thống đã xếp hàng tự động thử lại. Nếu cần xử
+            lý gấp, bạn có thể bấm &ldquo;Thử tạo lại ngay&rdquo; ở thanh đầu trang — máy chủ chống
+            tạo trùng vận đơn.
+          </p>
+        </div>
+      )}
+
+      {isShipmentFailed && (
+        <div className={common.card} role="alert">
+          <div className={common.cardHeader}>
+            <h2 className={common.cardTitle}>Tạo vận đơn thất bại</h2>
+          </div>
+          <p className={common.fieldError}>
+            Hệ thống đã tự động thử lại nhiều lần nhưng vẫn chưa tạo được vận đơn với hãng vận
+            chuyển. Vui lòng kiểm tra cấu hình hãng hoặc bấm &ldquo;Thử tạo lại vận đơn&rdquo; ở
+            trên.
+          </p>
+        </div>
+      )}
 
       {showShipPanel && canShip && (
         <form className={common.card} onSubmit={(e) => void handleShip(e)}>
@@ -716,7 +772,7 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
                   <span className={styles.kvKey}>Đơn vị vận chuyển</span>
                   <span className={styles.kvVal}>
                     {order.carrier_code
-                      ? `${order.carrier_code.toUpperCase()} (${order.service_code || "STANDARD"})`
+                      ? `${formatCarrierLabel(order.carrier_code)} (${order.service_code || "STANDARD"})`
                       : EMPTY_DASH}
                   </span>
                 </div>
@@ -747,10 +803,13 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
 
             {!shipment ? (
               <div className={common.inlineEmpty}>
-                Đơn hàng chưa có vận đơn.{" "}
-                {canShip
-                  ? "Hãy nhấn nút Tạo vận đơn & giao hàng ở đầu trang để bàn giao cho đơn vị vận chuyển."
-                  : "Vận đơn sẽ xuất hiện ngay sau khi gian hàng bàn giao."}
+                {isShipmentQueued
+                  ? "Đang tạo vận đơn (tự thử lại) — hệ thống sẽ tự cập nhật mã vận đơn khi hãng phản hồi."
+                  : isShipmentFailed
+                    ? "Tạo vận đơn thất bại sau các lượt tự thử lại. Bạn có thể bấm Thử tạo lại vận đơn ở đầu trang."
+                    : canShip
+                      ? "Đơn hàng chưa có vận đơn. Hãy nhấn nút Tạo vận đơn ở đầu trang để bàn giao cho đơn vị vận chuyển."
+                      : "Đơn hàng chưa có vận đơn. Vận đơn sẽ xuất hiện ngay sau khi gian hàng bàn giao."}
               </div>
             ) : (
               <>
@@ -762,7 +821,7 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
                   <div className={styles.kvRow}>
                     <span className={styles.kvKey}>Đơn vị & dịch vụ</span>
                     <span className={styles.kvVal}>
-                      {shipment.carrier_code.toUpperCase()} · {shipment.service_code}
+                      {formatCarrierLabel(shipment.carrier_code)} · {shipment.service_code}
                     </span>
                   </div>
                   <div className={styles.kvRow}>

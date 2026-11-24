@@ -62,9 +62,11 @@ export const ADMIN_ORDER_STATUS_META: Record<string, { label: string; tone: Pill
 
 export const RECONCILE_ITEM_STATUS_META: Record<string, { label: string; tone: PillTone }> = {
   MATCHED: { label: "Khớp", tone: "positive" },
+  ALREADY_RECONCILED: { label: "Đã đối soát trước đó", tone: "neutral" },
   MISSING_LOCAL: { label: "Thiếu trên sàn", tone: "negative" },
   MISSING_PROVIDER: { label: "Thiếu ở đối tác", tone: "warning" },
   AMOUNT_MISMATCH: { label: "Lệch số tiền", tone: "negative" },
+  NOT_DELIVERED: { label: "Chưa giao hàng", tone: "warning" },
 };
 
 export function getReconciliationQueueStatusMeta(status: string): {

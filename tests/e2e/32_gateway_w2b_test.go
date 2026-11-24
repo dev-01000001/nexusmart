@@ -402,6 +402,7 @@ func TestE2E_GatewayW2B(t *testing.T) {
 		}
 
 		// Buyer order fee privacy: buyer checkout & GET /orders/{id} zero out commission/payment fees; seller/admin keep them.
+		env.verifyBuyerPhone(t, buyer)
 		env.addAddress(t, buyer)
 		coResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "gw-w2b-privacy-" + env.runID,
@@ -581,6 +582,7 @@ func TestE2E_GatewayW2B(t *testing.T) {
 	t.Run("CalculateShippingFeeAuthoritativeItemsMatchesCheckout", func(t *testing.T) {
 		sShip := env.createApprovedSeller(t, "gw-w2b-ship-items")
 		shipBuyer := env.registerVerifyAndLogin(t, "gw-w2b-ship-buyer")
+		env.verifyBuyerPhone(t, shipBuyer)
 		addr := env.addAddress(t, shipBuyer)
 
 		// Configure shop default_weight_grams=1800 (distinct from 500g fallback) so qty=2 -> 3600g.

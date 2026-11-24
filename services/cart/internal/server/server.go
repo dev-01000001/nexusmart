@@ -21,6 +21,11 @@ import (
 	"github.com/nexusmart/core/services/cart/internal/store"
 )
 
+const (
+	unavailableReasonSKUInactive = "SKU_INACTIVE"
+	unavailableReasonSKUNotFound = "SKU_NOT_FOUND"
+)
+
 // ProductClient is the subset of productv1.ProductServiceClient required by CartService.
 type ProductClient interface {
 	GetSKUsBatch(ctx context.Context, in *productv1.GetSKUsBatchRequest, opts ...grpc.CallOption) (*productv1.GetSKUsBatchResponse, error)
@@ -294,6 +299,9 @@ func (s *Server) fetchSKUsBatch(ctx context.Context, skuIDs []string) (map[strin
 
 	byID := make(map[string]*productv1.SKU, len(resp.GetSkus()))
 	for _, sk := range resp.GetSkus() {
+		if sk == nil || sk.GetId() == "" {
+			continue
+		}
 		byID[sk.GetId()] = sk
 	}
 	return byID, nil
@@ -375,48 +383,94 @@ func (s *Server) buildCart(ctx context.Context, userID string) (*cartv1.Cart, er
 	for _, skuID := range skuIDs {
 		stItem := storedItems[skuID]
 		sku, ok := skuMap[skuID]
-		if !ok || !sku.GetIsActive() || sku.GetPriceVnd() <= 0 {
-			continue
+
+		var (
+			shopID string
+			item   *cartv1.CartItem
+		)
+		switch {
+		case !ok:
+			item = &cartv1.CartItem{
+				SkuId:             skuID,
+				PriceVnd:          0,
+				AddedPriceVnd:     stItem.AddedPriceVND,
+				PriceChanged:      false,
+				Quantity:          stItem.Quantity,
+				AvailableStock:    0,
+				WeightGrams:       0,
+				Selected:          stItem.Selected,
+				Unavailable:       true,
+				UnavailableReason: unavailableReasonSKUNotFound,
+			}
+		case !sku.GetIsActive() || sku.GetPriceVnd() <= 0:
+			shopID = sku.GetShopId()
+			item = &cartv1.CartItem{
+				SkuId:             skuID,
+				ProductId:         sku.GetProductId(),
+				ShopId:            shopID,
+				ProductName:       sku.GetProductName(),
+				SkuName:           sku.GetName(),
+				ImageUrl:          sku.GetImageUrl(),
+				PriceVnd:          0,
+				AddedPriceVnd:     stItem.AddedPriceVND,
+				PriceChanged:      false,
+				Quantity:          stItem.Quantity,
+				AvailableStock:    0,
+				WeightGrams:       0,
+				Selected:          stItem.Selected,
+				Unavailable:       true,
+				UnavailableReason: unavailableReasonSKUInactive,
+			}
+		default:
+			shopID = sku.GetShopId()
+			livePrice := sku.GetPriceVnd()
+			priceChanged := stItem.AddedPriceVND > 0 && livePrice != stItem.AddedPriceVND
+			item = &cartv1.CartItem{
+				SkuId:          skuID,
+				ProductId:      sku.GetProductId(),
+				ShopId:         shopID,
+				ProductName:    sku.GetProductName(),
+				SkuName:        sku.GetName(),
+				ImageUrl:       sku.GetImageUrl(),
+				PriceVnd:       livePrice,
+				AddedPriceVnd:  stItem.AddedPriceVND,
+				PriceChanged:   priceChanged,
+				Quantity:       stItem.Quantity,
+				AvailableStock: sku.GetAvailableStock(),
+				WeightGrams:    sku.GetWeightGrams(),
+				Selected:       stItem.Selected,
+			}
 		}
 
-		livePrice := sku.GetPriceVnd()
-		priceChanged := stItem.AddedPriceVND > 0 && livePrice != stItem.AddedPriceVND
-
-		item := &cartv1.CartItem{
-			SkuId:          sku.GetId(),
-			ProductId:      sku.GetProductId(),
-			ShopId:         sku.GetShopId(),
-			ProductName:    sku.GetProductName(),
-			SkuName:        sku.GetName(),
-			ImageUrl:       sku.GetImageUrl(),
-			PriceVnd:       livePrice,
-			AddedPriceVnd:  stItem.AddedPriceVND,
-			PriceChanged:   priceChanged,
-			Quantity:       stItem.Quantity,
-			AvailableStock: sku.GetAvailableStock(),
-			WeightGrams:    sku.GetWeightGrams(),
-			Selected:       stItem.Selected,
-		}
-
-		grp, exists := groupsByShop[sku.GetShopId()]
+		grp, exists := groupsByShop[shopID]
 		if !exists {
 			grp = &cartv1.CartShopGroup{
-				ShopId:   sku.GetShopId(),
-				ShopName: s.fetchShopName(ctx, sku.GetShopId()),
+				ShopId:   shopID,
+				ShopName: s.fetchShopName(ctx, shopID),
 				Items:    []*cartv1.CartItem{},
 			}
-			groupsByShop[sku.GetShopId()] = grp
+			groupsByShop[shopID] = grp
 		}
 		grp.Items = append(grp.Items, item)
-		grp.SubtotalVnd += livePrice * int64(stItem.Quantity)
-		grp.TotalWeightGrams += sku.GetWeightGrams() * stItem.Quantity
+		if !item.Unavailable {
+			grp.SubtotalVnd += item.PriceVnd * int64(item.Quantity)
+			grp.TotalWeightGrams += item.WeightGrams * item.Quantity
+		}
 	}
 
 	shopIDs := make([]string, 0, len(groupsByShop))
 	for shopID := range groupsByShop {
 		shopIDs = append(shopIDs, shopID)
 	}
-	sort.Strings(shopIDs)
+	sort.Slice(shopIDs, func(i, j int) bool {
+		if shopIDs[i] == "" {
+			return false
+		}
+		if shopIDs[j] == "" {
+			return true
+		}
+		return shopIDs[i] < shopIDs[j]
+	})
 
 	shopGroups := make([]*cartv1.CartShopGroup, 0, len(shopIDs))
 	var totalItems int32
@@ -427,7 +481,9 @@ func (s *Server) buildCart(ctx context.Context, userID string) (*cartv1.Cart, er
 			return grp.Items[i].SkuId < grp.Items[j].SkuId
 		})
 		for _, it := range grp.Items {
-			totalItems += it.Quantity
+			if !it.Unavailable {
+				totalItems += it.Quantity
+			}
 		}
 		totalVND += grp.SubtotalVnd
 		shopGroups = append(shopGroups, grp)

@@ -28,6 +28,9 @@ type Config struct {
 
 	CODMaxVND                 int64
 	CODMaxRejectedCount       int32
+	CODRequirePhoneVerified   bool
+	CODMinOrdersForRate       int32
+	CODMaxRejectRateBPS       int32
 	PaymentExpiryMinutes      int
 	FlashPaymentExpiryMinutes int
 	RewardCoinsBPS            int32
@@ -67,6 +70,9 @@ func Load() Config {
 
 		CODMaxVND:                 envInt64("ORDER_COD_MAX_VND", 5000000),
 		CODMaxRejectedCount:       int32(env.EnvInt("ORDER_COD_MAX_REJECTED_COUNT", 3)),
+		CODRequirePhoneVerified:   env.EnvBool("ORDER_COD_REQUIRE_PHONE_VERIFIED", true),
+		CODMinOrdersForRate:       int32(env.EnvInt("ORDER_COD_MIN_ORDERS_FOR_RATE", 3)),
+		CODMaxRejectRateBPS:       int32(env.EnvInt("ORDER_COD_MAX_REJECT_RATE_BPS", 3000)),
 		PaymentExpiryMinutes:      env.EnvInt("ORDER_PAYMENT_EXPIRY_MINUTES", 15),
 		FlashPaymentExpiryMinutes: env.EnvInt("ORDER_FLASH_PAYMENT_EXPIRY_MINUTES", 5),
 		RewardCoinsBPS:            int32(env.EnvInt("ORDER_REWARD_COINS_BPS", 100)),

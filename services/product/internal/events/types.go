@@ -11,6 +11,9 @@ const (
 	// SubjectProductReviewed matches docs/contracts.md Section 5.
 	SubjectProductReviewed = "product.reviewed"
 
+	// SubjectReviewCreated matches docs/contracts.md Section 5 (E6).
+	SubjectReviewCreated = "review.created"
+
 	// DLQStreamName is the canonical NexusMart dead-letter stream name.
 	DLQStreamName = jetstream.DefaultDLQStream
 )
@@ -32,4 +35,18 @@ type ProductReviewedPayload struct {
 	Decision    string `json:"decision"`
 	Reason      string `json:"reason"`
 	OccurredAt  string `json:"occurred_at"`
+}
+
+// ReviewCreatedPayload matches docs/contracts.md Section 5 for review.created (E6).
+type ReviewCreatedPayload struct {
+	ReviewID      string `json:"review_id"`
+	ProductID     string `json:"product_id"`
+	ShopID        string `json:"shop_id"`
+	OrderID       string `json:"order_id"`
+	OrderItemID   string `json:"order_item_id"`
+	BuyerID       string `json:"buyer_id"`
+	Rating        int32  `json:"rating"`
+	ReviewCount   int32  `json:"review_count"`
+	RatingAvgX100 int32  `json:"rating_avg_x100"`
+	OccurredAt    string `json:"occurred_at"`
 }

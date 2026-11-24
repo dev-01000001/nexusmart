@@ -101,6 +101,20 @@ export function formatBpsPercent(bps: number): string {
   return `${formatted}%`;
 }
 
+/**
+ * Formats integer average rating scaled by 100 (0..500 -> `"4,8"`, `"5,0"`, `"0,0"`).
+ */
+export function formatRatingFromX100(ratingAvgX100: number | undefined | null): string {
+  const safe =
+    typeof ratingAvgX100 === "number" && Number.isFinite(ratingAvgX100)
+      ? Math.max(0, Math.min(500, Math.trunc(ratingAvgX100)))
+      : 0;
+  const tenths = Math.round(safe / 10);
+  const whole = Math.floor(tenths / 10);
+  const frac = tenths % 10;
+  return `${whole},${frac}`;
+}
+
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export const MAX_REPORT_RANGE_DAYS = 366;
 
@@ -238,6 +252,7 @@ export const GATEWAY_ORDER_STATUS_LABELS: Record<GatewayOrderStatus, string> = {
 };
 
 export const GATEWAY_SHIPMENT_STATUS_LABELS: Record<string, string> = {
+  QUEUED: "Đang tạo vận đơn (tự thử lại)",
   CREATED: "Đã tạo vận đơn",
   PICKING: "Đang lấy hàng",
   DELIVERING: "Đang vận chuyển",
@@ -252,6 +267,30 @@ export const GATEWAY_PAYMENT_METHOD_LABELS: Record<GatewayPaymentMethod, string>
   COD: "Thanh toán khi nhận hàng (COD)",
   VIETQR: "Chuyển khoản VietQR",
 };
+
+/**
+ * Single source of truth for Vietnamese shipping carrier display labels across buyer, seller & admin.
+ * - `ghn` -> "Giao Hàng Nhanh (GHN)"
+ * - `mock_express` -> "Chuyển phát Nexus"
+ * - other codes -> API-provided `carrierName` (if any), else code fallback.
+ */
+export function formatCarrierLabel(
+  carrierCode: string | undefined,
+  carrierName?: string | null
+): string {
+  const code = (carrierCode ?? "").trim().toLowerCase();
+  if (code === "ghn") return "Giao Hàng Nhanh (GHN)";
+  if (code === "mock_express") return "Chuyển phát Nexus";
+  const cleanName = (carrierName ?? "").trim();
+  if (cleanName) {
+    if (/mock[\s_-]*express/i.test(cleanName)) return "Chuyển phát Nexus";
+    if (/^giao\s+hang\s+nhanh(?:\s*\(ghn\))?$/i.test(cleanName)) {
+      return "Giao Hàng Nhanh (GHN)";
+    }
+    return cleanName;
+  }
+  return (carrierCode ?? "").trim() || "Đơn vị vận chuyển";
+}
 
 export function formatVoucherBenefit(
   voucher: Pick<

@@ -263,7 +263,10 @@ func (s *OrderService) HandleShipmentUpdated(ctx context.Context, eventID string
 		SkipMarkProcessed: isReturned && eventID != "",
 		OrderID:           payload.OrderID,
 		ShipmentStatus:    payload.Status,
+		CarrierCode:       payload.CarrierCode,
+		ServiceCode:       payload.ServiceCode,
 		TrackingCode:      payload.TrackingCode,
+		LabelURL:          payload.LabelURL,
 		Description:       payload.Description,
 		TraceID:           traceID,
 		Traceparent:       traceparent,
@@ -273,6 +276,15 @@ func (s *OrderService) HandleShipmentUpdated(ctx context.Context, eventID string
 		return err
 	}
 	if outcome.AlreadyProcessed {
+		return nil
+	}
+	if outcome.NeedsOrphanShipmentCancel {
+		s.compensateOrphanForwardShipment(ctx, payload.OrderID, fmt.Sprintf("orphan forward shipment event (%s) received for cancelled order", strings.TrimSpace(payload.Status)))
+		if isReturned && eventID != "" {
+			if mErr := s.store.MarkEventProcessed(ctx, eventID, events.SubjectShipmentUpdated); mErr != nil {
+				return fmt.Errorf("mark orphan-shipment event processed: %w", mErr)
+			}
+		}
 		return nil
 	}
 	if outcome.NotFound {
@@ -303,6 +315,39 @@ func (s *OrderService) HandleShipmentUpdated(ctx context.Context, eventID string
 		}
 	}
 
+	return nil
+}
+
+// HandleShipmentCreateFailed processes shipment.create_failed events idempotently (E18).
+// Records orders.shipment_job_status="FAILED" when no tracking_code is attached yet so the seller can retry.
+func (s *OrderService) HandleShipmentCreateFailed(ctx context.Context, eventID string, payload events.ShipmentCreateFailedPayload) error {
+	if strings.TrimSpace(payload.OrderID) == "" {
+		return fmt.Errorf("shipment.create_failed missing order_id")
+	}
+	outcome, err := s.store.ApplyShipmentCreateFailed(ctx, store.ShipmentCreateFailedParams{
+		EventID:      eventID,
+		EventType:    events.SubjectShipmentCreateFailed,
+		JobID:        payload.JobID,
+		OrderID:      payload.OrderID,
+		CarrierCode:  payload.CarrierCode,
+		ServiceCode:  payload.ServiceCode,
+		Attempts:     payload.Attempts,
+		ErrorMessage: payload.ErrorMessage,
+		Now:          s.nowFn(),
+	})
+	if err != nil {
+		return err
+	}
+	if outcome == nil || !outcome.AlreadyProcessed {
+		s.logger.WarnContext(ctx, "async shipment creation failed",
+			"order_id", payload.OrderID,
+			"job_id", payload.JobID,
+			"carrier_code", payload.CarrierCode,
+			"attempts", payload.Attempts,
+			"updated", outcome != nil && outcome.Updated,
+			"error_message", payload.ErrorMessage,
+		)
+	}
 	return nil
 }
 
@@ -663,7 +708,7 @@ func (s *OrderService) reconcileIncompleteCheckoutGroup(ctx context.Context, gro
 			allPending = false
 			hasConfirmedOrBeyond = true // CONFIRMED, PREPARING, or legacy SHIPPING
 		}
-		if strings.TrimSpace(ord.TrackingCode) != "" || ord.PendingShipmentCancel ||
+		if strings.TrimSpace(ord.TrackingCode) != "" || ord.PendingShipmentCancel || store.IsOrderShipmentQueued(ord) ||
 			((strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") || strings.EqualFold(ord.PaymentStatus, "REFUNDED")) && ord.TotalPayableVND > 0) {
 			hasTrackingOrPaid = true
 		}
@@ -1059,7 +1104,10 @@ func (s *OrderService) ScanStalePendingShipmentCancels(ctx context.Context) (int
 		if shipStatusStr := protoShipmentStatusToString(sh.GetStatus()); shipStatusStr != "" {
 			_ = s.HandleShipmentUpdated(ctx, "", events.ShipmentUpdatedPayload{
 				OrderID:      orderID,
+				CarrierCode:  strings.TrimSpace(sh.GetCarrierCode()),
+				ServiceCode:  strings.TrimSpace(sh.GetServiceCode()),
 				TrackingCode: strings.TrimSpace(sh.GetTrackingCode()),
+				LabelURL:     strings.TrimSpace(sh.GetLabelUrl()),
 				Status:       shipStatusStr,
 				Description:  "Synced live forward shipment status from shipping service",
 			})

@@ -36,6 +36,7 @@ func CanonicalPrimarySubjects() []string {
 		"shipment.>",
 		"product.>",
 		"promotion.>",
+		"review.>",
 	}
 }
 

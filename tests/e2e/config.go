@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,9 +20,15 @@ type Config struct {
 	ShippingHTTPURL     string
 	NotificationHTTPURL string
 
+	UserGRPCAddr      string
 	PromotionGRPCAddr string
 	ProductGRPCAddr   string
+	OrderGRPCAddr     string
 	PaymentGRPCAddr   string
+	ShippingGRPCAddr  string
+
+	NATSURL   string
+	RedisAddr string
 
 	MailpitURL string
 
@@ -30,7 +37,17 @@ type Config struct {
 	PaymentWebhookSecret  string
 	ShippingWebhookSecret string
 	// JWTSecret is the dev user-token key, used only to mint buyer tokens for the direct-gRPC flash-sale burst.
-	JWTSecret string
+	JWTSecret        string
+	ServiceJWTSecret string
+
+	ShippingTestFaultInjection      bool
+	ShippingCreateRetryMax          int
+	ShippingCreateRetryBaseMS       int
+	ShippingCreateRetryMaxBackoffMS int
+	ShippingCreateWorkerIntervalMS  int
+	CarrierMaxRetries               int
+	CarrierCBMaxFailures            int
+	CarrierCBOpenTimeout            time.Duration
 
 	HTTPTimeout time.Duration
 	PollTimeout time.Duration
@@ -55,9 +72,15 @@ func LoadConfig() Config {
 		ShippingHTTPURL:     envOr("SHIPPING_HTTP_URL", "http://localhost:8087"),
 		NotificationHTTPURL: envOr("NOTIFICATION_HTTP_URL", "http://localhost:8088"),
 
+		UserGRPCAddr:      envOr("USER_GRPC_ADDR", "localhost:50051"),
 		PromotionGRPCAddr: envOr("PROMOTION_GRPC_ADDR", "localhost:50054"),
 		ProductGRPCAddr:   envOr("PRODUCT_GRPC_ADDR", "localhost:50052"),
+		OrderGRPCAddr:     envOr("ORDER_GRPC_ADDR", "localhost:50055"),
 		PaymentGRPCAddr:   envOr("PAYMENT_GRPC_ADDR", "localhost:50056"),
+		ShippingGRPCAddr:  envOr("SHIPPING_GRPC_ADDR", "localhost:50057"),
+
+		NATSURL:   envOr("NATS_URL", "nats://localhost:4222"),
+		RedisAddr: envOr("REDIS_ADDR", "localhost:6379"),
 
 		MailpitURL: envOr("MAILPIT_URL", "http://localhost:8025"),
 
@@ -66,6 +89,16 @@ func LoadConfig() Config {
 		PaymentWebhookSecret:  envOr("PAYMENT_WEBHOOK_SECRET", "dev-only-payment-webhook-hmac-secret"),
 		ShippingWebhookSecret: envOr("SHIPPING_WEBHOOK_SECRET", "dev-only-shipping-webhook-hmac-secret"),
 		JWTSecret:             envOr("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me"),
+		ServiceJWTSecret:      envOr("SERVICE_JWT_SECRET", "dev-only-nexusmart-service-hs256-secret-change-me"),
+
+		ShippingTestFaultInjection:      envBool("SHIPPING_TEST_FAULT_INJECTION", false),
+		ShippingCreateRetryMax:          envInt("SHIPPING_CREATE_RETRY_MAX", 8),
+		ShippingCreateRetryBaseMS:       envInt("SHIPPING_CREATE_RETRY_BASE_MS", 2000),
+		ShippingCreateRetryMaxBackoffMS: envInt("SHIPPING_CREATE_RETRY_MAX_BACKOFF_MS", 300000),
+		ShippingCreateWorkerIntervalMS:  envInt("SHIPPING_CREATE_WORKER_INTERVAL_MS", 2000),
+		CarrierMaxRetries:               envInt("CARRIER_MAX_RETRIES", 3),
+		CarrierCBMaxFailures:            envInt("CARRIER_CB_MAX_FAILURES", 3),
+		CarrierCBOpenTimeout:            envDuration("CARRIER_CB_OPEN_TIMEOUT", 30*time.Second),
 
 		HTTPTimeout: 15 * time.Second,
 		PollTimeout: 25 * time.Second,
@@ -101,4 +134,40 @@ func envOrMulti(keys []string, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+func envBool(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return v
+}
+
+func envInt(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return v
+}
+
+func envDuration(key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return fallback
+	}
+	return d
 }

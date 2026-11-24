@@ -16,6 +16,7 @@ enum ShipmentStatus {
   SHIPMENT_STATUS_RETURNING = 6;
   SHIPMENT_STATUS_RETURNED = 7;
   SHIPMENT_STATUS_CANCELLED = 8;
+  SHIPMENT_STATUS_QUEUED = 9;
 }
 
 enum ShipmentDirection {
@@ -40,6 +41,8 @@ message Ward {
   string code = 1;
   string province_code = 2;
   string name = 3;
+  // True by default; false for islands/areas where COD is unsupported (e.g. Hoang Sa, Truong Sa) (E16).
+  bool cod_supported = 4;
 }
 
 message CarrierQuote {
@@ -50,6 +53,7 @@ message CarrierQuote {
   int64 fee_vnd = 5;
   int32 estimated_days = 6;
   bool is_fallback = 7;
+  bool cod_supported = 8;
 }
 
 message ShipmentAddress {
@@ -158,10 +162,14 @@ message CalculateFeeRequest {
   string to_ward_code = 5;
   int32 weight_grams = 6;
   int64 cod_amount_vnd = 7;
+  // Quantity of items whose SKU lacked explicit weight_grams (>0) so shipping adds shop default_weight_grams * qty internally (E17).
+  int32 fallback_weight_item_qty = 8;
 }
 
 message CalculateFeeResponse {
   repeated CarrierQuote quotes = 1;
+  // True when to_ward_code was omitted and shipping quoted using a representative ward of to_province_code (E17).
+  bool is_estimated = 2;
 }
 
 message CreateShipmentRequest {
@@ -182,6 +190,9 @@ message CreateShipmentRequest {
 message CreateShipmentResponse {
   Shipment shipment = 1;
   bool already_existed = 2;
+  // True when carrier failed transiently (5xx/timeout/circuit-open) and a retry job was persisted (E18).
+  bool queued = 3;
+  string job_id = 4;
 }
 
 message CancelShipmentRequest {

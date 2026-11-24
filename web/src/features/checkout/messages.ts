@@ -195,6 +195,18 @@ export function translateCheckoutError(err: unknown, ctx?: CheckoutErrorContext)
     return "Lần đặt trước có thể đã tạo đơn hàng rồi. Vui lòng kiểm tra mục Đơn hàng của tôi trước khi đặt lại.";
   }
 
+  if (err.code === "COD_PHONE_NOT_VERIFIED") {
+    return "Vui lòng xác minh số điện thoại trong mục Tài khoản trước khi đặt hàng thanh toán khi nhận hàng (COD).";
+  }
+
+  if (err.code === "COD_AREA_NOT_SUPPORTED") {
+    return "Khu vực giao hàng hiện chưa hỗ trợ thanh toán khi nhận hàng (COD). Vui lòng đổi địa chỉ hoặc chọn chuyển khoản VietQR.";
+  }
+
+  if (err.code === "CART_NO_AVAILABLE_ITEMS") {
+    return "Không còn sản phẩm khả dụng trong giỏ hàng để đặt đơn.";
+  }
+
   if (err.code === "COD_REJECTED_LIMIT_EXCEEDED") {
     return "Tài khoản tạm không áp dụng thanh toán khi nhận hàng (COD) do vượt giới hạn từ chối nhận hàng. Vui lòng chọn chuyển khoản VietQR.";
   }
@@ -331,14 +343,6 @@ export function getPaymentStatusView(rawStatus: string): PaymentStatusView {
         description: "Hệ thống đang cập nhật trạng thái thanh toán của đơn hàng.",
       };
   }
-}
-
-export function formatCarrierDisplay(carrierName: string, carrierCode: string): string {
-  const raw = (carrierName || carrierCode || "").trim();
-  if (!raw || raw.toLowerCase().includes("mock")) {
-    return "Chuyển phát Nexus";
-  }
-  return raw;
 }
 
 export function formatServiceDisplay(serviceName: string, serviceCode: string): string {

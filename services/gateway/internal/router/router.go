@@ -2,7 +2,9 @@ package router
 
 import (
 	"log/slog"
+	"mime"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	paymentv1 "github.com/nexusmart/core/gen/go/nexusmart/payment/v1"
@@ -16,25 +18,27 @@ import (
 
 // Dependencies wires all handlers, middlewares, and reverse proxies into the gateway router.
 type Dependencies struct {
-	ServiceName            string
-	Clients                *clients.Clients
-	AuthManager            *auth.Manager
-	RevocationChecker      middleware.TokenRevocationChecker
-	RateLimiter            middleware.RateLimiter
-	RateLimitIPPerMin      int
-	RateLimitUserPerMin    int
-	RateLimitFlashPerMin   int
-	RateLimitAuthPerMin    int
-	RateLimitBankOTPPerMin int
-	RateLimitWebhookPerMin int
-	TrustedProxies         *middleware.TrustedProxies
-	RED                    *metrics.RED
-	OpsHandler             http.Handler
-	PaymentWebhookProxy    http.Handler
-	ShippingWebhookProxy   http.Handler
-	ShippingLabelProxy     http.Handler
-	PaymentSSEProxy        http.Handler
-	Logger                 *slog.Logger
+	ServiceName                string
+	Clients                    *clients.Clients
+	AuthManager                *auth.Manager
+	RevocationChecker          middleware.TokenRevocationChecker
+	RateLimiter                middleware.RateLimiter
+	RateLimitIPPerMin          int
+	RateLimitUserPerMin        int
+	RateLimitFlashPerMin       int
+	RateLimitAuthPerMin        int
+	RateLimitBankOTPPerMin     int
+	RateLimitPhoneOTPPerMin    int
+	RateLimitShippingFeePerMin int
+	RateLimitWebhookPerMin     int
+	TrustedProxies             *middleware.TrustedProxies
+	RED                        *metrics.RED
+	OpsHandler                 http.Handler
+	PaymentWebhookProxy        http.Handler
+	ShippingWebhookProxy       http.Handler
+	ShippingLabelProxy         http.Handler
+	PaymentSSEProxy            http.Handler
+	Logger                     *slog.Logger
 }
 
 type handler struct {
@@ -111,7 +115,7 @@ func New(deps Dependencies) http.Handler {
 			main.Use(deps.RED.HTTPMiddleware())
 		}
 		main.Use(middleware.RequestLogger(deps.Logger, deps.TrustedProxies))
-		main.Use(middleware.MaxBodyBytes(httpx.MaxBodyBytes))
+		main.Use(middleware.MaxBodyBytesFunc(requestBodyLimit))
 
 		// Section 4.9 Webhooks (no JWT; HMAC verified by upstream; exact raw body & headers preserved).
 		main.Group(func(wh chi.Router) {
@@ -149,10 +153,19 @@ func New(deps Dependencies) http.Handler {
 			api.Get("/products", h.handleListProducts)
 			api.Get("/products/slug/{slug}", h.handleGetProductBySlug)
 			api.Get("/products/{id}", h.handleGetProduct)
+			api.Get("/products/{id}/reviews", h.handleListProductReviews)
 
 			api.Get("/shipping/provinces", h.handleListProvinces)
 			api.Get("/shipping/provinces/{code}/wards", h.handleListWards)
 			api.Post("/shipping/addresses/map-legacy", h.handleMapLegacyAddress)
+
+			// Public / optional-auth shipping fee calculator (E17 / E17-bis):
+			// anonymous callers rate-limited by IP; authenticated callers rate-limited by user ID.
+			api.Group(func(fee chi.Router) {
+				fee.Use(middleware.Auth(deps.AuthManager, deps.RevocationChecker, deps.Logger, false))
+				fee.Use(middleware.RateLimitShippingFee(deps.RateLimiter, deps.RateLimitShippingFeePerMin, deps.Logger, deps.TrustedProxies))
+				fee.Post("/shipping/calculate-fee", h.handleCalculateShippingFee)
+			})
 
 			// Optional-auth vouchers endpoint (forwards JWT claims when present for saved/eligible status).
 			api.Group(func(opt chi.Router) {
@@ -177,6 +190,11 @@ func New(deps Dependencies) http.Handler {
 				authed.Post("/auth/logout", h.handleLogout)
 				authed.Get("/users/me", h.handleGetMe)
 				authed.Patch("/users/me", h.handleUpdateMe)
+				authed.Group(func(phoneOTP chi.Router) {
+					phoneOTP.Use(middleware.RateLimitPhoneOTP(deps.RateLimiter, deps.RateLimitPhoneOTPPerMin, deps.Logger))
+					phoneOTP.Post("/users/me/phone/otp", h.handleRequestPhoneOTP)
+					phoneOTP.Post("/users/me/phone/verify", h.handleVerifyPhoneOTP)
+				})
 				authed.Get("/users/me/addresses", h.handleListAddresses)
 				authed.Post("/users/me/addresses", h.handleCreateAddress)
 				authed.Put("/users/me/addresses/{id}", h.handleUpdateAddress)
@@ -210,6 +228,8 @@ func New(deps Dependencies) http.Handler {
 				authed.Post("/orders/{id}/confirm-received", h.handleConfirmReceived)
 				authed.Post("/orders/{id}/return", h.handleRequestReturn)
 				authed.Get("/orders/{id}/return", h.handleGetOrderReturn)
+				authed.Post("/orders/{id}/reviews", h.handleCreateOrderReview)
+				authed.Get("/orders/{id}/reviews", h.handleListOrderReviews)
 				authed.Get("/returns", h.handleListBuyerReturns)
 				authed.Get("/returns/{id}", h.handleGetReturn)
 				authed.Post("/returns/{id}/escalate", h.handleEscalateReturn)
@@ -222,7 +242,6 @@ func New(deps Dependencies) http.Handler {
 				authed.Post("/refunds/{id}/bank-account", h.handleSubmitRefundBankAccount)
 
 				// Section 4.7 Shipping (Authenticated)
-				authed.Post("/shipping/calculate-fee", h.handleCalculateShippingFee)
 				authed.Get("/shipping/shipments/{order_id}", h.handleGetShipment)
 				authed.Get("/shipping/labels/{tracking_code}", func(w http.ResponseWriter, req *http.Request) {
 					if deps.ShippingLabelProxy == nil {
@@ -330,6 +349,12 @@ func New(deps Dependencies) http.Handler {
 					admin.Get("/products", h.handleAdminListProducts)
 					admin.Get("/products/{id}", h.handleAdminGetProduct)
 					admin.Post("/products/{id}/review", h.handleAdminReviewProduct)
+					admin.Get("/banned-keywords", h.handleAdminListBannedKeywords)
+					admin.Post("/banned-keywords", h.handleAdminCreateBannedKeyword)
+					admin.Put("/banned-keywords/{id}", h.handleAdminUpdateBannedKeyword)
+					admin.Delete("/banned-keywords/{id}", h.handleAdminDeleteBannedKeyword)
+					admin.Post("/banned-keywords/preview", h.handleAdminPreviewBannedKeyword)
+					admin.Post("/banned-keywords/rescan", h.handleAdminRescanBannedContent)
 
 					// Section 4.4 Admin Vouchers, Flash Sales & Coins
 					admin.Get("/vouchers", h.handleAdminListVouchers)
@@ -361,6 +386,8 @@ func New(deps Dependencies) http.Handler {
 					admin.Get("/refunds", h.handleAdminListRefunds)
 					admin.Post("/refunds/{id}/settle", h.handleAdminSettleRefund)
 					admin.Post("/payments/reconcile", h.handleAdminReconcilePayments)
+					admin.Post("/reconciliation/cod/import", h.handleAdminImportCodReconciliation)
+					admin.Get("/reconciliation/runs", h.handleAdminListReconciliationRuns)
 					admin.Get("/reconciliation/queue", h.handleAdminListReconciliationQueue)
 					admin.Post("/reconciliation/queue/{id}/resolve", h.handleAdminResolveReconciliationItem)
 
@@ -381,4 +408,20 @@ func New(deps Dependencies) http.Handler {
 	})
 
 	return r
+}
+
+const (
+	codImportRoutePath              = "/api/v1/admin/reconciliation/cod/import"
+	codImportMultipartOverheadBytes = 64 << 10 // 64 KiB multipart framing overhead for COD CSV upload only
+)
+
+func requestBodyLimit(r *http.Request) int64 {
+	if r.Method == http.MethodPost && r.URL.Path == codImportRoutePath {
+		if ct := strings.TrimSpace(r.Header.Get("Content-Type")); ct != "" {
+			if mt, _, err := mime.ParseMediaType(ct); err == nil && strings.EqualFold(strings.TrimSpace(mt), "multipart/form-data") {
+				return httpx.MaxBodyBytes + codImportMultipartOverheadBytes
+			}
+		}
+	}
+	return httpx.MaxBodyBytes
 }

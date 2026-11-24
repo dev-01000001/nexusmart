@@ -2,35 +2,38 @@
 
 import React, { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import type {
+  GatewayCarrierConfig,
+  GatewayImportCodReconciliationResponse,
   GatewayLedgerSummary,
   GatewayOrder,
   GatewayReconcileResponse,
   GatewayReconciliationAction,
   GatewayReconciliationQueueItem,
+  GatewayReconciliationRunSummary,
   GatewayRefund,
   GatewayRefundResponse,
   GatewayResolveReconciliationResponse,
   GatewaySettleRefundResponse,
   PaginatedResponse,
 } from "@/lib/gateway-types";
-import type { PaymentMethod } from "@/data";
-import {
-  ADMIN_RECONCILIATION,
-  computeReconciliationSummary,
-  type PaymentReconciliationRow,
-} from "@/data/admin";
 import { api, getErrorMessage } from "@/lib/api";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, StateView } from "@/components";
 import {
+  formatCarrierLabel,
   formatDateTimeVi,
-  formatDateVi,
   formatInt,
-  formatSignedVnd,
   formatVnDayKey,
   formatVnd,
 } from "@/lib/format";
-import { CHANNEL_META, RECON_STATUS_META } from "@/features/admin/adminMeta";
+import {
+  COD_RESULT_PAGE_SIZE,
+  formatReconciliationNote,
+  formatReconciliationReason,
+  paginateCodItems,
+  validateCodCsvFile,
+  validateCodCsvText,
+} from "@/features/admin/codReconciliationHelper";
 import {
   RECONCILE_ITEM_STATUS_META,
   getAdminOrderStatusMeta,
@@ -42,7 +45,35 @@ import { StatusPill } from "@/features/admin/StatusPill";
 import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
 
-type DoiSoatTab = "so_cai" | "hang_doi" | "hoan_tien" | "can_xu_ly" | "phien_mau";
+type DoiSoatTab = "so_cai" | "doi_soat_cod" | "hang_doi" | "hoan_tien" | "can_xu_ly";
+
+const FALLBACK_COD_CARRIERS: ReadonlyArray<{ carrier_code: string; name: string }> = [
+  { carrier_code: "ghn", name: formatCarrierLabel("ghn") },
+  { carrier_code: "mock_express", name: formatCarrierLabel("mock_express") },
+];
+
+function formatCarrierFromList(
+  carrierCode: string | undefined,
+  carriers: ReadonlyArray<{ carrier_code: string; name?: string }>
+): string {
+  const clean = (carrierCode ?? "").trim();
+  if (!clean) return "—";
+  const matched = carriers.find((c) => c.carrier_code.trim().toLowerCase() === clean.toLowerCase());
+  return formatCarrierLabel(clean, matched?.name);
+}
+
+function formatQueueSourceType(sourceType?: string): string {
+  switch ((sourceType ?? "").trim().toLowerCase()) {
+    case "cod_file":
+      return "Đối soát COD (file)";
+    case "webhook":
+      return "Webhook cổng thanh toán";
+    case "reconciliation":
+      return "Đối soát ngày";
+    default:
+      return sourceType || "Hệ thống";
+  }
+}
 
 function todayDateIso(): string {
   return formatVnDayKey(Date.now());
@@ -70,7 +101,6 @@ function isRefundPendingStatus(status: string): boolean {
 
 function ReconciliationContent() {
   const { showToast } = useMockStore();
-  const reconciliationRows = ADMIN_RECONCILIATION;
 
   const [activeTab, setActiveTab] = useState<DoiSoatTab>("so_cai");
   const [ledger, setLedger] = useState<GatewayLedgerSummary | null>(null);
@@ -83,6 +113,32 @@ function ReconciliationContent() {
   const [reconciling, setReconciling] = useState(false);
   const [reconcileError, setReconcileError] = useState<string | null>(null);
   const [reconcileResult, setReconcileResult] = useState<GatewayReconcileResponse | null>(null);
+
+  // COD CSV reconciliation import & runs history state (E20 / E20-bis)
+  const [codCarriers, setCodCarriers] = useState<GatewayCarrierConfig[]>([]);
+  const [codCarrierCode, setCodCarrierCode] = useState("ghn");
+  const [codRunDate, setCodRunDate] = useState(todayDateIso);
+  const [codFile, setCodFile] = useState<File | null>(null);
+  const [codFileInputKey, setCodFileInputKey] = useState(0);
+  const [codImporting, setCodImporting] = useState(false);
+  const [codImportError, setCodImportError] = useState<string | null>(null);
+  const [codImportResult, setCodImportResult] =
+    useState<GatewayImportCodReconciliationResponse | null>(null);
+  const [codResultPage, setCodResultPage] = useState(1);
+  const [codRuns, setCodRuns] = useState<GatewayReconciliationRunSummary[]>([]);
+  const [codRunsTotal, setCodRunsTotal] = useState(0);
+  const [codRunsLoading, setCodRunsLoading] = useState(false);
+  const [codRunsError, setCodRunsError] = useState<string | null>(null);
+  const [isCompactViewport, setIsCompactViewport] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(max-width: 720px)");
+    const sync = () => setIsCompactViewport(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
 
   // Mismatched reconciliation queue state
   const [queueItems, setQueueItems] = useState<GatewayReconciliationQueueItem[]>([]);
@@ -123,8 +179,6 @@ function ReconciliationContent() {
   const [refundBusy, setRefundBusy] = useState(false);
   const [refundError, setRefundError] = useState<string | null>(null);
   const [refundResult, setRefundResult] = useState<GatewayRefundResponse | null>(null);
-
-  const [mockChannelFilter, setMockChannelFilter] = useState<"all" | PaymentMethod>("all");
 
   // Orphan / manual-review orders (GET /api/v1/admin/orders/needs-review)
   const [needsReviewOrders, setNeedsReviewOrders] = useState<GatewayOrder[]>([]);
@@ -235,6 +289,38 @@ function ReconciliationContent() {
     }
   }, []);
 
+  const loadCodCarriers = useCallback(async () => {
+    try {
+      const res = await api<{ carriers: GatewayCarrierConfig[] }>("admin/carriers");
+      const list = Array.isArray(res?.carriers) ? res.carriers : [];
+      setCodCarriers(list);
+      if (list.length > 0) {
+        setCodCarrierCode((prev) =>
+          list.some((c) => c.carrier_code === prev) ? prev : list[0].carrier_code
+        );
+      }
+    } catch {
+      // Keep fallback options if carriers endpoint is temporarily unavailable
+    }
+  }, []);
+
+  const loadCodRuns = useCallback(async () => {
+    setCodRunsLoading(true);
+    setCodRunsError(null);
+    try {
+      const res = await api<PaginatedResponse<GatewayReconciliationRunSummary>>(
+        "admin/reconciliation/runs?run_type=cod_file&page=1&page_size=20"
+      );
+      const items = res.items ?? [];
+      setCodRuns(items);
+      setCodRunsTotal(res.total ?? items.length);
+    } catch (err) {
+      setCodRunsError(getErrorMessage(err, "Không thể tải lịch sử phiên đối soát COD lúc này."));
+    } finally {
+      setCodRunsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadData();
   }, [loadData]);
@@ -250,6 +336,88 @@ function ReconciliationContent() {
   useEffect(() => {
     void loadNeedsReviewOrders();
   }, [loadNeedsReviewOrders]);
+
+  useEffect(() => {
+    void loadCodRuns();
+  }, [loadCodRuns]);
+
+  useEffect(() => {
+    void loadCodCarriers();
+  }, [loadCodCarriers]);
+
+  const handleCodCsvImport = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (codImporting) return;
+    setCodImportError(null);
+
+    const carrierCode = codCarrierCode.trim();
+    const runDate = codRunDate.trim();
+    if (!carrierCode) {
+      setCodImportError("Vui lòng chọn đơn vị vận chuyển.");
+      return;
+    }
+    if (!runDate) {
+      setCodImportError("Vui lòng chọn ngày chốt đối soát COD.");
+      return;
+    }
+    const fileValidation = validateCodCsvFile(codFile);
+    if (fileValidation.error || !codFile) {
+      setCodImportError(fileValidation.error ?? "Vui lòng chọn tệp CSV đối soát COD.");
+      return;
+    }
+
+    try {
+      const csvText = await codFile.text();
+      const contentCheck = validateCodCsvText(csvText);
+      if (contentCheck.error) {
+        setCodImportError(contentCheck.error);
+        return;
+      }
+    } catch {
+      setCodImportError("Không thể đọc nội dung tệp CSV đã chọn.");
+      return;
+    }
+
+    setCodImporting(true);
+    try {
+      const qs = new URLSearchParams({
+        carrier_code: carrierCode,
+        run_date: runDate,
+        file_name: codFile.name,
+      });
+      const res = await api<GatewayImportCodReconciliationResponse>(
+        `admin/reconciliation/cod/import?${qs.toString()}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "text/csv; charset=utf-8",
+          },
+          body: codFile,
+        }
+      );
+      setCodImportResult(res);
+      setCodResultPage(1);
+      setCodFile(null);
+      setCodFileInputKey((k) => k + 1);
+      const run = res.run;
+      if (run && run.matched_count === 0 && (run.already_reconciled_count ?? 0) > 0) {
+        showToast(
+          `Tệp ${run.file_name || codFile.name} đã đối soát trước đó (${formatInt(run.already_reconciled_count)} dòng trùng) — không ghi lặp bút toán.`
+        );
+      } else {
+        showToast(
+          `Đã nhập đối soát COD: ${formatInt(run?.matched_count ?? 0)} khớp, ${formatInt(run?.amount_mismatch_count ?? 0)} lệch tiền, ${formatInt(run?.missing_local_count ?? 0)} thiếu hệ thống, ${formatInt(run?.not_delivered_count ?? 0)} chưa giao.`
+        );
+      }
+      await Promise.all([loadData(), loadQueue(), loadCodRuns()]);
+    } catch (err) {
+      const msg = getErrorMessage(err, "Không thể nhập tệp CSV đối soát COD lúc này.");
+      setCodImportError(msg);
+      showToast(msg);
+    } finally {
+      setCodImporting(false);
+    }
+  };
 
   const handleResolveManualOrder = async (order: GatewayOrder) => {
     const note = (reviewNoteDrafts[order.id] ?? "").trim();
@@ -278,7 +446,11 @@ function ReconciliationContent() {
 
   const handleRunReconcile = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!reconcileDate || reconciling) return;
+    if (reconciling) return;
+    if (!reconcileDate.trim()) {
+      setReconcileError("Vui lòng chọn ngày chốt sao kê.");
+      return;
+    }
     setReconcileError(null);
     setReconciling(true);
     try {
@@ -500,16 +672,6 @@ function ReconciliationContent() {
     }
   };
 
-  const mockSummary = useMemo(
-    () => computeReconciliationSummary(reconciliationRows),
-    [reconciliationRows]
-  );
-
-  const filteredMockRows = useMemo<PaymentReconciliationRow[]>(() => {
-    if (mockChannelFilter === "all") return reconciliationRows;
-    return reconciliationRows.filter((r) => r.channel === mockChannelFilter);
-  }, [reconciliationRows, mockChannelFilter]);
-
   const selectedQueueItem = useMemo(
     () => queueItems.find((item) => item.id === selectedQueueId) ?? null,
     [queueItems, selectedQueueId]
@@ -583,6 +745,8 @@ function ReconciliationContent() {
             onClick={() =>
               void Promise.all([
                 loadData(),
+                loadCodCarriers(),
+                loadCodRuns(),
                 loadQueue(),
                 loadRefundsQueue(),
                 loadNeedsReviewOrders(),
@@ -663,6 +827,16 @@ function ReconciliationContent() {
           <button
             type="button"
             role="tab"
+            aria-selected={activeTab === "doi_soat_cod"}
+            className={`${shared.tabBtn} ${activeTab === "doi_soat_cod" ? shared.tabBtnActive : ""}`}
+            onClick={() => setActiveTab("doi_soat_cod")}
+          >
+            <span>Đối soát COD (file hãng)</span>
+            {codRunsTotal > 0 && <span className={shared.tabCount}>{codRunsTotal}</span>}
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={activeTab === "hang_doi"}
             className={`${shared.tabBtn} ${activeTab === "hang_doi" ? shared.tabBtnActive : ""}`}
             onClick={() => setActiveTab("hang_doi")}
@@ -692,16 +866,6 @@ function ReconciliationContent() {
             <span>Đơn cần xử lý tay</span>
             {needsReviewTotal > 0 && <span className={shared.tabCount}>{needsReviewTotal}</span>}
           </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "phien_mau"}
-            className={`${shared.tabBtn} ${activeTab === "phien_mau" ? shared.tabBtnActive : ""}`}
-            onClick={() => setActiveTab("phien_mau")}
-          >
-            <span>Lịch sử lô (mẫu)</span>
-            <span className={shared.tabCount}>{reconciliationRows.length}</span>
-          </button>
         </div>
       </div>
 
@@ -719,7 +883,11 @@ function ReconciliationContent() {
               />
             </div>
 
-            <form onSubmit={(e) => void handleRunReconcile(e)} className={styles.inlineFormRow}>
+            <form
+              onSubmit={(e) => void handleRunReconcile(e)}
+              className={styles.inlineFormRow}
+              noValidate
+            >
               <div className={styles.dateField}>
                 <label htmlFor="recon-date" className={shared.fieldLabel}>
                   Chọn ngày chốt sao kê
@@ -807,7 +975,7 @@ function ReconciliationContent() {
                                 <td>
                                   <StatusPill label={meta.label} tone={meta.tone} />
                                 </td>
-                                <td>{item.note || "—"}</td>
+                                <td>{formatReconciliationNote(item.note) || "—"}</td>
                               </tr>
                             );
                           })}
@@ -837,7 +1005,7 @@ function ReconciliationContent() {
                             <div className={shared.mobileLine2}>
                               <span className={shared.mobileMetaText}>
                                 Đối tác: {formatVnd(item.provider_amount_vnd)}{" "}
-                                {item.note ? `· ${item.note}` : ""}
+                                {item.note ? `· ${formatReconciliationNote(item.note)}` : ""}
                               </span>
                               <StatusPill label={meta.label} tone={meta.tone} />
                             </div>
@@ -917,7 +1085,421 @@ function ReconciliationContent() {
         </div>
       )}
 
-      {/* TAB 2: Mismatched Reconciliation Queue */}
+      {/* TAB 2: COD CSV Reconciliation Import & Runs History (E20 / E20-bis) */}
+      {activeTab === "doi_soat_cod" && (
+        <div className={shared.sectionStack}>
+          <section className={shared.panel} aria-labelledby="cod-import-heading">
+            <div className={shared.panelHeader}>
+              <div>
+                <h2 id="cod-import-heading" className={shared.panelTitle}>
+                  Nhập tệp CSV đối soát thu hộ COD từ hãng vận chuyển
+                </h2>
+                <span className={shared.panelMeta}>
+                  Khớp mã vận đơn, hạch toán sổ cái ghi kép cho đơn đã giao và đẩy dòng sai lệch vào
+                  hàng đợi xử lý.
+                </span>
+              </div>
+              <StatusPill
+                label={ledger.is_balanced ? "Sổ cái cân bằng" : "Sổ cái có chênh lệch"}
+                tone={ledger.is_balanced ? "positive" : "negative"}
+              />
+            </div>
+
+            <form
+              onSubmit={(e) => void handleCodCsvImport(e)}
+              className={styles.codFormStack}
+              noValidate
+            >
+              <div className={shared.detailGrid}>
+                <div className={shared.detailField}>
+                  <label htmlFor="cod-carrier" className={shared.fieldLabel}>
+                    Đơn vị vận chuyển
+                  </label>
+                  <select
+                    id="cod-carrier"
+                    className={styles.fullSelect}
+                    value={codCarrierCode}
+                    onChange={(e) => setCodCarrierCode(e.target.value)}
+                    disabled={codImporting}
+                  >
+                    {(codCarriers.length > 0 ? codCarriers : FALLBACK_COD_CARRIERS).map((c) => (
+                      <option key={c.carrier_code} value={c.carrier_code}>
+                        {formatCarrierFromList(c.carrier_code, codCarriers)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className={shared.detailField}>
+                  <label htmlFor="cod-run-date" className={shared.fieldLabel}>
+                    Ngày chốt đối soát (UTC+7)
+                  </label>
+                  <input
+                    id="cod-run-date"
+                    type="date"
+                    className={shared.textInput}
+                    value={codRunDate}
+                    onChange={(e) => setCodRunDate(e.target.value)}
+                    disabled={codImporting}
+                    required
+                  />
+                </div>
+
+                <div className={shared.detailField}>
+                  <label htmlFor="cod-csv-file" className={shared.fieldLabel}>
+                    Tệp sao kê CSV (UTF-8, tối đa 2 MiB · 5.000 dòng)
+                  </label>
+                  <input
+                    key={codFileInputKey}
+                    id="cod-csv-file"
+                    type="file"
+                    accept=".csv,text/csv"
+                    className={styles.fileInput}
+                    disabled={codImporting}
+                    onChange={(e) => {
+                      const picked = e.target.files?.[0] ?? null;
+                      setCodFile(picked);
+                      setCodImportError(null);
+                    }}
+                  />
+                </div>
+              </div>
+
+              <p className={styles.codHint}>
+                Cột bắt buộc trong dòng tiêu đề:{" "}
+                <code>tracking_code,cod_amount_vnd,delivered_at</code>. Cột tùy chọn{" "}
+                <code>order_code</code> là mã đơn NexusMart đã gửi cho hãng vận chuyển (ID đơn), chỉ
+                cần khi đơn chưa có mã vận đơn trong hệ thống. Tải lại cùng tệp sẽ giữ nguyên sổ cái
+                và báo trạng thái Đã đối soát trước đó.
+              </p>
+
+              {codImportError && (
+                <p className={styles.alertError} role="alert">
+                  {codImportError}
+                </p>
+              )}
+
+              <div className={shared.detailButtons}>
+                <Button
+                  type="submit"
+                  variant="primary"
+                  size="sm"
+                  shape="app"
+                  disabled={codImporting}
+                >
+                  {codImporting ? "Đang đối soát tệp CSV..." : "Nhập & đối soát COD"}
+                </Button>
+              </div>
+            </form>
+
+            {codImportResult && (
+              <div className={shared.detailWell} style={{ marginTop: 16 }}>
+                <div className={shared.detailHeader}>
+                  <h3 className={shared.detailHeading}>
+                    Kết quả nhập COD:{" "}
+                    {codImportResult.run.file_name || codImportResult.run.run_id.slice(0, 8)}
+                  </h3>
+                  <span className={shared.panelMeta}>
+                    {formatCarrierFromList(codImportResult.run.provider, codCarriers)} · Ngày{" "}
+                    {codImportResult.run.run_date}
+                  </span>
+                </div>
+
+                <div className={shared.detailGrid}>
+                  <div className={shared.detailField}>
+                    <span className={shared.detailKey}>Tổng số dòng CSV</span>
+                    <span className={`${shared.detailVal} num`}>
+                      {formatInt(codImportResult.run.total_rows)}
+                    </span>
+                  </div>
+                  <div className={shared.detailField}>
+                    <span className={shared.detailKey}>Khớp mới / Tổng tiền khớp</span>
+                    <span className={`${shared.detailVal} num`}>
+                      {formatInt(codImportResult.run.matched_count)} dòng ·{" "}
+                      {formatVnd(codImportResult.run.total_matched_vnd)}
+                    </span>
+                  </div>
+                  <div className={shared.detailField}>
+                    <span className={shared.detailKey}>Đã đối soát trước đó</span>
+                    <span className={`${shared.detailVal} num`}>
+                      {formatInt(codImportResult.run.already_reconciled_count)}
+                    </span>
+                  </div>
+                  <div className={shared.detailField}>
+                    <span className={shared.detailKey}>Lệch số tiền</span>
+                    <span className={`${shared.detailVal} num`}>
+                      {formatInt(codImportResult.run.amount_mismatch_count)}
+                    </span>
+                  </div>
+                  <div className={shared.detailField}>
+                    <span className={shared.detailKey}>Thiếu trên hệ thống</span>
+                    <span className={`${shared.detailVal} num`}>
+                      {formatInt(codImportResult.run.missing_local_count)}
+                    </span>
+                  </div>
+                  <div className={shared.detailField}>
+                    <span className={shared.detailKey}>Đơn chưa giao thành công</span>
+                    <span className={`${shared.detailVal} num`}>
+                      {formatInt(codImportResult.run.not_delivered_count)}
+                    </span>
+                  </div>
+                </div>
+
+                {(codImportResult.items ?? []).length > 0 &&
+                  (() => {
+                    const paged = paginateCodItems(
+                      codImportResult.items,
+                      codResultPage,
+                      COD_RESULT_PAGE_SIZE
+                    );
+                    return (
+                      <>
+                        {!isCompactViewport ? (
+                          <div className={shared.tableWrap} style={{ marginTop: 12 }}>
+                            <table className={shared.dataTable}>
+                              <thead>
+                                <tr>
+                                  <th>Dòng</th>
+                                  <th>Mã vận đơn & đơn hàng</th>
+                                  <th className={shared.colNum}>Trên sàn</th>
+                                  <th className={shared.colNum}>Từ file hãng</th>
+                                  <th>Kết quả</th>
+                                  <th>Ghi chú</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {paged.slice.map((item, idx) => {
+                                  const rowIndex = paged.startIndex + idx;
+                                  const meta = RECONCILE_ITEM_STATUS_META[item.status] ?? {
+                                    label: item.status,
+                                    tone: "neutral" as const,
+                                  };
+                                  return (
+                                    <tr
+                                      key={`cod-item-${item.tracking_code || rowIndex}-${rowIndex}`}
+                                    >
+                                      <td className="num">{item.line_number ?? rowIndex + 1}</td>
+                                      <td>
+                                        <div className={shared.cellPrimary}>
+                                          {item.tracking_code || item.provider_tx_id || "—"}
+                                        </div>
+                                        <div className={shared.cellSub}>
+                                          {item.order_id
+                                            ? `Đơn ${item.order_id.slice(0, 8)}`
+                                            : item.payment_id
+                                              ? `TT ${item.payment_id.slice(0, 8)}`
+                                              : "Không tìm thấy đơn"}
+                                        </div>
+                                      </td>
+                                      <td className={shared.colNum}>
+                                        {formatVnd(item.local_amount_vnd)}
+                                      </td>
+                                      <td className={shared.colNum}>
+                                        {formatVnd(item.provider_amount_vnd)}
+                                      </td>
+                                      <td>
+                                        <StatusPill label={meta.label} tone={meta.tone} />
+                                      </td>
+                                      <td>{formatReconciliationNote(item.note) || "—"}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        ) : (
+                          <div className={shared.mobileList} style={{ marginTop: 12 }}>
+                            {paged.slice.map((item, idx) => {
+                              const rowIndex = paged.startIndex + idx;
+                              const meta = RECONCILE_ITEM_STATUS_META[item.status] ?? {
+                                label: item.status,
+                                tone: "neutral" as const,
+                              };
+                              return (
+                                <div
+                                  key={`m-cod-item-${item.tracking_code || rowIndex}-${rowIndex}`}
+                                  className={shared.mobileItem}
+                                >
+                                  <div className={shared.mobileLine1}>
+                                    <span className={shared.mobileIdentity}>
+                                      #{item.line_number ?? rowIndex + 1} ·{" "}
+                                      {item.tracking_code || item.provider_tx_id || "—"}
+                                    </span>
+                                    <span className={shared.mobileMetric}>
+                                      {formatVnd(item.provider_amount_vnd)}
+                                    </span>
+                                  </div>
+                                  <div className={shared.mobileLine2}>
+                                    <span className={shared.mobileMetaText}>
+                                      Sàn: {formatVnd(item.local_amount_vnd)}
+                                      {item.note ? ` · ${formatReconciliationNote(item.note)}` : ""}
+                                    </span>
+                                    <StatusPill label={meta.label} tone={meta.tone} />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        {paged.totalPages > 1 && (
+                          <div className={shared.detailActionBar}>
+                            <span className={shared.savedStamp}>
+                              Trang {formatInt(paged.page)} / {formatInt(paged.totalPages)} · Hiển
+                              thị {formatInt(paged.startIndex + 1)}–{formatInt(paged.endIndex)} /{" "}
+                              {formatInt(codImportResult.items.length)} dòng
+                            </span>
+                            <div className={shared.detailButtons}>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                shape="app"
+                                disabled={paged.page <= 1}
+                                onClick={() => setCodResultPage((p) => Math.max(1, p - 1))}
+                              >
+                                Trang trước
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                shape="app"
+                                disabled={paged.page >= paged.totalPages}
+                                onClick={() =>
+                                  setCodResultPage((p) => Math.min(paged.totalPages, p + 1))
+                                }
+                              >
+                                Trang sau
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+              </div>
+            )}
+          </section>
+
+          <section className={shared.panel} aria-labelledby="cod-runs-history-heading">
+            <div className={shared.panelHeader}>
+              <div>
+                <h2 id="cod-runs-history-heading" className={shared.panelTitle}>
+                  Lịch sử phiên đối soát COD ({formatInt(codRunsTotal)})
+                </h2>
+                <span className={shared.panelMeta}>
+                  Danh sách các tệp sao kê COD đã nhập và lưu vết thực tế trên dịch vụ thanh toán.
+                </span>
+              </div>
+              <Button variant="outline" size="sm" shape="app" onClick={() => void loadCodRuns()}>
+                Làm mới
+              </Button>
+            </div>
+
+            {codRunsLoading ? (
+              <StateView
+                kind="loading"
+                surface="app"
+                title="Đang tải lịch sử phiên đối soát COD..."
+                rows={4}
+              />
+            ) : codRunsError ? (
+              <StateView
+                kind="error"
+                surface="app"
+                title="Không thể tải lịch sử đối soát COD"
+                message={codRunsError}
+                actionLabel="Thử lại"
+                onAction={() => void loadCodRuns()}
+              />
+            ) : codRuns.length === 0 ? (
+              <p className={shared.emptyRow}>
+                Chưa có phiên đối soát COD nào được nhập. Tải tệp CSV ở biểu mẫu phía trên để bắt
+                đầu.
+              </p>
+            ) : (
+              <>
+                <div className={shared.tableWrap}>
+                  <table className={shared.dataTable}>
+                    <thead>
+                      <tr>
+                        <th>Tệp & ngày chốt</th>
+                        <th>Hãng vận chuyển</th>
+                        <th className={shared.colNum}>Tổng dòng</th>
+                        <th className={shared.colNum}>Khớp / Trùng</th>
+                        <th className={shared.colNum}>Lệch / Thiếu / Chưa giao</th>
+                        <th className={shared.colNum}>Tổng tiền khớp</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {codRuns.map((run) => (
+                        <tr key={run.run_id}>
+                          <td>
+                            <div className={shared.cellPrimary}>
+                              {run.file_name || run.run_id.slice(0, 8)}
+                            </div>
+                            <div className={shared.cellSub}>
+                              Ngày {run.run_date}
+                              {run.created_at
+                                ? ` · Nhập lúc ${formatDateTimeVi(run.created_at)}`
+                                : ""}
+                            </div>
+                          </td>
+                          <td>{formatCarrierFromList(run.provider, codCarriers)}</td>
+                          <td className={shared.colNum}>{formatInt(run.total_rows)}</td>
+                          <td className={shared.colNum}>
+                            {formatInt(run.matched_count)} /{" "}
+                            {formatInt(run.already_reconciled_count)}
+                          </td>
+                          <td className={shared.colNum}>
+                            {formatInt(run.amount_mismatch_count)} /{" "}
+                            {formatInt(run.missing_local_count)} /{" "}
+                            {formatInt(run.not_delivered_count)}
+                          </td>
+                          <td className={shared.colNum}>
+                            <strong>{formatVnd(run.total_matched_vnd)}</strong>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className={shared.mobileList}>
+                  {codRuns.map((run) => (
+                    <div key={`m-cod-run-${run.run_id}`} className={shared.mobileItem}>
+                      <div className={shared.mobileLine1}>
+                        <span className={shared.mobileIdentity}>
+                          {run.file_name || run.run_id.slice(0, 8)}
+                        </span>
+                        <span className={shared.mobileMetric}>
+                          {formatVnd(run.total_matched_vnd)}
+                        </span>
+                      </div>
+                      <div className={shared.mobileLine2}>
+                        <span className={shared.mobileMetaText}>
+                          {formatCarrierFromList(run.provider, codCarriers)} · {run.run_date} ·{" "}
+                          {formatInt(run.matched_count)} khớp ·{" "}
+                          {formatInt(run.already_reconciled_count)} trùng ·{" "}
+                          {formatInt(
+                            run.amount_mismatch_count +
+                              run.missing_local_count +
+                              run.not_delivered_count
+                          )}{" "}
+                          cần xử lý
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </section>
+        </div>
+      )}
+
+      {/* TAB 3: Mismatched Reconciliation Queue */}
       {activeTab === "hang_doi" && (
         <div className={shared.sectionStack}>
           <section className={shared.panel} aria-labelledby="recon-queue-heading">
@@ -998,11 +1580,15 @@ function ReconciliationContent() {
                           >
                             <td>
                               <div className={shared.cellPrimary}>
-                                {item.provider_tx_id || item.id.slice(0, 8)}
+                                {item.tracking_code || item.provider_tx_id || item.id.slice(0, 8)}
                               </div>
                               <div className={shared.cellSub}>
-                                {item.provider} ·{" "}
+                                {formatQueueSourceType(item.source_type)} ·{" "}
+                                {formatCarrierFromList(item.provider, codCarriers)} ·{" "}
                                 {item.order_ref || item.expected_payment_id || "—"}
+                                {item.tracking_code && item.provider_tx_id
+                                  ? ` · GD ${item.provider_tx_id}`
+                                  : ""}
                               </div>
                             </td>
                             <td className={shared.colNum}>{formatVnd(item.expected_amount_vnd)}</td>
@@ -1014,8 +1600,12 @@ function ReconciliationContent() {
                               {formatVnd(item.actual_amount_vnd)}
                             </td>
                             <td>
-                              <div>{item.reason || "—"}</div>
-                              {item.notes && <div className={shared.cellSub}>{item.notes}</div>}
+                              <div>{formatReconciliationReason(item.reason)}</div>
+                              {item.notes && (
+                                <div className={shared.cellSub}>
+                                  {formatReconciliationNote(item.notes)}
+                                </div>
+                              )}
                             </td>
                             <td>
                               <StatusPill label={stMeta.label} tone={stMeta.tone} />
@@ -1039,180 +1629,208 @@ function ReconciliationContent() {
                   </table>
                 </div>
 
-                <div className={shared.mobileList}>
-                  {queueItems.map((item) => {
-                    const stMeta = getReconciliationQueueStatusMeta(item.resolution_status);
-                    const isSelected = selectedQueueId === item.id;
-                    return (
-                      <div key={item.id} className={shared.mobileItem}>
-                        <button
-                          type="button"
-                          className={shared.mobileItemBtn}
-                          onClick={() => handleSelectQueueItem(item)}
-                          aria-expanded={isSelected}
-                        >
-                          <div className={shared.mobileLine1}>
-                            <span className={shared.mobileIdentity}>
-                              {item.provider_tx_id || item.order_ref || item.id.slice(0, 8)}
-                            </span>
-                            <span className={shared.mobileMetric}>
-                              {formatVnd(item.actual_amount_vnd)}
-                            </span>
-                          </div>
-                          <div className={shared.mobileLine2}>
-                            <span className={shared.mobileMetaText}>
-                              Kỳ vọng {formatVnd(item.expected_amount_vnd)} · {item.reason}
-                            </span>
-                            <StatusPill label={stMeta.label} tone={stMeta.tone} />
-                          </div>
-                        </button>
+                {(() => {
+                  const renderQueueDetail = (
+                    item: GatewayReconciliationQueueItem,
+                    prefix: string
+                  ) => (
+                    <div className={shared.detailWell}>
+                      <div className={shared.detailHeader}>
+                        <h3 className={shared.detailHeading}>
+                          Xử lý giao dịch: {item.tracking_code || item.provider_tx_id || item.id}
+                        </h3>
+                        <StatusPill
+                          label={getReconciliationQueueStatusMeta(item.resolution_status).label}
+                          tone={getReconciliationQueueStatusMeta(item.resolution_status).tone}
+                        />
                       </div>
-                    );
-                  })}
-                </div>
 
-                {selectedQueueItem && (
-                  <div className={shared.detailWell} style={{ marginTop: 16 }}>
-                    <div className={shared.detailHeader}>
-                      <h3 className={shared.detailHeading}>
-                        Xử lý giao dịch: {selectedQueueItem.provider_tx_id || selectedQueueItem.id}
-                      </h3>
-                      <StatusPill
-                        label={
-                          getReconciliationQueueStatusMeta(selectedQueueItem.resolution_status)
-                            .label
-                        }
-                        tone={
-                          getReconciliationQueueStatusMeta(selectedQueueItem.resolution_status).tone
-                        }
-                      />
-                    </div>
-
-                    <div className={shared.detailGrid}>
-                      <div className={shared.detailField}>
-                        <span className={shared.detailKey}>Cổng / Mã đối tác</span>
-                        <span className={shared.detailVal}>
-                          {selectedQueueItem.provider} · {selectedQueueItem.provider_tx_id || "—"}
-                        </span>
-                      </div>
-                      <div className={shared.detailField}>
-                        <span className={shared.detailKey}>Kỳ vọng / Thực nhận</span>
-                        <span className={`${shared.detailVal} num`}>
-                          {formatVnd(selectedQueueItem.expected_amount_vnd)} /{" "}
-                          {formatVnd(selectedQueueItem.actual_amount_vnd)}
-                        </span>
-                      </div>
-                      <div className={shared.detailField}>
-                        <span className={shared.detailKey}>Thời điểm ghi nhận</span>
-                        <span className={`${shared.detailValPlain} num`}>
-                          {selectedQueueItem.created_at
-                            ? formatDateTimeVi(selectedQueueItem.created_at)
-                            : "—"}
-                        </span>
-                      </div>
-                    </div>
-
-                    {isQueueItemActionable(selectedQueueItem.resolution_status) ? (
-                      <form
-                        onSubmit={(e) => void handleResolveQueueSubmit(e, selectedQueueItem)}
-                        className={styles.resolveStack}
-                      >
-                        <div className={shared.detailGrid}>
-                          <div className={shared.detailField}>
-                            <label htmlFor="rq-action" className={shared.fieldLabel}>
-                              Hướng xử lý
-                            </label>
-                            <select
-                              id="rq-action"
-                              className={styles.fullSelect}
-                              value={resolveAction}
-                              onChange={(e) =>
-                                setResolveAction(e.target.value as GatewayReconciliationAction)
-                              }
-                              disabled={resolvingQueue}
-                            >
-                              <option value="ASSIGN">
-                                Gán khớp vào thanh toán (ASSIGN — báo lỗi nếu thiếu tiền)
-                              </option>
-                              <option value="REFUND">Tạo khoản hoàn tiền cho khách (REFUND)</option>
-                              <option value="SUSPEND">Tạm treo chờ kiểm tra thêm (SUSPEND)</option>
-                            </select>
-                          </div>
-                          <div className={shared.detailField}>
-                            <label htmlFor="rq-payment-id" className={shared.fieldLabel}>
-                              Mã thanh toán (payment_id)
-                            </label>
-                            <input
-                              id="rq-payment-id"
-                              type="text"
-                              className={shared.textInput}
-                              value={resolvePaymentId}
-                              onChange={(e) => setResolvePaymentId(e.target.value)}
-                              placeholder="Nhập payment_id liên quan..."
-                              disabled={resolvingQueue}
-                              required={resolveAction === "ASSIGN" || resolveAction === "REFUND"}
-                            />
-                          </div>
-                          <div className={shared.detailField}>
-                            <label htmlFor="rq-note" className={shared.fieldLabel}>
-                              Ghi chú kế toán
-                            </label>
-                            <input
-                              id="rq-note"
-                              type="text"
-                              className={shared.textInput}
-                              value={resolveNote}
-                              onChange={(e) => setResolveNote(e.target.value)}
-                              placeholder="Ví dụ: Khách chuyển dư 20.000₫, gán khớp và hoàn phần dư..."
-                              disabled={resolvingQueue}
-                            />
-                          </div>
-                        </div>
-
-                        {resolveQueueError && (
-                          <p className={shared.validationError} role="alert">
-                            {resolveQueueError}
-                          </p>
-                        )}
-
-                        <div className={shared.detailActionBar}>
-                          <span className={shared.savedStamp}>
-                            Khóa chống trùng lặp: {resolveIdempotencyKey}
+                      <div className={shared.detailGrid}>
+                        <div className={shared.detailField}>
+                          <span className={shared.detailKey}>Nguồn phát sinh / Cổng</span>
+                          <span className={shared.detailVal}>
+                            {formatQueueSourceType(item.source_type)} ·{" "}
+                            {formatCarrierFromList(item.provider, codCarriers)}
                           </span>
-                          <div className={shared.detailButtons}>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              shape="app"
-                              disabled={resolvingQueue}
-                              onClick={() => setSelectedQueueId(null)}
-                            >
-                              Đóng
-                            </Button>
-                            <Button
-                              type="submit"
-                              variant="primary"
-                              size="sm"
-                              shape="app"
-                              disabled={resolvingQueue}
-                            >
-                              {resolvingQueue ? "Đang xử lý..." : "Xác nhận xử lý"}
-                            </Button>
-                          </div>
                         </div>
-                      </form>
-                    ) : (
-                      <p className={shared.savedStamp}>
-                        Giao dịch này đã hoàn tất xử lý
-                        {selectedQueueItem.resolved_at
-                          ? ` lúc ${formatDateTimeVi(selectedQueueItem.resolved_at)}`
-                          : ""}
-                        {selectedQueueItem.notes ? ` · Ghi chú: ${selectedQueueItem.notes}` : "."}
-                      </p>
-                    )}
-                  </div>
-                )}
+                        <div className={shared.detailField}>
+                          <span className={shared.detailKey}>Mã vận đơn / Mã đối tác</span>
+                          <span className={shared.detailVal}>
+                            {item.tracking_code || item.provider_tx_id || "—"}
+                          </span>
+                        </div>
+                        <div className={shared.detailField}>
+                          <span className={shared.detailKey}>Kỳ vọng / Thực nhận</span>
+                          <span className={`${shared.detailVal} num`}>
+                            {formatVnd(item.expected_amount_vnd)} /{" "}
+                            {formatVnd(item.actual_amount_vnd)}
+                          </span>
+                        </div>
+                        <div className={shared.detailField}>
+                          <span className={shared.detailKey}>Thời điểm ghi nhận</span>
+                          <span className={`${shared.detailValPlain} num`}>
+                            {item.created_at ? formatDateTimeVi(item.created_at) : "—"}
+                          </span>
+                        </div>
+                      </div>
+
+                      {isQueueItemActionable(item.resolution_status) ? (
+                        <form
+                          onSubmit={(e) => void handleResolveQueueSubmit(e, item)}
+                          className={styles.resolveStack}
+                          noValidate
+                        >
+                          <div className={shared.detailGrid}>
+                            <div className={shared.detailField}>
+                              <label htmlFor={`${prefix}-action`} className={shared.fieldLabel}>
+                                Hướng xử lý
+                              </label>
+                              <select
+                                id={`${prefix}-action`}
+                                className={styles.fullSelect}
+                                value={resolveAction}
+                                onChange={(e) =>
+                                  setResolveAction(e.target.value as GatewayReconciliationAction)
+                                }
+                                disabled={resolvingQueue}
+                              >
+                                <option value="ASSIGN">
+                                  Gán khớp vào thanh toán (ASSIGN — báo lỗi nếu thiếu tiền)
+                                </option>
+                                <option value="REFUND">
+                                  Tạo khoản hoàn tiền cho khách (REFUND)
+                                </option>
+                                <option value="SUSPEND">
+                                  Tạm treo chờ kiểm tra thêm (SUSPEND)
+                                </option>
+                              </select>
+                            </div>
+                            <div className={shared.detailField}>
+                              <label htmlFor={`${prefix}-payment-id`} className={shared.fieldLabel}>
+                                Mã thanh toán (payment_id)
+                              </label>
+                              <input
+                                id={`${prefix}-payment-id`}
+                                type="text"
+                                className={shared.textInput}
+                                value={resolvePaymentId}
+                                onChange={(e) => setResolvePaymentId(e.target.value)}
+                                placeholder="Nhập payment_id liên quan..."
+                                disabled={resolvingQueue}
+                                required={resolveAction === "ASSIGN" || resolveAction === "REFUND"}
+                              />
+                            </div>
+                            <div className={shared.detailField}>
+                              <label htmlFor={`${prefix}-note`} className={shared.fieldLabel}>
+                                Ghi chú kế toán
+                              </label>
+                              <input
+                                id={`${prefix}-note`}
+                                type="text"
+                                className={shared.textInput}
+                                value={resolveNote}
+                                onChange={(e) => setResolveNote(e.target.value)}
+                                placeholder="Ví dụ: Khách chuyển dư 20.000₫, gán khớp và hoàn phần dư..."
+                                disabled={resolvingQueue}
+                              />
+                            </div>
+                          </div>
+
+                          {resolveQueueError && (
+                            <p className={shared.validationError} role="alert">
+                              {resolveQueueError}
+                            </p>
+                          )}
+
+                          <div className={shared.detailActionBar}>
+                            <span className={shared.savedStamp}>
+                              Khóa chống trùng lặp: {resolveIdempotencyKey}
+                            </span>
+                            <div className={shared.detailButtons}>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                shape="app"
+                                disabled={resolvingQueue}
+                                onClick={() => setSelectedQueueId(null)}
+                              >
+                                Đóng
+                              </Button>
+                              <Button
+                                type="submit"
+                                variant="primary"
+                                size="sm"
+                                shape="app"
+                                disabled={resolvingQueue}
+                              >
+                                {resolvingQueue ? "Đang xử lý..." : "Xác nhận xử lý"}
+                              </Button>
+                            </div>
+                          </div>
+                        </form>
+                      ) : (
+                        <p className={shared.savedStamp}>
+                          Giao dịch này đã hoàn tất xử lý
+                          {item.resolved_at ? ` lúc ${formatDateTimeVi(item.resolved_at)}` : ""}
+                          {item.notes ? ` · Ghi chú: ${formatReconciliationNote(item.notes)}` : "."}
+                        </p>
+                      )}
+                    </div>
+                  );
+
+                  return (
+                    <>
+                      <div className={shared.mobileList}>
+                        {queueItems.map((item) => {
+                          const stMeta = getReconciliationQueueStatusMeta(item.resolution_status);
+                          const isSelected = selectedQueueId === item.id;
+                          return (
+                            <div key={item.id} className={shared.mobileItem}>
+                              <button
+                                type="button"
+                                className={shared.mobileItemBtn}
+                                onClick={() => handleSelectQueueItem(item)}
+                                aria-expanded={isSelected}
+                              >
+                                <div className={shared.mobileLine1}>
+                                  <span className={shared.mobileIdentity}>
+                                    {item.tracking_code ||
+                                      item.provider_tx_id ||
+                                      item.order_ref ||
+                                      item.id.slice(0, 8)}
+                                  </span>
+                                  <span className={shared.mobileMetric}>
+                                    {formatVnd(item.actual_amount_vnd)}
+                                  </span>
+                                </div>
+                                <div className={shared.mobileLine2}>
+                                  <span className={shared.mobileMetaText}>
+                                    {formatQueueSourceType(item.source_type)} · Kỳ vọng{" "}
+                                    {formatVnd(item.expected_amount_vnd)} ·{" "}
+                                    {formatReconciliationReason(item.reason)}
+                                  </span>
+                                  <StatusPill label={stMeta.label} tone={stMeta.tone} />
+                                </div>
+                              </button>
+                              {isSelected && (
+                                <div className={shared.mobileDetailWrap}>
+                                  {renderQueueDetail(item, `m-rq-${item.id}`)}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {selectedQueueItem && (
+                        <div className={shared.desktopDetailSection}>
+                          {renderQueueDetail(selectedQueueItem, "rq")}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
               </>
             )}
           </section>
@@ -1424,6 +2042,7 @@ function ReconciliationContent() {
                       <form
                         onSubmit={(e) => void handleSubmitSettle(e, settlingRefund)}
                         className={styles.resolveStack}
+                        noValidate
                       >
                         <div className={shared.detailGrid}>
                           <div className={shared.detailField}>
@@ -1532,7 +2151,11 @@ function ReconciliationContent() {
                 bên dưới hoặc nhấn &ldquo;Mở phiếu hoàn tiền mới&rdquo;.
               </p>
             ) : (
-              <form className={shared.detailWell} onSubmit={(e) => void handleSubmitRefund(e)}>
+              <form
+                className={shared.detailWell}
+                onSubmit={(e) => void handleSubmitRefund(e)}
+                noValidate
+              >
                 <div className={shared.detailHeader}>
                   <h3 className={shared.detailHeading}>Thông tin lệnh hoàn tiền</h3>
                   <span className={shared.panelMeta}>
@@ -1540,7 +2163,11 @@ function ReconciliationContent() {
                   </span>
                 </div>
 
-                {refundError && <p className={shared.validationError}>{refundError}</p>}
+                {refundError && (
+                  <p className={shared.validationError} role="alert">
+                    {refundError}
+                  </p>
+                )}
 
                 <div className={shared.detailGrid}>
                   <div className={shared.detailField}>
@@ -1902,98 +2529,6 @@ function ReconciliationContent() {
                 </div>
               </>
             )}
-          </section>
-        </div>
-      )}
-
-      {/* TAB 5: Historical Mock Batches (kept separated) */}
-      {activeTab === "phien_mau" && (
-        <div className={shared.sectionStack}>
-          <section className={shared.panel} aria-label="Lịch sử phiên đối soát tham khảo">
-            <div style={{ marginBottom: 12 }}>
-              <StatusPill label="Bản xem trước, dữ liệu mẫu" tone="warning" />
-            </div>
-            <div className={shared.panelHeader}>
-              <div>
-                <h2 className={shared.panelTitle}>Lịch sử phiên đối soát mẫu (tham khảo)</h2>
-                <span className={shared.panelMeta}>
-                  Dữ liệu minh họa phân bổ theo cổng · Tổng kỳ vọng{" "}
-                  {formatVnd(mockSummary.totalGross)}
-                </span>
-              </div>
-              <select
-                className={shared.toolbarSelect}
-                value={mockChannelFilter}
-                onChange={(e) => setMockChannelFilter(e.target.value as "all" | PaymentMethod)}
-                aria-label="Lọc cổng thanh toán mẫu"
-              >
-                <option value="all">Tất cả cổng</option>
-                <option value="cod">COD thu hộ</option>
-                <option value="vietqr">VietQR</option>
-                <option value="vi_sandbox">Ví điện tử</option>
-              </select>
-            </div>
-
-            <div className={shared.tableWrap}>
-              <table className={shared.dataTable}>
-                <thead>
-                  <tr>
-                    <th>Mã phiên & ngày</th>
-                    <th>Cổng thanh toán</th>
-                    <th className={shared.colNum}>Kỳ vọng</th>
-                    <th className={shared.colNum}>Chênh lệch</th>
-                    <th>Trạng thái</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredMockRows.map((row) => {
-                    const meta = RECON_STATUS_META[row.status];
-                    return (
-                      <tr key={row.id}>
-                        <td>
-                          <div className={shared.cellPrimary}>{row.batchCode}</div>
-                          <div className={shared.cellSub}>
-                            {formatDateVi(row.date)} · {formatInt(row.txCount)} giao dịch
-                          </div>
-                        </td>
-                        <td>{CHANNEL_META[row.channel]}</td>
-                        <td className={shared.colNum}>{formatVnd(row.grossCollected)}</td>
-                        <td
-                          className={`${shared.colNum} ${
-                            row.discrepancy > 0 ? shared.numNegative : shared.numMuted
-                          }`}
-                        >
-                          {row.discrepancy > 0 ? formatSignedVnd(-row.discrepancy) : "0₫"}
-                        </td>
-                        <td>
-                          <StatusPill label={meta.label} tone={meta.tone} />
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            <div className={shared.mobileList}>
-              {filteredMockRows.map((row) => {
-                const meta = RECON_STATUS_META[row.status];
-                return (
-                  <div key={`m-mock-${row.id}`} className={shared.mobileItem}>
-                    <div className={shared.mobileLine1}>
-                      <span className={shared.mobileIdentity}>{row.batchCode}</span>
-                      <span className={shared.mobileMetric}>{formatVnd(row.grossCollected)}</span>
-                    </div>
-                    <div className={shared.mobileLine2}>
-                      <span className={shared.mobileMetaText}>
-                        {CHANNEL_META[row.channel]} · {formatDateVi(row.date)}
-                      </span>
-                      <StatusPill label={meta.label} tone={meta.tone} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
           </section>
         </div>
       )}

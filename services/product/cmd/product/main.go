@@ -17,9 +17,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection"
 
+	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
 	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
+	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/env"
 	"github.com/nexusmart/core/pkg/common/jetstream"
@@ -49,6 +52,8 @@ func run() error {
 	databaseURL := env.EnvString("DATABASE_URL", "")
 	natsURL := env.EnvString("NATS_URL", "nats://nats:4222")
 	natsStream := env.EnvString("NATS_STREAM", jetstream.DefaultPrimaryStream)
+	orderGRPCAddr := env.EnvString("ORDER_GRPC_ADDR", "")
+	userGRPCAddr := env.EnvString("USER_GRPC_ADDR", "")
 	jwtSecret := env.EnvString("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me")
 	otelEndpoint := env.EnvString("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	logLevel := parseLogLevel(env.EnvString("LOG_LEVEL", "info"))
@@ -114,6 +119,32 @@ func run() error {
 		),
 	)
 	productSrv := server.New(pgStore, log)
+	if orderGRPCAddr != "" {
+		orderConn, dialErr := grpc.NewClient(
+			orderGRPCAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithChainUnaryInterceptor(telemetry.GRPCUnaryClientInterceptor(serviceName)),
+		)
+		if dialErr != nil {
+			log.Warn("failed to initialize lazy order grpc client", slog.String("addr", orderGRPCAddr), slog.String("error", dialErr.Error()))
+		} else {
+			defer func() { _ = orderConn.Close() }()
+			productSrv.SetOrderClient(orderv1.NewOrderServiceClient(orderConn))
+		}
+	}
+	if userGRPCAddr != "" {
+		userConn, dialErr := grpc.NewClient(
+			userGRPCAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithChainUnaryInterceptor(telemetry.GRPCUnaryClientInterceptor(serviceName)),
+		)
+		if dialErr != nil {
+			log.Warn("failed to initialize lazy user grpc client", slog.String("addr", userGRPCAddr), slog.String("error", dialErr.Error()))
+		} else {
+			defer func() { _ = userConn.Close() }()
+			productSrv.SetUserClient(userv1.NewUserServiceClient(userConn))
+		}
+	}
 	productv1.RegisterProductServiceServer(grpcServer, productSrv)
 	reflection.Register(grpcServer)
 

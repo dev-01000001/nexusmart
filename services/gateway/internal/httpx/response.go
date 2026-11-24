@@ -70,6 +70,23 @@ func WriteError(w http.ResponseWriter, r *http.Request, statusCode int, code, me
 	})
 }
 
+func extractDomainCode(msg string, allowed ...string) string {
+	trimmed := strings.TrimSpace(msg)
+	for _, code := range allowed {
+		if !strings.HasPrefix(trimmed, code) {
+			continue
+		}
+		if len(trimmed) == len(code) {
+			return code
+		}
+		switch trimmed[len(code)] {
+		case ':', ' ', '(':
+			return code
+		}
+	}
+	return ""
+}
+
 // MapGRPCError translates a gRPC status error to HTTP status code, canonical code, and message.
 func MapGRPCError(err error) (int, string, string) {
 	st, ok := status.FromError(err)
@@ -80,6 +97,9 @@ func MapGRPCError(err error) (int, string, string) {
 	msg := st.Message()
 	switch st.Code() {
 	case codes.InvalidArgument:
+		if code := extractDomainCode(msg, "BANNED_CONTENT", "PROHIBITED_CATEGORY"); code != "" {
+			return http.StatusBadRequest, code, msg
+		}
 		return http.StatusBadRequest, "INVALID_ARGUMENT", msg
 	case codes.Unauthenticated:
 		return http.StatusUnauthorized, "UNAUTHENTICATED", msg
@@ -92,6 +112,15 @@ func MapGRPCError(err error) (int, string, string) {
 	case codes.Aborted:
 		return http.StatusConflict, "ABORTED", msg
 	case codes.FailedPrecondition:
+		if code := extractDomainCode(msg,
+			"SKU_INACTIVE",
+			"COD_PHONE_NOT_VERIFIED",
+			"COD_AREA_NOT_SUPPORTED",
+			"COD_REJECTED_LIMIT_EXCEEDED",
+			"OWNER_NAME_CHANGED",
+		); code != "" {
+			return http.StatusConflict, code, msg
+		}
 		return http.StatusConflict, "FAILED_PRECONDITION", msg
 	case codes.ResourceExhausted:
 		return http.StatusTooManyRequests, "RESOURCE_EXHAUSTED", msg

@@ -10,19 +10,21 @@ import (
 )
 
 type cartItemDTO struct {
-	SKUID          string `json:"sku_id"`
-	ProductID      string `json:"product_id"`
-	ShopID         string `json:"shop_id"`
-	ProductName    string `json:"product_name"`
-	SKUName        string `json:"sku_name"`
-	ImageURL       string `json:"image_url"`
-	PriceVND       int64  `json:"price_vnd"`
-	AddedPriceVND  int64  `json:"added_price_vnd"`
-	PriceChanged   bool   `json:"price_changed"`
-	Quantity       int32  `json:"quantity"`
-	AvailableStock int32  `json:"available_stock"`
-	WeightGrams    int32  `json:"weight_grams"`
-	Selected       bool   `json:"selected"`
+	SKUID             string `json:"sku_id"`
+	ProductID         string `json:"product_id"`
+	ShopID            string `json:"shop_id"`
+	ProductName       string `json:"product_name"`
+	SKUName           string `json:"sku_name"`
+	ImageURL          string `json:"image_url"`
+	PriceVND          int64  `json:"price_vnd"`
+	AddedPriceVND     int64  `json:"added_price_vnd"`
+	PriceChanged      bool   `json:"price_changed"`
+	Quantity          int32  `json:"quantity"`
+	AvailableStock    int32  `json:"available_stock"`
+	WeightGrams       int32  `json:"weight_grams"`
+	Selected          bool   `json:"selected"`
+	Unavailable       bool   `json:"unavailable"`
+	UnavailableReason string `json:"unavailable_reason"`
 }
 
 type cartShopGroupDTO struct {
@@ -49,19 +51,21 @@ func mapCart(c *cartv1.Cart) *cartDTO {
 		items := make([]*cartItemDTO, 0, len(g.GetItems()))
 		for _, it := range g.GetItems() {
 			items = append(items, &cartItemDTO{
-				SKUID:          it.GetSkuId(),
-				ProductID:      it.GetProductId(),
-				ShopID:         it.GetShopId(),
-				ProductName:    it.GetProductName(),
-				SKUName:        it.GetSkuName(),
-				ImageURL:       it.GetImageUrl(),
-				PriceVND:       it.GetPriceVnd(),
-				AddedPriceVND:  it.GetAddedPriceVnd(),
-				PriceChanged:   it.GetPriceChanged(),
-				Quantity:       it.GetQuantity(),
-				AvailableStock: it.GetAvailableStock(),
-				WeightGrams:    it.GetWeightGrams(),
-				Selected:       it.GetSelected(),
+				SKUID:             it.GetSkuId(),
+				ProductID:         it.GetProductId(),
+				ShopID:            it.GetShopId(),
+				ProductName:       it.GetProductName(),
+				SKUName:           it.GetSkuName(),
+				ImageURL:          it.GetImageUrl(),
+				PriceVND:          it.GetPriceVnd(),
+				AddedPriceVND:     it.GetAddedPriceVnd(),
+				PriceChanged:      it.GetPriceChanged(),
+				Quantity:          it.GetQuantity(),
+				AvailableStock:    it.GetAvailableStock(),
+				WeightGrams:       it.GetWeightGrams(),
+				Selected:          it.GetSelected(),
+				Unavailable:       it.GetUnavailable(),
+				UnavailableReason: it.GetUnavailableReason(),
 			})
 		}
 		groups = append(groups, &cartShopGroupDTO{

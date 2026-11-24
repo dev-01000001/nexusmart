@@ -135,6 +135,7 @@ func TestE2E_PaymentMoney_PAY_B4_CODLifecycle(t *testing.T) {
 	_, sku := env.createApprovedProduct(t, seller, cat.ID, "COD Lifecycle Shirt", 230000, 30, 500)
 
 	buyer := env.registerVerifyAndLogin(t, "payfix-cod-buyer")
+	env.verifyBuyerPhone(t, buyer)
 	addr := env.addAddress(t, buyer)
 	quote := env.calculateShippingQuote(t, buyer.AccessToken, seller.ShopID, 500, 230000)
 

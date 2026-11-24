@@ -28,6 +28,8 @@ type MemoryStore struct {
 	releaseTombstones    map[string]time.Time
 	history              []StockHistoryEntry
 	outbox               []OutboxEvent
+	reviews              map[string]ProductReview
+	bannedKeywords       map[string]BannedKeyword
 	nextOutboxSeq        int64
 	outboxLease          time.Duration
 	outboxPublishTimeout time.Duration
@@ -49,6 +51,8 @@ func NewMemoryStore() *MemoryStore {
 		skus:                 make(map[string]SKU),
 		reservations:         make(map[string]StockReservation),
 		releaseTombstones:    make(map[string]time.Time),
+		reviews:              make(map[string]ProductReview),
+		bannedKeywords:       make(map[string]BannedKeyword),
 		outboxLease:          jetstream.DefaultOutboxLease,
 		outboxPublishTimeout: jetstream.DefaultOutboxPublishTimeout,
 	}
@@ -424,6 +428,10 @@ func (m *MemoryStore) WithTx(ctx context.Context, fn func(q Queries) error) erro
 		deactivatedSKUs:  make(map[string]bool),
 		stagedRes:        make(map[string]StockReservation),
 		stagedTombstones: make(map[string]time.Time),
+		ratingDeltas:     make(map[string]ratingDelta),
+		stagedReviews:    make(map[string]ProductReview),
+		stagedKeywords:   make(map[string]BannedKeyword),
+		deletedKeywords:  make(map[string]bool),
 	}
 	if err := fn(tx); err != nil {
 		return err
@@ -563,6 +571,18 @@ func (m *MemoryStore) CategoryHasAncestor(_ context.Context, startID, targetAnce
 	return categoryHasAncestorInMap(m.categories, startID, targetAncestorID), nil
 }
 
+func (m *MemoryStore) IsCategoryProhibited(_ context.Context, categoryID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return categoryIsProhibitedInMap(m.categories, categoryID), nil
+}
+
+func (m *MemoryStore) ListProhibitedCategoryIDs(_ context.Context) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return listProhibitedCategoryIDsInMap(m.categories), nil
+}
+
 func (m *MemoryStore) GetCategoryDescendants(_ context.Context, categoryIDs []string) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -633,6 +653,16 @@ func (m *MemoryStore) GetProductByIDForUpdate(ctx context.Context, id string) (P
 	return m.GetProductByID(ctx, id)
 }
 
+func (m *MemoryStore) GetProductByIDForUpdateAny(_ context.Context, id string) (Product, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.products[id]
+	if !ok {
+		return Product{}, ErrNotFound
+	}
+	return cloneProduct(p), nil
+}
+
 func (m *MemoryStore) GetProductBySlug(_ context.Context, slug string) (Product, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -642,6 +672,30 @@ func (m *MemoryStore) GetProductBySlug(_ context.Context, slug string) (Product,
 		}
 	}
 	return Product{}, ErrNotFound
+}
+
+func (m *MemoryStore) GetDeletedApprovedProductBySlug(_ context.Context, slug string) (Product, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var (
+		found bool
+		best  Product
+	)
+	for _, p := range m.products {
+		if p.DeletedAt == nil || p.FirstApprovedAt == nil || p.Slug == "" || p.Slug != slug {
+			continue
+		}
+		if !found ||
+			p.DeletedAt.After(*best.DeletedAt) ||
+			(p.DeletedAt.Equal(*best.DeletedAt) && p.ID > best.ID) {
+			best = p
+			found = true
+		}
+	}
+	if !found {
+		return Product{}, ErrNotFound
+	}
+	return cloneProduct(best), nil
 }
 
 func (m *MemoryStore) UpdateProduct(ctx context.Context, p Product) (Product, error) {
@@ -654,14 +708,47 @@ func (m *MemoryStore) UpdateProduct(ctx context.Context, p Product) (Product, er
 	return out, err
 }
 
-func (m *MemoryStore) UpdateProductReview(ctx context.Context, id, status, rejectionReason string) (Product, error) {
+func (m *MemoryStore) UpdateProductReview(ctx context.Context, id, status, rejectionReason string, flaggedKeywords []string) (Product, error) {
 	var out Product
 	err := m.WithTx(ctx, func(q Queries) error {
 		var e error
-		out, e = q.UpdateProductReview(ctx, id, status, rejectionReason)
+		out, e = q.UpdateProductReview(ctx, id, status, rejectionReason, flaggedKeywords)
 		return e
 	})
 	return out, err
+}
+
+func (m *MemoryStore) IncrementProductRating(ctx context.Context, id string, ratingDelta int64) (int64, int32, error) {
+	var (
+		sum int64
+		cnt int32
+	)
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		sum, cnt, e = q.IncrementProductRating(ctx, id, ratingDelta)
+		return e
+	})
+	return sum, cnt, err
+}
+
+func (m *MemoryStore) ListProductsForModerationScan(_ context.Context, cursorID string, limit int32) ([]Product, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	matched := make([]Product, 0)
+	for _, p := range m.products {
+		if p.DeletedAt != nil {
+			continue
+		}
+		if cursorID != "" && p.ID <= cursorID {
+			continue
+		}
+		matched = append(matched, cloneProduct(p))
+	}
+	sort.Slice(matched, func(i, j int) bool { return matched[i].ID < matched[j].ID })
+	if limit > 0 && int(limit) < len(matched) {
+		matched = matched[:limit]
+	}
+	return matched, nil
 }
 
 func (m *MemoryStore) UpdateProductStatus(ctx context.Context, id, status string) error {
@@ -1075,6 +1162,168 @@ func (m *MemoryStore) InsertOutboxEvent(ctx context.Context, ev OutboxEvent) err
 	})
 }
 
+func (m *MemoryStore) CreateProductReview(ctx context.Context, r ProductReview) (ProductReview, error) {
+	var out ProductReview
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		out, e = q.CreateProductReview(ctx, r)
+		return e
+	})
+	return out, err
+}
+
+func (m *MemoryStore) ListProductReviews(_ context.Context, filter ListProductReviewsFilter) ([]ProductReview, int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	matched := make([]ProductReview, 0)
+	for _, r := range m.reviews {
+		if r.ProductID != filter.ProductID || r.Status != ReviewStatusPublished {
+			continue
+		}
+		if filter.RatingFilter > 0 && r.Rating != filter.RatingFilter {
+			continue
+		}
+		if filter.HasImages && len(r.ImageURLs) == 0 {
+			continue
+		}
+		matched = append(matched, cloneReview(r))
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		if !matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
+			return matched[i].CreatedAt.After(matched[j].CreatedAt)
+		}
+		return matched[i].ID > matched[j].ID
+	})
+	total := int64(len(matched))
+	start := int(filter.Offset)
+	if start >= len(matched) {
+		return []ProductReview{}, total, nil
+	}
+	end := start + int(filter.Limit)
+	if filter.Limit <= 0 || end > len(matched) {
+		end = len(matched)
+	}
+	return matched[start:end], total, nil
+}
+
+func (m *MemoryStore) GetProductReviewRatingCounts(_ context.Context, productID string) (map[int32]int32, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	counts := map[int32]int32{1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+	for _, r := range m.reviews {
+		if r.ProductID == productID && r.Status == ReviewStatusPublished {
+			counts[r.Rating]++
+		}
+	}
+	return counts, nil
+}
+
+func (m *MemoryStore) ListReviewsByOrderAndBuyer(_ context.Context, orderID, buyerID string) ([]ProductReview, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]ProductReview, 0)
+	for _, r := range m.reviews {
+		if r.OrderID == orderID && r.BuyerID == buyerID {
+			out = append(out, cloneReview(r))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (m *MemoryStore) CreateBannedKeyword(ctx context.Context, kw BannedKeyword) (BannedKeyword, error) {
+	var out BannedKeyword
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		out, e = q.CreateBannedKeyword(ctx, kw)
+		return e
+	})
+	return out, err
+}
+
+func (m *MemoryStore) GetBannedKeywordByID(_ context.Context, id string) (BannedKeyword, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	kw, ok := m.bannedKeywords[id]
+	if !ok {
+		return BannedKeyword{}, ErrNotFound
+	}
+	return kw, nil
+}
+
+func (m *MemoryStore) UpdateBannedKeyword(ctx context.Context, kw BannedKeyword) (BannedKeyword, error) {
+	var out BannedKeyword
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		out, e = q.UpdateBannedKeyword(ctx, kw)
+		return e
+	})
+	return out, err
+}
+
+func (m *MemoryStore) DeleteBannedKeyword(ctx context.Context, id string) (bool, error) {
+	var ok bool
+	err := m.WithTx(ctx, func(q Queries) error {
+		var e error
+		ok, e = q.DeleteBannedKeyword(ctx, id)
+		return e
+	})
+	return ok, err
+}
+
+func (m *MemoryStore) ListBannedKeywords(_ context.Context, filter ListBannedKeywordsFilter) ([]BannedKeyword, int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	q := strings.ToLower(strings.TrimSpace(filter.Query))
+	matched := make([]BannedKeyword, 0, len(m.bannedKeywords))
+	for _, kw := range m.bannedKeywords {
+		if !filter.IncludeInactive && !kw.IsActive {
+			continue
+		}
+		if filter.Action != "" && kw.Action != filter.Action {
+			continue
+		}
+		if q != "" && !strings.Contains(strings.ToLower(kw.Term), q) && !strings.Contains(kw.NormalizedTerm, q) {
+			continue
+		}
+		matched = append(matched, kw)
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		if !matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
+			return matched[i].CreatedAt.After(matched[j].CreatedAt)
+		}
+		return matched[i].ID > matched[j].ID
+	})
+	total := int64(len(matched))
+	start := int(filter.Offset)
+	if start >= len(matched) {
+		return []BannedKeyword{}, total, nil
+	}
+	end := start + int(filter.Limit)
+	if filter.Limit <= 0 || end > len(matched) {
+		end = len(matched)
+	}
+	return matched[start:end], total, nil
+}
+
+func (m *MemoryStore) ListActiveBannedKeywords(_ context.Context) ([]BannedKeyword, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]BannedKeyword, 0)
+	for _, kw := range m.bannedKeywords {
+		if kw.IsActive {
+			out = append(out, kw)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
 func (m *MemoryStore) effectiveCommissionBpsLocked(categoryID string, fallbackBps int32, asOf time.Time, staged []CategoryFeeSchedule) int32 {
 	found := false
 	var best CategoryFeeSchedule
@@ -1177,6 +1426,39 @@ func categoryHasAncestorInMap(cats map[string]Category, startID, targetAncestorI
 	return false
 }
 
+func categoryIsProhibitedInMap(cats map[string]Category, categoryID string) bool {
+	visited := make(map[string]bool)
+	cur := categoryID
+	for cur != "" {
+		if visited[cur] {
+			return false
+		}
+		visited[cur] = true
+		c, ok := cats[cur]
+		if !ok {
+			return false
+		}
+		if c.IsProhibited {
+			return true
+		}
+		cur = c.ParentID
+	}
+	return false
+}
+
+func listProhibitedCategoryIDsInMap(cats map[string]Category) []string {
+	roots := make([]string, 0)
+	for _, c := range cats {
+		if c.IsProhibited {
+			roots = append(roots, c.ID)
+		}
+	}
+	if len(roots) == 0 {
+		return []string{}
+	}
+	return collectCategoryDescendants(cats, roots)
+}
+
 func collectCategoryDescendants(cats map[string]Category, rootIDs []string) []string {
 	seen := make(map[string]bool, len(rootIDs))
 	queue := make([]string, 0, len(rootIDs))
@@ -1212,6 +1494,11 @@ func collectCategoryDescendants(cats map[string]Category, rootIDs []string) []st
 	return out
 }
 
+type ratingDelta struct {
+	sum   int64
+	count int32
+}
+
 // memTx buffers writes and validates optimistic locks atomically on commit.
 type memTx struct {
 	store              *MemoryStore
@@ -1219,6 +1506,7 @@ type memTx struct {
 	deletedCats        map[string]bool
 	stagedFeeSchedules []CategoryFeeSchedule
 	stagedProds        map[string]Product
+	ratingDeltas       map[string]ratingDelta
 	stagedSKUs         map[string]SKU
 	stagedPriceHistory []SKUPriceHistoryEntry
 	updatedSKUMeta     map[string]bool
@@ -1230,6 +1518,9 @@ type memTx struct {
 	newRes             []StockReservation
 	stagedHistory      []StockHistoryEntry
 	stagedOutbox       []OutboxEvent
+	stagedReviews      map[string]ProductReview
+	stagedKeywords     map[string]BannedKeyword
+	deletedKeywords    map[string]bool
 }
 
 func (t *memTx) commit() error {
@@ -1485,6 +1776,43 @@ func (t *memTx) commit() error {
 		computedSKUs[op.skuID] = cur
 	}
 
+	// 4b. Validate staged reviews (product FK & UNIQUE(order_item_id)) and banned keywords (UNIQUE(normalized_term)).
+	if len(t.stagedReviews) > 0 {
+		seenOrderItems := make(map[string]string, len(t.store.reviews)+len(t.stagedReviews))
+		for id, r := range t.store.reviews {
+			seenOrderItems[r.OrderItemID] = id
+		}
+		for id, r := range t.stagedReviews {
+			_, inStore := t.store.products[r.ProductID]
+			_, inStaged := t.stagedProds[r.ProductID]
+			if !inStore && !inStaged {
+				return ErrForeignKeyViolation
+			}
+			if prevID, exists := seenOrderItems[r.OrderItemID]; exists && prevID != id {
+				return ErrAlreadyExists
+			}
+			seenOrderItems[r.OrderItemID] = id
+		}
+	}
+	if len(t.stagedKeywords) > 0 || len(t.deletedKeywords) > 0 {
+		effKWs := make(map[string]BannedKeyword, len(t.store.bannedKeywords)+len(t.stagedKeywords))
+		for id, kw := range t.store.bannedKeywords {
+			if !t.deletedKeywords[id] {
+				effKWs[id] = kw
+			}
+		}
+		for id, kw := range t.stagedKeywords {
+			effKWs[id] = kw
+		}
+		for id, kw := range t.stagedKeywords {
+			for otherID, other := range effKWs {
+				if otherID != id && other.NormalizedTerm == kw.NormalizedTerm {
+					return ErrAlreadyExists
+				}
+			}
+		}
+	}
+
 	// 5. Apply all mutations atomically
 	for id := range t.deletedCats {
 		delete(t.store.categories, id)
@@ -1506,6 +1834,22 @@ func (t *memTx) commit() error {
 	}
 	for id, p := range t.stagedProds {
 		t.store.products[id] = cloneProduct(p)
+	}
+	for prodID, d := range t.ratingDeltas {
+		if p, ok := t.store.products[prodID]; ok {
+			p.RatingSum += d.sum
+			p.ReviewCount += d.count
+			t.store.products[prodID] = cloneProduct(p)
+		}
+	}
+	for id, r := range t.stagedReviews {
+		t.store.reviews[id] = cloneReview(r)
+	}
+	for id := range t.deletedKeywords {
+		delete(t.store.bannedKeywords, id)
+	}
+	for id, kw := range t.stagedKeywords {
+		t.store.bannedKeywords[id] = kw
 	}
 	for id, s := range t.stagedSKUs {
 		if _, hasOp := computedSKUs[id]; !hasOp && !duplicateRestockSKUs[id] {
@@ -1697,6 +2041,36 @@ func (t *memTx) CategoryHasAncestor(_ context.Context, startID, targetAncestorID
 	return categoryHasAncestorInMap(merged, startID, targetAncestorID), nil
 }
 
+func (t *memTx) IsCategoryProhibited(_ context.Context, categoryID string) (bool, error) {
+	t.store.mu.Lock()
+	merged := make(map[string]Category, len(t.store.categories)+len(t.stagedCats))
+	for id, c := range t.store.categories {
+		if !t.deletedCats[id] {
+			merged[id] = c
+		}
+	}
+	t.store.mu.Unlock()
+	for id, c := range t.stagedCats {
+		merged[id] = c
+	}
+	return categoryIsProhibitedInMap(merged, categoryID), nil
+}
+
+func (t *memTx) ListProhibitedCategoryIDs(_ context.Context) ([]string, error) {
+	t.store.mu.Lock()
+	merged := make(map[string]Category, len(t.store.categories)+len(t.stagedCats))
+	for id, c := range t.store.categories {
+		if !t.deletedCats[id] {
+			merged[id] = c
+		}
+	}
+	t.store.mu.Unlock()
+	for id, c := range t.stagedCats {
+		merged[id] = c
+	}
+	return listProhibitedCategoryIDsInMap(merged), nil
+}
+
 func (t *memTx) GetCategoryDescendants(_ context.Context, categoryIDs []string) ([]string, error) {
 	t.store.mu.Lock()
 	merged := make(map[string]Category, len(t.store.categories)+len(t.stagedCats))
@@ -1759,6 +2133,19 @@ func (t *memTx) GetProductByIDForUpdate(ctx context.Context, id string) (Product
 	return t.GetProductByID(ctx, id)
 }
 
+func (t *memTx) GetProductByIDForUpdateAny(_ context.Context, id string) (Product, error) {
+	if p, ok := t.stagedProds[id]; ok {
+		return cloneProduct(p), nil
+	}
+	t.store.mu.Lock()
+	defer t.store.mu.Unlock()
+	p, ok := t.store.products[id]
+	if !ok {
+		return Product{}, ErrNotFound
+	}
+	return cloneProduct(p), nil
+}
+
 func (t *memTx) GetProductBySlug(_ context.Context, slug string) (Product, error) {
 	for _, p := range t.stagedProds {
 		if p.DeletedAt == nil && p.Slug != "" && p.Slug == slug {
@@ -1781,29 +2168,69 @@ func (t *memTx) GetProductBySlug(_ context.Context, slug string) (Product, error
 	return Product{}, ErrNotFound
 }
 
+func (t *memTx) GetDeletedApprovedProductBySlug(ctx context.Context, slug string) (Product, error) {
+	return t.store.GetDeletedApprovedProductBySlug(ctx, slug)
+}
+
 func (t *memTx) UpdateProduct(ctx context.Context, p Product) (Product, error) {
 	cur, err := t.GetProductByID(ctx, p.ID)
 	if err != nil {
 		return Product{}, err
 	}
+	now := AsOfFromContext(ctx)
 	p.ShopID = cur.ShopID
 	p.SearchText = BuildProductSearchText(p.Name, p.Description)
+	p.RatingSum = cur.RatingSum
+	p.ReviewCount = cur.ReviewCount
+	p.FirstApprovedAt = cur.FirstApprovedAt
+	if (p.Status == ProductStatusApproved || p.Status == ProductStatusOutOfStock) && p.FirstApprovedAt == nil {
+		ts := now
+		p.FirstApprovedAt = &ts
+	}
 	p.CreatedAt = cur.CreatedAt
-	p.UpdatedAt = AsOfFromContext(ctx)
+	p.UpdatedAt = now
 	t.stagedProds[p.ID] = cloneProduct(p)
 	return cloneProduct(p), nil
 }
 
-func (t *memTx) UpdateProductReview(ctx context.Context, id, status, rejectionReason string) (Product, error) {
+func (t *memTx) UpdateProductReview(ctx context.Context, id, status, rejectionReason string, flaggedKeywords []string) (Product, error) {
 	cur, err := t.GetProductByID(ctx, id)
 	if err != nil {
 		return Product{}, err
 	}
+	now := AsOfFromContext(ctx)
 	cur.Status = status
 	cur.RejectionReason = rejectionReason
-	cur.UpdatedAt = AsOfFromContext(ctx)
+	if flaggedKeywords != nil {
+		cp := make([]string, len(flaggedKeywords))
+		copy(cp, flaggedKeywords)
+		cur.FlaggedKeywords = cp
+	} else {
+		cur.FlaggedKeywords = []string{}
+	}
+	if (status == ProductStatusApproved || status == ProductStatusOutOfStock) && cur.FirstApprovedAt == nil {
+		ts := now
+		cur.FirstApprovedAt = &ts
+	}
+	cur.UpdatedAt = now
 	t.stagedProds[id] = cloneProduct(cur)
 	return cloneProduct(cur), nil
+}
+
+func (t *memTx) IncrementProductRating(ctx context.Context, id string, ratingDeltaVal int64) (int64, int32, error) {
+	cur, err := t.GetProductByIDForUpdateAny(ctx, id)
+	if err != nil {
+		return 0, 0, err
+	}
+	d := t.ratingDeltas[id]
+	d.sum += ratingDeltaVal
+	d.count++
+	t.ratingDeltas[id] = d
+	return cur.RatingSum + d.sum, cur.ReviewCount + d.count, nil
+}
+
+func (t *memTx) ListProductsForModerationScan(ctx context.Context, cursorID string, limit int32) ([]Product, error) {
+	return t.store.ListProductsForModerationScan(ctx, cursorID, limit)
 }
 
 func (t *memTx) UpdateProductStatus(ctx context.Context, id, status string) error {
@@ -1954,23 +2381,23 @@ func (t *memTx) ListSKUsByProductIDs(ctx context.Context, productIDs []string) (
 	for _, id := range productIDs {
 		want[id] = true
 	}
-	merged := make(map[string]SKU)
+	raw := make(map[string]SKU)
 	t.store.mu.Lock()
 	for id, s := range t.store.skus {
 		if want[s.ProductID] {
-			merged[id] = t.store.enrichSKULocked(s, asOf)
+			raw[id] = s
 		}
 	}
 	t.store.mu.Unlock()
 	for id, s := range t.stagedSKUs {
 		if want[s.ProductID] {
-			merged[id] = t.enrichWithStaged(s, asOf)
+			raw[id] = s
 		}
 	}
-	out := make([]SKU, 0, len(merged))
-	for _, s := range merged {
+	out := make([]SKU, 0, len(raw))
+	for _, s := range raw {
 		if s.Status != SKUStatusInactive {
-			out = append(out, s)
+			out = append(out, t.enrichWithStaged(s, asOf))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -1984,22 +2411,22 @@ func (t *memTx) ListSKUsByProductIDs(ctx context.Context, productIDs []string) (
 
 func (t *memTx) ListAllSKUsByProductID(ctx context.Context, productID string) ([]SKU, error) {
 	asOf := AsOfFromContext(ctx)
-	merged := make(map[string]SKU)
+	raw := make(map[string]SKU)
 	t.store.mu.Lock()
 	for id, s := range t.store.skus {
 		if s.ProductID == productID {
-			merged[id] = t.store.enrichSKULocked(s, asOf)
+			raw[id] = s
 		}
 	}
 	t.store.mu.Unlock()
 	for id, s := range t.stagedSKUs {
 		if s.ProductID == productID {
-			merged[id] = t.enrichWithStaged(s, asOf)
+			raw[id] = s
 		}
 	}
-	out := make([]SKU, 0, len(merged))
-	for _, s := range merged {
-		out = append(out, s)
+	out := make([]SKU, 0, len(raw))
+	for _, s := range raw {
+		out = append(out, t.enrichWithStaged(s, asOf))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
@@ -2020,12 +2447,12 @@ func (t *memTx) GetSKUWithContext(ctx context.Context, skuID string) (SKU, error
 		return t.enrichWithStaged(s, asOf), nil
 	}
 	t.store.mu.Lock()
-	defer t.store.mu.Unlock()
 	s, ok := t.store.skus[skuID]
+	t.store.mu.Unlock()
 	if !ok {
 		return SKU{}, ErrNotFound
 	}
-	return t.store.enrichSKULocked(s, asOf), nil
+	return t.enrichWithStaged(s, asOf), nil
 }
 
 func (t *memTx) GetSKUWithContextForUpdate(ctx context.Context, skuID string) (SKU, error) {
@@ -2321,13 +2748,164 @@ func (t *memTx) InsertOutboxEvent(ctx context.Context, ev OutboxEvent) error {
 	return nil
 }
 
+func (t *memTx) CreateProductReview(ctx context.Context, r ProductReview) (ProductReview, error) {
+	if r.Status == "" {
+		r.Status = ReviewStatusPublished
+	}
+	now := r.CreatedAt
+	if now.IsZero() {
+		now = AsOfFromContext(ctx)
+	}
+	r.CreatedAt = now.UTC()
+	r.UpdatedAt = now.UTC()
+
+	for _, existing := range t.stagedReviews {
+		if existing.OrderItemID == r.OrderItemID {
+			return ProductReview{}, ErrAlreadyExists
+		}
+	}
+	t.store.mu.Lock()
+	for _, existing := range t.store.reviews {
+		if existing.OrderItemID == r.OrderItemID {
+			t.store.mu.Unlock()
+			return ProductReview{}, ErrAlreadyExists
+		}
+	}
+	t.store.mu.Unlock()
+
+	cp := cloneReview(r)
+	t.stagedReviews[cp.ID] = cp
+	return cloneReview(cp), nil
+}
+
+func (t *memTx) ListProductReviews(ctx context.Context, filter ListProductReviewsFilter) ([]ProductReview, int64, error) {
+	return t.store.ListProductReviews(ctx, filter)
+}
+
+func (t *memTx) GetProductReviewRatingCounts(ctx context.Context, productID string) (map[int32]int32, error) {
+	return t.store.GetProductReviewRatingCounts(ctx, productID)
+}
+
+func (t *memTx) ListReviewsByOrderAndBuyer(ctx context.Context, orderID, buyerID string) ([]ProductReview, error) {
+	return t.store.ListReviewsByOrderAndBuyer(ctx, orderID, buyerID)
+}
+
+func (t *memTx) CreateBannedKeyword(ctx context.Context, kw BannedKeyword) (BannedKeyword, error) {
+	now := kw.CreatedAt
+	if now.IsZero() {
+		now = AsOfFromContext(ctx)
+	}
+	kw.CreatedAt = now.UTC()
+	kw.UpdatedAt = now.UTC()
+	for _, existing := range t.stagedKeywords {
+		if existing.NormalizedTerm == kw.NormalizedTerm {
+			return BannedKeyword{}, ErrAlreadyExists
+		}
+	}
+	t.store.mu.Lock()
+	for id, existing := range t.store.bannedKeywords {
+		if !t.deletedKeywords[id] && existing.NormalizedTerm == kw.NormalizedTerm {
+			t.store.mu.Unlock()
+			return BannedKeyword{}, ErrAlreadyExists
+		}
+	}
+	t.store.mu.Unlock()
+	t.stagedKeywords[kw.ID] = kw
+	return kw, nil
+}
+
+func (t *memTx) GetBannedKeywordByID(_ context.Context, id string) (BannedKeyword, error) {
+	if t.deletedKeywords[id] {
+		return BannedKeyword{}, ErrNotFound
+	}
+	if kw, ok := t.stagedKeywords[id]; ok {
+		return kw, nil
+	}
+	t.store.mu.Lock()
+	defer t.store.mu.Unlock()
+	kw, ok := t.store.bannedKeywords[id]
+	if !ok {
+		return BannedKeyword{}, ErrNotFound
+	}
+	return kw, nil
+}
+
+func (t *memTx) UpdateBannedKeyword(ctx context.Context, kw BannedKeyword) (BannedKeyword, error) {
+	cur, err := t.GetBannedKeywordByID(ctx, kw.ID)
+	if err != nil {
+		return BannedKeyword{}, err
+	}
+	kw.CreatedBy = cur.CreatedBy
+	kw.CreatedAt = cur.CreatedAt
+	kw.UpdatedAt = AsOfFromContext(ctx)
+	t.stagedKeywords[kw.ID] = kw
+	return kw, nil
+}
+
+func (t *memTx) DeleteBannedKeyword(ctx context.Context, id string) (bool, error) {
+	if _, err := t.GetBannedKeywordByID(ctx, id); err != nil {
+		return false, nil
+	}
+	delete(t.stagedKeywords, id)
+	t.deletedKeywords[id] = true
+	return true, nil
+}
+
+func (t *memTx) ListBannedKeywords(ctx context.Context, filter ListBannedKeywordsFilter) ([]BannedKeyword, int64, error) {
+	return t.store.ListBannedKeywords(ctx, filter)
+}
+
+func (t *memTx) ListActiveBannedKeywords(_ context.Context) ([]BannedKeyword, error) {
+	t.store.mu.Lock()
+	merged := make(map[string]BannedKeyword, len(t.store.bannedKeywords)+len(t.stagedKeywords))
+	for id, kw := range t.store.bannedKeywords {
+		if !t.deletedKeywords[id] {
+			merged[id] = kw
+		}
+	}
+	t.store.mu.Unlock()
+	for id, kw := range t.stagedKeywords {
+		merged[id] = kw
+	}
+	out := make([]BannedKeyword, 0, len(merged))
+	for _, kw := range merged {
+		if kw.IsActive {
+			out = append(out, kw)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
 func cloneProduct(p Product) Product {
 	if p.Images != nil {
 		cp := make([]string, len(p.Images))
 		copy(cp, p.Images)
 		p.Images = cp
 	}
+	if p.FlaggedKeywords != nil {
+		cp := make([]string, len(p.FlaggedKeywords))
+		copy(cp, p.FlaggedKeywords)
+		p.FlaggedKeywords = cp
+	}
+	if p.FirstApprovedAt != nil {
+		ts := *p.FirstApprovedAt
+		p.FirstApprovedAt = &ts
+	}
+	if p.DeletedAt != nil {
+		ts := *p.DeletedAt
+		p.DeletedAt = &ts
+	}
 	return p
+}
+
+func cloneReview(r ProductReview) ProductReview {
+	if r.ImageURLs != nil {
+		cp := make([]string, len(r.ImageURLs))
+		copy(cp, r.ImageURLs)
+		r.ImageURLs = cp
+	}
+	return r
 }
 
 func cloneSKU(s SKU) SKU {

@@ -292,6 +292,7 @@ SET status = $2,
     payment_status = CASE WHEN sqlc.arg(payment_status)::text <> '' THEN sqlc.arg(payment_status)::text ELSE payment_status END,
     payment_id = CASE WHEN sqlc.arg(payment_id)::text <> '' THEN sqlc.arg(payment_id)::text ELSE payment_id END,
     confirmed_at = CASE WHEN $2 = 'CONFIRMED' AND confirmed_at IS NULL THEN NOW() ELSE confirmed_at END,
+    shipment_job_status = CASE WHEN $2 IN ('CANCELLED', 'RETURNED', 'SHIPPING', 'DELIVERED', 'COMPLETED') THEN '' ELSE shipment_job_status END,
     updated_at = NOW()
 WHERE id = $1
 RETURNING *;
@@ -303,12 +304,48 @@ SET status = 'PREPARING',
     service_code = $3,
     tracking_code = $4,
     label_url = $5,
+    shipment_job_status = '',
     pending_shipment_cancel = FALSE,
     pending_shipment_cancel_at = NULL,
     pending_shipment_cancel_token = '',
     updated_at = NOW()
 WHERE id = $1
 RETURNING *;
+
+-- name: SetOrderShipmentQueued :one
+UPDATE orders
+SET shipment_job_status = 'QUEUED',
+    pending_shipment_cancel = FALSE,
+    pending_shipment_cancel_at = NULL,
+    pending_shipment_cancel_token = '',
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: SetOrderShipmentJobFailed :one
+UPDATE orders
+SET shipment_job_status = 'FAILED',
+    updated_at = NOW()
+WHERE id = $1
+  AND tracking_code = ''
+  AND status IN ('CONFIRMED', 'PREPARING')
+RETURNING *;
+
+-- name: MarkOrderShipmentJobFailedIfQueued :execrows
+UPDATE orders
+SET shipment_job_status = 'FAILED',
+    updated_at = NOW()
+WHERE id = $1
+  AND status IN ('CONFIRMED', 'PREPARING')
+  AND shipment_job_status = 'QUEUED'
+  AND tracking_code = ''
+  AND pending_shipment_cancel = FALSE;
+
+-- name: ClearOrderShipmentJobStatus :exec
+UPDATE orders
+SET shipment_job_status = '',
+    updated_at = NOW()
+WHERE id = $1;
 
 -- name: SetOrderPendingShipmentCancel :exec
 UPDATE orders
@@ -366,6 +403,7 @@ UPDATE orders
 SET carrier_code = CASE WHEN carrier_code = '' OR LOWER(carrier_code) = 'fallback' THEN $2 ELSE carrier_code END,
     service_code = CASE WHEN service_code = '' OR LOWER(carrier_code) = 'fallback' THEN $3 ELSE service_code END,
     label_url = CASE WHEN sqlc.arg(label_url)::text <> '' THEN sqlc.arg(label_url)::text ELSE label_url END,
+    shipment_job_status = '',
     pending_shipment_cancel = FALSE,
     pending_shipment_cancel_at = NULL,
     pending_shipment_cancel_token = '',
@@ -376,7 +414,10 @@ RETURNING *;
 -- name: UpdateOrderShippedFromWebhook :one
 UPDATE orders
 SET status = 'SHIPPING',
+    carrier_code = CASE WHEN (carrier_code = '' OR LOWER(carrier_code) = 'fallback') AND sqlc.arg(carrier_code)::text <> '' THEN sqlc.arg(carrier_code)::text ELSE carrier_code END,
+    service_code = CASE WHEN (service_code = '' OR LOWER(carrier_code) = 'fallback') AND sqlc.arg(service_code)::text <> '' THEN sqlc.arg(service_code)::text ELSE service_code END,
     tracking_code = CASE WHEN sqlc.arg(tracking_code)::text <> '' THEN sqlc.arg(tracking_code)::text ELSE tracking_code END,
+    shipment_job_status = '',
     updated_at = NOW()
 WHERE id = $1
 RETURNING *;
@@ -384,7 +425,9 @@ RETURNING *;
 -- name: UpdateOrderDelivered :one
 UPDATE orders
 SET status = 'DELIVERED',
+    carrier_code = CASE WHEN (carrier_code = '' OR LOWER(carrier_code) = 'fallback') AND sqlc.arg(carrier_code)::text <> '' THEN sqlc.arg(carrier_code)::text ELSE carrier_code END,
     tracking_code = CASE WHEN sqlc.arg(tracking_code)::text <> '' THEN sqlc.arg(tracking_code)::text ELSE tracking_code END,
+    shipment_job_status = '',
     delivered_at = NOW(),
     updated_at = NOW()
 WHERE id = $1
@@ -973,3 +1016,16 @@ WHERE o.status = 'COMPLETED'
 GROUP BY oi.product_id
 ORDER BY revenue_vnd DESC, units_sold DESC, oi.product_id ASC
 LIMIT sqlc.arg(top_limit)::int;
+
+-- Wave 3b-1 (E19): Single indexed query counting a buyer's terminal COD orders and delivery refusals.
+-- Uses idx_orders_buyer_cod_status ON orders (buyer_id, status) INCLUDE (delivered_at) WHERE payment_method = 'COD'.
+-- Excludes non-terminal orders and pre-delivery CANCELLED orders; counts only SHIPPING -> RETURNED (delivered_at IS NULL)
+-- as COD rejections while treating post-delivery returns (delivered_at IS NOT NULL) as non-rejected terminal outcomes.
+-- name: GetBuyerTerminalCODStats :one
+SELECT
+    COUNT(*)::bigint AS total_terminal,
+    COUNT(*) FILTER (WHERE status = 'RETURNED' AND delivered_at IS NULL)::bigint AS rejected_count
+FROM orders
+WHERE buyer_id = $1
+  AND payment_method = 'COD'
+  AND status IN ('COMPLETED', 'RETURNED');

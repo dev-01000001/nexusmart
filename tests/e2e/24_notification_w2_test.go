@@ -166,6 +166,7 @@ func TestNotificationW2(t *testing.T) {
 	_, sku := env.createApprovedProduct(t, seller, cat.ID, "Ao So Mi NotifW2 "+env.runID, 250000, 30, 400)
 
 	buyer := env.registerVerifyAndLogin(t, "notifw2-buyer")
+	env.verifyBuyerPhone(t, buyer)
 	env.addAddress(t, buyer)
 
 	var deliveredOrder OrderDTO

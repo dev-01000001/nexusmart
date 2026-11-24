@@ -21,6 +21,7 @@ type categoryDTO struct {
 	ParentID          string `json:"parent_id"`
 	CommissionRateBps *int32 `json:"commission_rate_bps,omitempty"`
 	SortOrder         int32  `json:"sort_order"`
+	IsProhibited      bool   `json:"is_prohibited"`
 	CreatedAt         string `json:"created_at,omitempty"`
 	UpdatedAt         string `json:"updated_at,omitempty"`
 }
@@ -83,6 +84,9 @@ type productDTO struct {
 	RejectionReason string    `json:"rejection_reason"`
 	MinPriceVND     int64     `json:"min_price_vnd"`
 	MaxPriceVND     int64     `json:"max_price_vnd"`
+	RatingAvgX100   int32     `json:"rating_avg_x100"`
+	ReviewCount     int32     `json:"review_count"`
+	FlaggedKeywords *[]string `json:"flagged_keywords,omitempty"`
 	SKUs            []*skuDTO `json:"skus"`
 	CreatedAt       string    `json:"created_at,omitempty"`
 	UpdatedAt       string    `json:"updated_at,omitempty"`
@@ -114,6 +118,7 @@ func mapCategory(c *productv1.Category) *categoryDTO {
 		ParentID:          c.GetParentId(),
 		CommissionRateBps: int32Ptr(c.GetCommissionRateBps()),
 		SortOrder:         c.GetSortOrder(),
+		IsProhibited:      c.GetIsProhibited(),
 		CreatedAt:         httpx.FormatTimestamp(c.GetCreatedAt()),
 		UpdatedAt:         httpx.FormatTimestamp(c.GetUpdatedAt()),
 	}
@@ -169,6 +174,10 @@ func mapProduct(p *productv1.Product) *productDTO {
 	for _, s := range p.GetSkus() {
 		skus = append(skus, mapSKU(s))
 	}
+	flagged := p.GetFlaggedKeywords()
+	if flagged == nil {
+		flagged = []string{}
+	}
 	return &productDTO{
 		ID:              p.GetId(),
 		ShopID:          p.GetShopId(),
@@ -181,6 +190,9 @@ func mapProduct(p *productv1.Product) *productDTO {
 		RejectionReason: p.GetRejectionReason(),
 		MinPriceVND:     p.GetMinPriceVnd(),
 		MaxPriceVND:     p.GetMaxPriceVnd(),
+		RatingAvgX100:   p.GetRatingAvgX100(),
+		ReviewCount:     p.GetReviewCount(),
+		FlaggedKeywords: &flagged,
 		SKUs:            skus,
 		CreatedAt:       httpx.FormatTimestamp(p.GetCreatedAt()),
 		UpdatedAt:       httpx.FormatTimestamp(p.GetUpdatedAt()),
@@ -190,6 +202,8 @@ func mapProduct(p *productv1.Product) *productDTO {
 func mapPublicProduct(p *productv1.Product) *productDTO {
 	dto := mapProduct(p)
 	if dto != nil {
+		dto.FlaggedKeywords = nil
+		dto.RejectionReason = ""
 		for _, sk := range dto.SKUs {
 			if sk != nil {
 				sk.CommissionRateBps = nil
@@ -304,6 +318,7 @@ func (h *handler) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 		ParentID          string `json:"parent_id"`
 		CommissionRateBps int32  `json:"commission_rate_bps"`
 		SortOrder         int32  `json:"sort_order"`
+		IsProhibited      bool   `json:"is_prohibited"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
 		httpx.WriteDecodeError(w, r, err)
@@ -318,6 +333,7 @@ func (h *handler) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 		ParentId:          body.ParentID,
 		CommissionRateBps: body.CommissionRateBps,
 		SortOrder:         body.SortOrder,
+		IsProhibited:      body.IsProhibited,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
@@ -333,6 +349,7 @@ func (h *handler) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
 		ParentID          *string `json:"parent_id"`
 		CommissionRateBps *int32  `json:"commission_rate_bps"`
 		SortOrder         *int32  `json:"sort_order"`
+		IsProhibited      *bool   `json:"is_prohibited"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
 		httpx.WriteDecodeError(w, r, err)
@@ -354,6 +371,10 @@ func (h *handler) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
 	if body.SortOrder != nil {
 		req.SortOrder = *body.SortOrder
 		req.HasSortOrder = true
+	}
+	if body.IsProhibited != nil {
+		req.IsProhibited = *body.IsProhibited
+		req.HasIsProhibited = true
 	}
 
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
@@ -658,10 +679,22 @@ func (h *handler) handleGetProductBySlug(w http.ResponseWriter, r *http.Request)
 	defer cancel()
 
 	resp, err := h.clients.Product.GetProduct(ctx, &productv1.GetProductRequest{
-		Slug: chi.URLParam(r, "slug"),
+		Slug:                    chi.URLParam(r, "slug"),
+		IncludeDiscontinuedStub: true,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	if resp.GetDiscontinued() {
+		stub := map[string]any{
+			"discontinued": true,
+			"category_id":  resp.GetDiscontinuedCategoryId(),
+		}
+		if name := strings.TrimSpace(resp.GetDiscontinuedName()); name != "" {
+			stub["name"] = name
+		}
+		httpx.WriteJSON(w, http.StatusOK, stub)
 		return
 	}
 	prod := resp.GetProduct()

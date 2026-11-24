@@ -12,7 +12,7 @@ node tools/seed/seed.mjs
 
 Biến môi trường (tự đọc mặc định từ `.env` ở gốc repo nếu không truyền):
 - `SEED_GATEWAY_URL`: URL Gateway REST (mặc định `http://localhost:${GATEWAY_PORT:-8080}`).
-- `MAILPIT_URL`: URL Mailpit API để lấy OTP đăng ký (mặc định `http://localhost:${MAILPIT_UI_PORT:-8025}`).
+- `MAILPIT_URL`: URL Mailpit API để lấy OTP đăng ký và OTP xác minh SĐT người mua mẫu (mặc định `http://localhost:${MAILPIT_UI_PORT:-8025}`).
 - `ADMIN_BOOTSTRAP_EMAIL` / `ADMIN_BOOTSTRAP_PASSWORD`: tài khoản admin bootstrap.
 - `PAYMENT_WEBHOOK_SECRET` / `SHIPPING_WEBHOOK_SECRET`: khóa ký HMAC-SHA256 dùng để chuyển trạng thái đơn hàng mẫu qua `/webhooks/payment` và `/webhooks/shipping/ghn`.
 
@@ -29,7 +29,7 @@ Script chạy lặp lại an toàn (idempotent): kiểm tra tồn tại trước
 - **3 khung Flash Sale** từ `web/src/data/flash-sale.ts` (`PRM-D1`): chọn SKU đang hoạt động có `available_stock` cao nhất, cắt chặt `total_slots <= available_stock`, `per_user_limit <= total_slots` và `flash_price_vnd < min_price_30d_vnd`.
 - **4 chương trình giảm giá của shop** (UC-S18): 1 chương trình đang hoạt động cho mỗi gian hàng (kết hợp cả chế độ `discount_percent` và `discounted_price_vnd` số nguyên VND, tránh SKU đang chạy Flash Sale).
 - **Lịch phí mẫu** (UC-A09): 3 lịch biểu phí hoa hồng danh mục tương lai (`ao-thun` 5,2%, `ao-polo` 5,8%, `tat-phu-kien` 5,5%) và 2 lịch phí thanh toán tương lai (`VIETQR` 1,5%, `COD` 1,0%) có `effective_from` ở tương lai (giữ nguyên phí thanh toán hiện hành 0 bps).
-- **1 tài khoản người mua demo** từ `web/src/data/orders.ts` (địa chỉ mặc định hợp lệ theo tỉnh/phường backend + `42.000` xu khởi tạo idempotent).
+- **1 tài khoản người mua demo** từ `web/src/data/orders.ts` (xác minh SĐT thật qua `POST /api/v1/users/me/phone/otp` + Mailpit + `POST /api/v1/users/me/phone/verify` trước khi đặt đơn COD theo E19, địa chỉ mặc định hợp lệ theo tỉnh/phường backend + `42.000` xu khởi tạo idempotent).
 - **6 đơn hàng mẫu ở nhiều trạng thái** (tạo 100% qua API thật & webhook ký HMAC, không ghi DB):
   - `PREPARING` (VietQR đã thanh toán, shop đã xác nhận)
   - `SHIPPING` (COD đã tạo vận đơn GHN và đang giao)
@@ -43,7 +43,7 @@ Script chạy lặp lại an toàn (idempotent): kiểm tra tồn tại trước
 | Vai trò | Email | Mật khẩu dev | Ghi chú / Gian hàng |
 | --- | --- | --- | --- |
 | `admin` | `admin@nexusmart.local` | `AdminDevPassword123!` | Admin bootstrap (theo `.env`) |
-| `buyer` | `minhquan.nguyen@nexusmart.vn` | `BuyerDevPassword123!` | Nguyễn Minh Quân · địa chỉ mặc định TP.HCM · 42.000 xu · 6 đơn mẫu |
+| `buyer` | `minhquan.nguyen@nexusmart.vn` | `BuyerDevPassword123!` | Nguyễn Minh Quân · SĐT đã xác minh · địa chỉ mặc định TP.HCM · 42.000 xu · 6 đơn mẫu |
 | `seller` | `seller.bachdang@nexusmart.local` | `SellerDevPassword123!` | Xưởng Dệt Bạch Đằng |
 | `seller` | `seller.saigon@nexusmart.local` | `SellerDevPassword123!` | Kho Basic Sài Gòn |
 | `seller` | `seller.danang@nexusmart.local` | `SellerDevPassword123!` | Sợi Tự Nhiên Đà Nẵng |

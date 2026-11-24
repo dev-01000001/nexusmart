@@ -84,14 +84,15 @@ func TestE2E_ShippingFeeShopPickupValidationAndWebhookCarrier(t *testing.T) {
 	env := getEnv()
 	ctx := env.ctx(t)
 
-	// Use TP.HCM (79 / 79001, South region) for both shop pickup and buyer address so that
+	// Use TP.HCM (79 / 26740, South region) for both shop pickup and buyer address so that
 	// omitting from_province_code would fall back to central region (+16,000 VND) if broken.
 	cat := env.ensureCategory(t)
-	seller := shpFixCreateApprovedSellerInProvince(t, env, "shpfix-seller", "79", "Thành phố Hồ Chí Minh", "79001", "Phường Sài Gòn")
+	seller := shpFixCreateApprovedSellerInProvince(t, env, "shpfix-seller", "79", "Thành phố Hồ Chí Minh", "26740", "Phường Sài Gòn")
 	_, sku := env.createApprovedProduct(t, seller, cat.ID, "ShipFix Cotton Tee", 200000, 20, 250)
 
 	buyer := env.registerVerifyAndLogin(t, "shpfix-buyer")
-	buyerAddr := shpFixAddAddressInProvince(t, env, buyer, "79", "Thành phố Hồ Chí Minh", "79001", "Phường Sài Gòn")
+	env.verifyBuyerPhone(t, buyer)
+	buyerAddr := shpFixAddAddressInProvince(t, env, buyer, "79", "Thành phố Hồ Chí Minh", "26740", "Phường Sài Gòn")
 
 	// 1. R7 (SHP-B1): Quote with shop_id only (no from_province_code / from_ward_code) must match checkout shipping_fee_vnd.
 	quoteResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/shipping/calculate-fee", buyer.AccessToken, nil, CalculateFeeRequest{
@@ -99,7 +100,7 @@ func TestE2E_ShippingFeeShopPickupValidationAndWebhookCarrier(t *testing.T) {
 		FromProvinceCode: "",
 		FromWardCode:     "",
 		ToProvinceCode:   "79",
-		ToWardCode:       "79001",
+		ToWardCode:       "26740",
 		WeightGrams:      250,
 		CODAmountVND:     200000,
 	}, http.StatusOK)
@@ -150,7 +151,7 @@ func TestE2E_ShippingFeeShopPickupValidationAndWebhookCarrier(t *testing.T) {
 	// Missing both shop_id and from_province_code -> 400.
 	env.mustDoJSON(t, http.MethodPost, "/api/v1/shipping/calculate-fee", buyer.AccessToken, nil, CalculateFeeRequest{
 		ToProvinceCode: "79",
-		ToWardCode:     "79001",
+		ToWardCode:     "26740",
 		WeightGrams:    250,
 	}, http.StatusBadRequest)
 
@@ -162,29 +163,29 @@ func TestE2E_ShippingFeeShopPickupValidationAndWebhookCarrier(t *testing.T) {
 		{
 			name: "zero weight",
 			req: CalculateFeeRequest{
-				ShopID: seller.ShopID, FromProvinceCode: "79", FromWardCode: "79001",
-				ToProvinceCode: "79", ToWardCode: "79001", WeightGrams: 0,
+				ShopID: seller.ShopID, FromProvinceCode: "79", FromWardCode: "26740",
+				ToProvinceCode: "79", ToWardCode: "26740", WeightGrams: 0,
 			},
 		},
 		{
 			name: "negative weight",
 			req: CalculateFeeRequest{
-				ShopID: seller.ShopID, FromProvinceCode: "79", FromWardCode: "79001",
-				ToProvinceCode: "79", ToWardCode: "79001", WeightGrams: -50,
+				ShopID: seller.ShopID, FromProvinceCode: "79", FromWardCode: "26740",
+				ToProvinceCode: "79", ToWardCode: "26740", WeightGrams: -50,
 			},
 		},
 		{
 			name: "unknown province 99999",
 			req: CalculateFeeRequest{
-				ShopID: seller.ShopID, FromProvinceCode: "79", FromWardCode: "79001",
+				ShopID: seller.ShopID, FromProvinceCode: "79", FromWardCode: "26740",
 				ToProvinceCode: "99999", ToWardCode: "99999", WeightGrams: 250,
 			},
 		},
 		{
 			name: "ward from another province",
 			req: CalculateFeeRequest{
-				ShopID: seller.ShopID, FromProvinceCode: "79", FromWardCode: "79001",
-				ToProvinceCode: "79", ToWardCode: "01001", WeightGrams: 250,
+				ShopID: seller.ShopID, FromProvinceCode: "79", FromWardCode: "26740",
+				ToProvinceCode: "79", ToWardCode: "00070", WeightGrams: 250,
 			},
 		},
 	} {

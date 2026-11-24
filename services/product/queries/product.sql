@@ -4,9 +4,9 @@
 SELECT pg_advisory_xact_lock(7956455656534110821);
 
 -- name: CreateCategory :one
-INSERT INTO categories (id, name, slug, parent_id, commission_rate_bps, sort_order)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at;
+INSERT INTO categories (id, name, slug, parent_id, commission_rate_bps, sort_order, is_prohibited)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, name, slug, parent_id, commission_rate_bps, sort_order, is_prohibited, created_at, updated_at;
 
 -- name: GetCategoryByID :one
 SELECT
@@ -22,12 +22,12 @@ SELECT
         ),
         c.commission_rate_bps
     )::int AS commission_rate_bps,
-    c.sort_order, c.created_at, c.updated_at
+    c.sort_order, c.is_prohibited, c.created_at, c.updated_at
 FROM categories c
 WHERE c.id = sqlc.arg(id)::text;
 
 -- name: GetCategoryBySlug :one
-SELECT id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at
+SELECT id, name, slug, parent_id, commission_rate_bps, sort_order, is_prohibited, created_at, updated_at
 FROM categories
 WHERE slug = $1;
 
@@ -38,9 +38,10 @@ SET name = $2,
     parent_id = $4,
     commission_rate_bps = $5,
     sort_order = $6,
+    is_prohibited = $7,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, name, slug, parent_id, commission_rate_bps, sort_order, created_at, updated_at;
+RETURNING id, name, slug, parent_id, commission_rate_bps, sort_order, is_prohibited, created_at, updated_at;
 
 -- name: UpdateCategoryCommissionRate :exec
 UPDATE categories
@@ -78,7 +79,7 @@ SELECT
         ),
         c.commission_rate_bps
     )::int AS commission_rate_bps,
-    c.sort_order, c.created_at, c.updated_at
+    c.sort_order, c.is_prohibited, c.created_at, c.updated_at
 FROM categories c
 ORDER BY c.sort_order ASC, c.name ASC, c.id ASC;
 
@@ -96,7 +97,7 @@ SELECT
         ),
         c.commission_rate_bps
     )::int AS commission_rate_bps,
-    c.sort_order, c.created_at, c.updated_at
+    c.sort_order, c.is_prohibited, c.created_at, c.updated_at
 FROM categories c
 WHERE c.parent_id = sqlc.arg(parent_id)
 ORDER BY c.sort_order ASC, c.name ASC, c.id ASC;
@@ -115,7 +116,7 @@ SELECT
         ),
         c.commission_rate_bps
     )::int AS commission_rate_bps,
-    c.sort_order, c.created_at, c.updated_at
+    c.sort_order, c.is_prohibited, c.created_at, c.updated_at
 FROM categories c
 WHERE c.parent_id IS NULL
 ORDER BY c.sort_order ASC, c.name ASC, c.id ASC;
@@ -133,6 +134,34 @@ WITH RECURSIVE ancestors AS (
 SELECT EXISTS (
     SELECT 1 FROM ancestors WHERE id = sqlc.arg(target_ancestor_id)::text
 )::bool AS has_ancestor;
+
+-- name: IsCategoryProhibited :one
+WITH RECURSIVE ancestors AS (
+    SELECT c.id, c.parent_id, c.is_prohibited
+    FROM categories c
+    WHERE c.id = sqlc.arg(category_id)::text
+    UNION
+    SELECT p.id, p.parent_id, p.is_prohibited
+    FROM categories p
+    JOIN ancestors a ON p.id = a.parent_id
+)
+SELECT EXISTS (
+    SELECT 1 FROM ancestors WHERE is_prohibited = TRUE
+)::bool AS is_prohibited;
+
+-- name: ListProhibitedCategoryIDs :many
+WITH RECURSIVE prohibited_tree AS (
+    SELECT c.id
+    FROM categories c
+    WHERE c.is_prohibited = TRUE
+    UNION
+    SELECT child.id
+    FROM categories child
+    JOIN prohibited_tree pt ON child.parent_id = pt.id
+)
+SELECT id::text AS id
+FROM prohibited_tree
+ORDER BY id ASC;
 
 -- name: GetCategoryDescendants :many
 WITH RECURSIVE cat_tree AS (
@@ -174,30 +203,53 @@ OFFSET sqlc.arg(offset_val)::int;
 -- name: CreateProduct :one
 INSERT INTO products (
     id, shop_id, category_id, name, description, images, status,
-    rejection_reason, min_price_vnd, max_price_vnd, slug, search_text
+    rejection_reason, min_price_vnd, max_price_vnd, slug, search_text, flagged_keywords
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text;
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at;
 
 -- name: GetProductByID :one
 SELECT id, shop_id, category_id, name, description, images, status,
-       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
 FROM products
 WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: GetProductByIDForUpdate :one
 SELECT id, shop_id, category_id, name, description, images, status,
-       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
 FROM products
 WHERE id = $1 AND deleted_at IS NULL
 FOR UPDATE;
 
+-- name: GetProductByIDForUpdateAny :one
+SELECT id, shop_id, category_id, name, description, images, status,
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+FROM products
+WHERE id = $1
+FOR UPDATE;
+
 -- name: GetProductBySlug :one
 SELECT id, shop_id, category_id, name, description, images, status,
-       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
 FROM products
 WHERE slug = $1 AND deleted_at IS NULL;
+
+-- name: GetDeletedApprovedProductBySlug :one
+SELECT id, shop_id, category_id, name, description, images, status,
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+FROM products
+WHERE slug = $1
+  AND deleted_at IS NOT NULL
+  AND first_approved_at IS NOT NULL
+ORDER BY deleted_at DESC, id DESC
+LIMIT 1;
 
 -- name: UpdateProduct :one
 UPDATE products
@@ -211,19 +263,48 @@ SET category_id = $2,
     max_price_vnd = $9,
     slug = $10,
     search_text = $11,
+    flagged_keywords = $12,
+    first_approved_at = CASE
+        WHEN $6 IN ('APPROVED', 'OUT_OF_STOCK') AND first_approved_at IS NULL THEN NOW()
+        ELSE first_approved_at
+    END,
     updated_at = NOW()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text;
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at;
 
 -- name: UpdateProductReview :one
 UPDATE products
 SET status = $2,
     rejection_reason = $3,
+    flagged_keywords = $4,
+    first_approved_at = CASE
+        WHEN $2 IN ('APPROVED', 'OUT_OF_STOCK') AND first_approved_at IS NULL THEN NOW()
+        ELSE first_approved_at
+    END,
     updated_at = NOW()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
-          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at, slug, search_text;
+          rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+          slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at;
+
+-- name: IncrementProductRating :one
+UPDATE products
+SET rating_sum = rating_sum + sqlc.arg(rating_delta)::bigint,
+    review_count = review_count + 1
+WHERE id = sqlc.arg(id)::text
+RETURNING rating_sum, review_count;
+
+-- name: ListProductsForModerationScan :many
+SELECT id, shop_id, category_id, name, description, images, status,
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at
+FROM products
+WHERE deleted_at IS NULL
+  AND (sqlc.arg(cursor_id)::text = '' OR id > sqlc.arg(cursor_id)::text)
+ORDER BY id ASC
+LIMIT sqlc.arg(limit_val)::int;
 
 -- name: UpdateProductStatus :exec
 UPDATE products
@@ -278,7 +359,8 @@ WITH RECURSIVE cat_tree AS (
     JOIN cat_tree ct ON child.parent_id = ct.id
 )
 SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
-       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at, p.slug, p.search_text
+       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at,
+       p.slug, p.search_text, p.rating_sum, p.review_count, p.flagged_keywords, p.first_approved_at
 FROM products p
 WHERE p.deleted_at IS NULL
   AND (sqlc.arg(category_id)::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
@@ -359,7 +441,8 @@ matched_products AS (
       AND s.status <> 'INACTIVE'
 )
 SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status,
-       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at, p.slug, p.search_text
+       p.rejection_reason, p.min_price_vnd, p.max_price_vnd, p.deleted_at, p.created_at, p.updated_at,
+       p.slug, p.search_text, p.rating_sum, p.review_count, p.flagged_keywords, p.first_approved_at
 FROM matched_products mp
 JOIN products p ON p.id = mp.product_id
 WHERE p.deleted_at IS NULL
@@ -889,3 +972,109 @@ SET claimed_until = NULL,
 WHERE id = ANY(sqlc.arg(ids)::text[])
   AND claim_token = sqlc.arg(claim_token)::text
   AND published_at IS NULL;
+
+-- Product Reviews (E5/E6/E7/E8)
+
+-- name: CreateProductReview :one
+INSERT INTO product_reviews (
+    id, product_id, shop_id, order_id, order_item_id, sku_id, sku_name,
+    buyer_id, buyer_name, rating, comment, image_urls, status, created_at, updated_at
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
+RETURNING id, product_id, shop_id, order_id, order_item_id, sku_id, sku_name,
+          buyer_id, buyer_name, rating, comment, image_urls, status, created_at, updated_at;
+
+-- name: CountProductReviews :one
+SELECT COUNT(*)::bigint AS cnt
+FROM product_reviews
+WHERE product_id = sqlc.arg(product_id)::text
+  AND status = 'PUBLISHED'
+  AND (sqlc.arg(rating_filter)::int <= 0 OR rating = sqlc.arg(rating_filter)::int)
+  AND (NOT sqlc.arg(has_images)::bool OR jsonb_array_length(image_urls) > 0);
+
+-- name: ListProductReviews :many
+SELECT id, product_id, shop_id, order_id, order_item_id, sku_id, sku_name,
+       buyer_id, buyer_name, rating, comment, image_urls, status, created_at, updated_at
+FROM product_reviews
+WHERE product_id = sqlc.arg(product_id)::text
+  AND status = 'PUBLISHED'
+  AND (sqlc.arg(rating_filter)::int <= 0 OR rating = sqlc.arg(rating_filter)::int)
+  AND (NOT sqlc.arg(has_images)::bool OR jsonb_array_length(image_urls) > 0)
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg(limit_val)::int
+OFFSET sqlc.arg(offset_val)::int;
+
+-- name: GetProductReviewRatingCounts :many
+SELECT rating::int AS rating, COUNT(*)::int AS cnt
+FROM product_reviews
+WHERE product_id = $1
+  AND status = 'PUBLISHED'
+GROUP BY rating;
+
+-- name: ListReviewsByOrderAndBuyer :many
+SELECT id, product_id, shop_id, order_id, order_item_id, sku_id, sku_name,
+       buyer_id, buyer_name, rating, comment, image_urls, status, created_at, updated_at
+FROM product_reviews
+WHERE order_id = $1
+  AND buyer_id = $2
+ORDER BY created_at ASC, id ASC;
+
+-- Banned Keywords (E9/E10/E11)
+
+-- name: CreateBannedKeyword :one
+INSERT INTO banned_keywords (
+    id, term, normalized_term, category, action, is_active, created_by, created_at, updated_at
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+RETURNING id, term, normalized_term, category, action, is_active, created_by, created_at, updated_at;
+
+-- name: GetBannedKeywordByID :one
+SELECT id, term, normalized_term, category, action, is_active, created_by, created_at, updated_at
+FROM banned_keywords
+WHERE id = $1;
+
+-- name: UpdateBannedKeyword :one
+UPDATE banned_keywords
+SET term = $2,
+    normalized_term = $3,
+    category = $4,
+    action = $5,
+    is_active = $6,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, term, normalized_term, category, action, is_active, created_by, created_at, updated_at;
+
+-- name: DeleteBannedKeyword :execrows
+DELETE FROM banned_keywords
+WHERE id = $1;
+
+-- name: CountBannedKeywords :one
+SELECT COUNT(*)::bigint AS cnt
+FROM banned_keywords
+WHERE (sqlc.arg(include_inactive)::bool OR is_active = TRUE)
+  AND (sqlc.arg(action_filter)::text = '' OR action = sqlc.arg(action_filter)::text)
+  AND (
+      sqlc.arg(query)::text = ''
+      OR LOWER(term) LIKE '%' || sqlc.arg(query)::text || '%' ESCAPE '\'
+      OR normalized_term LIKE '%' || sqlc.arg(query)::text || '%' ESCAPE '\'
+  );
+
+-- name: ListBannedKeywords :many
+SELECT id, term, normalized_term, category, action, is_active, created_by, created_at, updated_at
+FROM banned_keywords
+WHERE (sqlc.arg(include_inactive)::bool OR is_active = TRUE)
+  AND (sqlc.arg(action_filter)::text = '' OR action = sqlc.arg(action_filter)::text)
+  AND (
+      sqlc.arg(query)::text = ''
+      OR LOWER(term) LIKE '%' || sqlc.arg(query)::text || '%' ESCAPE '\'
+      OR normalized_term LIKE '%' || sqlc.arg(query)::text || '%' ESCAPE '\'
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg(limit_val)::int
+OFFSET sqlc.arg(offset_val)::int;
+
+-- name: ListActiveBannedKeywords :many
+SELECT id, term, normalized_term, category, action, is_active, created_by, created_at, updated_at
+FROM banned_keywords
+WHERE is_active = TRUE
+ORDER BY id ASC;

@@ -327,11 +327,12 @@ func (p *pgQueries) CreateCategory(ctx context.Context, cat Category) (Category,
 		ParentID:          toPgText(cat.ParentID),
 		CommissionRateBps: cat.CommissionRateBps,
 		SortOrder:         cat.SortOrder,
+		IsProhibited:      cat.IsProhibited,
 	})
 	if err != nil {
 		return Category{}, mapPgError(err)
 	}
-	return fromDBCategory(row), nil
+	return fromCategoryFields(row.ID, row.Name, row.Slug, row.ParentID, row.CommissionRateBps, row.SortOrder, row.IsProhibited, row.CreatedAt, row.UpdatedAt), nil
 }
 
 func (p *pgQueries) GetCategoryByID(ctx context.Context, id string) (Category, error) {
@@ -342,16 +343,7 @@ func (p *pgQueries) GetCategoryByID(ctx context.Context, id string) (Category, e
 	if err != nil {
 		return Category{}, mapPgError(err)
 	}
-	return Category{
-		ID:                row.ID,
-		Name:              row.Name,
-		Slug:              row.Slug,
-		ParentID:          row.ParentID.String,
-		CommissionRateBps: row.CommissionRateBps,
-		SortOrder:         row.SortOrder,
-		CreatedAt:         row.CreatedAt,
-		UpdatedAt:         row.UpdatedAt,
-	}, nil
+	return fromCategoryFields(row.ID, row.Name, row.Slug, row.ParentID, row.CommissionRateBps, row.SortOrder, row.IsProhibited, row.CreatedAt, row.UpdatedAt), nil
 }
 
 func (p *pgQueries) GetCategoryBySlug(ctx context.Context, slug string) (Category, error) {
@@ -359,7 +351,7 @@ func (p *pgQueries) GetCategoryBySlug(ctx context.Context, slug string) (Categor
 	if err != nil {
 		return Category{}, mapPgError(err)
 	}
-	return fromDBCategory(row), nil
+	return fromCategoryFields(row.ID, row.Name, row.Slug, row.ParentID, row.CommissionRateBps, row.SortOrder, row.IsProhibited, row.CreatedAt, row.UpdatedAt), nil
 }
 
 func (p *pgQueries) UpdateCategory(ctx context.Context, cat Category) (Category, error) {
@@ -370,11 +362,12 @@ func (p *pgQueries) UpdateCategory(ctx context.Context, cat Category) (Category,
 		ParentID:          toPgText(cat.ParentID),
 		CommissionRateBps: cat.CommissionRateBps,
 		SortOrder:         cat.SortOrder,
+		IsProhibited:      cat.IsProhibited,
 	})
 	if err != nil {
 		return Category{}, mapPgError(err)
 	}
-	return fromDBCategory(row), nil
+	return fromCategoryFields(row.ID, row.Name, row.Slug, row.ParentID, row.CommissionRateBps, row.SortOrder, row.IsProhibited, row.CreatedAt, row.UpdatedAt), nil
 }
 
 func (p *pgQueries) UpdateCategoryCommissionRate(ctx context.Context, id string, bps int32) error {
@@ -417,16 +410,7 @@ func (p *pgQueries) ListCategories(ctx context.Context, parentID string) ([]Cate
 		}
 		out := make([]Category, 0, len(rows))
 		for _, r := range rows {
-			out = append(out, Category{
-				ID:                r.ID,
-				Name:              r.Name,
-				Slug:              r.Slug,
-				ParentID:          r.ParentID.String,
-				CommissionRateBps: r.CommissionRateBps,
-				SortOrder:         r.SortOrder,
-				CreatedAt:         r.CreatedAt,
-				UpdatedAt:         r.UpdatedAt,
-			})
+			out = append(out, fromCategoryFields(r.ID, r.Name, r.Slug, r.ParentID, r.CommissionRateBps, r.SortOrder, r.IsProhibited, r.CreatedAt, r.UpdatedAt))
 		}
 		return out, nil
 	case "root":
@@ -436,16 +420,7 @@ func (p *pgQueries) ListCategories(ctx context.Context, parentID string) ([]Cate
 		}
 		out := make([]Category, 0, len(rows))
 		for _, r := range rows {
-			out = append(out, Category{
-				ID:                r.ID,
-				Name:              r.Name,
-				Slug:              r.Slug,
-				ParentID:          r.ParentID.String,
-				CommissionRateBps: r.CommissionRateBps,
-				SortOrder:         r.SortOrder,
-				CreatedAt:         r.CreatedAt,
-				UpdatedAt:         r.UpdatedAt,
-			})
+			out = append(out, fromCategoryFields(r.ID, r.Name, r.Slug, r.ParentID, r.CommissionRateBps, r.SortOrder, r.IsProhibited, r.CreatedAt, r.UpdatedAt))
 		}
 		return out, nil
 	default:
@@ -458,16 +433,7 @@ func (p *pgQueries) ListCategories(ctx context.Context, parentID string) ([]Cate
 		}
 		out := make([]Category, 0, len(rows))
 		for _, r := range rows {
-			out = append(out, Category{
-				ID:                r.ID,
-				Name:              r.Name,
-				Slug:              r.Slug,
-				ParentID:          r.ParentID.String,
-				CommissionRateBps: r.CommissionRateBps,
-				SortOrder:         r.SortOrder,
-				CreatedAt:         r.CreatedAt,
-				UpdatedAt:         r.UpdatedAt,
-			})
+			out = append(out, fromCategoryFields(r.ID, r.Name, r.Slug, r.ParentID, r.CommissionRateBps, r.SortOrder, r.IsProhibited, r.CreatedAt, r.UpdatedAt))
 		}
 		return out, nil
 	}
@@ -482,6 +448,22 @@ func (p *pgQueries) CategoryHasAncestor(ctx context.Context, startID, targetAnce
 		return false, mapPgError(err)
 	}
 	return has, nil
+}
+
+func (p *pgQueries) IsCategoryProhibited(ctx context.Context, categoryID string) (bool, error) {
+	prohibited, err := p.q.IsCategoryProhibited(ctx, categoryID)
+	if err != nil {
+		return false, mapPgError(err)
+	}
+	return prohibited, nil
+}
+
+func (p *pgQueries) ListProhibitedCategoryIDs(ctx context.Context) ([]string, error) {
+	ids, err := p.q.ListProhibitedCategoryIDs(ctx)
+	if err != nil {
+		return nil, mapPgError(err)
+	}
+	return ids, nil
 }
 
 func (p *pgQueries) GetCategoryDescendants(ctx context.Context, categoryIDs []string) ([]string, error) {
@@ -543,6 +525,10 @@ func (p *pgQueries) CreateProduct(ctx context.Context, prod Product) (Product, e
 	if err != nil {
 		return Product{}, err
 	}
+	flaggedBytes, err := marshalStringSlice(prod.FlaggedKeywords)
+	if err != nil {
+		return Product{}, err
+	}
 	row, err := p.q.CreateProduct(ctx, db.CreateProductParams{
 		ID:              prod.ID,
 		ShopID:          prod.ShopID,
@@ -556,6 +542,7 @@ func (p *pgQueries) CreateProduct(ctx context.Context, prod Product) (Product, e
 		MaxPriceVnd:     prod.MaxPriceVND,
 		Slug:            prod.Slug,
 		SearchText:      BuildProductSearchText(prod.Name, prod.Description),
+		FlaggedKeywords: flaggedBytes,
 	})
 	if err != nil {
 		return Product{}, mapPgError(err)
@@ -579,6 +566,14 @@ func (p *pgQueries) GetProductByIDForUpdate(ctx context.Context, id string) (Pro
 	return fromDBProduct(row), nil
 }
 
+func (p *pgQueries) GetProductByIDForUpdateAny(ctx context.Context, id string) (Product, error) {
+	row, err := p.q.GetProductByIDForUpdateAny(ctx, id)
+	if err != nil {
+		return Product{}, mapPgError(err)
+	}
+	return fromDBProduct(row), nil
+}
+
 func (p *pgQueries) GetProductBySlug(ctx context.Context, slug string) (Product, error) {
 	row, err := p.q.GetProductBySlug(ctx, slug)
 	if err != nil {
@@ -587,8 +582,20 @@ func (p *pgQueries) GetProductBySlug(ctx context.Context, slug string) (Product,
 	return fromDBProduct(row), nil
 }
 
+func (p *pgQueries) GetDeletedApprovedProductBySlug(ctx context.Context, slug string) (Product, error) {
+	row, err := p.q.GetDeletedApprovedProductBySlug(ctx, slug)
+	if err != nil {
+		return Product{}, mapPgError(err)
+	}
+	return fromDBProduct(row), nil
+}
+
 func (p *pgQueries) UpdateProduct(ctx context.Context, prod Product) (Product, error) {
 	imgBytes, err := marshalStringSlice(prod.Images)
+	if err != nil {
+		return Product{}, err
+	}
+	flaggedBytes, err := marshalStringSlice(prod.FlaggedKeywords)
 	if err != nil {
 		return Product{}, err
 	}
@@ -604,6 +611,7 @@ func (p *pgQueries) UpdateProduct(ctx context.Context, prod Product) (Product, e
 		MaxPriceVnd:     prod.MaxPriceVND,
 		Slug:            prod.Slug,
 		SearchText:      BuildProductSearchText(prod.Name, prod.Description),
+		FlaggedKeywords: flaggedBytes,
 	})
 	if err != nil {
 		return Product{}, mapPgError(err)
@@ -611,16 +619,47 @@ func (p *pgQueries) UpdateProduct(ctx context.Context, prod Product) (Product, e
 	return fromDBProduct(row), nil
 }
 
-func (p *pgQueries) UpdateProductReview(ctx context.Context, id, status, rejectionReason string) (Product, error) {
+func (p *pgQueries) UpdateProductReview(ctx context.Context, id, status, rejectionReason string, flaggedKeywords []string) (Product, error) {
+	flaggedBytes, err := marshalStringSlice(flaggedKeywords)
+	if err != nil {
+		return Product{}, err
+	}
 	row, err := p.q.UpdateProductReview(ctx, db.UpdateProductReviewParams{
 		ID:              id,
 		Status:          status,
 		RejectionReason: rejectionReason,
+		FlaggedKeywords: flaggedBytes,
 	})
 	if err != nil {
 		return Product{}, mapPgError(err)
 	}
 	return fromDBProduct(row), nil
+}
+
+func (p *pgQueries) IncrementProductRating(ctx context.Context, id string, ratingDelta int64) (int64, int32, error) {
+	row, err := p.q.IncrementProductRating(ctx, db.IncrementProductRatingParams{
+		RatingDelta: ratingDelta,
+		ID:          id,
+	})
+	if err != nil {
+		return 0, 0, mapPgError(err)
+	}
+	return row.RatingSum, row.ReviewCount, nil
+}
+
+func (p *pgQueries) ListProductsForModerationScan(ctx context.Context, cursorID string, limit int32) ([]Product, error) {
+	rows, err := p.q.ListProductsForModerationScan(ctx, db.ListProductsForModerationScanParams{
+		CursorID: cursorID,
+		LimitVal: limit,
+	})
+	if err != nil {
+		return nil, mapPgError(err)
+	}
+	out := make([]Product, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fromDBProduct(r))
+	}
+	return out, nil
 }
 
 func (p *pgQueries) UpdateProductStatus(ctx context.Context, id, status string) error {
@@ -1176,6 +1215,194 @@ func (p *pgQueries) InsertOutboxEvent(ctx context.Context, ev OutboxEvent) error
 	}))
 }
 
+func (p *pgQueries) CreateProductReview(ctx context.Context, r ProductReview) (ProductReview, error) {
+	imgBytes, err := marshalStringSlice(r.ImageURLs)
+	if err != nil {
+		return ProductReview{}, err
+	}
+	st := r.Status
+	if st == "" {
+		st = ReviewStatusPublished
+	}
+	createdAt := r.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = AsOfFromContext(ctx)
+	}
+	row, err := p.q.CreateProductReview(ctx, db.CreateProductReviewParams{
+		ID:          r.ID,
+		ProductID:   r.ProductID,
+		ShopID:      r.ShopID,
+		OrderID:     r.OrderID,
+		OrderItemID: r.OrderItemID,
+		SkuID:       r.SKUID,
+		SkuName:     r.SKUName,
+		BuyerID:     r.BuyerID,
+		BuyerName:   r.BuyerName,
+		Rating:      int16(r.Rating),
+		Comment:     r.Comment,
+		ImageUrls:   imgBytes,
+		Status:      st,
+		CreatedAt:   createdAt.UTC(),
+	})
+	if err != nil {
+		return ProductReview{}, mapPgError(err)
+	}
+	return fromDBProductReview(row), nil
+}
+
+func (p *pgQueries) ListProductReviews(ctx context.Context, filter ListProductReviewsFilter) ([]ProductReview, int64, error) {
+	total, err := p.q.CountProductReviews(ctx, db.CountProductReviewsParams{
+		ProductID:    filter.ProductID,
+		RatingFilter: filter.RatingFilter,
+		HasImages:    filter.HasImages,
+	})
+	if err != nil {
+		return nil, 0, mapPgError(err)
+	}
+	if total == 0 {
+		return []ProductReview{}, 0, nil
+	}
+	rows, err := p.q.ListProductReviews(ctx, db.ListProductReviewsParams{
+		ProductID:    filter.ProductID,
+		RatingFilter: filter.RatingFilter,
+		HasImages:    filter.HasImages,
+		OffsetVal:    filter.Offset,
+		LimitVal:     filter.Limit,
+	})
+	if err != nil {
+		return nil, 0, mapPgError(err)
+	}
+	out := make([]ProductReview, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, fromDBProductReview(row))
+	}
+	return out, total, nil
+}
+
+func (p *pgQueries) GetProductReviewRatingCounts(ctx context.Context, productID string) (map[int32]int32, error) {
+	rows, err := p.q.GetProductReviewRatingCounts(ctx, productID)
+	if err != nil {
+		return nil, mapPgError(err)
+	}
+	counts := map[int32]int32{1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+	for _, r := range rows {
+		counts[r.Rating] = r.Cnt
+	}
+	return counts, nil
+}
+
+func (p *pgQueries) ListReviewsByOrderAndBuyer(ctx context.Context, orderID, buyerID string) ([]ProductReview, error) {
+	rows, err := p.q.ListReviewsByOrderAndBuyer(ctx, db.ListReviewsByOrderAndBuyerParams{
+		OrderID: orderID,
+		BuyerID: buyerID,
+	})
+	if err != nil {
+		return nil, mapPgError(err)
+	}
+	out := make([]ProductReview, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, fromDBProductReview(row))
+	}
+	return out, nil
+}
+
+func (p *pgQueries) CreateBannedKeyword(ctx context.Context, kw BannedKeyword) (BannedKeyword, error) {
+	createdAt := kw.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = AsOfFromContext(ctx)
+	}
+	row, err := p.q.CreateBannedKeyword(ctx, db.CreateBannedKeywordParams{
+		ID:             kw.ID,
+		Term:           kw.Term,
+		NormalizedTerm: kw.NormalizedTerm,
+		Category:       kw.Category,
+		Action:         kw.Action,
+		IsActive:       kw.IsActive,
+		CreatedBy:      kw.CreatedBy,
+		CreatedAt:      createdAt.UTC(),
+	})
+	if err != nil {
+		return BannedKeyword{}, mapPgError(err)
+	}
+	return fromDBBannedKeyword(row), nil
+}
+
+func (p *pgQueries) GetBannedKeywordByID(ctx context.Context, id string) (BannedKeyword, error) {
+	row, err := p.q.GetBannedKeywordByID(ctx, id)
+	if err != nil {
+		return BannedKeyword{}, mapPgError(err)
+	}
+	return fromDBBannedKeyword(row), nil
+}
+
+func (p *pgQueries) UpdateBannedKeyword(ctx context.Context, kw BannedKeyword) (BannedKeyword, error) {
+	row, err := p.q.UpdateBannedKeyword(ctx, db.UpdateBannedKeywordParams{
+		ID:             kw.ID,
+		Term:           kw.Term,
+		NormalizedTerm: kw.NormalizedTerm,
+		Category:       kw.Category,
+		Action:         kw.Action,
+		IsActive:       kw.IsActive,
+	})
+	if err != nil {
+		return BannedKeyword{}, mapPgError(err)
+	}
+	return fromDBBannedKeyword(row), nil
+}
+
+func (p *pgQueries) DeleteBannedKeyword(ctx context.Context, id string) (bool, error) {
+	n, err := p.q.DeleteBannedKeyword(ctx, id)
+	if err != nil {
+		return false, mapPgError(err)
+	}
+	return n > 0, nil
+}
+
+func (p *pgQueries) ListBannedKeywords(ctx context.Context, filter ListBannedKeywordsFilter) ([]BannedKeyword, int64, error) {
+	sqlQuery := ""
+	if trimmed := strings.ToLower(strings.TrimSpace(filter.Query)); trimmed != "" {
+		sqlQuery = EscapeLikePattern(trimmed)
+	}
+	total, err := p.q.CountBannedKeywords(ctx, db.CountBannedKeywordsParams{
+		IncludeInactive: filter.IncludeInactive,
+		ActionFilter:    filter.Action,
+		Query:           sqlQuery,
+	})
+	if err != nil {
+		return nil, 0, mapPgError(err)
+	}
+	if total == 0 {
+		return []BannedKeyword{}, 0, nil
+	}
+	rows, err := p.q.ListBannedKeywords(ctx, db.ListBannedKeywordsParams{
+		IncludeInactive: filter.IncludeInactive,
+		ActionFilter:    filter.Action,
+		Query:           sqlQuery,
+		OffsetVal:       filter.Offset,
+		LimitVal:        filter.Limit,
+	})
+	if err != nil {
+		return nil, 0, mapPgError(err)
+	}
+	out := make([]BannedKeyword, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, fromDBBannedKeyword(row))
+	}
+	return out, total, nil
+}
+
+func (p *pgQueries) ListActiveBannedKeywords(ctx context.Context) ([]BannedKeyword, error) {
+	rows, err := p.q.ListActiveBannedKeywords(ctx)
+	if err != nil {
+		return nil, mapPgError(err)
+	}
+	out := make([]BannedKeyword, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, fromDBBannedKeyword(row))
+	}
+	return out, nil
+}
+
 func mapPgError(err error) error {
 	if err == nil {
 		return nil
@@ -1202,16 +1429,57 @@ func toPgText(s string) pgtype.Text {
 	return pgtype.Text{String: s, Valid: true}
 }
 
-func fromDBCategory(c db.Category) Category {
+func fromCategoryFields(
+	id, name, slug string,
+	parentID pgtype.Text,
+	commissionRateBps, sortOrder int32,
+	isProhibited bool,
+	createdAt, updatedAt time.Time,
+) Category {
 	return Category{
-		ID:                c.ID,
-		Name:              c.Name,
-		Slug:              c.Slug,
-		ParentID:          c.ParentID.String,
-		CommissionRateBps: c.CommissionRateBps,
-		SortOrder:         c.SortOrder,
-		CreatedAt:         c.CreatedAt,
-		UpdatedAt:         c.UpdatedAt,
+		ID:                id,
+		Name:              name,
+		Slug:              slug,
+		ParentID:          parentID.String,
+		CommissionRateBps: commissionRateBps,
+		SortOrder:         sortOrder,
+		IsProhibited:      isProhibited,
+		CreatedAt:         createdAt,
+		UpdatedAt:         updatedAt,
+	}
+}
+
+func fromDBProductReview(r db.ProductReview) ProductReview {
+	return ProductReview{
+		ID:          r.ID,
+		ProductID:   r.ProductID,
+		ShopID:      r.ShopID,
+		OrderID:     r.OrderID,
+		OrderItemID: r.OrderItemID,
+		SKUID:       r.SkuID,
+		SKUName:     r.SkuName,
+		BuyerID:     r.BuyerID,
+		BuyerName:   r.BuyerName,
+		Rating:      int32(r.Rating),
+		Comment:     r.Comment,
+		ImageURLs:   unmarshalStringSlice(r.ImageUrls),
+		Status:      r.Status,
+		CreatedAt:   r.CreatedAt,
+		UpdatedAt:   r.UpdatedAt,
+	}
+}
+
+func fromDBBannedKeyword(k db.BannedKeyword) BannedKeyword {
+	return BannedKeyword{
+		ID:             k.ID,
+		Term:           k.Term,
+		NormalizedTerm: k.NormalizedTerm,
+		Category:       k.Category,
+		Action:         k.Action,
+		IsActive:       k.IsActive,
+		CreatedBy:      k.CreatedBy,
+		CreatedAt:      k.CreatedAt,
+		UpdatedAt:      k.UpdatedAt,
 	}
 }
 
@@ -1260,6 +1528,10 @@ func fromDBProduct(p db.Product) Product {
 		RejectionReason: p.RejectionReason,
 		MinPriceVND:     p.MinPriceVnd,
 		MaxPriceVND:     p.MaxPriceVnd,
+		RatingSum:       p.RatingSum,
+		ReviewCount:     p.ReviewCount,
+		FlaggedKeywords: unmarshalStringSlice(p.FlaggedKeywords),
+		FirstApprovedAt: p.FirstApprovedAt,
 		DeletedAt:       p.DeletedAt,
 		CreatedAt:       p.CreatedAt,
 		UpdatedAt:       p.UpdatedAt,

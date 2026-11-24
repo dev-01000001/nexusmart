@@ -204,13 +204,17 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
   };
 
   const handleShipOrder = async (order: GatewayOrder) => {
-    if (!canSellerShipOrder(order.status, order.tracking_code) || busyOrderId) return;
+    if (!canSellerShipOrder(order.status, order.tracking_code) || busyOrderId) {
+      return;
+    }
     setBusyOrderId(order.id);
     try {
       const res = await api<{
         order: GatewayOrder;
         tracking_code?: string;
         label_url?: string;
+        queued?: boolean;
+        shipment_job_id?: string;
       }>(`seller/orders/${order.id}/ship`, {
         method: "POST",
         json: {
@@ -219,17 +223,27 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
         },
       });
       if (res.order) {
-        setOrders((prev) => prev.map((item) => (item.id === order.id ? res.order : item)));
+        const nextOrder =
+          res.queued && !res.order.shipment_job_status
+            ? { ...res.order, shipment_job_status: "QUEUED" }
+            : res.order;
+        setOrders((prev) => prev.map((item) => (item.id === order.id ? nextOrder : item)));
       } else {
         await loadOrders();
       }
       setShippingOrderId(null);
       await refreshPendingOrders();
-      showToast(
-        res.tracking_code
-          ? `Đã tạo vận đơn ${res.tracking_code} cho đơn ${order.order_code}. Trạng thái: Chờ hãng lấy hàng.`
-          : `Đã tạo vận đơn cho đơn ${order.order_code}. Trạng thái: Chờ hãng lấy hàng.`
-      );
+      if (res.queued) {
+        showToast(
+          `Đơn ${order.order_code}: hãng vận chuyển đang tạm gián đoạn. Đơn chuyển sang Đang chờ tạo lại với hãng — bạn có thể bấm Thử tạo lại ngay nếu cần.`
+        );
+      } else {
+        showToast(
+          res.tracking_code
+            ? `Đã tạo vận đơn ${res.tracking_code} cho đơn ${order.order_code}. Trạng thái: Chờ hãng lấy hàng.`
+            : `Đã tạo vận đơn cho đơn ${order.order_code}. Trạng thái: Chờ hãng lấy hàng.`
+        );
+      }
     } catch (err) {
       showToast(translateSellerShipError(err));
     } finally {
@@ -445,6 +459,9 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
                         const netVnd = computeOrderNetVnd(o);
                         const isBusy = busyOrderId === o.id;
                         const canConfirm = canSellerConfirmOrder(o.status);
+                        const isQueued =
+                          !o.tracking_code &&
+                          (o.shipment_job_status ?? "").trim().toUpperCase() === "QUEUED";
                         const canShip = canSellerShipOrder(o.status, o.tracking_code);
                         const showShipDrawer = shippingOrderId === o.id;
 
@@ -505,7 +522,11 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
                                       disabled={isBusy}
                                       onClick={() => handleToggleShipDrawer(o)}
                                     >
-                                      {showShipDrawer ? "Đóng" : "Tạo vận đơn"}
+                                      {showShipDrawer
+                                        ? "Đóng"
+                                        : isQueued
+                                          ? "Thử tạo lại ngay"
+                                          : "Tạo vận đơn"}
                                     </button>
                                   )}
                                   {(() => {
@@ -592,6 +613,9 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
                     const summary = summarizeItems(o);
                     const isBusy = busyOrderId === o.id;
                     const canConfirm = canSellerConfirmOrder(o.status);
+                    const isQueued =
+                      !o.tracking_code &&
+                      (o.shipment_job_status ?? "").trim().toUpperCase() === "QUEUED";
                     const canShip = canSellerShipOrder(o.status, o.tracking_code);
                     const showShipDrawer = shippingOrderId === o.id;
                     return (
@@ -634,7 +658,11 @@ function SellerOrdersInner({ shop }: { shop: GatewayShop }) {
                                 disabled={isBusy}
                                 onClick={() => handleToggleShipDrawer(o)}
                               >
-                                Tạo vận đơn
+                                {showShipDrawer
+                                  ? "Đóng"
+                                  : isQueued
+                                    ? "Thử tạo lại ngay"
+                                    : "Tạo vận đơn"}
                               </button>
                             )}
                             {(() => {

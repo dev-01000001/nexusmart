@@ -179,6 +179,27 @@ func mapStoreError(err error) error {
 	return status.Errorf(codes.Internal, "internal order error: %v", err)
 }
 
+func (s *OrderService) codMaxRejectedCount() int32 {
+	if s.cfg.CODMaxRejectedCount <= 0 {
+		return 3
+	}
+	return s.cfg.CODMaxRejectedCount
+}
+
+func (s *OrderService) codMinOrdersForRate() int64 {
+	if s.cfg.CODMinOrdersForRate <= 0 {
+		return 3
+	}
+	return int64(s.cfg.CODMinOrdersForRate)
+}
+
+func (s *OrderService) codMaxRejectRateBPS() int64 {
+	if s.cfg.CODMaxRejectRateBPS <= 0 {
+		return 3000
+	}
+	return int64(s.cfg.CODMaxRejectRateBPS)
+}
+
 func (s *OrderService) paymentExpiryDuration() time.Duration {
 	mins := s.cfg.PaymentExpiryMinutes
 	if mins <= 0 {
@@ -383,6 +404,7 @@ func aggregateToProtoForCaller(agg store.OrderAggregate, caller callerIdentity) 
 		CreatedAt:                  timestamppb.New(ord.CreatedAt),
 		UpdatedAt:                  timestamppb.New(ord.UpdatedAt),
 		NeedsManualReview:          isAdmin && ord.OrphanShipmentNeedsManualReview,
+		ShipmentJobStatus:          ord.ShipmentJobStatus,
 	}
 	if ord.PaymentExpiresAt != nil {
 		out.PaymentExpiresAt = timestamppb.New(*ord.PaymentExpiresAt)

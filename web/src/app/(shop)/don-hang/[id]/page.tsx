@@ -2,6 +2,7 @@ import React from "react";
 import { notFound } from "next/navigation";
 import type {
   GatewayOrder,
+  GatewayOrderReviewsResponse,
   GatewayOrderTimelineEvent,
   GatewayPublicShop,
   GatewayRefund,
@@ -105,12 +106,14 @@ export default async function OrderDetailPage({
     Boolean(order.return_request_id) ||
     order.status === "RETURN_REQUESTED" ||
     order.status === "RETURNED";
+  const shouldFetchReviews = order.status === "COMPLETED";
   const [
     timelineRes,
     shipmentRes,
     returnRes,
     returnShipmentRes,
     refundsRes,
+    orderReviewsRes,
     shopRes,
     visuals,
     pendingOrdersRes,
@@ -133,6 +136,9 @@ export default async function OrderDetailPage({
     gatewayFetch<PaginatedResponse<GatewayRefund>>(
       `/orders/${encodedId}/refunds?page=1&page_size=20`
     ).catch(() => null),
+    shouldFetchReviews
+      ? gatewayFetch<GatewayOrderReviewsResponse>(`/orders/${encodedId}/reviews`).catch(() => null)
+      : Promise.resolve(null),
     gatewayFetch<{ shop: GatewayPublicShop }>(`/shops/${encodeURIComponent(order.shop_id)}`, {
       token: false,
       cache: "no-store",
@@ -166,6 +172,7 @@ export default async function OrderDetailPage({
       initialReturnRequest={returnRes?.return_request ?? null}
       initialReturnShipment={returnShipmentRes?.shipment ? returnShipmentRes : null}
       initialRefunds={Array.isArray(refundsRes?.items) ? refundsRes.items : []}
+      initialReviews={Array.isArray(orderReviewsRes?.reviews) ? orderReviewsRes.reviews : []}
       shop={shopRes?.shop ?? null}
       visuals={visuals}
       orderId={order.id}

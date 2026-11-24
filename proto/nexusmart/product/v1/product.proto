@@ -21,6 +21,18 @@ enum ProductReviewDecision {
   PRODUCT_REVIEW_DECISION_REJECT = 2;
 }
 
+enum ReviewStatus {
+  REVIEW_STATUS_UNSPECIFIED = 0;
+  REVIEW_STATUS_PUBLISHED = 1;
+  REVIEW_STATUS_HIDDEN = 2;
+}
+
+enum BannedKeywordAction {
+  BANNED_KEYWORD_ACTION_UNSPECIFIED = 0;
+  BANNED_KEYWORD_ACTION_BLOCK = 1;
+  BANNED_KEYWORD_ACTION_REVIEW = 2;
+}
+
 message Category {
   string id = 1;
   string name = 2;
@@ -30,6 +42,8 @@ message Category {
   int32 sort_order = 6;
   google.protobuf.Timestamp created_at = 7;
   google.protobuf.Timestamp updated_at = 8;
+  // Prohibited category flag (E10): creating/updating/approving products in this category or any descendant is rejected.
+  bool is_prohibited = 9;
 }
 
 message SKU {
@@ -80,6 +94,11 @@ message Product {
   google.protobuf.Timestamp created_at = 12;
   google.protobuf.Timestamp updated_at = 13;
   string slug = 14;
+  // Integer average rating scaled by 100 (0..500, e.g. 475 = 4.75 stars; never float) (E6/E14).
+  int32 rating_avg_x100 = 15;
+  int32 review_count = 16;
+  // Matched REVIEW-level banned keywords for moderation visibility (omitted from public gateway JSON) (E10).
+  repeated string flagged_keywords = 17;
 }
 
 message CreateCategoryRequest {
@@ -88,6 +107,7 @@ message CreateCategoryRequest {
   string parent_id = 3;
   int32 commission_rate_bps = 4;
   int32 sort_order = 5;
+  bool is_prohibited = 6;
 }
 
 message CreateCategoryResponse {
@@ -105,6 +125,8 @@ message UpdateCategoryRequest {
   bool has_commission_rate_bps = 7;
   bool has_sort_order = 8;
   bool has_parent_id = 9;
+  bool is_prohibited = 10;
+  bool has_is_prohibited = 11;
 }
 
 message UpdateCategoryResponse {
@@ -180,10 +202,17 @@ message AdminReviewProductResponse {
 message GetProductRequest {
   string id = 1;
   string slug = 2;
+  // When true on a public slug lookup, previously-approved products that are now HIDDEN/REJECTED/soft-deleted
+  // return a discontinued stub instead of NotFound; unknown or never-approved slugs still return NotFound (E13).
+  bool include_discontinued_stub = 3;
 }
 
 message GetProductResponse {
   Product product = 1;
+  bool discontinued = 2;
+  string discontinued_category_id = 3;
+  // Populated ONLY when the discontinued product's current status is HIDDEN (empty for REJECTED or soft-deleted) (E13).
+  string discontinued_name = 4;
 }
 
 message ListProductsRequest {
@@ -311,6 +340,159 @@ message ListCategoryFeeSchedulesResponse {
   int64 total = 2;
 }
 
+message ProductReview {
+  string id = 1;
+  string product_id = 2;
+  string shop_id = 3;
+  string order_id = 4;
+  string order_item_id = 5;
+  string sku_id = 6;
+  string sku_name = 7;
+  string buyer_id = 8;
+  // Masked display name snapshotted from UserService.GetProfile at creation time (E5).
+  string buyer_name = 9;
+  int32 rating = 10;
+  string comment = 11;
+  repeated string image_urls = 12;
+  ReviewStatus status = 13;
+  google.protobuf.Timestamp created_at = 14;
+  google.protobuf.Timestamp updated_at = 15;
+}
+
+message CreateReviewRequest {
+  string order_id = 1;
+  string order_item_id = 2;
+  int32 rating = 3;
+  string comment = 4;
+  // Max 5 URLs (<= 500 chars each, https:// or internal /products/... only) (E7).
+  repeated string image_urls = 5;
+}
+
+message CreateReviewResponse {
+  ProductReview review = 1;
+}
+
+message ListProductReviewsRequest {
+  string product_id = 1;
+  // Optional 1..5 filter; 0 returns all ratings.
+  int32 rating_filter = 2;
+  bool has_images = 3;
+  int32 page = 4;
+  int32 page_size = 5;
+}
+
+message ListProductReviewsResponse {
+  repeated ProductReview reviews = 1;
+  int64 total = 2;
+  int32 rating_avg_x100 = 3;
+  int32 review_count = 4;
+  map<int32, int32> rating_counts = 5;
+}
+
+message ListOrderReviewsRequest {
+  string order_id = 1;
+}
+
+message ListOrderReviewsResponse {
+  repeated ProductReview reviews = 1;
+}
+
+message BannedKeyword {
+  string id = 1;
+  string term = 2;
+  string normalized_term = 3;
+  string category = 4;
+  BannedKeywordAction action = 5;
+  bool is_active = 6;
+  string created_by = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+message BannedContentProductSample {
+  string product_id = 1;
+  string shop_id = 2;
+  string name = 3;
+  string slug = 4;
+  ProductStatus status = 5;
+  repeated string matched_terms = 6;
+  BannedKeywordAction highest_action = 7;
+}
+
+message ListBannedKeywordsRequest {
+  string query = 1;
+  BannedKeywordAction action = 2;
+  bool include_inactive = 3;
+  int32 page = 4;
+  int32 page_size = 5;
+}
+
+message ListBannedKeywordsResponse {
+  repeated BannedKeyword keywords = 1;
+  int64 total = 2;
+}
+
+message CreateBannedKeywordRequest {
+  string term = 1;
+  string category = 2;
+  BannedKeywordAction action = 3;
+}
+
+message CreateBannedKeywordResponse {
+  BannedKeyword keyword = 1;
+}
+
+message UpdateBannedKeywordRequest {
+  string id = 1;
+  string term = 2;
+  string category = 3;
+  BannedKeywordAction action = 4;
+  bool is_active = 5;
+  bool has_is_active = 6;
+}
+
+message UpdateBannedKeywordResponse {
+  BannedKeyword keyword = 1;
+}
+
+message DeleteBannedKeywordRequest {
+  string id = 1;
+}
+
+message DeleteBannedKeywordResponse {
+  bool ok = 1;
+}
+
+message PreviewBannedKeywordRequest {
+  string term = 1;
+}
+
+message PreviewBannedKeywordResponse {
+  int64 affected_count = 1;
+  // Up to 20 sample products matching the term (E11).
+  repeated BannedContentProductSample samples = 2;
+}
+
+message RescanProductsForBannedContentRequest {
+  // Optional subset of banned_keywords.id values; empty scans against all active rules and prohibited categories.
+  repeated string keyword_ids = 1;
+  bool dry_run = 2;
+  // Opaque pagination cursor from the previous batch's next_cursor (E11).
+  string cursor = 3;
+  // Batch size (default 500, capped at 500 per E11).
+  int32 limit = 4;
+}
+
+message RescanProductsForBannedContentResponse {
+  int32 scanned_count = 1;
+  int32 blocked_count = 2;
+  int32 flagged_count = 3;
+  // Up to 20 sample affected products in this batch (E11).
+  repeated BannedContentProductSample samples = 4;
+  bool has_more = 5;
+  string next_cursor = 6;
+}
+
 service ProductService {
   rpc CreateCategory(CreateCategoryRequest) returns (CreateCategoryResponse);
   rpc UpdateCategory(UpdateCategoryRequest) returns (UpdateCategoryResponse);
@@ -331,4 +513,13 @@ service ProductService {
   rpc ReleaseStock(ReleaseStockRequest) returns (ReleaseStockResponse);
   rpc ConfirmStock(ConfirmStockRequest) returns (ConfirmStockResponse);
   rpc RestockOrderItems(RestockOrderItemsRequest) returns (RestockOrderItemsResponse);
+  rpc CreateReview(CreateReviewRequest) returns (CreateReviewResponse);
+  rpc ListProductReviews(ListProductReviewsRequest) returns (ListProductReviewsResponse);
+  rpc ListOrderReviews(ListOrderReviewsRequest) returns (ListOrderReviewsResponse);
+  rpc ListBannedKeywords(ListBannedKeywordsRequest) returns (ListBannedKeywordsResponse);
+  rpc CreateBannedKeyword(CreateBannedKeywordRequest) returns (CreateBannedKeywordResponse);
+  rpc UpdateBannedKeyword(UpdateBannedKeywordRequest) returns (UpdateBannedKeywordResponse);
+  rpc DeleteBannedKeyword(DeleteBannedKeywordRequest) returns (DeleteBannedKeywordResponse);
+  rpc PreviewBannedKeyword(PreviewBannedKeywordRequest) returns (PreviewBannedKeywordResponse);
+  rpc RescanProductsForBannedContent(RescanProductsForBannedContentRequest) returns (RescanProductsForBannedContentResponse);
 }

@@ -21,6 +21,7 @@ const (
 	StatusReturning  = "returning"
 	StatusReturned   = "returned"
 	StatusCancelled  = "cancelled"
+	StatusQueued     = "queued"
 
 	// DefaultLabelBaseURL is the fallback public label base URL when SHIPPING_LABEL_BASE_URL is unset.
 	DefaultLabelBaseURL = "http://localhost:8080/api/v1/shipping/labels"
@@ -28,6 +29,11 @@ const (
 
 // ErrInvalidCarrierToken indicates a carrier rejected or could not accept the provided API token.
 var ErrInvalidCarrierToken = errors.New("invalid carrier API token")
+
+// ErrMissingGHNMapping indicates a ward lacks a GHN district/ward code mapping in sandbox mode.
+// Aggregator treats it as fallback-eligible in CalculateFee (not out-of-service-area),
+// while CreateShipment rejects it immediately as non-retryable without calling GHN.
+var ErrMissingGHNMapping = errors.New("phường chưa có mã GHN, chọn hãng khác")
 
 // NonRetryableError wraps errors that should not be retried (e.g., 4xx validation errors).
 type NonRetryableError struct {
@@ -56,18 +62,19 @@ func IsNonRetryable(err error) bool {
 
 // FeeRequest contains route and package parameters for shipping fee calculation.
 type FeeRequest struct {
-	ShopID           string
-	FromProvinceCode string
-	FromWardCode     string
-	FromDistrictID   int
-	FromGHNWardCode  string
-	ToProvinceCode   string
-	ToWardCode       string
-	ToDistrictID     int
-	ToGHNWardCode    string
-	WeightGrams      int32
-	CODAmountVND     int64
-	AllowedCarriers  []string
+	ShopID                string
+	FromProvinceCode      string
+	FromWardCode          string
+	FromDistrictID        int
+	FromGHNWardCode       string
+	ToProvinceCode        string
+	ToWardCode            string
+	ToDistrictID          int
+	ToGHNWardCode         string
+	WeightGrams           int32
+	CODAmountVND          int64
+	FallbackWeightItemQty int32
+	AllowedCarriers       []string
 }
 
 // Quote represents a shipping option from a carrier or fallback table.
@@ -79,6 +86,7 @@ type Quote struct {
 	FeeVND        int64
 	EstimatedDays int32
 	IsFallback    bool
+	CODSupported  bool
 }
 
 // Address holds sender/recipient details for creating a carrier shipment.

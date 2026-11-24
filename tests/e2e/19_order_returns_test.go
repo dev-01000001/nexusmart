@@ -467,6 +467,7 @@ func TestE2E_OrderW2AReturnsAndShipments(t *testing.T) {
 	t.Run("D_CODDelivered_ReturnRefunds", func(t *testing.T) {
 		seller := env.createApprovedSeller(t, "ordw2-s-d")
 		buyer := env.registerVerifyAndLogin(t, "ordw2-b-d")
+		env.verifyBuyerPhone(t, buyer)
 		addr := env.addAddress(t, buyer)
 		_, sku := env.createApprovedProduct(t, seller, cat.ID, "OrdW2 Return Flow D COD", 180000, 15, 500)
 
@@ -516,6 +517,7 @@ func TestE2E_OrderW2AReturnsAndShipments(t *testing.T) {
 	t.Run("E_CancelOrderWithShipment_BeforeAndAfterPicked", func(t *testing.T) {
 		seller := env.createApprovedSeller(t, "ordw2-s-e")
 		buyer := env.registerVerifyAndLogin(t, "ordw2-b-e")
+		env.verifyBuyerPhone(t, buyer)
 		addr := env.addAddress(t, buyer)
 		_, sku := env.createApprovedProduct(t, seller, cat.ID, "OrdW2 Cancel Shipment E", 120000, 20, 400)
 		quote := env.calculateShippingQuote(t, buyer.AccessToken, seller.ShopID, 400, 120000)
@@ -860,6 +862,7 @@ func TestE2E_OrderW2A_Review2EdgeCases(t *testing.T) {
 
 		// 7b. COD failed delivery -> RETURNED, empty delivered_at, cod_rejected_count increments, restocked.
 		buyerCOD := env.registerVerifyAndLogin(t, "ordw2-r3-b7cod")
+		env.verifyBuyerPhone(t, buyerCOD)
 		addrCOD := env.addAddress(t, buyerCOD)
 		meBefore := ordW2GetMe(t, env, buyerCOD.AccessToken)
 		qCOD := env.calculateShippingQuote(t, buyerCOD.AccessToken, seller.ShopID, 400, 180000)
@@ -920,6 +923,7 @@ func TestE2E_OrderW2A_Review2EdgeCases(t *testing.T) {
 		seller1 := env.createApprovedSeller(t, "ordw2-r3-s8a")
 		seller2 := env.createApprovedSeller(t, "ordw2-r3-s8b")
 		buyer := env.registerVerifyAndLogin(t, "ordw2-r3-b8")
+		env.verifyBuyerPhone(t, buyer)
 		addr := env.addAddress(t, buyer)
 		prod1, sku1 := env.createApprovedProduct(t, seller1, cat.ID, "OrdW2 R3 MultiShop1", 130000, 10, 400)
 		prod2, sku2 := env.createApprovedProduct(t, seller2, cat.ID, "OrdW2 R3 MultiShop2", 160000, 10, 400)

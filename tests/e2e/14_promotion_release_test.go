@@ -67,6 +67,7 @@ func TestE2E_PromotionPartialRelease_SubOrderCancel(t *testing.T) {
 	platformVoucher := env.createAdminVoucher(t, "PLATFORM", 30000, 200000, 10)
 
 	buyer := env.registerVerifyAndLogin(t, "buyer-prm-r5")
+	env.verifyBuyerPhone(t, buyer)
 	addr := env.addAddress(t, buyer)
 
 	const (

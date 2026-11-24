@@ -299,6 +299,8 @@ mod tests {
             "GetFeeConfig",
             "SetFeeConfig",
             "ListSellerLedger",
+            "ImportCodReconciliation",
+            "ListReconciliationRuns",
         ] {
             let err = auth().authenticate(&m, method).unwrap_err();
             assert_eq!(err.code(), tonic::Code::Unauthenticated, "{method}");
@@ -363,6 +365,8 @@ mod tests {
             "ResolveReconciliationItem",
             "SetFeeConfig",
             "ListSellerLedger",
+            "ImportCodReconciliation",
+            "ListReconciliationRuns",
         ] {
             let denied = a
                 .authenticate(&md(&[bearer(svc(SVC_KEY, exp_in(60)))]), method)
@@ -456,6 +460,11 @@ mod tests {
                 escrow_status: "pending".into(),
                 settled_at: None,
                 released_at: None,
+                tracking_code: None,
+                carrier_code: None,
+                order_code: None,
+                cod_reconciled_at: None,
+                cod_reconciliation_run_id: None,
                 created_at: now,
             }],
         };

@@ -79,7 +79,10 @@ func run() error {
 		log.Error("failed to connect NATS JetStream", slog.String("error", err.Error()))
 		return err
 	}
-	defer nc.Close()
+	defer func() {
+		_ = nc.FlushTimeout(2 * time.Second)
+		nc.Close()
+	}()
 
 	svcMgr, err := auth.NewManager(os.Getenv("SERVICE_JWT_SECRET"), auth.ServiceTokenTTL)
 	if err != nil {

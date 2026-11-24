@@ -202,6 +202,7 @@ func TestE2E_OrderMoneyAndLifecycleFixes(t *testing.T) {
 		platV := env.createAdminVoucher(t, "PLATFORM", 20000, 100000, 5)
 
 		buyer := env.registerVerifyAndLogin(t, "ordfix-subcancel")
+		env.verifyBuyerPhone(t, buyer)
 		addr := env.addAddress(t, buyer)
 		env.saveVoucher(t, buyer.AccessToken, shopV1)
 		env.saveVoucher(t, buyer.AccessToken, platV)
@@ -411,6 +412,7 @@ func TestE2E_OrderMoneyAndLifecycleFixes(t *testing.T) {
 		ctx := env.ctx(t)
 		_, sku := env.createApprovedProduct(t, seller1, cat.ID, "OrderFix ReturnGuard", 140000, 30, 400)
 		buyer := env.registerVerifyAndLogin(t, "ordfix-retguard")
+		env.verifyBuyerPhone(t, buyer)
 		addr := env.addAddress(t, buyer)
 		quote := env.calculateShippingQuote(t, buyer.AccessToken, seller1.ShopID, 400, 140000)
 

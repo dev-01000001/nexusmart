@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use async_nats::jetstream::{
     self,
-    consumer::PullConsumer,
+    consumer::{FromConsumer, PullConsumer},
     context::{GetStreamErrorKind, PublishErrorKind},
     stream, AckKind,
 };
@@ -31,6 +31,14 @@ const OUTBOX_RELAY_BACKOFF_MAX: Duration = Duration::from_secs(5);
 const OUTBOX_ROW_BACKOFF_MAX_SECS: i64 = 60;
 const OUTBOX_BATCH_LIMIT: i64 = 50;
 const MAX_NATS_DELIVERIES: i64 = 5;
+/// JetStream `max_deliver` MUST exceed `MAX_NATS_DELIVERIES` (DLQ threshold) so redelivery remains
+/// available when both DLQ sinks transiently fail (E1).
+const CONSUMER_MAX_DELIVER: i64 = MAX_NATS_DELIVERIES + 1;
+/// Pull 1 message per batch because `handle_order_event` processes sequentially; the default
+/// 200-message prefetch burns `NumDelivered` for all buffered messages on restart.
+const ORDER_CONSUMER_PULL_BATCH: usize = 1;
+const DLQ_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const ORDER_EVENT_PROCESS_TIMEOUT: Duration = Duration::from_secs(25);
 const MAX_ENSURE_STREAM_ATTEMPTS: usize = 5;
 const DLQ_STREAM_NAME: &str = "NEXUSMART_DLQ";
 const ORDER_CONSUMER_NAME: &str = "payment-order-events";
@@ -43,6 +51,7 @@ pub const CANONICAL_PRIMARY_SUBJECTS: &[&str] = &[
     "shipment.>",
     "product.>",
     "promotion.>",
+    "review.>",
 ];
 
 /// Order lifecycle subjects consumed by the payment service.
@@ -1037,26 +1046,677 @@ pub async fn run_escrow_hold_releaser(
                 if let Err(e) = service.release_matured_escrow_holds().await {
                     error!(error = %e, "seller escrow hold release scan error");
                 }
+                if let Err(e) = service
+                    .fail_stale_cod_reconciliation_runs(chrono::Duration::seconds(
+                        crate::service::STALE_COD_RECONCILIATION_RUN_TIMEOUT_SECS,
+                    ))
+                    .await
+                {
+                    error!(error = %e, "stale COD reconciliation run sweep error");
+                }
             }
         }
     }
 }
 
-/// Pure retry vs DLQ decision matching `docs/contracts.md:269` (`max_deliver = 5`).
+/// Pure retry vs DLQ decision matching `docs/contracts.md` §5 (`MAX_NATS_DELIVERIES = 5`).
 pub fn should_route_to_dlq(delivered_count: i64, max_deliver: i64) -> bool {
     delivered_count >= max_deliver
 }
 
+fn consumer_nak_delay(delivered: i64) -> Duration {
+    Duration::from_secs(delivered.clamp(1, 5) as u64)
+}
+
+fn sanitize_nats_header_value(raw: &str, max_chars: usize) -> String {
+    raw.chars()
+        .map(|c| if c == '\r' || c == '\n' { ' ' } else { c })
+        .take(max_chars)
+        .collect()
+}
+
+fn is_consumer_not_found_error(err_text: &str) -> bool {
+    let lower = err_text.to_ascii_lowercase();
+    lower.contains("10014") || lower.contains("consumer not found")
+}
+
+/// Action taken by the NATS JetStream consumer after processing a single delivery (E1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConsumerDeliveryAction {
+    /// Business handler succeeded -> ACK.
+    Ack,
+    /// Poison message or max-attempts failure durably recorded to >= 1 DLQ sink -> ACK.
+    DlqAck,
+    /// Transient failure OR both DLQ sinks failed -> NAK with delay.
+    Nak(Duration),
+    /// Shutdown in progress -> neither ACK nor NAK (AckWait redelivers cleanly without burning max_deliver).
+    ShutdownIgnore,
+}
+
+#[tonic::async_trait]
+trait OrderConsumerAdmin {
+    type Consumer;
+
+    async fn lookup_consumer(
+        &self,
+        name: &str,
+    ) -> anyhow::Result<Option<jetstream::consumer::Config>>;
+    async fn get_existing_consumer(&self, name: &str) -> anyhow::Result<Self::Consumer>;
+    async fn create_new_consumer(
+        &self,
+        cfg: jetstream::consumer::pull::Config,
+    ) -> anyhow::Result<Self::Consumer>;
+    async fn update_existing_consumer(
+        &self,
+        cfg: jetstream::consumer::pull::Config,
+    ) -> anyhow::Result<Self::Consumer>;
+}
+
+#[tonic::async_trait]
+impl OrderConsumerAdmin for jetstream::stream::Stream {
+    type Consumer = PullConsumer;
+
+    async fn lookup_consumer(
+        &self,
+        name: &str,
+    ) -> anyhow::Result<Option<jetstream::consumer::Config>> {
+        match self.consumer_info(name).await {
+            Ok(info) => Ok(Some(info.config)),
+            Err(err) => {
+                let msg = err.to_string();
+                if is_consumer_not_found_error(&msg) {
+                    Ok(None)
+                } else {
+                    Err(anyhow::anyhow!("consumer_info({name}): {msg}"))
+                }
+            }
+        }
+    }
+
+    async fn get_existing_consumer(&self, name: &str) -> anyhow::Result<Self::Consumer> {
+        self.get_consumer::<jetstream::consumer::pull::Config>(name)
+            .await
+            .map_err(|e| anyhow::anyhow!("get_consumer({name}): {e}"))
+    }
+
+    async fn create_new_consumer(
+        &self,
+        cfg: jetstream::consumer::pull::Config,
+    ) -> anyhow::Result<Self::Consumer> {
+        self.create_consumer(cfg)
+            .await
+            .map_err(|e| anyhow::anyhow!("create_consumer: {e}"))
+    }
+
+    async fn update_existing_consumer(
+        &self,
+        cfg: jetstream::consumer::pull::Config,
+    ) -> anyhow::Result<Self::Consumer> {
+        self.update_consumer(cfg)
+            .await
+            .map_err(|e| anyhow::anyhow!("update_consumer: {e}"))
+    }
+}
+
+/// Ensures the durable pull consumer exists with all `desired_subjects` and
+/// `max_deliver >= desired_cfg.max_deliver` WITHOUT EVER deleting an existing consumer (E1).
+async fn ensure_order_consumer<A: OrderConsumerAdmin>(
+    admin: &A,
+    desired_cfg: jetstream::consumer::pull::Config,
+    desired_subjects: &[&str],
+) -> anyhow::Result<A::Consumer> {
+    match admin.lookup_consumer(ORDER_CONSUMER_NAME).await? {
+        None => admin.create_new_consumer(desired_cfg).await,
+        Some(existing_cfg) => {
+            let mut existing_subjects = existing_cfg.filter_subjects.clone();
+            if existing_subjects.is_empty() && !existing_cfg.filter_subject.trim().is_empty() {
+                existing_subjects.push(existing_cfg.filter_subject.clone());
+            }
+            let (merged_subjects, subjects_added) =
+                merge_stream_subjects(&existing_subjects, desired_subjects);
+            let needs_max_deliver_bump =
+                existing_cfg.max_deliver > 0 && existing_cfg.max_deliver < desired_cfg.max_deliver;
+
+            if !subjects_added && !needs_max_deliver_bump {
+                return admin.get_existing_consumer(ORDER_CONSUMER_NAME).await;
+            }
+
+            let mut updated =
+                jetstream::consumer::pull::Config::try_from_consumer_config(existing_cfg.clone())
+                    .map_err(|e| {
+                    anyhow::anyhow!("convert existing consumer config to pull config: {e}")
+                })?;
+            updated.durable_name = Some(ORDER_CONSUMER_NAME.to_string());
+            updated.filter_subject.clear();
+            updated.filter_subjects = merged_subjects;
+            if needs_max_deliver_bump {
+                updated.max_deliver = desired_cfg.max_deliver;
+            }
+
+            info!(
+                consumer = ORDER_CONSUMER_NAME,
+                existing_subjects = ?existing_subjects,
+                merged_subjects = ?updated.filter_subjects,
+                existing_max_deliver = existing_cfg.max_deliver,
+                updated_max_deliver = updated.max_deliver,
+                "updating existing JetStream consumer in-place without deleting"
+            );
+            // E1: NEVER call delete_consumer on update failure; propagate error so the worker
+            // retries cleanly without wiping ack progress or replaying the stream.
+            admin.update_existing_consumer(updated).await
+        }
+    }
+}
+
+#[tonic::async_trait]
+trait DlqStore: Send + Sync {
+    async fn insert_dead_letter(
+        &self,
+        subject: &str,
+        event_id: &str,
+        payload: &[u8],
+        error_message: &str,
+        attempts: i32,
+    ) -> anyhow::Result<()>;
+}
+
+#[tonic::async_trait]
+impl DlqStore for PgPool {
+    async fn insert_dead_letter(
+        &self,
+        subject: &str,
+        event_id: &str,
+        payload: &[u8],
+        error_message: &str,
+        attempts: i32,
+    ) -> anyhow::Result<()> {
+        let id = Uuid::new_v4().to_string();
+        sqlx::query(
+            r#"
+            INSERT INTO dead_letter_events (id, subject, event_id, payload, error_message, attempts)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+        )
+        .bind(id)
+        .bind(subject)
+        .bind(event_id)
+        .bind(payload)
+        .bind(error_message)
+        .bind(attempts)
+        .execute(self)
+        .await?;
+        Ok(())
+    }
+}
+
+#[tonic::async_trait]
+trait DlqPublisher: Send + Sync {
+    async fn publish_dlq(
+        &self,
+        subject: String,
+        headers: NatsHeaders,
+        payload: Vec<u8>,
+    ) -> anyhow::Result<()>;
+}
+
+#[tonic::async_trait]
+impl DlqPublisher for jetstream::Context {
+    async fn publish_dlq(
+        &self,
+        subject: String,
+        headers: NatsHeaders,
+        payload: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        let ack_future = self
+            .publish_with_headers(subject, headers, payload.into())
+            .await
+            .map_err(|e| anyhow::anyhow!("publish DLQ message: {e}"))?;
+        // E1: MUST await JetStream PubAck before considering NATS DLQ durable.
+        ack_future
+            .await
+            .map_err(|e| anyhow::anyhow!("await DLQ PubAck: {e}"))?;
+        Ok(())
+    }
+}
+
+#[tonic::async_trait]
+trait OrderEventProcessor: Send + Sync {
+    async fn process_event(
+        &self,
+        event_type: &str,
+        envelope: &EventEnvelope,
+        order_id: &str,
+        trace_id: &str,
+    ) -> anyhow::Result<()>;
+}
+
+#[tonic::async_trait]
+impl OrderEventProcessor for PaymentService {
+    async fn process_event(
+        &self,
+        event_type: &str,
+        envelope: &EventEnvelope,
+        order_id: &str,
+        trace_id: &str,
+    ) -> anyhow::Result<()> {
+        match event_type {
+            "order.completed" => self
+                .process_order_completed_event(&envelope.event_id, order_id, trace_id)
+                .await
+                .map(|_| ())
+                .map_err(anyhow::Error::from),
+            "order.cancelled" => self
+                .process_order_cancelled_event(&envelope.event_id, order_id, trace_id)
+                .await
+                .map(|_| ())
+                .map_err(anyhow::Error::from),
+            "order.delivered" => {
+                let tracking_code = envelope
+                    .payload
+                    .get("tracking_code")
+                    .and_then(|v| v.as_str());
+                let carrier_code = envelope
+                    .payload
+                    .get("carrier_code")
+                    .and_then(|v| v.as_str());
+                let order_code = envelope.payload.get("order_code").and_then(|v| v.as_str());
+                self.process_order_delivered_event_with_shipping(
+                    &envelope.event_id,
+                    order_id,
+                    tracking_code,
+                    carrier_code,
+                    order_code,
+                    trace_id,
+                )
+                .await
+                .map(|_| ())
+                .map_err(anyhow::Error::from)
+            }
+            "order.returned" => {
+                let from_status = envelope.payload.get("from_status").and_then(|v| v.as_str());
+                self.process_order_returned_event(
+                    &envelope.event_id,
+                    order_id,
+                    from_status,
+                    trace_id,
+                )
+                .await
+                .map(|_| ())
+                .map_err(anyhow::Error::from)
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Persists a poison message to BOTH `dead_letter_events` (Postgres) and `NEXUSMART_DLQ`
+/// (`dlq.<subject>`, awaiting PubAck) under detached bounded timeouts.
+/// Returns `true` iff at least ONE durable DLQ sink succeeded (E1 / E2).
+#[allow(clippy::too_many_arguments)]
+async fn route_to_dlq<S: DlqStore, P: DlqPublisher>(
+    dlq_store: &S,
+    dlq_pub: &P,
+    subject: &str,
+    event_id: &str,
+    payload: &[u8],
+    error_message: &str,
+    attempts: i64,
+    dlq_timeout: Duration,
+) -> bool {
+    let mut saved = false;
+    let attempts_i32 = attempts.clamp(0, i32::MAX as i64) as i32;
+
+    match tokio::time::timeout(
+        dlq_timeout,
+        dlq_store.insert_dead_letter(subject, event_id, payload, error_message, attempts_i32),
+    )
+    .await
+    {
+        Ok(Ok(())) => saved = true,
+        Ok(Err(e)) => {
+            error!(
+                service = "payment",
+                subject = %subject,
+                event_id = %event_id,
+                attempts = attempts,
+                error = %e,
+                "failed to persist dead_letter_events row"
+            );
+        }
+        Err(_) => {
+            error!(
+                service = "payment",
+                subject = %subject,
+                event_id = %event_id,
+                attempts = attempts,
+                timeout_ms = dlq_timeout.as_millis() as u64,
+                "timed out persisting dead_letter_events row"
+            );
+        }
+    }
+
+    let dlq_subject = format!("dlq.{subject}");
+    let mut headers = NatsHeaders::new();
+    headers.insert(
+        "X-DLQ-Original-Subject",
+        sanitize_nats_header_value(subject, 256).as_str(),
+    );
+    headers.insert(
+        "X-DLQ-Error",
+        sanitize_nats_header_value(error_message, 512).as_str(),
+    );
+    headers.insert("X-DLQ-Attempts", attempts.to_string().as_str());
+    if !event_id.is_empty() {
+        headers.insert(
+            "X-DLQ-Event-Id",
+            sanitize_nats_header_value(event_id, 256).as_str(),
+        );
+    }
+
+    match tokio::time::timeout(
+        dlq_timeout,
+        dlq_pub.publish_dlq(dlq_subject.clone(), headers, payload.to_vec()),
+    )
+    .await
+    {
+        Ok(Ok(())) => saved = true,
+        Ok(Err(e)) => {
+            error!(
+                service = "payment",
+                dlq_subject = %dlq_subject,
+                event_id = %event_id,
+                attempts = attempts,
+                error = %e,
+                "failed to publish message to NEXUSMART_DLQ (or PubAck failed)"
+            );
+        }
+        Err(_) => {
+            error!(
+                service = "payment",
+                dlq_subject = %dlq_subject,
+                event_id = %event_id,
+                attempts = attempts,
+                timeout_ms = dlq_timeout.as_millis() as u64,
+                "timed out waiting for NEXUSMART_DLQ PubAck"
+            );
+        }
+    }
+
+    saved
+}
+
+/// Core testable order-event delivery processor implementing E1 & E2 invariants:
+/// - Errors during shutdown never route to DLQ and never Ack/Nak (`ShutdownIgnore`).
+/// - Malformed envelope, missing `event_id`, or missing `order_id` route to DLQ (never silent Ack).
+/// - DLQ Ack happens ONLY if `dead_letter_events` OR `NEXUSMART_DLQ` (with PubAck) succeeded;
+///   if both sinks fail, returns `Nak(delay)` so the message is not lost.
+#[allow(clippy::too_many_arguments)]
+async fn process_order_event_raw<E, S, P, F>(
+    processor: &E,
+    dlq_store: &S,
+    dlq_pub: &P,
+    subject: &str,
+    payload: &[u8],
+    headers: Option<&NatsHeaders>,
+    delivered: i64,
+    is_shutting_down: F,
+    process_timeout: Duration,
+    dlq_timeout: Duration,
+) -> ConsumerDeliveryAction
+where
+    E: OrderEventProcessor,
+    S: DlqStore,
+    P: DlqPublisher,
+    F: Fn() -> bool,
+{
+    let delivered = delivered.max(1);
+    if is_shutting_down() {
+        return ConsumerDeliveryAction::ShutdownIgnore;
+    }
+
+    let envelope: EventEnvelope = match serde_json::from_slice(payload) {
+        Ok(e) => e,
+        Err(e) => {
+            if is_shutting_down() {
+                return ConsumerDeliveryAction::ShutdownIgnore;
+            }
+            let parent_cx = extract_context_from_nats(headers, None);
+            let span = tracing::info_span!(
+                "nats.consume",
+                otel.name = %format!("nats.consume {subject}"),
+                otel.kind = "consumer",
+                messaging.destination = %subject,
+                trace_id = tracing::field::Empty,
+            );
+            let trace_id = attach_parent_context(&span, parent_cx, None);
+            span.record("trace_id", trace_id.as_str());
+            let err_msg = format!("malformed event envelope: {e}");
+            span.in_scope(|| {
+                warn!(
+                    service = "payment",
+                    subject = %subject,
+                    trace_id = %trace_id,
+                    error = %e,
+                    "malformed NATS event payload; routing to DLQ"
+                );
+            });
+            return if route_to_dlq(
+                dlq_store,
+                dlq_pub,
+                subject,
+                "",
+                payload,
+                &err_msg,
+                delivered,
+                dlq_timeout,
+            )
+            .await
+            {
+                ConsumerDeliveryAction::DlqAck
+            } else {
+                ConsumerDeliveryAction::Nak(consumer_nak_delay(delivered))
+            };
+        }
+    };
+
+    let fallback_tid = if envelope.trace_id.is_empty() {
+        None
+    } else {
+        Some(envelope.trace_id.as_str())
+    };
+    let parent_cx = extract_context_from_nats(headers, fallback_tid);
+    let span = tracing::info_span!(
+        "nats.consume",
+        otel.name = %format!("nats.consume {subject}"),
+        otel.kind = "consumer",
+        messaging.destination = %subject,
+        event_id = %envelope.event_id,
+        trace_id = tracing::field::Empty,
+    );
+    let trace_id = attach_parent_context(&span, parent_cx, fallback_tid);
+    span.record("trace_id", trace_id.as_str());
+
+    async {
+        let event_id = envelope.event_id.trim();
+        if event_id.is_empty() {
+            if is_shutting_down() {
+                return ConsumerDeliveryAction::ShutdownIgnore;
+            }
+            let err_msg = format!("missing event_id on subject {subject}");
+            warn!(
+                service = "payment",
+                subject = %subject,
+                trace_id = %trace_id,
+                "{err_msg}; routing to DLQ"
+            );
+            return if route_to_dlq(
+                dlq_store,
+                dlq_pub,
+                subject,
+                "",
+                payload,
+                &err_msg,
+                delivered,
+                dlq_timeout,
+            )
+            .await
+            {
+                ConsumerDeliveryAction::DlqAck
+            } else {
+                ConsumerDeliveryAction::Nak(consumer_nak_delay(delivered))
+            };
+        }
+
+        let event_type = if envelope.event_type.trim().is_empty() {
+            subject
+        } else {
+            envelope.event_type.trim()
+        };
+
+        let order_id = envelope
+            .payload
+            .get("order_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or("");
+
+        if order_id.is_empty() {
+            if is_shutting_down() {
+                return ConsumerDeliveryAction::ShutdownIgnore;
+            }
+            let err_msg = format!("missing order_id on {event_type} (event_id={event_id})");
+            warn!(
+                service = "payment",
+                subject = %subject,
+                event_id = %event_id,
+                event_type = %event_type,
+                trace_id = %trace_id,
+                "{err_msg}; routing to DLQ"
+            );
+            return if route_to_dlq(
+                dlq_store,
+                dlq_pub,
+                subject,
+                event_id,
+                payload,
+                &err_msg,
+                delivered,
+                dlq_timeout,
+            )
+            .await
+            {
+                ConsumerDeliveryAction::DlqAck
+            } else {
+                ConsumerDeliveryAction::Nak(consumer_nak_delay(delivered))
+            };
+        }
+
+        let res = match tokio::time::timeout(
+            process_timeout,
+            processor.process_event(event_type, &envelope, order_id, &trace_id),
+        )
+        .await
+        {
+            Ok(inner) => inner,
+            Err(_) => Err(anyhow::anyhow!(
+                "order event processing timed out after {}ms",
+                process_timeout.as_millis()
+            )),
+        };
+
+        match res {
+            Ok(()) => {
+                info!(
+                    service = "payment",
+                    subject = %subject,
+                    event_id = %event_id,
+                    event_type = %event_type,
+                    order_id = %order_id,
+                    trace_id = %trace_id,
+                    "processed NATS order event"
+                );
+                ConsumerDeliveryAction::Ack
+            }
+            Err(e) => {
+                if is_shutting_down() {
+                    warn!(
+                        service = "payment",
+                        subject = %subject,
+                        event_id = %event_id,
+                        event_type = %event_type,
+                        order_id = %order_id,
+                        trace_id = %trace_id,
+                        error = %e,
+                        "order event failed during shutdown; leaving unacked without DLQ"
+                    );
+                    return ConsumerDeliveryAction::ShutdownIgnore;
+                }
+
+                let err_msg = e.to_string();
+                if should_route_to_dlq(delivered, MAX_NATS_DELIVERIES) {
+                    warn!(
+                        service = "payment",
+                        event_id = %event_id,
+                        event_type = %event_type,
+                        order_id = %order_id,
+                        trace_id = %trace_id,
+                        delivered = delivered,
+                        error = %err_msg,
+                        "max NATS delivery attempts reached; routing to DLQ"
+                    );
+                    if route_to_dlq(
+                        dlq_store,
+                        dlq_pub,
+                        subject,
+                        event_id,
+                        payload,
+                        &err_msg,
+                        delivered,
+                        dlq_timeout,
+                    )
+                    .await
+                    {
+                        ConsumerDeliveryAction::DlqAck
+                    } else {
+                        ConsumerDeliveryAction::Nak(consumer_nak_delay(delivered))
+                    }
+                } else {
+                    warn!(
+                        service = "payment",
+                        event_id = %event_id,
+                        event_type = %event_type,
+                        order_id = %order_id,
+                        trace_id = %trace_id,
+                        delivered = delivered,
+                        max_deliver = MAX_NATS_DELIVERIES,
+                        error = %err_msg,
+                        "transient error processing order event; NAKing for retry"
+                    );
+                    ConsumerDeliveryAction::Nak(consumer_nak_delay(delivered))
+                }
+            }
+        }
+    }
+    .instrument(span)
+    .await
+}
+
 /// Background worker 4: Transactional idempotent NATS JetStream consumer for
-/// `order.completed` and `order.cancelled`.
+/// `order.{completed,cancelled,delivered,returned}` (E1 / E2):
 /// - Persists `processed_nats_events` in the EXACT SAME PostgreSQL transaction as state updates.
-/// - Retries transient failures via NAK until `delivered >= max_deliver` (5), then routes to
-///   `dlq.<original_subject>` and ACKs per `docs/contracts.md:269`.
+/// - Retries transient failures via NAK with delay until `delivered >= MAX_NATS_DELIVERIES` (5),
+///   then persists to `dead_letter_events` AND publishes to `dlq.<subject>` (awaiting PubAck),
+///   ACKing only if at least one durable DLQ sink succeeded.
+/// - `CONSUMER_MAX_DELIVER` (6) exceeds `MAX_NATS_DELIVERIES` (5) so redelivery remains available
+///   if both DLQ sinks transiently fail; upgrades existing durable consumer in-place without deleting.
+/// - On shutdown: stops pulling new messages, waits for in-flight handler to finish, never sends
+///   shutdown errors to DLQ, and never deletes/drains the durable consumer on the server.
 pub async fn run_nats_order_consumer(service: PaymentService, mut shutdown: watch::Receiver<bool>) {
     info!("started NATS order event consumer");
 
     loop {
         if *shutdown.borrow() {
+            info!("stopping NATS order event consumer");
             break;
         }
 
@@ -1082,15 +1742,16 @@ pub async fn run_nats_order_consumer(service: PaymentService, mut shutdown: watc
             .collect();
         let desired_cfg = jetstream::consumer::pull::Config {
             durable_name: Some(ORDER_CONSUMER_NAME.to_string()),
-            filter_subjects: desired_subjects.clone(),
-            max_deliver: MAX_NATS_DELIVERIES,
+            filter_subjects: desired_subjects,
+            ack_wait: Duration::from_secs(30),
+            max_deliver: CONSUMER_MAX_DELIVER,
             ..Default::default()
         };
 
         let consumer: PullConsumer = match ensure_order_consumer(
             &stream,
             desired_cfg,
-            &desired_subjects,
+            ORDER_EVENT_SUBJECTS,
         )
         .await
         {
@@ -1104,13 +1765,25 @@ pub async fn run_nats_order_consumer(service: PaymentService, mut shutdown: watc
             }
         };
 
-        let Ok(mut messages) = consumer.messages().await else {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            continue;
+        let Ok(mut messages) = consumer
+            .stream()
+            .max_messages_per_batch(ORDER_CONSUMER_PULL_BATCH)
+            .messages()
+            .await
+        else {
+            tokio::select! {
+                _ = shutdown.changed() => break,
+                _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
+            }
         };
 
         loop {
+            if *shutdown.borrow() {
+                info!("stopping NATS order event consumer");
+                return;
+            }
             tokio::select! {
+                biased;
                 _ = shutdown.changed() => {
                     info!("stopping NATS order event consumer");
                     return;
@@ -1119,48 +1792,10 @@ pub async fn run_nats_order_consumer(service: PaymentService, mut shutdown: watc
                     let Some(Ok(msg)) = maybe_msg else {
                         break;
                     };
-                    handle_order_event(&service, &js, msg).await;
+                    handle_order_event(&service, &js, msg, &shutdown).await;
                 }
             }
         }
-    }
-}
-
-async fn ensure_order_consumer(
-    stream: &jetstream::stream::Stream,
-    cfg: jetstream::consumer::pull::Config,
-    desired_subjects: &[String],
-) -> anyhow::Result<PullConsumer> {
-    match stream.consumer_info(ORDER_CONSUMER_NAME).await {
-        Ok(info) => {
-            let has_all = desired_subjects
-                .iter()
-                .all(|s| info.config.filter_subjects.contains(s));
-            if has_all {
-                return Ok(stream
-                    .get_or_create_consumer(ORDER_CONSUMER_NAME, cfg)
-                    .await?);
-            }
-            info!(
-                consumer = ORDER_CONSUMER_NAME,
-                existing_subjects = ?info.config.filter_subjects,
-                desired_subjects = ?desired_subjects,
-                "updating JetStream consumer filter_subjects"
-            );
-            match stream.update_consumer(cfg.clone()).await {
-                Ok(c) => Ok(c),
-                Err(e) => {
-                    warn!(
-                        consumer = ORDER_CONSUMER_NAME,
-                        error = %e,
-                        "update_consumer failed; recreating consumer with updated filter_subjects"
-                    );
-                    let _ = stream.delete_consumer(ORDER_CONSUMER_NAME).await;
-                    Ok(stream.create_consumer(cfg).await?)
-                }
-            }
-        }
-        Err(_) => Ok(stream.create_consumer(cfg).await?),
     }
 }
 
@@ -1168,147 +1803,41 @@ async fn handle_order_event(
     service: &PaymentService,
     js: &jetstream::Context,
     msg: jetstream::Message,
+    shutdown: &watch::Receiver<bool>,
 ) {
+    if *shutdown.borrow() {
+        return;
+    }
+
     let subject = msg.subject.to_string();
     let delivered = msg.info().map(|i| i.delivered).unwrap_or(1);
 
-    let envelope: EventEnvelope = match serde_json::from_slice(&msg.payload) {
-        Ok(e) => e,
-        Err(e) => {
-            let parent_cx = extract_context_from_nats(msg.headers.as_ref(), None);
-            let span = tracing::info_span!(
-                "nats.consume",
-                otel.name = %format!("nats.consume {subject}"),
-                otel.kind = "consumer",
-                messaging.destination = %subject,
-                trace_id = tracing::field::Empty,
-            );
-            let trace_id = attach_parent_context(&span, parent_cx, None);
-            span.record("trace_id", trace_id.as_str());
-            // Permanent deserialization poison message -> straight to DLQ + ACK
-            span.in_scope(|| {
-                warn!(
-                    service = "payment",
-                    subject = %subject,
-                    trace_id = %trace_id,
-                    error = %e,
-                    "malformed NATS event payload; routing to DLQ"
-                );
-            });
-            let dlq_subject = format!("dlq.{subject}");
-            let _ = js.publish(dlq_subject, msg.payload.clone()).await;
-            let _ = msg.ack().await;
-            return;
-        }
-    };
-
-    let fallback_tid = if envelope.trace_id.is_empty() {
-        None
-    } else {
-        Some(envelope.trace_id.as_str())
-    };
-    let parent_cx = extract_context_from_nats(msg.headers.as_ref(), fallback_tid);
-    let span = tracing::info_span!(
-        "nats.consume",
-        otel.name = %format!("nats.consume {subject}"),
-        otel.kind = "consumer",
-        messaging.destination = %subject,
-        event_id = %envelope.event_id,
-        trace_id = tracing::field::Empty,
-    );
-    let trace_id = attach_parent_context(&span, parent_cx, fallback_tid);
-    span.record("trace_id", trace_id.as_str());
-
-    async {
-        let order_id = envelope
-            .payload
-            .get("order_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        if order_id.is_empty() {
-            let _ = msg.ack().await;
-            return;
-        }
-
-        // Both `processed_nats_events` claim AND business state mutation execute in ONE DB transaction.
-        let res = match envelope.event_type.as_str() {
-            "order.completed" => service
-                .process_order_completed_event(&envelope.event_id, &order_id, &trace_id)
-                .await
-                .map(|_| ()),
-            "order.cancelled" => service
-                .process_order_cancelled_event(&envelope.event_id, &order_id, &trace_id)
-                .await
-                .map(|_| ()),
-            "order.delivered" => service
-                .process_order_delivered_event(&envelope.event_id, &order_id, &trace_id)
-                .await
-                .map(|_| ()),
-            "order.returned" => {
-                let from_status = envelope.payload.get("from_status").and_then(|v| v.as_str());
-                service
-                    .process_order_returned_event(
-                        &envelope.event_id,
-                        &order_id,
-                        from_status,
-                        &trace_id,
-                    )
-                    .await
-                    .map(|_| ())
-            }
-            _ => Ok(()),
-        };
-
-        match res {
-            Ok(()) => {
-                info!(
-                    service = "payment",
-                    subject = %subject,
-                    event_id = %envelope.event_id,
-                    event_type = %envelope.event_type,
-                    order_id = %order_id,
-                    trace_id = %trace_id,
-                    "processed NATS order event"
-                );
-                let _ = msg.ack().await;
-            }
-            Err(e) => {
-                if should_route_to_dlq(delivered, MAX_NATS_DELIVERIES) {
-                    warn!(
-                        service = "payment",
-                        event_id = %envelope.event_id,
-                        event_type = %envelope.event_type,
-                        order_id = %order_id,
-                        trace_id = %trace_id,
-                        delivered = delivered,
-                        error = %e,
-                        "max NATS delivery attempts reached; routing to DLQ"
-                    );
-                    let dlq_subject = format!("dlq.{subject}");
-                    let _ = js.publish(dlq_subject, msg.payload.clone()).await;
-                    let _ = msg.ack().await;
-                } else {
-                    warn!(
-                        service = "payment",
-                        event_id = %envelope.event_id,
-                        event_type = %envelope.event_type,
-                        order_id = %order_id,
-                        trace_id = %trace_id,
-                        delivered = delivered,
-                        max_deliver = MAX_NATS_DELIVERIES,
-                        error = %e,
-                        "transient error processing order event; NAKing for retry"
-                    );
-                    let backoff = Duration::from_secs(delivered.clamp(1, 5) as u64);
-                    let _ = msg.ack_with(AckKind::Nak(Some(backoff))).await;
-                }
-            }
-        }
-    }
-    .instrument(span)
+    let action = process_order_event_raw(
+        service,
+        service.pool(),
+        js,
+        &subject,
+        &msg.payload,
+        msg.headers.as_ref(),
+        delivered,
+        || *shutdown.borrow(),
+        ORDER_EVENT_PROCESS_TIMEOUT,
+        DLQ_WRITE_TIMEOUT,
+    )
     .await;
+
+    match action {
+        ConsumerDeliveryAction::Ack | ConsumerDeliveryAction::DlqAck => {
+            let _ = msg.ack().await;
+        }
+        ConsumerDeliveryAction::Nak(delay) => {
+            if *shutdown.borrow() {
+                return;
+            }
+            let _ = msg.ack_with(AckKind::Nak(Some(delay))).await;
+        }
+        ConsumerDeliveryAction::ShutdownIgnore => {}
+    }
 }
 
 #[cfg(test)]
@@ -1342,7 +1871,8 @@ mod tests {
                 "payment.>",
                 "shipment.>",
                 "product.>",
-                "promotion.>"
+                "promotion.>",
+                "review.>"
             ]
         );
 
@@ -1364,7 +1894,8 @@ mod tests {
                 "shipment.>",
                 "audit.>",
                 "product.>",
-                "promotion.>"
+                "promotion.>",
+                "review.>"
             ]
         );
 
@@ -1445,7 +1976,7 @@ mod tests {
             }
         }
 
-        // Case 1: Fresh creation includes all 6 canonical subjects
+        // Case 1: Fresh creation includes all 7 canonical subjects
         let fresh_state = Arc::new(Mutex::new(FakeState::default()));
         let fresh = FakeAdmin(fresh_state.clone());
         ensure_stream_subjects(
@@ -1464,9 +1995,10 @@ mod tests {
             assert_eq!(st.create_calls, 1);
             assert_eq!(st.update_calls, 0);
             let got = st.cfg.as_ref().unwrap();
-            assert_eq!(got.subjects.len(), 6);
+            assert_eq!(got.subjects.len(), 7);
             assert!(got.subjects.contains(&"product.>".to_string()));
             assert!(got.subjects.contains(&"promotion.>".to_string()));
+            assert!(got.subjects.contains(&"review.>".to_string()));
         }
 
         // Calling again when all subjects exist is a strict no-op (0 extra updates)
@@ -1514,7 +2046,8 @@ mod tests {
                 "shipment.>",
                 "product.>",
                 "custom.>",
-                "promotion.>"
+                "promotion.>",
+                "review.>"
             ]
         );
     }
@@ -3573,5 +4106,702 @@ mod tests {
 
             db.teardown().await;
         }
+
+        #[tokio::test]
+        async fn test_pg_w3b_e1_e2_dead_letter_events_real_postgres() {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            use std::sync::Arc;
+
+            let Some(db) =
+                OutboxTestDb::setup("test_pg_w3b_e1_e2_dead_letter_events_real_postgres", 4).await
+            else {
+                return;
+            };
+
+            struct AlwaysFailProc;
+            #[tonic::async_trait]
+            impl OrderEventProcessor for AlwaysFailProc {
+                async fn process_event(
+                    &self,
+                    _event_type: &str,
+                    _envelope: &EventEnvelope,
+                    _order_id: &str,
+                    _trace_id: &str,
+                ) -> anyhow::Result<()> {
+                    anyhow::bail!("simulated DB transient error")
+                }
+            }
+
+            struct FailingDlqPub;
+            #[tonic::async_trait]
+            impl DlqPublisher for FailingDlqPub {
+                async fn publish_dlq(
+                    &self,
+                    _subject: String,
+                    _headers: NatsHeaders,
+                    _payload: Vec<u8>,
+                ) -> anyhow::Result<()> {
+                    anyhow::bail!("simulated NATS DLQ PubAck failure")
+                }
+            }
+
+            // 1. Missing order_id on order.delivered -> even when NATS DLQ fails, Postgres
+            //    `dead_letter_events` persists the row and returns DlqAck (never silent Ack).
+            let missing_order_payload = serde_json::to_vec(&serde_json::json!({
+                "event_id": "evt-missing-oid-pg-1",
+                "event_type": "order.delivered",
+                "trace_id": "0123456789abcdef0123456789abcdef",
+                "occurred_at": Utc::now().to_rfc3339(),
+                "payload": { "tracking_code": "TRK-NO-OID" }
+            }))
+            .unwrap();
+
+            let act = process_order_event_raw(
+                &AlwaysFailProc,
+                &db.pool,
+                &FailingDlqPub,
+                "order.delivered",
+                &missing_order_payload,
+                None,
+                1,
+                || false,
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+            )
+            .await;
+            assert_eq!(act, ConsumerDeliveryAction::DlqAck);
+
+            let row: (String, String, Vec<u8>, String, i32) = sqlx::query_as(
+                r#"
+                SELECT subject, event_id, payload, error_message, attempts
+                FROM dead_letter_events
+                WHERE event_id = 'evt-missing-oid-pg-1'
+                "#,
+            )
+            .fetch_one(&db.pool)
+            .await
+            .expect("dead_letter_events row must exist in Postgres");
+            assert_eq!(row.0, "order.delivered");
+            assert_eq!(row.1, "evt-missing-oid-pg-1");
+            assert_eq!(row.2, missing_order_payload);
+            assert!(row.3.contains("missing order_id"), "got: {}", row.3);
+            assert_eq!(row.4, 1);
+
+            // 2. Error on attempt 5 while shutting down -> ShutdownIgnore, 0 rows inserted in dead_letter_events!
+            let shutting_down = Arc::new(AtomicBool::new(false));
+            struct FlipShutdownAndFail(Arc<AtomicBool>);
+            #[tonic::async_trait]
+            impl OrderEventProcessor for FlipShutdownAndFail {
+                async fn process_event(
+                    &self,
+                    _event_type: &str,
+                    _envelope: &EventEnvelope,
+                    _order_id: &str,
+                    _trace_id: &str,
+                ) -> anyhow::Result<()> {
+                    self.0.store(true, Ordering::SeqCst);
+                    anyhow::bail!("aborted due to shutdown")
+                }
+            }
+
+            let valid_payload = serde_json::to_vec(&serde_json::json!({
+                "event_id": "evt-shutdown-no-dlq-pg",
+                "event_type": "order.completed",
+                "trace_id": "0123456789abcdef0123456789abcdef",
+                "occurred_at": Utc::now().to_rfc3339(),
+                "payload": { "order_id": "ord-shutdown-1" }
+            }))
+            .unwrap();
+            let sd_flag = shutting_down.clone();
+            let act_sd = process_order_event_raw(
+                &FlipShutdownAndFail(shutting_down),
+                &db.pool,
+                &FailingDlqPub,
+                "order.completed",
+                &valid_payload,
+                None,
+                MAX_NATS_DELIVERIES,
+                move || sd_flag.load(Ordering::SeqCst),
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+            )
+            .await;
+            assert_eq!(act_sd, ConsumerDeliveryAction::ShutdownIgnore);
+
+            let sd_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*)::BIGINT FROM dead_letter_events WHERE event_id = 'evt-shutdown-no-dlq-pg'",
+            )
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                sd_count, 0,
+                "shutdown errors must never be persisted to dead_letter_events"
+            );
+
+            db.teardown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_w3b_e1_ensure_order_consumer_upgrades_max_deliver_and_subjects_without_deleting()
+    {
+        use std::sync::{Arc, Mutex};
+
+        const {
+            assert!(CONSUMER_MAX_DELIVER > MAX_NATS_DELIVERIES);
+            assert!(ORDER_CONSUMER_PULL_BATCH == 1);
+        }
+
+        #[derive(Default)]
+        struct FakeConsumerState {
+            existing: Option<jetstream::consumer::Config>,
+            get_calls: usize,
+            create_calls: usize,
+            update_calls: usize,
+            fail_update: bool,
+            last_updated: Option<jetstream::consumer::pull::Config>,
+            last_created: Option<jetstream::consumer::pull::Config>,
+        }
+
+        struct FakeConsumerAdmin(Arc<Mutex<FakeConsumerState>>);
+
+        #[tonic::async_trait]
+        impl OrderConsumerAdmin for FakeConsumerAdmin {
+            type Consumer = ();
+
+            async fn lookup_consumer(
+                &self,
+                _name: &str,
+            ) -> anyhow::Result<Option<jetstream::consumer::Config>> {
+                Ok(self.0.lock().unwrap().existing.clone())
+            }
+
+            async fn get_existing_consumer(&self, _name: &str) -> anyhow::Result<()> {
+                self.0.lock().unwrap().get_calls += 1;
+                Ok(())
+            }
+
+            async fn create_new_consumer(
+                &self,
+                cfg: jetstream::consumer::pull::Config,
+            ) -> anyhow::Result<()> {
+                let mut st = self.0.lock().unwrap();
+                st.create_calls += 1;
+                st.last_created = Some(cfg);
+                Ok(())
+            }
+
+            async fn update_existing_consumer(
+                &self,
+                cfg: jetstream::consumer::pull::Config,
+            ) -> anyhow::Result<()> {
+                let mut st = self.0.lock().unwrap();
+                st.update_calls += 1;
+                if st.fail_update {
+                    anyhow::bail!("simulated NATS update failure");
+                }
+                st.last_updated = Some(cfg);
+                Ok(())
+            }
+        }
+
+        let desired_cfg = || jetstream::consumer::pull::Config {
+            durable_name: Some(ORDER_CONSUMER_NAME.to_string()),
+            filter_subjects: ORDER_EVENT_SUBJECTS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+            ack_wait: Duration::from_secs(30),
+            max_deliver: CONSUMER_MAX_DELIVER,
+            ..Default::default()
+        };
+
+        // Case 1: Existing consumer with old max_deliver = 5 -> updates in-place to 6, preserves ack_wait & subjects, NEVER creates/deletes
+        let st1 = Arc::new(Mutex::new(FakeConsumerState {
+            existing: Some(jetstream::consumer::Config {
+                durable_name: Some(ORDER_CONSUMER_NAME.to_string()),
+                filter_subjects: ORDER_EVENT_SUBJECTS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
+                ack_wait: Duration::from_secs(45),
+                max_deliver: 5,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+        ensure_order_consumer(
+            &FakeConsumerAdmin(st1.clone()),
+            desired_cfg(),
+            ORDER_EVENT_SUBJECTS,
+        )
+        .await
+        .unwrap();
+        {
+            let st = st1.lock().unwrap();
+            assert_eq!(st.update_calls, 1);
+            assert_eq!(st.create_calls, 0);
+            assert_eq!(st.get_calls, 0);
+            let upd = st.last_updated.as_ref().unwrap();
+            assert_eq!(upd.max_deliver, CONSUMER_MAX_DELIVER);
+            assert_eq!(
+                upd.ack_wait,
+                Duration::from_secs(45),
+                "must preserve existing ack_wait"
+            );
+            assert_eq!(upd.filter_subjects.len(), 4);
+            assert!(upd.filter_subject.is_empty());
+        }
+
+        // Case 2: Existing consumer already has max_deliver = 6 (or -1 unlimited) and all subjects -> get_existing_consumer (0 updates, 0 creates)
+        for existing_md in [CONSUMER_MAX_DELIVER, CONSUMER_MAX_DELIVER + 4, -1] {
+            let st2 = Arc::new(Mutex::new(FakeConsumerState {
+                existing: Some(jetstream::consumer::Config {
+                    durable_name: Some(ORDER_CONSUMER_NAME.to_string()),
+                    filter_subjects: ORDER_EVENT_SUBJECTS
+                        .iter()
+                        .map(|s| (*s).to_string())
+                        .collect(),
+                    max_deliver: existing_md,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }));
+            ensure_order_consumer(
+                &FakeConsumerAdmin(st2.clone()),
+                desired_cfg(),
+                ORDER_EVENT_SUBJECTS,
+            )
+            .await
+            .unwrap();
+            let st = st2.lock().unwrap();
+            assert_eq!(st.get_calls, 1, "existing_md={existing_md}");
+            assert_eq!(st.update_calls, 0, "existing_md={existing_md}");
+            assert_eq!(st.create_calls, 0, "existing_md={existing_md}");
+        }
+
+        // Case 3: Existing consumer missing subjects + legacy filter_subject -> union-merges + clears singular filter_subject
+        let st3 = Arc::new(Mutex::new(FakeConsumerState {
+            existing: Some(jetstream::consumer::Config {
+                durable_name: Some(ORDER_CONSUMER_NAME.to_string()),
+                filter_subject: "order.completed".to_string(),
+                max_deliver: 5,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+        ensure_order_consumer(
+            &FakeConsumerAdmin(st3.clone()),
+            desired_cfg(),
+            ORDER_EVENT_SUBJECTS,
+        )
+        .await
+        .unwrap();
+        {
+            let st = st3.lock().unwrap();
+            assert_eq!(st.update_calls, 1);
+            assert_eq!(st.create_calls, 0);
+            let upd = st.last_updated.as_ref().unwrap();
+            assert!(upd.filter_subject.is_empty());
+            assert_eq!(
+                upd.filter_subjects,
+                vec![
+                    "order.completed",
+                    "order.cancelled",
+                    "order.delivered",
+                    "order.returned"
+                ]
+            );
+            assert_eq!(upd.max_deliver, CONSUMER_MAX_DELIVER);
+        }
+
+        // Case 4: update_consumer fails -> returns Err without recreating or deleting consumer
+        let st4 = Arc::new(Mutex::new(FakeConsumerState {
+            existing: Some(jetstream::consumer::Config {
+                durable_name: Some(ORDER_CONSUMER_NAME.to_string()),
+                filter_subjects: ORDER_EVENT_SUBJECTS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
+                max_deliver: 5,
+                ..Default::default()
+            }),
+            fail_update: true,
+            ..Default::default()
+        }));
+        assert!(ensure_order_consumer(
+            &FakeConsumerAdmin(st4.clone()),
+            desired_cfg(),
+            ORDER_EVENT_SUBJECTS
+        )
+        .await
+        .is_err());
+        assert_eq!(st4.lock().unwrap().create_calls, 0);
+
+        // Case 5: Consumer does not exist -> creates with CONSUMER_MAX_DELIVER
+        let st5 = Arc::new(Mutex::new(FakeConsumerState::default()));
+        ensure_order_consumer(
+            &FakeConsumerAdmin(st5.clone()),
+            desired_cfg(),
+            ORDER_EVENT_SUBJECTS,
+        )
+        .await
+        .unwrap();
+        {
+            let st = st5.lock().unwrap();
+            assert_eq!(st.create_calls, 1);
+            assert_eq!(
+                st.last_created.as_ref().unwrap().max_deliver,
+                CONSUMER_MAX_DELIVER
+            );
+        }
+
+        // Consumer-not-found detection helper
+        assert!(is_consumer_not_found_error(
+            "nats: error while getting consumer info: consumer not found (code: 404, err_code: 10014)"
+        ));
+        assert!(!is_consumer_not_found_error("connection reset by peer"));
+    }
+
+    #[tokio::test]
+    async fn test_w3b_e1_e2_consumer_dlq_puback_both_fail_missing_fields_and_shutdown() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        type RecordedDlqRow = (String, String, Vec<u8>, String, i32);
+
+        #[derive(Default)]
+        struct MockDlqStore {
+            fail: bool,
+            rows: Mutex<Vec<RecordedDlqRow>>,
+        }
+        #[tonic::async_trait]
+        impl DlqStore for MockDlqStore {
+            async fn insert_dead_letter(
+                &self,
+                subject: &str,
+                event_id: &str,
+                payload: &[u8],
+                error_message: &str,
+                attempts: i32,
+            ) -> anyhow::Result<()> {
+                if self.fail {
+                    anyhow::bail!("simulated DB down");
+                }
+                self.rows.lock().unwrap().push((
+                    subject.to_string(),
+                    event_id.to_string(),
+                    payload.to_vec(),
+                    error_message.to_string(),
+                    attempts,
+                ));
+                Ok(())
+            }
+        }
+
+        #[derive(Default)]
+        struct MockDlqPub {
+            fail: bool,
+            sleep_ms: u64,
+            msgs: Mutex<Vec<(String, NatsHeaders, Vec<u8>)>>,
+        }
+        #[tonic::async_trait]
+        impl DlqPublisher for MockDlqPub {
+            async fn publish_dlq(
+                &self,
+                subject: String,
+                headers: NatsHeaders,
+                payload: Vec<u8>,
+            ) -> anyhow::Result<()> {
+                if self.sleep_ms > 0 {
+                    tokio::time::sleep(Duration::from_millis(self.sleep_ms)).await;
+                }
+                if self.fail {
+                    anyhow::bail!("simulated PubAck failure");
+                }
+                self.msgs.lock().unwrap().push((subject, headers, payload));
+                Ok(())
+            }
+        }
+
+        struct MockProc {
+            fail: bool,
+            flip_shutdown: Option<Arc<AtomicBool>>,
+            seen: Mutex<Vec<(String, String)>>,
+        }
+        #[tonic::async_trait]
+        impl OrderEventProcessor for MockProc {
+            async fn process_event(
+                &self,
+                event_type: &str,
+                _envelope: &EventEnvelope,
+                order_id: &str,
+                _trace_id: &str,
+            ) -> anyhow::Result<()> {
+                self.seen
+                    .lock()
+                    .unwrap()
+                    .push((event_type.to_string(), order_id.to_string()));
+                if let Some(ref flag) = self.flip_shutdown {
+                    flag.store(true, Ordering::SeqCst);
+                }
+                if self.fail {
+                    anyhow::bail!("handler error");
+                }
+                Ok(())
+            }
+        }
+
+        let valid_msg = serde_json::to_vec(&serde_json::json!({
+            "event_id": "evt-1",
+            "event_type": "order.completed",
+            "trace_id": "0123456789abcdef0123456789abcdef",
+            "occurred_at": Utc::now().to_rfc3339(),
+            "payload": { "order_id": "ord-1" }
+        }))
+        .unwrap();
+
+        // 1. Both DLQ sinks fail at attempt 5 -> MUST NAK with delay (NEVER Ack!)
+        let db_fail = MockDlqStore {
+            fail: true,
+            ..Default::default()
+        };
+        let nats_fail = MockDlqPub {
+            fail: true,
+            ..Default::default()
+        };
+        let proc_fail = MockProc {
+            fail: true,
+            flip_shutdown: None,
+            seen: Mutex::new(vec![]),
+        };
+        let act = process_order_event_raw(
+            &proc_fail,
+            &db_fail,
+            &nats_fail,
+            "order.completed",
+            &valid_msg,
+            None,
+            MAX_NATS_DELIVERIES,
+            || false,
+            Duration::from_secs(5),
+            Duration::from_secs(2),
+        )
+        .await;
+        assert_eq!(act, ConsumerDeliveryAction::Nak(Duration::from_secs(5)));
+
+        // 2. DB fails, NATS PubAck times out -> bounded dlq_timeout triggers NAK (never hangs or Acks!)
+        let nats_hang = MockDlqPub {
+            fail: false,
+            sleep_ms: 400,
+            ..Default::default()
+        };
+        let act_timeout = process_order_event_raw(
+            &proc_fail,
+            &db_fail,
+            &nats_hang,
+            "order.completed",
+            &valid_msg,
+            None,
+            MAX_NATS_DELIVERIES,
+            || false,
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+        )
+        .await;
+        assert_eq!(
+            act_timeout,
+            ConsumerDeliveryAction::Nak(Duration::from_secs(5))
+        );
+
+        // 3. DB succeeds, NATS PubAck fails -> DlqAck (at least one durable sink succeeded)
+        let db_ok = MockDlqStore::default();
+        let act_db_only = process_order_event_raw(
+            &proc_fail,
+            &db_ok,
+            &nats_fail,
+            "order.completed",
+            &valid_msg,
+            None,
+            MAX_NATS_DELIVERIES,
+            || false,
+            Duration::from_secs(5),
+            Duration::from_secs(2),
+        )
+        .await;
+        assert_eq!(act_db_only, ConsumerDeliveryAction::DlqAck);
+        assert_eq!(db_ok.rows.lock().unwrap().len(), 1);
+
+        // 4. DB fails, NATS PubAck succeeds -> DlqAck with DLQ headers populated
+        let nats_ok = MockDlqPub::default();
+        let act_nats_only = process_order_event_raw(
+            &proc_fail,
+            &db_fail,
+            &nats_ok,
+            "order.completed",
+            &valid_msg,
+            None,
+            MAX_NATS_DELIVERIES,
+            || false,
+            Duration::from_secs(5),
+            Duration::from_secs(2),
+        )
+        .await;
+        assert_eq!(act_nats_only, ConsumerDeliveryAction::DlqAck);
+        {
+            let msgs = nats_ok.msgs.lock().unwrap();
+            assert_eq!(msgs.len(), 1);
+            assert_eq!(msgs[0].0, "dlq.order.completed");
+            assert_eq!(
+                msgs[0].1.get("X-DLQ-Original-Subject").map(|v| v.as_str()),
+                Some("order.completed")
+            );
+            assert_eq!(
+                msgs[0].1.get("X-DLQ-Event-Id").map(|v| v.as_str()),
+                Some("evt-1")
+            );
+            assert_eq!(
+                msgs[0].1.get("X-DLQ-Attempts").map(|v| v.as_str()),
+                Some("5")
+            );
+        }
+
+        // 5. Missing order_id, missing event_id, malformed JSON -> routed to DLQ (NEVER silent Ack),
+        //    and NAKed if both DLQ sinks fail!
+        let missing_order = serde_json::to_vec(&serde_json::json!({
+            "event_id": "evt-no-ord",
+            "event_type": "order.delivered",
+            "trace_id": "0123456789abcdef0123456789abcdef",
+            "occurred_at": Utc::now().to_rfc3339(),
+            "payload": { "tracking_code": "TRK-1" }
+        }))
+        .unwrap();
+        let missing_eid = serde_json::to_vec(&serde_json::json!({
+            "event_id": "   ",
+            "event_type": "order.delivered",
+            "trace_id": "0123456789abcdef0123456789abcdef",
+            "occurred_at": Utc::now().to_rfc3339(),
+            "payload": { "order_id": "ord-1" }
+        }))
+        .unwrap();
+        let malformed = b"{not-json".to_vec();
+
+        for (label, raw) in [
+            ("missing_order_id", &missing_order),
+            ("missing_event_id", &missing_eid),
+            ("malformed_json", &malformed),
+        ] {
+            let db_p = MockDlqStore::default();
+            let nats_p = MockDlqPub::default();
+            let act_saved = process_order_event_raw(
+                &proc_fail,
+                &db_p,
+                &nats_p,
+                "order.delivered",
+                raw,
+                None,
+                1,
+                || false,
+                Duration::from_secs(5),
+                Duration::from_secs(2),
+            )
+            .await;
+            assert_eq!(act_saved, ConsumerDeliveryAction::DlqAck, "{label} saved");
+            assert_eq!(db_p.rows.lock().unwrap().len(), 1, "{label} db row");
+            assert_eq!(nats_p.msgs.lock().unwrap().len(), 1, "{label} nats msg");
+
+            let act_unsaved = process_order_event_raw(
+                &proc_fail,
+                &db_fail,
+                &nats_fail,
+                "order.delivered",
+                raw,
+                None,
+                1,
+                || false,
+                Duration::from_secs(5),
+                Duration::from_secs(2),
+            )
+            .await;
+            assert_eq!(
+                act_unsaved,
+                ConsumerDeliveryAction::Nak(Duration::from_secs(1)),
+                "{label} must NAK when both DLQ sinks fail"
+            );
+        }
+
+        // 6. Error during shutdown -> ShutdownIgnore, 0 DLQ writes even on attempt 5!
+        let sd_flag = Arc::new(AtomicBool::new(false));
+        let proc_sd_fail = MockProc {
+            fail: true,
+            flip_shutdown: Some(sd_flag.clone()),
+            seen: Mutex::new(vec![]),
+        };
+        let db_sd = MockDlqStore::default();
+        let nats_sd = MockDlqPub::default();
+        let act_sd_err = process_order_event_raw(
+            &proc_sd_fail,
+            &db_sd,
+            &nats_sd,
+            "order.completed",
+            &valid_msg,
+            None,
+            MAX_NATS_DELIVERIES,
+            || sd_flag.load(Ordering::SeqCst),
+            Duration::from_secs(5),
+            Duration::from_secs(2),
+        )
+        .await;
+        assert_eq!(act_sd_err, ConsumerDeliveryAction::ShutdownIgnore);
+        assert!(db_sd.rows.lock().unwrap().is_empty());
+        assert!(nats_sd.msgs.lock().unwrap().is_empty());
+
+        // 7. Handler SUCCEEDS even though shutdown flipped mid-flight -> Ack (already committed!)
+        let sd_ok_flag = Arc::new(AtomicBool::new(false));
+        let proc_sd_ok = MockProc {
+            fail: false,
+            flip_shutdown: Some(sd_ok_flag.clone()),
+            seen: Mutex::new(vec![]),
+        };
+        let act_sd_ok = process_order_event_raw(
+            &proc_sd_ok,
+            &db_sd,
+            &nats_sd,
+            "order.completed",
+            &valid_msg,
+            None,
+            1,
+            || sd_ok_flag.load(Ordering::SeqCst),
+            Duration::from_secs(5),
+            Duration::from_secs(2),
+        )
+        .await;
+        assert_eq!(act_sd_ok, ConsumerDeliveryAction::Ack);
+
+        // 8. Transient failure on attempt 1..4 -> NAK with delay, 0 DLQ writes
+        let db_retry = MockDlqStore::default();
+        let nats_retry = MockDlqPub::default();
+        for attempt in 1..MAX_NATS_DELIVERIES {
+            let act_r = process_order_event_raw(
+                &proc_fail,
+                &db_retry,
+                &nats_retry,
+                "order.completed",
+                &valid_msg,
+                None,
+                attempt,
+                || false,
+                Duration::from_secs(5),
+                Duration::from_secs(2),
+            )
+            .await;
+            assert_eq!(
+                act_r,
+                ConsumerDeliveryAction::Nak(Duration::from_secs(attempt as u64))
+            );
+        }
+        assert!(db_retry.rows.lock().unwrap().is_empty());
+        assert!(nats_retry.msgs.lock().unwrap().is_empty());
     }
 }

@@ -839,3 +839,95 @@ test("W3A Round2 P1-1: buildCategorySeedPlan rejects unknown shops without 0.05 
     { id: "cat-child-1", body: { parent_id: "cat-root-1", commission_rate_bps: 550 } },
   ]);
 });
+
+test("W3B E19: ensureBuyerPhoneVerified verifies once in order, skips when verified, and unlocks COD orders", async () => {
+  const { ensureBuyerPhoneVerified, seedDemoOrders } = await import(`./seed.mjs?e19=${Date.now()}`);
+  const buyerEmail = "minhquan.nguyen@nexusmart.vn";
+  const seenSnapshot = new Set(["msg-reg-1"]);
+  const authCalls = [];
+  const orders = new Map();
+  const returns = new Map();
+  let phoneVerified = false;
+  let seq = 0;
+  const ok = (data, status = 200) => ({ status, ok: true, data });
+
+  const mockApi = async (method, path, { body } = {}) => {
+    if (path.startsWith("/api/v1/users/me")) authCalls.push(`${method} ${path}`);
+    if (method === "GET" && path === "/api/v1/users/me") return ok({ user: { email: buyerEmail, phone_verified: phoneVerified } });
+    if (method === "POST" && path === "/api/v1/users/me/phone/otp") { assert.deepEqual(body, {}); return ok({ sent: true }); }
+    if (method === "POST" && path === "/api/v1/users/me/phone/verify") {
+      assert.equal(body.otp, "748291");
+      phoneVerified = true;
+      return ok({ verified: true, user: { phone_verified: true } });
+    }
+    if (method === "POST" && path === "/api/v1/checkout") {
+      if (body.payment_method === "COD" && !phoneVerified) {
+        return { status: 409, ok: false, data: { error: { code: "COD_PHONE_NOT_VERIFIED", message: "phone unverified" } } };
+      }
+      const id = `ord-${++seq}`;
+      const ord = { id, checkout_group_id: `grp-${seq}`, payment_id: `pay-${seq}`, status: body.payment_method === "COD" ? "CONFIRMED" : "PENDING", total_payable_vnd: 200000, tracking_code: "", return_request_id: "" };
+      orders.set(id, ord);
+      return ok({ orders: [ord], idempotent_replay: false }, 201);
+    }
+    if (method === "GET" && path.startsWith("/api/v1/orders/")) return ok({ order: { ...orders.get(path.split("/").pop()) } });
+    if (method === "POST" && path === "/webhooks/payment") {
+      for (const o of orders.values()) if (o.checkout_group_id === body.order_group_id) o.status = "CONFIRMED";
+      return ok({ ok: true });
+    }
+    if (method === "POST" && path === "/webhooks/shipping/ghn") {
+      orders.get(body.order_id).status = body.raw_status === "delivering" ? "SHIPPING" : "DELIVERED";
+      return ok({ ok: true });
+    }
+    if (method === "POST" && path.endsWith("/confirm")) { const o = orders.get(path.split("/")[5]); o.status = "PREPARING"; return ok({ order: { ...o } }); }
+    if (method === "POST" && path.endsWith("/ship")) { const o = orders.get(path.split("/")[5]); o.tracking_code = `GHN-${o.id}`; return ok({ order: { ...o }, tracking_code: o.tracking_code }); }
+    if (method === "POST" && path.endsWith("/confirm-received")) { const o = orders.get(path.split("/")[4]); o.status = "COMPLETED"; return ok({ order: { ...o } }); }
+    if (method === "POST" && path.endsWith("/cancel")) { const o = orders.get(path.split("/")[4]); o.status = "CANCELLED"; return ok({ order: { ...o } }); }
+    if (method === "POST" && path.endsWith("/return")) {
+      const o = orders.get(path.split("/")[4]);
+      o.status = "RETURN_REQUESTED";
+      o.return_request_id = `ret-${o.id}`;
+      returns.set(o.return_request_id, o.id);
+      return ok({ order: { ...o }, return_request_id: o.return_request_id });
+    }
+    if (method === "POST" && path.endsWith("/respond")) { orders.get(returns.get(path.split("/")[5])).status = "RETURNED"; return ok({ ok: true }); }
+    throw new Error(`unexpected call: ${method} ${path}`);
+  };
+
+  const sellerByStaticShopId = new Map(["shop-bach-dang", "shop-sai-gon", "shop-da-nang", "shop-ha-noi"].map((id) => [id, { token: `t-${id}`, backendShop: { id: `b-${id}` } }]));
+  const productByStaticId = new Map(["prod-at-xamda", "prod-tat-cothap", "prod-short-run", "prod-aokhoac-gio", "prod-dolot-brief", "prod-jogger-tech"].map((id) => [id, { skus: [{ id: `sku-${id}`, stock: 20, available_stock: 20, is_active: true }] }]));
+  const runOrders = () => seedDemoOrders({ buyerToken: "buyer-tok", buyerAddress: { id: "addr-1" }, sellerByStaticShopId, productByStaticId, paymentWebhookSecret: "s1", shippingWebhookSecret: "s2", apiFn: mockApi, pollIntervalMs: 1 });
+
+  // (c) COD is blocked before verification, then all 6 demo orders succeed after verify.
+  await assert.rejects(() => runOrders(), /COD_PHONE_NOT_VERIFIED/);
+  orders.clear();
+
+  // (a) Unverified buyer -> GET me -> POST otp -> POST verify (once each, passing seenIds).
+  let receivedSeen = null;
+  const first = await ensureBuyerPhoneVerified({
+    buyerToken: "buyer-tok",
+    buyerEmail,
+    apiFn: mockApi,
+    listSeenFn: async () => seenSnapshot,
+    waitForOtpFn: async (email, _since, _timeout, seen) => {
+      assert.equal(email, buyerEmail);
+      receivedSeen = seen;
+      return "748291";
+    },
+  });
+  assert.equal(first, "created");
+  assert.equal(receivedSeen, seenSnapshot);
+  assert.deepEqual(authCalls, ["GET /api/v1/users/me", "POST /api/v1/users/me/phone/otp", "POST /api/v1/users/me/phone/verify"]);
+  assert.equal((await runOrders()).created, 6);
+
+  // (b) Already verified -> only GET me, zero otp/verify/Mailpit calls.
+  authCalls.length = 0;
+  const second = await ensureBuyerPhoneVerified({
+    buyerToken: "buyer-tok",
+    buyerEmail,
+    apiFn: mockApi,
+    listSeenFn: async () => assert.fail("must not read Mailpit when already verified"),
+    waitForOtpFn: async () => assert.fail("must not wait for OTP when already verified"),
+  });
+  assert.equal(second, "existing");
+  assert.deepEqual(authCalls, ["GET /api/v1/users/me"]);
+});

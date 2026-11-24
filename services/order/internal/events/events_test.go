@@ -74,13 +74,14 @@ func (f *fakeDLQStore) InsertDeadLetterEvent(_ context.Context, arg db.InsertDea
 }
 
 type fakeEventHandler struct {
-	mu              sync.Mutex
-	failErr         error
-	succeededEvents []string
-	failedEvents    []string
-	expiredEvents   []string
-	refundedEvents  []string
-	shipmentEvents  []string
+	mu                       sync.Mutex
+	failErr                  error
+	succeededEvents          []string
+	failedEvents             []string
+	expiredEvents            []string
+	refundedEvents           []string
+	shipmentEvents           []string
+	shipmentCreateFailEvents []string
 }
 
 func (h *fakeEventHandler) HandlePaymentSucceeded(_ context.Context, eventID string, _ PaymentSucceededPayload) error {
@@ -115,6 +116,13 @@ func (h *fakeEventHandler) HandleShipmentUpdated(_ context.Context, eventID stri
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.shipmentEvents = append(h.shipmentEvents, eventID)
+	return h.failErr
+}
+
+func (h *fakeEventHandler) HandleShipmentCreateFailed(_ context.Context, eventID string, _ ShipmentCreateFailedPayload) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.shipmentCreateFailEvents = append(h.shipmentCreateFailEvents, eventID)
 	return h.failErr
 }
 
@@ -338,5 +346,68 @@ func TestConsumer_DispatchAndDLQRouting(t *testing.T) {
 	}
 	if len(pub.msgs) != 2 || len(dlqStore.records) != 2 {
 		t.Fatalf("expected 2 DLQ publishes and 2 DLQ DB records, got pub=%d db=%d", len(pub.msgs), len(dlqStore.records))
+	}
+}
+
+func TestConsumer_ShipmentCreateFailed_DispatchAndMalformedDLQ(t *testing.T) {
+	pub := &recordingPublisher{}
+	dlqStore := &fakeDLQStore{}
+	handler := &fakeEventHandler{}
+	log := logger.New("order-test", logger.WithWriter(io.Discard))
+
+	consumer := NewConsumer(nil, pub, dlqStore, handler, log, "NEXUSMART")
+
+	// 1. Valid shipment.create_failed -> dispatches to HandleShipmentCreateFailed + ActionAck.
+	validPayload, _ := json.Marshal(ShipmentCreateFailedPayload{
+		JobID:        "job-1",
+		OrderID:      "ord-1",
+		ShopID:       "shop-1",
+		CarrierCode:  "ghn",
+		ServiceCode:  "standard",
+		Attempts:     8,
+		ErrorMessage: "carrier 503 exhausted",
+		OccurredAt:   "2026-11-24T10:00:00Z",
+	})
+	validEnv, _ := json.Marshal(Envelope{
+		EventID:    "evt-scf-1",
+		EventType:  SubjectShipmentCreateFailed,
+		OccurredAt: time.Now().UTC(),
+		Payload:    validPayload,
+	})
+	action, err := consumer.ProcessRawMessage(context.Background(), SubjectShipmentCreateFailed, validEnv, nil, 1)
+	if err != nil || action != ActionAck {
+		t.Fatalf("expected ActionAck for shipment.create_failed, got action=%v err=%v", action, err)
+	}
+	if len(handler.shipmentCreateFailEvents) != 1 || handler.shipmentCreateFailEvents[0] != "evt-scf-1" {
+		t.Fatalf("expected shipmentCreateFailEvents=[evt-scf-1], got %v", handler.shipmentCreateFailEvents)
+	}
+
+	// 2. Malformed outer JSON envelope on shipment.create_failed -> immediate ActionDLQ.
+	action, _ = consumer.ProcessRawMessage(context.Background(), SubjectShipmentCreateFailed, []byte("{bad-json"), nil, 1)
+	if action != ActionDLQ {
+		t.Fatalf("expected ActionDLQ for malformed shipment.create_failed envelope, got %v", action)
+	}
+	if len(pub.msgs) != 1 || pub.msgs[0].Subject != "dlq.shipment.create_failed" {
+		t.Fatalf("expected DLQ subject dlq.shipment.create_failed, got %+v", pub.msgs)
+	}
+	if len(dlqStore.records) != 1 {
+		t.Fatalf("expected 1 DLQ DB record, got %d", len(dlqStore.records))
+	}
+
+	// 3. Malformed inner payload JSON -> ActionNak on attempt 1, ActionDLQ at maxAttempts (5).
+	badPayloadEnv, _ := json.Marshal(Envelope{
+		EventID:    "evt-scf-bad",
+		EventType:  SubjectShipmentCreateFailed,
+		OccurredAt: time.Now().UTC(),
+		Payload:    json.RawMessage(`"not-an-object"`),
+	})
+	if act1, _ := consumer.ProcessRawMessage(context.Background(), SubjectShipmentCreateFailed, badPayloadEnv, nil, 1); act1 != ActionNak {
+		t.Fatalf("expected ActionNak on attempt 1 for malformed inner payload, got %v", act1)
+	}
+	if act5, _ := consumer.ProcessRawMessage(context.Background(), SubjectShipmentCreateFailed, badPayloadEnv, nil, 5); act5 != ActionDLQ {
+		t.Fatalf("expected ActionDLQ at attempt 5 for malformed inner payload, got %v", act5)
+	}
+	if len(pub.msgs) != 2 || pub.msgs[1].Subject != "dlq.shipment.create_failed" || len(dlqStore.records) != 2 {
+		t.Fatalf("expected 2 DLQ publishes/records for shipment.create_failed, got pub=%d db=%d", len(pub.msgs), len(dlqStore.records))
 	}
 }

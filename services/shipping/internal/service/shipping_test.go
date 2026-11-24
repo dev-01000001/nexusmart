@@ -38,6 +38,7 @@ type memRepo struct {
 	webhookSeen  map[string]bool
 	outbox       []store.OutboxEvent
 	processed    map[string]bool
+	jobs         map[string]*store.ShipmentCreateJob
 	shopSettings map[string]*store.ShopShippingSettings
 	carriers     map[string]*store.CarrierConfig
 	fallback     map[string][]store.FallbackRate
@@ -54,6 +55,7 @@ func newMemRepo() *memRepo {
 		events:       make(map[string][]store.ShipmentEvent),
 		webhookSeen:  make(map[string]bool),
 		processed:    make(map[string]bool),
+		jobs:         make(map[string]*store.ShipmentCreateJob),
 		shopSettings: make(map[string]*store.ShopShippingSettings),
 		carriers:     make(map[string]*store.CarrierConfig),
 		fallback:     make(map[string][]store.FallbackRate),
@@ -94,6 +96,9 @@ func (m *memRepo) ListWards(_ context.Context, provinceCode, query string) ([]ad
 	qAlias := address.NormalizeName(query)
 	var out []address.Ward
 	for _, w := range m.wards {
+		if !w.IsActive {
+			continue
+		}
 		wNorm := address.StripDiacritics(w.Name)
 		if w.ProvinceCode == provinceCode && (q == "" || strings.Contains(strings.ToLower(w.Name), q) ||
 			(qNorm != "" && strings.Contains(wNorm, qNorm)) ||
@@ -113,6 +118,23 @@ func (m *memRepo) GetWard(_ context.Context, wardCode string) (*address.Ward, er
 		}
 	}
 	return nil, store.ErrNotFound
+}
+
+func (m *memRepo) GetRepresentativeWard(_ context.Context, provinceCode string) (*address.Ward, error) {
+	var best *address.Ward
+	for _, w := range m.wards {
+		if w.ProvinceCode != provinceCode || !w.IsActive {
+			continue
+		}
+		if best == nil || (w.CODSupported && !best.CODSupported) || (w.CODSupported == best.CODSupported && w.Code < best.Code) {
+			cp := w
+			best = &cp
+		}
+	}
+	if best == nil {
+		return nil, store.ErrNotFound
+	}
+	return best, nil
 }
 
 func (m *memRepo) MapLegacyAddress(_ context.Context, legacyProv, legacyDist, legacyWard string) (*address.LegacyMatch, error) {
@@ -618,6 +640,226 @@ func (m *memRepo) InsertDeadLetter(_ context.Context, _, _ string, _ []byte, _ s
 	return nil
 }
 
+func (m *memRepo) CreateShipmentWithOutbox(ctx context.Context, sh *store.Shipment, initEv *store.ShipmentEvent, outbox *store.JobOutboxParams) (*store.Shipment, bool, error) {
+	saved, existed, err := m.CreateShipment(ctx, sh, initEv)
+	if err != nil || existed {
+		return saved, existed, err
+	}
+	if outbox != nil && outbox.Subject != "" {
+		m.mu.Lock()
+		m.outbox = append(m.outbox, store.OutboxEvent{
+			ID:          uuid.NewString(),
+			EventID:     outbox.EventID,
+			Subject:     outbox.Subject,
+			AggregateID: outbox.AggregateID,
+			Payload:     append([]byte(nil), outbox.Payload...),
+			Traceparent: outbox.Traceparent,
+			TraceID:     outbox.TraceID,
+			CreatedAt:   time.Now().UTC(),
+		})
+		m.mu.Unlock()
+	}
+	return saved, false, nil
+}
+
+func (m *memRepo) GetActiveShipmentCreateJob(_ context.Context, orderID, direction string) (*store.ShipmentCreateJob, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dir := store.NormalizeDirection(direction)
+	for _, j := range m.jobs {
+		if j.OrderID == orderID && j.Direction == dir && (j.Status == store.JobStatusPending || j.Status == store.JobStatusProcessing) {
+			cp := *j
+			cp.RequestJSON = append([]byte(nil), j.RequestJSON...)
+			return &cp, nil
+		}
+	}
+	return nil, store.ErrNotFound
+}
+
+func (m *memRepo) GetShipmentCreateJobByID(_ context.Context, jobID string) (*store.ShipmentCreateJob, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j, ok := m.jobs[jobID]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	cp := *j
+	cp.RequestJSON = append([]byte(nil), j.RequestJSON...)
+	return &cp, nil
+}
+
+func (m *memRepo) EnqueueShipmentCreateJob(_ context.Context, job *store.ShipmentCreateJob) (*store.ShipmentCreateJob, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dir := store.NormalizeDirection(job.Direction)
+	for _, existing := range m.jobs {
+		if existing.OrderID == job.OrderID && existing.Direction == dir && (existing.Status == store.JobStatusPending || existing.Status == store.JobStatusProcessing) {
+			cp := *existing
+			cp.RequestJSON = append([]byte(nil), existing.RequestJSON...)
+			return &cp, true, nil
+		}
+	}
+	cp := *job
+	if cp.ID == "" {
+		cp.ID = uuid.NewString()
+	}
+	cp.Direction = dir
+	if cp.Status == "" {
+		cp.Status = store.JobStatusPending
+	}
+	if cp.MaxAttempts <= 0 {
+		cp.MaxAttempts = 8
+	}
+	cp.RequestJSON = append([]byte(nil), job.RequestJSON...)
+	m.jobs[cp.ID] = &cp
+	ret := cp
+	return &ret, false, nil
+}
+
+func (m *memRepo) CancelActiveShipmentCreateJobs(_ context.Context, orderID, direction, reason string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dir := store.NormalizeDirection(direction)
+	var n int64
+	for _, j := range m.jobs {
+		if j.OrderID == orderID && j.Direction == dir && (j.Status == store.JobStatusPending || j.Status == store.JobStatusProcessing) {
+			j.Status = store.JobStatusCancelled
+			j.ClaimedUntil = nil
+			j.ClaimToken = ""
+			j.LastError = reason
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (m *memRepo) ClaimDueShipmentCreateJobs(_ context.Context, limit int, lease time.Duration, now time.Time) ([]store.ShipmentCreateJob, string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if limit <= 0 {
+		limit = 20
+	}
+	if lease <= 0 {
+		lease = 30 * time.Second
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	token := uuid.NewString()
+	until := now.Add(lease)
+	var claimed []store.ShipmentCreateJob
+	for _, j := range m.jobs {
+		due := (j.Status == store.JobStatusPending && !j.NextRetryAt.After(now)) ||
+			(j.Status == store.JobStatusProcessing && j.ClaimedUntil != nil && !j.ClaimedUntil.After(now))
+		if !due {
+			continue
+		}
+		j.Status = store.JobStatusProcessing
+		u := until
+		j.ClaimedUntil = &u
+		j.ClaimToken = token
+		j.UpdatedAt = now
+		cp := *j
+		cp.RequestJSON = append([]byte(nil), j.RequestJSON...)
+		claimed = append(claimed, cp)
+		if len(claimed) >= limit {
+			break
+		}
+	}
+	return claimed, token, nil
+}
+
+func (m *memRepo) CompleteShipmentCreateJob(_ context.Context, jobID, claimToken string, sh *store.Shipment, initEv *store.ShipmentEvent, outbox *store.JobOutboxParams) (*store.Shipment, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j, ok := m.jobs[jobID]
+	if !ok {
+		return nil, false, store.ErrNotFound
+	}
+	if j.Status == store.JobStatusCancelled {
+		return nil, false, store.ErrJobCancelled
+	}
+	if j.Status != store.JobStatusProcessing || claimToken == "" || j.ClaimToken != claimToken {
+		return nil, false, store.ErrStaleClaimToken
+	}
+	dir := store.NormalizeDirection(sh.Direction)
+	if existing := m.findByOrderLocked(sh.OrderID, dir, true); existing != nil {
+		j.Status = store.JobStatusSucceeded
+		j.ClaimedUntil = nil
+		j.ClaimToken = ""
+		cp := *existing
+		return &cp, true, nil
+	}
+	cp := *sh
+	cp.Direction = dir
+	m.shipments = append(m.shipments, &cp)
+	m.byTracking[cp.TrackingCode] = &cp
+	if initEv != nil {
+		ev := *initEv
+		if ev.CreatedAt.IsZero() {
+			ev.CreatedAt = time.Now().UTC()
+		}
+		m.events[cp.ID] = append(m.events[cp.ID], ev)
+	}
+	if outbox != nil && outbox.Subject != "" {
+		m.outbox = append(m.outbox, store.OutboxEvent{
+			ID:          uuid.NewString(),
+			EventID:     outbox.EventID,
+			Subject:     outbox.Subject,
+			AggregateID: outbox.AggregateID,
+			Payload:     append([]byte(nil), outbox.Payload...),
+			Traceparent: outbox.Traceparent,
+			TraceID:     outbox.TraceID,
+			CreatedAt:   time.Now().UTC(),
+		})
+	}
+	j.Status = store.JobStatusSucceeded
+	j.ClaimedUntil = nil
+	j.ClaimToken = ""
+	j.LastError = ""
+	ret := cp
+	return &ret, false, nil
+}
+
+func (m *memRepo) RecordShipmentCreateJobFailure(_ context.Context, jobID, claimToken, errMsg string, nextRetryAt *time.Time, terminal bool, outbox *store.JobOutboxParams, now time.Time) (*store.ShipmentCreateJob, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j, ok := m.jobs[jobID]
+	if !ok {
+		return nil, false, store.ErrNotFound
+	}
+	if j.Status != store.JobStatusProcessing || j.ClaimToken != claimToken {
+		return nil, false, nil
+	}
+	j.Attempts++
+	j.ClaimedUntil = nil
+	j.ClaimToken = ""
+	j.LastError = errMsg
+	j.UpdatedAt = now
+	if terminal || j.Attempts >= j.MaxAttempts {
+		j.Status = store.JobStatusFailed
+		if outbox != nil && outbox.Subject != "" {
+			m.outbox = append(m.outbox, store.OutboxEvent{
+				ID:          uuid.NewString(),
+				EventID:     outbox.EventID,
+				Subject:     outbox.Subject,
+				AggregateID: outbox.AggregateID,
+				Payload:     append([]byte(nil), outbox.Payload...),
+				Traceparent: outbox.Traceparent,
+				TraceID:     outbox.TraceID,
+				CreatedAt:   now,
+			})
+		}
+	} else {
+		j.Status = store.JobStatusPending
+		if nextRetryAt != nil {
+			j.NextRetryAt = *nextRetryAt
+		}
+	}
+	cp := *j
+	return &cp, true, nil
+}
+
 type countingCarrier struct {
 	carrier.Carrier
 	createCalls atomic.Int32
@@ -647,8 +889,8 @@ func TestCreateShipmentIdempotentByOrderID(t *testing.T) {
 		ServiceCode:  "STANDARD",
 		CODAmountVND: 250000,
 		WeightGrams:  1200,
-		FromAddress:  carrier.Address{ProvinceCode: "79", WardCode: "79001"},
-		ToAddress:    carrier.Address{ProvinceCode: "01", WardCode: "01001"},
+		FromAddress:  carrier.Address{ProvinceCode: "79", WardCode: "26740"},
+		ToAddress:    carrier.Address{ProvinceCode: "01", WardCode: "00070"},
 	}
 
 	first, existed1, err := svc.CreateShipment(context.Background(), in)
@@ -838,7 +1080,7 @@ func TestLegacyAddressMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MapLegacyAddress failed: %v", err)
 	}
-	if !match.Found || match.ProvinceCode != "79" || match.WardCode != "79006" || match.LegacyProvinceCode != "74" {
+	if !match.Found || match.ProvinceCode != "79" || match.WardCode != "25747" || match.LegacyProvinceCode != "74" {
 		t.Fatalf("unexpected Binh Duong -> HCMC mapping: %+v", match)
 	}
 
@@ -847,7 +1089,7 @@ func TestLegacyAddressMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MapLegacyAddress failed: %v", err)
 	}
-	if !match2.Found || match2.ProvinceCode != "48" || match2.WardCode != "48005" {
+	if !match2.Found || match2.ProvinceCode != "48" || match2.WardCode != "20410" {
 		t.Fatalf("unexpected Quang Nam -> Da Nang mapping: %+v", match2)
 	}
 
@@ -900,7 +1142,7 @@ func TestCalculateFee_RejectsMissingOriginAndShop(t *testing.T) {
 
 	_, err := svc.CalculateFee(context.Background(), carrier.FeeRequest{
 		ToProvinceCode: "79",
-		ToWardCode:     "79001",
+		ToWardCode:     "26740",
 		WeightGrams:    250,
 		CODAmountVND:   200000,
 	})
@@ -923,23 +1165,23 @@ func TestCalculateFee_ValidationAndOutOfServiceArea(t *testing.T) {
 		{
 			name: "zero weight",
 			req: carrier.FeeRequest{
-				FromProvinceCode: "79", FromWardCode: "79001",
-				ToProvinceCode: "79", ToWardCode: "79001",
+				FromProvinceCode: "79", FromWardCode: "26740",
+				ToProvinceCode: "79", ToWardCode: "26740",
 				WeightGrams: 0,
 			},
 		},
 		{
 			name: "negative weight",
 			req: carrier.FeeRequest{
-				FromProvinceCode: "79", FromWardCode: "79001",
-				ToProvinceCode: "79", ToWardCode: "79001",
+				FromProvinceCode: "79", FromWardCode: "26740",
+				ToProvinceCode: "79", ToWardCode: "26740",
 				WeightGrams: -100,
 			},
 		},
 		{
 			name: "unknown destination province",
 			req: carrier.FeeRequest{
-				FromProvinceCode: "79", FromWardCode: "79001",
+				FromProvinceCode: "79", FromWardCode: "26740",
 				ToProvinceCode: "99999", ToWardCode: "99999",
 				WeightGrams: 250,
 			},
@@ -947,7 +1189,7 @@ func TestCalculateFee_ValidationAndOutOfServiceArea(t *testing.T) {
 		{
 			name: "legacy unmerged province code not in 34 provinces",
 			req: carrier.FeeRequest{
-				FromProvinceCode: "79", FromWardCode: "79001",
+				FromProvinceCode: "79", FromWardCode: "26740",
 				ToProvinceCode: "74",
 				WeightGrams:    250,
 			},
@@ -955,7 +1197,7 @@ func TestCalculateFee_ValidationAndOutOfServiceArea(t *testing.T) {
 		{
 			name: "unknown destination ward",
 			req: carrier.FeeRequest{
-				FromProvinceCode: "79", FromWardCode: "79001",
+				FromProvinceCode: "79", FromWardCode: "26740",
 				ToProvinceCode: "79", ToWardCode: "79999",
 				WeightGrams: 250,
 			},
@@ -963,8 +1205,8 @@ func TestCalculateFee_ValidationAndOutOfServiceArea(t *testing.T) {
 		{
 			name: "destination ward belongs to different province",
 			req: carrier.FeeRequest{
-				FromProvinceCode: "79", FromWardCode: "79001",
-				ToProvinceCode: "79", ToWardCode: "01001",
+				FromProvinceCode: "79", FromWardCode: "26740",
+				ToProvinceCode: "79", ToWardCode: "00070",
 				WeightGrams: 250,
 			},
 		},
@@ -972,7 +1214,7 @@ func TestCalculateFee_ValidationAndOutOfServiceArea(t *testing.T) {
 			name: "unknown origin province",
 			req: carrier.FeeRequest{
 				FromProvinceCode: "99999",
-				ToProvinceCode:   "79", ToWardCode: "79001",
+				ToProvinceCode:   "79", ToWardCode: "26740",
 				WeightGrams: 250,
 			},
 		},
@@ -980,22 +1222,22 @@ func TestCalculateFee_ValidationAndOutOfServiceArea(t *testing.T) {
 			name: "unknown origin ward",
 			req: carrier.FeeRequest{
 				FromProvinceCode: "79", FromWardCode: "79999",
-				ToProvinceCode: "79", ToWardCode: "79001",
+				ToProvinceCode: "79", ToWardCode: "26740",
 				WeightGrams: 250,
 			},
 		},
 		{
 			name: "origin ward belongs to different province",
 			req: carrier.FeeRequest{
-				FromProvinceCode: "79", FromWardCode: "01001",
-				ToProvinceCode: "79", ToWardCode: "79001",
+				FromProvinceCode: "79", FromWardCode: "00070",
+				ToProvinceCode: "79", ToWardCode: "26740",
 				WeightGrams: 250,
 			},
 		},
 		{
 			name: "missing destination province",
 			req: carrier.FeeRequest{
-				FromProvinceCode: "79", FromWardCode: "79001",
+				FromProvinceCode: "79", FromWardCode: "26740",
 				WeightGrams: 250,
 			},
 		},
@@ -1103,19 +1345,19 @@ func TestCalculateFee_ResolvesShopPickupAndCachesRealOrigin(t *testing.T) {
 	svc := NewShippingService(repo, agg, qc, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	pickup := &fakeShopPickup{
 		byShop: map[string][2]string{
-			"shop-sg":       {"79", "79001"},
+			"shop-sg":       {"79", "26740"},
 			"shop-no-addr":  {"", ""},
 			"shop-bad-prov": {"99999", "99999"},
 		},
 	}
 	svc.SetShopPickupResolver(pickup)
 
-	// 1. Quote with shop_id only (no from_province_code/from_ward_code) resolves shop pickup (79/79001)
+	// 1. Quote with shop_id only (no from_province_code/from_ward_code) resolves shop pickup (79/26740)
 	//    and returns intra-province TP.HCM quotes (ghn/STANDARD=24000, mock_express/STANDARD=19500).
 	quotesByShop, err := svc.CalculateFee(context.Background(), carrier.FeeRequest{
 		ShopID:         "shop-sg",
 		ToProvinceCode: "79",
-		ToWardCode:     "79001",
+		ToWardCode:     "26740",
 		WeightGrams:    250,
 		CODAmountVND:   200000,
 	})
@@ -1123,21 +1365,21 @@ func TestCalculateFee_ResolvesShopPickupAndCachesRealOrigin(t *testing.T) {
 		t.Fatalf("CalculateFee with shop_id failed: %v", err)
 	}
 
-	// Verify cache lookup and write both used the REAL resolved origin (79/79001), never empty.
-	if len(qc.getReqs) != 1 || qc.getReqs[0].FromProvinceCode != "79" || qc.getReqs[0].FromWardCode != "79001" {
-		t.Fatalf("expected cache Get with real origin 79/79001, got %+v", qc.getReqs)
+	// Verify cache lookup and write both used the REAL resolved origin (79/26740), never empty.
+	if len(qc.getReqs) != 1 || qc.getReqs[0].FromProvinceCode != "79" || qc.getReqs[0].FromWardCode != "26740" {
+		t.Fatalf("expected cache Get with real origin 79/26740, got %+v", qc.getReqs)
 	}
-	if len(qc.setReqs) != 1 || qc.setReqs[0].FromProvinceCode != "79" || qc.setReqs[0].FromWardCode != "79001" {
-		t.Fatalf("expected cache Set with real origin 79/79001, got %+v", qc.setReqs)
+	if len(qc.setReqs) != 1 || qc.setReqs[0].FromProvinceCode != "79" || qc.setReqs[0].FromWardCode != "26740" {
+		t.Fatalf("expected cache Set with real origin 79/26740, got %+v", qc.setReqs)
 	}
 
 	// Compare with explicit origin (what OrderService sends at checkout).
 	quotesExplicit, err := svc.CalculateFee(context.Background(), carrier.FeeRequest{
 		ShopID:           "shop-sg",
 		FromProvinceCode: "79",
-		FromWardCode:     "79001",
+		FromWardCode:     "26740",
 		ToProvinceCode:   "79",
-		ToWardCode:       "79001",
+		ToWardCode:       "26740",
 		WeightGrams:      250,
 		CODAmountVND:     200000,
 	})
@@ -1175,7 +1417,7 @@ func TestCalculateFee_ResolvesShopPickupAndCachesRealOrigin(t *testing.T) {
 	if _, err := svc.CalculateFee(context.Background(), carrier.FeeRequest{
 		ShopID:         "shop-missing",
 		ToProvinceCode: "79",
-		ToWardCode:     "79001",
+		ToWardCode:     "26740",
 		WeightGrams:    250,
 	}); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("expected store.ErrNotFound for missing shop, got %v", err)
@@ -1185,7 +1427,7 @@ func TestCalculateFee_ResolvesShopPickupAndCachesRealOrigin(t *testing.T) {
 	if _, err := svc.CalculateFee(context.Background(), carrier.FeeRequest{
 		ShopID:         "shop-no-addr",
 		ToProvinceCode: "79",
-		ToWardCode:     "79001",
+		ToWardCode:     "26740",
 		WeightGrams:    250,
 	}); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("expected ErrInvalidArgument for shop missing pickup address, got %v", err)
@@ -1195,7 +1437,7 @@ func TestCalculateFee_ResolvesShopPickupAndCachesRealOrigin(t *testing.T) {
 	if _, err := svc.CalculateFee(context.Background(), carrier.FeeRequest{
 		ShopID:         "shop-bad-prov",
 		ToProvinceCode: "79",
-		ToWardCode:     "79001",
+		ToWardCode:     "26740",
 		WeightGrams:    250,
 	}); !errors.Is(err, ErrOutOfServiceArea) {
 		t.Fatalf("expected ErrOutOfServiceArea for unsupported shop pickup province, got %v", err)
@@ -1228,9 +1470,9 @@ func TestCalculateFee_AllCarriersRejectOutOfServiceArea(t *testing.T) {
 
 	_, err := svc.CalculateFee(context.Background(), carrier.FeeRequest{
 		FromProvinceCode: "79",
-		FromWardCode:     "79001",
+		FromWardCode:     "26740",
 		ToProvinceCode:   "96",
-		ToWardCode:       "96003",
+		ToWardCode:       "31825",
 		WeightGrams:      500,
 	})
 	if !errors.Is(err, ErrOutOfServiceArea) {
@@ -1401,8 +1643,8 @@ func TestW2A_ReturnShipmentIdempotentAndIsolatedFromForward(t *testing.T) {
 	// 1. Create and deliver FORWARD shipment.
 	fwd, _, err := svc.CreateShipment(context.Background(), CreateShipmentInput{
 		OrderID: "ord-ret-iso", ShopID: "shop-1", BuyerID: "buyer-1", CarrierCode: carrier.CodeGHN, WeightGrams: 500,
-		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "79001"},
-		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "01001"},
+		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "26740"},
+		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "00070"},
 	})
 	if err != nil {
 		t.Fatalf("CreateShipment: %v", err)
@@ -1417,8 +1659,8 @@ func TestW2A_ReturnShipmentIdempotentAndIsolatedFromForward(t *testing.T) {
 	// 2. Create RETURN shipment (fee computed via aggregator; cheapest carrier mock_express chosen when omitted).
 	ret, existed, err := svc.CreateReturnShipment(context.Background(), CreateReturnShipmentInput{
 		OrderID: "ord-ret-iso", ReturnRequestID: "rr-100", ShopID: "shop-1", BuyerID: "buyer-1", WeightGrams: 500,
-		FromAddress: carrier.Address{ProvinceCode: "01", WardCode: "01001"},
-		ToAddress:   carrier.Address{ProvinceCode: "79", WardCode: "79001"},
+		FromAddress: carrier.Address{ProvinceCode: "01", WardCode: "00070"},
+		ToAddress:   carrier.Address{ProvinceCode: "79", WardCode: "26740"},
 	})
 	if err != nil || existed {
 		t.Fatalf("CreateReturnShipment: sh=%+v existed=%v err=%v", ret, existed, err)
@@ -1429,8 +1671,8 @@ func TestW2A_ReturnShipmentIdempotentAndIsolatedFromForward(t *testing.T) {
 	// Replay is idempotent.
 	retReplay, existed2, err := svc.CreateReturnShipment(context.Background(), CreateReturnShipmentInput{
 		OrderID: "ord-ret-iso", ReturnRequestID: "rr-100", ShopID: "shop-1", BuyerID: "buyer-1", WeightGrams: 500,
-		FromAddress: carrier.Address{ProvinceCode: "01", WardCode: "01001"},
-		ToAddress:   carrier.Address{ProvinceCode: "79", WardCode: "79001"},
+		FromAddress: carrier.Address{ProvinceCode: "01", WardCode: "00070"},
+		ToAddress:   carrier.Address{ProvinceCode: "79", WardCode: "26740"},
 	})
 	if err != nil || !existed2 || retReplay.ID != ret.ID {
 		t.Fatalf("expected idempotent return replay, got sh=%+v existed=%v err=%v", retReplay, existed2, err)
@@ -1547,8 +1789,8 @@ func TestW2A_ShopSettingsCarrierFilterDefaultWeightAndAdminControls(t *testing.T
 
 	// Quote with weight=0 uses shop's default_weight_grams=1600 and returns ONLY ghn!
 	quotes, err := svc.CalculateFee(context.Background(), carrier.FeeRequest{
-		ShopID: "shop-filter", FromProvinceCode: "79", FromWardCode: "79001",
-		ToProvinceCode: "79", ToWardCode: "79001", WeightGrams: 0,
+		ShopID: "shop-filter", FromProvinceCode: "79", FromWardCode: "26740",
+		ToProvinceCode: "79", ToWardCode: "26740", WeightGrams: 0,
 	})
 	if err != nil || len(quotes) == 0 {
 		t.Fatalf("CalculateFee with shop settings failed: quotes=%+v err=%v", quotes, err)
@@ -1587,8 +1829,8 @@ func TestW2A_ShopSettingsCarrierFilterDefaultWeightAndAdminControls(t *testing.T
 	}
 	ghnFail.Store(true)
 	fbQuotes, err := svc.CalculateFee(context.Background(), carrier.FeeRequest{
-		ShopID: "shop-filter", FromProvinceCode: "79", FromWardCode: "79001",
-		ToProvinceCode: "79", ToWardCode: "79001", WeightGrams: 1500,
+		ShopID: "shop-filter", FromProvinceCode: "79", FromWardCode: "26740",
+		ToProvinceCode: "79", ToWardCode: "26740", WeightGrams: 1500,
 	})
 	ghnFail.Store(false)
 	if err != nil || len(fbQuotes) != 1 || !fbQuotes[0].IsFallback || fbQuotes[0].FeeVND != 36000 {
@@ -1604,8 +1846,8 @@ func TestW2A_ShopSettingsCarrierFilterDefaultWeightAndAdminControls(t *testing.T
 		t.Fatalf("AdminUpdateCarrier disable ghn: %v", err)
 	}
 	if _, err := svc.CalculateFee(context.Background(), carrier.FeeRequest{
-		ShopID: "shop-filter", FromProvinceCode: "79", FromWardCode: "79001",
-		ToProvinceCode: "79", ToWardCode: "79001", WeightGrams: 500,
+		ShopID: "shop-filter", FromProvinceCode: "79", FromWardCode: "26740",
+		ToProvinceCode: "79", ToWardCode: "26740", WeightGrams: 500,
 	}); !errors.Is(err, ErrNoEnabledCarriers) {
 		t.Fatalf("expected ErrNoEnabledCarriers when shop∩platform is empty, got %v", err)
 	}
@@ -1617,8 +1859,8 @@ func TestW2A_ShopSettingsCarrierFilterDefaultWeightAndAdminControls(t *testing.T
 	if _, _, err := svc.CreateReturnShipment(context.Background(), CreateReturnShipmentInput{
 		OrderID: "ord-after-disable", ReturnRequestID: "rr-disabled-ghn", ShopID: "shop-filter",
 		CarrierCode: carrier.CodeGHN, WeightGrams: 500,
-		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "79001"},
-		ToAddress:   carrier.Address{ProvinceCode: "79", WardCode: "79001"},
+		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "26740"},
+		ToAddress:   carrier.Address{ProvinceCode: "79", WardCode: "26740"},
 	}); !errors.Is(err, ErrCarrierDisabled) {
 		t.Fatalf("expected ErrCarrierDisabled for explicit disabled carrier CreateReturnShipment, got %v", err)
 	}
@@ -1675,8 +1917,8 @@ func TestW2A_AccentInsensitiveAddressSearch(t *testing.T) {
 		t.Fatalf("ListProvinces('HCM') = (%+v, %v), want code 79", provsHCM, err)
 	}
 	wards, err := svc.ListWards(context.Background(), "79", "Ben Thanh")
-	if err != nil || len(wards) != 1 || wards[0].Code != "79002" {
-		t.Fatalf("ListWards('79', 'Ben Thanh') = (%+v, %v), want code 79002", wards, err)
+	if err != nil || len(wards) != 1 || wards[0].Code != "26743" {
+		t.Fatalf("ListWards('79', 'Ben Thanh') = (%+v, %v), want code 26743", wards, err)
 	}
 }
 
@@ -1702,8 +1944,8 @@ func TestW2A_OrderCancelledNeverTouchesReturnShipmentAndRedeliveryValidation(t *
 	ret, _, err := svc.CreateReturnShipment(context.Background(), CreateReturnShipmentInput{
 		OrderID: "ord-ret-safe", ReturnRequestID: "rr-safe", ShopID: "shop-1", BuyerID: "buyer-1",
 		CarrierCode: carrier.CodeGHN, WeightGrams: 500,
-		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "79001"},
-		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "01001"},
+		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "26740"},
+		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "00070"},
 	})
 	if err != nil {
 		t.Fatalf("CreateReturnShipment: %v", err)
@@ -1873,8 +2115,8 @@ func TestReview_ClientOrderCodeStableAndDistinctAcrossRecreateAndReturn(t *testi
 	ret1, _, err := svc.CreateReturnShipment(context.Background(), CreateReturnShipmentInput{
 		OrderID: "ord-idem-1", ReturnRequestID: "rr-99", ShopID: "shop-1", BuyerID: "buyer-1",
 		CarrierCode: "ghn", WeightGrams: 500,
-		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "79001"},
-		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "01001"},
+		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "26740"},
+		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "00070"},
 	})
 	if err != nil {
 		t.Fatalf("CreateReturnShipment #1: %v", err)
@@ -1890,8 +2132,8 @@ func TestReview_ClientOrderCodeStableAndDistinctAcrossRecreateAndReturn(t *testi
 	if _, _, err := svc.CreateReturnShipment(context.Background(), CreateReturnShipmentInput{
 		OrderID: "ord-idem-1", ReturnRequestID: "rr-99", ShopID: "shop-1", BuyerID: "buyer-1",
 		CarrierCode: "ghn", WeightGrams: 500,
-		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "79001"},
-		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "01001"},
+		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "26740"},
+		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "00070"},
 	}); err != nil {
 		t.Fatalf("CreateReturnShipment #2: %v", err)
 	}
@@ -1999,8 +2241,8 @@ func TestReview_CreateErrorClassificationAndReturnCarrierAutoPick(t *testing.T) 
 	_, _, err = svc.CreateReturnShipment(context.Background(), CreateReturnShipmentInput{
 		OrderID: "ord-ret-explicit", ReturnRequestID: "rr-exp-1", ShopID: "shop-1", BuyerID: "buyer-1",
 		CarrierCode: "ghn", WeightGrams: 500,
-		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "79001"},
-		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "01001"},
+		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "26740"},
+		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "00070"},
 	})
 	if !errors.Is(err, ErrCarrierRejected) {
 		t.Fatalf("expected ErrCarrierRejected when explicit return carrier does not serve route, got %v", err)
@@ -2010,8 +2252,8 @@ func TestReview_CreateErrorClassificationAndReturnCarrierAutoPick(t *testing.T) 
 	ret, _, err := svc.CreateReturnShipment(context.Background(), CreateReturnShipmentInput{
 		OrderID: "ord-ret-auto", ReturnRequestID: "rr-auto-1", ShopID: "shop-1", BuyerID: "buyer-1",
 		CarrierCode: "", WeightGrams: 500,
-		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "79001"},
-		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "01001"},
+		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "26740"},
+		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "00070"},
 	})
 	if err != nil || ret.CarrierCode != carrier.CodeMockExpress {
 		t.Fatalf("empty carrier_code must auto-pick enabled carrier serving route (mock_express), got sh=%+v err=%v", ret, err)
@@ -2086,8 +2328,8 @@ func TestReview2_ReturnRecreateAfterReturnedAndRejectWhenFailed(t *testing.T) {
 	ret1, existed, err := svc.CreateReturnShipment(context.Background(), CreateReturnShipmentInput{
 		OrderID: "ord-ret-life", ReturnRequestID: "rr-1", ShopID: "shop-1", BuyerID: "buyer-1",
 		CarrierCode: "ghn", WeightGrams: 500,
-		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "79001"},
-		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "01001"},
+		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "26740"},
+		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "00070"},
 	})
 	if err != nil || existed {
 		t.Fatalf("RETURN #1 create failed: sh=%+v existed=%v err=%v", ret1, existed, err)
@@ -2095,8 +2337,8 @@ func TestReview2_ReturnRecreateAfterReturnedAndRejectWhenFailed(t *testing.T) {
 	replay, existedReplay, err := svc.CreateReturnShipment(context.Background(), CreateReturnShipmentInput{
 		OrderID: "ord-ret-life", ReturnRequestID: "rr-1", ShopID: "shop-1", BuyerID: "buyer-1",
 		CarrierCode: "ghn", WeightGrams: 500,
-		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "79001"},
-		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "01001"},
+		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "26740"},
+		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "00070"},
 	})
 	if err != nil || !existedReplay || replay.ID != ret1.ID {
 		t.Fatalf("active RETURN replay must return existing shipment, got sh=%+v existed=%v err=%v", replay, existedReplay, err)
@@ -2112,8 +2354,8 @@ func TestReview2_ReturnRecreateAfterReturnedAndRejectWhenFailed(t *testing.T) {
 	if got, existedFailed, err := svc.CreateReturnShipment(context.Background(), CreateReturnShipmentInput{
 		OrderID: "ord-ret-life", ReturnRequestID: "rr-2", ShopID: "shop-1", BuyerID: "buyer-1",
 		CarrierCode: "ghn", WeightGrams: 500,
-		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "79001"},
-		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "01001"},
+		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "26740"},
+		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "00070"},
 	}); !errors.Is(err, ErrReturnShipmentFailed) {
 		t.Fatalf("CreateReturnShipment while RETURN is failed must return ErrReturnShipmentFailed, got sh=%+v existed=%v err=%v", got, existedFailed, err)
 	}
@@ -2129,8 +2371,8 @@ func TestReview2_ReturnRecreateAfterReturnedAndRejectWhenFailed(t *testing.T) {
 	ret2, existed2, err := svc.CreateReturnShipment(context.Background(), CreateReturnShipmentInput{
 		OrderID: "ord-ret-life", ReturnRequestID: "rr-1", ShopID: "shop-1", BuyerID: "buyer-1",
 		CarrierCode: "ghn", WeightGrams: 500,
-		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "79001"},
-		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "01001"},
+		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "26740"},
+		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "00070"},
 	})
 	if err != nil || existed2 || ret2.ID == ret1.ID || ret2.TrackingCode == ret1.TrackingCode {
 		t.Fatalf("RETURN #2 after returned must create a new shipment, got ret2=%+v existed=%v err=%v (ret1=%+v)", ret2, existed2, err, ret1)
@@ -2155,8 +2397,8 @@ func TestReview2_ReturnRecreateAfterReturnedAndRejectWhenFailed(t *testing.T) {
 	ret3, existed3, err := svc.CreateReturnShipment(context.Background(), CreateReturnShipmentInput{
 		OrderID: "ord-ret-life", ReturnRequestID: "rr-3", ShopID: "shop-1", BuyerID: "buyer-1",
 		CarrierCode: "ghn", WeightGrams: 500,
-		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "79001"},
-		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "01001"},
+		FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "26740"},
+		ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "00070"},
 	})
 	if err != nil || existed3 || ret3.ID == ret2.ID {
 		t.Fatalf("RETURN #3 after returned+cancelled must create new shipment, got %+v existed=%v err=%v", ret3, existed3, err)
@@ -2262,8 +2504,8 @@ func TestReview3_FailoverOnOpenCBNonRetryableCancelRedeliveryAndShopSettingsPlat
 		ret, _, err := svc.CreateReturnShipment(context.Background(), CreateReturnShipmentInput{
 			OrderID: "ord-cb-failover", ReturnRequestID: "rr-cb-1", ShopID: "shop-1", BuyerID: "buyer-1",
 			CarrierCode: "", WeightGrams: 500,
-			FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "79001"},
-			ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "01001"},
+			FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "26740"},
+			ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "00070"},
 		})
 		if err != nil || ret.CarrierCode != carrier.CodeMockExpress {
 			t.Fatalf("expected failover to mock_express when ghn CB is open, got sh=%+v err=%v", ret, err)
@@ -2473,8 +2715,8 @@ func TestReview4_ConcurrentCreateShipmentAndReturnCallsCarrierOnce(t *testing.T)
 					sh, existed, err := svc.CreateReturnShipment(context.Background(), CreateReturnShipmentInput{
 						OrderID: ordID, ReturnRequestID: rrID, ShopID: "shop-conc", BuyerID: "buyer-conc",
 						CarrierCode: carrier.CodeMockExpress, WeightGrams: 500,
-						FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "79001"},
-						ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "01001"},
+						FromAddress: carrier.Address{ProvinceCode: "79", WardCode: "26740"},
+						ToAddress:   carrier.Address{ProvinceCode: "01", WardCode: "00070"},
 					})
 					results[idx] = res{sh: sh, existed: existed, err: err}
 				}(i)
@@ -2737,15 +2979,15 @@ func TestW2B_ShopFreeshipValidationAndCalculateFeeRaw(t *testing.T) {
 	}
 
 	baseExplicit, err := svc.CalculateFee(ctx, carrier.FeeRequest{
-		ShopID: "shop-w2b-fs", FromProvinceCode: "79", FromWardCode: "79001",
-		ToProvinceCode: "01", ToWardCode: "01001", WeightGrams: 1000,
+		ShopID: "shop-w2b-fs", FromProvinceCode: "79", FromWardCode: "26740",
+		ToProvinceCode: "01", ToWardCode: "00070", WeightGrams: 1000,
 	})
 	if err != nil || len(baseExplicit) == 0 {
 		t.Fatalf("baseline explicit CalculateFee: quotes=%+v err=%v", baseExplicit, err)
 	}
 	baseDefaultWt, err := svc.CalculateFee(ctx, carrier.FeeRequest{
-		ShopID: "shop-w2b-fs", FromProvinceCode: "79", FromWardCode: "79001",
-		ToProvinceCode: "79", ToWardCode: "79001", WeightGrams: 0,
+		ShopID: "shop-w2b-fs", FromProvinceCode: "79", FromWardCode: "26740",
+		ToProvinceCode: "79", ToWardCode: "26740", WeightGrams: 0,
 	})
 	if err != nil || len(baseDefaultWt) == 0 {
 		t.Fatalf("baseline default-weight CalculateFee: quotes=%+v err=%v", baseDefaultWt, err)
@@ -2773,8 +3015,8 @@ func TestW2B_ShopFreeshipValidationAndCalculateFeeRaw(t *testing.T) {
 	// Use fresh service without cache to ensure raw carrier quotes are ALSO unchanged without cache hits.
 	svcNoCache := NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	afterExplicit, err := svcNoCache.CalculateFee(ctx, carrier.FeeRequest{
-		ShopID: "shop-w2b-fs", FromProvinceCode: "79", FromWardCode: "79001",
-		ToProvinceCode: "01", ToWardCode: "01001", WeightGrams: 1000,
+		ShopID: "shop-w2b-fs", FromProvinceCode: "79", FromWardCode: "26740",
+		ToProvinceCode: "01", ToWardCode: "00070", WeightGrams: 1000,
 	})
 	if err != nil || len(afterExplicit) != len(baseExplicit) {
 		t.Fatalf("after freeship CalculateFee explicit: quotes=%+v err=%v", afterExplicit, err)
@@ -2786,8 +3028,8 @@ func TestW2B_ShopFreeshipValidationAndCalculateFeeRaw(t *testing.T) {
 		}
 	}
 	afterDefaultWt, err := svcNoCache.CalculateFee(ctx, carrier.FeeRequest{
-		ShopID: "shop-w2b-fs", FromProvinceCode: "79", FromWardCode: "79001",
-		ToProvinceCode: "79", ToWardCode: "79001", WeightGrams: 0,
+		ShopID: "shop-w2b-fs", FromProvinceCode: "79", FromWardCode: "26740",
+		ToProvinceCode: "79", ToWardCode: "26740", WeightGrams: 0,
 	})
 	if err != nil || len(afterDefaultWt) != len(baseDefaultWt) {
 		t.Fatalf("after freeship CalculateFee default weight: quotes=%+v err=%v", afterDefaultWt, err)

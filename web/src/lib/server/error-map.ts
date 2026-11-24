@@ -19,6 +19,12 @@ const KNOWN_PREFIXED_ERROR_CODES = new Set<string>([
   "STOCK_VERSION_CONFLICT",
   "COD_LIMIT_EXCEEDED",
   "COD_REJECTED_LIMIT_EXCEEDED",
+  "COD_PHONE_NOT_VERIFIED",
+  "COD_AREA_NOT_SUPPORTED",
+  "ADDRESS_WARD_REQUIRED",
+  "CART_NO_AVAILABLE_ITEMS",
+  "BANNED_CONTENT",
+  "PROHIBITED_CATEGORY",
   "FLASH_SALE_COD_NOT_ALLOWED",
   "FLASH_SALE_NOT_ACTIVE",
   "FLASH_SALE_SKU_MISMATCH",
@@ -113,6 +119,19 @@ function extractSafeLockReason(rawMessage: string): string {
   return reason;
 }
 
+function extractSafeBannedDetail(rawMessage: string): string {
+  const cleaned = rawMessage.replace(CONTROL_CHAR_RE, " ").replace(/\s+/g, " ").trim();
+  if (!cleaned) return "";
+  const match =
+    /banned\s+keywords?\s*[:\-]\s*(.+)$/i.exec(cleaned) ??
+    /matched\s+banned\s+(?:keyword|term)s?\s*[:\-]\s*(.+)$/i.exec(cleaned) ??
+    /^BANNED_CONTENT\s*[:\-]\s*matched\s*[:\-]?\s*(.+)$/i.exec(cleaned);
+  if (!match) return "";
+  const detail = match[1].trim();
+  if (!detail || /^(?:review|product)\s+contains\b/i.test(detail)) return "";
+  return detail.length > 140 ? `${detail.slice(0, 140).trim()}...` : detail;
+}
+
 export function toSafeVietnameseMessage(status: number, code: string, rawMessage: string): string {
   const lower = rawMessage.toLowerCase();
 
@@ -150,7 +169,7 @@ export function toSafeVietnameseMessage(status: number, code: string, rawMessage
   if (lower.includes("email is already registered")) {
     return "Địa chỉ email này đã được đăng ký. Vui lòng đăng nhập hoặc dùng email khác.";
   }
-  if (lower.includes("phone is already registered")) {
+  if (lower.includes("phone is already registered") || lower.includes("phone is already in use")) {
     return "Số điện thoại này đã được sử dụng cho tài khoản khác.";
   }
   if (lower.includes("email or phone already registered")) {
@@ -246,6 +265,34 @@ export function toSafeVietnameseMessage(status: number, code: string, rawMessage
     return "Tối đa 5 liên kết bằng chứng hợp lệ (bắt đầu bằng http:// hoặc https://, tối đa 500 ký tự mỗi liên kết).";
   }
 
+  // Phone OTP rate-limit / cooldown (services/user phone_otp.go) — must run before bank OTP 429 branch
+  if (
+    (status === 429 || code === "RESOURCE_EXHAUSTED") &&
+    lower.includes("phone") &&
+    lower.includes("otp")
+  ) {
+    const secMatch = /please\s+wait\s+(\d+)\s+seconds?/i.exec(rawMessage);
+    if (secMatch) {
+      return `Vui lòng đợi ${secMatch[1]} giây trước khi yêu cầu gửi lại mã OTP xác minh số điện thoại.`;
+    }
+    if (lower.includes("too many")) {
+      return "Bạn đã yêu cầu gửi mã OTP xác minh số điện thoại quá số lần cho phép trong giờ. Vui lòng thử lại sau.";
+    }
+    return "Vui lòng đợi hết thời gian chờ trước khi yêu cầu gửi lại mã OTP xác minh số điện thoại.";
+  }
+  if (lower.includes("valid vietnamese phone is required")) {
+    return "Vui lòng nhập số điện thoại Việt Nam hợp lệ (ví dụ: 0912345678).";
+  }
+  if (lower.includes("user email is required for phone otp delivery")) {
+    return "Tài khoản cần có địa chỉ email hợp lệ để nhận mã OTP xác minh số điện thoại.";
+  }
+  if (lower.includes("phone verification service unavailable")) {
+    return "Dịch vụ xác minh số điện thoại đang tạm bận. Vui lòng thử lại sau ít phút.";
+  }
+  if (lower.includes("otp is required")) {
+    return "Vui lòng nhập mã OTP gồm 6 chữ số.";
+  }
+
   // Refund, Bank Account & Reconciliation domain mappings
   if (
     (status === 429 || code === "RESOURCE_EXHAUSTED") &&
@@ -286,7 +333,12 @@ export function toSafeVietnameseMessage(status: number, code: string, rawMessage
   ) {
     return "Cổng thanh toán hiện chưa có dữ liệu giao dịch để chạy đối soát tự động.";
   }
-  if (lower.includes("future date") || (lower.includes("date") && lower.includes("invalid"))) {
+  if (
+    lower.includes("cannot be in the future") ||
+    lower.includes("future date") ||
+    (lower.includes("run_date") && lower.includes("yyyy-mm-dd")) ||
+    (lower.includes("date") && lower.includes("invalid"))
+  ) {
     return "Ngày đối soát không hợp lệ hoặc nằm trong tương lai.";
   }
 
@@ -333,6 +385,118 @@ export function toSafeVietnameseMessage(status: number, code: string, rawMessage
   }
   if (lower.includes("only pending shops can be reviewed")) {
     return "Dữ liệu đã thay đổi — hồ sơ gian hàng này không còn ở trạng thái chờ duyệt. Vui lòng tải lại danh sách.";
+  }
+
+  // Wave 3b-1: Banned content, prohibited categories, phone OTP, COD eligibility & COD CSV import
+  if (code === "BANNED_CONTENT" || lower.includes("banned_content")) {
+    const matched = extractSafeBannedDetail(rawMessage);
+    if (matched) {
+      return `Nội dung chứa từ khoá không được phép (${matched}). Vui lòng chỉnh sửa trước khi gửi.`;
+    }
+    return "Nội dung chứa từ khoá không được phép trên sàn. Vui lòng chỉnh sửa trước khi gửi.";
+  }
+  if (code === "PROHIBITED_CATEGORY" || lower.includes("prohibited_category")) {
+    return "Danh mục sản phẩm thuộc nhóm hàng bị cấm kinh doanh trên sàn.";
+  }
+  if (code === "COD_PHONE_NOT_VERIFIED" || lower.includes("cod_phone_not_verified")) {
+    return "Vui lòng xác minh số điện thoại trong mục Tài khoản trước khi đặt hàng thanh toán khi nhận hàng (COD).";
+  }
+  if (code === "COD_AREA_NOT_SUPPORTED" || lower.includes("cod_area_not_supported")) {
+    return "Khu vực nhận hàng này hiện chưa hỗ trợ thanh toán khi nhận hàng (COD). Vui lòng đổi địa chỉ hoặc chọn chuyển khoản VietQR.";
+  }
+  if (code === "ADDRESS_WARD_REQUIRED" || lower.includes("address_ward_required")) {
+    return "Địa chỉ nhận hàng cần chọn đầy đủ Tỉnh/Thành phố và Phường/Xã cụ thể.";
+  }
+  if (code === "CART_NO_AVAILABLE_ITEMS" || lower.includes("cart_no_available_items")) {
+    return "Không còn sản phẩm khả dụng trong giỏ hàng để đặt đơn.";
+  }
+  if (lower.includes("only completed orders can be reviewed")) {
+    return "Chỉ có thể đánh giá sản phẩm sau khi đơn hàng đã hoàn tất.";
+  }
+  if (lower.includes("already been reviewed")) {
+    return "Bạn đã đánh giá sản phẩm này trong đơn hàng rồi.";
+  }
+  if (lower.includes("rating must be between 1 and 5")) {
+    return "Điểm đánh giá phải từ 1 đến 5 sao.";
+  }
+  if (lower.includes("comment exceeds maximum length")) {
+    return "Nội dung đánh giá vượt quá giới hạn 2.000 ký tự.";
+  }
+  if (lower.includes("image_urls[") || (lower.includes("at most") && lower.includes("image url"))) {
+    return "Liên kết ảnh đánh giá chưa hợp lệ (tối đa 5 ảnh https:// hoặc /products/..., mỗi liên kết tối đa 500 ký tự).";
+  }
+  if (lower.includes("term must contain at least 2 alphanumeric")) {
+    return "Cụm từ cấm cần có ít nhất 2 ký tự chữ hoặc số.";
+  }
+  if (lower.includes("banned keyword already exists")) {
+    return "Từ khoá cấm này đã tồn tại trong danh sách.";
+  }
+  if (lower.includes("banned keyword not found")) {
+    return "Không tìm thấy từ khoá cấm cần thao tác.";
+  }
+  if (
+    lower.includes("action must be block or review") ||
+    lower.includes("invalid banned keyword action")
+  ) {
+    return "Hành động xử lý từ khoá cấm chỉ chấp nhận BLOCK hoặc REVIEW.";
+  }
+  if (lower.includes("legacy_province is required")) {
+    return "Vui lòng nhập Tỉnh/Thành phố cũ để quy đổi địa chỉ.";
+  }
+  if (lower.includes("phone") && (lower.includes("changed") || lower.includes("mismatch"))) {
+    return "Số điện thoại không khớp với mã OTP đã gửi. Vui lòng yêu cầu gửi lại mã mới.";
+  }
+  if (lower.includes("phone") && lower.includes("cooldown")) {
+    return "Vui lòng đợi hết thời gian chờ trước khi yêu cầu gửi lại mã OTP xác minh số điện thoại.";
+  }
+  const csvLineMatch = /^line\s+(\d+)\s*:\s*(.+)$/i.exec(rawMessage.trim());
+  if (csvLineMatch) {
+    const lineNo = csvLineMatch[1];
+    const detailLower = csvLineMatch[2].toLowerCase();
+    if (detailLower.includes("cod_amount_vnd")) {
+      if (detailLower.includes("range")) {
+        return `Dòng ${lineNo}: số tiền thu hộ (cod_amount_vnd) vượt quá giới hạn cho phép.`;
+      }
+      return `Dòng ${lineNo}: số tiền thu hộ (cod_amount_vnd) phải là số nguyên VND không âm (chỉ gồm chữ số).`;
+    }
+    if (detailLower.includes("tracking_code")) {
+      return `Dòng ${lineNo}: mã vận đơn (tracking_code) không hợp lệ, để trống hoặc chứa ký tự không được phép.`;
+    }
+    if (detailLower.includes("delivered_at")) {
+      return `Dòng ${lineNo}: thời gian giao hàng (delivered_at) không hợp lệ hoặc vượt quá độ dài cho phép.`;
+    }
+    if (detailLower.includes("order_code")) {
+      return `Dòng ${lineNo}: mã đơn hàng (order_code) không hợp lệ hoặc vượt quá độ dài cho phép.`;
+    }
+    if (detailLower.includes("column count")) {
+      return `Dòng ${lineNo}: số lượng cột không khớp với dòng tiêu đề CSV.`;
+    }
+    return `Dòng ${lineNo}: dữ liệu CSV không hợp lệ, vui lòng kiểm tra lại.`;
+  }
+  if (lower.includes("invalid carrier_code")) {
+    return "Mã hãng vận chuyển không hợp lệ.";
+  }
+  if (lower.includes("invalid file_name")) {
+    return "Tên tệp CSV không hợp lệ.";
+  }
+  if (
+    lower.includes("csv") &&
+    (lower.includes("empty") ||
+      lower.includes("no data") ||
+      lower.includes("5000") ||
+      lower.includes("row") ||
+      lower.includes("column") ||
+      lower.includes("header") ||
+      lower.includes("malformed") ||
+      lower.includes("utf-8") ||
+      lower.includes("formula") ||
+      lower.includes("amount") ||
+      lower.includes("2 mib") ||
+      lower.includes("exceeds") ||
+      lower.includes("content-type") ||
+      lower.includes("multipart"))
+  ) {
+    return "Tệp CSV đối soát COD chưa đúng định dạng (UTF-8, tối đa 2 MiB và 5.000 dòng, cột tracking_code,cod_amount_vnd,delivered_at với số tiền nguyên VND).";
   }
 
   // Commerce domain mappings (prioritize normalized domain codes from services/order, promotion, product)

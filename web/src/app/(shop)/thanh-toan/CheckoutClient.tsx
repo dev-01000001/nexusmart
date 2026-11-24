@@ -22,8 +22,15 @@ import type {
   GatewayVouchersResponse,
 } from "@/lib/gateway-types";
 import { ApiError, api, getErrorMessage } from "@/lib/api";
-import { formatInt, formatSignedVnd, formatVnd, formatVoucherBenefit } from "@/lib/format";
+import {
+  formatCarrierLabel,
+  formatInt,
+  formatSignedVnd,
+  formatVnd,
+  formatVoucherBenefit,
+} from "@/lib/format";
 import { useCart } from "@/context/CartContext";
+import { useSession } from "@/context/SessionContext";
 import { Button, IconShield, IconTruck, StateView } from "@/components";
 import { AddressForm } from "@/features/commerce/AddressForm";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
@@ -33,7 +40,6 @@ import {
   DEFAULT_COD_MAX_REJECTED,
   DEFAULT_COD_MAX_VND,
   SHOP_PICKUP_ADDRESS_REQUIRED_BUYER_MESSAGE,
-  formatCarrierDisplay,
   formatServiceDisplay,
   formatVoucherCondition,
   translateCheckoutError,
@@ -139,6 +145,17 @@ export function CheckoutClient({
 }: CheckoutClientProps) {
   const router = useRouter();
   const viewState = usePageStateParam();
+  const { user: sessionUser, refreshSession } = useSession();
+  const effectivePhoneVerified =
+    sessionUser && sessionUser.id === user.id ? sessionUser.phone_verified : user.phone_verified;
+  const effectiveCodRejectedCount =
+    sessionUser && sessionUser.id === user.id
+      ? sessionUser.cod_rejected_count
+      : user.cod_rejected_count;
+
+  useEffect(() => {
+    void refreshSession();
+  }, [refreshSession]);
   const {
     selectedShopGroups,
     cartLoading,
@@ -203,6 +220,14 @@ export function CheckoutClient({
 
   // Checkout submission state (strictly single-use after success, same idempotencyKey on retry)
   const [formError, setFormError] = useState<string | null>(null);
+  const [lastCodErrorCode, setLastCodErrorCode] = useState<
+    | "COD_PHONE_NOT_VERIFIED"
+    | "COD_AREA_NOT_SUPPORTED"
+    | "COD_REJECTED_LIMIT_EXCEEDED"
+    | "COD_LIMIT_EXCEEDED"
+    | "FLASH_SALE_COD_NOT_ALLOWED"
+    | null
+  >(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const submittingRef = useRef<boolean>(false);
   const completedRef = useRef<boolean>(false);
@@ -334,7 +359,7 @@ export function CheckoutClient({
       return initialCart.shop_groups
         .map((g) => {
           const items = (g.items ?? [])
-            .filter((it) => it.available_stock > 0 && it.quantity > 0)
+            .filter((it) => !it.unavailable && it.available_stock > 0 && it.quantity > 0)
             .map((it) =>
               enrichCartLine({
                 skuId: it.sku_id,
@@ -623,6 +648,17 @@ export function CheckoutClient({
     () => activeSlices.reduce((sum, s) => sum + (chosenQuoteByShop[s.shopId]?.fee_vnd ?? 0), 0),
     [activeSlices, chosenQuoteByShop]
   );
+
+  const codAreaSupported = useMemo(() => {
+    if (activeSlices.length === 0) return true;
+    for (const slice of activeSlices) {
+      const chosen = chosenQuoteByShop[slice.shopId];
+      if (chosen && chosen.cod_supported === false) return false;
+      const list = quotesByShop[slice.shopId];
+      if (list && list.length > 0 && list.every((q) => q.cod_supported === false)) return false;
+    }
+    return true;
+  }, [activeSlices, chosenQuoteByShop, quotesByShop]);
 
   const activeShopVoucherMap = useMemo(() => {
     const out: Record<string, string> = {};
@@ -1010,9 +1046,12 @@ export function CheckoutClient({
     const codCheck = isCodAllowedForCheckout({
       hasFlashSaleItem,
       totalPayableVnd: grandTotalVnd,
-      codRejectedCount: user.cod_rejected_count,
+      codRejectedCount: effectiveCodRejectedCount,
+      phoneVerified: effectivePhoneVerified,
+      codAreaSupported,
     });
     if (paymentMethod === "COD" && hasFlashSaleItem) {
+      setLastCodErrorCode("FLASH_SALE_COD_NOT_ALLOWED");
       setFormError(codCheck.reason);
       setPaymentMethod("VIETQR");
       return;
@@ -1036,6 +1075,7 @@ export function CheckoutClient({
 
     submittingRef.current = true;
     setFormError(null);
+    setLastCodErrorCode(null);
     // P1-1: Never clear keyUncertainty before knowing the retry outcome; P1-4: persist {key, sig} in sessionStorage before sending.
     applySubmitGuardEvent({ type: "submit_start" });
     savePendingCheckoutKey({ key: checkoutIdempotencyKey, sig: checkoutSignature });
@@ -1110,11 +1150,24 @@ export function CheckoutClient({
         return;
       }
 
+      if (
+        err instanceof ApiError &&
+        (err.code === "COD_PHONE_NOT_VERIFIED" ||
+          err.code === "COD_AREA_NOT_SUPPORTED" ||
+          err.code === "COD_REJECTED_LIMIT_EXCEEDED" ||
+          err.code === "COD_LIMIT_EXCEEDED" ||
+          err.code === "FLASH_SALE_COD_NOT_ALLOWED")
+      ) {
+        setLastCodErrorCode(err.code);
+      } else {
+        setLastCodErrorCode(null);
+      }
+
       setFormError(
         translateCheckoutError(err, {
           paymentMethod,
           totalPayableVnd: grandTotalVnd,
-          codRejectedCount: user.cod_rejected_count,
+          codRejectedCount: effectiveCodRejectedCount,
           hasVouchers: hasActiveVouchers,
           isFlashSale: hasFlashSaleItem,
         })
@@ -1233,10 +1286,26 @@ export function CheckoutClient({
   const codPolicy = isCodAllowedForCheckout({
     hasFlashSaleItem,
     totalPayableVnd: grandTotalVnd,
-    codRejectedCount: user.cod_rejected_count,
+    codRejectedCount: effectiveCodRejectedCount,
+    phoneVerified: effectivePhoneVerified,
+    codAreaSupported,
   });
+  const codPhoneMissing = effectivePhoneVerified === false;
   const codExceedsLimit = grandTotalVnd > DEFAULT_COD_MAX_VND;
-  const codBlockedHistory = user.cod_rejected_count >= DEFAULT_COD_MAX_REJECTED;
+  const codBlockedHistory = effectiveCodRejectedCount >= DEFAULT_COD_MAX_REJECTED;
+  const activeCodBlockCode =
+    lastCodErrorCode ??
+    (paymentMethod === "COD" && !codPolicy.allowed
+      ? codPolicy.blockCode === "PHONE_NOT_VERIFIED"
+        ? "COD_PHONE_NOT_VERIFIED"
+        : codPolicy.blockCode === "AREA_NOT_SUPPORTED"
+          ? "COD_AREA_NOT_SUPPORTED"
+          : codPolicy.blockCode === "REJECTED_LIMIT"
+            ? "COD_REJECTED_LIMIT_EXCEEDED"
+            : codPolicy.blockCode === "AMOUNT_LIMIT"
+              ? "COD_LIMIT_EXCEEDED"
+              : "FLASH_SALE_COD_NOT_ALLOWED"
+      : null);
 
   return (
     <div className={`${shared.page} ${styles.mobileSpacer}`}>
@@ -1431,13 +1500,14 @@ export function CheckoutClient({
                                 >
                                   <span className={styles.quoteTop}>
                                     <span>
-                                      {formatCarrierDisplay(q.carrier_name, q.carrier_code)}
+                                      {formatCarrierLabel(q.carrier_code, q.carrier_name)}
                                     </span>
                                     <span className="num">{formatVnd(q.fee_vnd)}</span>
                                   </span>
                                   <span className={styles.quoteMeta}>
                                     {formatServiceDisplay(q.service_name, q.service_code)} · Dự kiến{" "}
                                     {q.estimated_days > 0 ? `${q.estimated_days} ngày` : "2-4 ngày"}
+                                    {q.cod_supported === false ? " · Không hỗ trợ COD" : ""}
                                   </span>
                                 </button>
                               );
@@ -1471,7 +1541,10 @@ export function CheckoutClient({
                   className={`${styles.paymentOption} ${
                     paymentMethod === "VIETQR" ? styles.paymentOptionSelected : ""
                   }`}
-                  onClick={() => setPaymentMethod("VIETQR")}
+                  onClick={() => {
+                    setPaymentMethod("VIETQR");
+                    setLastCodErrorCode(null);
+                  }}
                 >
                   <div className={styles.paymentHead}>
                     <span className={styles.paymentTitle}>Chuyển khoản nhanh VietQR</span>
@@ -1497,7 +1570,10 @@ export function CheckoutClient({
                     paymentMethod === "COD" ? styles.paymentOptionSelected : ""
                   }`}
                   onClick={() => {
-                    if (!hasFlashSaleItem) setPaymentMethod("COD");
+                    if (!hasFlashSaleItem) {
+                      setPaymentMethod("COD");
+                      setLastCodErrorCode(null);
+                    }
                   }}
                 >
                   <div className={styles.paymentHead}>
@@ -1506,6 +1582,14 @@ export function CheckoutClient({
                       <span className={`${shared.statusTag} ${shared.toneWarn}`}>
                         Không áp dụng cho Flash sale
                       </span>
+                    ) : codPhoneMissing ? (
+                      <span className={`${shared.statusTag} ${shared.toneWarn}`}>
+                        Cần xác minh SĐT
+                      </span>
+                    ) : !codAreaSupported ? (
+                      <span className={`${shared.statusTag} ${shared.toneWarn}`}>
+                        Khu vực chưa hỗ trợ COD
+                      </span>
                     ) : paymentMethod === "COD" ? (
                       <span className={`${shared.statusTag} ${shared.tonePos}`}>Đang chọn</span>
                     ) : null}
@@ -1513,22 +1597,72 @@ export function CheckoutClient({
                   <p className={styles.paymentDesc}>
                     {hasFlashSaleItem
                       ? codPolicy.reason
-                      : `Thanh toán tiền mặt trực tiếp cho nhân viên giao hàng khi nhận kiện. Áp dụng cho đơn hàng tối đa ${formatVnd(DEFAULT_COD_MAX_VND)}.`}
+                      : `Thanh toán tiền mặt trực tiếp cho nhân viên giao hàng khi nhận kiện. Áp dụng cho đơn hàng tối đa ${formatVnd(DEFAULT_COD_MAX_VND)} sau khi xác minh số điện thoại.`}
                   </p>
+                  {paymentMethod === "COD" && codPhoneMissing && (
+                    <p className={styles.codAdvisory}>
+                      Tài khoản chưa xác minh số điện thoại. Vui lòng xác minh SĐT trong mục Tài
+                      khoản để đặt COD hoặc chuyển sang VietQR.
+                    </p>
+                  )}
+                  {paymentMethod === "COD" && !codAreaSupported && (
+                    <p className={styles.codAdvisory}>
+                      Khu vực giao hàng đã chọn hiện chưa hỗ trợ thu hộ COD. Bạn có thể đổi địa chỉ
+                      nhận hàng hoặc chọn Chuyển khoản nhanh VietQR.
+                    </p>
+                  )}
                   {paymentMethod === "COD" && codExceedsLimit && (
                     <p className={styles.codAdvisory}>
-                      Tổng thanh toán đang vượt mốc {formatVnd(DEFAULT_COD_MAX_VND)}. Nếu hệ thống
-                      từ chối COD, bạn có thể chuyển sang Chuyển khoản nhanh VietQR.
+                      Tổng thanh toán đang vượt mốc {formatVnd(DEFAULT_COD_MAX_VND)}. Bạn vui lòng
+                      chuyển sang Chuyển khoản nhanh VietQR.
                     </p>
                   )}
                   {paymentMethod === "COD" && codBlockedHistory && (
                     <p className={styles.codAdvisory}>
-                      Tài khoản có nhiều lần không nhận hàng COD trước đây nên có thể không đặt được
-                      COD. Khuyên dùng Chuyển khoản nhanh VietQR.
+                      Tài khoản có nhiều lần không nhận hàng COD trước đây nên tạm không hỗ trợ COD.
+                      Vui lòng chọn Chuyển khoản nhanh VietQR.
                     </p>
                   )}
                 </button>
               </div>
+
+              {!hasFlashSaleItem &&
+                (codPhoneMissing || !codAreaSupported || codExceedsLimit || codBlockedHistory) && (
+                  <div className={styles.codRecoveryBar} role="status">
+                    <span className={styles.codRecoveryText}>{codPolicy.reason}</span>
+                    <div className={shared.formActions}>
+                      {codPhoneMissing && (
+                        <Button variant="secondary" size="sm" href="/tai-khoan#xac-minh-sdt">
+                          Xác minh SĐT ngay
+                        </Button>
+                      )}
+                      {!codAreaSupported && (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => setShowNewAddressForm(true)}
+                        >
+                          Đổi địa chỉ nhận hàng
+                        </Button>
+                      )}
+                      {paymentMethod === "COD" && (
+                        <Button
+                          type="button"
+                          variant="primary"
+                          size="sm"
+                          onClick={() => {
+                            setPaymentMethod("VIETQR");
+                            setFormError(null);
+                            setLastCodErrorCode(null);
+                          }}
+                        >
+                          Chuyển sang VietQR
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )}
             </div>
           </div>
 
@@ -2031,6 +2165,41 @@ export function CheckoutClient({
                           ? "Bỏ suất Flash sale (dùng giá chương trình gian hàng / giá thường)"
                           : "Mua giá thường (bỏ suất Flash sale)"}
                       </button>
+                    </div>
+                  )}
+                  {activeCodBlockCode && !keyMayHaveCreatedOrder && (
+                    <div className={`${shared.formActions} ${styles.errorActions}`}>
+                      {activeCodBlockCode === "COD_PHONE_NOT_VERIFIED" && (
+                        <Button variant="secondary" size="sm" href="/tai-khoan#xac-minh-sdt">
+                          Xác minh SĐT ngay
+                        </Button>
+                      )}
+                      {activeCodBlockCode === "COD_AREA_NOT_SUPPORTED" && (
+                        <button
+                          type="button"
+                          className={styles.regularPriceLightBtn}
+                          onClick={() => {
+                            setShowNewAddressForm(true);
+                            setFormError(null);
+                            setLastCodErrorCode(null);
+                          }}
+                        >
+                          Đổi địa chỉ nhận hàng
+                        </button>
+                      )}
+                      {paymentMethod === "COD" && (
+                        <button
+                          type="button"
+                          className={styles.regularPriceLightBtn}
+                          onClick={() => {
+                            setPaymentMethod("VIETQR");
+                            setFormError(null);
+                            setLastCodErrorCode(null);
+                          }}
+                        >
+                          Chuyển sang VietQR
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

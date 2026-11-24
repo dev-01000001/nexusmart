@@ -25,6 +25,9 @@ type Config struct {
 	LoginLockoutDuration   time.Duration
 	BankPayoutLockDuration time.Duration
 	BankAccountKey         string
+	PhoneOTPTTL            time.Duration
+	PhoneOTPCooldown       time.Duration
+	PhoneOTPMaxPerHour     int
 	AdminBootstrapEmail    string
 	AdminBootstrapPassword string
 	ShippingGRPCAddr       string
@@ -53,6 +56,9 @@ func Load() Config {
 		LoginLockoutDuration:   env.EnvDuration("LOGIN_LOCKOUT_DURATION", 15*time.Minute),
 		BankPayoutLockDuration: time.Duration(env.EnvInt("USER_BANK_PAYOUT_LOCK_HOURS", 24)) * time.Hour,
 		BankAccountKey:         env.EnvString("BANK_ACCOUNT_KEY", ""),
+		PhoneOTPTTL:            time.Duration(env.EnvInt("USER_PHONE_OTP_TTL_SECONDS", 300)) * time.Second,
+		PhoneOTPCooldown:       time.Duration(env.EnvInt("USER_PHONE_OTP_COOLDOWN_SECONDS", 60)) * time.Second,
+		PhoneOTPMaxPerHour:     env.EnvInt("USER_PHONE_OTP_MAX_PER_HOUR", 5),
 		AdminBootstrapEmail:    env.EnvString("ADMIN_BOOTSTRAP_EMAIL", "admin@nexusmart.local"),
 		AdminBootstrapPassword: env.EnvString("ADMIN_BOOTSTRAP_PASSWORD", "AdminDevPassword123!"),
 		ShippingGRPCAddr:       env.EnvString("SHIPPING_GRPC_ADDR", "localhost:50057"),

@@ -169,6 +169,17 @@
   padding-bottom: 4px;
 }
 
+.itemRowUnavailable {
+  background: var(--surface);
+  padding: 14px 12px;
+}
+
+.itemRowUnavailable:first-child,
+.itemRowUnavailable:last-child {
+  padding-top: 14px;
+  padding-bottom: 14px;
+}
+
 .itemCheck {
   padding-top: 8px;
 }
@@ -233,6 +244,12 @@
   min-width: 152px;
 }
 
+.itemActionsColUnavailable {
+  min-width: 0;
+  align-self: center;
+  justify-content: center;
+}
+
 .lineSubtotal {
   font-size: 18px;
   font-weight: 600;
@@ -279,13 +296,30 @@
   gap: 6px;
   font-size: var(--step-small);
   color: var(--ink-secondary);
-  min-height: 32px;
-  padding: 0 4px;
-  transition: color var(--t-hover) ease;
+  min-height: 36px;
+  padding: 0 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition:
+    color var(--t-hover) ease,
+    background-color var(--t-hover) ease;
 }
 
 .removeBtn:hover {
   color: var(--negative);
+}
+
+.removeBtnUnavailable {
+  min-height: 40px;
+  padding: 8px 14px;
+  background: var(--surface-white);
+  color: var(--negative);
+  font-weight: 500;
+  border-radius: var(--radius-control);
+}
+
+.removeBtnUnavailable:hover {
+  background: var(--surface-subtle);
 }
 
 /* Per-shop voucher strip directly on white */
@@ -688,6 +722,11 @@
     justify-content: space-between;
     min-width: 0;
     padding-top: 4px;
+  }
+
+  .itemActionsColUnavailable {
+    justify-content: flex-start;
+    padding-top: 2px;
   }
 
   .giftRow {

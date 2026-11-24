@@ -56,6 +56,7 @@ func (s *Server) ListWards(ctx context.Context, req *shippingv1.ListWardsRequest
 			Code:         w.Code,
 			ProvinceCode: w.ProvinceCode,
 			Name:         w.Name,
+			CodSupported: w.CODSupported,
 		})
 	}
 	return resp, nil
@@ -79,21 +80,23 @@ func (s *Server) MapLegacyAddress(ctx context.Context, req *shippingv1.MapLegacy
 }
 
 func (s *Server) CalculateFee(ctx context.Context, req *shippingv1.CalculateFeeRequest) (*shippingv1.CalculateFeeResponse, error) {
-	quotes, err := s.svc.CalculateFee(ctx, carrier.FeeRequest{
-		ShopID:           req.GetShopId(),
-		FromProvinceCode: req.GetFromProvinceCode(),
-		FromWardCode:     req.GetFromWardCode(),
-		ToProvinceCode:   req.GetToProvinceCode(),
-		ToWardCode:       req.GetToWardCode(),
-		WeightGrams:      req.GetWeightGrams(),
-		CODAmountVND:     req.GetCodAmountVnd(),
+	quotes, isEstimated, err := s.svc.CalculateFeeWithEstimate(ctx, carrier.FeeRequest{
+		ShopID:                req.GetShopId(),
+		FromProvinceCode:      req.GetFromProvinceCode(),
+		FromWardCode:          req.GetFromWardCode(),
+		ToProvinceCode:        req.GetToProvinceCode(),
+		ToWardCode:            req.GetToWardCode(),
+		WeightGrams:           req.GetWeightGrams(),
+		CODAmountVND:          req.GetCodAmountVnd(),
+		FallbackWeightItemQty: req.GetFallbackWeightItemQty(),
 	})
 	if err != nil {
 		return nil, mapError(err)
 	}
 
 	resp := &shippingv1.CalculateFeeResponse{
-		Quotes: make([]*shippingv1.CarrierQuote, 0, len(quotes)),
+		Quotes:      make([]*shippingv1.CarrierQuote, 0, len(quotes)),
+		IsEstimated: isEstimated,
 	}
 	for _, q := range quotes {
 		resp.Quotes = append(resp.Quotes, &shippingv1.CarrierQuote{
@@ -104,6 +107,7 @@ func (s *Server) CalculateFee(ctx context.Context, req *shippingv1.CalculateFeeR
 			FeeVnd:        q.FeeVND,
 			EstimatedDays: q.EstimatedDays,
 			IsFallback:    q.IsFallback,
+			CodSupported:  q.CODSupported,
 		})
 	}
 	return resp, nil
@@ -139,13 +143,15 @@ func (s *Server) CreateShipment(ctx context.Context, req *shippingv1.CreateShipm
 		ToAddress:    fromProtoAddress(req.GetToAddress()),
 	}
 
-	sh, existed, err := s.svc.CreateShipment(ctx, in)
+	out, err := s.svc.CreateShipmentWithQueue(ctx, in)
 	if err != nil {
 		return nil, mapError(err)
 	}
 	return &shippingv1.CreateShipmentResponse{
-		Shipment:       toProtoShipment(sh),
-		AlreadyExisted: existed,
+		Shipment:       toProtoShipment(out.Shipment),
+		AlreadyExisted: out.AlreadyExisted,
+		Queued:         out.Queued,
+		JobId:          out.JobID,
 	}, nil
 }
 
@@ -469,6 +475,9 @@ func toProtoRegion(r string) shippingv1.ShippingRegion {
 }
 
 func toProtoShipment(sh *store.Shipment) *shippingv1.Shipment {
+	if sh == nil {
+		return nil
+	}
 	return &shippingv1.Shipment{
 		ShipmentId:      sh.ID,
 		OrderId:         sh.OrderID,
@@ -557,6 +566,8 @@ func toProtoStatus(s string) shippingv1.ShipmentStatus {
 		return shippingv1.ShipmentStatus_SHIPMENT_STATUS_RETURNED
 	case carrier.StatusCancelled:
 		return shippingv1.ShipmentStatus_SHIPMENT_STATUS_CANCELLED
+	case carrier.StatusQueued:
+		return shippingv1.ShipmentStatus_SHIPMENT_STATUS_QUEUED
 	default:
 		return shippingv1.ShipmentStatus_SHIPMENT_STATUS_UNSPECIFIED
 	}

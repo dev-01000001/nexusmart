@@ -8,6 +8,7 @@ import type {
 import {
   GATEWAY_ORDER_STATUS_LABELS,
   GATEWAY_SHIPMENT_STATUS_LABELS,
+  formatCarrierLabel,
   formatVnd,
 } from "@/lib/format";
 
@@ -59,7 +60,7 @@ export const CARRIER_OPTIONS: Array<{
 }> = [
   {
     carrierCode: "ghn",
-    carrierLabel: "Giao Hàng Nhanh (GHN)",
+    carrierLabel: formatCarrierLabel("ghn"),
     services: [
       { serviceCode: "STANDARD", serviceLabel: "GHN Tiêu chuẩn" },
       { serviceCode: "EXPRESS", serviceLabel: "GHN Nhanh" },
@@ -67,7 +68,7 @@ export const CARRIER_OPTIONS: Array<{
   },
   {
     carrierCode: "mock_express",
-    carrierLabel: "Chuyển phát nội địa nhanh",
+    carrierLabel: formatCarrierLabel("mock_express"),
     services: [
       { serviceCode: "STANDARD", serviceLabel: "Gói Tiêu chuẩn" },
       { serviceCode: "FAST", serviceLabel: "Gói Giao nhanh" },
@@ -154,7 +155,7 @@ export function buildCarrierSelectOptions(
       ...CARRIER_OPTIONS,
       {
         carrierCode: defaults.carrierCode,
-        carrierLabel: defaults.carrierCode,
+        carrierLabel: formatCarrierLabel(defaults.carrierCode),
         services: [{ serviceCode: defaults.serviceCode, serviceLabel: defaults.serviceCode }],
       },
     ];
@@ -190,24 +191,35 @@ export function getOrderStatusMeta(status: string): StatusMeta {
 }
 
 /**
- * Seller-facing order status label honoring Wave 2a §1.1:
- * PREPARING with tracking_code is "Chờ hãng lấy hàng" (awaiting carrier pickup),
- * transitioning to "Đang giao" only when carrier emits picking/delivering webhook.
+ * Seller-facing order status label honoring Wave 2a §1.1 & Wave 3b-1 E18:
+ * - No tracking_code + shipment_job_status QUEUED -> "Đang chờ tạo lại với hãng"
+ * - No tracking_code + shipment_job_status FAILED -> "Tạo vận đơn thất bại"
+ * - PREPARING with tracking_code -> "Chờ hãng lấy hàng" (awaiting carrier pickup)
  */
 export function getSellerOrderDisplayMeta(
-  order: Pick<GatewayOrder, "status" | "tracking_code">
+  order: Pick<GatewayOrder, "status" | "tracking_code"> & {
+    shipment_job_status?: string;
+  }
 ): StatusMeta {
-  if (order.status === "PREPARING" && Boolean((order.tracking_code ?? "").trim())) {
+  const hasTracking = Boolean((order.tracking_code ?? "").trim());
+  const jobStatus = (order.shipment_job_status ?? "").trim().toUpperCase();
+  if (!hasTracking && jobStatus === "QUEUED") {
+    return { label: "Đang chờ tạo lại với hãng", tone: "warn" };
+  }
+  if (!hasTracking && jobStatus === "FAILED") {
+    return { label: "Tạo vận đơn thất bại", tone: "neg" };
+  }
+  if (order.status === "PREPARING" && hasTracking) {
     return { label: "Chờ hãng lấy hàng", tone: "warn" };
   }
   return getOrderStatusMeta(order.status);
 }
 
 /**
- * Valid seller actions by order state machine (docs/contracts.md §6):
+ * Valid seller actions by order state machine (docs/contracts.md §6 & E18):
  * - PENDING: cancel
  * - CONFIRMED: confirm (→ PREPARING), ship (creates shipment, stays PREPARING with tracking_code), cancel
- * - PREPARING: ship (if no tracking_code yet), cancel (until carrier picks up)
+ * - PREPARING: ship (if no tracking_code yet — allowed even when QUEUED so orders never get stuck; server is idempotent), cancel
  */
 export function canSellerConfirmOrder(status: string): boolean {
   return status === "CONFIRMED";

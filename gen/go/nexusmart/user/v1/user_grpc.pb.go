@@ -52,6 +52,8 @@ const (
 	UserService_AdminReviewShopBankAccount_FullMethodName  = "/nexusmart.user.v1.UserService/AdminReviewShopBankAccount"
 	UserService_GetPlatformUserStats_FullMethodName        = "/nexusmart.user.v1.UserService/GetPlatformUserStats"
 	UserService_GetShopBankAccountForPayout_FullMethodName = "/nexusmart.user.v1.UserService/GetShopBankAccountForPayout"
+	UserService_RequestPhoneOTP_FullMethodName             = "/nexusmart.user.v1.UserService/RequestPhoneOTP"
+	UserService_VerifyPhoneOTP_FullMethodName              = "/nexusmart.user.v1.UserService/VerifyPhoneOTP"
 )
 
 // UserServiceClient is the client API for UserService service.
@@ -91,6 +93,8 @@ type UserServiceClient interface {
 	AdminReviewShopBankAccount(ctx context.Context, in *AdminReviewShopBankAccountRequest, opts ...grpc.CallOption) (*AdminReviewShopBankAccountResponse, error)
 	GetPlatformUserStats(ctx context.Context, in *GetPlatformUserStatsRequest, opts ...grpc.CallOption) (*GetPlatformUserStatsResponse, error)
 	GetShopBankAccountForPayout(ctx context.Context, in *GetShopBankAccountForPayoutRequest, opts ...grpc.CallOption) (*GetShopBankAccountForPayoutResponse, error)
+	RequestPhoneOTP(ctx context.Context, in *RequestPhoneOTPRequest, opts ...grpc.CallOption) (*RequestPhoneOTPResponse, error)
+	VerifyPhoneOTP(ctx context.Context, in *VerifyPhoneOTPRequest, opts ...grpc.CallOption) (*VerifyPhoneOTPResponse, error)
 }
 
 type userServiceClient struct {
@@ -431,6 +435,26 @@ func (c *userServiceClient) GetShopBankAccountForPayout(ctx context.Context, in 
 	return out, nil
 }
 
+func (c *userServiceClient) RequestPhoneOTP(ctx context.Context, in *RequestPhoneOTPRequest, opts ...grpc.CallOption) (*RequestPhoneOTPResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequestPhoneOTPResponse)
+	err := c.cc.Invoke(ctx, UserService_RequestPhoneOTP_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) VerifyPhoneOTP(ctx context.Context, in *VerifyPhoneOTPRequest, opts ...grpc.CallOption) (*VerifyPhoneOTPResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VerifyPhoneOTPResponse)
+	err := c.cc.Invoke(ctx, UserService_VerifyPhoneOTP_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UserServiceServer is the server API for UserService service.
 // All implementations must embed UnimplementedUserServiceServer
 // for forward compatibility.
@@ -468,6 +492,8 @@ type UserServiceServer interface {
 	AdminReviewShopBankAccount(context.Context, *AdminReviewShopBankAccountRequest) (*AdminReviewShopBankAccountResponse, error)
 	GetPlatformUserStats(context.Context, *GetPlatformUserStatsRequest) (*GetPlatformUserStatsResponse, error)
 	GetShopBankAccountForPayout(context.Context, *GetShopBankAccountForPayoutRequest) (*GetShopBankAccountForPayoutResponse, error)
+	RequestPhoneOTP(context.Context, *RequestPhoneOTPRequest) (*RequestPhoneOTPResponse, error)
+	VerifyPhoneOTP(context.Context, *VerifyPhoneOTPRequest) (*VerifyPhoneOTPResponse, error)
 	mustEmbedUnimplementedUserServiceServer()
 }
 
@@ -576,6 +602,12 @@ func (UnimplementedUserServiceServer) GetPlatformUserStats(context.Context, *Get
 }
 func (UnimplementedUserServiceServer) GetShopBankAccountForPayout(context.Context, *GetShopBankAccountForPayoutRequest) (*GetShopBankAccountForPayoutResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetShopBankAccountForPayout not implemented")
+}
+func (UnimplementedUserServiceServer) RequestPhoneOTP(context.Context, *RequestPhoneOTPRequest) (*RequestPhoneOTPResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RequestPhoneOTP not implemented")
+}
+func (UnimplementedUserServiceServer) VerifyPhoneOTP(context.Context, *VerifyPhoneOTPRequest) (*VerifyPhoneOTPResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method VerifyPhoneOTP not implemented")
 }
 func (UnimplementedUserServiceServer) mustEmbedUnimplementedUserServiceServer() {}
 func (UnimplementedUserServiceServer) testEmbeddedByValue()                     {}
@@ -1192,6 +1224,42 @@ func _UserService_GetShopBankAccountForPayout_Handler(srv interface{}, ctx conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UserService_RequestPhoneOTP_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestPhoneOTPRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).RequestPhoneOTP(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_RequestPhoneOTP_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).RequestPhoneOTP(ctx, req.(*RequestPhoneOTPRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_VerifyPhoneOTP_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VerifyPhoneOTPRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).VerifyPhoneOTP(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_VerifyPhoneOTP_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).VerifyPhoneOTP(ctx, req.(*VerifyPhoneOTPRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // UserService_ServiceDesc is the grpc.ServiceDesc for UserService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1330,6 +1398,14 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetShopBankAccountForPayout",
 			Handler:    _UserService_GetShopBankAccountForPayout_Handler,
+		},
+		{
+			MethodName: "RequestPhoneOTP",
+			Handler:    _UserService_RequestPhoneOTP_Handler,
+		},
+		{
+			MethodName: "VerifyPhoneOTP",
+			Handler:    _UserService_VerifyPhoneOTP_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

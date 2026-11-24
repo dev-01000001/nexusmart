@@ -36,6 +36,12 @@ const (
 	ReservationStatusConfirmed = "CONFIRMED"
 	ReservationStatusReleased  = "RELEASED"
 
+	ReviewStatusPublished = "PUBLISHED"
+	ReviewStatusHidden    = "HIDDEN"
+
+	BannedKeywordActionBlock  = "BLOCK"
+	BannedKeywordActionReview = "REVIEW"
+
 	PriceHistoryWindow = 30 * 24 * time.Hour
 )
 
@@ -67,6 +73,7 @@ type Category struct {
 	ParentID          string
 	CommissionRateBps int32
 	SortOrder         int32
+	IsProhibited      bool
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -144,9 +151,80 @@ type Product struct {
 	RejectionReason string
 	MinPriceVND     int64
 	MaxPriceVND     int64
+	RatingSum       int64
+	ReviewCount     int32
+	FlaggedKeywords []string
+	FirstApprovedAt *time.Time
 	DeletedAt       *time.Time
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+}
+
+// ComputeRatingAvgX100 computes integer average rating scaled by 100 (0..500) using integer arithmetic only (E6/E14).
+func ComputeRatingAvgX100(ratingSum int64, reviewCount int32) int32 {
+	if reviewCount <= 0 || ratingSum <= 0 {
+		return 0
+	}
+	rc := int64(reviewCount)
+	avg := (ratingSum*100 + rc/2) / rc
+	if avg < 0 {
+		return 0
+	}
+	if avg > 500 {
+		return 500
+	}
+	return int32(avg)
+}
+
+// RatingAvgX100 returns the integer average rating scaled by 100 (0..500).
+func (p Product) RatingAvgX100() int32 {
+	return ComputeRatingAvgX100(p.RatingSum, p.ReviewCount)
+}
+
+type ProductReview struct {
+	ID          string
+	ProductID   string
+	ShopID      string
+	OrderID     string
+	OrderItemID string
+	SKUID       string
+	SKUName     string
+	BuyerID     string
+	BuyerName   string
+	Rating      int32
+	Comment     string
+	ImageURLs   []string
+	Status      string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type ListProductReviewsFilter struct {
+	ProductID    string
+	RatingFilter int32
+	HasImages    bool
+	Limit        int32
+	Offset       int32
+}
+
+type BannedKeyword struct {
+	ID             string
+	Term           string
+	NormalizedTerm string
+	Category       string
+	Action         string
+	IsActive       bool
+	CreatedBy      string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type ListBannedKeywordsFilter struct {
+	Query           string
+	Action          string
+	IncludeInactive bool
+	Limit           int32
+	Offset          int32
 }
 
 type SKU struct {
@@ -243,6 +321,8 @@ type Queries interface {
 	DeleteCategory(ctx context.Context, id string) (bool, error)
 	ListCategories(ctx context.Context, parentID string) ([]Category, error)
 	CategoryHasAncestor(ctx context.Context, startID, targetAncestorID string) (bool, error)
+	IsCategoryProhibited(ctx context.Context, categoryID string) (bool, error)
+	ListProhibitedCategoryIDs(ctx context.Context) ([]string, error)
 	GetCategoryDescendants(ctx context.Context, categoryIDs []string) ([]string, error)
 
 	InsertCategoryFeeSchedule(ctx context.Context, sched CategoryFeeSchedule) (CategoryFeeSchedule, error)
@@ -251,12 +331,28 @@ type Queries interface {
 	CreateProduct(ctx context.Context, p Product) (Product, error)
 	GetProductByID(ctx context.Context, id string) (Product, error)
 	GetProductByIDForUpdate(ctx context.Context, id string) (Product, error)
+	GetProductByIDForUpdateAny(ctx context.Context, id string) (Product, error)
 	GetProductBySlug(ctx context.Context, slug string) (Product, error)
+	GetDeletedApprovedProductBySlug(ctx context.Context, slug string) (Product, error)
 	UpdateProduct(ctx context.Context, p Product) (Product, error)
-	UpdateProductReview(ctx context.Context, id, status, rejectionReason string) (Product, error)
+	UpdateProductReview(ctx context.Context, id, status, rejectionReason string, flaggedKeywords []string) (Product, error)
+	IncrementProductRating(ctx context.Context, id string, ratingDelta int64) (int64, int32, error)
+	ListProductsForModerationScan(ctx context.Context, cursorID string, limit int32) ([]Product, error)
 	UpdateProductStatus(ctx context.Context, id, status string) error
 	SoftDeleteProduct(ctx context.Context, id string) (bool, error)
 	ListProducts(ctx context.Context, filter ListProductsFilter) ([]Product, int64, error)
+
+	CreateProductReview(ctx context.Context, r ProductReview) (ProductReview, error)
+	ListProductReviews(ctx context.Context, filter ListProductReviewsFilter) ([]ProductReview, int64, error)
+	GetProductReviewRatingCounts(ctx context.Context, productID string) (map[int32]int32, error)
+	ListReviewsByOrderAndBuyer(ctx context.Context, orderID, buyerID string) ([]ProductReview, error)
+
+	CreateBannedKeyword(ctx context.Context, kw BannedKeyword) (BannedKeyword, error)
+	GetBannedKeywordByID(ctx context.Context, id string) (BannedKeyword, error)
+	UpdateBannedKeyword(ctx context.Context, kw BannedKeyword) (BannedKeyword, error)
+	DeleteBannedKeyword(ctx context.Context, id string) (bool, error)
+	ListBannedKeywords(ctx context.Context, filter ListBannedKeywordsFilter) ([]BannedKeyword, int64, error)
+	ListActiveBannedKeywords(ctx context.Context) ([]BannedKeyword, error)
 
 	CreateSKU(ctx context.Context, s SKU) (SKU, error)
 	InsertSKUPriceHistory(ctx context.Context, h SKUPriceHistoryEntry) error

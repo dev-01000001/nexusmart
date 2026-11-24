@@ -6,6 +6,9 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { SizeCode } from "@/data";
 import type {
   GatewayActiveShopDiscount,
+  GatewayCalculateFeeResponse,
+  GatewayCarrierQuote,
+  GatewayProductReviewsResponse,
   GatewayProvince,
   GatewayVoucher,
 } from "@/lib/gateway-types";
@@ -43,10 +46,9 @@ import {
   IconTruck,
   Price,
 } from "@/components";
-import { formatVnd } from "@/lib/format";
+import { formatCarrierLabel, formatVnd } from "@/lib/format";
 import { computePdpQuantityCap } from "@/features/checkout/helpers";
-import { PROVINCES } from "@/lib/provinces";
-import { estimateDelivery, recommendSize } from "@/lib/sizing";
+import { recommendSize } from "@/lib/sizing";
 import { useRevealObserver } from "@/features/catalog/useRevealObserver";
 import {
   PdpBackInStock,
@@ -61,6 +63,7 @@ import styles from "./page.module.css";
 export interface ProductDetailClientProps {
   product: CatalogProduct;
   shop: CatalogShop;
+  initialReviews?: GatewayProductReviewsResponse | null;
   shopVouchers: CatalogVoucher[];
   platformVouchers: CatalogVoucher[];
   sameShopProducts: CatalogProduct[];
@@ -73,15 +76,15 @@ export interface ProductDetailClientProps {
   initialSizeQuery: SizeCode | null;
 }
 
-function normalizeProvinceName(name: string): string {
-  return name
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[đĐ]/g, "d")
-    .toLowerCase()
-    .replace(/^(thanh pho|tinh)\s+/i, "")
-    .replace(/\s+/g, " ")
-    .trim();
+function pickDefaultProvinceCode(list: readonly GatewayProvince[]): string {
+  if (list.length === 0) return "";
+  const hcm = list.find(
+    (p) =>
+      p.code === "79" ||
+      p.name.toLowerCase().includes("hồ chí minh") ||
+      p.name.toLowerCase().includes("ho chi minh")
+  );
+  return hcm?.code ?? list[0].code;
 }
 
 function resolveInitialSize(
@@ -113,6 +116,7 @@ function getCurrentReturnPath(fallbackPathname: string): string {
 export function ProductDetailClient({
   product,
   shop,
+  initialReviews = null,
   shopVouchers,
   platformVouchers,
   sameShopProducts,
@@ -173,7 +177,16 @@ export function ProductDetailClient({
     tab: "chart" | "finder";
   }>({ open: false, tab: "chart" });
   const [bisDrawerOpen, setBisDrawerOpen] = useState<boolean>(false);
-  const [deliveryProvince, setDeliveryProvince] = useState<string>("HCM");
+  const [availableProvinces, setAvailableProvinces] = useState<GatewayProvince[]>(provinces);
+  const [deliveryProvince, setDeliveryProvince] = useState<string>(() =>
+    pickDefaultProvinceCode(provinces)
+  );
+  const [shippingQuotes, setShippingQuotes] = useState<GatewayCarrierQuote[]>([]);
+  const [shippingIsEstimated, setShippingIsEstimated] = useState<boolean>(true);
+  const [shippingLoading, setShippingLoading] = useState<boolean>(false);
+  const [shippingError, setShippingError] = useState<string | null>(null);
+  const [shippingRetryNonce, setShippingRetryNonce] = useState<number>(0);
+  const shippingSeqRef = useRef<number>(0);
   const [fabricVideoPlaying, setFabricVideoPlaying] = useState<boolean>(true);
 
   useEffect(() => {
@@ -199,25 +212,41 @@ export function ProductDetailClient({
 
   useRevealObserver(rootRef, product.id);
 
-  // Map backend provinces from GET /shipping/provinces onto local province codes for ETA calculation
-  const deliveryProvinceOptions = useMemo(() => {
-    if (provinces.length === 0) {
-      return PROVINCES.map((p) => ({ code: p.code, label: p.shortName }));
-    }
-    const localByNorm = new Map(PROVINCES.map((p) => [normalizeProvinceName(p.name), p]));
-    const mapped: Array<{ code: string; label: string }> = [];
-    const seenCodes = new Set<string>();
-    for (const gwProv of provinces) {
-      const matched = localByNorm.get(normalizeProvinceName(gwProv.name));
-      const code = matched?.code ?? gwProv.code;
-      if (seenCodes.has(code)) continue;
-      seenCodes.add(code);
-      mapped.push({ code, label: matched?.shortName ?? gwProv.name });
-    }
-    return mapped.length > 0
-      ? mapped
-      : PROVINCES.map((p) => ({ code: p.code, label: p.shortName }));
-  }, [provinces]);
+  // Fallback client load of real backend provinces if SSR returned empty
+  useEffect(() => {
+    if (availableProvinces.length > 0) return;
+    let cancelled = false;
+    api<{ provinces?: GatewayProvince[] }>("shipping/provinces", {
+      method: "GET",
+      retryOn401: false,
+    })
+      .then((res) => {
+        if (cancelled) return;
+        const list = Array.isArray(res?.provinces) ? res.provinces : [];
+        if (list.length > 0) {
+          setAvailableProvinces(list);
+          setDeliveryProvince((prev) => prev || pickDefaultProvinceCode(list));
+        }
+      })
+      .catch(() => {
+        // Keep empty; user can retry quote section
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [availableProvinces.length]);
+
+  const deliveryProvinceOptions = useMemo(
+    () => availableProvinces.map((p) => ({ code: p.code, label: p.name })),
+    [availableProvinces]
+  );
+
+  const selectedProvinceLabel = useMemo(
+    () =>
+      deliveryProvinceOptions.find((p) => p.code === deliveryProvince)?.label ??
+      (deliveryProvince || "tỉnh/thành đã chọn"),
+    [deliveryProvinceOptions, deliveryProvince]
+  );
 
   const effectiveColor = product.colors.some((c) => c.code === selectedColor)
     ? selectedColor
@@ -267,15 +296,58 @@ export function ProductDetailClient({
   const isOutlet = Boolean(product.badges?.includes("outlet"));
   const hasOutOfStockVariant = product.skus.some((s) => s.stock <= 0);
 
-  const deliveryEstimate = useMemo(
-    () =>
-      estimateDelivery({
-        shopId: shop.editorialShopId ?? shop.id,
-        provinceCode: deliveryProvince,
-        orderSubtotal: effectiveSubtotal,
-      }),
-    [shop.editorialShopId, shop.id, deliveryProvince, effectiveSubtotal]
-  );
+  // Public real shipping fee calculation (E17 / E17-bis: optional-auth, retryOn401: false)
+  useEffect(() => {
+    if (!deliveryProvince || !shop.id) {
+      setShippingQuotes([]);
+      setShippingError(null);
+      setShippingLoading(false);
+      return;
+    }
+
+    const seq = ++shippingSeqRef.current;
+    setShippingLoading(true);
+    setShippingError(null);
+
+    const timer = window.setTimeout(() => {
+      const qtyForQuote = Math.max(1, clampedQty || 1);
+      const payload = {
+        shop_id: shop.id,
+        to_province_code: deliveryProvince,
+        to_ward_code: "",
+        ...(activeSku?.id
+          ? { items: [{ sku_id: activeSku.id, quantity: qtyForQuote }] }
+          : { weight_grams: 300 }),
+        payment_method: "VIETQR",
+      };
+
+      api<GatewayCalculateFeeResponse>("shipping/calculate-fee", {
+        method: "POST",
+        json: payload,
+        retryOn401: isAuthenticated,
+      })
+        .then((res) => {
+          if (shippingSeqRef.current !== seq) return;
+          setShippingQuotes(Array.isArray(res?.quotes) ? res.quotes : []);
+          setShippingIsEstimated(res?.is_estimated !== false);
+          setShippingError(null);
+        })
+        .catch((err) => {
+          if (shippingSeqRef.current !== seq) return;
+          setShippingQuotes([]);
+          setShippingError(
+            getErrorMessage(err, "Chưa thể ước tính phí vận chuyển cho khu vực này lúc này.")
+          );
+        })
+        .finally(() => {
+          if (shippingSeqRef.current === seq) {
+            setShippingLoading(false);
+          }
+        });
+    }, 180);
+
+    return () => window.clearTimeout(timer);
+  }, [shop.id, deliveryProvince, activeSku?.id, clampedQty, shippingRetryNonce, isAuthenticated]);
 
   const garmentGroup = useMemo(() => {
     if (product.shopSizeChart) return product.shopSizeChart;
@@ -951,38 +1023,74 @@ export function ProductDetailClient({
             <div className={styles.deliveryHead}>
               <span className={styles.deliveryTitle}>
                 <IconTruck size={16} />
-                <span>Ước tính giao hàng</span>
+                <span>Phí vận chuyển ước tính</span>
               </span>
-              <label className={styles.provincePicker}>
-                <span className="sr-only">Chọn tỉnh thành giao hàng</span>
-                <select
-                  value={deliveryProvince}
-                  onChange={(e) => setDeliveryProvince(e.target.value)}
-                  className={styles.provinceSelect}
-                >
-                  {deliveryProvinceOptions.map((prov) => (
-                    <option key={prov.code} value={prov.code}>
-                      {prov.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              {deliveryProvinceOptions.length > 0 && (
+                <label className={styles.provincePicker}>
+                  <span className="sr-only">Chọn tỉnh thành giao hàng</span>
+                  <select
+                    value={deliveryProvince}
+                    onChange={(e) => setDeliveryProvince(e.target.value)}
+                    className={styles.provinceSelect}
+                  >
+                    {deliveryProvinceOptions.map((prov) => (
+                      <option key={prov.code} value={prov.code}>
+                        {prov.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
             </div>
 
-            <div className={styles.deliveryDetails}>
-              <p className={styles.deliveryLine}>
-                Từ kho <strong>{shop.city}</strong> đến{" "}
-                <strong>{deliveryEstimate.destinationProvinceName}</strong> · Dự kiến{" "}
-                <strong>{deliveryEstimate.etaLabel}</strong>.
-              </p>
-              <p className={styles.deliveryLine}>
-                Phí vận chuyển chính xác được tính theo kho gian hàng và địa chỉ nhận tại bước thanh
-                toán; áp dụng mã miễn phí vận chuyển nếu có.
-              </p>
-              {product.slaText && (
-                <p className={styles.deliverySub}>
-                  Hạn chuẩn bị hàng: {product.slaText}. {deliveryEstimate.coInspectionNote}
+            <div className={styles.deliveryDetails} aria-live="polite">
+              {shippingLoading ? (
+                <p className={styles.deliveryLine}>
+                  Đang tính phí vận chuyển đến <strong>{selectedProvinceLabel}</strong>...
                 </p>
+              ) : shippingError ? (
+                <div className={styles.deliveryLine}>
+                  <p role="alert">{shippingError}</p>
+                  <button
+                    type="button"
+                    className={styles.inlineLink}
+                    onClick={() => setShippingRetryNonce((n) => n + 1)}
+                  >
+                    Thử tính lại phí
+                  </button>
+                </div>
+              ) : shippingQuotes.length > 0 ? (
+                <>
+                  <p className={styles.deliveryLine}>
+                    Giao đến <strong>{selectedProvinceLabel}</strong>
+                    {shippingIsEstimated
+                      ? " (ước tính theo tỉnh/thành — phí chính xác theo phường/xã tại thanh toán)"
+                      : ""}
+                  </p>
+                  <ul className={styles.quoteList} aria-label="Báo giá vận chuyển">
+                    {shippingQuotes.map((q) => (
+                      <li key={`${q.carrier_code}-${q.service_code}`} className={styles.quoteRow}>
+                        <div>
+                          <strong>{formatCarrierLabel(q.carrier_code, q.carrier_name)}</strong>
+                          {q.service_name ? ` · ${q.service_name}` : ""}
+                          <div className={styles.quoteMeta}>
+                            Dự kiến {Math.max(1, Math.trunc(q.estimated_days || 1))} ngày
+                            {q.cod_supported === false ? " · Không hỗ trợ COD" : ""}
+                          </div>
+                        </div>
+                        <span className={`${styles.quoteFee} num`}>{formatVnd(q.fee_vnd)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <p className={styles.deliveryLine}>
+                  Chọn tỉnh/thành để xem báo giá vận chuyển thực tế từ các đơn vị giao hàng của gian
+                  hàng.
+                </p>
+              )}
+              {product.slaText && (
+                <p className={styles.deliverySub}>Hạn chuẩn bị hàng: {product.slaText}.</p>
               )}
             </div>
 
@@ -1308,12 +1416,7 @@ export function ProductDetailClient({
         </div>
       </section>
 
-      <PdpReviews
-        product={product}
-        shop={shop}
-        selectedColorName={colorObj?.name ?? "Mặc định"}
-        selectedSize={effectiveSize}
-      />
+      <PdpReviews product={product} initialReviews={initialReviews} />
 
       <PdpQuestions product={product} shop={shop} />
 

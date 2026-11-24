@@ -232,13 +232,25 @@ pub fn build_cod_collect_tx(
     }
 }
 
-/// COD cash reconciled from shipping carrier: Debit gateway_clearing, Credit cod_receivable
-pub fn build_cod_reconcile_tx(payment_id: Uuid, amount_vnd: i64) -> LedgerTransactionDraft {
+/// COD cash reconciled from shipping carrier (E20):
+/// Debit gateway_clearing, Credit cod_receivable.
+/// Scoped per `(payment_id, order_id, shop_id)` so multi-shop COD orders never collide on
+/// `idempotency_key` and re-importing a CSV file posts zero duplicate ledger entries.
+pub fn build_cod_reconcile_tx(
+    payment_id: Uuid,
+    order_id: &str,
+    shop_id: &str,
+    amount_vnd: i64,
+) -> LedgerTransactionDraft {
+    let oid = order_id.trim();
+    let sid = shop_id.trim();
     LedgerTransactionDraft {
-        idempotency_key: format!("cod-reconcile:{payment_id}"),
+        idempotency_key: format!("cod-reconcile:{payment_id}:{oid}:{sid}"),
         reference_type: "cod_reconcile".to_string(),
         reference_id: payment_id.to_string(),
-        description: format!("COD collected from carrier for payment {payment_id}"),
+        description: format!(
+            "COD reconciled from carrier for order {oid} shop {sid} (payment {payment_id})"
+        ),
         lines: vec![
             LedgerLine::debit(
                 ACCOUNT_GATEWAY_CLEARING,
@@ -1085,9 +1097,22 @@ mod tests {
         assert_eq!(ledger.balance_of(ACCOUNT_COD_RECEIVABLE), 200_000);
         assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 530_000);
 
-        // 3. COD reconciled from shipping carrier
+        // 3. COD reconciled from shipping carrier (idempotent per payment+order+shop)
         assert!(ledger
-            .post(&build_cod_reconcile_tx(pay_cod, 200_000))
+            .post(&build_cod_reconcile_tx(
+                pay_cod,
+                "ord-cod-life",
+                "shop-B",
+                200_000
+            ))
+            .unwrap());
+        assert!(!ledger
+            .post(&build_cod_reconcile_tx(
+                pay_cod,
+                "ord-cod-life",
+                "shop-B",
+                200_000
+            ))
             .unwrap());
         assert!(ledger.summary().is_balanced);
         assert_eq!(ledger.balance_of(ACCOUNT_COD_RECEIVABLE), 0);
@@ -1602,5 +1627,45 @@ mod tests {
         assert_eq!(summary.total_debits_vnd, summary.total_credits_vnd);
         assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 0);
         assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 0);
+    }
+
+    #[test]
+    fn test_w3b_e20_build_cod_reconcile_tx_multishop_keys_and_balance() {
+        let mut ledger = InMemoryLedger::default();
+        let pid = Uuid::new_v4();
+
+        // Two sub-orders under ONE multi-shop COD payment collect into cod_receivable
+        assert!(ledger
+            .post(&build_cod_collect_tx(pid, "ord-1", Some("shop-1"), 220_000))
+            .unwrap());
+        assert!(ledger
+            .post(&build_cod_collect_tx(pid, "ord-2", Some("shop-2"), 320_000))
+            .unwrap());
+        assert_eq!(ledger.balance_of(ACCOUNT_COD_RECEIVABLE), 540_000);
+
+        let tx1 = build_cod_reconcile_tx(pid, "ord-1", "shop-1", 220_000);
+        let tx2 = build_cod_reconcile_tx(pid, "ord-2", "shop-2", 320_000);
+        assert_eq!(
+            tx1.idempotency_key,
+            format!("cod-reconcile:{pid}:ord-1:shop-1")
+        );
+        assert_eq!(
+            tx2.idempotency_key,
+            format!("cod-reconcile:{pid}:ord-2:shop-2")
+        );
+        assert_ne!(tx1.idempotency_key, tx2.idempotency_key);
+
+        assert!(ledger.post(&tx1).unwrap());
+        assert!(ledger.post(&tx2).unwrap());
+        // Replay posts 0 new ledger transactions
+        assert!(!ledger.post(&tx1).unwrap());
+        assert!(!ledger.post(&tx2).unwrap());
+
+        let summary = ledger.summary();
+        assert!(summary.is_balanced);
+        assert_eq!(summary.transaction_count, 4);
+        assert_eq!(summary.total_debits_vnd, summary.total_credits_vnd);
+        assert_eq!(ledger.balance_of(ACCOUNT_COD_RECEIVABLE), 0);
+        assert_eq!(ledger.balance_of(ACCOUNT_GATEWAY_CLEARING), 540_000);
     }
 }

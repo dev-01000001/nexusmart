@@ -84,6 +84,7 @@ type Order struct {
 	PaymentFeeVND                   int64      `json:"payment_fee_vnd"`
 	PaymentFeeBPS                   int32      `json:"payment_fee_bps"`
 	SettlementRefundedVND           int64      `json:"settlement_refunded_vnd"`
+	ShipmentJobStatus               string     `json:"shipment_job_status"`
 }
 
 type OrderItem struct {

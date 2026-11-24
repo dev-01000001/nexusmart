@@ -105,6 +105,7 @@ func TestE2E_OrderWave3a(t *testing.T) {
 	env := getEnv()
 	cat, seller1, _ := env.ensureBaseMarketplace(t)
 	buyer := env.registerVerifyAndLogin(t, "buyer-w3a-ord")
+	env.verifyBuyerPhone(t, buyer)
 	addr := env.addAddress(t, buyer)
 
 	// 1. D11: Pre-persist 0-order FAILED (non-regression 1a-1c) + post-persist FAILED-with-orders (core W3a 1d).
@@ -530,6 +531,7 @@ func TestE2E_OrderWave3a(t *testing.T) {
 	//    same SKU is in cart, whereas from_cart=true clears the ordered SKU from cart.
 	t.Run("4_BuyNowDoesNotClearCart_FromCartClearsCart", func(t *testing.T) {
 		cartBuyer := env.registerVerifyAndLogin(t, "buyer-w3a-buynow-cart")
+		env.verifyBuyerPhone(t, cartBuyer)
 		cartAddr := env.addAddress(t, cartBuyer)
 		_, sku := env.createApprovedProduct(t, seller1, cat.ID, "W3A BuyNow Cart Item", 180000, 20, 400)
 

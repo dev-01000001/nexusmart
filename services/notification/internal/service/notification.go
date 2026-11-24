@@ -385,7 +385,10 @@ func (s *NotificationService) ProcessEvent(ctx context.Context, subject string, 
 	if s.mailer != nil {
 		for _, item := range emailsToSend {
 			if sendErr := s.mailer.Send(ctx, item.msg); sendErr != nil {
-				if delErr := s.repo.DeleteProcessedEvent(ctx, env.EventID); delErr != nil {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+				delErr := s.repo.DeleteProcessedEvent(cleanupCtx, env.EventID)
+				cleanupCancel()
+				if delErr != nil {
 					s.logger.WarnContext(ctx, "failed to clear processed_event after SMTP error",
 						slog.String("event_id", env.EventID),
 						slog.String("error", delErr.Error()),
@@ -393,7 +396,10 @@ func (s *NotificationService) ProcessEvent(ctx context.Context, subject string, 
 				}
 				return false, fmt.Errorf("send email: %w", sendErr)
 			}
-			if recErr := s.repo.RecordEmailDedup(ctx, sentEmailDedupKey(env.EventID, item.userID), env.EventID); recErr != nil {
+			dedupCtx, dedupCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+			recErr := s.repo.RecordEmailDedup(dedupCtx, sentEmailDedupKey(env.EventID, item.userID), env.EventID)
+			dedupCancel()
+			if recErr != nil {
 				s.logger.WarnContext(ctx, "failed to record sent email dedup",
 					slog.String("event_id", env.EventID),
 					slog.String("user_id", item.userID),
@@ -720,6 +726,46 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 				userID:     userID,
 				category:   store.CategorySystem,
 				forceEmail: true, // Security OTP email always sends; never stored in-app or logged
+				inApp:      nil,
+				email:      &otpMsg,
+			}},
+		}, nil
+
+	case "user.phone_otp_requested":
+		var p struct {
+			UserID      string `json:"user_id"`
+			Email       string `json:"email"`
+			FullName    string `json:"full_name"`
+			PhoneMasked string `json:"phone_masked"`
+			OTP         string `json:"otp"`
+			ExpiresAt   string `json:"expires_at"`
+		}
+		if err := json.Unmarshal(env.Payload, &p); err != nil ||
+			strings.TrimSpace(p.UserID) == "" ||
+			strings.TrimSpace(p.Email) == "" ||
+			strings.TrimSpace(p.OTP) == "" {
+			return nil, fmt.Errorf("%w: invalid user.phone_otp_requested payload", ErrMalformedPayload)
+		}
+		userID := strings.TrimSpace(p.UserID)
+		emailAddr := strings.TrimSpace(p.Email)
+		otpMsg := mailer.FormatPhoneOTPEmail(
+			emailAddr,
+			p.FullName,
+			p.PhoneMasked,
+			p.OTP,
+			p.ExpiresAt,
+		)
+		return &eventPlan{
+			cacheContact: &store.UserContact{
+				UserID:   userID,
+				Email:    emailAddr,
+				FullName: strings.TrimSpace(p.FullName),
+			},
+			deliveries: []recipientDelivery{{
+				role:       "user",
+				userID:     userID,
+				category:   store.CategorySystem,
+				forceEmail: true, // Security SMS-mock OTP email always sends; never stored in-app or logged
 				inApp:      nil,
 				email:      &otpMsg,
 			}},
@@ -1402,6 +1448,9 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 	case "shipment.updated":
 		return buildShipmentUpdatedPlan(env.Payload, now)
 
+	case "shipment.create_failed":
+		return buildShipmentCreateFailedPlan(env.Payload, env.OccurredAt, now)
+
 	default:
 		// Unknown future subject: acknowledge safely without poisoning DLQ.
 		return &eventPlan{}, nil
@@ -1844,6 +1893,82 @@ func buildReturnShipmentDeliveries(
 	return deliveries
 }
 
+type shipmentCreateFailedPayload struct {
+	JobID        string `json:"job_id"`
+	OrderID      string `json:"order_id"`
+	ShopID       string `json:"shop_id"`
+	CarrierCode  string `json:"carrier_code"`
+	ServiceCode  string `json:"service_code"`
+	Attempts     int32  `json:"attempts"`
+	ErrorMessage string `json:"error_message"`
+	OccurredAt   string `json:"occurred_at"`
+}
+
+func buildShipmentCreateFailedPlan(raw json.RawMessage, envOccurredAt string, now time.Time) (*eventPlan, error) {
+	var p shipmentCreateFailedPayload
+	if err := json.Unmarshal(raw, &p); err != nil || strings.TrimSpace(p.OrderID) == "" {
+		return nil, fmt.Errorf("%w: invalid shipment.create_failed payload", ErrMalformedPayload)
+	}
+	p.JobID = strings.TrimSpace(p.JobID)
+	p.OrderID = strings.TrimSpace(p.OrderID)
+	p.ShopID = strings.TrimSpace(p.ShopID)
+	p.CarrierCode = strings.TrimSpace(p.CarrierCode)
+	if envOccurredAt == "" && strings.TrimSpace(p.OccurredAt) != "" {
+		if parsed, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(p.OccurredAt)); parseErr == nil {
+			now = parsed.UTC()
+		}
+	}
+
+	dedupKey := shipmentCreateFailedDedupKey(p.JobID)
+	buildDeliveries := func(orderCode string) []recipientDelivery {
+		orderRef := orderLabel(orderCode, p.OrderID)
+		carrier := carrierLabel(p.CarrierCode)
+		title := fmt.Sprintf("Tạo vận đơn thất bại cho đơn %s", orderRef)
+		var body string
+		if p.Attempts > 0 {
+			body = fmt.Sprintf("Hệ thống không thể tạo vận đơn qua %s cho đơn hàng %s sau %d lần thử.", carrier, orderRef, p.Attempts)
+		} else {
+			body = fmt.Sprintf("Hệ thống không thể tạo vận đơn qua %s cho đơn hàng %s.", carrier, orderRef)
+		}
+		body += " Vui lòng kiểm tra và bấm tạo lại vận đơn trong chi tiết đơn hàng."
+
+		return []recipientDelivery{{
+			role:          "seller",
+			shopID:        p.ShopID,
+			requireUser:   true,
+			category:      store.CategoryOrder,
+			emailDedupKey: dedupKey,
+			inApp: &store.Notification{
+				Category:  store.CategoryOrder,
+				Title:     title,
+				Body:      body,
+				Link:      sellerOrderLink(p.OrderID),
+				DedupKey:  dedupKey,
+				CreatedAt: now,
+			},
+			email: &mailer.Message{
+				Subject: fmt.Sprintf("NexusMart - Tạo vận đơn thất bại đơn %s", orderRef),
+				Body:    body + "\n",
+			},
+		}}
+	}
+
+	plan := &eventPlan{
+		lookupOrderID: p.OrderID,
+		deliveries:    buildDeliveries(""),
+	}
+	plan.applyParticipant = func(part store.OrderParticipant, found bool) {
+		if !found {
+			return
+		}
+		if p.ShopID == "" {
+			p.ShopID = part.ShopID
+		}
+		plan.deliveries = buildDeliveries(part.OrderCode)
+	}
+	return plan, nil
+}
+
 func deliveredEmailDedupKey(orderID string) string {
 	orderID = strings.TrimSpace(orderID)
 	if orderID == "" {
@@ -1859,6 +1984,14 @@ func voucherExpiringDedupKey(userID, voucherID string) string {
 		return ""
 	}
 	return "voucher_expiring:" + userID + ":" + voucherID
+}
+
+func shipmentCreateFailedDedupKey(jobID string) string {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return ""
+	}
+	return "shipment_create_failed:" + jobID
 }
 
 func sentEmailDedupKey(eventID, userID string) string {

@@ -7,8 +7,9 @@ import (
 )
 
 const (
-	SubjectShipmentUpdated = "shipment.updated"
-	SubjectOrderCancelled  = "order.cancelled"
+	SubjectShipmentUpdated      = "shipment.updated"
+	SubjectShipmentCreateFailed = "shipment.create_failed"
+	SubjectOrderCancelled       = "order.cancelled"
 )
 
 // Envelope is the canonical NexusMart NATS JetStream event wrapper (docs/contracts.md §5).
@@ -26,7 +27,9 @@ type ShipmentUpdatedPayload struct {
 	OrderID         string `json:"order_id"`
 	ShopID          string `json:"shop_id"`
 	CarrierCode     string `json:"carrier_code"`
+	ServiceCode     string `json:"service_code,omitempty"`
 	TrackingCode    string `json:"tracking_code"`
+	LabelURL        string `json:"label_url,omitempty"`
 	Status          string `json:"status"`
 	RawStatus       string `json:"raw_status"`
 	Description     string `json:"description"`
@@ -34,6 +37,18 @@ type ShipmentUpdatedPayload struct {
 	Direction       string `json:"direction"`
 	ReturnRequestID string `json:"return_request_id"`
 	RedeliveryCount int32  `json:"redelivery_count"`
+}
+
+// ShipmentCreateFailedPayload matches docs/contracts.md §5 for shipment.create_failed (E18).
+type ShipmentCreateFailedPayload struct {
+	JobID        string `json:"job_id"`
+	OrderID      string `json:"order_id"`
+	ShopID       string `json:"shop_id"`
+	CarrierCode  string `json:"carrier_code"`
+	ServiceCode  string `json:"service_code"`
+	Attempts     int32  `json:"attempts"`
+	ErrorMessage string `json:"error_message"`
+	OccurredAt   string `json:"occurred_at"`
 }
 
 // OrderCancelledPayload matches docs/contracts.md §5 for order.cancelled.

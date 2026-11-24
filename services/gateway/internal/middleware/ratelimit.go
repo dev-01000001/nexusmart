@@ -149,6 +149,29 @@ func RateLimitBankOTP(limiter RateLimiter, limitPerMin int, log *slog.Logger) fu
 	})
 }
 
+// RateLimitPhoneOTP enforces a dedicated per-user rate limit on buyer phone OTP endpoints
+// using a Redis key namespace separate from general user, auth, and bank-OTP buckets (E19).
+func RateLimitPhoneOTP(limiter RateLimiter, limitPerMin int, log *slog.Logger) func(http.Handler) http.Handler {
+	return rateLimitMiddleware(limiter, limitPerMin, time.Minute, log, func(r *http.Request) string {
+		if uid := auth.UserIDFromContext(r.Context()); uid != "" {
+			return "rl:phone_otp:user:" + uid
+		}
+		return ""
+	})
+}
+
+// RateLimitShippingFee enforces rate limiting on public/optional-auth POST /shipping/calculate-fee:
+// anonymous callers are keyed by client IP, while authenticated callers are keyed by user ID so
+// multiple buyers sharing a NAT/office IP do not block each other at checkout (E17 / E17-bis).
+func RateLimitShippingFee(limiter RateLimiter, limitPerMin int, log *slog.Logger, tp *TrustedProxies) func(http.Handler) http.Handler {
+	return rateLimitMiddleware(limiter, limitPerMin, time.Minute, log, func(r *http.Request) string {
+		if uid := auth.UserIDFromContext(r.Context()); uid != "" {
+			return "rl:shipping_fee:user:" + uid
+		}
+		return "rl:shipping_fee:ip:" + tp.ClientIP(r)
+	})
+}
+
 func rateLimitMiddleware(
 	limiter RateLimiter,
 	limit int,

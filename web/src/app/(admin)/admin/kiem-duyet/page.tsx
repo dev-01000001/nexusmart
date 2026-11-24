@@ -1,26 +1,27 @@
 "use client";
 
-import React, { Suspense, useMemo, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import type {
-  AdminBannedKeyword,
   AdminMediaModerationItem,
   AdminQaModerationItem,
   AdminReviewModerationItem,
   ModerationStatus,
 } from "@/data/admin";
+import type { GatewayBannedKeyword, PaginatedResponse } from "@/lib/gateway-types";
+import { api } from "@/lib/api";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconAlert, IconCheck, IconSearch } from "@/components";
 import { formatDateTimeVi, formatInt } from "@/lib/format";
 import { formatShortTimeDateVi, MODERATION_STATUS_META } from "@/features/admin/adminMeta";
 import { updateAdminModerationState, useAdminModerationState } from "@/features/admin/auditStore";
+import { AdminBannedKeywordsTab } from "@/features/admin/AdminBannedKeywordsTab";
 import { AdminProductModerationTab } from "@/features/admin/AdminProductModerationTab";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { StatusPill } from "@/features/admin/StatusPill";
-import { ToggleSwitch } from "@/features/admin/ToggleSwitch";
 import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
 
-type ModTab = "san_pham" | "reviews" | "qa" | "media";
+type ModTab = "san_pham" | "tu_khoa_cam" | "reviews" | "qa" | "media";
 type StatusFilter = "all" | ModerationStatus;
 
 function ModerationContent({ initialQuery }: { initialQuery: string }) {
@@ -37,6 +38,22 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
 
   const [activeTab, setActiveTab] = useState<ModTab>(initialTab);
   const [pendingProductCount, setPendingProductCount] = useState(0);
+  const [activeBannedCount, setActiveBannedCount] = useState(0);
+
+  const loadActiveBannedCount = useCallback(async () => {
+    try {
+      const res = await api<PaginatedResponse<GatewayBannedKeyword>>(
+        "admin/banned-keywords?page=1&page_size=1"
+      );
+      setActiveBannedCount(res?.total ?? 0);
+    } catch {
+      // Keep previous KPI count on transient error
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadActiveBannedCount();
+  }, [loadActiveBannedCount]);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [query, setQuery] = useState(initialQuery);
   const [selectedReviewId, setSelectedReviewId] = useState<string | null>("rev-2");
@@ -45,24 +62,15 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
   const [mobileOpenId, setMobileOpenId] = useState<string | null>(null);
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
 
-  // Banned keyword form
-  const [newBannedTerm, setNewBannedTerm] = useState("");
-  const [newBannedCategory, setNewBannedCategory] =
-    useState<AdminBannedKeyword["category"]>("Link ngoài sàn");
-  const [newBannedMode, setNewBannedMode] =
-    useState<AdminBannedKeyword["actionMode"]>("chan_tu_dong");
-
   const counts = useMemo(() => {
     const revPending = mod.reviews.filter((r) => r.status === "cho_duyet").length;
     const qaPending = mod.qaItems.filter((q) => q.status === "cho_duyet").length;
     const mediaPending = mod.mediaItems.filter((m) => m.status === "cho_duyet").length;
-    const activeBanned = mod.bannedKeywords.filter((b) => b.active).length;
     return {
       totalPending: revPending + qaPending + mediaPending,
       revPending,
       qaPending,
       mediaPending,
-      activeBanned,
     };
   }, [mod]);
 
@@ -215,40 +223,6 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
           : "Cảnh báo media biến thể sản phẩm";
 
     showToast(`${actionText} ${item.code}.`);
-  };
-
-  const handleAddBannedKeyword = (e: React.FormEvent) => {
-    e.preventDefault();
-    const clean = newBannedTerm.trim();
-    if (!clean) return;
-    updateAdminModerationState((prev) => ({
-      ...prev,
-      bannedKeywords: [
-        {
-          id: `bk-${Date.now()}`,
-          term: clean,
-          category: newBannedCategory,
-          actionMode: newBannedMode,
-          hitCount30d: 0,
-          active: true,
-        },
-        ...prev.bannedKeywords,
-      ],
-    }));
-    setNewBannedTerm("");
-    showToast(`Đã thêm cụm từ cấm "${clean}".`);
-  };
-
-  const handleToggleBannedKeyword = (id: string) => {
-    const item = mod.bannedKeywords.find((b) => b.id === id);
-    if (!item) return;
-    const nextActive = !item.active;
-    updateAdminModerationState((prev) => ({
-      ...prev,
-      bannedKeywords: prev.bannedKeywords.map((b) =>
-        b.id === id ? { ...b, active: nextActive } : b
-      ),
-    }));
   };
 
   const renderReviewDetail = (item: AdminReviewModerationItem, showHeading = false) => {
@@ -589,17 +563,15 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
           <span className={shared.kpiCaption}>Hàng đợi thực từ gian hàng đăng bán</span>
         </div>
         <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Đánh giá mẫu</span>
-          <span className={shared.kpiValue}>{formatInt(counts.revPending)}</span>
-          <span className={shared.kpiCaption}>
-            Trong {formatInt(mod.reviews.length)} đánh giá mẫu
-          </span>
+          <span className={shared.kpiLabel}>Từ khoá cấm đang bật</span>
+          <span className={shared.kpiValue}>{formatInt(activeBannedCount)}</span>
+          <span className={shared.kpiCaption}>Đồng bộ trực tiếp với máy chủ</span>
         </div>
         <div className={shared.kpiCell}>
           <span className={shared.kpiLabel}>Hỏi đáp mẫu</span>
           <span className={shared.kpiValue}>{formatInt(counts.qaPending)}</span>
           <span className={shared.kpiCaption}>
-            {formatInt(counts.activeBanned)} cụm từ cấm đang bật
+            Trong {formatInt(mod.qaItems.length)} câu hỏi mẫu
           </span>
         </div>
         <div className={shared.kpiCell}>
@@ -624,11 +596,21 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
           <button
             type="button"
             role="tab"
+            aria-selected={activeTab === "tu_khoa_cam"}
+            className={`${shared.tabBtn} ${activeTab === "tu_khoa_cam" ? shared.tabBtnActive : ""}`}
+            onClick={() => setActiveTab("tu_khoa_cam")}
+          >
+            <span>Từ khoá cấm</span>
+            {activeBannedCount > 0 && <span className={shared.tabCount}>{activeBannedCount}</span>}
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={activeTab === "reviews"}
             className={`${shared.tabBtn} ${activeTab === "reviews" ? shared.tabBtnActive : ""}`}
             onClick={() => setActiveTab("reviews")}
           >
-            <span>Đánh giá sản phẩm</span>
+            <span>Đánh giá sản phẩm (mẫu)</span>
             <span className={shared.tabCount}>{counts.revPending}</span>
           </button>
           <button
@@ -638,7 +620,7 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
             className={`${shared.tabBtn} ${activeTab === "qa" ? shared.tabBtnActive : ""}`}
             onClick={() => setActiveTab("qa")}
           >
-            <span>Hỏi đáp & Từ cấm</span>
+            <span>Hỏi đáp mẫu</span>
             <span className={shared.tabCount}>{counts.qaPending}</span>
           </button>
           <button
@@ -648,7 +630,7 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
             className={`${shared.tabBtn} ${activeTab === "media" ? shared.tabBtnActive : ""}`}
             onClick={() => setActiveTab("media")}
           >
-            <span>Media biến thể</span>
+            <span>Media biến thể (mẫu)</span>
             <span className={shared.tabCount}>{counts.mediaPending}</span>
           </button>
         </div>
@@ -661,13 +643,17 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
         />
       )}
 
-      {activeTab !== "san_pham" && (
+      {activeTab === "tu_khoa_cam" && (
+        <AdminBannedKeywordsTab onMutated={() => void loadActiveBannedCount()} />
+      )}
+
+      {activeTab !== "san_pham" && activeTab !== "tu_khoa_cam" && (
         <>
           <section className={shared.panel} role="note" style={{ marginTop: 16 }}>
             <StatusPill label="Bản xem trước, dữ liệu mẫu" tone="warning" />
             <p className={shared.pageSubtitle} style={{ marginTop: 8 }}>
               Hàng đợi đánh giá, hỏi đáp và media biến thể bên dưới là dữ liệu mẫu minh họa. Tab Sản
-              phẩm chờ duyệt đang đồng bộ trực tiếp với máy chủ.
+              phẩm chờ duyệt và Từ khoá cấm đang đồng bộ trực tiếp với máy chủ.
             </p>
           </section>
           <div className={shared.toolbar}>
@@ -946,134 +932,6 @@ function ModerationContent({ initialQuery }: { initialQuery: string }) {
               </div>
             </>
           )}
-
-          {/* Bộ lọc từ cấm */}
-          <section
-            className={`${shared.panel} ${styles.bannedSection}`}
-            aria-labelledby="kd-banned-heading"
-          >
-            <div className={shared.panelHeader}>
-              <h2 id="kd-banned-heading" className={shared.panelTitle}>
-                Bộ lọc từ cấm cho Đánh giá & Hỏi đáp
-              </h2>
-              <span className={shared.panelMeta}>
-                {formatInt(counts.activeBanned)}/{mod.bannedKeywords.length} quy tắc đang bật
-              </span>
-            </div>
-
-            <form className={styles.bannedForm} onSubmit={handleAddBannedKeyword}>
-              <div className={styles.fieldGroup}>
-                <label htmlFor="bk-term" className={shared.fieldLabel}>
-                  Cụm từ cần lọc
-                </label>
-                <input
-                  id="bk-term"
-                  type="text"
-                  className={shared.textInput}
-                  value={newBannedTerm}
-                  onChange={(e) => setNewBannedTerm(e.target.value)}
-                  placeholder="VD: chuyển khoản ngoài sàn, telegram..."
-                />
-              </div>
-              <div className={styles.fieldGroup}>
-                <label htmlFor="bk-cat" className={shared.fieldLabel}>
-                  Nhóm vi phạm
-                </label>
-                <select
-                  id="bk-cat"
-                  className={shared.toolbarSelect}
-                  value={newBannedCategory}
-                  onChange={(e) =>
-                    setNewBannedCategory(e.target.value as AdminBannedKeyword["category"])
-                  }
-                >
-                  <option value="Link ngoài sàn">Link ngoài sàn</option>
-                  <option value="Ngôn từ công kích">Ngôn từ công kích</option>
-                  <option value="Cam kết sai lệch">Cam kết sai lệch</option>
-                  <option value="Nhãn hiệu cấm">Nhãn hiệu cấm</option>
-                </select>
-              </div>
-              <div className={styles.fieldGroup}>
-                <label htmlFor="bk-mode" className={shared.fieldLabel}>
-                  Hành động tự động
-                </label>
-                <select
-                  id="bk-mode"
-                  className={shared.toolbarSelect}
-                  value={newBannedMode}
-                  onChange={(e) =>
-                    setNewBannedMode(e.target.value as AdminBannedKeyword["actionMode"])
-                  }
-                >
-                  <option value="chan_tu_dong">Chặn tự động</option>
-                  <option value="gan_co_duyet">Gắn cờ chờ duyệt</option>
-                </select>
-              </div>
-              <Button type="submit" variant="ink" size="sm" shape="app">
-                Thêm từ cấm
-              </Button>
-            </form>
-
-            <div className={shared.tableWrap}>
-              <table className={shared.dataTable}>
-                <thead>
-                  <tr>
-                    <th>Cụm từ lọc</th>
-                    <th>Nhóm vi phạm</th>
-                    <th>Xử lý tự động</th>
-                    <th className={shared.colNum}>Lượt chặn 30 ngày</th>
-                    <th className={shared.colAction}>Kích hoạt</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {mod.bannedKeywords.map((bk) => (
-                    <tr key={bk.id}>
-                      <td className={shared.cellPrimary}>{bk.term}</td>
-                      <td>{bk.category}</td>
-                      <td>
-                        <StatusPill
-                          label={
-                            bk.actionMode === "chan_tu_dong" ? "Chặn tự động" : "Gắn cờ chờ duyệt"
-                          }
-                          tone={bk.actionMode === "chan_tu_dong" ? "negative" : "warning"}
-                        />
-                      </td>
-                      <td className={shared.colNum}>{formatInt(bk.hitCount30d)}</td>
-                      <td className={shared.colAction}>
-                        <ToggleSwitch
-                          id={`sw-bk-${bk.id}`}
-                          checked={bk.active}
-                          label={`Bật hoặc tắt cụm từ cấm ${bk.term}`}
-                          onChange={() => handleToggleBannedKeyword(bk.id)}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className={shared.mobileList}>
-              {mod.bannedKeywords.map((bk) => (
-                <div key={bk.id} className={shared.mobileItem}>
-                  <div className={shared.mobileLine1}>
-                    <span className={shared.mobileIdentity}>{bk.term}</span>
-                    <ToggleSwitch
-                      id={`sw-bkm-${bk.id}`}
-                      checked={bk.active}
-                      label={`Bật hoặc tắt từ cấm ${bk.term}`}
-                      onChange={() => handleToggleBannedKeyword(bk.id)}
-                    />
-                  </div>
-                  <div className={shared.mobileLine2}>
-                    <span className={shared.mobileMetaText}>
-                      {bk.category} · {formatInt(bk.hitCount30d)} lượt/30 ngày
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
         </>
       )}
 

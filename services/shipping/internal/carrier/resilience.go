@@ -205,7 +205,7 @@ func (r *ResilientCarrier) execute(ctx context.Context, op string, fn func(conte
 		if errors.Is(err, gobreaker.ErrOpenState) || errors.Is(err, gobreaker.ErrTooManyRequests) {
 			return nil, fmt.Errorf("carrier %s %s rejected by circuit breaker: %w", r.inner.Code(), op, err)
 		}
-		if IsNonRetryable(err) || errors.Is(ctx.Err(), context.Canceled) {
+		if IsNonRetryable(err) || ctx.Err() != nil {
 			return nil, err
 		}
 

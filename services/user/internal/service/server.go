@@ -50,6 +50,11 @@ type Options struct {
 	BankAddMaxPerHour       int
 	BankAddRateWindow       time.Duration
 	BankAccountBox          *secretbox.Box
+	PhoneOTPTTL             time.Duration
+	PhoneOTPCooldown        time.Duration
+	PhoneOTPMaxPerHour      int
+	PhoneOTPRateWindow      time.Duration
+	PhoneOTPMaxAttempts     int
 	AddressCatalog          AddressCatalog
 	Now                     func() time.Time
 }
@@ -93,6 +98,21 @@ func (o Options) withDefaults() Options {
 	}
 	if o.BankAddRateWindow <= 0 {
 		o.BankAddRateWindow = time.Hour
+	}
+	if o.PhoneOTPTTL <= 0 {
+		o.PhoneOTPTTL = 5 * time.Minute
+	}
+	if o.PhoneOTPCooldown <= 0 {
+		o.PhoneOTPCooldown = 60 * time.Second
+	}
+	if o.PhoneOTPMaxPerHour <= 0 {
+		o.PhoneOTPMaxPerHour = 5
+	}
+	if o.PhoneOTPRateWindow <= 0 {
+		o.PhoneOTPRateWindow = time.Hour
+	}
+	if o.PhoneOTPMaxAttempts <= 0 {
+		o.PhoneOTPMaxAttempts = 5
 	}
 	if o.Now == nil {
 		o.Now = func() time.Time { return time.Now().UTC() }
@@ -226,7 +246,7 @@ func (s *Server) resolveOwnerUserID(ctx context.Context, requestedUserID string)
 func (s *Server) Register(ctx context.Context, req *userv1.RegisterRequest) (*userv1.RegisterResponse, error) {
 	fullName := strings.TrimSpace(req.GetFullName())
 	email := normalizeEmail(req.GetEmail())
-	phone := strings.TrimSpace(req.GetPhone())
+	phone := canonicalizeAccountPhone(req.GetPhone())
 	plainPassword := req.GetPassword()
 
 	if fullName == "" {
@@ -858,46 +878,75 @@ func (s *Server) UpdateProfile(ctx context.Context, req *userv1.UpdateProfileReq
 		return nil, status.Error(codes.NotFound, "user not found")
 	}
 
-	existing, err := s.store.GetUserByID(ctx, targetID)
-	if err != nil {
-		if isNotFoundErr(err) {
-			return nil, status.Error(codes.NotFound, "user not found")
+	var (
+		updated      db.User
+		phoneChanged bool
+	)
+	err = s.store.WithTx(ctx, func(q db.Querier) error {
+		existing, txErr := q.GetUserByIDForUpdate(ctx, targetID)
+		if txErr != nil {
+			if isNotFoundErr(txErr) {
+				return status.Error(codes.NotFound, "user not found")
+			}
+			return txErr
 		}
-		return nil, status.Error(codes.Internal, "failed to load user")
-	}
 
-	fullName := existing.FullName
-	if v := strings.TrimSpace(req.GetFullName()); v != "" {
-		fullName = v
-	}
-	phone := existing.Phone
-	phoneVerified := existing.PhoneVerified
-	if v := strings.TrimSpace(req.GetPhone()); v != "" && v != existing.Phone {
-		if other, pErr := s.store.GetUserByPhone(ctx, v); pErr == nil && other.ID != existing.ID {
-			return nil, status.Error(codes.AlreadyExists, "phone is already in use")
-		} else if pErr != nil && !isNotFoundErr(pErr) {
-			return nil, status.Error(codes.Internal, "failed to check phone uniqueness")
+		fullName := existing.FullName
+		if v := strings.TrimSpace(req.GetFullName()); v != "" {
+			fullName = v
 		}
-		phone = v
-		phoneVerified = false
-	}
-	avatarURL := existing.AvatarURL
-	if v := strings.TrimSpace(req.GetAvatarUrl()); v != "" {
-		avatarURL = v
-	}
+		existingCanon := canonicalizeAccountPhone(existing.Phone)
+		phone := existing.Phone
+		phoneVerified := existing.PhoneVerified
+		if v := strings.TrimSpace(req.GetPhone()); v != "" {
+			newPhone := canonicalizeAccountPhone(v)
+			if newPhone != existingCanon {
+				if uErr := checkVerifiedPhoneAvailableForUser(ctx, q, existing.ID, newPhone); uErr != nil {
+					return uErr
+				}
+				phone = newPhone
+				phoneVerified = false
+				phoneChanged = true
+			} else {
+				// Same phone in another format (e.g. "+84..." or spaces/hyphens): treat as unchanged,
+				// preserve phone_verified, and persist canonical form.
+				phone = newPhone
+			}
+		}
+		avatarURL := existing.AvatarURL
+		if v := strings.TrimSpace(req.GetAvatarUrl()); v != "" {
+			avatarURL = v
+		}
 
-	updated, err := s.store.UpdateUserProfile(ctx, db.UpdateUserProfileParams{
-		ID:            existing.ID,
-		FullName:      fullName,
-		Phone:         phone,
-		AvatarURL:     avatarURL,
-		PhoneVerified: phoneVerified,
+		updated, txErr = q.UpdateUserProfile(ctx, db.UpdateUserProfileParams{
+			ID:            existing.ID,
+			FullName:      fullName,
+			Phone:         phone,
+			AvatarURL:     avatarURL,
+			PhoneVerified: phoneVerified,
+		})
+		if txErr != nil {
+			if isUniqueViolation(txErr) {
+				return status.Error(codes.AlreadyExists, "phone is already in use")
+			}
+			return txErr
+		}
+		return nil
 	})
 	if err != nil {
-		if isUniqueViolation(err) {
-			return nil, status.Error(codes.AlreadyExists, "phone is already in use")
+		if _, ok := status.FromError(err); ok {
+			return nil, err
 		}
 		return nil, status.Error(codes.Internal, "failed to update profile")
+	}
+
+	if phoneChanged && s.sec != nil {
+		if delErr := s.sec.DeletePhoneOTP(ctx, updated.ID); delErr != nil {
+			s.log.WarnContext(ctx, "failed to clear pending phone otp after phone change",
+				slog.String("user_id", updated.ID),
+				slog.String("error", delErr.Error()),
+			)
+		}
 	}
 
 	return &userv1.UpdateProfileResponse{User: toProtoUser(updated)}, nil

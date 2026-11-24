@@ -10,6 +10,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type BannedKeyword struct {
+	ID             string
+	Term           string
+	NormalizedTerm string
+	Category       string
+	Action         string
+	IsActive       bool
+	CreatedBy      string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
 type Category struct {
 	ID                string
 	Name              string
@@ -19,6 +31,7 @@ type Category struct {
 	SortOrder         int32
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	IsProhibited      bool
 }
 
 type CategoryFeeSchedule struct {
@@ -64,6 +77,28 @@ type Product struct {
 	UpdatedAt       time.Time
 	Slug            string
 	SearchText      string
+	RatingSum       int64
+	ReviewCount     int32
+	FlaggedKeywords []byte
+	FirstApprovedAt *time.Time
+}
+
+type ProductReview struct {
+	ID          string
+	ProductID   string
+	ShopID      string
+	OrderID     string
+	OrderItemID string
+	SkuID       string
+	SkuName     string
+	BuyerID     string
+	BuyerName   string
+	Rating      int16
+	Comment     string
+	ImageUrls   []byte
+	Status      string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 type Sku struct {

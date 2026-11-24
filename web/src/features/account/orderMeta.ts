@@ -10,6 +10,7 @@ import {
   GATEWAY_ORDER_STATUS_LABELS,
   GATEWAY_PAYMENT_METHOD_LABELS,
   GATEWAY_SHIPMENT_STATUS_LABELS,
+  formatCarrierLabel,
   formatVoucherBenefit,
 } from "@/lib/format";
 import { isPaymentDeadlinePassed } from "@/features/checkout/helpers";
@@ -287,23 +288,6 @@ export function getShipmentStatusInfo(status: string): { label: string; tone: Ba
   };
 }
 
-export function getCarrierLabel(carrierCode: string): string {
-  switch (carrierCode.toUpperCase()) {
-    case "GHN":
-      return "Giao Hàng Nhanh";
-    case "GHTK":
-      return "Giao Hàng Tiết Kiệm";
-    case "SPX":
-      return "SPX Express";
-    case "MOCK":
-    case "MOCK_EXPRESS":
-    case "NEXUS_EXPRESS":
-      return "Vận chuyển tiêu chuẩn NexusMart";
-    default:
-      return carrierCode || "Đơn vị vận chuyển";
-  }
-}
-
 export function localizeTimelineNote(rawNote: string): string {
   const trimmed = rawNote.trim();
   if (!trimmed) return "";
@@ -350,7 +334,7 @@ export function localizeTimelineNote(rawNote: string): string {
   }
   const shippedMatch = /^shipped\s+via\s+([^\s(]+)(?:\s*\(tracking:\s*([^)]+)\))?/i.exec(trimmed);
   if (shippedMatch) {
-    const carrierName = getCarrierLabel(shippedMatch[1]);
+    const carrierName = formatCarrierLabel(shippedMatch[1]);
     const track = shippedMatch[2]?.trim();
     return track
       ? `Gian hàng đã tạo vận đơn qua ${carrierName} (mã vận đơn: ${track}).`

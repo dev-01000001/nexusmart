@@ -6,9 +6,13 @@ export PROTOC="${PROTOC:-$HOME/.local/bin/protoc}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PG_IMAGE="${TEST_DB_IMAGE:-postgres:16-alpine}"
+NATS_IMAGE="${TEST_NATS_IMAGE:-nats:2.10-alpine}"
+REDIS_IMAGE="${TEST_REDIS_IMAGE:-redis:7-alpine}"
 PG_USER="nexusmart"
 PG_PASS="testdb_ephemeral_pw"
 CONTAINER_NAME=""
+NATS_CONTAINER_NAME=""
+REDIS_CONTAINER_NAME=""
 TMP_DIR="$(mktemp -d)"
 CLEANED_UP=0
 
@@ -19,6 +23,12 @@ cleanup() {
 	CLEANED_UP=1
 	if [[ -n "$CONTAINER_NAME" ]]; then
 		docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+	fi
+	if [[ -n "$NATS_CONTAINER_NAME" ]]; then
+		docker rm -f "$NATS_CONTAINER_NAME" >/dev/null 2>&1 || true
+	fi
+	if [[ -n "$REDIS_CONTAINER_NAME" ]]; then
+		docker rm -f "$REDIS_CONTAINER_NAME" >/dev/null 2>&1 || true
 	fi
 	rm -rf "$TMP_DIR"
 }
@@ -115,7 +125,88 @@ export TEST_SHIPPING_DB_URL="postgres://${PG_USER}:${PG_PASS}@127.0.0.1:${PG_POR
 export TEST_USER_DB_URL="postgres://${PG_USER}:${PG_PASS}@127.0.0.1:${PG_PORT}/user_db?sslmode=disable"
 export TEST_PAYMENT_DB_URL="postgres://${PG_USER}:${PG_PASS}@127.0.0.1:${PG_PORT}/payment_db?sslmode=disable"
 
-# Wrapper mode: allow other scripts (such as scripts/coverage.sh) to share this ephemeral Postgres lifecycle.
+NATS_CONTAINER_NAME="nexusmart-testnats-$$"
+
+echo "==> Starting ephemeral NATS JetStream ($NATS_IMAGE, container=$NATS_CONTAINER_NAME, random localhost port)"
+docker run -d \
+	--name "$NATS_CONTAINER_NAME" \
+	-p "127.0.0.1::4222" \
+	-p "127.0.0.1::8222" \
+	"$NATS_IMAGE" \
+	-js -m 8222 -sd /tmp/js >/dev/null
+
+NATS_PORT="$(docker port "$NATS_CONTAINER_NAME" 4222/tcp | head -n 1 | awk -F: '{print $NF}')"
+NATS_HTTP_PORT="$(docker port "$NATS_CONTAINER_NAME" 8222/tcp | head -n 1 | awk -F: '{print $NF}')"
+if [[ -z "$NATS_PORT" || -z "$NATS_HTTP_PORT" ]]; then
+	echo "ERROR: failed to determine mapped host ports for $NATS_CONTAINER_NAME" >&2
+	exit 1
+fi
+
+echo "==> Waiting for NATS JetStream readiness on 127.0.0.1:${NATS_PORT}"
+nats_ready=0
+for _ in $(seq 1 60); do
+	if [[ "$(docker inspect -f '{{.State.Running}}' "$NATS_CONTAINER_NAME" 2>/dev/null || true)" != "true" ]]; then
+		echo "ERROR: ephemeral NATS container exited unexpectedly:" >&2
+		docker logs "$NATS_CONTAINER_NAME" >&2 || true
+		exit 1
+	fi
+	if (exec 3<>/dev/tcp/127.0.0.1/"$NATS_PORT") 2>/dev/null \
+		&& curl -fsS --max-time 2 "http://127.0.0.1:${NATS_HTTP_PORT}/jsz" 2>/dev/null | grep -q '"streams"'; then
+		nats_ready=1
+		break
+	fi
+	sleep 0.25
+done
+
+if [[ "$nats_ready" -ne 1 ]]; then
+	echo "ERROR: ephemeral NATS JetStream on 127.0.0.1:${NATS_PORT} did not become ready in time" >&2
+	docker logs "$NATS_CONTAINER_NAME" >&2 || true
+	exit 1
+fi
+
+export TEST_NATS_URL="nats://127.0.0.1:${NATS_PORT}"
+
+REDIS_CONTAINER_NAME="nexusmart-testredis-$$"
+
+echo "==> Starting ephemeral Redis ($REDIS_IMAGE, container=$REDIS_CONTAINER_NAME, tmpfs, random localhost port)"
+docker run -d \
+	--name "$REDIS_CONTAINER_NAME" \
+	-p "127.0.0.1::6379" \
+	--tmpfs /data:rw \
+	"$REDIS_IMAGE" \
+	redis-server --save "" --appendonly no >/dev/null
+
+REDIS_PORT="$(docker port "$REDIS_CONTAINER_NAME" 6379/tcp | head -n 1 | awk -F: '{print $NF}')"
+if [[ -z "$REDIS_PORT" ]]; then
+	echo "ERROR: failed to determine mapped host port for $REDIS_CONTAINER_NAME" >&2
+	exit 1
+fi
+
+echo "==> Waiting for Redis readiness on 127.0.0.1:${REDIS_PORT}"
+redis_ready=0
+for _ in $(seq 1 60); do
+	if [[ "$(docker inspect -f '{{.State.Running}}' "$REDIS_CONTAINER_NAME" 2>/dev/null || true)" != "true" ]]; then
+		echo "ERROR: ephemeral Redis container exited unexpectedly:" >&2
+		docker logs "$REDIS_CONTAINER_NAME" >&2 || true
+		exit 1
+	fi
+	if (exec 3<>/dev/tcp/127.0.0.1/"$REDIS_PORT") 2>/dev/null \
+		&& [[ "$(docker exec "$REDIS_CONTAINER_NAME" redis-cli ping 2>/dev/null || true)" == "PONG" ]]; then
+		redis_ready=1
+		break
+	fi
+	sleep 0.25
+done
+
+if [[ "$redis_ready" -ne 1 ]]; then
+	echo "ERROR: ephemeral Redis on 127.0.0.1:${REDIS_PORT} did not become ready in time" >&2
+	docker logs "$REDIS_CONTAINER_NAME" >&2 || true
+	exit 1
+fi
+
+export TEST_REDIS_ADDR="127.0.0.1:${REDIS_PORT}"
+
+# Wrapper mode: allow other scripts (such as scripts/coverage.sh) to share this ephemeral Postgres + NATS + Redis lifecycle.
 if [[ "${1:-}" == "--run" ]]; then
 	shift
 	"$@"
@@ -126,8 +217,8 @@ discover_go_pg_pkgs() {
 	local svc_dir="$1"
 	(
 		cd "$svc_dir"
-		# Find *_test.go files referencing TEST_*_DB_URL on non-comment lines.
-		grep -rnE 'TEST_[A-Z]+_DB_URL' --include='*_test.go' . 2>/dev/null \
+		# Find *_test.go files referencing TEST_*_DB_URL, TEST_NATS_URL, or TEST_REDIS_ADDR on non-comment lines.
+		grep -rnE 'TEST_(([A-Z]+_DB|NATS)_URL|REDIS_ADDR)' --include='*_test.go' . 2>/dev/null \
 			| grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
 			| cut -d: -f1 \
 			| xargs -r -n1 dirname \
@@ -143,20 +234,20 @@ run_go_pg_tests() {
 	mapfile -t pkgs < <(discover_go_pg_pkgs "$svc_dir")
 
 	if [[ "${#pkgs[@]}" -eq 0 ]]; then
-		echo "ERROR: no Go Postgres test packages found in services/$svc" >&2
+		echo "ERROR: no Go integration test packages found in services/$svc" >&2
 		exit 1
 	fi
 
 	echo "==> [test-db] go test services/$svc (${pkgs[*]})"
 	if ! (cd "$svc_dir" && go test -v -race -count=1 -p 1 "${pkgs[@]}") >"$log_file" 2>&1; then
 		cat "$log_file"
-		echo "ERROR: Postgres tests failed in services/$svc" >&2
+		echo "ERROR: integration tests failed in services/$svc" >&2
 		exit 1
 	fi
 
 	if grep -qE '^[[:space:]]*--- SKIP:' "$log_file"; then
 		cat "$log_file"
-		echo "ERROR: Postgres test(s) were SKIPPED in services/$svc:" >&2
+		echo "ERROR: integration test(s) were SKIPPED in services/$svc:" >&2
 		grep -E '^[[:space:]]*--- SKIP:' "$log_file" >&2
 		exit 1
 	fi
@@ -171,9 +262,9 @@ run_go_pg_tests() {
 	echo "    PASS services/$svc (${pass_count} test cases/subtests, 0 skipped)"
 }
 
-for svc in order product promotion shipping user; do
+for svc in order product promotion shipping user notification; do
 	run_go_pg_tests "$svc"
 done
 
 run_rust_payment_tests
-echo "==> All Postgres tests passed with 0 skips."
+echo "==> All Postgres, NATS, and Redis tests passed with 0 skips."

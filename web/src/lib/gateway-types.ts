@@ -157,6 +157,18 @@ export interface SessionResponse {
   can_refresh?: boolean;
 }
 
+export interface GatewayRequestPhoneOTPResponse {
+  sent: boolean;
+  expires_in_seconds: number;
+  retry_after_seconds: number;
+  phone_masked: string;
+}
+
+export interface GatewayVerifyPhoneOTPResponse {
+  verified: boolean;
+  user: GatewayUser | null;
+}
+
 // --- Section 4.2: Categories, Products & Inventory ---
 
 export type ProductStatus = "PENDING" | "APPROVED" | "REJECTED" | "HIDDEN" | "OUT_OF_STOCK";
@@ -168,6 +180,7 @@ export interface GatewayCategory {
   parent_id: string;
   commission_rate_bps?: number;
   sort_order: number;
+  is_prohibited?: boolean;
   created_at?: string;
   updated_at?: string;
 }
@@ -205,9 +218,91 @@ export interface GatewayProduct {
   rejection_reason: string;
   min_price_vnd: number;
   max_price_vnd: number;
+  rating_avg_x100?: number;
+  review_count?: number;
+  flagged_keywords?: string[];
   skus: GatewaySKU[];
   created_at?: string;
   updated_at?: string;
+}
+
+export interface GatewayProductSlugResponse {
+  product?: GatewayProduct | null;
+  discontinued?: boolean;
+  category_id?: string;
+  name?: string;
+}
+
+/**
+ * Product review DTO. Per E6-bis, public GET /products/{id}/reviews omits
+ * buyer_id, order_id, order_item_id, and sku_id; authenticated GET /orders/{id}/reviews
+ * populates them.
+ */
+export interface GatewayProductReview {
+  id: string;
+  product_id: string;
+  buyer_id?: string;
+  order_id?: string;
+  order_item_id?: string;
+  sku_id?: string;
+  sku_name: string;
+  buyer_name: string;
+  rating: number;
+  comment: string;
+  image_urls: string[];
+  created_at?: string;
+}
+
+export interface GatewayProductReviewsResponse {
+  items: GatewayProductReview[];
+  rating_avg_x100: number;
+  review_count: number;
+  rating_counts: Record<string, number>;
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface GatewayOrderReviewsResponse {
+  reviews: GatewayProductReview[];
+}
+
+export type GatewayBannedKeywordAction = "BLOCK" | "REVIEW";
+
+export interface GatewayBannedKeyword {
+  id: string;
+  term: string;
+  normalized_term: string;
+  category: string;
+  action: GatewayBannedKeywordAction | string;
+  is_active: boolean;
+  created_by: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface GatewayBannedContentProductSample {
+  product_id: string;
+  shop_id: string;
+  name: string;
+  slug: string;
+  status: string;
+  matched_terms: string[];
+  highest_action: GatewayBannedKeywordAction | string;
+}
+
+export interface GatewayPreviewBannedKeywordResponse {
+  affected_count: number;
+  samples: GatewayBannedContentProductSample[];
+}
+
+export interface GatewayRescanProductsResponse {
+  scanned_count: number;
+  blocked_count: number;
+  flagged_count: number;
+  samples: GatewayBannedContentProductSample[];
+  has_more: boolean;
+  next_cursor: string;
 }
 
 export interface GatewaySellerSKUInput {
@@ -237,6 +332,8 @@ export interface GatewayCartItem {
   available_stock: number;
   weight_grams: number;
   selected: boolean;
+  unavailable?: boolean;
+  unavailable_reason?: string;
 }
 
 export interface GatewayCartShopGroup {
@@ -390,6 +487,7 @@ export interface GatewayOrder {
   service_code: string;
   tracking_code: string;
   label_url: string;
+  shipment_job_status?: "QUEUED" | "FAILED" | "" | string;
   cancel_reason: string;
   shipping_address?: GatewayOrderAddressSnapshot;
   items: GatewayOrderItem[];
@@ -705,8 +803,18 @@ export interface GatewayReconcileItem {
   provider_tx_id: string;
   local_amount_vnd: number;
   provider_amount_vnd: number;
-  status: "MATCHED" | "MISSING_LOCAL" | "MISSING_PROVIDER" | "AMOUNT_MISMATCH" | string;
+  status:
+    | "MATCHED"
+    | "MISSING_LOCAL"
+    | "MISSING_PROVIDER"
+    | "AMOUNT_MISMATCH"
+    | "ALREADY_RECONCILED"
+    | "NOT_DELIVERED"
+    | string;
   note: string;
+  tracking_code?: string;
+  order_id?: string;
+  line_number?: number;
 }
 
 export interface GatewayReconcileResponse {
@@ -715,6 +823,30 @@ export interface GatewayReconcileResponse {
   missing_local_count: number;
   missing_provider_count: number;
   amount_mismatch_count: number;
+  items: GatewayReconcileItem[];
+}
+
+export interface GatewayReconciliationRunSummary {
+  run_id: string;
+  run_type: "vietqr" | "cod_file" | string;
+  provider: string;
+  run_date: string;
+  file_name?: string;
+  total_rows: number;
+  matched_count: number;
+  already_reconciled_count: number;
+  missing_local_count: number;
+  missing_provider_count: number;
+  amount_mismatch_count: number;
+  not_delivered_count: number;
+  total_matched_vnd: number;
+  status: string;
+  created_by: string;
+  created_at?: string;
+}
+
+export interface GatewayImportCodReconciliationResponse {
+  run: GatewayReconciliationRunSummary;
   items: GatewayReconcileItem[];
 }
 
@@ -761,6 +893,8 @@ export interface GatewayReconciliationQueueItem {
   reason: string;
   resolution_status: string;
   notes: string;
+  source_type?: "webhook" | "reconciliation" | "cod_file" | string;
+  tracking_code?: string;
   created_at?: string;
   resolved_at?: string;
 }
@@ -782,6 +916,18 @@ export interface GatewayWard {
   code: string;
   province_code: string;
   name: string;
+  cod_supported?: boolean;
+}
+
+export interface GatewayMapLegacyAddressResponse {
+  found: boolean;
+  province_code: string;
+  province_name: string;
+  ward_code: string;
+  ward_name: string;
+  legacy_province_code?: string;
+  legacy_district_code?: string;
+  legacy_ward_code?: string;
 }
 
 export interface GatewayCarrierQuote {
@@ -792,10 +938,12 @@ export interface GatewayCarrierQuote {
   fee_vnd: number;
   estimated_days: number;
   is_fallback: boolean;
+  cod_supported?: boolean;
 }
 
 export interface GatewayCalculateFeeResponse {
   quotes: GatewayCarrierQuote[];
+  is_estimated?: boolean;
 }
 
 export interface GatewayShipment {

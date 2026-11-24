@@ -126,12 +126,17 @@ func isPendingShipmentCancelFresh(ord db.Order, now time.Time) bool {
 	return now.Sub(markedAt) <= PendingShipmentCancelTTL
 }
 
-// checkCancelShipmentGuard enforces P0-1 under FOR UPDATE when transitioning an order to CANCELLED:
+// IsOrderShipmentQueued reports whether an order currently has an async shipment creation job queued.
+func IsOrderShipmentQueued(ord db.Order) bool {
+	return strings.EqualFold(strings.TrimSpace(ord.ShipmentJobStatus), "QUEUED")
+}
+
+// checkCancelShipmentGuard enforces P0-1 & E18 under FOR UPDATE when transitioning an order to CANCELLED:
 // any non-empty tracking_code must match the tracking code cancelled by Shipping.CancelShipment
-// (or match KnownTrackingBeforeCancel when CancelShipment returned NotFound and no fresh creation is in flight),
-// and a fresh in-flight shipment creation (pending_shipment_cancel=true with age <= PendingShipmentCancelTTL)
-// cannot be bypassed after a NotFound cancel. Once age > PendingShipmentCancelTTL and CancelShipment confirms
-// NotFound, cancellation is allowed so crashed/Unavailable attempts cannot trap an order permanently.
+// (or match KnownTrackingBeforeCancel when CancelShipment returned NotFound and no fresh creation or QUEUED job exists),
+// a fresh in-flight shipment creation (pending_shipment_cancel=true with age <= PendingShipmentCancelTTL)
+// cannot be bypassed after a NotFound cancel, and a QUEUED async shipment job is treated as active shipment
+// creation: CancelShipment(FORWARD) must have been called for the observed QUEUED state before committing CANCELLED.
 func checkCancelShipmentGuard(ord db.Order, params SingleOrderTransitionParams, now time.Time) error {
 	if params.TargetStatus != orderv1.OrderStatus_ORDER_STATUS_CANCELLED {
 		return nil
@@ -146,8 +151,8 @@ func checkCancelShipmentGuard(ord db.Order, params SingleOrderTransitionParams, 
 		if canTrk != "" && strings.EqualFold(ordTrk, canTrk) {
 			return nil
 		}
-		// Pre-existing tracking where shipping confirmed NotFound and no fresh shipment creation is in flight.
-		if params.LastCancelNotFound && !isPendingShipmentCancelFresh(ord, now) && knownTrk != "" && strings.EqualFold(ordTrk, knownTrk) {
+		// Pre-existing tracking where shipping confirmed NotFound and no fresh shipment creation or QUEUED job exists.
+		if params.LastCancelNotFound && !isPendingShipmentCancelFresh(ord, now) && !IsOrderShipmentQueued(ord) && knownTrk != "" && strings.EqualFold(ordTrk, knownTrk) {
 			return nil
 		}
 		return ErrOrderHasTracking
@@ -159,6 +164,18 @@ func checkCancelShipmentGuard(ord db.Order, params SingleOrderTransitionParams, 
 			return ErrOrderHasTracking
 		}
 		if params.LastCancelNotFound && isPendingShipmentCancelFresh(ord, now) {
+			return ErrOrderHasTracking
+		}
+	}
+	if IsOrderShipmentQueued(ord) {
+		// E18: A QUEUED shipment job may have already created a shipment or been picked up by the carrier
+		// before order receives shipment.updated(created). Always require Shipping.CancelShipment(FORWARD)
+		// before committing CANCELLED, and reject if QUEUED appeared or was refreshed between steps.
+		if params.RequireNoTracking || !params.KnownShipmentQueued {
+			return ErrOrderHasTracking
+		}
+		if params.KnownQueuedUpdatedAt != nil &&
+			ord.UpdatedAt.Truncate(time.Microsecond).After(params.KnownQueuedUpdatedAt.Truncate(time.Microsecond)) {
 			return ErrOrderHasTracking
 		}
 	}
@@ -575,7 +592,7 @@ func canCancelGroupOrder(ord db.Order, onlyPending bool) bool {
 	if isOrderPaymentTerminalProtected(ord) && ord.TotalPayableVND > 0 {
 		return false
 	}
-	if strings.TrimSpace(ord.TrackingCode) != "" || ord.PendingShipmentCancel {
+	if strings.TrimSpace(ord.TrackingCode) != "" || ord.PendingShipmentCancel || IsOrderShipmentQueued(ord) {
 		return false
 	}
 	return true
@@ -667,13 +684,15 @@ type SingleOrderTransitionParams struct {
 	ActorID                    string
 	ActorRole                  string
 	Note                       string
-	CancelGroupPend            bool   // When cancelling PENDING order, cancel sibling PENDING orders in group too.
-	RequireNoTracking          bool   // If true and locked order already has tracking_code or pending_shipment_cancel, return ErrOrderHasTracking.
-	VerifyShipmentCancel       bool   // P0-1: When cancelling, always verify tracking_code matches CancelledTrackingCode and in-flight pending_shipment_cancel was not NotFound.
-	CancelledTrackingCode      string // Tracking code actually cancelled by Shipping.CancelShipment (empty if NotFound or not called).
-	KnownTrackingBeforeCancel  string // Tracking code observed on the order before calling Shipping.CancelShipment.
-	LastCancelNotFound         bool   // True when Shipping.CancelShipment returned NotFound (shipment may still be in flight).
-	ClearPendingShipmentCancel bool   // If true, clear pending_shipment_cancel flag in the same transaction.
+	CancelGroupPend            bool       // When cancelling PENDING order, cancel sibling PENDING orders in group too.
+	RequireNoTracking          bool       // If true and locked order already has tracking_code or pending_shipment_cancel, return ErrOrderHasTracking.
+	VerifyShipmentCancel       bool       // P0-1: When cancelling, always verify tracking_code matches CancelledTrackingCode and in-flight pending_shipment_cancel was not NotFound.
+	CancelledTrackingCode      string     // Tracking code actually cancelled by Shipping.CancelShipment (empty if NotFound or not called).
+	KnownTrackingBeforeCancel  string     // Tracking code observed on the order before calling Shipping.CancelShipment.
+	KnownShipmentQueued        bool       // True when shipment_job_status='QUEUED' was observed before calling Shipping.CancelShipment (E18).
+	KnownQueuedUpdatedAt       *time.Time // UpdatedAt observed while QUEUED before calling Shipping.CancelShipment; detects re-queued jobs between steps.
+	LastCancelNotFound         bool       // True when Shipping.CancelShipment returned NotFound (shipment may still be in flight).
+	ClearPendingShipmentCancel bool       // If true, clear pending_shipment_cancel flag in the same transaction.
 	OutboxEvents               []db.InsertOutboxEventParams
 	BuildOutboxFn              func(order db.Order) []db.InsertOutboxEventParams
 	Now                        time.Time
@@ -797,6 +816,50 @@ type ReturnShipmentUpdateOutcome struct {
 	Return           *ReturnAggregate
 }
 
+// BuyerCODStats aggregates terminal COD delivery outcomes for a buyer (E19).
+type BuyerCODStats struct {
+	TotalTerminal int64
+	RejectedCount int64
+}
+
+// QueueShipmentParams marks an order's async shipment creation job as QUEUED without advancing status (E18).
+type QueueShipmentParams struct {
+	OrderID               string
+	JobID                 string
+	ExpectedCreatingToken string
+	ActorID               string
+	ActorRole             string
+	Note                  string
+	Now                   time.Time
+}
+
+// QueueShipmentOutcome reports the order state after queueing an async shipment creation job (E18).
+type QueueShipmentOutcome struct {
+	Order           *OrderAggregate
+	AlreadyAttached bool // True if shipment.updated(status="created") already attached tracking_code before RPC returned.
+}
+
+// ShipmentCreateFailedParams drives idempotent shipment.create_failed consumption (E18).
+type ShipmentCreateFailedParams struct {
+	EventID      string
+	EventType    string
+	JobID        string
+	OrderID      string
+	CarrierCode  string
+	ServiceCode  string
+	Attempts     int32
+	ErrorMessage string
+	Now          time.Time
+}
+
+// ShipmentCreateFailedOutcome reports the effect of a shipment.create_failed event.
+type ShipmentCreateFailedOutcome struct {
+	AlreadyProcessed bool
+	NotFound         bool
+	Updated          bool
+	Order            *OrderAggregate
+}
+
 // ShipmentUpdateParams drives idempotent shipment.updated event consumption.
 type ShipmentUpdateParams struct {
 	EventID           string
@@ -804,7 +867,10 @@ type ShipmentUpdateParams struct {
 	SkipMarkProcessed bool // When true, caller calls MarkEventProcessed after downstream compensations succeed.
 	OrderID           string
 	ShipmentStatus    string
+	CarrierCode       string
+	ServiceCode       string
 	TrackingCode      string
+	LabelURL          string
 	Description       string
 	TraceID           string
 	Traceparent       string
@@ -813,13 +879,14 @@ type ShipmentUpdateParams struct {
 
 // ShipmentUpdateOutcome reports the effect of applying a shipment.updated event.
 type ShipmentUpdateOutcome struct {
-	AlreadyProcessed bool
-	AlreadyReturned  bool // Redelivery where order was already RETURNED before event was marked processed.
-	NotFound         bool
-	EmittedOutbox    bool
-	TransitionedFrom orderv1.OrderStatus
-	TransitionedTo   orderv1.OrderStatus
-	Order            *OrderAggregate
+	AlreadyProcessed          bool
+	AlreadyReturned           bool // Redelivery where order was already RETURNED before event was marked processed.
+	NeedsOrphanShipmentCancel bool // Async shipment.updated(status="created") arrived after order was already CANCELLED (E18).
+	NotFound                  bool
+	EmittedOutbox             bool
+	TransitionedFrom          orderv1.OrderStatus
+	TransitionedTo            orderv1.OrderStatus
+	Order                     *OrderAggregate
 }
 
 // PaymentRefundedParams drives idempotent payment.refunded event consumption.
@@ -875,11 +942,15 @@ type Store interface {
 	ClearOrderPendingCancelCompensation(ctx context.Context, orderID string) error
 	ClearOrderPendingReturnCompensation(ctx context.Context, orderID string) error
 	TransitionOrderPreparedForShipment(ctx context.Context, params ShipOrderParams) (*OrderAggregate, error)
+	MarkOrderShipmentQueued(ctx context.Context, params QueueShipmentParams) (*QueueShipmentOutcome, error)
+	MarkOrderShipmentJobFailedIfQueued(ctx context.Context, orderID string) (bool, error)
 	TransitionOrderCompleted(ctx context.Context, params CompleteOrderParams) (*OrderAggregate, error)
 	TransitionOrderReturnRequested(ctx context.Context, params ReturnRequestParams) (*OrderAggregate, *ReturnAggregate, error)
 	ApplyShipmentUpdate(ctx context.Context, params ShipmentUpdateParams) (*ShipmentUpdateOutcome, error)
+	ApplyShipmentCreateFailed(ctx context.Context, params ShipmentCreateFailedParams) (*ShipmentCreateFailedOutcome, error)
 	ApplyReturnShipmentUpdate(ctx context.Context, params ReturnShipmentUpdateParams) (*ReturnShipmentUpdateOutcome, error)
 	RecordPaymentRefunded(ctx context.Context, params PaymentRefundedParams) (bool, error)
+	GetBuyerTerminalCODStats(ctx context.Context, buyerID string) (BuyerCODStats, error)
 
 	GetReturnRequest(ctx context.Context, returnRequestID, orderID string) (*ReturnAggregate, error)
 	ListReturnRequestsFiltered(ctx context.Context, buyerID, shopID, status string, limit, offset int32) ([]ReturnAggregate, int64, error)

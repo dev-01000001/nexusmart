@@ -26,6 +26,7 @@ type stubRepo struct {
 	mu           sync.Mutex
 	shipments    []*store.Shipment
 	events       map[string][]store.ShipmentEvent
+	jobs         map[string]*store.ShipmentCreateJob
 	shopSettings map[string]*store.ShopShippingSettings
 	carriers     map[string]*store.CarrierConfig
 	fallback     map[string][]store.FallbackRate
@@ -34,6 +35,7 @@ type stubRepo struct {
 func newStubRepo() *stubRepo {
 	return &stubRepo{
 		events:       make(map[string][]store.ShipmentEvent),
+		jobs:         make(map[string]*store.ShipmentCreateJob),
 		shopSettings: make(map[string]*store.ShopShippingSettings),
 		carriers:     make(map[string]*store.CarrierConfig),
 		fallback:     make(map[string][]store.FallbackRate),
@@ -52,8 +54,14 @@ func (r *stubRepo) GetProvince(_ context.Context, provinceCode string) (*address
 	}
 	return nil, store.ErrNotFound
 }
-func (r *stubRepo) ListWards(_ context.Context, _, _ string) ([]address.Ward, error) {
-	return nil, nil
+func (r *stubRepo) ListWards(_ context.Context, provinceCode, _ string) ([]address.Ward, error) {
+	var out []address.Ward
+	for _, w := range address.Wards() {
+		if w.ProvinceCode == provinceCode && w.IsActive {
+			out = append(out, w)
+		}
+	}
+	return out, nil
 }
 func (r *stubRepo) GetWard(_ context.Context, wardCode string) (*address.Ward, error) {
 	for _, w := range address.Wards() {
@@ -63,6 +71,22 @@ func (r *stubRepo) GetWard(_ context.Context, wardCode string) (*address.Ward, e
 		}
 	}
 	return nil, store.ErrNotFound
+}
+func (r *stubRepo) GetRepresentativeWard(_ context.Context, provinceCode string) (*address.Ward, error) {
+	var best *address.Ward
+	for _, w := range address.Wards() {
+		if w.ProvinceCode != provinceCode || !w.IsActive {
+			continue
+		}
+		if best == nil || (w.CODSupported && !best.CODSupported) || (w.CODSupported == best.CODSupported && w.Code < best.Code) {
+			cp := w
+			best = &cp
+		}
+	}
+	if best == nil {
+		return nil, store.ErrNotFound
+	}
+	return best, nil
 }
 func (r *stubRepo) MapLegacyAddress(_ context.Context, _, _, _ string) (*address.LegacyMatch, error) {
 	return &address.LegacyMatch{}, nil
@@ -168,6 +192,85 @@ func (r *stubRepo) CreateShipment(_ context.Context, sh *store.Shipment, initial
 	}
 	ret := cp
 	return &ret, false, nil
+}
+func (r *stubRepo) CreateShipmentWithOutbox(ctx context.Context, sh *store.Shipment, initEv *store.ShipmentEvent, _ *store.JobOutboxParams) (*store.Shipment, bool, error) {
+	return r.CreateShipment(ctx, sh, initEv)
+}
+func (r *stubRepo) GetActiveShipmentCreateJob(_ context.Context, orderID, direction string) (*store.ShipmentCreateJob, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	dir := store.NormalizeDirection(direction)
+	for _, j := range r.jobs {
+		if j.OrderID == orderID && j.Direction == dir && (j.Status == store.JobStatusPending || j.Status == store.JobStatusProcessing) {
+			cp := *j
+			return &cp, nil
+		}
+	}
+	return nil, store.ErrNotFound
+}
+func (r *stubRepo) GetShipmentCreateJobByID(_ context.Context, jobID string) (*store.ShipmentCreateJob, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	j, ok := r.jobs[jobID]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	cp := *j
+	return &cp, nil
+}
+func (r *stubRepo) EnqueueShipmentCreateJob(_ context.Context, job *store.ShipmentCreateJob) (*store.ShipmentCreateJob, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	dir := store.NormalizeDirection(job.Direction)
+	for _, existing := range r.jobs {
+		if existing.OrderID == job.OrderID && existing.Direction == dir && (existing.Status == store.JobStatusPending || existing.Status == store.JobStatusProcessing) {
+			cp := *existing
+			return &cp, true, nil
+		}
+	}
+	cp := *job
+	if cp.ID == "" {
+		cp.ID = uuid.NewString()
+	}
+	cp.Direction = dir
+	if cp.Status == "" {
+		cp.Status = store.JobStatusPending
+	}
+	r.jobs[cp.ID] = &cp
+	ret := cp
+	return &ret, false, nil
+}
+func (r *stubRepo) CancelActiveShipmentCreateJobs(_ context.Context, orderID, direction, reason string) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	dir := store.NormalizeDirection(direction)
+	var n int64
+	for _, j := range r.jobs {
+		if j.OrderID == orderID && j.Direction == dir && (j.Status == store.JobStatusPending || j.Status == store.JobStatusProcessing) {
+			j.Status = store.JobStatusCancelled
+			j.LastError = reason
+			n++
+		}
+	}
+	return n, nil
+}
+func (r *stubRepo) ClaimDueShipmentCreateJobs(_ context.Context, _ int, _ time.Duration, _ time.Time) ([]store.ShipmentCreateJob, string, error) {
+	return nil, "", nil
+}
+func (r *stubRepo) CompleteShipmentCreateJob(ctx context.Context, jobID, _ string, sh *store.Shipment, initEv *store.ShipmentEvent, _ *store.JobOutboxParams) (*store.Shipment, bool, error) {
+	r.mu.Lock()
+	if j, ok := r.jobs[jobID]; ok {
+		if j.Status == store.JobStatusCancelled {
+			r.mu.Unlock()
+			return nil, false, store.ErrJobCancelled
+		}
+		j.Status = store.JobStatusSucceeded
+	}
+	r.mu.Unlock()
+	return r.CreateShipment(ctx, sh, initEv)
+}
+func (r *stubRepo) RecordShipmentCreateJobFailure(_ context.Context, _, _, _ string, _ *time.Time, _ bool, _ *store.JobOutboxParams, _ time.Time) (*store.ShipmentCreateJob, bool, error) {
+	return nil, false, nil
 }
 func (r *stubRepo) CancelShipmentByID(_ context.Context, shipmentID, _ string) (*store.Shipment, error) {
 	r.mu.Lock()
@@ -428,10 +531,10 @@ func TestShippingGRPC_CalculateFeeValidationErrorCodes(t *testing.T) {
 	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
 
 	badReqs := []*shippingv1.CalculateFeeRequest{
-		{ToProvinceCode: "79", ToWardCode: "79001", WeightGrams: 250},
-		{FromProvinceCode: "79", FromWardCode: "79001", ToProvinceCode: "79", ToWardCode: "79001", WeightGrams: 0},
-		{FromProvinceCode: "79", FromWardCode: "79001", ToProvinceCode: "99999", ToWardCode: "99999", WeightGrams: 250},
-		{FromProvinceCode: "79", FromWardCode: "79001", ToProvinceCode: "79", ToWardCode: "01001", WeightGrams: 250},
+		{ToProvinceCode: "79", ToWardCode: "26740", WeightGrams: 250},
+		{FromProvinceCode: "79", FromWardCode: "26740", ToProvinceCode: "79", ToWardCode: "26740", WeightGrams: 0},
+		{FromProvinceCode: "79", FromWardCode: "26740", ToProvinceCode: "99999", ToWardCode: "99999", WeightGrams: 250},
+		{FromProvinceCode: "79", FromWardCode: "26740", ToProvinceCode: "79", ToWardCode: "00070", WeightGrams: 250},
 	}
 	for i, req := range badReqs {
 		if _, err := srv.CalculateFee(buyerCtx, req); status.Code(err) != codes.InvalidArgument {
@@ -496,8 +599,8 @@ func TestShippingGRPC_W2A_ReturnShipmentAndRedelivery(t *testing.T) {
 		WeightGrams:     500,
 		CarrierCode:     "ghn",
 		BuyerId:         "buyer-1",
-		FromAddress:     &shippingv1.ShipmentAddress{ProvinceCode: "79", WardCode: "79001"},
-		ToAddress:       &shippingv1.ShipmentAddress{ProvinceCode: "01", WardCode: "01001"},
+		FromAddress:     &shippingv1.ShipmentAddress{ProvinceCode: "79", WardCode: "26740"},
+		ToAddress:       &shippingv1.ShipmentAddress{ProvinceCode: "01", WardCode: "00070"},
 	}
 	if _, err := srv.CreateReturnShipment(sellerCtx, retReq); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("expected PermissionDenied for seller CreateReturnShipment, got %v", err)
@@ -768,7 +871,7 @@ func TestReview_GRPCMapsCarrierRejectedVsUnavailable(t *testing.T) {
 		}
 	})
 
-	t.Run("transient carrier failure maps to Unavailable", func(t *testing.T) {
+	t.Run("transient carrier failure queues async retry job (E18) while return shipment still maps to Unavailable", func(t *testing.T) {
 		repo := newStubRepo()
 		c := &failingCreateCarrier{
 			Carrier:   carrier.NewGHNAdapter(carrier.GHNConfig{Mode: "mock"}),
@@ -776,11 +879,14 @@ func TestReview_GRPCMapsCarrierRejectedVsUnavailable(t *testing.T) {
 		}
 		svc := service.NewShippingService(repo, carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)), c), nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		srv := New(svc)
-		_, err := srv.CreateShipment(sellerCtx, &shippingv1.CreateShipmentRequest{
+		resp, err := srv.CreateShipment(sellerCtx, &shippingv1.CreateShipmentRequest{
 			OrderId: "ord-unavail-1", ShopId: "shop-1", CarrierCode: "ghn", WeightGrams: 500,
 		})
-		if status.Code(err) != codes.Unavailable {
-			t.Fatalf("expected Unavailable for transient carrier error, got %v", err)
+		if err != nil {
+			t.Fatalf("E18: expected queued response on transient carrier error, got err=%v", err)
+		}
+		if !resp.GetQueued() || resp.GetJobId() == "" || resp.GetShipment() != nil {
+			t.Fatalf("E18: expected queued=true with job_id and nil shipment, got %+v", resp)
 		}
 	})
 
@@ -818,8 +924,8 @@ func TestReview_GRPCMapsCarrierRejectedVsUnavailable(t *testing.T) {
 		_, err := srv.CreateReturnShipment(svcCtx, &shippingv1.CreateReturnShipmentRequest{
 			OrderId: "ord-ret-failed-grpc", ReturnRequestId: "rr-f2", ShopId: "shop-1", BuyerId: "buyer-1",
 			CarrierCode: "ghn", WeightGrams: 500,
-			FromAddress: &shippingv1.ShipmentAddress{ProvinceCode: "79", WardCode: "79001"},
-			ToAddress:   &shippingv1.ShipmentAddress{ProvinceCode: "01", WardCode: "01001"},
+			FromAddress: &shippingv1.ShipmentAddress{ProvinceCode: "79", WardCode: "26740"},
+			ToAddress:   &shippingv1.ShipmentAddress{ProvinceCode: "01", WardCode: "00070"},
 		})
 		if status.Code(err) != codes.FailedPrecondition {
 			t.Fatalf("expected FailedPrecondition when RETURN is failed, got %v", err)
@@ -837,8 +943,8 @@ func TestReview_GRPCMapsCarrierRejectedVsUnavailable(t *testing.T) {
 		resp, err := srv.CreateReturnShipment(svcCtx, &shippingv1.CreateReturnShipmentRequest{
 			OrderId: "ord-ret-returned-grpc", ReturnRequestId: "rr-r2", ShopId: "shop-1", BuyerId: "buyer-1",
 			CarrierCode: "ghn", WeightGrams: 500,
-			FromAddress: &shippingv1.ShipmentAddress{ProvinceCode: "79", WardCode: "79001"},
-			ToAddress:   &shippingv1.ShipmentAddress{ProvinceCode: "01", WardCode: "01001"},
+			FromAddress: &shippingv1.ShipmentAddress{ProvinceCode: "79", WardCode: "26740"},
+			ToAddress:   &shippingv1.ShipmentAddress{ProvinceCode: "01", WardCode: "00070"},
 		})
 		if err != nil || resp.GetAlreadyExisted() || resp.GetShipment().GetTrackingCode() == "GHN-RET-DONE-1" {
 			t.Fatalf("expected new RETURN after returned, got resp=%+v err=%v", resp, err)
@@ -906,8 +1012,8 @@ func TestShippingGRPC_W2B_ShopFreeshipSettingsAndOrderAccess(t *testing.T) {
 
 	// Baseline quote before freeship.
 	baseQ, err := srv.CalculateFee(buyerCtx, &shippingv1.CalculateFeeRequest{
-		ShopId: "shop-w2b-1", FromProvinceCode: "79", FromWardCode: "79001",
-		ToProvinceCode: "79", ToWardCode: "79001", WeightGrams: 1200,
+		ShopId: "shop-w2b-1", FromProvinceCode: "79", FromWardCode: "26740",
+		ToProvinceCode: "79", ToWardCode: "26740", WeightGrams: 1200,
 	})
 	if err != nil || len(baseQ.GetQuotes()) == 0 {
 		t.Fatalf("baseline CalculateFee: resp=%+v err=%v", baseQ, err)
@@ -1008,8 +1114,8 @@ func TestShippingGRPC_W2B_ShopFreeshipSettingsAndOrderAccess(t *testing.T) {
 
 	// 5. CalculateFee MUST NOT deduct shop freeship (returns full raw carrier fee).
 	afterQ, err := srv.CalculateFee(buyerCtx, &shippingv1.CalculateFeeRequest{
-		ShopId: "shop-w2b-1", FromProvinceCode: "79", FromWardCode: "79001",
-		ToProvinceCode: "79", ToWardCode: "79001", WeightGrams: 0, // uses default_weight_grams=1200
+		ShopId: "shop-w2b-1", FromProvinceCode: "79", FromWardCode: "26740",
+		ToProvinceCode: "79", ToWardCode: "26740", WeightGrams: 0, // uses default_weight_grams=1200
 	})
 	if err != nil || len(afterQ.GetQuotes()) == 0 {
 		t.Fatalf("after freeship CalculateFee: resp=%+v err=%v", afterQ, err)

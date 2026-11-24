@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -26,9 +27,14 @@ type DeadLetterStore interface {
 	InsertDeadLetter(ctx context.Context, eventID, subject string, payload []byte, errMsg string, attempts int) error
 }
 
+const (
+	messageProcessTimeout = 25 * time.Second
+	dlqWriteTimeout       = 5 * time.Second
+)
+
 // DLQPublisher publishes poison messages to NEXUSMART_DLQ (subject dlq.<original_subject>).
 type DLQPublisher interface {
-	PublishDLQ(subject string, data []byte) error
+	PublishDLQ(ctx context.Context, subject string, data []byte) error
 }
 
 // Message abstracts *nats.Msg for clean unit testing of retry + DLQ routing.
@@ -55,17 +61,19 @@ type Consumer struct {
 	stream      string
 	maxAttempts uint64
 	logger      *slog.Logger
-	sub         *nats.Subscription
+	mu          sync.Mutex
+	stopping    bool
+	wg          sync.WaitGroup
 }
 
 type jsDLQPublisher struct {
 	js nats.JetStreamContext
 }
 
-func (p jsDLQPublisher) PublishDLQ(subject string, data []byte) error {
+func (p jsDLQPublisher) PublishDLQ(ctx context.Context, subject string, data []byte) error {
 	msg := nats.NewMsg(subject)
 	msg.Data = data
-	_, err := p.js.PublishMsg(msg)
+	_, err := p.js.PublishMsg(msg, nats.Context(ctx))
 	return err
 }
 
@@ -124,11 +132,15 @@ func NewTestableConsumer(
 
 // Start creates a durable JetStream queue subscription consuming all subjects on NEXUSMART.
 func (c *Consumer) Start(ctx context.Context) error {
-	sub, err := c.js.QueueSubscribe(
+	c.mu.Lock()
+	c.stopping = false
+	c.mu.Unlock()
+
+	_, err := c.js.QueueSubscribe(
 		"",
 		"notification-workers",
 		func(msg *nats.Msg) {
-			c.HandleMessage(ctx, natsMessageAdapter{msg: msg})
+			c.onMessage(ctx, natsMessageAdapter{msg: msg})
 		},
 		nats.BindStream(c.stream),
 		nats.Durable("notification-events-v1"),
@@ -137,24 +149,59 @@ func (c *Consumer) Start(ctx context.Context) error {
 		nats.MaxDeliver(int(c.maxAttempts)+1),
 	)
 	if err != nil {
+		_ = c.Close()
 		return fmt.Errorf("subscribe notification consumer on stream %s: %w", c.stream, err)
 	}
-	c.sub = sub
 	return nil
 }
 
-// Close drains the NATS subscription gracefully.
-func (c *Consumer) Close() error {
-	if c.sub != nil {
-		return c.sub.Drain()
+func (c *Consumer) isStopping() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stopping
+}
+
+func (c *Consumer) isShuttingDown(ctx context.Context) bool {
+	return c.isStopping() || errors.Is(ctx.Err(), context.Canceled)
+}
+
+func (c *Consumer) onMessage(ctx context.Context, msg Message) {
+	c.mu.Lock()
+	if c.stopping || errors.Is(ctx.Err(), context.Canceled) {
+		c.mu.Unlock()
+		// E1: Do NOT Ack or Nak while shutting down — AckWait redelivers cleanly after nc.Close().
+		return
 	}
+	c.wg.Add(1)
+	c.mu.Unlock()
+	defer c.wg.Done()
+	c.HandleMessage(ctx, msg)
+}
+
+// Close prevents new message callbacks from entering and waits for every in-flight message
+// handler to finish before returning (safe to call multiple times).
+// Intentionally does NOT call sub.Drain() or sub.Unsubscribe(): in nats.go v1.36, QueueSubscribe
+// marks library-created durable consumers with jsi.dc=true, so Drain/Unsubscribe deletes the
+// shared durable consumer on the server, disrupting peer replicas and replaying the stream on restart.
+// Closing nc in main detaches cleanly while preserving durables.
+func (c *Consumer) Close() error {
+	c.mu.Lock()
+	c.stopping = true
+	c.mu.Unlock()
+	c.wg.Wait()
 	return nil
 }
 
 // HandleMessage decodes, traces, processes idempotently, retries transient errors,
 // and routes poison/exhausted messages to NEXUSMART_DLQ + dead_letter_events.
 func (c *Consumer) HandleMessage(baseCtx context.Context, msg Message) {
-	ctx := baseCtx
+	if c.isShuttingDown(baseCtx) {
+		return
+	}
+
+	procCtx, cancel := context.WithTimeout(baseCtx, messageProcessTimeout)
+	defer cancel()
+
 	carrier := map[string]string{}
 	if tp := msg.Header("traceparent"); tp != "" {
 		carrier["traceparent"] = tp
@@ -162,7 +209,7 @@ func (c *Consumer) HandleMessage(baseCtx context.Context, msg Message) {
 	if ts := msg.Header("tracestate"); ts != "" {
 		carrier["tracestate"] = ts
 	}
-	ctx, span := telemetry.StartConsumerSpan(ctx, "notification", msg.Subject(), carrier)
+	ctx, span := telemetry.StartConsumerSpan(procCtx, "notification", msg.Subject(), carrier)
 	defer span.End()
 
 	delivered := msg.NumDelivered()
@@ -172,17 +219,29 @@ func (c *Consumer) HandleMessage(baseCtx context.Context, msg Message) {
 
 	var env service.Envelope
 	if err := json.Unmarshal(msg.Data(), &env); err != nil || strings.TrimSpace(env.EventID) == "" {
+		if c.isShuttingDown(baseCtx) {
+			return
+		}
 		errMsg := "malformed event envelope"
 		if err != nil {
 			errMsg = fmt.Sprintf("malformed event envelope: %v", err)
 		}
-		c.routeToDLQ(ctx, env.EventID, msg.Subject(), msg.Data(), errMsg, int(delivered))
-		_ = msg.Ack()
+		if c.routeToDLQ(ctx, env.EventID, msg.Subject(), msg.Data(), errMsg, int(delivered)) {
+			_ = msg.Ack()
+			return
+		}
+		if !c.isShuttingDown(baseCtx) {
+			_ = msg.NakWithDelay(time.Duration(delivered) * time.Second)
+		}
 		return
 	}
 
 	duplicate, err := c.processor.ProcessEvent(ctx, msg.Subject(), env)
 	if err != nil {
+		// E1: Never route to DLQ, Ack, or Nak when shutdown cancelled processing.
+		if c.isShuttingDown(baseCtx) {
+			return
+		}
 		c.logger.ErrorContext(ctx, "notification event processing failed",
 			slog.String("subject", msg.Subject()),
 			slog.String("event_id", env.EventID),
@@ -190,8 +249,13 @@ func (c *Consumer) HandleMessage(baseCtx context.Context, msg Message) {
 			slog.String("error", err.Error()),
 		)
 		if errors.Is(err, service.ErrMalformedPayload) || delivered >= c.maxAttempts {
-			c.routeToDLQ(ctx, env.EventID, msg.Subject(), msg.Data(), err.Error(), int(delivered))
-			_ = msg.Ack()
+			if c.routeToDLQ(ctx, env.EventID, msg.Subject(), msg.Data(), err.Error(), int(delivered)) {
+				_ = msg.Ack()
+				return
+			}
+			if !c.isShuttingDown(baseCtx) {
+				_ = msg.NakWithDelay(time.Duration(delivered) * time.Second)
+			}
 			return
 		}
 		_ = msg.NakWithDelay(time.Duration(delivered) * time.Second)
@@ -206,7 +270,9 @@ func (c *Consumer) HandleMessage(baseCtx context.Context, msg Message) {
 	_ = msg.Ack()
 }
 
-func (c *Consumer) routeToDLQ(ctx context.Context, eventID, subject string, raw []byte, errMsg string, attempts int) {
+// routeToDLQ persists the sanitized poison message to dead_letter_events and/or NEXUSMART_DLQ
+// using a detached bounded context. Returns true iff at least one durable DLQ sink succeeded.
+func (c *Consumer) routeToDLQ(ctx context.Context, eventID, subject string, raw []byte, errMsg string, attempts int) bool {
 	safeRaw := sanitizeDLQPayload(subject, raw)
 	c.logger.WarnContext(ctx, "routing poison message to DLQ",
 		slog.String("event_id", eventID),
@@ -215,17 +281,23 @@ func (c *Consumer) routeToDLQ(ctx context.Context, eventID, subject string, raw 
 		slog.String("error", errMsg),
 	)
 
+	dlqCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dlqWriteTimeout)
+	defer cancel()
+
+	saved := false
 	if c.dlqStore != nil {
-		if err := c.dlqStore.InsertDeadLetter(ctx, eventID, subject, safeRaw, errMsg, attempts); err != nil {
-			c.logger.ErrorContext(ctx, "failed to save dead_letter_events record",
+		if err := c.dlqStore.InsertDeadLetter(dlqCtx, eventID, subject, safeRaw, errMsg, attempts); err != nil {
+			c.logger.ErrorContext(dlqCtx, "failed to save dead_letter_events record",
 				slog.String("event_id", eventID),
 				slog.String("error", err.Error()),
 			)
+		} else {
+			saved = true
 		}
 	}
 
 	if c.dlqPub != nil {
-		dlqPayload, _ := json.Marshal(map[string]any{
+		dlqPayload, err := json.Marshal(map[string]any{
 			"event_id":         eventID,
 			"original_subject": subject,
 			"error":            errMsg,
@@ -233,14 +305,24 @@ func (c *Consumer) routeToDLQ(ctx context.Context, eventID, subject string, raw 
 			"failed_at":        time.Now().UTC().Format(time.RFC3339),
 			"original_payload": string(safeRaw),
 		})
+		if err != nil {
+			c.logger.ErrorContext(dlqCtx, "failed to marshal NEXUSMART_DLQ payload",
+				slog.String("event_id", eventID),
+				slog.String("error", err.Error()),
+			)
+			return saved
+		}
 		dlqSubject := "dlq." + subject
-		if err := c.dlqPub.PublishDLQ(dlqSubject, dlqPayload); err != nil {
-			c.logger.ErrorContext(ctx, "failed to publish to NEXUSMART_DLQ",
+		if err := c.dlqPub.PublishDLQ(dlqCtx, dlqSubject, dlqPayload); err != nil {
+			c.logger.ErrorContext(dlqCtx, "failed to publish to NEXUSMART_DLQ",
 				slog.String("dlq_subject", dlqSubject),
 				slog.String("error", err.Error()),
 			)
+		} else {
+			saved = true
 		}
 	}
+	return saved
 }
 
 var sensitivePayloadFields = map[string]struct{}{
@@ -251,7 +333,7 @@ var sensitivePayloadFields = map[string]struct{}{
 
 func isSensitiveSubject(subject string) bool {
 	switch strings.TrimSpace(subject) {
-	case "user.password_reset_requested", "user.registered", "user.shop_bank_account_otp":
+	case "user.password_reset_requested", "user.registered", "user.shop_bank_account_otp", "user.phone_otp_requested":
 		return true
 	default:
 		return false

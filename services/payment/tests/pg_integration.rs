@@ -21,10 +21,10 @@ use uuid::Uuid;
 use nexusmart_payment::auth::GrpcAuth;
 use nexusmart_payment::config::{Config, VietQrMode};
 use nexusmart_payment::domain::{
-    vn_today, CreatePaymentInput, CreateRefundInput, GetFeeConfigFilter, ListRefundsFilter,
-    ListSellerLedgerFilter, PaymentMethod, ReconciliationActionKind, ResolveReconciliationInput,
-    SellerLedgerAccountFilter, SetFeeConfigInput, SettleRefundInput, ShopAllocationInput,
-    SubmitRefundBankAccountInput,
+    vn_today, CodReconciliationRowInput, CreatePaymentInput, CreateRefundInput, GetFeeConfigFilter,
+    ImportCodReconciliationInput, ListRefundsFilter, ListSellerLedgerFilter, PaymentMethod,
+    ReconciliationActionKind, ResolveReconciliationInput, SellerLedgerAccountFilter,
+    SetFeeConfigInput, SettleRefundInput, ShopAllocationInput, SubmitRefundBankAccountInput,
 };
 use nexusmart_payment::error::PaymentError;
 use nexusmart_payment::grpc::pb::payment_service_server::PaymentService as PaymentServiceGrpcTrait;
@@ -2472,9 +2472,16 @@ async fn test_pg_full_money_cod_reconciliation_and_hold_protection_sql() {
     ));
 
     // Deliver ord_c1 -> parent stays pending while ord_c2 awaits collection
-    svc.process_order_delivered_event(&format!("evt-del-{}", Uuid::new_v4()), &ord_c1, "tr-cod")
-        .await
-        .unwrap();
+    svc.process_order_delivered_event_with_shipping(
+        &format!("evt-del-{}", Uuid::new_v4()),
+        &ord_c1,
+        None,
+        None,
+        None,
+        "tr-cod",
+    )
+    .await
+    .unwrap();
     let after_del1 = svc
         .get_payment(Some(p_cod.payment.id), None, None)
         .await
@@ -3268,6 +3275,1985 @@ async fn test_pg_p2_7_release_escrow_no_abba_deadlock_with_multi_alloc_update() 
         matches!(rel_res, Err(PaymentError::Conflict(_))),
         "release_escrow on held allocations must return clean Conflict (never 40P01 Database error), got: {rel_res:?}"
     );
+
+    db.cleanup().await;
+}
+
+// =============================================================================
+// 11. Wave 3b-1 (E20 / E20-bis): COD Carrier CSV Reconciliation, Concurrency,
+//     order.delivered Ordering, Bad-Row Isolation, Ledger Entry Counts & Pagination
+// =============================================================================
+
+#[tokio::test]
+async fn test_pg_w3b_e20_cod_reconciliation_lifecycle_race_and_list_runs() {
+    let Some(db) = TestDb::setup(
+        "test_pg_w3b_e20_cod_reconciliation_lifecycle_race_and_list_runs",
+        16,
+    )
+    .await
+    else {
+        return;
+    };
+    let svc = db.service();
+    let grpc = PaymentGrpcServer::new(svc.clone(), db.auth());
+    let today = vn_today(Utc::now());
+
+    let admin_tok = sign_test_jwt(
+        TEST_USER_SECRET,
+        json!({"sub": "admin-w3b", "role": "admin", "exp": Utc::now().timestamp() + 300}),
+    );
+
+    // -------------------------------------------------------------------------
+    // Scenario 1: Multi-shop COD payment + order.delivered persisting tracking
+    //             + order.completed unchanged + mixed CSV (matched, dup same-file
+    //             exact, dup same-file 1-VND off, missing_local, bad empty row)
+    //             + re-upload same file -> 0 new ledger entries, exact counts!
+    // -------------------------------------------------------------------------
+    let grp_ms = format!("grp-cod-ms-{}", Uuid::new_v4().simple());
+    let ord_a = format!("ord-cod-a-{}", Uuid::new_v4().simple());
+    let ord_b = format!("ord-cod-b-{}", Uuid::new_v4().simple());
+    let shop_a = format!("shop-cod-a-{}", Uuid::new_v4().simple());
+    let shop_b = format!("shop-cod-b-{}", Uuid::new_v4().simple());
+
+    // shop-A payable: 200_000 + 20_000 - 0 = 220_000 (commission 10_000)
+    // shop-B payable: 300_000 + 30_000 - 10_000 = 320_000 (commission 15_000)
+    let pwa_ms = svc
+        .create_payment(CreatePaymentInput {
+            order_group_id: grp_ms.clone(),
+            order_id: grp_ms.clone(),
+            user_id: "buyer-cod-ms".into(),
+            amount_vnd: 540_000,
+            method: PaymentMethod::Cod,
+            shop_allocations: vec![
+                ShopAllocationInput {
+                    order_id: Some(ord_a.clone()),
+                    shop_id: shop_a.clone(),
+                    subtotal_vnd: 200_000,
+                    commission_vnd: 10_000,
+                    shipping_fee_vnd: 20_000,
+                    platform_discount_vnd: 0,
+                },
+                ShopAllocationInput {
+                    order_id: Some(ord_b.clone()),
+                    shop_id: shop_b.clone(),
+                    subtotal_vnd: 300_000,
+                    commission_vnd: 15_000,
+                    shipping_fee_vnd: 30_000,
+                    platform_discount_vnd: 10_000,
+                },
+            ],
+            expires_at: None,
+            idempotency_key: Some(format!("checkout:{grp_ms}")),
+            supersede_previous: false,
+            trace_id: "tr-cod-ms".into(),
+        })
+        .await
+        .unwrap();
+
+    // Deliver ord_a (HELD) and deliver + complete ord_b (PENDING_RELEASE)
+    svc.process_order_delivered_event_with_shipping(
+        &format!("evt-del-a-{}", Uuid::new_v4()),
+        &ord_a,
+        Some("TRK-COD-A"),
+        Some("GHN"),
+        Some("NM-ORD-A"),
+        "tr-del-a",
+    )
+    .await
+    .unwrap();
+    svc.process_order_delivered_event_with_shipping(
+        &format!("evt-del-b-{}", Uuid::new_v4()),
+        &ord_b,
+        Some("TRK-COD-B"),
+        Some("ghn"),
+        Some("NM-ORD-B"),
+        "tr-del-b",
+    )
+    .await
+    .unwrap();
+    svc.process_order_completed_event(
+        &format!("evt-comp-b-{}", Uuid::new_v4()),
+        &ord_b,
+        "tr-comp-b",
+    )
+    .await
+    .unwrap();
+
+    let bal_b_before = svc.get_seller_balance(&shop_b).await.unwrap();
+    assert_eq!(bal_b_before.pending_vnd, 285_000);
+
+    // Import mixed CSV including:
+    // line 1: empty tracking_code (bad row — MUST NOT block lines 2..6!)
+    // line 2: TRK-COD-A exact 220_000 -> matched
+    // line 3: TRK-COD-B exact 320_000 -> matched
+    // line 4: TRK-COD-A dup exact 220_000 -> already_reconciled (E20-bis)
+    // line 5: TRK-COD-B dup 1 VND off 319_999 -> amount_mismatch + queue (E20-bis)
+    // line 6: TRK-UNKNOWN 99_000 -> missing_local + queue
+    // line 7: TRK-FAKE with order_code=ord_a (ord_a ALREADY has TRK-COD-A -> MUST NOT fallback!) -> missing_local
+    let csv_rows_1 = vec![
+        CodReconciliationRowInput {
+            line_number: 1,
+            tracking_code: "   ".into(),
+            cod_amount_vnd: 50_000,
+            delivered_at: "not-a-date".into(),
+            order_code: String::new(),
+        },
+        CodReconciliationRowInput {
+            line_number: 2,
+            tracking_code: "TRK-COD-A".into(),
+            cod_amount_vnd: 220_000,
+            delivered_at: "2026-11-24T08:00:00Z".into(),
+            order_code: String::new(),
+        },
+        CodReconciliationRowInput {
+            line_number: 3,
+            tracking_code: "TRK-COD-B".into(),
+            cod_amount_vnd: 320_000,
+            delivered_at: "2026-11-24T09:00:00Z".into(),
+            order_code: String::new(),
+        },
+        CodReconciliationRowInput {
+            line_number: 4,
+            tracking_code: "TRK-COD-A".into(),
+            cod_amount_vnd: 220_000,
+            delivered_at: "2026-11-24T08:00:00Z".into(),
+            order_code: String::new(),
+        },
+        CodReconciliationRowInput {
+            line_number: 5,
+            tracking_code: "TRK-COD-B".into(),
+            cod_amount_vnd: 319_999,
+            delivered_at: "2026-11-24T09:00:00Z".into(),
+            order_code: String::new(),
+        },
+        CodReconciliationRowInput {
+            line_number: 6,
+            tracking_code: "TRK-UNKNOWN".into(),
+            cod_amount_vnd: 99_000,
+            delivered_at: "2026-11-24T10:00:00Z".into(),
+            order_code: String::new(),
+        },
+        CodReconciliationRowInput {
+            line_number: 7,
+            tracking_code: "TRK-FAKE".into(),
+            cod_amount_vnd: 220_000,
+            delivered_at: "2026-11-24T10:00:00Z".into(),
+            order_code: ord_a.clone(),
+        },
+    ];
+
+    let rep1 = svc
+        .import_cod_reconciliation(ImportCodReconciliationInput {
+            carrier_code: "GHN".into(),
+            file_name: "ghn_batch_1.csv".into(),
+            file_sha256: "sha256-batch-1".into(),
+            run_date: today,
+            created_by: "admin-w3b".into(),
+            rows: csv_rows_1.clone(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(rep1.run.run_type, "cod_file");
+    assert_eq!(rep1.run.provider, "ghn");
+    assert_eq!(rep1.run.status, "completed");
+    assert_eq!(rep1.run.total_rows, 7);
+    assert_eq!(rep1.run.matched_count, 2);
+    assert_eq!(rep1.run.already_reconciled_count, 1);
+    assert_eq!(rep1.run.amount_mismatch_count, 1);
+    assert_eq!(rep1.run.missing_local_count, 3); // empty row + TRK-UNKNOWN + TRK-FAKE
+    assert_eq!(rep1.run.not_delivered_count, 0);
+    assert_eq!(rep1.run.total_matched_vnd, 540_000);
+    assert_eq!(rep1.items.len(), 7);
+    assert_eq!(rep1.items[0].classification, "missing_local");
+    assert_eq!(rep1.items[1].classification, "matched");
+    assert_eq!(rep1.items[2].classification, "matched");
+    assert_eq!(rep1.items[3].classification, "already_reconciled");
+    assert_eq!(rep1.items[4].classification, "amount_mismatch");
+    assert_eq!(rep1.items[5].classification, "missing_local");
+    assert_eq!(rep1.items[6].classification, "missing_local");
+
+    // Verify EXACT ledger transaction count for cod_reconcile == 2 (one per sub-order/shop)
+    let cod_recon_tx_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM ledger_transactions WHERE reference_type = 'cod_reconcile'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(cod_recon_tx_count, 2);
+
+    // Verify seller_pending for shop-B was NOT double-credited or prematurely released (E20)
+    let bal_b_after = svc.get_seller_balance(&shop_b).await.unwrap();
+    assert_eq!(bal_b_after.pending_vnd, 285_000);
+    assert_eq!(bal_b_after.available_vnd, 0);
+
+    // Verify ledger is strictly balanced and cod_receivable is cleared to 0
+    let sum1 = svc.get_ledger_summary().await.unwrap();
+    assert!(sum1.is_balanced);
+    assert_eq!(sum1.total_debits_vnd, sum1.total_credits_vnd);
+    let cod_recv_1 = sum1
+        .accounts
+        .iter()
+        .find(|a| a.account_id == "cod_receivable")
+        .unwrap()
+        .balance_vnd;
+    let gw_clr_1 = sum1
+        .accounts
+        .iter()
+        .find(|a| a.account_id == "gateway_clearing")
+        .unwrap()
+        .balance_vnd;
+    assert_eq!(cod_recv_1, 0);
+    assert_eq!(gw_clr_1, 540_000);
+
+    // Verify mismatch & missing rows entered reconciliation_queue with source_type = "cod_file"
+    let q_resp = grpc
+        .list_reconciliation_queue(grpc_req_with_token(
+            pb::ListReconciliationQueueRequest {
+                status: "pending".into(),
+                page: 1,
+                page_size: 50,
+            },
+            &admin_tok,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(q_resp.items.iter().any(|it| it.source_type == "cod_file"
+        && it.tracking_code == "TRK-COD-B"
+        && it.reason == "cod_amount_mismatch"));
+    assert!(q_resp.items.iter().any(|it| it.source_type == "cod_file"
+        && it.tracking_code == "TRK-UNKNOWN"
+        && it.reason == "cod_missing_local"));
+
+    // Money-safety guard: VietQR REFUND/ASSIGN must be rejected on cod_file queue items, while SUSPEND works
+    let cod_unknown_q_id = Uuid::parse_str(
+        &q_resp
+            .items
+            .iter()
+            .find(|it| it.source_type == "cod_file" && it.tracking_code == "TRK-UNKNOWN")
+            .unwrap()
+            .id,
+    )
+    .unwrap();
+    let refund_cod_q_err = svc
+        .resolve_reconciliation_item(ResolveReconciliationInput {
+            item_id: cod_unknown_q_id,
+            action: ReconciliationActionKind::Refund,
+            payment_id: Some(pwa_ms.payment.id),
+            note: "must reject".into(),
+            idempotency_key: format!("cod-q-ref-{}", Uuid::new_v4()),
+            trace_id: "tr-cod-q".into(),
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refund_cod_q_err, PaymentError::Conflict(_)),
+        "VietQR REFUND on cod_file queue row must fail with Conflict, got: {refund_cod_q_err:?}"
+    );
+    let susp_cod_q = svc
+        .resolve_reconciliation_item(ResolveReconciliationInput {
+            item_id: cod_unknown_q_id,
+            action: ReconciliationActionKind::Suspend,
+            payment_id: None,
+            note: "waiting for carrier confirmation".into(),
+            idempotency_key: format!("cod-q-susp-{}", Uuid::new_v4()),
+            trace_id: "tr-cod-q".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(susp_cod_q.item.resolution_status, "suspended");
+
+    // Re-uploading the EXACT SAME CSV file -> matched lines now `already_reconciled`, 0 new ledger txs!
+    let rep1_replay = svc
+        .import_cod_reconciliation(ImportCodReconciliationInput {
+            carrier_code: "ghn".into(),
+            file_name: "ghn_batch_1.csv".into(),
+            file_sha256: "sha256-batch-1".into(),
+            run_date: today,
+            created_by: "admin-w3b".into(),
+            rows: csv_rows_1,
+        })
+        .await
+        .unwrap();
+    assert_eq!(rep1_replay.run.matched_count, 0);
+    assert_eq!(rep1_replay.run.already_reconciled_count, 3); // lines 2, 3, 4
+    assert_eq!(rep1_replay.run.amount_mismatch_count, 1); // line 5
+    let cod_recon_tx_count_after_replay: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM ledger_transactions WHERE reference_type = 'cod_reconcile'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        cod_recon_tx_count_after_replay, 2,
+        "re-importing same file must post 0 new cod_reconcile ledger entries"
+    );
+
+    // -------------------------------------------------------------------------
+    // Scenario 2: order.delivered arrives AFTER CSV import (E20 + E20-bis)
+    //             + legacy order_code fallback when tracking_code is empty
+    // -------------------------------------------------------------------------
+    let ord_late = format!("ord-cod-late-{}", Uuid::new_v4().simple());
+    let shop_late = format!("shop-cod-late-{}", Uuid::new_v4().simple());
+    let _pwa_late = svc
+        .create_payment(CreatePaymentInput {
+            order_group_id: ord_late.clone(),
+            order_id: ord_late.clone(),
+            user_id: "buyer-late".into(),
+            amount_vnd: 180_000,
+            method: PaymentMethod::Cod,
+            shop_allocations: vec![ShopAllocationInput {
+                order_id: Some(ord_late.clone()),
+                shop_id: shop_late.clone(),
+                subtotal_vnd: 160_000,
+                commission_vnd: 8_000,
+                shipping_fee_vnd: 20_000,
+                platform_discount_vnd: 0,
+            }],
+            expires_at: None,
+            idempotency_key: Some(format!("checkout:{ord_late}")),
+            supersede_previous: false,
+            trace_id: "tr-late".into(),
+        })
+        .await
+        .unwrap();
+
+    // Legacy order delivered WITHOUT tracking_code (tests order_code fallback)
+    let ord_legacy = format!("ord-cod-leg-{}", Uuid::new_v4().simple());
+    let shop_legacy = format!("shop-cod-leg-{}", Uuid::new_v4().simple());
+    let _pwa_legacy = svc
+        .create_payment(CreatePaymentInput {
+            order_group_id: ord_legacy.clone(),
+            order_id: ord_legacy.clone(),
+            user_id: "buyer-leg".into(),
+            amount_vnd: 150_000,
+            method: PaymentMethod::Cod,
+            shop_allocations: vec![ShopAllocationInput {
+                order_id: Some(ord_legacy.clone()),
+                shop_id: shop_legacy.clone(),
+                subtotal_vnd: 130_000,
+                commission_vnd: 6_500,
+                shipping_fee_vnd: 20_000,
+                platform_discount_vnd: 0,
+            }],
+            expires_at: None,
+            idempotency_key: Some(format!("checkout:{ord_legacy}")),
+            supersede_previous: false,
+            trace_id: "tr-leg".into(),
+        })
+        .await
+        .unwrap();
+    svc.process_order_delivered_event_with_shipping(
+        &format!("evt-del-leg-{}", Uuid::new_v4()),
+        &ord_legacy,
+        None,
+        None,
+        None,
+        "tr-del-leg",
+    )
+    .await
+    .unwrap();
+
+    let late_file_rows = vec![
+        CodReconciliationRowInput {
+            line_number: 1,
+            tracking_code: "TRK-LATE-DELIVER".into(),
+            cod_amount_vnd: 180_000,
+            delivered_at: "2026-11-24T11:00:00Z".into(),
+            order_code: ord_late.clone(),
+        },
+        CodReconciliationRowInput {
+            line_number: 2,
+            tracking_code: "TRK-LEGACY-FB".into(),
+            cod_amount_vnd: 150_000,
+            delivered_at: "2026-11-24T11:00:00Z".into(),
+            order_code: ord_legacy.clone(),
+        },
+    ];
+
+    // Upload #1 BEFORE order.delivered arrives for ord_late -> ord_late is NOT_DELIVERED + queued,
+    // while ord_legacy matches via order_code fallback!
+    let rep_late_1 = svc
+        .import_cod_reconciliation(ImportCodReconciliationInput {
+            carrier_code: "ghn".into(),
+            file_name: "ghn_late.csv".into(),
+            file_sha256: "sha256-same-file-reupload".into(),
+            run_date: today,
+            created_by: "admin-w3b".into(),
+            rows: late_file_rows.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(rep_late_1.run.not_delivered_count, 1);
+    assert_eq!(rep_late_1.run.matched_count, 1);
+    assert_eq!(rep_late_1.items[0].classification, "not_delivered");
+    assert_eq!(rep_late_1.items[1].classification, "matched");
+
+    let late_q_status_before: String = sqlx::query_scalar(
+        "SELECT resolution_status FROM reconciliation_queue WHERE provider_tx_id = 'cod:ghn:TRK-LATE-DELIVER'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(late_q_status_before, "pending");
+
+    // Now order.delivered arrives AFTER file import! Queue entry must still exist (not lost).
+    svc.process_order_delivered_event_with_shipping(
+        &format!("evt-del-late-{}", Uuid::new_v4()),
+        &ord_late,
+        Some("TRK-LATE-DELIVER"),
+        Some("ghn"),
+        Some("NM-LATE-1"),
+        "tr-del-late",
+    )
+    .await
+    .unwrap();
+    let late_q_still_pending: String = sqlx::query_scalar(
+        "SELECT resolution_status FROM reconciliation_queue WHERE provider_tx_id = 'cod:ghn:TRK-LATE-DELIVER'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(late_q_still_pending, "pending");
+
+    // E20-bis: Re-upload the EXACT SAME file (identical file_sha256!) -> MUST NOT skip!
+    // ord_late now matches and auto-closes the old queue item; ord_legacy is already_reconciled.
+    let rep_late_2 = svc
+        .import_cod_reconciliation(ImportCodReconciliationInput {
+            carrier_code: "ghn".into(),
+            file_name: "ghn_late.csv".into(),
+            file_sha256: "sha256-same-file-reupload".into(),
+            run_date: today,
+            created_by: "admin-w3b".into(),
+            rows: late_file_rows,
+        })
+        .await
+        .unwrap();
+    assert_eq!(rep_late_2.run.matched_count, 1);
+    assert_eq!(rep_late_2.run.already_reconciled_count, 1);
+    assert_eq!(rep_late_2.run.not_delivered_count, 0);
+    assert_eq!(rep_late_2.items[0].classification, "matched");
+    assert_eq!(rep_late_2.items[1].classification, "already_reconciled");
+
+    let (late_q_status_after, late_q_resolved_at): (String, Option<DateTime<Utc>>) =
+        sqlx::query_as(
+            "SELECT resolution_status, resolved_at FROM reconciliation_queue WHERE provider_tx_id = 'cod:ghn:TRK-LATE-DELIVER'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        late_q_status_after, "assigned",
+        "E20-bis: old NOT_DELIVERED queue item must auto-close when row later matches"
+    );
+    assert!(late_q_resolved_at.is_some());
+
+    // -------------------------------------------------------------------------
+    // Scenario 3: 8x PARALLEL concurrent imports of the exact same COD file
+    //             -> strictly ONE ledger transaction posted, 7 already_reconciled!
+    // -------------------------------------------------------------------------
+    let ord_race = format!("ord-cod-race-{}", Uuid::new_v4().simple());
+    let shop_race = format!("shop-cod-race-{}", Uuid::new_v4().simple());
+    let pwa_race = svc
+        .create_payment(CreatePaymentInput {
+            order_group_id: ord_race.clone(),
+            order_id: ord_race.clone(),
+            user_id: "buyer-race".into(),
+            amount_vnd: 250_000,
+            method: PaymentMethod::Cod,
+            shop_allocations: vec![ShopAllocationInput {
+                order_id: Some(ord_race.clone()),
+                shop_id: shop_race.clone(),
+                subtotal_vnd: 220_000,
+                commission_vnd: 11_000,
+                shipping_fee_vnd: 30_000,
+                platform_discount_vnd: 0,
+            }],
+            expires_at: None,
+            idempotency_key: Some(format!("checkout:{ord_race}")),
+            supersede_previous: false,
+            trace_id: "tr-race".into(),
+        })
+        .await
+        .unwrap();
+    svc.process_order_delivered_event_with_shipping(
+        &format!("evt-del-race-{}", Uuid::new_v4()),
+        &ord_race,
+        Some("TRK-RACE-PARALLEL"),
+        Some("ghtk"),
+        None,
+        "tr-del-race",
+    )
+    .await
+    .unwrap();
+
+    let n_parallel = 8usize;
+    let barrier = Arc::new(Barrier::new(n_parallel));
+    let mut handles = Vec::with_capacity(n_parallel);
+    for worker_idx in 0..n_parallel {
+        let svc_c = svc.clone();
+        let bar_c = barrier.clone();
+        handles.push(tokio::spawn(async move {
+            bar_c.wait().await;
+            svc_c
+                .import_cod_reconciliation(ImportCodReconciliationInput {
+                    carrier_code: "ghtk".into(),
+                    file_name: format!("ghtk_race_{worker_idx}.csv"),
+                    file_sha256: "sha256-race".into(),
+                    run_date: today,
+                    created_by: "admin-race".into(),
+                    rows: vec![CodReconciliationRowInput {
+                        line_number: 1,
+                        tracking_code: "TRK-RACE-PARALLEL".into(),
+                        cod_amount_vnd: 250_000,
+                        delivered_at: "2026-11-24T12:00:00Z".into(),
+                        order_code: String::new(),
+                    }],
+                })
+                .await
+        }));
+    }
+
+    let mut total_matched_parallel = 0_i32;
+    let mut total_already_parallel = 0_i32;
+    for h in handles {
+        let rep = h.await.unwrap().expect("parallel import must succeed");
+        total_matched_parallel += rep.run.matched_count;
+        total_already_parallel += rep.run.already_reconciled_count;
+    }
+    assert_eq!(
+        total_matched_parallel, 1,
+        "parallel imports of same COD file must match exactly ONCE"
+    );
+    assert_eq!(
+        total_already_parallel,
+        (n_parallel - 1) as i32,
+        "remaining parallel imports must report already_reconciled"
+    );
+
+    let race_ledger_key = format!(
+        "cod-reconcile:{}:{ord_race}:{shop_race}",
+        pwa_race.payment.id
+    );
+    let race_tx_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM ledger_transactions WHERE idempotency_key = $1",
+    )
+    .bind(&race_ledger_key)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(race_tx_count, 1);
+
+    // Total cod_reconcile ledger transactions across ALL scenarios:
+    // ord_a + ord_b + ord_legacy + ord_late + ord_race = 5 strictly!
+    let total_cod_txs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM ledger_transactions WHERE reference_type = 'cod_reconcile'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(total_cod_txs, 5);
+
+    // Final ledger balance check across the entire schema
+    let final_summary = svc.get_ledger_summary().await.unwrap();
+    assert!(final_summary.is_balanced);
+    assert_eq!(
+        final_summary.total_debits_vnd,
+        final_summary.total_credits_vnd
+    );
+    let final_cod_recv = final_summary
+        .accounts
+        .iter()
+        .find(|a| a.account_id == "cod_receivable")
+        .unwrap()
+        .balance_vnd;
+    assert_eq!(final_cod_recv, 0);
+
+    // -------------------------------------------------------------------------
+    // Scenario 4: ListReconciliationRuns pagination & run_type filtering via gRPC
+    // -------------------------------------------------------------------------
+    let _vietqr_run = svc.run_reconciliation(today).await.unwrap();
+
+    // All runs paginated (we have 12 cod_file runs + 1 vietqr run = 13 total)
+    let page1 = grpc
+        .list_reconciliation_runs(grpc_req_with_token(
+            pb::ListReconciliationRunsRequest {
+                run_type: String::new(),
+                page: 1,
+                page_size: 5,
+            },
+            &admin_tok,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(page1.total, 13);
+    assert_eq!(page1.runs.len(), 5);
+
+    let page2 = grpc
+        .list_reconciliation_runs(grpc_req_with_token(
+            pb::ListReconciliationRunsRequest {
+                run_type: String::new(),
+                page: 2,
+                page_size: 5,
+            },
+            &admin_tok,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(page2.total, 13);
+    assert_eq!(page2.runs.len(), 5);
+
+    let page3 = grpc
+        .list_reconciliation_runs(grpc_req_with_token(
+            pb::ListReconciliationRunsRequest {
+                run_type: String::new(),
+                page: 3,
+                page_size: 5,
+            },
+            &admin_tok,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(page3.total, 13);
+    assert_eq!(page3.runs.len(), 3);
+
+    // Verify no duplicate run_ids across pages
+    let mut seen_ids = std::collections::HashSet::new();
+    for r in page1
+        .runs
+        .iter()
+        .chain(page2.runs.iter())
+        .chain(page3.runs.iter())
+    {
+        assert!(
+            seen_ids.insert(r.run_id.clone()),
+            "duplicate run_id across pages"
+        );
+    }
+    assert_eq!(seen_ids.len(), 13);
+
+    // Filtered by run_type = "vietqr"
+    let vietqr_only = grpc
+        .list_reconciliation_runs(grpc_req_with_token(
+            pb::ListReconciliationRunsRequest {
+                run_type: "vietqr".into(),
+                page: 1,
+                page_size: 10,
+            },
+            &admin_tok,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(vietqr_only.total, 1);
+    assert_eq!(vietqr_only.runs.len(), 1);
+    assert_eq!(vietqr_only.runs[0].run_type, "vietqr");
+
+    // Filtered by run_type = "cod_file"
+    let cod_only = grpc
+        .list_reconciliation_runs(grpc_req_with_token(
+            pb::ListReconciliationRunsRequest {
+                run_type: "cod_file".into(),
+                page: 1,
+                page_size: 50,
+            },
+            &admin_tok,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(cod_only.total, 12);
+    assert_eq!(cod_only.runs.len(), 12);
+    assert!(cod_only.runs.iter().all(|r| r.run_type == "cod_file"));
+
+    // Verify gRPC ImportCodReconciliation returns populated run & items fields
+    let grpc_imp = grpc
+        .import_cod_reconciliation(grpc_req_with_token(
+            pb::ImportCodReconciliationRequest {
+                carrier_code: "ghn".into(),
+                file_name: "grpc_replay.csv".into(),
+                file_sha256: "sha-grpc".into(),
+                rows: vec![pb::CodReconciliationRow {
+                    line_number: 1,
+                    tracking_code: "TRK-COD-A".into(),
+                    cod_amount_vnd: 220_000,
+                    delivered_at: "2026-11-24T08:00:00Z".into(),
+                    order_code: String::new(),
+                }],
+                run_date: today.format("%Y-%m-%d").to_string(),
+            },
+            &admin_tok,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let run_pb = grpc_imp.run.expect("run summary");
+    assert_eq!(run_pb.run_type, "cod_file");
+    assert_eq!(run_pb.provider, "ghn");
+    assert_eq!(run_pb.file_name, "grpc_replay.csv");
+    assert_eq!(run_pb.created_by, "admin-w3b");
+    assert_eq!(run_pb.already_reconciled_count, 1);
+    assert_eq!(grpc_imp.items.len(), 1);
+    assert_eq!(
+        grpc_imp.items[0].status,
+        pb::ReconciliationStatus::AlreadyReconciled as i32
+    );
+    assert_eq!(grpc_imp.items[0].payment_id, pwa_ms.payment.id.to_string());
+    assert_eq!(grpc_imp.items[0].tracking_code, "TRK-COD-A");
+    assert_eq!(grpc_imp.items[0].order_id, ord_a);
+    assert_eq!(grpc_imp.items[0].line_number, 1);
+
+    db.cleanup().await;
+}
+
+// =============================================================================
+// 12. Wave 3b-1 Review Fixes (4 items):
+//     (1) cod_carrier_mismatch on tracking_code & order_code paths (empty carrier still matches)
+//     (2) AlreadyReconciled never closes cod_amount_mismatch across 4 identical re-uploads
+//     (3) Dropping/cancelling import_cod_reconciliation future mid-run still completes the run
+// =============================================================================
+
+#[tokio::test]
+async fn test_pg_w3b_r2_cod_carrier_mismatch_queue_persist_and_rpc_cancel() {
+    let Some(db) = TestDb::setup(
+        "test_pg_w3b_r2_cod_carrier_mismatch_queue_persist_and_rpc_cancel",
+        16,
+    )
+    .await
+    else {
+        return;
+    };
+    let svc = db.service();
+    let today = vn_today(Utc::now());
+
+    // -------------------------------------------------------------------------
+    // (1) Carrier mismatch: tracking_code path + order_code fallback path,
+    //     while empty allocation carrier_code still matches cleanly.
+    // -------------------------------------------------------------------------
+    let ord_cm_track = format!("ord-cm-trk-{}", Uuid::new_v4().simple());
+    let shop_cm_track = format!("shop-cm-trk-{}", Uuid::new_v4().simple());
+    let _p1 = svc
+        .create_payment(CreatePaymentInput {
+            order_group_id: ord_cm_track.clone(),
+            order_id: ord_cm_track.clone(),
+            user_id: "buyer-cm-1".into(),
+            amount_vnd: 210_000,
+            method: PaymentMethod::Cod,
+            shop_allocations: vec![ShopAllocationInput {
+                order_id: Some(ord_cm_track.clone()),
+                shop_id: shop_cm_track.clone(),
+                subtotal_vnd: 190_000,
+                commission_vnd: 9_500,
+                shipping_fee_vnd: 20_000,
+                platform_discount_vnd: 0,
+            }],
+            expires_at: None,
+            idempotency_key: Some(format!("checkout:{ord_cm_track}")),
+            supersede_previous: false,
+            trace_id: "tr-cm-1".into(),
+        })
+        .await
+        .unwrap();
+    svc.process_order_delivered_event_with_shipping(
+        &format!("evt-cm-1-{}", Uuid::new_v4()),
+        &ord_cm_track,
+        Some("TRK-CM-GHN"),
+        Some("ghn"),
+        Some("NM-CM-1"),
+        "tr-cm-1",
+    )
+    .await
+    .unwrap();
+
+    // Order with carrier_code = "ghn" but empty tracking_code -> order_code fallback must ALSO reject wrong carrier!
+    let ord_cm_fb = format!("ord-cm-fb-{}", Uuid::new_v4().simple());
+    let shop_cm_fb = format!("shop-cm-fb-{}", Uuid::new_v4().simple());
+    let _p2 = svc
+        .create_payment(CreatePaymentInput {
+            order_group_id: ord_cm_fb.clone(),
+            order_id: ord_cm_fb.clone(),
+            user_id: "buyer-cm-2".into(),
+            amount_vnd: 170_000,
+            method: PaymentMethod::Cod,
+            shop_allocations: vec![ShopAllocationInput {
+                order_id: Some(ord_cm_fb.clone()),
+                shop_id: shop_cm_fb.clone(),
+                subtotal_vnd: 150_000,
+                commission_vnd: 7_500,
+                shipping_fee_vnd: 20_000,
+                platform_discount_vnd: 0,
+            }],
+            expires_at: None,
+            idempotency_key: Some(format!("checkout:{ord_cm_fb}")),
+            supersede_previous: false,
+            trace_id: "tr-cm-2".into(),
+        })
+        .await
+        .unwrap();
+    svc.process_order_delivered_event_with_shipping(
+        &format!("evt-cm-2-{}", Uuid::new_v4()),
+        &ord_cm_fb,
+        None,
+        Some("ghn"),
+        Some("NM-CM-2"),
+        "tr-cm-2",
+    )
+    .await
+    .unwrap();
+
+    // Order with empty carrier_code -> must still match any carrier file as before
+    let ord_no_car = format!("ord-nocar-{}", Uuid::new_v4().simple());
+    let shop_no_car = format!("shop-nocar-{}", Uuid::new_v4().simple());
+    let _p3 = svc
+        .create_payment(CreatePaymentInput {
+            order_group_id: ord_no_car.clone(),
+            order_id: ord_no_car.clone(),
+            user_id: "buyer-cm-3".into(),
+            amount_vnd: 130_000,
+            method: PaymentMethod::Cod,
+            shop_allocations: vec![ShopAllocationInput {
+                order_id: Some(ord_no_car.clone()),
+                shop_id: shop_no_car.clone(),
+                subtotal_vnd: 110_000,
+                commission_vnd: 5_500,
+                shipping_fee_vnd: 20_000,
+                platform_discount_vnd: 0,
+            }],
+            expires_at: None,
+            idempotency_key: Some(format!("checkout:{ord_no_car}")),
+            supersede_previous: false,
+            trace_id: "tr-cm-3".into(),
+        })
+        .await
+        .unwrap();
+    svc.process_order_delivered_event_with_shipping(
+        &format!("evt-cm-3-{}", Uuid::new_v4()),
+        &ord_no_car,
+        Some("TRK-NO-CARRIER"),
+        None,
+        None,
+        "tr-cm-3",
+    )
+    .await
+    .unwrap();
+
+    // Import under WRONG carrier "ghtk" for GHN orders + empty-carrier order
+    let rep_cm = svc
+        .import_cod_reconciliation(ImportCodReconciliationInput {
+            carrier_code: "ghtk".into(),
+            file_name: "ghtk_wrong_carrier.csv".into(),
+            file_sha256: "sha-cm-1".into(),
+            run_date: today,
+            created_by: "admin-r2".into(),
+            rows: vec![
+                CodReconciliationRowInput {
+                    line_number: 1,
+                    tracking_code: "TRK-CM-GHN".into(),
+                    cod_amount_vnd: 210_000,
+                    delivered_at: "2026-11-24T08:00:00Z".into(),
+                    order_code: String::new(),
+                },
+                CodReconciliationRowInput {
+                    line_number: 2,
+                    tracking_code: "TRK-CM-FB-NEW".into(),
+                    cod_amount_vnd: 170_000,
+                    delivered_at: "2026-11-24T08:00:00Z".into(),
+                    order_code: "NM-CM-2".into(),
+                },
+                CodReconciliationRowInput {
+                    line_number: 3,
+                    tracking_code: "TRK-NO-CARRIER".into(),
+                    cod_amount_vnd: 130_000,
+                    delivered_at: "2026-11-24T08:00:00Z".into(),
+                    order_code: String::new(),
+                },
+            ],
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        rep_cm.run.matched_count, 1,
+        "only empty-carrier allocation should match"
+    );
+    assert_eq!(
+        rep_cm.run.missing_local_count, 2,
+        "both wrong-carrier rows must classify missing_local"
+    );
+    assert_eq!(rep_cm.items[0].classification, "missing_local");
+    let d0 = rep_cm.items[0].details.as_deref().unwrap_or("");
+    assert!(
+        d0.contains("ghn") && d0.contains("ghtk"),
+        "tracking_code carrier mismatch details must mention both carriers, got: {d0}"
+    );
+    assert_eq!(rep_cm.items[1].classification, "missing_local");
+    let d1 = rep_cm.items[1].details.as_deref().unwrap_or("");
+    assert!(
+        d1.contains("ghn") && d1.contains("ghtk"),
+        "order_code fallback carrier mismatch details must mention both carriers, got: {d1}"
+    );
+    assert_eq!(rep_cm.items[2].classification, "matched");
+
+    // Verify both carrier-mismatch items entered reconciliation_queue with reason = 'cod_carrier_mismatch'
+    let cm_reasons: Vec<(String, String, String)> = sqlx::query_as(
+        r#"
+        SELECT provider_tx_id, reason, resolution_status
+        FROM reconciliation_queue
+        WHERE provider_tx_id IN ('cod:ghtk:TRK-CM-GHN', 'cod:ghtk:TRK-CM-FB-NEW')
+        ORDER BY provider_tx_id ASC
+        "#,
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(cm_reasons.len(), 2);
+    assert_eq!(
+        cm_reasons[0],
+        (
+            "cod:ghtk:TRK-CM-FB-NEW".to_string(),
+            "cod_carrier_mismatch".to_string(),
+            "pending".to_string()
+        )
+    );
+    assert_eq!(
+        cm_reasons[1],
+        (
+            "cod:ghtk:TRK-CM-GHN".to_string(),
+            "cod_carrier_mismatch".to_string(),
+            "pending".to_string()
+        )
+    );
+
+    // Confirm zero cod_reconcile ledger entries posted for the two GHN allocations
+    let cm_ledger_cnt: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM ledger_transactions WHERE reference_type = 'cod_reconcile'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        cm_ledger_cnt, 1,
+        "only ord_no_car should have posted a cod_reconcile entry"
+    );
+
+    // -------------------------------------------------------------------------
+    // (2) Re-uploading same file 4 times (1 exact row + 1 mismatched row for
+    //     the SAME tracking_code): cod_amount_mismatch MUST stay `pending` on
+    //     all 4 uploads, with strictly 1 ledger transaction!
+    // -------------------------------------------------------------------------
+    let ord_m4 = format!("ord-m4-{}", Uuid::new_v4().simple());
+    let shop_m4 = format!("shop-m4-{}", Uuid::new_v4().simple());
+    let p_m4 = svc
+        .create_payment(CreatePaymentInput {
+            order_group_id: ord_m4.clone(),
+            order_id: ord_m4.clone(),
+            user_id: "buyer-m4".into(),
+            amount_vnd: 250_000,
+            method: PaymentMethod::Cod,
+            shop_allocations: vec![ShopAllocationInput {
+                order_id: Some(ord_m4.clone()),
+                shop_id: shop_m4.clone(),
+                subtotal_vnd: 230_000,
+                commission_vnd: 11_500,
+                shipping_fee_vnd: 20_000,
+                platform_discount_vnd: 0,
+            }],
+            expires_at: None,
+            idempotency_key: Some(format!("checkout:{ord_m4}")),
+            supersede_previous: false,
+            trace_id: "tr-m4".into(),
+        })
+        .await
+        .unwrap();
+    svc.process_order_delivered_event_with_shipping(
+        &format!("evt-m4-{}", Uuid::new_v4()),
+        &ord_m4,
+        Some("TRK-MISMATCH-4X"),
+        Some("ghn"),
+        None,
+        "tr-m4",
+    )
+    .await
+    .unwrap();
+
+    let rows_4x = vec![
+        CodReconciliationRowInput {
+            line_number: 1,
+            tracking_code: "TRK-MISMATCH-4X".into(),
+            cod_amount_vnd: 250_000,
+            delivered_at: "2026-11-24T09:00:00Z".into(),
+            order_code: String::new(),
+        },
+        CodReconciliationRowInput {
+            line_number: 2,
+            tracking_code: "TRK-MISMATCH-4X".into(),
+            cod_amount_vnd: 249_000,
+            delivered_at: "2026-11-24T09:00:00Z".into(),
+            order_code: String::new(),
+        },
+    ];
+
+    for upload_no in 1..=4 {
+        let rep = svc
+            .import_cod_reconciliation(ImportCodReconciliationInput {
+                carrier_code: "ghn".into(),
+                file_name: "ghn_mixed_4x.csv".into(),
+                file_sha256: "sha-4x".into(),
+                run_date: today,
+                created_by: "admin-r2".into(),
+                rows: rows_4x.clone(),
+            })
+            .await
+            .unwrap();
+        if upload_no == 1 {
+            assert_eq!(rep.run.matched_count, 1);
+            assert_eq!(rep.run.already_reconciled_count, 0);
+        } else {
+            assert_eq!(rep.run.matched_count, 0, "upload {upload_no}");
+            assert_eq!(rep.run.already_reconciled_count, 1, "upload {upload_no}");
+        }
+        assert_eq!(rep.run.amount_mismatch_count, 1, "upload {upload_no}");
+
+        let pending_mismatch_cnt: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)::BIGINT
+            FROM reconciliation_queue
+            WHERE source_type = 'cod_file'
+              AND tracking_code = 'TRK-MISMATCH-4X'
+              AND reason = 'cod_amount_mismatch'
+              AND resolution_status = 'pending'
+            "#,
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            pending_mismatch_cnt, 1,
+            "upload {upload_no}: cod_amount_mismatch queue row MUST remain pending and never be auto-closed by AlreadyReconciled"
+        );
+    }
+
+    let m4_key = format!("cod-reconcile:{}:{ord_m4}:{shop_m4}", p_m4.payment.id);
+    let m4_tx_cnt: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM ledger_transactions WHERE idempotency_key = $1",
+    )
+    .bind(&m4_key)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(m4_tx_cnt, 1);
+
+    // -------------------------------------------------------------------------
+    // (3) Caller drops/cancels import_cod_reconciliation future mid-run:
+    //     spawned task MUST continue processing all rows and mark run `completed`!
+    // -------------------------------------------------------------------------
+    let ord_d1 = format!("ord-drop-1-{}", Uuid::new_v4().simple());
+    let ord_d2 = format!("ord-drop-2-{}", Uuid::new_v4().simple());
+    let shop_d = format!("shop-drop-{}", Uuid::new_v4().simple());
+    for (oid, trk, amt) in [
+        (&ord_d1, "TRK-DROP-1", 190_000_i64),
+        (&ord_d2, "TRK-DROP-2", 240_000_i64),
+    ] {
+        svc.create_payment(CreatePaymentInput {
+            order_group_id: oid.clone(),
+            order_id: oid.clone(),
+            user_id: "buyer-drop".into(),
+            amount_vnd: amt,
+            method: PaymentMethod::Cod,
+            shop_allocations: vec![ShopAllocationInput {
+                order_id: Some(oid.clone()),
+                shop_id: shop_d.clone(),
+                subtotal_vnd: amt - 20_000,
+                commission_vnd: 5_000,
+                shipping_fee_vnd: 20_000,
+                platform_discount_vnd: 0,
+            }],
+            expires_at: None,
+            idempotency_key: Some(format!("checkout:{oid}")),
+            supersede_previous: false,
+            trace_id: "tr-drop".into(),
+        })
+        .await
+        .unwrap();
+        svc.process_order_delivered_event_with_shipping(
+            &format!("evt-drop-{}", Uuid::new_v4()),
+            oid,
+            Some(trk),
+            Some("ghn"),
+            None,
+            "tr-drop",
+        )
+        .await
+        .unwrap();
+    }
+
+    // Hold a FOR UPDATE lock on ord_d1's allocation so the import pauses deterministically after creating the run.
+    let mut tx_hold = db.pool.begin().await.unwrap();
+    let blocker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *tx_hold)
+        .await
+        .unwrap();
+    let _: Uuid = sqlx::query_scalar(
+        "SELECT id FROM payment_shop_allocations WHERE order_id = $1 FOR UPDATE",
+    )
+    .bind(&ord_d1)
+    .fetch_one(&mut *tx_hold)
+    .await
+    .unwrap();
+
+    let svc_drop = svc.clone();
+    let cancel_file = format!("ghn_cancel_{}.csv", Uuid::new_v4().simple());
+    let cancel_file_q = cancel_file.clone();
+    let caller_handle = tokio::spawn(async move {
+        svc_drop
+            .import_cod_reconciliation(ImportCodReconciliationInput {
+                carrier_code: "ghn".into(),
+                file_name: cancel_file,
+                file_sha256: "sha-cancel".into(),
+                run_date: today,
+                created_by: "admin-cancel".into(),
+                rows: vec![
+                    CodReconciliationRowInput {
+                        line_number: 1,
+                        tracking_code: "TRK-DROP-1".into(),
+                        cod_amount_vnd: 190_000,
+                        delivered_at: "2026-11-24T10:00:00Z".into(),
+                        order_code: String::new(),
+                    },
+                    CodReconciliationRowInput {
+                        line_number: 2,
+                        tracking_code: "TRK-DROP-2".into(),
+                        cod_amount_vnd: 240_000,
+                        delivered_at: "2026-11-24T10:00:00Z".into(),
+                        order_code: String::new(),
+                    },
+                ],
+            })
+            .await
+    });
+
+    // Wait until the import's row-1 query is deterministically blocked on `tx_hold`.
+    wait_for_blocked_by_pid(&db.pool, blocker_pid, "payment_shop_allocations", 1).await;
+
+    // Simulate gRPC client disconnect / gateway timeout by aborting (dropping) the caller future!
+    caller_handle.abort();
+    let _ = caller_handle.await;
+
+    // Release the lock: the detached background task must still finish BOTH rows and mark the run `completed`.
+    tx_hold.rollback().await.unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let final_run: (String, i32, i64) = loop {
+        let row: Option<(String, i32, i64)> = sqlx::query_as(
+            r#"
+            SELECT status, matched_count, total_matched_vnd
+            FROM reconciliation_runs
+            WHERE file_name = $1
+            LIMIT 1
+            "#,
+        )
+        .bind(&cancel_file_q)
+        .fetch_optional(&db.pool)
+        .await
+        .unwrap();
+        if let Some((st, matched, vnd)) = row.as_ref() {
+            if st == "completed" {
+                break (st.clone(), *matched, *vnd);
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("run stuck after caller future was dropped! last observed={row:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+
+    assert_eq!(
+        final_run,
+        ("completed".to_string(), 2, 430_000),
+        "detached COD reconciliation run must complete both rows even after caller disconnects"
+    );
+
+    let sum = svc.get_ledger_summary().await.unwrap();
+    assert!(sum.is_balanced);
+    assert_eq!(sum.total_debits_vnd, sum.total_credits_vnd);
+
+    db.cleanup().await;
+}
+
+// =============================================================================
+// 13. Wave 3b-1 Independent Review Fixes (P1 + P2 + P3):
+//     (1a) [mismatch, match] same file keeps current-run mismatch pending;
+//          previous-file mismatch auto-closes on later-file match
+//     (1b) wrong-carrier file then right-carrier file keeps cod_carrier_mismatch pending
+//     (2)  late order.delivered after full COD refund populates tracking metadata with 0 extra collect tx
+//     (3)  stale running cod_file run > 10m -> failed + late task completion does not overwrite to completed
+//     (4)  two different mismatch amounts for same tracking_code preserved + idempotent replay + legacy key
+// =============================================================================
+
+#[tokio::test]
+async fn test_pg_w3b_r3_indep_review_cod_queue_refunded_stale_and_multi_mismatch() {
+    let Some(db) = TestDb::setup(
+        "test_pg_w3b_r3_indep_review_cod_queue_refunded_stale_and_multi_mismatch",
+        16,
+    )
+    .await
+    else {
+        return;
+    };
+    let svc = db.service();
+    let today = vn_today(Utc::now());
+
+    // Helper to create & deliver a single-shop COD order
+    let create_and_deliver_cod =
+        |oid: String, shop: String, amt: i64, trk: &'static str, carrier: &'static str| {
+            let svc_c = svc.clone();
+            async move {
+                let pwa = svc_c
+                    .create_payment(CreatePaymentInput {
+                        order_group_id: oid.clone(),
+                        order_id: oid.clone(),
+                        user_id: format!("buyer-{oid}"),
+                        amount_vnd: amt,
+                        method: PaymentMethod::Cod,
+                        shop_allocations: vec![ShopAllocationInput {
+                            order_id: Some(oid.clone()),
+                            shop_id: shop,
+                            subtotal_vnd: amt - 20_000,
+                            commission_vnd: 5_000,
+                            shipping_fee_vnd: 20_000,
+                            platform_discount_vnd: 0,
+                        }],
+                        expires_at: None,
+                        idempotency_key: Some(format!("checkout:{oid}")),
+                        supersede_previous: false,
+                        trace_id: format!("tr-{oid}"),
+                    })
+                    .await
+                    .unwrap();
+                svc_c
+                    .process_order_delivered_event_with_shipping(
+                        &format!("evt-del-{}", Uuid::new_v4()),
+                        &oid,
+                        Some(trk),
+                        Some(carrier),
+                        Some(&format!("NM-{trk}")),
+                        "tr-del",
+                    )
+                    .await
+                    .unwrap();
+                pwa
+            }
+        };
+
+    // -------------------------------------------------------------------------
+    // (1a) [mismatch, match] in the SAME file: Line 1 mismatch MUST stay pending!
+    // -------------------------------------------------------------------------
+    let ord_sf = format!("ord-sf-{}", Uuid::new_v4().simple());
+    create_and_deliver_cod(ord_sf.clone(), "shop-sf".into(), 200_000, "TRK-SF-1", "ghn").await;
+
+    let rep_sf = svc
+        .import_cod_reconciliation(ImportCodReconciliationInput {
+            carrier_code: "ghn".into(),
+            file_name: "same_file_mm_then_match.csv".into(),
+            file_sha256: "sha-sf-1".into(),
+            run_date: today,
+            created_by: "admin-r3".into(),
+            rows: vec![
+                CodReconciliationRowInput {
+                    line_number: 1,
+                    tracking_code: "TRK-SF-1".into(),
+                    cod_amount_vnd: 190_000,
+                    delivered_at: "2026-11-24T08:00:00Z".into(),
+                    order_code: String::new(),
+                },
+                CodReconciliationRowInput {
+                    line_number: 2,
+                    tracking_code: "TRK-SF-1".into(),
+                    cod_amount_vnd: 200_000,
+                    delivered_at: "2026-11-24T08:00:00Z".into(),
+                    order_code: String::new(),
+                },
+            ],
+        })
+        .await
+        .unwrap();
+    assert_eq!(rep_sf.run.amount_mismatch_count, 1);
+    assert_eq!(rep_sf.run.matched_count, 1);
+
+    let sf_pending_mm: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)::BIGINT
+        FROM reconciliation_queue
+        WHERE source_type = 'cod_file'
+          AND tracking_code = 'TRK-SF-1'
+          AND reason = 'cod_amount_mismatch'
+          AND resolution_status = 'pending'
+        "#,
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        sf_pending_mm, 1,
+        "(1a) Line 1 mismatch created in the SAME run must stay pending after Line 2 matches"
+    );
+
+    // -------------------------------------------------------------------------
+    // (1a-bis) Mismatch in File 1, then exact match in File 2 -> File 1 mismatch MUST auto-close!
+    // -------------------------------------------------------------------------
+    let ord_f12 = format!("ord-f12-{}", Uuid::new_v4().simple());
+    create_and_deliver_cod(
+        ord_f12.clone(),
+        "shop-f12".into(),
+        210_000,
+        "TRK-F12-1",
+        "ghn",
+    )
+    .await;
+
+    let rep_f1 = svc
+        .import_cod_reconciliation(ImportCodReconciliationInput {
+            carrier_code: "ghn".into(),
+            file_name: "file1_mismatch.csv".into(),
+            file_sha256: "sha-f1".into(),
+            run_date: today,
+            created_by: "admin-r3".into(),
+            rows: vec![CodReconciliationRowInput {
+                line_number: 1,
+                tracking_code: "TRK-F12-1".into(),
+                cod_amount_vnd: 205_000,
+                delivered_at: "2026-11-24T08:00:00Z".into(),
+                order_code: String::new(),
+            }],
+        })
+        .await
+        .unwrap();
+    assert_eq!(rep_f1.run.amount_mismatch_count, 1);
+
+    let rep_f2 = svc
+        .import_cod_reconciliation(ImportCodReconciliationInput {
+            carrier_code: "ghn".into(),
+            file_name: "file2_fixed.csv".into(),
+            file_sha256: "sha-f2".into(),
+            run_date: today,
+            created_by: "admin-r3".into(),
+            rows: vec![CodReconciliationRowInput {
+                line_number: 1,
+                tracking_code: "TRK-F12-1".into(),
+                cod_amount_vnd: 210_000,
+                delivered_at: "2026-11-24T09:00:00Z".into(),
+                order_code: String::new(),
+            }],
+        })
+        .await
+        .unwrap();
+    assert_eq!(rep_f2.run.matched_count, 1);
+
+    let (f12_status, f12_resolved): (String, Option<DateTime<Utc>>) = sqlx::query_as(
+        r#"
+        SELECT resolution_status, resolved_at
+        FROM reconciliation_queue
+        WHERE source_type = 'cod_file'
+          AND tracking_code = 'TRK-F12-1'
+          AND reason = 'cod_amount_mismatch'
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        f12_status, "assigned",
+        "(1a-bis) mismatch from earlier File 1 must auto-close when File 2 matches"
+    );
+    assert!(f12_resolved.is_some());
+
+    // -------------------------------------------------------------------------
+    // (1b) Wrong-carrier file (ghtk -> cod_carrier_mismatch) then right-carrier file (ghn -> match):
+    //      cod_carrier_mismatch MUST stay pending!
+    // -------------------------------------------------------------------------
+    let ord_car = format!("ord-car-{}", Uuid::new_v4().simple());
+    create_and_deliver_cod(
+        ord_car.clone(),
+        "shop-car".into(),
+        230_000,
+        "TRK-CAR-1",
+        "ghn",
+    )
+    .await;
+
+    let rep_wrong_car = svc
+        .import_cod_reconciliation(ImportCodReconciliationInput {
+            carrier_code: "ghtk".into(),
+            file_name: "wrong_carrier_ghtk.csv".into(),
+            file_sha256: "sha-wc".into(),
+            run_date: today,
+            created_by: "admin-r3".into(),
+            rows: vec![CodReconciliationRowInput {
+                line_number: 1,
+                tracking_code: "TRK-CAR-1".into(),
+                cod_amount_vnd: 230_000,
+                delivered_at: "2026-11-24T08:00:00Z".into(),
+                order_code: String::new(),
+            }],
+        })
+        .await
+        .unwrap();
+    assert_eq!(rep_wrong_car.run.missing_local_count, 1);
+
+    let rep_right_car = svc
+        .import_cod_reconciliation(ImportCodReconciliationInput {
+            carrier_code: "ghn".into(),
+            file_name: "right_carrier_ghn.csv".into(),
+            file_sha256: "sha-rc".into(),
+            run_date: today,
+            created_by: "admin-r3".into(),
+            rows: vec![CodReconciliationRowInput {
+                line_number: 1,
+                tracking_code: "TRK-CAR-1".into(),
+                cod_amount_vnd: 230_000,
+                delivered_at: "2026-11-24T09:00:00Z".into(),
+                order_code: String::new(),
+            }],
+        })
+        .await
+        .unwrap();
+    assert_eq!(rep_right_car.run.matched_count, 1);
+
+    let cm_status: String = sqlx::query_scalar(
+        r#"
+        SELECT resolution_status
+        FROM reconciliation_queue
+        WHERE provider_tx_id = 'cod:ghtk:TRK-CAR-1'
+          AND reason = 'cod_carrier_mismatch'
+        "#,
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        cm_status, "pending",
+        "(1b) right-carrier ghn match must NEVER close wrong-carrier ghtk cod_carrier_mismatch"
+    );
+
+    // -------------------------------------------------------------------------
+    // (2) Late order.delivered arriving AFTER COD order was returned & fully refunded
+    //     (payments.status = 'refunded'): must populate tracking_code/carrier_code/order_code,
+    //     post 0 extra collect ledger txs, then CSV import clears cod_receivable cleanly!
+    // -------------------------------------------------------------------------
+    let ord_ref = format!("ord-cod-ref-{}", Uuid::new_v4().simple());
+    let shop_ref = format!("shop-cod-ref-{}", Uuid::new_v4().simple());
+    let pwa_ref = svc
+        .create_payment(CreatePaymentInput {
+            order_group_id: ord_ref.clone(),
+            order_id: ord_ref.clone(),
+            user_id: "buyer-cod-ref".into(),
+            amount_vnd: 260_000,
+            method: PaymentMethod::Cod,
+            shop_allocations: vec![ShopAllocationInput {
+                order_id: Some(ord_ref.clone()),
+                shop_id: shop_ref.clone(),
+                subtotal_vnd: 240_000,
+                commission_vnd: 12_000,
+                shipping_fee_vnd: 20_000,
+                platform_discount_vnd: 0,
+            }],
+            expires_at: None,
+            idempotency_key: Some(format!("checkout:{ord_ref}")),
+            supersede_previous: false,
+            trace_id: "tr-cod-ref".into(),
+        })
+        .await
+        .unwrap();
+
+    // Post-delivery return arrives BEFORE order.delivered -> collects COD without tracking_code
+    svc.process_order_returned_event(
+        &format!("evt-ret-{}", Uuid::new_v4()),
+        &ord_ref,
+        Some("RETURN_REQUESTED"),
+        "tr-ret-ref",
+    )
+    .await
+    .unwrap();
+
+    // Full refund transitions payment.status -> 'refunded' and alloc.escrow_status -> 'refunded'
+    svc.create_refund(CreateRefundInput {
+        payment_id: Some(pwa_ref.payment.id),
+        order_id: ord_ref.clone(),
+        amount_vnd: 260_000,
+        reason: "buyer returned COD order".into(),
+        idempotency_key: format!("order-return-refund:{ord_ref}"),
+        trace_id: "tr-rf-ref".into(),
+    })
+    .await
+    .unwrap();
+
+    let pay_status_before: String = sqlx::query_scalar("SELECT status FROM payments WHERE id = $1")
+        .bind(pwa_ref.payment.id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(pay_status_before, "refunded");
+
+    let ledger_cnt_before_late_del: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM ledger_transactions")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    let succ_outbox_before_late_del: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM outbox_events WHERE event_type = 'payment.succeeded'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+
+    // Delayed order.delivered arrives now with tracking_code/carrier_code/order_code!
+    svc.process_order_delivered_event_with_shipping(
+        &format!("evt-late-del-ref-{}", Uuid::new_v4()),
+        &ord_ref,
+        Some("TRK-LATE-REFUNDED"),
+        Some("ghn"),
+        Some("NM-LATE-REF"),
+        "tr-late-del-ref",
+    )
+    .await
+    .unwrap();
+
+    let ledger_cnt_after_late_del: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM ledger_transactions")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    let succ_outbox_after_late_del: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM outbox_events WHERE event_type = 'payment.succeeded'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        ledger_cnt_after_late_del, ledger_cnt_before_late_del,
+        "(2) late order.delivered on refunded COD payment must post 0 extra ledger transactions"
+    );
+    assert_eq!(
+        succ_outbox_after_late_del, succ_outbox_before_late_del,
+        "(2) late order.delivered on refunded COD payment must emit 0 extra payment.succeeded events"
+    );
+
+    let (saved_trk, saved_car, saved_oc): (Option<String>, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT tracking_code, carrier_code, order_code FROM payment_shop_allocations WHERE order_id = $1",
+        )
+        .bind(&ord_ref)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(saved_trk.as_deref(), Some("TRK-LATE-REFUNDED"));
+    assert_eq!(saved_car.as_deref(), Some("ghn"));
+    assert_eq!(saved_oc.as_deref(), Some("NM-LATE-REF"));
+
+    // Carrier COD CSV import now finds TRK-LATE-REFUNDED and clears cod_receivable!
+    let rep_ref = svc
+        .import_cod_reconciliation(ImportCodReconciliationInput {
+            carrier_code: "ghn".into(),
+            file_name: "ghn_refunded_cod.csv".into(),
+            file_sha256: "sha-ref".into(),
+            run_date: today,
+            created_by: "admin-r3".into(),
+            rows: vec![CodReconciliationRowInput {
+                line_number: 1,
+                tracking_code: "TRK-LATE-REFUNDED".into(),
+                cod_amount_vnd: 260_000,
+                delivered_at: "2026-11-24T10:00:00Z".into(),
+                order_code: String::new(),
+            }],
+        })
+        .await
+        .unwrap();
+    assert_eq!(rep_ref.run.matched_count, 1);
+
+    // -------------------------------------------------------------------------
+    // (4) Two DIFFERENT mismatch amounts for the same tracking_code (before match)
+    //     must BOTH persist without overwriting each other, stay idempotent on replay,
+    //     and legacy base-key mismatch rows must also be handled cleanly.
+    // -------------------------------------------------------------------------
+    let ord_mm2 = format!("ord-mm2-{}", Uuid::new_v4().simple());
+    create_and_deliver_cod(
+        ord_mm2.clone(),
+        "shop-mm2".into(),
+        300_000,
+        "TRK-MM-TWO",
+        "ghn",
+    )
+    .await;
+
+    let mm2_rows = vec![
+        CodReconciliationRowInput {
+            line_number: 1,
+            tracking_code: "TRK-MM-TWO".into(),
+            cod_amount_vnd: 290_000,
+            delivered_at: "2026-11-24T08:00:00Z".into(),
+            order_code: String::new(),
+        },
+        CodReconciliationRowInput {
+            line_number: 2,
+            tracking_code: "TRK-MM-TWO".into(),
+            cod_amount_vnd: 280_000,
+            delivered_at: "2026-11-24T08:00:00Z".into(),
+            order_code: String::new(),
+        },
+    ];
+
+    for upload in 1..=2 {
+        let rep = svc
+            .import_cod_reconciliation(ImportCodReconciliationInput {
+                carrier_code: "ghn".into(),
+                file_name: "two_mismatches.csv".into(),
+                file_sha256: "sha-mm2".into(),
+                run_date: today,
+                created_by: "admin-r3".into(),
+                rows: mm2_rows.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(rep.run.amount_mismatch_count, 2, "upload {upload}");
+
+        let mm2_entries: Vec<(String, i64)> = sqlx::query_as(
+            r#"
+            SELECT provider_tx_id, actual_amount_vnd
+            FROM reconciliation_queue
+            WHERE source_type = 'cod_file'
+              AND tracking_code = 'TRK-MM-TWO'
+              AND reason = 'cod_amount_mismatch'
+              AND resolution_status = 'pending'
+            ORDER BY actual_amount_vnd ASC
+            "#,
+        )
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            mm2_entries,
+            vec![
+                ("cod:ghn:TRK-MM-TWO:mismatch:280000".to_string(), 280_000),
+                ("cod:ghn:TRK-MM-TWO:mismatch:290000".to_string(), 290_000),
+            ],
+            "(4) upload {upload}: both distinct mismatch amounts must persist without overwriting or duplicating"
+        );
+    }
+
+    // Legacy base-key mismatch row (`cod:ghn:TRK-LEG-MM`, 270_000) + replay same amount + new amount 260_000 + later match 300_000
+    let ord_leg_mm = format!("ord-legmm-{}", Uuid::new_v4().simple());
+    let pwa_leg_mm = create_and_deliver_cod(
+        ord_leg_mm.clone(),
+        "shop-legmm".into(),
+        300_000,
+        "TRK-LEG-MM",
+        "ghn",
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO reconciliation_queue (
+            provider, provider_tx_id, expected_payment_id, order_ref,
+            expected_amount_vnd, actual_amount_vnd, reason, source_type, tracking_code,
+            created_at
+        )
+        VALUES ('ghn', 'cod:ghn:TRK-LEG-MM', $1, $2, 300000, 270000, 'cod_amount_mismatch', 'cod_file', 'TRK-LEG-MM', NOW() - INTERVAL '5 minutes')
+        "#,
+    )
+    .bind(pwa_leg_mm.payment.id)
+    .bind(&ord_leg_mm)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    svc.import_cod_reconciliation(ImportCodReconciliationInput {
+        carrier_code: "ghn".into(),
+        file_name: "legacy_mm_replay.csv".into(),
+        file_sha256: "sha-legmm-1".into(),
+        run_date: today,
+        created_by: "admin-r3".into(),
+        rows: vec![
+            CodReconciliationRowInput {
+                line_number: 1,
+                tracking_code: "TRK-LEG-MM".into(),
+                cod_amount_vnd: 270_000,
+                delivered_at: "2026-11-24T08:00:00Z".into(),
+                order_code: String::new(),
+            },
+            CodReconciliationRowInput {
+                line_number: 2,
+                tracking_code: "TRK-LEG-MM".into(),
+                cod_amount_vnd: 260_000,
+                delivered_at: "2026-11-24T08:00:00Z".into(),
+                order_code: String::new(),
+            },
+        ],
+    })
+    .await
+    .unwrap();
+
+    let leg_mm_entries: Vec<(String, i64)> = sqlx::query_as(
+        r#"
+        SELECT provider_tx_id, actual_amount_vnd
+        FROM reconciliation_queue
+        WHERE source_type = 'cod_file'
+          AND tracking_code = 'TRK-LEG-MM'
+          AND reason = 'cod_amount_mismatch'
+          AND resolution_status = 'pending'
+        ORDER BY actual_amount_vnd ASC
+        "#,
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        leg_mm_entries,
+        vec![
+            ("cod:ghn:TRK-LEG-MM:mismatch:260000".to_string(), 260_000),
+            ("cod:ghn:TRK-LEG-MM".to_string(), 270_000),
+        ],
+        "(4) legacy base-key mismatch must be deduplicated in-place while distinct amount inserts separately"
+    );
+
+    // Later file matches both TRK-MM-TWO and TRK-LEG-MM -> auto-closes all prior mismatch rows!
+    let rep_close = svc
+        .import_cod_reconciliation(ImportCodReconciliationInput {
+            carrier_code: "ghn".into(),
+            file_name: "close_multi_mm.csv".into(),
+            file_sha256: "sha-close-mm".into(),
+            run_date: today,
+            created_by: "admin-r3".into(),
+            rows: vec![
+                CodReconciliationRowInput {
+                    line_number: 1,
+                    tracking_code: "TRK-MM-TWO".into(),
+                    cod_amount_vnd: 300_000,
+                    delivered_at: "2026-11-24T11:00:00Z".into(),
+                    order_code: String::new(),
+                },
+                CodReconciliationRowInput {
+                    line_number: 2,
+                    tracking_code: "TRK-LEG-MM".into(),
+                    cod_amount_vnd: 300_000,
+                    delivered_at: "2026-11-24T11:00:00Z".into(),
+                    order_code: String::new(),
+                },
+            ],
+        })
+        .await
+        .unwrap();
+    assert_eq!(rep_close.run.matched_count, 2);
+
+    let still_open_mm: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)::BIGINT
+        FROM reconciliation_queue
+        WHERE source_type = 'cod_file'
+          AND tracking_code IN ('TRK-MM-TWO', 'TRK-LEG-MM')
+          AND resolution_status IN ('pending', 'suspended')
+        "#,
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        still_open_mm, 0,
+        "all prior mismatch rows (both legacy base-key and :mismatch:<amt>) must auto-close on later-file match"
+    );
+
+    // -------------------------------------------------------------------------
+    // (3) Stale `running` cod_file runs > 10 minutes -> swept to `failed` + `completed_at`,
+    //     and a late-finishing task must NOT silently overwrite `failed` back to `completed`!
+    // -------------------------------------------------------------------------
+    let stale_cod_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO reconciliation_runs (
+            provider, run_date, status, run_type, file_sha256, file_name,
+            total_rows, created_by, created_at
+        )
+        VALUES ('ghn', $1, 'running', 'cod_file', 'sha-stale-old', 'stale_old.csv', 1, 'admin-r3', NOW() - INTERVAL '11 minutes')
+        RETURNING id
+        "#,
+    )
+    .bind(today)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+
+    let fresh_cod_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO reconciliation_runs (
+            provider, run_date, status, run_type, file_sha256, file_name,
+            total_rows, created_by, created_at
+        )
+        VALUES ('ghn', $1, 'running', 'cod_file', 'sha-stale-fresh', 'fresh.csv', 1, 'admin-r3', NOW() - INTERVAL '2 minutes')
+        RETURNING id
+        "#,
+    )
+    .bind(today)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+
+    let old_vietqr_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO reconciliation_runs (
+            provider, run_date, status, run_type, file_sha256, file_name,
+            total_rows, created_by, created_at
+        )
+        VALUES ('vietqr', $1, 'running', 'vietqr', '', '', 0, 'system', NOW() - INTERVAL '15 minutes')
+        RETURNING id
+        "#,
+    )
+    .bind(today)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+
+    let swept = svc
+        .fail_stale_cod_reconciliation_runs(chrono::Duration::minutes(10))
+        .await
+        .unwrap();
+    assert_eq!(
+        swept, 1,
+        "(3a) sweeper must fail exactly the stale >10m cod_file run"
+    );
+
+    let (stale_st, stale_done): (String, Option<DateTime<Utc>>) =
+        sqlx::query_as("SELECT status, completed_at FROM reconciliation_runs WHERE id = $1")
+            .bind(stale_cod_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(stale_st, "failed");
+    assert!(stale_done.is_some());
+
+    let fresh_st: String =
+        sqlx::query_scalar("SELECT status FROM reconciliation_runs WHERE id = $1")
+            .bind(fresh_cod_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        fresh_st, "running",
+        "(3a) fresh cod_file run must stay running"
+    );
+
+    let vietqr_st: String =
+        sqlx::query_scalar("SELECT status FROM reconciliation_runs WHERE id = $1")
+            .bind(old_vietqr_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        vietqr_st, "running",
+        "(3a) non-cod_file vietqr run must not be touched by cod_file sweeper"
+    );
+
+    // (3b) Late-finishing task guard: pause an in-flight cod_file run behind a row lock,
+    //      age its created_at > 10m, sweep it to `failed`, then unblock it -> MUST stay `failed`!
+    let ord_stale = format!("ord-stale-{}", Uuid::new_v4().simple());
+    create_and_deliver_cod(
+        ord_stale.clone(),
+        "shop-stale".into(),
+        160_000,
+        "TRK-STALE-1",
+        "ghn",
+    )
+    .await;
+
+    let mut tx_hold = db.pool.begin().await.unwrap();
+    let blocker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *tx_hold)
+        .await
+        .unwrap();
+    let _: Uuid = sqlx::query_scalar(
+        "SELECT id FROM payment_shop_allocations WHERE order_id = $1 FOR UPDATE",
+    )
+    .bind(&ord_stale)
+    .fetch_one(&mut *tx_hold)
+    .await
+    .unwrap();
+
+    let svc_stale = svc.clone();
+    let late_handle = tokio::spawn(async move {
+        svc_stale
+            .import_cod_reconciliation(ImportCodReconciliationInput {
+                carrier_code: "ghn".into(),
+                file_name: "late_finish_guard.csv".into(),
+                file_sha256: "sha-late-finish-guard".into(),
+                run_date: today,
+                created_by: "admin-r3".into(),
+                rows: vec![CodReconciliationRowInput {
+                    line_number: 1,
+                    tracking_code: "TRK-STALE-1".into(),
+                    cod_amount_vnd: 160_000,
+                    delivered_at: "2026-11-24T12:00:00Z".into(),
+                    order_code: String::new(),
+                }],
+            })
+            .await
+    });
+
+    wait_for_blocked_by_pid(&db.pool, blocker_pid, "payment_shop_allocations", 1).await;
+
+    let late_run_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM reconciliation_runs WHERE file_sha256 = 'sha-late-finish-guard' AND status = 'running'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE reconciliation_runs SET created_at = NOW() - INTERVAL '11 minutes' WHERE id = $1",
+    )
+    .bind(late_run_id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    let swept_late = svc
+        .fail_stale_cod_reconciliation_runs(chrono::Duration::minutes(10))
+        .await
+        .unwrap();
+    assert_eq!(swept_late, 1);
+
+    // Release lock so the late-finishing task finishes its row and reaches finalization.
+    tx_hold.rollback().await.unwrap();
+    let late_rep = late_handle.await.unwrap().unwrap();
+    assert_eq!(
+        late_rep.run.status, "failed",
+        "(3b) late-finishing COD run must not silently overwrite failed status back to completed"
+    );
+    assert!(late_rep.run.completed_at.is_some());
+
+    let (db_late_status, db_late_completed): (String, Option<DateTime<Utc>>) =
+        sqlx::query_as("SELECT status, completed_at FROM reconciliation_runs WHERE id = $1")
+            .bind(late_run_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        db_late_status, "failed",
+        "(3b) DB status must remain failed after late-finishing task completes"
+    );
+    assert!(db_late_completed.is_some());
+
+    // Final global ledger integrity check: cod_receivable == 0 & balanced!
+    let sum = svc.get_ledger_summary().await.unwrap();
+    assert!(sum.is_balanced);
+    assert_eq!(sum.total_debits_vnd, sum.total_credits_vnd);
+    let cod_recv_final = sum
+        .accounts
+        .iter()
+        .find(|a| a.account_id == "cod_receivable")
+        .unwrap()
+        .balance_vnd;
+    assert_eq!(cod_recv_final, 0);
 
     db.cleanup().await;
 }

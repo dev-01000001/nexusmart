@@ -196,6 +196,70 @@ func (m *MailpitClient) WaitForOTP(ctx context.Context, toEmail string, timeout 
 	return "", fmt.Errorf("timed out waiting for 6-digit OTP email to %s", toEmail)
 }
 
+// SnapshotRecipientMessageIDs captures the current set of Mailpit message IDs addressed to `toEmail`.
+// Call before triggering a new email (such as phone OTP) so polling ignores older emails like registration OTP.
+func (m *MailpitClient) SnapshotRecipientMessageIDs(ctx context.Context, toEmail string) (map[string]struct{}, error) {
+	seen := make(map[string]struct{})
+	targetEmail := strings.ToLower(strings.TrimSpace(toEmail))
+	list, err := m.ListMessages(ctx, 200)
+	if err != nil {
+		return nil, err
+	}
+	for _, summary := range list.Messages {
+		if hasRecipient(summary.To, targetEmail) {
+			seen[summary.ID] = struct{}{}
+		}
+	}
+	return seen, nil
+}
+
+// WaitForNewOTPMessage polls Mailpit for a newly arrived email addressed to `toEmail` whose ID is not
+// in `seenIDs` and extracts a 6-digit OTP strictly from the email body (Text/HTML, never Subject).
+func (m *MailpitClient) WaitForNewOTPMessage(
+	ctx context.Context,
+	toEmail string,
+	seenIDs map[string]struct{},
+	timeout time.Duration,
+) (*MailpitMessage, string, error) {
+	deadline := time.Now().Add(timeout)
+	targetEmail := strings.ToLower(strings.TrimSpace(toEmail))
+
+	var lastErr error
+	for time.Now().Before(deadline) {
+		list, err := m.ListMessages(ctx, 100)
+		if err != nil {
+			lastErr = err
+		} else {
+			for _, summary := range list.Messages {
+				if !hasRecipient(summary.To, targetEmail) {
+					continue
+				}
+				if _, old := seenIDs[summary.ID]; old {
+					continue
+				}
+				full, getErr := m.GetMessage(ctx, summary.ID)
+				if getErr != nil {
+					lastErr = getErr
+					continue
+				}
+				if otp := ExtractOTP(full.Text, full.HTML); otp != "" {
+					return full, otp, nil
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil, "", ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+
+	if lastErr != nil {
+		return nil, "", fmt.Errorf("timed out waiting for new OTP email to %s; last error: %w", toEmail, lastErr)
+	}
+	return nil, "", fmt.Errorf("timed out waiting for new 6-digit OTP email to %s", toEmail)
+}
+
 // ExtractOTP pulls a 6-digit numeric OTP from email subject/body text.
 func ExtractOTP(parts ...string) string {
 	combined := strings.Join(parts, "\n")

@@ -104,7 +104,7 @@ func TestEnsureStreamsCreatesPrimaryWithCanonicalSubjectsAndDLQ(t *testing.T) {
 	if primary == nil {
 		t.Fatalf("expected stream %s to be created", DefaultPrimaryStream)
 	}
-	wantPrimary := []string{"user.>", "order.>", "payment.>", "shipment.>", "product.>", "promotion.>"}
+	wantPrimary := []string{"user.>", "order.>", "payment.>", "shipment.>", "product.>", "promotion.>", "review.>"}
 	if !reflect.DeepEqual(primary.Subjects, wantPrimary) {
 		t.Fatalf("primary subjects = %v, want %v", primary.Subjects, wantPrimary)
 	}
@@ -137,7 +137,7 @@ func TestEnsureStreamMergesMissingSubjectsWithoutDroppingExistingOrClobberingCon
 		t.Fatalf("updateCalls = %d, want 1", mgr.updateCalls)
 	}
 	got := mgr.streams["NEXUSMART"]
-	want := []string{"user.>", "order.>", "payment.>", "shipment.>", "audit.>", "product.>", "promotion.>"}
+	want := []string{"user.>", "order.>", "payment.>", "shipment.>", "audit.>", "product.>", "promotion.>", "review.>"}
 	if !reflect.DeepEqual(got.Subjects, want) {
 		t.Fatalf("subjects = %v, want %v", got.Subjects, want)
 	}
@@ -187,7 +187,7 @@ func TestEnsureStreamHandlesConcurrentAddAndUpdateConflicts(t *testing.T) {
 	}
 
 	got := mgr.streams["NEXUSMART"].Subjects
-	want := []string{"user.>", "order.>", "payment.>", "shipment.>", "product.>", "custom.>", "promotion.>"}
+	want := []string{"user.>", "order.>", "payment.>", "shipment.>", "product.>", "custom.>", "promotion.>", "review.>"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("subjects after concurrent merge = %v, want %v", got, want)
 	}

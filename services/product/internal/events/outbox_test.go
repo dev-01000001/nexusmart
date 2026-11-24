@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nexusmart/core/pkg/common/jetstream"
 	"github.com/nexusmart/core/services/product/internal/store"
 )
 
@@ -149,12 +150,13 @@ func TestOutboxRelay_PublishesCanonicalEnvelopeAndRetriesFailures(t *testing.T) 
 }
 
 func TestEnsureStreams_UnionMergesMissingProductSubject(t *testing.T) {
+	existing := []string{"user.>", "order.>", "payment.>", "shipment.>", "custom.>"}
 	mgr := &fakeStreamManager{
 		streams: map[string]*nats.StreamInfo{
 			"NEXUSMART": {
 				Config: nats.StreamConfig{
 					Name:     "NEXUSMART",
-					Subjects: []string{"user.>", "order.>", "payment.>", "shipment.>", "custom.>"},
+					Subjects: append([]string(nil), existing...),
 				},
 			},
 		},
@@ -167,7 +169,7 @@ func TestEnsureStreams_UnionMergesMissingProductSubject(t *testing.T) {
 		t.Fatalf("expected UpdateStream called once to merge missing subjects, got %d", mgr.updateCalled)
 	}
 	gotSubjects := mgr.streams["NEXUSMART"].Config.Subjects
-	want := []string{"user.>", "order.>", "payment.>", "shipment.>", "custom.>", "product.>", "promotion.>"}
+	want, _ := jetstream.MergeSubjects(existing, jetstream.CanonicalPrimarySubjects())
 	if len(gotSubjects) != len(want) {
 		t.Fatalf("merged subjects = %v, want %v", gotSubjects, want)
 	}

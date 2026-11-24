@@ -44,6 +44,11 @@ const webPort = envValue("WEB_PORT", "3000");
 const mailpitPort = envValue("MAILPIT_UI_PORT", "8025");
 const gatewayPort = envValue("GATEWAY_PORT", "8080");
 
+export const SHIPPING_WEBHOOK_SECRET = envValue(
+  "SHIPPING_WEBHOOK_SECRET",
+  "dev-only-shipping-webhook-hmac-secret"
+);
+
 export const config = {
   webUrl: envValue("WEB_URL", `http://localhost:${webPort}`).replace(/\/+$/, ""),
   mailpitUrl: envValue("MAILPIT_URL", `http://localhost:${mailpitPort}`).replace(/\/+$/, ""),
@@ -52,6 +57,7 @@ export const config = {
     "PAYMENT_WEBHOOK_SECRET",
     "dev-only-payment-webhook-hmac-secret"
   ),
+  shippingWebhookSecret: SHIPPING_WEBHOOK_SECRET,
   requestTimeoutMs: 15_000,
   pollTimeoutMs: 25_000,
   pollIntervalMs: 300,
@@ -71,9 +77,17 @@ export function uniqueEmail(label) {
   return `e2eweb-${label}-${Date.now()}-${seqCounter}-${tag}@nexusmart.test`;
 }
 
+const usedPhones = new Set();
+
 export function uniquePhone() {
-  const n = crypto.randomInt(10_000_000, 99_999_999);
-  return `09${n}`;
+  while (true) {
+    const n = crypto.randomInt(10_000_000, 99_999_999);
+    const phone = `09${n}`;
+    if (!usedPhones.has(phone)) {
+      usedPhones.add(phone);
+      return phone;
+    }
+  }
 }
 
 export function normalizeStatus(raw) {
@@ -505,7 +519,24 @@ export async function pollUntil(checkFn, options = {}) {
   }
 }
 
-export async function waitForOtp(email, options = {}) {
+export async function snapshotMailpitIds(email) {
+  const target = email.trim().toLowerCase();
+  const seen = new Set();
+  const listRes = await fetch(`${config.mailpitUrl}/api/v1/messages?limit=100`, {
+    signal: AbortSignal.timeout(config.requestTimeoutMs),
+  });
+  assert.equal(listRes.ok, true, `mailpit snapshot expected 2xx, got HTTP ${listRes.status}`);
+  const list = await listRes.json();
+  for (const summary of list?.messages ?? []) {
+    const recipients = Array.isArray(summary?.To) ? summary.To : [];
+    if (recipients.some((r) => String(r?.Address ?? "").trim().toLowerCase() === target)) {
+      if (summary?.ID) seen.add(summary.ID);
+    }
+  }
+  return seen;
+}
+
+export async function waitForRecentOtp(email, seenIds = new Set(), options = {}) {
   const target = email.trim().toLowerCase();
   return pollUntil(
     async () => {
@@ -518,6 +549,7 @@ export async function waitForOtp(email, options = {}) {
       const list = await listRes.json();
       const messages = Array.isArray(list?.messages) ? list.messages : [];
       for (const summary of messages) {
+        if (summary?.ID && seenIds.has(summary.ID)) continue;
         const recipients = Array.isArray(summary?.To) ? summary.To : [];
         const matched = recipients.some(
           (r) => String(r?.Address ?? "").trim().toLowerCase() === target
@@ -532,17 +564,25 @@ export async function waitForOtp(email, options = {}) {
         const full = await msgRes.json();
         const otp = extractOtp(full?.Subject, full?.Text, full?.HTML, summary?.Snippet);
         if (otp) {
+          if (summary?.ID) seenIds.add(summary.ID);
           return { done: true, value: otp };
         }
       }
-      return { done: false, detail: `no OTP email for ${target} among ${messages.length} messages` };
+      return { done: false, detail: `no new OTP email for ${target} among ${messages.length} messages` };
     },
     {
       timeoutMs: options.timeoutMs ?? config.pollTimeoutMs,
       intervalMs: options.intervalMs ?? config.pollIntervalMs,
-      label: `OTP email for ${target}`,
+      label: options.label ?? `new OTP email for ${target}`,
     }
   );
+}
+
+export async function waitForOtp(email, options = {}) {
+  return waitForRecentOtp(email, new Set(), {
+    ...options,
+    label: options.label ?? `OTP email for ${email.trim().toLowerCase()}`,
+  });
 }
 
 /**
@@ -578,6 +618,87 @@ export async function postSignedPaymentWebhook(payload, options = {}) {
     }
   }
   return { status: res.status, text, data };
+}
+
+/**
+ * Simulates a shipping carrier calling Gateway `/webhooks/shipping/{carrier}` directly
+ * with HMAC-SHA256 `X-Signature` and `X-Timestamp`.
+ */
+export async function postSignedShippingWebhook(carrier, payload, options = {}) {
+  const secret = options.secret ?? SHIPPING_WEBHOOK_SECRET;
+  const rawBody = JSON.stringify(payload);
+  const signature =
+    options.overrideSignature ??
+    crypto.createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
+  const timestamp = String(options.timestampSec ?? Math.floor(Date.now() / 1000));
+
+  const res = await fetchWith429Retry(
+    `${config.gatewayUrl}/webhooks/shipping/${encodeURIComponent(carrier || "ghn")}`,
+    () => ({
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Signature": signature,
+        "X-Timestamp": timestamp,
+      },
+      body: rawBody,
+      signal: AbortSignal.timeout(config.requestTimeoutMs),
+    })
+  );
+  const text = await res.text();
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
+  }
+  return { status: res.status, text, data };
+}
+
+/**
+ * Completes real E19 phone OTP verification via Mailpit for a logged-in buyer.
+ * Never logs the OTP value.
+ */
+export async function verifyBuyerPhone(client, buyer) {
+  const email = buyer?.email;
+  assert.ok(email, "verifyBuyerPhone requires buyer.email");
+
+  const seenIds = await snapshotMailpitIds(email);
+  const otpReq = await client.json("POST", "/api/gw/users/me/phone/otp", { body: {} });
+  assert.equal(
+    otpReq.status,
+    200,
+    `POST /api/gw/users/me/phone/otp (${email}) expected 200, got ${otpReq.status}: ${otpReq.text}`
+  );
+  assert.equal(otpReq.data?.sent, true, `phone/otp (${email}) returned sent!=true: ${otpReq.text}`);
+
+  const phoneOtp = await waitForRecentOtp(email, seenIds, {
+    label: `phone OTP email for ${email}`,
+  });
+  const verifyRes = await client.json("POST", "/api/gw/users/me/phone/verify", {
+    body: { otp: phoneOtp },
+  });
+  assert.equal(
+    verifyRes.status,
+    200,
+    `POST /api/gw/users/me/phone/verify (${email}) expected 200, got ${verifyRes.status}: ${verifyRes.text}`
+  );
+  assert.equal(
+    verifyRes.data?.verified,
+    true,
+    `phone/verify (${email}) expected verified=true: ${verifyRes.text}`
+  );
+  assert.equal(
+    verifyRes.data?.user?.phone_verified,
+    true,
+    `phone/verify (${email}) expected user.phone_verified=true: ${verifyRes.text}`
+  );
+  if (buyer && typeof buyer === "object") {
+    buyer.user = verifyRes.data.user;
+  }
+  return verifyRes.data.user;
 }
 
 export async function registerAndLoginBuyer(client, label, options = {}) {
@@ -616,7 +737,7 @@ export async function registerAndLoginBuyer(client, label, options = {}) {
     `login (${label}) expected 200, got ${loginRes.status}: ${loginRes.text}`
   );
 
-  return {
+  const account = {
     userId: loginRes.data?.user?.id || regRes.data.user_id,
     user: loginRes.data?.user,
     email,
@@ -625,6 +746,12 @@ export async function registerAndLoginBuyer(client, label, options = {}) {
     fullName,
     loginRes,
   };
+
+  if (options.verifyPhone === true) {
+    await verifyBuyerPhone(client, account);
+  }
+
+  return account;
 }
 
 let cachedLocation = null;
