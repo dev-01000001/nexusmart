@@ -495,6 +495,7 @@ Nền: `7ef6ff3`. Luật F1–F15 ở `w3b-plan.md` §4. Mọi dòng dưới do 
 - Tạo nhân viên (trùng email, bấm đúp một tài khoản), lịch sử hoạt động, cấu hình phương thức (min/max, âm, xung đột phiên bản 409, tắt ZaloPay khi có đơn chờ vẫn trả được, không tắt được phương thức cuối).
 - Lỗi bắt được → web r4: (P1) người bán bị khoá không vào được đơn dở và lý do khoá đọc sai trường; cùng 9 lỗi chữ/nhãn. Web r5: ô ghi chú đổi cấu hình bị điền sẵn câu cũ, UUID ở `doi-soat`, và một `.catch` của r4 biến lỗi tải sản phẩm thành "0 sản phẩm" (manager bắt khi đọc diff).
 - Kiểm lại sau r5 (chỉ dựng lại `web`): gian bị khoá vào được tổng quan, đơn hàng, chi tiết đơn, trả hàng, tài chính với đúng lý do và thời điểm; bấm "Xác nhận đơn" trên giao diện khi đang bị khoá → đơn sang Đang chuẩn bị; sản phẩm, khuyến mãi, hồ sơ bị chặn đúng lý do; 390/768/1440 không tràn. Dòng thời gian và lý do hoàn tiền toàn tiếng Việt; nhãn hoạt động đúng; ô vai không còn `super_admin`; khoá lần hai báo đúng câu; trang chờ ZaloPay sạch chữ VietQR và đổi sang "Tổng đã thanh toán"; COD chưa xác minh SĐT có liên kết tới `/tai-khoan#xac-minh-sdt`; panel duyệt hiện tên, không lộ UUID; ô ghi chú trống.
+- Advisor soát: rà secret lại trên diff đã commit (`7ef6ff3..14763df`, 02:49): sạch. `t23`: ops2 xem yêu cầu do ops1 và kế toán lập thấy đúng tên (tra qua `admin/users`); lưu cấu hình với ô ghi chú trống thành công, F5 giữ giá trị.
 
 ### Khởi động lại dịch vụ
 

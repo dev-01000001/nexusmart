@@ -36,3 +36,5 @@
 3. Test mới và kết quả đỏ → xanh; lệnh kiểm đã chạy và dòng kết quả thật.
 4. Nhờ agent khác; Cập nhật contracts; test cũ cần đổi kỳ vọng.
 5. Quyết định đáng chú ý, giới hạn còn lại.
+
+Tài liệu và code không chứa đường dẫn máy (`file:///…`, `/home/…`): liên kết trong repo dùng đường dẫn tương đối.
