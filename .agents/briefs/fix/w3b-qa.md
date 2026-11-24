@@ -1,0 +1,2 @@
+# 3b-1 – agent `qa` (sở hữu `tests/e2e/**`; chạy sau khi mọi service + gateway xong)
+Viết `41_`, `42_`, `43_` theo `w3b-plan.md` §3 và "ca e2e cần có" trong báo cáo các agent (manager gửi kèm). Dùng fixture sẵn có; người mua COD xác minh SĐT thật qua Mailpit một lần mỗi tài khoản. `43_` không dừng container (agent không được): kiểm bằng event trùng/độc hại qua NATS và đếm `dead_letter_events`/trạng thái qua API hoặc DB fixture đã có. Không sleep cố định khi có thể chờ điều kiện. Kiểm bằng `go vet ./...` trong `tests/e2e`; manager chạy `make e2e`.

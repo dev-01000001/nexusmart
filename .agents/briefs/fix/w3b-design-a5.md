@@ -62,7 +62,7 @@ Nền khảo sát: cây làm việc hiện tại (gồm thay đổi 3a chưa com
   - `ImportCodReconciliation` & `ListReconciliationRuns` chỉ `admin`/`super_admin` (buyer/seller → 403).
   - `CalculateFee` công khai chỉ trả báo giá/ETA/`cod_supported`, không lộ PII/địa chỉ kho, chặn IP bằng rate limit.
   - `RequestPhoneOTP`/`VerifyPhoneOTP` khoá theo `claims.UserID()`, OTP 6 số so khớp hằng thời gian, sai 5 lần huỷ mã (Redis Lua nguyên tử), không ghi OTP vào log, subject email hay DLQ.
-  - **Test tấn công:** (a) Buyer chưa xác minh SĐT hoặc chọn phường `cod_supported=false` gọi thẳng `POST /checkout` với `COD` → 412; (b) Đổi SĐT qua `PATCH /users/me` rồi đặt COD ngay → bị chặn vì `phone_verified=false`; (c) Brute-force OTP 6 lần → lần 5 xoá OTP, trả lỗi đồng nhất; (d) Gửi OTP quá 5 lần/giờ → 429.
+  - **Test tấn công:** (a) Buyer chưa xác minh SĐT hoặc chọn phường `cod_supported=false` gọi thẳng `POST /checkout` với `COD` → 409; (b) Đổi SĐT qua `PATCH /users/me` rồi đặt COD ngay → bị chặn vì `phone_verified=false`; (c) Brute-force OTP 6 lần → lần 5 xoá OTP, trả lỗi đồng nhất; (d) Gửi OTP quá 5 lần/giờ → 429.
 - **Đua tạo vận đơn & huỷ đơn (UC-SHIP03):**
   - Hai request `SellerShipOrder` song song hoặc 2 replica worker retry: `AcquireOrderDirectionLock` + `FOR UPDATE SKIP LOCKED` lease + `client_order_code` bất biến + partial unique index `uq_shipments_order_direction_active` → chỉ tạo đúng 1 vận đơn.
   - Huỷ đơn trong khi job đang chờ retry: consumer `order.cancelled` đánh dấu job `cancelled`; nếu worker vừa tạo xong ngay sau khi đơn `CANCELLED`, nhánh `ApplyShipmentUpdate` / re-check gọi `CancelShipment` bù trừ.
@@ -98,7 +98,7 @@ Nền khảo sát: cây làm việc hiện tại (gồm thay đổi 3a chưa com
   1. `GET /shipping/provinces` trả 34 tỉnh; tổng phường = **3.321**; `POST /shipping/addresses/map-legacy` quy đổi địa chỉ 3 cấp cũ sang 2 cấp mới và tạo địa chỉ thành công.
   2. Khách **không JWT** gọi `POST /shipping/calculate-fee` nhận báo giá thật + `cod_supported`; vượt hạn mức IP → 429.
   3. Tiêm lỗi 5xx 3 lần vào mock carrier → `POST /seller/orders/{id}/ship` trả `queued=true` → sau backoff hãng phục hồi → tạo **đúng 1** vận đơn, `GET /orders/{id}` có `tracking_code` + `label_url`; gọi ship lặp lại không tạo vận đơn thứ 2.
-  4. Buyer mới chưa xác minh SĐT đặt COD → 412 `COD_PHONE_NOT_VERIFIED`; gửi OTP SĐT → lấy mã từ Mailpit → xác minh OTP → đặt COD tới phường `cod_supported=false` → 412 `COD_AREA_NOT_SUPPORTED`; đặt COD phường hợp lệ → 201; mô phỏng 3 đơn COD `RETURNED` → đơn COD tiếp theo bị chặn `COD_REJECTED_LIMIT_EXCEEDED`.
+  4. Buyer mới chưa xác minh SĐT đặt COD → 409 `COD_PHONE_NOT_VERIFIED`; gửi OTP SĐT → lấy mã từ Mailpit → xác minh OTP → đặt COD tới phường `cod_supported=false` → 409 `COD_AREA_NOT_SUPPORTED`; đặt COD phường hợp lệ → 201; mô phỏng 3 đơn COD `RETURNED` → đơn COD tiếp theo bị chặn `COD_REJECTED_LIMIT_EXCEEDED`.
   5. Đơn COD đã giao (`order.delivered` + `completed`) → Admin upload CSV gồm 1 dòng khớp + 1 dòng lệch tiền + 1 mã lạ → dòng khớp giảm `cod_receivable` đúng 1 lần, 2 dòng lỗi vào `/admin/reconciliation/queue`; upload lại **cùng CSV** lần 2 → 0 bút toán mới, `GET /admin/ledger/summary` có `is_balanced=true`.
 - **Trình duyệt thật Playwright (`tests/e2e-web/09_w3b_a5_cod_shipping.test.mjs` — sau `08_w3a_storefront_security.test.mjs`):**
   1. **SHIP01:** Buyer vào `/tai-khoan` → Thêm địa chỉ → mở mục quy đổi địa chỉ cũ → nhập `Bình Dương / Thủ Dầu Một / Phú Cường` → bấm Quy đổi → form tự chọn TP.HCM + phường mới → Lưu → thấy địa chỉ xuất hiện trong danh sách.

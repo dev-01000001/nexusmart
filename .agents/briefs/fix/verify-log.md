@@ -349,3 +349,118 @@
 - 2026-11-24 15:59 — **3a nghiệm thu volume trắng (không agent nào chạy)**: `make lint` 0, `make test` 0 (49 gói Go, Rust 102), down -v, up 0, seed×2 0 (lần hai không tạo gì), **`make e2e` 0: 58 PASS, 0 SKIP, 697 s**, **`make e2e-web` ×2 0: 42/42, 42/42**, `invariants.sh` **ĐẠT** (mọi dòng 0, DLQ 0).
 - 2026-11-24 16:02 — 3a trình duyệt thật trên volume trắng: người bán lưu `ao-thun-cotton-compact-xanh-than` (SKU 242/245 g) ở 1440 và 390 px → PUT 200 và lời "Đã lưu thay đổi…"; khối lượng 0 → `role=alert` "Khối lượng của SKU … phải lớn hơn 0 gram."; không tràn ngang 390; form giảm giá gian hàng `step=1`.
 - 2026-11-24 16:06 — 3a `make test-db` ×2 0 (Postgres thật, 0 SKIP), `make coverage` 0: order 76,7% (không tính file sinh 78,5%), promotion 77,1% (79,6%), payment 82,95%; ngưỡng 60%.
+- 2026-11-24 16:10 — **3a commit local trên `main`**: `d6344e7` (feat), `7dd48a6` (chore agy.sh), `6088145` (docs). Chưa push. Quét secret: chỉ có khoá dev base64 đã ghi rõ dev-only. Advisor: không chặn; sửa w3b-plan §3 (tối đa 4 agent, chủ sở hữu e2e, thời gian e2e, bài nhạy tải).
+- 2026-11-24 — 3a push `1b1a385..6088145` lên `origin/main` (chủ dự án: "push đi, rồi continue 3b-1"). Quyền push này đã dùng; lần sau hỏi lại.
+- 2026-11-24 16:45 — 3b-1 `contract` đóng (conv 17e9dd8c): `buf breaking` so `main` 0, `docker compose config` 0, test `pkg/common` 0; `make test` đỏ đúng 1 bài cũ của product cứng 6 subject (giao product). Manager bổ sung E6-bis, E10-bis, E17-bis, E20-bis.
+- 2026-11-24 17:05 — máy khởi động lại 16:59 (RAM 20 GB), 4 agent 3b-1 bị cắt ngang (`interrupted`); `git fsck` sạch, không file rỗng/NUL; nối tiếp đúng phiên: product 348ac375, shipping 92d5a1c8, payment 73064158, order f11d932a.
+- 2026-11-24 17:10 — máy khởi động lại lần hai 17:07 (tắt đột ngột 17:04, không dấu OOM trong journal boot đó); boot trước: 16:54 OOM killer giết `vshort-web.service` (ngoài repo, đã tự bật lại) khi 4 agent + 3 stack chạy. Hạ còn 2 agent, `scripts/agy.sh` thêm `choom -n 500`, `GOFLAGS=-p=4`, `CARGO_BUILD_JOBS=4`. File repo nguyên vẹn (fsck sạch).
+- 2026-11-24 17:24 — máy tắt đột ngột lần ba 17:13:52 (bật lại 17:18). Hai object git rỗng không ai tham chiếu đã dời sang `.runs/git-empty-objects`, fsck sạch. Từ nay agent chạy bằng `.runs/w3b/run.sh` (systemd user unit, 6 GB/6 nhân, một agent), ghi nhịp máy `.runs/w3b/vitals.log`, chụp phần chưa commit bằng `.runs/w3b/snap.sh`.
+- 2026-11-24 17:29 — chủ dự án "chạy tối đa đi": 10 agent 3b-1 chạy cùng lúc trong `nm3b.slice` (trần chung 10 GB RAM, 6 GB swap, 16 nhân).
+- 2026-11-24 17:37 — 3b-1 `cart` r0 đóng (manager đọc diff, tự chạy lại): E3 đúng (dòng `unavailable` giá 0, `selected` giữ nguyên, không cộng tổng, `product` lỗi thì trả lỗi, chỉ đọc Redis), gofmt/vet/lint/`go test -race` 0, 0 SKIP.
+- 2026-11-24 18:26 — máy tắt đột ngột lần bốn 17:40 (bật lại 18:21). Trước khi tắt 5 s: load 9,8, còn 8,6 GB RAM, swap chưa dùng; không OOM/panic trong máy ảo. fsck sạch, 9 phiên agy `quick_check` ok, mất nội dung đúng hai file web đang ghi (`bannedKeywordsHelper.ts`, `reviewHelpers.ts`). 9 agent nối lại đúng phiên (vòng r4) qua hàng đợi 4 agent một lúc, `nm3b.slice` trần 5,5 GB / 8 nhân.
+- 2026-11-24 18:35 — 3b-1 `product` r4: manager đọc hết diff, tự chạy lại: lint 0, build 0, Postgres thật `-race` 239 PASS / 0 SKIP / 0 FAIL. Đạt: quyền đánh giá lấy từ `order`, khoá + UNIQUE + outbox một transaction, E13 theo `first_approved_at`. Gửi r5 9 điểm: từ cấm gõ không dấu lọt ("ma tuy"), thuộc tính SKU + slug không quét, quét lại/sửa giá lật sản phẩm admin đã duyệt, HIDDEN bị đẩy về PENDING, `keyword_ids` làm mất cờ, quét theo nội dung cũ, người bán không ẩn được hàng vi phạm, `updated_at` đổi theo đánh giá, lý do từ chối tiếng Anh. Thêm E9-bis.
+- 2026-11-24 18:43 — 3b-1 `user` r4 đóng (manager đọc diff, tự chạy lại): OTP SĐT (Lua nguyên tử, buộc theo SĐT hồ sơ lúc gửi, khoá dòng khi xác minh, sai 5 lần huỷ, 60 s, 5 lần/giờ), không migration. Lint 0, Postgres thật `-race` 99 PASS / 0 SKIP / 0 FAIL. Bài Redis thật nằm sau tag `redis_integration` (agent chạy 5/5; manager chưa chạy lại, e2e `42_` phủ luồng thật).
+- 2026-11-24 18:45 — 3b-1 `product` r5: 9 điểm xong, manager tự chạy lại lint 0, Postgres thật 249 PASS / 0 SKIP. Đọc lại còn 2 lỗi → r6: (A) ẩn + thêm từ REVIEW rồi mở bán lại lên sàn không qua duyệt; (B) "ẩn thuần" đòi không gửi SKU nhưng form thật luôn gửi đủ SKU.
+- 2026-11-24 18:49 — 3b-1 `payment` r4: manager đọc hết phần tiền và consumer, tự chạy fmt 0, clippy 0, Postgres thật 119 bài 0 ignored. Khoá `cod-reconcile:{payment}:{order}:{shop}`, mỗi dòng một transaction, DLQ chờ PubAck, không xoá durable: đạt. r5: so hãng khi khớp mã vận đơn, `AlreadyReconciled` không đóng mục lệch tiền, chạy dòng trong `tokio::spawn`, consumer kéo từng tin.
+- 2026-11-24 18:49 — 3b-1 `notification` r4: đọc diff đạt E1/E19/E18. r5: đưa NATS thử vào `scripts/test-db.sh` (`TEST_NATS_URL`), bỏ `docker run` trong `go test`; không in lỗi thô của hãng cho người bán. `promotion` phải theo cùng cách.
+- 2026-11-24 18:50 — 3b-1 `product` r6 **đóng** (chờ review độc lập): manager đọc lại đường ẩn/mở bán, tự chạy lint 0, Postgres thật `-race` 251 PASS / 0 SKIP / 0 FAIL.
+
+### 3b-1, duyệt lại sau lần máy tắt 17:40 (24/11, 18:52–18:58)
+
+| Agent | Quản lý tự chạy lại | Kết luận |
+|---|---|---|
+| notification r5 | golangci-lint 0; Postgres + NATS `-race` 53 PASS, 0 SKIP (chạy cùng lượt với order) | Đạt, đóng. NATS tạm chuyển vào `scripts/test-db.sh` (`TEST_NATS_URL`); lỗi thô của hãng không còn lộ cho người bán |
+| payment r5 | fmt 0, clippy 0, `--run-payment-only` 120 test, 0 ignored | Đạt, đóng. Sai hãng → `cod_carrier_mismatch`; `AlreadyReconciled` không đóng `cod_amount_mismatch`; phiên chạy trong task riêng; consumer kéo từng tin |
+| shipping r4 | golangci-lint 0; Postgres `-race` 182 PASS, 0 SKIP | Gửi r5: RPC `CancelShipment` FORWARD chưa huỷ job đang chờ |
+| order r4 | golangci-lint 0; Postgres `-race` 501 PASS, 0 SKIP | Gửi r5: lỗi thô của hãng lọt vào timeline đơn |
+| gateway r4 | golangci-lint 0; `-race` 5 gói xanh | Gửi r5: nhập CSV COD 5.000 dòng vượt timeout gRPC 10 s và WriteTimeout 30 s |
+| promotion r4 | golangci-lint 0; Postgres + NATS `-race` 220 PASS, 0 SKIP | Logic E1/E2 đạt; gửi r5: bỏ `docker run` trong test, dùng `TEST_NATS_URL` |
+| shipping r5 | golangci-lint 0; Postgres `-race` 185 PASS, 0 SKIP | Đạt, đóng. RPC huỷ FORWARD huỷ cả job đang chờ |
+| order r5 | golangci-lint 0; Postgres `-race` 501 PASS, 0 SKIP | Đạt, đóng. Timeline không còn lỗi thô và mã job |
+| promotion r5 | golangci-lint 0; `events` + `store` Postgres + NATS `-race` 46 PASS, 0 SKIP | Đạt, đóng. Không còn `docker run` trong test |
+| gateway r5 | golangci-lint 0; `-race` 5 gói xanh | Đạt, đóng. Import COD có timeout riêng 110 s/115 s, route khác giữ nguyên |
+
+Ghi nhận P3 (không sửa đợt này): sự kiện `shipment.create_failed` đến đúng lúc người bán đang bấm gửi lại (cờ `pending_shipment_cancel`) bị bỏ qua, đơn có thể hiện `QUEUED` dù job đã hỏng; người bán bấm gửi lại vẫn chạy được vì `shipping` không còn job sống.
+
+### 3b-1, review độc lập lượt A (payment, order, shipping; 19:21)
+
+11 phát hiện: 2 P1, 4 P2, 5 P3. Quản lý đối chiếu code: nhận P1-1 (huỷ đơn `QUEUED` không gọi `CancelShipment`), P1-2 (khớp tự đóng nhầm `cod_amount_mismatch`/`cod_carrier_mismatch`), P2-3 (delivered muộn sau hoàn), P2-4 (GHN mã 0), P2-5 (phiên kẹt `running`), P2-6 (lease/token worker), P3-7, P3-9, P3-11 → gửi r6 cho order, payment, shipping. P3-8 (E4 khi không chọn món nào) không sửa, ghi vào w3-plan §10. Lượt duyệt của quản lý đã bỏ sót P1-1 và P1-2.
+
+### 3b-1, review độc lập lượt B (product, cart, user, notification, promotion, pkg/common; 19:28)
+
+10 phát hiện: 3 P1, 4 P2, 3 P3. Quản lý chạy thử bảng chuỗi trên bản sao gói `moderation`: "mã tủ y tế", "mà tự ý", "mạ tủ y", "Cà đo huyết" bị chặn nhầm; "ma tuý", "s̩úng" (dấu kết hợp trên phụ âm), "suúung", "thuooốc lắc" lọt. Đọc code xác nhận slug tự sinh bị quét ở duyệt/sửa/quét lại, `UpdateProduct` kiểm duyệt ngoài transaction, SĐT lưu chuỗi thô. Gửi **product r7** (mục 1–5, 8, xoá mã chết) và **user r5** (E19-bis, Redis thật trong `scripts/test-db.sh`). Ghi nợ: P3-9 (promotion lỗi giữa xoá/tạo consumer cũ thì phát lại cả stream, consumer idempotent), gom `resilience/breaker.go` trùng giữa `cart` và `product`.
+
+### 3b-1, `qa` r0 (19:26)
+
+Viết 41/42/43, biên dịch và lint 0 (chưa chạy trên stack). Phát hiện breaker hãng 30 s dài hơn cửa sổ thử lại rút gọn dùng trong test; mặc định thật (≈250 s) không bị. Gửi r1: passthrough `CARRIER_*`, cấm skip im lặng, ca E19-bis, ca huỷ đơn `QUEUED`.
+
+### 3b-1, sau review (19:33–)
+
+| Agent | Quản lý tự chạy lại | Kết luận |
+|---|---|---|
+| shipping r6 | golangci-lint 0; Postgres `-race` 195 PASS, 0 SKIP | Đạt, đóng. Mỗi lượt thuê 1 job, kiểm `claim_token` khi hoàn tất, GHN thiếu mã phường → 0 request, khoá cache theo đúng tiền COD |
+| order r6 | golangci-lint 0; Postgres `-race` 509 PASS, 0 SKIP | Đạt, đóng. Huỷ đơn `QUEUED` gọi `CancelShipment` trước khi ghi; đơn đã huỷ nhận sự kiện giao hàng → bù trừ hoặc soát tay |
+| qa r1 | (compile, lint do agent) | Chờ chạy thật ở nghiệm thu |
+| payment r6 | fmt 0, clippy 0; `--run-payment-only` 121 test, 0 ignored | Đạt, đóng. Tự đóng hàng đợi chỉ với mục có trước phiên và cùng hãng, không đụng `cod_carrier_mismatch`; phiên kẹt >10 phút tự `failed`; delivered muộn sau hoàn chỉ điền mã vận đơn |
+| user r5 | golangci-lint 0; Postgres + Redis thật `-race` 103 PASS, 0 SKIP | Đạt, đóng. SĐT lưu dạng chuẩn, unique chỉ trên số đã xác minh (migration 0008 chạy trên DB rỗng và DB lẫn lộn), Lua E19 chạy trên Redis thật trong `scripts/test-db.sh` |
+
+### 3b-1, review độc lập lượt C (gateway, web; 19:41)
+
+18 phát hiện: 0 P0, 3 P1, 10 P2, 5 P3. Nhận 2–18 → gateway r6 (trần multipart, nhật ký > 4 KiB, UTF-8, URL ảnh, ẩn `shipment_job_status` với người mua) và web r5 (A–N). Mục 1 (giả `X-Forwarded-For` qua BFF) là B02 cũ, giữ ở B5 T2: Next không cho biết IP kết nối, cần edge proxy; 3b-1 làm nặng thêm vì `calculate-fee` mở công khai.
+| product r7 | golangci-lint 0; Postgres `-race` 288 PASS, 0 SKIP; bảng chuỗi của manager đúng hết trừ "mma túy" (chấp nhận) | Đạt. Slug tự sinh không quét, `UpdateProduct` khoá trong transaction, so thanh + chữ. Agent đổi thêm thứ tự khoá `products → skus` ở `UpdateStock`/`DeleteProduct`/`ConfirmStock`/`RestockOrderItems` (manager đọc, hợp lý, sửa luôn việc hồi sinh trạng thái cũ). r8: admin duyệt được khi chỉ slug khớp |
+| contract r2 | đọc diff | Đạt |
+| gateway r6 | golangci-lint 0; `-race` 5 gói xanh | Đạt, đóng. Trần multipart riêng `cod/import`, tóm tắt kiểm toán khi response > 4 KiB, `shipment_job_status` ẩn với người mua |
+| product r8 | golangci-lint 0; Postgres `-race` 288 PASS, 0 SKIP | Đạt, đóng |
+- 2026-11-24 20:03 — 3b-1 **nâng cấp volume 3a cũ**: 14 container (chưa dựng `web`) khoẻ sau 37 s, migration chạy hết, log không ERROR, `invariants.sh` **ĐẠT** (sửa một câu SQL của manager viết sai), DLQ 0.
+| web r5 | eslint 0, prettier 0, tsc 0, check:data 0; 5 file test 88/88 | Đọc phần địa chỉ, checkout, error-map, BFF: đạt; còn kiểm trên trình duyệt thật (gồm: CSP có ghi đè sandbox của nhãn vận đơn không) |
+
+### 3b-1, `make e2e` sớm trên volume cũ (20:03–20:18)
+
+Exit 2; 67 bài PASS, 6 FAIL, 924,9 s. Không bài cũ nào hỏng; cả 6 thuộc 41/42/43 mới.
+
+| Bài đỏ | Nguyên nhân | Xử lý |
+|---|---|---|
+| 41 reviews, 41 banned keywords | **lỗi thật**: từ cấm chỉ tách chữ một phần ("h.a.n.g.c.a.m xk") lọt khe giữa luật (a) và (c) | product r9 (E9-quater) |
+| 42 async shipment (3 subtest) | test gọi `/confirm` trước nên đơn đã PREPARING; hành vi QUEUED/FAILED đúng | qa r2 |
+| 42 COD CSV | test gửi mã hiển thị, hãng nhận `client_order_code` = `order_id` | qa r2; ghi rõ ở contract r3 và gợi ý web r6 (E20-ter) |
+| 43 duplicate order.completed, 43 thiếu order_id | phong bì test thiếu `trace_id`, payload thiếu trường | qa r2 |
+| 43 JSON hỏng | test dò nguyên thân; DLQ thật là phong bì với `original_payload` đã che (NATS seq 4 xác nhận, không lộ OTP) | qa r2 |
+
+### 3b-1, chạy lại 42/43 và trình duyệt thật lượt 1 (20:29–20:45, stack audit, web + 14 backend)
+
+- `go test -run …` 42/43 sau qa r2: EXIT 0, 27,2 s.
+- product r9 **không nhận**: đổi nghĩa E9(a) ("mà túy" lọt; đề của manager có ca âm mâu thuẫn), +384 dòng. Gửi r10 viết gọn.
+- e2e-web 09 test 1 **xanh giả** (return im lặng khi `confirm-received` 409, sai tên trường `image_urls`) → web r7.
+- Trình duyệt (Playwright, 390/768/1440 không tràn ngang): đánh giá (ảnh `http://` bị chặn, bấm đúp chỉ 1 POST 201, HTML thoát, tên che, sao thật trên PDP) ✓; từ cấm (xem trước 1 SP, lưu, trùng → 409, chạy thử, chạy thật → REJECTED + lý do ở trang người bán, sửa SP chứa từ → 400 có thông báo) ✓; giỏ có SKU ngừng bán (khoá, không cộng tiền, xoá được) ✓; PDP ngừng bán 200 + noindex + tương tự ✓; phí PDP ẩn danh đổi theo tỉnh ✓; quy đổi địa chỉ cũ (ô lọc phường tự xoá) ✓; COD chưa xác minh bị chặn → OTP sai 400, đúng → "Đã xác minh" → đặt COD 201 ✓; lỗi hãng 503 → QUEUED → FAILED → "Thử tạo lại" → có mã + nhãn ✓; file COD (công thức CSV bị chặn; khớp 1, lệch 1, thiếu 1; tải lại 0 bút toán, sổ cân) ✓.
+- **Lỗi bắt được trên trình duyệt**: (P1) CSP toàn trang đè `sandbox` của nhãn vận đơn HTML; tên hãng 4 kiểu; mã lý do tiếng Anh ở đối soát; `legacy_*_code` lưu tên; tiêu đề lặp "| NexusMart · NexusMart"; giỏ 390 px vỡ dòng; nhãn cột quét lại sai; "0 biến thể SKU" ở SP bị từ chối → web r8, r9.
+- product r10 (20:44): +96 dòng ròng so với r8, E9(a) khôi phục; golangci-lint 0; Postgres `-race` 308 PASS, 0 test SKIP; bảng chuỗi manager 18/18 ca dương đúng, 3 ca âm "lệch" là luật đã chốt (E9-bis, E9(c)); đối kháng 1.000 từ × 20.000 ký tự × 2 văn bản 1,8 s. **Đạt, đóng.** web r8 đọc diff: đạt.
+
+### 3b-1, nghiệm thu đầy đủ lượt 1 (21:21–, unit systemd `nm3b-accept`)
+
+VM tắt đột ngột lúc 20:48 (lần 4), khởi động lại 21:07; `git fsck` sạch, web r9 chạy tiếp thành r9b. `accept.sh` ghi mốc từng bước để nối lại được.
+
+| Bước | Kết quả |
+|---|---|
+| `make lint`, `make test` | exit 0, exit 0 |
+| dựng lại trên volume đã nâng cấp từ 20:03 + bất biến | exit 0, ĐẠT. Chỉ chứng minh khởi động lại và phục hồi sau mất điện; bằng chứng nâng cấp 3a→3b là lượt 20:03 |
+| volume sạch, `up` | exit 0 |
+| `make seed` ×2 | **exit 2, exit 2** (hai nguyên nhân ở dưới) |
+| `make e2e` (volume sạch, seed dở) | **exit 0**: 73 bài gốc, 208 bài con PASS, 0 FAIL, 0 SKIP, 872,6 s (máy đang tải 15–20 vì phiên khác dựng video) |
+
+Hai lỗi seed bắt được, e2e không thấy:
+- **Hồi quy ở `product`**: `AdminReviewProduct` (APPROVE) nạp SKU trước khi đổi trạng thái rồi trả bản cũ → response `is_active=false`, seed bỏ cả 16 món flash sale (HEAD nạp sau). → product r11.
+- `tools/seed` đặt đơn COD khi chưa xác minh SĐT (E19) → qa r3.
+
+So bộ lọc từ cấm r8 với r10: ba ca chặn nhầm ("hàng cam tươi", "bổ s.u n g", "đa g a") giống hệt nhau, không phải hồi quy; ghi ở `w3-plan.md` §10. Mã `COD_PHONE_NOT_VERIFIED` thống nhất 409 ở contracts, gateway, e2e, e2e-web; sửa 412 cũ trong `w3b-design-a5.md`.
+
+### 3b-1, sửa sau lượt 1 và kiểm lại
+
+| Bước | Kết quả |
+|---|---|
+| `make e2e-web` lượt 1 (volume seed dở) | exit 2: 48 bài, 36 xanh, 12 đỏ. 09/10 chạy thật lần đầu, xanh cả 6 bài; 12 bài đỏ đều do fixture chưa xác minh SĐT trước khi đặt COD → web r10. Dừng lượt 2 vì kết quả sẽ y hệt |
+| khởi động lại dịch vụ (T0) | dừng `notification`, `promotion`, `payment`, `shipping`; trong lúc đó xác nhận nhận hàng và huỷ một đơn đã trả tiền; bật lại: 6 durable giữ nguyên thời điểm tạo, 0 tồn đọng; đơn hoàn tất, đơn huỷ tạo lệnh hoàn, đủ thông báo, bất biến ĐẠT. Lệnh huỷ trả 503 dù đơn đã huỷ (bù trừ khuyến mãi quá hạn, watchdog làm nốt): hành vi cũ, ghi ở `w3-plan.md` §10 |
+| trình duyệt thật lượt 2 (volume sạch, 390/1280) | nhãn vận đơn đúng một CSP `sandbox`; trang thường giữ CSP; giỏ 390 px không tràn, dòng "Không còn bán" có nút xoá; trang ngừng bán `noindex`, gian tương tự đúng tên; số biến thể SKU đúng; tách chữ "c.ầ.n s.a" và "can-sa-thu" bị 400, sản phẩm thường 201; ô OTP `autocomplete="one-time-code"` + bàn phím số; đối soát COD tiếng Việt |
+| `test-db.sh` toàn bộ (product đã r11) | exit 0, 0 skip |
+| product r11, qa r4, web r10 | đạt: product 5 dòng, test đỏ rồi xanh trên cả memory store và Postgres; seed +32 dòng ròng (r3 +309 dòng bị trả lại); e2e-web gom ba bản chờ OTP thành một, −48 dòng; manager chạy lại eslint, prettier, tsc, check:data, 5 file test: xanh |
+| `make seed` ×2 (volume sạch, product r11) | exit 0, exit 0: 16 món flash sale và 6 đơn mẫu; lượt 2 toàn `existing` |
+| lượt 2 (product r11, web r10, seed r4, volume sạch) | `make lint`, `make test`, `make coverage` exit 0 (order 77,0 %, promotion 77,9 %, payment 84,7 %); **`make e2e-web` 48/48**, 297 s; e2e chọn lọc (W3B, FlashSale, Product, Checkout) 23 PASS, 0 FAIL, 134,5 s. Không chạy lại trọn bộ e2e vì từ lượt xanh 872,6 s tới đây phía Go chỉ đổi 5 dòng ở `product` |

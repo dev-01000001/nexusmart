@@ -1,4 +1,4 @@
-# 3b-1 – agent `shipping` (sở hữu `services/shipping/**`, `tools/` phần nạp phường, `tests/e2e/42_*` phần vận chuyển)
+# 3b-1 – agent `shipping` (sở hữu `services/shipping/**`, `tools/` phần nạp phường)
 Migration `000006_` (idempotent, chạy lại mỗi lần khởi động). Theo E1, E15–E18, E21.
 1. E1 consumer TRƯỚC, một commit logic riêng trong báo cáo.
 2. E15 dữ liệu phường: tải nguồn công khai, đối chiếu hai nguồn, báo số thật; `SOURCES.md`; giữ mã cũ. Khởi động lại không upsert lại khi checksum không đổi.
