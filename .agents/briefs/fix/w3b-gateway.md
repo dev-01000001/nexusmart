@@ -1,0 +1,2 @@
+# 3b-1 – agent `gateway` (sở hữu `services/gateway/**`)
+Route theo `w3b-plan.md` và `docs/contracts.md`: đánh giá, từ cấm (admin), ngừng bán, `calculate-fee` công khai + giới hạn IP, OTP SĐT (giới hạn theo người dùng, khoá Redis riêng), nhập CSV COD (parse `encoding/csv`, số tiền chỉ chữ số, giới hạn kích thước/dòng, công thức CSV không được chạy ở nơi nào xuất lại), danh sách phiên đối soát, giỏ có `unavailable`. Không lộ trường nội bộ ra JSON công khai. Audit `targetType` cho route admin mới. Giữ tách giới hạn auth như 3a. Test route + quyền cho từng route.

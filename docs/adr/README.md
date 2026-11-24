@@ -1,6 +1,6 @@
 # Architecture Decision Records (ADR)
 
-Nơi triển khai (Kubernetes tự host hay cloud) **chưa chốt** — đây là quyết định đầu tiên cần viết ADR trước khi chốt các thành phần hạ tầng phụ thuộc.
+Nơi triển khai đã chốt **cục bộ trên `k3d`** (`$0`, không thuê VPS/cloud) theo [ADR-0008](0008-kubernetes-cicd-and-backup.md) (manager chốt ngày 2026-11-24 theo uỷ quyền của chủ dự án).
 
 Mẫu ADR: [0000-template.md](0000-template.md).
 
@@ -16,11 +16,13 @@ Mẫu ADR: [0000-template.md](0000-template.md).
 
 | Số | Tên | Trạng thái | Ngày |
 | --- | --- | --- | --- |
-| [0004](0004-search-service-hybrid-vector.md) | Search service và tìm kiếm hybrid (từ khoá + vector) | Đề xuất | 2026-11-23 |
-| [0005](0005-realtime-chat-and-object-storage.md) | Chat thời gian thực và Object Storage cho media | Đề xuất | 2026-11-23 |
-| [0006](0006-ai-assistant-llm-rag-guardrails.md) | Trợ lý AI — nhà cung cấp LLM, embedding tiếng Việt, RAG và guardrail | Đề xuất | 2026-11-23 |
-| [0007](0007-observability-and-aiops-engine.md) | Hệ thống giám sát (Observability) và AIOps engine bằng Rust | Đề xuất | 2026-11-23 |
-| [0008](0008-kubernetes-cicd-and-backup.md) | Nơi triển khai Kubernetes, CI/CD và sao lưu cơ sở dữ liệu | Đề xuất | 2026-11-23 |
+| [0004](0004-search-service-hybrid-vector.md) | Search service và tìm kiếm hybrid (từ khoá + vector) | Chấp nhận | 2026-11-24 |
+| [0005](0005-realtime-chat-and-object-storage.md) | Chat thời gian thực và Object Storage cho media | Chấp nhận | 2026-11-24 |
+| [0006](0006-ai-assistant-llm-rag-guardrails.md) | Trợ lý AI — nhà cung cấp LLM, embedding tiếng Việt, RAG và guardrail | Chấp nhận | 2026-11-24 |
+| [0007](0007-observability-and-aiops-engine.md) | Hệ thống giám sát (Observability) và AIOps engine bằng Rust | Chấp nhận | 2026-11-24 |
+| [0008](0008-kubernetes-cicd-and-backup.md) | Nơi triển khai Kubernetes, CI/CD và sao lưu cơ sở dữ liệu | Chấp nhận | 2026-11-24 |
+
+> ADR 0004–0008 chuyển sang **Chấp nhận** ngày `2026-11-24` theo uỷ quyền của chủ dự án trong `.agents/briefs/fix/w3-plan.md` §1.1 (chủ dự án không duyệt riêng từng ADR) sau khi tra lại phiên bản và bảo mật. Các cổng còn giữ (push, khoá/tiền/lần gọi thật LLM, sandbox thật, token Telegram, đo RAM B4, tra lại GHSA SeaweedFS trước B2) ghi chi tiết trong từng ADR.
 
 Chạy skill `evaluate-oss` và mở ADR mới khi bắt đầu triển khai từng năng lực dưới đây. Danh sách ứng viên chỉ là điểm xuất phát, chưa tra web kiểm trạng thái trong đợt này:
 

@@ -1,0 +1,2 @@
+# 3b-1 – agent `user` (sở hữu `services/user/**`)
+Theo E19 phần OTP SĐT: `RequestPhoneOTP`/`VerifyPhoneOTP` theo mẫu OTP ngân hàng sẵn có; Lua nguyên tử, so sánh hằng thời gian; SĐT đổi giữa lúc gửi và lúc xác minh → từ chối; SĐT đã xác minh bởi tài khoản khác: theo ràng buộc hiện có, nêu rõ trong báo cáo; sự kiện `user.phone_otp_requested`. OTP không vào log/lỗi/audit. `UpdateProfile` đổi SĐT vẫn hạ `phone_verified`. Kiểm: lint, build, Postgres thật 0 SKIP, bài mới ×5.

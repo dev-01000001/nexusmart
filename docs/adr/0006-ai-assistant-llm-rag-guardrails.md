@@ -1,7 +1,7 @@
 # ADR-0006: Trợ lý AI — nhà cung cấp LLM, embedding tiếng Việt, RAG và guardrail
 
-- **Trạng thái**: Đề xuất
-- **Ngày**: 2026-11-23
+- **Trạng thái**: Chấp nhận
+- **Ngày**: 2026-11-23 (chấp nhận 2026-11-24 theo uỷ quyền)
 
 ## Bối cảnh
 
@@ -24,15 +24,16 @@
 
 ### Phần A — Nhà cung cấp LLM qua API
 
-Giá chuẩn tính theo **1 triệu token (MTok)**, tra cứu ngày `2026-11-23`:
+Giá chuẩn tính theo **1 triệu token (MTok)** (OpenAI cập nhật tra cứu ngày `2026-11-24`; Gemini/Claude theo đợt tra `2026-11-23` — mọi bảng giá chính thức phải tra lại trước lần gọi thật đầu tiên):
 
 1. **OpenAI API**
-   - **Model tiêu biểu & giá**:
-     - Chính (tốc độ + chi phí cân bằng): **GPT-5 Mini** (`$0.25` input / `$0.025` cached / `$2.00` output).
-     - Dự phòng khi chạm trần ngân sách ngày (`UC-AI14`): **GPT-5 Nano** (`$0.05` input / `$0.005` cached / `$0.40` output) hoặc **GPT-4o Mini** (`$0.15` / `$0.60`).
-     - Cao cấp (tùy chọn cho AIOps RCA): **GPT-5** (`$1.25` / `$10.00`) hoặc **GPT-4.1** (`$2.00` / `$8.00`).
-   - **SDK Go / Rust**: Go chính thức `github.com/openai/openai-go` (**Apache-2.0**); Rust gọi REST/SSE trực tiếp bằng `reqwest` (đã có trong `services/payment`) hoặc `async-openai`.
-   - **Kỹ thuật**: Function calling + Structured Outputs strict JSON rất ổn định; SSE TTFT ~0.5–1.2s trên dòng Mini/Nano; Prompt Caching giảm 90% input; hỗ trợ Batch API (-50%) cho `UC-AI05`/eval; dùng chung 1 API key với `text-embedding-3-small`.
+   - **Cảnh báo vòng đời model (tra `2026-11-24`)**: `gpt-5`, `gpt-5-mini`, `gpt-5-nano` **tắt ngày `2026-12-11`**; `gpt-4.1`, `gpt-4o-mini` **tắt ngày `2027-01-14`** → không dùng làm mặc định.
+   - **Model gợi ý & giá bậc Standard (tra `2026-11-24`; tên model cấu hình qua `LLM_MODEL`, mặc định chạy `mock`)**:
+     - Trợ lý mua hàng / tác vụ nhẹ (`services/ai-assistant`): **`gpt-6-luna`** (`$0.10` vào / `$0.01` cache / `$0.50` ra mỗi 1M token).
+     - AIOps RCA / tác vụ suy luận sâu (`services/aiops`, `UC-OPS03`): **`gpt-6.1-terra`** (`$1.00` vào / `$0.05` cache / `$5.00` ra mỗi 1M token).
+     - Embedding: giữ **`text-embedding-3-small`** (`$0.02/1M`, Batch `$0.01/1M`, `1536` dims).
+   - **SDK Go / Rust**: Go chính thức **`github.com/openai/openai-go/v3` `v3.106.0`** (**Apache-2.0**; nhánh v1 đã dừng ở `v1.12.0`); Rust gọi REST/SSE trực tiếp bằng `reqwest` (đã có trong `services/payment`) hoặc `async-openai`.
+   - **Kỹ thuật**: Function calling + Structured Outputs strict JSON ổn định; SSE TTFT thấp trên dòng nhẹ; Prompt Caching giảm mạnh chi phí input; hỗ trợ Batch API (-50%) cho `UC-AI05`/eval; dùng chung 1 API key với `text-embedding-3-small`.
 
 2. **Google Gemini API (Google AI Studio / Vertex AI)**
    - **Model tiêu biểu & giá**:
@@ -50,13 +51,13 @@ Giá chuẩn tính theo **1 triệu token (MTok)**, tra cứu ngày `2026-11-23`
 
 #### Bảng so sánh — Nhà cung cấp LLM API
 
-| Tiêu chí | OpenAI (GPT-5 Mini / Nano) | Google Gemini (Flash-Lite / 3.8 Flash) | Anthropic Claude (Haiku 5.5 / Sonnet 5.5) |
+| Tiêu chí | OpenAI (`gpt-6-luna` / `gpt-6.1-terra`) | Google Gemini (Flash-Lite / 3.8 Flash) | Anthropic Claude (Haiku 5.5 / Sonnet 5.5) |
 | --- | --- | --- | --- |
-| Độ khớp tiêu chí (TTFT < 2s, tool calling, tiếng Việt, SSE) | **Rất tốt** (tool calling strict schema ổn định nhất, TTFT < 1.2s) | **Rất tốt** (tiếng Việt mượt, TTFT < 1s; tool calling tốt) | **Rất tốt** (chống bịa & prompt injection xuất sắc; Haiku 5.5 TTFT < 1s) |
+| Độ khớp tiêu chí (TTFT < 2s, tool calling, tiếng Việt, SSE) | **Rất tốt** (tool calling strict schema ổn định, cấu hình qua `LLM_MODEL`) | **Rất tốt** (tiếng Việt mượt, TTFT < 1s; tool calling tốt) | **Rất tốt** (chống bịa & prompt injection xuất sắc; Haiku 5.5 TTFT < 1s) |
 | Độ phức tạp vận hành | **Thấp** (1 API key chung LLM + Embedding) | **Thấp** (1 API key chung LLM + Embedding) | Trung bình (cần thêm nhà cung cấp Embedding riêng) |
-| Chi phí (LLM chính + fallback) | **Rất thấp** ($0.25/$2.00; fallback $0.05/$0.40) | Thấp ($0.25–0.75 / $1.50–3.75; có free tier dev) | **Rất thấp ở Haiku** ($0.10/$0.50); trung bình ở Sonnet ($2/$10) |
-| Giấy phép (SDK / Dịch vụ) | SDK **Apache-2.0**; API thương mại (không dùng API data để train) | SDK **Apache-2.0**; API thương mại (lưu ý tắt free tier khi có dữ liệu thật) | SDK **MIT**; API thương mại (không dùng API data để train) |
-| Mức độ trưởng thành | Rất cao (chuẩn công nghiệp, Go SDK chín muồi) | Cao (`go-genai` mới thay `generative-ai-go`) | Rất cao (`anthropic-sdk-go/v2` ổn định) |
+| Chi phí (LLM chính / RCA, Standard) | **Rất thấp** (`$0.10/$0.50` assistant; `$1.00/$5.00` RCA, tra `2026-11-24`) | Thấp (`$0.25–0.75 / $1.50–3.75`; có free tier dev) | **Rất thấp ở Haiku** (`$0.10/$0.50`); trung bình ở Sonnet (`$2/$10`) |
+| Giấy phép (SDK / Dịch vụ) | SDK `openai-go/v3` **Apache-2.0**; API thương mại (không dùng API data để train) | SDK **Apache-2.0**; API thương mại (lưu ý tắt free tier khi có dữ liệu thật) | SDK **MIT**; API thương mại (không dùng API data để train) |
+| Mức độ trưởng thành | Rất cao (chuẩn công nghiệp, Go SDK `v3.106.0` tích cực) | Cao (`go-genai` mới thay `generative-ai-go`) | Rất cao (`anthropic-sdk-go/v2` ổn định) |
 
 ---
 
@@ -76,42 +77,51 @@ Giá chuẩn tính theo **1 triệu token (MTok)**, tra cứu ngày `2026-11-23`
 
 ### Phần C — Chi phí ước tính cho đồ án & demo (2 tháng phát triển + eval + demo)
 
-Giả định trung bình 1 lượt tư vấn RAG tốn `~2.500` input token (system prompt + top-5 SP/chính sách + lịch sử 4 lượt) và `~500` output token; 1 sản phẩm ~`200` token để tạo embedding:
+Giả định trung bình 1 lượt tư vấn RAG tốn `~2.500` input token (system prompt + top-5 SP/chính sách + lịch sử 4 lượt) và `~500` output token; 1 sản phẩm `~200` token để tạo embedding.
 
-| Hạng mục | Quy mô ước tính | Phương án OpenAI (`gpt-5-mini` + `3-small`) | Phương án Gemini (`3.5-flash-lite` + `gemini-emb-001`) | Phương án Claude (`haiku-5.5` + `voyage-4`) |
+- **Công thức tính cho cột OpenAI** (bậc Standard, tra `2026-11-24`):
+  - `chi_phí = (M_in × giá_in) + (M_cache × giá_cache) + (M_out × giá_out)`.
+  - Embedding (`text-embedding-3-small`): `$0.02 / 1M` (Batch `$0.01 / 1M`).
+  - Assistant (`gpt-6-luna`): `$0.10` vào / `$0.01` cache / `$0.50` ra mỗi 1M token.
+  - AIOps RCA (`gpt-6.1-terra`): `$1.00` vào / `$0.05` cache / `$5.00` ra mỗi 1M token.
+  - Mức "có cache" dưới đây giả định tỷ lệ cache hit `50%` trên input của eval và demo.
+
+| Hạng mục | Quy mô ước tính | Phương án OpenAI (`gpt-6-luna` + `gpt-6.1-terra` + `3-small`) | Phương án Gemini (`3.5-flash-lite` + `gemini-emb-001`) | Phương án Claude (`haiku-5.5` + `voyage-4`) |
 | --- | --- | --- | --- | --- |
-| Index embedding ban đầu | 50.000 SP (~10M tok) + 20% re-index (~2M tok) | **$0.24** | **$1.80** | **$0.72** (`voyage-4`) |
-| Chạy eval set 100 câu | 20 vòng chỉnh prompt/model (5M in + 1M out) | **$3.25** (~$2.00 có cache) | **$2.75** | **$1.00** (Haiku) / ~$12 (Sonnet) |
-| Demo & test tương tác | 3.000 lượt chat (7.5M in + 1.5M out) | **$4.88** (~$3.20 có cache) | **$4.13** | **$1.50** (Haiku) |
-| Tóm tắt đánh giá (`UC-AI05`) + gợi ý chat (`UC-AI10`) | 1.000 lượt (2M in + 0.4M out) | **$1.30** | **$1.10** | **$0.40** |
-| AIOps RCA (`UC-OPS03`) | 100 sự cố (0.5M in + 0.15M out, dùng model mạnh) | **$2.13** (`gpt-5`) | **$2.50** (`3.1-pro`) | **$2.50** (`sonnet-5.5`) |
-| **Tổng cộng dự kiến** | **Trọn gói 2 tháng + bảo vệ đồ án** | **~$10 – $12 USD** | **~$12 – $13 USD** | **~$6 – $17 USD** |
+| Index embedding ban đầu | 50.000 SP (`10M` tok) + 20% re-index (`2M` tok) = `12M` tok | **$0.24** (`12 × $0.02`; Batch `$0.12`) | **$1.80** | **$0.72** (`voyage-4`) |
+| Chạy eval set 100 câu | 20 vòng chỉnh prompt/model (`5M` in + `1M` out) | **$1.00** (`5×$0.10 + 1×$0.50`; có cache 50%: `2.5×$0.10 + 2.5×$0.01 + 1×$0.50 = $0.78`) | **$2.75** | **$1.00** (Haiku) / ~$12 (Sonnet) |
+| Demo & test tương tác | 3.000 lượt chat (`7.5M` in + `1.5M` out) | **$1.50** (`7.5×$0.10 + 1.5×$0.50`; có cache 50%: `3.75×$0.10 + 3.75×$0.01 + 1.5×$0.50 = $1.16`) | **$4.13** | **$1.50** (Haiku) |
+| Tóm tắt đánh giá (`UC-AI05`) + gợi ý chat (`UC-AI10`) | 1.000 lượt (`2M` in + `0.4M` out) | **$0.40** (`2×$0.10 + 0.4×$0.50`) | **$1.10** | **$0.40** |
+| AIOps RCA (`UC-OPS03`) | 100 sự cố (`0.5M` in + `0.15M` out, model mạnh) | **$1.25** (`0.5×$1.00 + 0.15×$5.00`, `gpt-6.1-terra`) | **$2.50** (`3.1-pro`) | **$2.50** (`sonnet-5.5`) |
+| **Tổng cộng dự kiến** | **Trọn gói 2 tháng + bảo vệ đồ án** | **~$3.83 – $4.39 USD** (`$4.39` không cache; `$3.83` có cache 50%) | **~$12 – $13 USD** | **~$6 – $17 USD** |
 
-*(Đặt trần chi tiêu ngày `$1–2/ngày` ở ứng dụng + Monthly Hard Cap `$20/tháng` trên dashboard nhà cung cấp đảm bảo không phát sinh hoá đơn bất ngờ.)*
+*(Các con số trên chỉ là ước tính tham khảo theo bảng giá tra `2026-11-24`. **Bảng giá chính thức phải tra lại trước lần gọi thật đầu tiên.** Không tự đặt ngân sách hay mở tài khoản: trần chi tiêu ngày/tháng trên ứng dụng và dashboard nhà cung cấp sẽ cấu hình theo mức chủ dự án chốt khi hỏi trước lần gọi LLM thật đầu tiên.)*
 
 ---
 
 ### Phần D — Cơ chế giữ khoá API ngoài repo & kiểm soát an toàn
 
 1. **Local dev**: khai báo `LLM_API_KEY`, `EMBEDDING_API_KEY` trong `.env` (đã nằm trong `.gitignore`); `.env.example` chỉ chứa giá trị rỗng và mặc định `AI_LLM_MODE=mock` để CI / `make e2e` chạy không cần key thật (giống `VIETQR_MODE=mock`, `GHN_MODE=mock`).
-2. **Staging / Production trên K8s (`ADR-0008`)**: tiêm qua **Kubernetes Secret** (quản lý bằng **SOPS `v3.13.3` + `age`** khi tự host, hoặc **External Secrets Operator `v2.15.0`** kéo từ Secret Manager khi lên cloud); tuyệt đối không ghi key vào `values.yaml`, Dockerfile hay CLI args.
-3. **Tách biệt & giới hạn thiệt hại**: tách 2 API key riêng (`staging` và `production`), giới hạn spend limit từng key trên portal nhà cung cấp, xoay vòng định kỳ; mọi log JSON trong `pkg/common/logger` và Rust `aiops` tự động che `*_API_KEY` / `Authorization`.
+2. **Staging / Production trên K8s (`ADR-0008`)**: tiêm qua **Kubernetes Secret** (quản lý bằng **SOPS `v3.13.3` (MPL-2.0) chỉ dùng backend `age v1.3.2` (BSD-3-Clause), không gắn `VAULT_TOKEN`** khi chạy `k3d`/tự host, hoặc External Secrets Operator nếu sau này chủ dự án duyệt lên cloud); tuyệt đối không ghi key vào `values.yaml`, Dockerfile hay CLI args.
+3. **Tách biệt & giới hạn thiệt hại**: tách 2 API key riêng (`staging` và `production`), giới hạn spend limit từng key trên portal nhà cung cấp theo mức chủ dự án duyệt, xoay vòng định kỳ; mọi log JSON trong `pkg/common/logger` và Rust `aiops` tự động che `*_API_KEY` / `Authorization`.
 
 ## Quyết định
 
 - **Đề xuất**:
-  1. **Kiến trúc provider-agnostic**: xây `services/ai-assistant` bằng **Go** với 2 interface `LLMClient` (hỗ trợ SSE streaming + tool calling) và `Embedder` (tương tự pattern `Carrier` ở `services/shipping`), hỗ trợ **mode `mock`** cho CI/test và **tự động hạ cấp sang model rẻ hơn** khi chạm ngân sách ngày (`UC-AI14`).
-  2. **Bộ model mặc định đề xuất**: **OpenAI `gpt-5-mini`** (model chính) + **`gpt-5-nano`** (fallback ngân sách) + **`text-embedding-3-small`** (`1536` dims) trên **`pgvector v0.8.7`** (`pgvector/pgvector:pg16`).
-     - *Lý do*: chỉ cần **1 API key / 1 billing**, chi phí trọn gói đồ án thấp (~$10–12), function calling (`UC-AI03/AI04`) với strict schema ổn định nhất, TTFT < 1.2 giây, và khi kết hợp hybrid keyword từ Meilisearch (`ADR-0004`), chất lượng tìm kiếm tiếng Việt của `text-embedding-3-small` đạt mức rất tốt.
-     - *Phương án thay thế ngang hàng*: nếu chủ dự án ưu tiên **Google Gemini** (`gemini-3.5-flash-lite` + `gemini-embedding-001`) hoặc **Claude Haiku 5.5 / Sonnet 5.5 + `voyage-4`**, kiến trúc interface cho phép chọn/đổi chỉ bằng biến môi trường `AI_PROVIDER`.
+  1. **Kiến trúc provider-agnostic & mặc định `mock`**: xây `services/ai-assistant` bằng **Go** với 2 interface `LLMClient` (hỗ trợ SSE streaming + tool calling) và `Embedder` (tương tự pattern `Carrier` ở `services/shipping`), **mặc định và CI chạy `mock`** (`AI_LLM_MODE=mock`), hỗ trợ **tự động hạ cấp sang model rẻ hơn / tắt tính năng phụ** khi chạm ngân sách ngày (`UC-AI14`).
+  2. **Adapter OpenAI & cấu hình model (`LLM_MODEL`)**: dùng SDK **`github.com/openai/openai-go/v3` (`v3.106.0`, Apache-2.0)**; tên model là cấu hình qua biến môi trường (`LLM_MODEL`, `AIOPS_LLM_MODEL`), không hardcode trong code. Khi chạy thật (chỉ sau khi hỏi chủ dự án): gợi ý **`gpt-6-luna`** cho assistant, **`gpt-6.1-terra`** cho AIOps RCA, và giữ **`text-embedding-3-small`** (`1536` dims) trên **`pgvector v0.8.7`** (`pgvector-go v0.4.1`; Compose dùng `pgvector/pgvector:pg16`, K8s CNPG dùng custom image từ `ghcr.io/cloudnative-pg/postgresql:16.16` + `postgresql-16-pgvector` theo `ADR-0008`).
+     - *Lý do*: chỉ cần **1 API key / 1 billing**, chi phí ước tính thấp (`~$3.83–$4.39` theo giá tra `2026-11-24`), tránh toàn bộ 5 model OpenAI cũ sắp ngừng hoạt động (`2026-12-11` / `2027-01-14`), function calling strict schema ổn định, và khi kết hợp hybrid keyword từ Meilisearch (`ADR-0004`), chất lượng tìm kiếm tiếng Việt của `text-embedding-3-small` đạt mức rất tốt.
+     - *Phương án thay thế ngang hàng*: nếu sau này đổi sang **Google Gemini** hoặc **Anthropic Claude + `voyage-4`**, kiến trúc interface cho phép đổi chỉ bằng biến môi trường `AI_PROVIDER` và `LLM_MODEL`.
   3. **Bảo mật & Guardrail bắt buộc**:
      - **Zero-privilege tool execution**: mọi tool (`getOrderStatus`, `addToCart`) gọi gRPC sang `order`/`cart`/`product` bằng **đúng JWT Bearer của người dùng** (cấm dùng `SERVICE_JWT_SECRET`); `addToCart` chỉ tạo đề xuất có mã xác nhận để người dùng bấm đồng ý trên UI trước khi thực thi.
      - **Kiểm soát đầu vào/đầu ra & chi phí**: chặn input quá dài (> 1.500 ký tự), lọc pattern prompt injection, dùng system prompt cô lập dữ liệu truy xuất trong thẻ `<context>` (không tin dữ liệu mô tả sản phẩm từ seller); Redis token bucket `ai:quota:user:<uid>` (ví dụ 20.000 tok/ngày/user → `429` + `Retry-After`) và `ai:budget:day:<YYYY-MM-DD>`; output filter che system prompt/JWT/PII.
 - **Điều kiện kích hoạt chuyển đổi**:
   - Đổi Embedding sang **`voyage-4`** nếu kết quả eval `UC-AI13` cho thấy Recall@5 tiếng Việt < 85% dù đã bật hybrid search.
-  - Chuyển model chính sang **Claude Sonnet 5.5** hoặc **GPT-5** cho các luồng yêu cầu độ chính xác cao nếu tỷ lệ bịa SP (hallucination) trên eval set > 2%.
-- **Phụ thuộc**: `ADR-0004` (`pgvector` & `Search.HybridSearch`), `ADR-0005` (tích hợp `UC-AI10` gợi ý trả lời chat và `UC-AI12` chuyển tiếp CSKH), `ADR-0007` (dùng chung provider/chính sách key cho AIOps RCA), `ADR-0008` (quản lý Secret trên K8s).
-- **Chủ dự án quyết**: (trống)
+  - Nâng `LLM_MODEL` của assistant sang **`gpt-6.1-terra`** (hoặc Claude Sonnet 5.5) cho các luồng yêu cầu độ chính xác cao nếu tỷ lệ bịa SP (hallucination) trên eval set > 2%.
+- **Phụ thuộc**: `ADR-0004` (`pgvector` & `Search.HybridSearch`), `ADR-0005` (tích hợp `UC-AI10` gợi ý trả lời chat và `UC-AI12` chuyển tiếp CSKH), `ADR-0007` (dùng chung provider/chính sách key cho AIOps RCA), `ADR-0008` (quản lý Secret SOPS+`age` và custom Postgres image trên `k3d`).
+- **Chủ dự án quyết**: 2026-11-24: chủ dự án uỷ quyền cho manager chốt theo phương án đề xuất (nguyên văn: «mấy câu hỏi bạn từ đề xuất tự làm luôn đi»). Chủ dự án không duyệt riêng từng ADR.
+  - **Chốt (`w3-plan.md` §1.1 câu 4)**: Adapter OpenAI (`github.com/openai/openai-go/v3 v3.106.0`), mặc định và CI chạy `mock`, tên model cấu hình qua `LLM_MODEL` (gợi ý `gpt-6-luna` cho assistant, `gpt-6.1-terra` cho RCA, giữ `text-embedding-3-small`).
+  - **Cổng còn giữ**: máy không có khoá API; **khoá LLM, tiền, ngân sách, không tự mở tài khoản và lần gọi LLM thật đầu tiên đều phải hỏi chủ dự án** (dữ liệu sản phẩm ra ngoài, tốn tiền); **bảng giá chính thức phải tra lại trước lần gọi thật đầu tiên**; push vẫn phải hỏi chủ dự án từng lần.
 
 ## Hệ quả
 
@@ -135,8 +145,23 @@ Giả định trung bình 1 lượt tư vấn RAG tốn `~2.500` input token (sy
 ## Câu hỏi chủ dự án cần trả lời
 
 1. **Chủ dự án đang có sẵn tài khoản/credit API của nhà cung cấp nào** (OpenAI, Google Gemini, Anthropic Claude) và **ngân sách tối đa cho toàn bộ đợt phát triển + demo** là bao nhiêu USD?
+   - **Trả lời (`w3-plan.md` §1.1 câu 4)**: Chốt adapter OpenAI, mặc định và CI chạy `mock`. Máy không có khoá API; không tự mở tài khoản và không tự đặt ngân sách — khoá LLM, tiền, ngân sách và lần gọi LLM thật đầu tiên đều phải hỏi chủ dự án.
 2. **Có chốt dùng 1 nhà cung cấp duy nhất** (ví dụ OpenAI cho cả LLM + Embedding để gọn vận hành) hay chấp nhận **ghép 2 nhà cung cấp** (ví dụ Claude cho LLM + Voyage/OpenAI cho Embedding)?
+   - **Trả lời (`w3-plan.md` §1.1 câu 4)**: Chốt 1 nhà cung cấp OpenAI (`LLM_MODEL` cấu hình, gợi ý `gpt-6-luna` / `gpt-6.1-terra` + `text-embedding-3-small`) qua interface trừu tượng, đổi được sau.
 3. **Ngưỡng đạt tối thiểu cho bộ eval 100 câu (`UC-AI13`)** để đưa vào báo cáo đồ án là bao nhiêu (đề xuất: Recall@5 ≥ 85%, Groundedness ≥ 90%, Hallucination SP ≤ 2%)?
+   - **Trả lời**: Chưa chốt, mặc định đề xuất trong ADR (Recall@5 ≥ 85%, Groundedness ≥ 90%, Hallucination SP ≤ 2%), đổi được sau.
+
+## Tra lại 2026-11-24
+
+- **Đổi toàn bộ model LLM OpenAI & Go SDK**: `gpt-5`, `gpt-5-mini`, `gpt-5-nano` tắt `2026-12-11`; `gpt-4.1`, `gpt-4o-mini` tắt `2027-01-14`. Chốt tên model cấu hình qua `LLM_MODEL` (mặc định chạy `mock`); gợi ý `gpt-6-luna` (`$0.10`/`$0.01`/`$0.50` mỗi 1M token, Standard) cho assistant, `gpt-6.1-terra` (`$1.00`/`$0.05`/`$5.00`) cho RCA; giữ `text-embedding-3-small` (`$0.02/1M`, Batch `$0.01`); đổi Go SDK sang `github.com/openai/openai-go/v3 v3.106.0` (Apache-2.0). Đã tính lại bảng chi phí Phần C (`~$3.83–$4.39 USD`) và yêu cầu tra lại bảng giá chính thức trước lần gọi thật đầu tiên.
+- **Liên đới `pgvector` & Secret (`ADR-0004`, `ADR-0008`)**: nâng `pgvector-go` `v0.4.0` → `v0.4.1`; Compose dùng `pgvector/pgvector:pg16`, K8s CNPG dùng custom image từ `ghcr.io/cloudnative-pg/postgresql:16.16` + `postgresql-16-pgvector`; SOPS `v3.13.3` (MPL-2.0) chỉ dùng backend `age v1.3.2` (BSD-3-Clause), không gắn `VAULT_TOKEN` (`GHSA-jgf3-f6rg-8x3h`).
+- **Nguồn**:
+  - https://platform.openai.com/docs/deprecations
+  - https://openai.com/api/pricing/
+  - https://developers.openai.com/api/docs/pricing
+  - https://github.com/openai/openai-go/releases/tag/v3.106.0
+  - https://github.com/getsops/sops/security/advisories/GHSA-jgf3-f6rg-8x3h
+  - https://github.com/FiloSottile/age/releases/tag/v1.3.2
 
 ## Ngày kiểm tra trạng thái ứng viên
 

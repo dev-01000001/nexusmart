@@ -1,7 +1,7 @@
 # ADR-0005: Chat thời gian thực và Object Storage cho media
 
-- **Trạng thái**: Đề xuất
-- **Ngày**: 2026-11-23
+- **Trạng thái**: Chấp nhận
+- **Ngày**: 2026-11-23 (chấp nhận 2026-11-24 theo uỷ quyền)
 
 ## Bối cảnh
 
@@ -54,10 +54,10 @@
 > **Cảnh báo tra web (2026-11-23)**: **MinIO Community (`minio/minio`, AGPL-3.0) bị loại** vì đã ngừng phát hành binary/image công khai từ 10/2025, chuyển maintenance mode từ 12/2025 và **lưu trữ (`archived`) read-only ngày 2026-04-25**, không còn bản vá bảo mật CVE.
 
 1. **SeaweedFS (Open Source Edition)**
-   - **Phiên bản & bảo trì**: `seaweedfs/seaweedfs` `v4.42` (2026-08), tiếp tục cập nhật đều đặn trên GitHub; viết bằng Go.
+   - **Phiên bản & bảo trì**: `seaweedfs/seaweedfs` tối thiểu **`4.55`** (`2026-11-23`), tiếp tục cập nhật đều đặn trên GitHub; viết bằng Go. *(Không dùng `v4.42` hay các bản `<= 4.47` do loạt GHSA công bố `2026-11-09` — xem mục `Tra lại 2026-11-24`.)*
    - **Giấy phép**: **Apache-2.0** (bản Open Source trên GitHub; bản Enterprise tính phí riêng cho tính năng doanh nghiệp nâng cao).
-   - **Client Go / Rust**: Giao tiếp qua **S3 API chuẩn** bằng `github.com/aws/aws-sdk-go-v2/service/s3` `v1.115.0` (Apache-2.0) và Rust crate `aws-sdk-s3` `v1.161.0` (Apache-2.0) — không khoá nhà cung cấp.
-   - **Vận hành & K8s**: 1 container đơn (`weed server -s3` / `weed mini`) trong `docker-compose.yml` (~150–250 MB RAM); có Helm chart và `seaweedfs-operator` chính thức cho K8s; hỗ trợ presigned URL, bucket lifecycle, Prometheus `/metrics`. Đáp ứng chung cho ảnh chat, ảnh SP/review và mục tiêu S3 cho backup WAL (`UC-OPS09`).
+   - **Client Go / Rust**: Giao tiếp qua **S3 API chuẩn** bằng `github.com/aws/aws-sdk-go-v2/service/s3` `v1.116.0` (Apache-2.0) và Rust crate `aws-sdk-s3` `v1.161.0` (Apache-2.0) — không khoá nhà cung cấp.
+   - **Vận hành & K8s**: 1 container đơn (`weed server -s3` / `weed mini`) trong `docker-compose.yml` (~150–250 MB RAM); có Helm chart và `seaweedfs-operator` chính thức cho K8s; hỗ trợ presigned URL, bucket lifecycle, Prometheus `/metrics`. Bắt buộc khoá mạng nội bộ (chỉ mở cổng S3 trong mạng nội bộ compose/k8s, tắt S3 Tables/Iceberg/Lance/STS, bắt buộc filer signing key). Đáp ứng chung cho ảnh chat, ảnh SP/review và mục tiêu S3 cho backup WAL (`UC-OPS09`).
 
 2. **Garage (Deuxfleurs)**
    - **Phiên bản & bảo trì**: `Deuxfleurs/garage` `v2.5.0` (2026-10-24); viết bằng Rust, bảo trì đều bởi tập thể Deuxfleurs.
@@ -90,16 +90,19 @@
   1. **Chat**: Xây `services/chat` bằng **Go + `coder/websocket` (`v1.8.15`) + Redis 7 Pub/Sub + `chat_db` (PostgreSQL 16)**.
      - Xác thực WS an toàn: trình duyệt gọi `POST /api/v1/chat/ws-ticket` (qua BFF/JWT như bình thường) để lấy **ticket dùng 1 lần TTL 30 giây** lưu trên Redis (`chat:ws_ticket:<id>`), rồi mở WS với `?ticket=...` — tránh đưa JWT dài hạn lên URL/access log.
      - `services/gateway` mở reverse proxy WS (`/api/v1/chat/ws`) có kiểm origin/ticket và heartbeat ping/pong 30s; khi người nhận offline, `services/chat` phát event `chat.message.offline` lên NATS để `services/notification` tạo thông báo in-app/push.
-  2. **Object Storage**: Chọn **SeaweedFS (`v4.42`, Apache-2.0)** cho môi trường local/tự host/K8s, và chuẩn hoá mọi giao tiếp qua **S3 API (`aws-sdk-go-v2/service/s3`)** để đổi sang **Managed S3 (R2/Spaces/GCS/S3)** chỉ bằng biến môi trường (`S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION`) nếu `ADR-0008` chọn cloud.
-     - Luồng gửi ảnh dùng **Presigned PUT URL** (TTL 5 phút, giới hạn ≤ 5 MB, chỉ `image/jpeg|png|webp`, `services/chat` kiểm tra `HEAD`/magic bytes khi đính kèm) — không đẩy binary qua Next.js BFF hay `services/gateway` (tránh rủi ro cạn RAM như `PLT-B6`).
+  2. **Object Storage**: Chọn **SeaweedFS (tối thiểu `4.55`, Apache-2.0)** cho môi trường local/tự host/`k3d`, và chuẩn hoá mọi giao tiếp qua **S3 API (`aws-sdk-go-v2/service/s3 v1.116.0`)** để có thể đổi sang **Managed S3 (R2/Spaces/GCS/S3)** chỉ bằng biến môi trường (`S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION`) nếu sau này chủ dự án duyệt lên cloud.
+     - **Ràng buộc bảo mật bắt buộc cho SeaweedFS (tra 2026-11-24)**: tối thiểu bản **`4.55`** (`2026-11-23`), **KHÔNG khẳng định `4.55` đã vá hết** vì metadata GHSA công bố `2026-11-09` vẫn để trống trường `patched` (gồm các Critical `GHSA-25hp-4mw7-9c75`, `GHSA-p983-2j86-34vj`, `GHSA-jq8h-9mjh-xv8f`, `GHSA-47fc-cj9r-ghpm`, `GHSA-f6rh-hw92-h9rx`). Trước khi triển khai B2 phải tra lại từng GHSA. Khi chạy bắt buộc: **chỉ mở cổng S3 trong mạng nội bộ compose/k8s**, **không công bố cổng gRPC/admin/STS/S3 Tables/Iceberg ra host**, **không bật S3 Tables/Iceberg/Lance/STS**, **presigned URL đi qua gateway hoặc domain nội bộ** (proxy streaming có kiểm giới hạn, không buffer toàn bộ binary qua Next.js BFF để tránh cạn RAM như `PLT-B6`), và **bắt buộc cấu hình filer signing key**. **Nếu tại thời điểm B2 vẫn còn Critical chưa vá chạm cấu hình này thì dừng, hỏi lại.**
+     - Luồng gửi ảnh dùng **Presigned PUT URL** (TTL 5 phút, giới hạn ≤ 5 MB, chỉ `image/jpeg|png|webp`, `services/chat` kiểm tra `HEAD`/magic bytes khi đính kèm) đi qua gateway/domain nội bộ (không đẩy binary qua Next.js BFF).
      - Bucket tách rõ: `nexusmart-media-public` (ảnh SP/đánh giá), `nexusmart-chat-private` (ảnh chat truy cập qua presigned GET URL có kiểm quyền thành viên hội thoại), `nexusmart-backups` (cho `UC-OPS09`).
 - **Điều kiện kích hoạt chuyển đổi**:
   - Chuyển tầng WS sang **Centrifugo OSS** nếu vượt > 20.000–50.000 kết nối đồng thời hoặc cần nhiều tính năng real-time ngoài chat (live presence toàn sàn, notification push fan-out cực lớn).
-  - Đổi SeaweedFS sang **Managed S3** ngay khi triển khai production trên cloud (`ADR-0008`).
+  - Đổi SeaweedFS sang **Garage** hoặc **Managed S3** nếu tại thời điểm B2 còn lỗ hổng Critical chưa vá chạm cấu hình S3 nội bộ (dừng, hỏi lại chủ dự án), hoặc khi chủ dự án duyệt triển khai production trên cloud.
 - **Phụ thuộc**:
   - `ADR-0001` (edge gateway Envoy/Traefik phải bật `Upgrade: websocket` và idle timeout phù hợp).
-  - `ADR-0008` (chốt nơi triển khai tự host vs cloud để chọn SeaweedFS hay Managed S3 cho production).
-- **Chủ dự án quyết**: (trống)
+  - `ADR-0008` (đã chốt `k3d` cục bộ, không thuê VPS/cloud).
+- **Chủ dự án quyết**: 2026-11-24: chủ dự án uỷ quyền cho manager chốt theo phương án đề xuất (nguyên văn: «mấy câu hỏi bạn từ đề xuất tự làm luôn đi»). Chủ dự án không duyệt riêng từng ADR.
+  - **Chốt (`w3-plan.md` §1.1 câu 3)**: Tự viết `services/chat` (`coder/websocket v1.8.15` + Redis Pub/Sub) và chọn SeaweedFS tối thiểu `4.55` (Apache-2.0) gọi qua S3 API (`aws-sdk-go-v2/service/s3 v1.116.0`) kèm đầy đủ ràng buộc cô lập mạng và bảo mật ở trên.
+  - **Cổng còn giữ**: đo RAM sau khi thêm; trước khi triển khai B2 phải tra lại từng GHSA Critical công bố 2026-11-09 — nếu còn Critical chưa vá chạm cấu hình này thì dừng, hỏi lại; không tự mở tài khoản cloud trả phí; push vẫn phải hỏi chủ dự án từng lần.
 
 ## Hệ quả
 
@@ -108,13 +111,13 @@
   - *Tiêu cực*: phải tự quản lý vòng đời kết nối WS (graceful shutdown khi rolling update K8s, backpressure khi client chậm, giới hạn số kết nối/user).
 - **SeaweedFS qua S3 API chuẩn (đề xuất)**:
   - *Tích cực*: loại bỏ rủi ro MinIO bị archive; Apache-2.0 sạch pháp lý; giải quyết 1 lần cho cả ảnh chat, ảnh sản phẩm (`UC-S02`), đánh giá (`UC-B10`), CSV import (`UC-S13`) và backup DB (`UC-OPS09`); dễ chuyển sang cloud S3 không đổi code.
-  - *Tiêu cực*: thêm 1 dịch vụ stateful trong Compose/K8s cần PVC bền vững và cấu hình CORS cho trình duyệt upload trực tiếp qua presigned URL.
+  - *Tiêu cực*: thêm 1 dịch vụ stateful trong Compose/K8s cần PVC bền vững, phải cấu hình chặt mạng nội bộ/filer signing key và đường dẫn proxy streaming cho presigned URL qua gateway hoặc domain nội bộ (không mở thẳng cổng S3/gRPC/admin ra host).
 
 ## Kế hoạch triển khai
 
 | Task | Phạm vi | Tiêu chí nghiệm thu đo được |
 | --- | --- | --- |
-| `T1` Hạ tầng Object Storage & thư viện S3 dùng chung | Thêm SeaweedFS (`weed server -s3`) vào Compose/Helm với 3 bucket init; thêm helper S3 presign/verify gọn vào `pkg/common/storage` (`aws-sdk-go-v2/service/s3`) | Upload + đọc lại ảnh ≤ 5 MB qua presigned URL thành công; từ chối file > 5 MB hoặc sai MIME; không đưa file qua BFF |
+| `T1` Hạ tầng Object Storage & thư viện S3 dùng chung | Thêm SeaweedFS (tối thiểu `4.55`, chỉ mở cổng S3 nội bộ, tắt S3 Tables/Iceberg/Lance/STS, bật filer signing key, không công bố gRPC/admin ra host) vào Compose/Helm với 3 bucket init; thêm helper S3 presign/verify gọn vào `pkg/common/storage` (`aws-sdk-go-v2/service/s3 v1.116.0`) và đường dẫn presigned URL qua gateway/domain nội bộ | Upload + đọc lại ảnh ≤ 5 MB qua presigned URL thành công; từ chối file > 5 MB hoặc sai MIME; không buffer binary qua BFF; cổng gRPC/admin không lộ ra host |
 | `T2` Hợp đồng `chat.proto` & DB `chat_db` | Tạo `proto/nexusmart/chat/v1/chat.proto`, `make proto`, cập nhật `docs/contracts.md`; migration `chat_db` (`conversations`, `messages` có `seq`, `auto_reply_rules`, `blocked_users`, `shop_response_stats`) | `buf lint` xanh; migration idempotent; kiểm tra chéo quyền: user A không đọc được hội thoại của user B (`403`) |
 | `T3` Core WebSocket + Redis Pub/Sub + đồng bộ rớt mạng | Dựng `services/chat` (`coder/websocket`, `:50060/:8090`, WS ticket 30s trên Redis, Redis Pub/Sub đa instance, reconnect `after_seq`, ping/pong, graceful drain) + proxy WS ở `gateway` | Chạy **2 instance `services/chat`**: user nối instance 1 gửi tin tới seller ở instance 2 độ trễ < 200 ms; ngắt mạng rồi nối lại nhận đủ 100% tin thiếu; kiểm thử tải `k6` đạt **≥ 1.000 kết nối đồng thời/instance** |
 | `T4` Nghiệp vụ sàn & thông báo offline | Gửi ảnh (presigned GET private), product card (snapshot tên/giá từ `ProductService`), mã đơn (kiểm quyền `OrderService`), cảnh báo SĐT/link ngoài sàn, auto-reply chào/ngoài giờ, chặn spam, tính tỷ lệ/thời gian phản hồi, phát event NATS khi offline | Unit + integration test phủ đủ: cảnh báo SĐT/URL, auto-reply ngoài giờ, chặn user spam không gửi được tin, người nhận offline có thông báo trong `notification` |
@@ -123,8 +126,24 @@
 ## Câu hỏi chủ dự án cần trả lời
 
 1. **Chốt Object Storage cho môi trường dev/tự host**: chọn **SeaweedFS** (Apache-2.0, đủ S3 cho cả media + backup WAL) hay **Garage** (nhẹ hơn nhưng AGPL-3.0)? Nếu đã có sẵn tài khoản cloud (R2/Spaces/S3) cho staging/prod thì có dùng thẳng cho môi trường ngoài local không?
+   - **Trả lời (`w3-plan.md` §1.1 câu 3)**: Chốt SeaweedFS (tối thiểu `4.55`, Apache-2.0), gọi qua S3 API, đo RAM sau khi thêm và không thuê cloud trả phí (`§1.1 câu 1`); trước B2 tra lại từng GHSA Critical, nếu còn chạm cấu hình thì dừng hỏi lại.
 2. **Ảnh chat cần lưu bao lâu và có cần nén/strip EXIF phía server không** (để tránh lộ toạ độ GPS người dùng và tiết kiệm dung lượng), hay chỉ cần kiểm kích thước ≤ 5 MB + MIME ở giai đoạn đồ án?
+   - **Trả lời**: Chưa chốt, mặc định kiểm kích thước ≤ 5 MB + MIME/magic bytes cho giai đoạn đồ án (nén/strip EXIF bổ sung sau nếu cần), đổi được sau.
 3. **Tin nhắn chứa SĐT/link ngoài sàn (`UC-B14`)**: chỉ **gắn banner cảnh báo** bên dưới tin nhắn hay **chặn cứng không cho gửi**?
+   - **Trả lời**: Chưa chốt, mặc định gắn banner cảnh báo bên dưới tin nhắn (đúng `UC-B14`), đổi được sau.
+
+## Tra lại 2026-11-24
+
+- **SeaweedFS (đổi phiên bản & bổ sung ràng buộc bảo mật)**: GitHub API của `seaweedfs/seaweedfs` liệt kê các GHSA công bố ngày `2026-11-09` ảnh hưởng tới `<= 4.47`, trong đó các Critical gồm `GHSA-25hp-4mw7-9c75`, `GHSA-p983-2j86-34vj`, `GHSA-jq8h-9mjh-xv8f`, `GHSA-47fc-cj9r-ghpm`, `GHSA-f6rh-hw92-h9rx` (cùng High `GHSA-g96f-g546-47xf`, `GHSA-qpcw-w62h-6qfr`, Moderate `GHSA-54j8-2gxc-wr9h`); trường `patched` trên metadata GHSA để trống. Bản mới nhất là **`4.55`** (`2026-11-23`, Apache-2.0). Nâng ngưỡng tối thiểu từ `v4.42` lên `4.55` (KHÔNG khẳng định `4.55` đã vá hết), yêu cầu tra lại từng GHSA trước B2, khoá cổng S3 nội bộ, không mở gRPC/admin/STS/S3 Tables/Iceberg ra host, tắt S3 Tables/Iceberg/Lance/STS, presigned URL đi qua gateway hoặc domain nội bộ, bắt buộc filer signing key; nếu lúc B2 vẫn còn Critical chưa vá chạm cấu hình này thì dừng, hỏi lại.
+- **`aws-sdk-go-v2/service/s3`**: nâng nhẹ `v1.115.0` → **`v1.116.0`** (Apache-2.0, release repo `release-2026-11-23`).
+- **`coder/websocket`**: giữ nguyên **`v1.8.15`** (ISC, không CVE/GHSA).
+- **Nguồn**:
+  - https://github.com/seaweedfs/seaweedfs/releases/tag/4.55
+  - https://github.com/seaweedfs/seaweedfs/security/advisories
+  - https://github.com/seaweedfs/seaweedfs/blob/master/LICENSE
+  - https://github.com/aws/aws-sdk-go-v2/releases/tag/release-2026-11-23
+  - https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/service/s3
+  - https://github.com/coder/websocket/releases/tag/v1.8.15
 
 ## Ngày kiểm tra trạng thái ứng viên
 

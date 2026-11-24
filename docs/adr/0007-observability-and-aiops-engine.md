@@ -1,7 +1,7 @@
 # ADR-0007: Hệ thống giám sát (Observability) và AIOps engine bằng Rust
 
-- **Trạng thái**: Đề xuất
-- **Ngày**: 2026-11-23
+- **Trạng thái**: Chấp nhận
+- **Ngày**: 2026-11-23 (chấp nhận 2026-11-24 theo uỷ quyền)
 
 ## Bối cảnh
 
@@ -33,7 +33,7 @@
    - **Vận hành & K8s**: Trên K8s cài qua Helm chart chuẩn `kube-prometheus-stack` + `loki` (chế độ `SingleBinary`) + `tempo` (chế độ monolithic); trên dev Compose chạy gọn trong profile `--profile obs` (~1.2–1.8 GB RAM tổng cho lưu giữ 7–14 ngày). Liên kết 1-click Metric ↔ Trace (`exemplars`/Tempo) ↔ Log (`trace_id` trên Loki). Khớp chuẩn PromQL HTTP API cho `services/aiops`.
 
 2. **VictoriaMetrics + VictoriaLogs + Tempo + Alertmanager + Grafana**
-   - **Phiên bản & bảo trì**: `VictoriaMetrics/VictoriaMetrics` `v1.156.0` (2026-11-09), `VictoriaMetrics/VictoriaLogs` `v1.52.x` LTS — cả hai đều **Apache-2.0**, viết bằng Go, rất tích cực.
+   - **Phiên bản & bảo trì**: `VictoriaMetrics/VictoriaMetrics` `v1.157.0` (2026-11-23), `VictoriaMetrics/VictoriaLogs` `v1.54.0` (community) hoặc LTS `v1.52.2` (2026-11-13) — cả hai đều **Apache-2.0**, viết bằng Go, rất tích cực.
    - **Vận hành & K8s**: Tiết kiệm 40–60% RAM (~0.6–1.0 GB tổng), tương thích PromQL query API cho `services/aiops`; tuy nhiên VictoriaLogs dùng ngôn ngữ truy vấn LogsQL riêng (cần plugin Grafana ngoài) và lệch công cụ Loki nêu trong `UC-OPS01`.
 
 3. **SigNoz (All-in-one trên ClickHouse + OTel)**
@@ -83,10 +83,12 @@
   3. Đặt AIOps engine tại **`services/aiops/` (Rust)**, triển khai ở **namespace `observability` tách biệt**, sở hữu DB `aiops_db`, tích hợp Alertmanager/Telegram và LLM API (`ADR-0006`), RBAC allowlist nghiêm ngặt cho runbook.
   4. Kiểm chứng `UC-OPS08` trên `staging` bằng **`k6` + bộ 5 kịch bản tiêm lỗi chuẩn hoá** trong `tools/chaos/` (chặn cứng không cho chạy trên `production`).
 - **Điều kiện kích hoạt chuyển đổi**:
-  - Chuyển từ Prometheus+Loki sang **VictoriaMetrics + VictoriaLogs** nếu máy demo cục bộ thiếu RAM (< 16 GB tổng) khi chạy đồng thời 12 service + observability stack.
+  - Chuyển từ Prometheus+Loki sang **VictoriaMetrics (`v1.157.0`) + VictoriaLogs (`v1.54.0` hoặc LTS `v1.52.2`)** khi máy demo cục bộ thiếu RAM (`< 16 GB` tổng) khi chạy đồng thời 12 service + observability stack. **Lưu ý (2026-11-24)**: máy hiện tại có `14,6 GB` RAM nên đã chạm điều kiện này; theo `w3-plan.md` §1.1 câu 5 vẫn giữ giả định Grafana/Loki/Tempo trước, nhưng **B4 T2 bắt buộc phải đo RAM thật trước khi chốt** — nếu không đạt thì chuyển ngay sang Victoria.
   - Cài thêm **Chaos Mesh** nếu đồ án mở rộng thêm bài tiêm lỗi packet-loss/clock-skew tầng kernel.
-- **Phụ thuộc**: `ADR-0006` (chọn LLM API và Secret cho RCA), `ADR-0008` (nơi triển khai K8s/Helm, namespace `staging`/`production`, đánh dấu deploy trên Grafana).
-- **Chủ dự án quyết**: (trống)
+- **Phụ thuộc**: `ADR-0006` (chọn LLM API và Secret cho RCA — mặc định `mock`, gợi ý `gpt-6.1-terra` khi chạy thật), `ADR-0008` (`k3d` cục bộ, Helm, namespace `staging`/`production`, đánh dấu deploy trên Grafana).
+- **Chủ dự án quyết**: 2026-11-24: chủ dự án uỷ quyền cho manager chốt theo phương án đề xuất (nguyên văn: «mấy câu hỏi bạn từ đề xuất tự làm luôn đi»). Chủ dự án không duyệt riêng từng ADR.
+  - **Chốt (`w3-plan.md` §1.1 câu 5)**: Prometheus `v3.16.0` + Alertmanager `v0.35.0` + Grafana `v13.3.1` + Loki `v3.7.10` + Tempo `v3.1.1` + Sloth `v0.16.0`, AIOps Rust `services/aiops` (`observability` namespace, `aiops_db`), và `k6 v2.4.0` + `tools/chaos/`.
+  - **Cổng còn giữ**: **B4 T2 phải đo RAM thật trước khi chốt Grafana/Loki/Tempo** (máy 14,6 GB đã chạm ngưỡng `< 16 GB` chuyển sang VictoriaMetrics `v1.157.0` + VictoriaLogs `v1.54.0`/LTS `v1.52.2`); **token Telegram phải hỏi chủ dự án** khi triển khai; **khoá LLM, tiền, ngân sách và lần gọi LLM RCA thật đầu tiên đều phải hỏi chủ dự án** (mặc định `mock`); push vẫn phải hỏi chủ dự án từng lần.
 
 ## Hệ quả
 
@@ -107,8 +109,27 @@
 ## Câu hỏi chủ dự án cần trả lời
 
 1. **Chấp nhận dùng bộ Grafana/Loki/Tempo (AGPL-3.0) chạy nội bộ** để khớp đúng đặc tả `UC-OPS01`, hay ưu tiên thay Prometheus+Loki bằng **VictoriaMetrics + VictoriaLogs** (Apache-2.0, nhẹ RAM hơn gần một nửa)?
+   - **Trả lời (`w3-plan.md` §1.1 câu 5)**: Chốt giữ giả định Grafana/Loki/Tempo (AGPL-3.0 nội bộ, đúng `docs/spec.md`), nhưng vì máy hiện có `14,6 GB` RAM (đã chạm điều kiện `< 16 GB`), B4 T2 bắt buộc phải đo RAM thật — không đạt thì chuyển sang VictoriaMetrics (`v1.157.0`) + VictoriaLogs (`v1.54.0` / LTS `v1.52.2`).
 2. **Với `UC-OPS04` (ưu tiên Thấp)**: có muốn bật chế độ **tự động thực thi** `restart pod`/`scale` trên staging để quay video demo, hay chỉ để chế độ **đề xuất + DevOps bấm xác nhận** (human-in-the-loop)?
+   - **Trả lời**: Chưa chốt, mặc định chế độ đề xuất + duyệt tay (human-in-the-loop) và chỉ làm khung allowlist nếu B4 T4 còn dư công (mức Thấp), đổi được sau.
 3. **Kênh Telegram cảnh báo**: dùng **1 bot + 1 group riêng cho staging và production** (phân biệt bằng tag/topic) để tránh nhầm lẫn khi chạy tiêm lỗi `UC-OPS08` trên staging?
+   - **Trả lời**: Chưa chốt, mặc định 1 bot + 1 group phân biệt tag/topic cho staging và prod (token Telegram phải hỏi chủ dự án khi tới B4), đổi được sau.
+
+## Tra lại 2026-11-24
+
+- **Giữ nguyên phiên bản & giấy phép**: Prometheus `v3.16.0` (Apache-2.0; lưu ý `CVE-2026-119566` Medium liên quan `remote_write` gặp HTTP 3xx trên `<= 3.15.1`, trạng thái vá ở `3.16.0` chưa xác minh từ release notes — tránh bật `remote_write` có redirect), Alertmanager `v0.35.0` (Apache-2.0), Grafana `v13.3.1` (AGPL-3.0), Loki `v3.7.10` (AGPL-3.0), Tempo `v3.1.1` (AGPL-3.0), Sloth `v0.16.0` (Apache-2.0), `k6 v2.4.0` (AGPL-3.0).
+- **Nâng nhẹ phương án dự phòng**: VictoriaMetrics `v1.156.0` → **`v1.157.0`** (`2026-11-23`, Apache-2.0); VictoriaLogs `v1.52.x` → **`v1.54.0`** (community) hoặc LTS **`v1.52.2`** (`2026-11-13`, Apache-2.0).
+- **Nguồn**:
+  - https://github.com/prometheus/prometheus/releases/tag/v3.16.0
+  - https://github.com/prometheus/alertmanager/releases/tag/v0.35.0
+  - https://github.com/grafana/grafana/releases/tag/v13.3.1
+  - https://github.com/grafana/loki/releases/tag/v3.7.10
+  - https://github.com/grafana/tempo/releases/tag/v3.1.1
+  - https://github.com/slok/sloth/releases/tag/v0.16.0
+  - https://github.com/VictoriaMetrics/VictoriaMetrics/releases/tag/v1.157.0
+  - https://github.com/VictoriaMetrics/VictoriaLogs/releases/tag/v1.54.0
+  - https://github.com/VictoriaMetrics/VictoriaLogs/releases/tag/v1.52.2
+  - https://github.com/grafana/k6/releases/tag/v2.4.0
 
 ## Ngày kiểm tra trạng thái ứng viên
 

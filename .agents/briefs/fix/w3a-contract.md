@@ -1,0 +1,10 @@
+# 3a – agent `contract` (chạy một mình, xong mới tới agent khác)
+Sở hữu: `proto/`, `gen/go`, `pkg/common/`, `docs/contracts.md`, `docker-compose.yml`, `.env.example`, `Makefile`, `scripts/` (trừ `agy.sh`), và RIÊNG việc chuyển cipher trong `services/shipping/`.
+1. Proto (chỉ thêm, `buf breaking` sạch so với `1b1a385`): `ListProductsRequest.sku_ids`, `AdminReviewShopRequest.expected_owner_name`; chú thích `bank_account_id` bắt buộc (D6), `DiscountLineItem.unit_price_vnd/category_id` bị bỏ qua ở Preview (D4). `make proto`, mọi module build được.
+2. `pkg/common/auth`: `ReservePromotion` → true (D3), comment khớp; test phân loại RPC vẫn xanh; thêm ca: token service bị từ chối ở RPC `false`.
+3. `pkg/common/secretbox` (D5) có unit test (khứ hồi, sai khoá, bản mã cụt, đọc được bản mã định dạng cũ của shipping bằng fixture cố định). `services/shipping` dùng nó, xoá `cipher.go` cũ; env `SHIPPING_CONFIG_KEY` giữ nguyên.
+4. Compose/.env.example: `BANK_ACCOUNT_KEY` (user), `RATE_LIMIT_BANK_OTP_PER_MIN` (gateway, 5). Không đặt khoá thật.
+5. `make test-db` + `scripts/test-db.sh`: container `postgres:16` tạm (tên duy nhất theo PID, cổng host ngẫu nhiên, tmpfs, không thuộc project compose nào, trap xoá cả khi lỗi), chờ TCP sẵn sàng, mỗi service một DB trắng, xuất `TEST_ORDER_DB_URL`, `TEST_PRODUCT_DB_URL`, `TEST_PROMOTION_DB_URL`, `TEST_SHIPPING_DB_URL`, `TEST_USER_DB_URL`, `TEST_PAYMENT_DB_URL`, chạy mọi test Postgres (`go test -race -count=1`, `cargo test`), FAIL nếu có test Postgres bị SKIP. `services/product/.../pg_integration_test.go` đang đọc nhầm `TEST_SHIPPING_DB_URL` một chỗ: ghi "Nhờ agent product".
+6. `make coverage`: dùng chung Postgres tạm của `test-db` để phần SQL được tính; giữ công thức hiện có; `payment` dùng `cargo llvm-cov` (đã cài).
+7. `docs/contracts.md`: D1–D10, mã lỗi mới, quyền RPC, env mới; sửa chỗ cũ mâu thuẫn. `.agents/skills/checkout-saga` (symlink `.claude/skills/`): ReservePromotion bằng token service.
+Kiểm: `make lint`, `make test`, `make test-db` (phải xanh với code hiện tại), `docker compose config -q`. Báo cáo theo `w2-rules.md`.

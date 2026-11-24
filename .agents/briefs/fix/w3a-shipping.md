@@ -1,0 +1,2 @@
+# 3a – agent `shipping` (sở hữu `services/shipping/**`, `tests/e2e/40_*.go`)
+Theo `w3a-plan.md` D9 (migration `000005_`, idempotent). Contract agent đã chuyển cipher sang `pkg/common/secretbox`: rà lại token hãng đã mã hoá trước đây vẫn đọc được (test fixture cũ). Nếu outbox đã publish ngoài transaction thì chứng minh và chỉ bổ sung test. Test Postgres thật: hai publisher song song không gửi trùng quá một lần thuê, chết giữa chừng thì gửi lại, thứ tự theo aggregate. Không có việc khác.
