@@ -33,13 +33,10 @@ export default async function SellerSiteDomainsPage() {
         <header className={common.pageHeader}>
           <div className={common.headerText}>
             <h1 className={common.title}>Tên miền</h1>
-            <p className={common.finding}>
-              Quản lý địa chỉ mặc định và gắn tên miền riêng cho cửa hàng của bạn.
-            </p>
           </div>
           <div className={common.headerActions}>
             <Button variant="outline" size="sm" shape="app" href="/seller/site">
-              Quay lại Site riêng
+              Quay lại Site bán hàng
             </Button>
           </div>
         </header>
@@ -60,14 +57,10 @@ export default async function SellerSiteDomainsPage() {
       <header className={common.pageHeader}>
         <div className={common.headerText}>
           <h1 className={common.title}>Tên miền</h1>
-          <p className={common.finding}>
-            Quản lý địa chỉ mặc định và gắn tên miền riêng cho{" "}
-            {siteRes.shop?.name || "gian hàng của bạn"}.
-          </p>
         </div>
         <div className={common.headerActions}>
           <Button variant="outline" size="sm" shape="app" href="/seller/site">
-            Quay lại Site riêng
+            Quay lại Site bán hàng
           </Button>
         </div>
       </header>

@@ -32,7 +32,7 @@ export default async function SellerOverviewPage() {
     loadSellerBalance(),
   ]);
 
-  const loadError = ordersRes.error ?? productsRes.error ?? balanceRes.error;
+  const loadError = ordersRes.error ?? productsRes.error;
 
   return (
     <SellerSuspense>
@@ -40,7 +40,9 @@ export default async function SellerOverviewPage() {
         initialOrders={ordersRes.data?.items ?? []}
         initialProducts={productsRes.data?.items ?? []}
         initialBalance={balanceRes.data}
+        balanceError={balanceRes.error}
         loadError={loadError}
+        serverNowMs={Date.now()}
       />
     </SellerSuspense>
   );

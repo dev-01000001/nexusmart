@@ -5,15 +5,18 @@ import Link from "next/link";
 import {
   Button,
   IconAlert,
+  IconArrowLeft,
+  IconArrowUpRight,
   IconPackage,
   IconRefresh,
   IconSearch,
   IconSend,
   IconSpark,
+  IconUser,
   StateView,
 } from "@/components";
 import { api, ApiError } from "@/lib/api";
-import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
+import { formatDateTimeVi, formatInt, formatTimeVi, formatVnd } from "@/lib/format";
 import { sanitizeSafeUrl } from "@/lib/site/theme";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { useSellerContext } from "@/features/seller/SellerShell";
@@ -54,6 +57,7 @@ const AVATAR_TINTS = ["#e3edf0", "#e6efe8", "#efeae1", "#e5ecf2"];
 
 type AttachMode = "none" | "image" | "product" | "order";
 type ThreadFilter = "all" | "unread";
+type MobilePane = "list" | "thread" | "context";
 
 interface ConversationsApiResponse {
   conversations?: unknown[];
@@ -128,7 +132,7 @@ export interface SellerChatClientProps {
 function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
   const { user, shop, showToast } = useSellerContext();
   const currentSellerId = sellerUserId || user.id;
-  const shopDisplayName = shop?.name ?? "Gian hàng của bạn";
+  const shopDisplayName = shop?.name ?? "Gian hàng";
 
   const [conversations, setConversations] = useState<ChatConversationDTO[]>([]);
   const [loadingConversations, setLoadingConversations] = useState(true);
@@ -137,7 +141,19 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
   const [query, setQuery] = useState("");
   const [threadFilter, setThreadFilter] = useState<ThreadFilter>("all");
   const [selectedId, setSelectedId] = useState<string>("");
-  const [mobileView, setMobileView] = useState<"list" | "thread">("list");
+  const [mobilePane, setMobilePane] = useState<MobilePane>("list");
+  const [contextOpenTablet, setContextOpenTablet] = useState(false);
+
+  useEffect(() => {
+    if (!contextOpenTablet) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setContextOpenTablet(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [contextOpenTablet]);
 
   const [messagesByConv, setMessagesByConv] = useState<Record<string, ChatMessageDTO[]>>({});
   const [loadingMessages, setLoadingMessages] = useState(false);
@@ -250,12 +266,10 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
     }
   }, []);
 
-  // Initial load
   useEffect(() => {
     void loadConversations();
   }, [loadConversations]);
 
-  // Load messages when active thread changes
   useEffect(() => {
     if (!selectedId) return;
     setAiSuggestions([]);
@@ -264,7 +278,6 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
     void loadMessages(selectedId);
   }, [selectedId, loadMessages]);
 
-  // Connect live WebSocket channel once conversations endpoint succeeds
   useEffect(() => {
     if (loadingConversations || conversationsError) {
       socketRef.current?.dispose();
@@ -389,6 +402,31 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
     [activeConv, messagesByConv]
   );
 
+  // Extract real order & product references from loaded conversation messages for Column 3
+  const referencedEntities = useMemo(() => {
+    const orders: Array<{ id: string; label: string }> = [];
+    const products: Array<{ id: string; name: string; priceVnd?: number; image?: string }> = [];
+    const seenOrders = new Set<string>();
+    const seenProducts = new Set<string>();
+    for (const msg of activeMessages) {
+      if (msg.kind === "order" && msg.ref_id && !seenOrders.has(msg.ref_id)) {
+        seenOrders.add(msg.ref_id);
+        const card = parseOrderRefCard(msg);
+        orders.push({ id: msg.ref_id, label: card.label });
+      } else if (msg.kind === "product" && msg.ref_id && !seenProducts.has(msg.ref_id)) {
+        seenProducts.add(msg.ref_id);
+        const card = parseProductRefCard(msg);
+        products.push({
+          id: msg.ref_id,
+          name: card.name,
+          priceVnd: card.priceVnd,
+          image: card.image,
+        });
+      }
+    }
+    return { orders, products };
+  }, [activeMessages]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [activeMessages.length, activeConv?.id]);
@@ -454,7 +492,6 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
         return true;
       }
 
-      // HTTP fallback
       setSending(true);
       try {
         const res = await api<SendMessageApiResponse>(
@@ -572,7 +609,7 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
       });
       const list = extractSuggestionStrings(res.suggestions);
       if (list.length === 0) {
-        setAiError("AI chưa tạo được gợi ý cho hội thoại này. Bạn vui lòng tự soạn phản hồi.");
+        setAiError("AI chưa tạo được gợi ý cho hội thoại này.");
       } else {
         setAiSuggestions(list);
       }
@@ -585,14 +622,16 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
     }
   };
 
-  const handlePickAiSuggestion = (text: string) => {
+  const handlePickReply = (text: string) => {
     setDraft(text);
+    setMobilePane("thread");
+    setContextOpenTablet(false);
     composerInputRef.current?.focus();
   };
 
   const handleSelectThread = (id: string) => {
     setSelectedId(id);
-    setMobileView("thread");
+    setMobilePane("thread");
   };
 
   const statusInfo = connectionStatusMeta(connStatus);
@@ -601,11 +640,7 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
     <div className={common.page}>
       <header className={common.pageHeader}>
         <div className={common.headerText}>
-          <h1 className={common.title}>Tin nhắn khách hàng</h1>
-          <p className={common.finding}>
-            {shopDisplayName} · {formatInt(conversations.length)} hội thoại
-            {unreadTotal > 0 ? ` · ${formatInt(unreadTotal)} chưa đọc` : ""}
-          </p>
+          <h1 className={common.title}>Tin nhắn</h1>
         </div>
         <div className={common.headerActions}>
           <span className={styles.connBadge}>
@@ -638,7 +673,8 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
         <StateView
           kind="loading"
           surface="app"
-          title="Đang đồng bộ hộp thư khách hàng..."
+          skeletonVariant="table"
+          title="Đang tải hộp thư khách hàng..."
           rows={5}
         />
       )}
@@ -647,7 +683,7 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
         <StateView
           kind="error"
           surface="app"
-          title="Không thể kết nối hộp thư trò chuyện"
+          title="Không thể kết nối hộp thư"
           message={conversationsError}
           actionLabel="Thử lại"
           onAction={() => void loadConversations()}
@@ -658,17 +694,18 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
         <StateView
           kind="empty"
           surface="app"
-          title="Chưa có tin nhắn khách hàng nào"
-          message="Khi người mua nhắn hỏi về sản phẩm, kích cỡ hoặc tình trạng đơn hàng từ site gian hàng, hội thoại sẽ hiển thị tại đây."
-          actionLabel="Xem đơn hàng gian hàng"
+          title="Chưa có tin nhắn khách hàng"
+          message="Khi người mua nhắn hỏi về sản phẩm, kích cỡ hoặc đơn hàng, hội thoại sẽ hiển thị tại đây."
+          actionLabel="Xem đơn hàng"
           actionHref="/seller/don-hang"
         />
       )}
 
       {!loadingConversations && !conversationsError && conversations.length > 0 && (
-        <section className={styles.inboxShell} aria-label="Hộp thư người bán">
+        <section className={styles.inboxShell} aria-label="Hộp thư 3 cột người bán">
+          {/* Column 1: Conversations List */}
           <div
-            className={`${styles.threadPane} ${mobileView === "thread" ? styles.paneHiddenMobile : ""}`}
+            className={`${styles.threadPane} ${mobilePane !== "list" ? styles.paneHiddenMobile : ""}`}
           >
             <div className={styles.threadPaneHead}>
               <div className={common.searchWrap} style={{ width: "100%" }}>
@@ -680,7 +717,7 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                   className={common.searchInput}
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Tìm khách hàng hoặc nội dung..."
+                  placeholder="Tìm khách hoặc tin nhắn..."
                   aria-label="Tìm hội thoại khách hàng"
                 />
               </div>
@@ -710,7 +747,7 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
             <div className={styles.threadList} role="listbox" aria-label="Danh sách hội thoại">
               {filteredConversations.length === 0 ? (
                 <div className={styles.emptyPaneHint}>
-                  <p className={common.cardMeta}>Không tìm thấy hội thoại phù hợp.</p>
+                  <p className={common.cardMeta}>Không có hội thoại phù hợp.</p>
                 </div>
               ) : (
                 filteredConversations.map((conv, idx) => {
@@ -736,7 +773,7 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                           <span className={styles.threadName}>{conv.buyer_name}</span>
                           {conv.last_message_at && (
                             <span className={styles.threadTime}>
-                              {formatDateTimeVi(conv.last_message_at).split(" · ")[0]}
+                              {formatTimeVi(conv.last_message_at)}
                             </span>
                           )}
                         </span>
@@ -759,8 +796,9 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
             </div>
           </div>
 
+          {/* Column 2: Active Message Stream & Composer */}
           <div
-            className={`${styles.chatPane} ${mobileView === "list" ? styles.paneHiddenMobile : ""}`}
+            className={`${styles.chatPane} ${mobilePane !== "thread" ? styles.paneHiddenMobile : ""}`}
           >
             {activeConv ? (
               <>
@@ -769,23 +807,37 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                     <button
                       type="button"
                       className={styles.mobileBackBtn}
-                      onClick={() => setMobileView("list")}
+                      onClick={() => setMobilePane("list")}
                     >
-                      Danh sách
+                      <IconArrowLeft size={14} />
+                      <span>Danh sách</span>
                     </button>
-                    <div>
+                    <div className={styles.chatBuyerText}>
                       <h2 className={styles.chatBuyerName}>{activeConv.buyer_name}</h2>
                       <p className={styles.chatBuyerSub}>
-                        {activeConv.site_host ? `${activeConv.site_host} · ` : ""}
-                        {shopDisplayName}
+                        {activeConv.site_host || shopDisplayName}
                       </p>
                     </div>
+                  </div>
+                  <div className={styles.chatHeaderRight}>
+                    <button
+                      type="button"
+                      className={styles.contextToggleBtn}
+                      aria-expanded={contextOpenTablet}
+                      onClick={() => {
+                        setContextOpenTablet((prev) => !prev);
+                        setMobilePane("context");
+                      }}
+                    >
+                      <IconUser size={14} />
+                      <span>Ngữ cảnh</span>
+                    </button>
                   </div>
                 </div>
 
                 <div className={styles.messages} aria-live="polite">
                   {loadingMessages && activeMessages.length === 0 ? (
-                    <p className={common.cardMeta}>Đang tải lịch sử tin nhắn...</p>
+                    <p className={common.cardMeta}>Đang tải tin nhắn...</p>
                   ) : messagesError && activeMessages.length === 0 ? (
                     <StateView
                       kind="error"
@@ -797,7 +849,7 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                     />
                   ) : activeMessages.length === 0 ? (
                     <p className={common.cardMeta}>
-                      Hội thoại chưa có tin nhắn nào. Gửi lời chào đến khách hàng ngay bên dưới.
+                      Chưa có tin nhắn. Gửi lời chào đến khách hàng ngay bên dưới.
                     </p>
                   ) : (
                     activeMessages.map((msg) => {
@@ -892,8 +944,8 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                               ? msg.is_auto_reply
                                 ? "Trả lời tự động"
                                 : shopDisplayName
-                              : activeConv.buyer_name}{" "}
-                            · {formatDateTimeVi(msg.created_at)}
+                              : activeConv.buyer_name}
+                            , {formatDateTimeVi(msg.created_at)}
                           </span>
                         </div>
                       );
@@ -907,14 +959,14 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                     <div className={styles.aiSuggestHead}>
                       <span className={styles.aiSuggestLabel}>
                         <IconSpark size={13} />
-                        <span>AI gợi ý, nhấn để đưa vào ô nhập và chỉnh sửa</span>
+                        <span>Gợi ý AI, nhấn để điền vào ô nhập</span>
                       </span>
                       <button
                         type="button"
                         className={styles.aiDismissBtn}
                         onClick={() => setAiSuggestions([])}
                       >
-                        Ẩn gợi ý
+                        Ẩn
                       </button>
                     </div>
                     <div className={styles.aiChipList}>
@@ -923,7 +975,7 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                           key={`${idx}-${suggestion.slice(0, 16)}`}
                           type="button"
                           className={styles.aiChipBtn}
-                          onClick={() => handlePickAiSuggestion(suggestion)}
+                          onClick={() => handlePickReply(suggestion)}
                         >
                           {suggestion}
                         </button>
@@ -941,10 +993,7 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                 {offPlatformCheck.flagged && (
                   <div className={styles.safetyNotice} role="note">
                     <IconAlert size={14} />
-                    <span>
-                      Lưu ý: Tránh trao đổi số điện thoại hoặc dẫn khách giao dịch ngoài nền tảng
-                      NexusMart.
-                    </span>
+                    <span>Tránh trao đổi số điện thoại hoặc dẫn khách giao dịch ngoài sàn.</span>
                   </div>
                 )}
 
@@ -984,8 +1033,8 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                           onChange={(e) => setAttachLabel(e.target.value)}
                           placeholder={
                             attachMode === "product"
-                              ? "Tên hiển thị sản phẩm (tuỳ chọn)..."
-                              : "Ghi chú mã đơn (tuỳ chọn)..."
+                              ? "Tên sản phẩm (tùy chọn)"
+                              : "Ghi chú mã đơn (tùy chọn)"
                           }
                           aria-label="Mô tả đính kèm"
                         />
@@ -1016,7 +1065,7 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                       disabled={aiLoading}
                     >
                       <IconSpark size={13} />
-                      <span>{aiLoading ? "Đang tạo gợi ý..." : "Gợi ý trả lời AI"}</span>
+                      <span>{aiLoading ? "Đang tạo..." : "Gợi ý AI"}</span>
                     </button>
 
                     <button
@@ -1024,38 +1073,22 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                       className={`${styles.toolChipBtn} ${attachMode === "image" ? styles.toolChipActive : ""}`}
                       onClick={() => setAttachMode((m) => (m === "image" ? "none" : "image"))}
                     >
-                      Gửi ảnh
+                      Ảnh
                     </button>
                     <button
                       type="button"
                       className={`${styles.toolChipBtn} ${attachMode === "product" ? styles.toolChipActive : ""}`}
                       onClick={() => setAttachMode((m) => (m === "product" ? "none" : "product"))}
                     >
-                      Thẻ sản phẩm
+                      Sản phẩm
                     </button>
                     <button
                       type="button"
                       className={`${styles.toolChipBtn} ${attachMode === "order" ? styles.toolChipActive : ""}`}
                       onClick={() => setAttachMode((m) => (m === "order" ? "none" : "order"))}
                     >
-                      Mã đơn hàng
+                      Đơn hàng
                     </button>
-                  </div>
-
-                  <div className={styles.quickReplies} aria-label="Mẫu trả lời nhanh">
-                    {QUICK_REPLIES.map((tpl) => (
-                      <button
-                        key={tpl.label}
-                        type="button"
-                        className={styles.quickReplyBtn}
-                        onClick={() => {
-                          setDraft(tpl.text);
-                          composerInputRef.current?.focus();
-                        }}
-                      >
-                        {tpl.label}
-                      </button>
-                    ))}
                   </div>
 
                   <div className={styles.composerRow}>
@@ -1065,7 +1098,7 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                       className={styles.composerInput}
                       value={draft}
                       onChange={(e) => setDraft(e.target.value)}
-                      placeholder={`Nhắn phản hồi cho ${activeConv.buyer_name}...`}
+                      placeholder={`Nhắn cho ${activeConv.buyer_name}...`}
                       aria-label="Nhập nội dung phản hồi"
                       maxLength={2000}
                     />
@@ -1077,17 +1110,182 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                       disabled={!draft.trim() || sending}
                     >
                       <IconSend size={14} />
-                      <span>Gửi phản hồi</span>
+                      <span>Gửi</span>
                     </Button>
                   </div>
                 </form>
               </>
             ) : (
               <div className={styles.emptyPaneHint}>
-                <p className={common.cardMeta}>Chọn một hội thoại bên trái để xem và phản hồi.</p>
+                <p className={common.cardMeta}>Chọn hội thoại bên trái để xem và phản hồi.</p>
               </div>
             )}
           </div>
+
+          {/* Column 3: Customer, Order/Product Context & Quick Templates Rail */}
+          <aside
+            className={`${styles.contextPane} ${contextOpenTablet ? styles.contextPaneOpenTablet : ""} ${mobilePane !== "context" ? styles.paneHiddenMobile : ""}`}
+            aria-label="Ngữ cảnh khách hàng và đơn hàng"
+          >
+            {activeConv ? (
+              <>
+                <div className={styles.contextHead}>
+                  <button
+                    type="button"
+                    className={styles.mobileBackBtn}
+                    onClick={() => {
+                      setMobilePane("thread");
+                      setContextOpenTablet(false);
+                    }}
+                  >
+                    <IconArrowLeft size={14} />
+                    <span>Hội thoại</span>
+                  </button>
+                  <span className={styles.contextHeadTitle}>Ngữ cảnh khách</span>
+                </div>
+
+                <div className={styles.contextScroll}>
+                  <div className={styles.contextSection}>
+                    <div className={styles.contextCustomer}>
+                      <span
+                        className={styles.avatar}
+                        style={{ backgroundColor: AVATAR_TINTS[0] }}
+                        aria-hidden="true"
+                      >
+                        {getInitials(activeConv.buyer_name)}
+                      </span>
+                      <div className={styles.contextCustomerText}>
+                        <strong className={styles.contextName}>{activeConv.buyer_name}</strong>
+                        <span className={styles.contextSub}>
+                          {activeConv.site_host || shopDisplayName}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className={styles.contextKv}>
+                      <div className={styles.contextKvRow}>
+                        <span>Tin nhắn</span>
+                        <strong className="num">{formatInt(activeMessages.length)}</strong>
+                      </div>
+                      {activeConv.last_message_at && (
+                        <div className={styles.contextKvRow}>
+                          <span>Gần nhất</span>
+                          <strong className="num">
+                            {formatTimeVi(activeConv.last_message_at)}
+                          </strong>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className={styles.contextLinkStack}>
+                      <Link href="/seller/don-hang" className={styles.contextNavLink}>
+                        <span>Đơn hàng gian hàng</span>
+                        <IconArrowUpRight size={13} />
+                      </Link>
+                      <Link href="/seller/ho-so?tab=autoreply" className={styles.contextNavLink}>
+                        <span>Trả lời tự động</span>
+                        <IconArrowUpRight size={13} />
+                      </Link>
+                    </div>
+                  </div>
+
+                  <div className={styles.contextSection}>
+                    <h3 className={styles.contextSecTitle}>Đơn &amp; Sản phẩm đã nhắc</h3>
+                    {referencedEntities.orders.length === 0 &&
+                    referencedEntities.products.length === 0 ? (
+                      <div className={styles.contextEmpty}>
+                        <span>Chưa có thẻ đơn/sản phẩm trong hội thoại.</span>
+                        <div className={styles.contextQuickAttach}>
+                          <button
+                            type="button"
+                            className={styles.toolChipBtn}
+                            onClick={() => {
+                              setAttachMode("product");
+                              setMobilePane("thread");
+                              setContextOpenTablet(false);
+                            }}
+                          >
+                            Gửi SP
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.toolChipBtn}
+                            onClick={() => {
+                              setAttachMode("order");
+                              setMobilePane("thread");
+                              setContextOpenTablet(false);
+                            }}
+                          >
+                            Gửi đơn
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className={styles.contextRefList}>
+                        {referencedEntities.orders.map((ord) => (
+                          <Link
+                            key={`ctx-ord-${ord.id}`}
+                            href={`/seller/don-hang/${encodeURIComponent(ord.id)}`}
+                            className={styles.contextRefCard}
+                          >
+                            <IconPackage size={15} />
+                            <span className={styles.contextRefText}>
+                              <strong>{ord.label}</strong>
+                              <span>Mở chi tiết đơn</span>
+                            </span>
+                          </Link>
+                        ))}
+                        {referencedEntities.products.map((prod) => (
+                          <Link
+                            key={`ctx-prod-${prod.id}`}
+                            href={`/seller/san-pham/${encodeURIComponent(prod.id)}`}
+                            className={styles.contextRefCard}
+                          >
+                            {prod.image && (
+                              <img
+                                src={prod.image}
+                                alt={prod.name}
+                                className={styles.contextRefThumb}
+                                width={34}
+                                height={42}
+                              />
+                            )}
+                            <span className={styles.contextRefText}>
+                              <strong>{prod.name}</strong>
+                              {prod.priceVnd !== undefined && (
+                                <span className="num">{formatVnd(prod.priceVnd)}</span>
+                              )}
+                            </span>
+                          </Link>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className={styles.contextSection}>
+                    <h3 className={styles.contextSecTitle}>Mẫu trả lời nhanh</h3>
+                    <div className={styles.quickTemplateStack}>
+                      {QUICK_REPLIES.map((tpl) => (
+                        <button
+                          key={tpl.label}
+                          type="button"
+                          className={styles.quickTemplateBtn}
+                          onClick={() => handlePickReply(tpl.text)}
+                        >
+                          <span className={styles.quickTemplateTitle}>{tpl.label}</span>
+                          <span className={styles.quickTemplatePreview}>{tpl.text}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className={styles.emptyPaneHint}>
+                <p className={common.cardMeta}>Chọn hội thoại để xem ngữ cảnh khách hàng.</p>
+              </div>
+            )}
+          </aside>
         </section>
       )}
     </div>

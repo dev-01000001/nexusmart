@@ -1,367 +1,188 @@
+/* /ve-nexusmart — 4-screen manifesto, each screen 1 large sentence + 1 large photograph,
+   4 distinct architectural compositions. Zero gradients, zero resting shadows, <= 120 words. */
+
 .page {
   width: 100%;
-  padding: clamp(24px, 3vw, 44px) var(--margin) clamp(56px, 6vw, 96px);
-  background: var(--bg);
-  color: var(--ink);
+  background: var(--bg-1);
+  color: var(--ink-1);
 }
 
-.heroGrid {
-  display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: clamp(24px, 3vw, 40px);
-  align-items: center;
-  margin-bottom: clamp(56px, 7vw, 96px);
-}
-
-.heroText {
-  grid-column: 1 / 7;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 16px;
-}
-
-.title {
-  font-size: clamp(34px, 4.7vw, 68px);
-  font-weight: 300;
-  letter-spacing: -0.035em;
-  line-height: 1.04;
-  color: var(--ink);
-}
-
-.lead {
-  font-size: 16px;
-  line-height: 1.55;
-  color: var(--ink);
-  max-width: 54ch;
-}
-
-.heroActions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.heroVisuals {
-  grid-column: 7 / 13;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.heroMainFigure,
-.heroSubFigure {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.heroMainMedia {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  background: var(--surface-subtle);
-  overflow: hidden;
-}
-
-.heroSubPair {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.heroSubMedia {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 10;
-  background: var(--surface-subtle);
-  overflow: hidden;
-}
-
-.heroPhotoImg {
+.coverImg {
   object-fit: cover;
   object-position: center;
 }
 
-.heroPhotoCaption {
-  font-size: 14px;
-  color: var(--ink-secondary);
+.coverPortrait {
+  object-fit: cover;
+  object-position: center 18%;
 }
 
-/* Tabbed Workspace */
-.tabsSection {
+/* Screen 1: Top-left monumental statement + edge-to-edge panorama below */
+.screenOne {
+  min-height: 94svh;
+  padding-top: calc(68px + clamp(28px, 4vw, 56px));
+  background: var(--bg-1);
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  justify-content: space-between;
+  gap: clamp(28px, 4vw, 48px);
 }
 
-.tabsHead {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.sectionTitle {
-  font-size: clamp(26px, 2.4vw, 34px);
-  font-weight: 400;
-  letter-spacing: -0.025em;
-  line-height: 1.15;
-  color: var(--ink);
-}
-
-.tabsBar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.tabBtn {
-  min-height: 42px;
-  padding: 0 16px;
-  background: var(--surface-white);
-  color: var(--ink);
-  font-size: 16px;
-  transition:
-    background-color var(--t-hover) ease,
-    color var(--t-hover) ease;
-}
-
-.tabBtn:hover {
-  background: var(--surface-muted);
-}
-
-.tabBtnActive {
-  background: var(--band-dark);
-  color: var(--band-dark-ink);
-  font-weight: 500;
-}
-
-.tabBtnActive:hover {
-  background: var(--band-dark);
-}
-
-.panelStack {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-
-.storyLeadGrid {
-  display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: clamp(24px, 3vw, 48px);
-  align-items: start;
-}
-
-.pillarsCol {
-  grid-column: 1 / 7;
-  display: flex;
-  flex-direction: column;
-  gap: 28px;
-}
-
-.pillarEntry {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.pillarTitle {
-  font-size: 20px;
-  font-weight: 500;
-  line-height: 1.3;
-  color: var(--ink-strong);
-}
-
-.pillarDetail {
-  font-size: 16px;
-  line-height: 1.55;
-  color: var(--ink);
-  max-width: 58ch;
-}
-
-.videoCol {
-  grid-column: 7 / 13;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.videoFrame {
+.screenOneHead {
   width: 100%;
-  aspect-ratio: 16 / 9;
-  background: var(--band-dark);
+  padding-inline: var(--margin);
+}
+
+.displayTitle {
+  font-size: clamp(1.75rem, 3.85vw, 3.6rem);
+  color: var(--ink-1);
+  line-height: 1.12;
+  max-width: 26ch;
+  text-wrap: balance;
+}
+
+.panoramaFrame {
+  position: relative;
+  width: 100%;
+  height: clamp(280px, 50svh, 520px);
+  background: var(--bg-3);
   overflow: hidden;
 }
 
-.loomVideo {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.videoCaption {
-  font-size: 16px;
-  line-height: 1.5;
-  color: var(--ink);
-  max-width: 56ch;
-}
-
-.standardBand {
+/* Screen 2: Dark slate split — tall portrait left, bottom-aligned tight statement right */
+.screenTwo {
+  min-height: 88svh;
   background: var(--band-dark);
   color: var(--band-dark-ink);
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.specRow {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.specKey {
-  font-size: 14px;
-  color: var(--band-dark-muted);
-}
-
-.specVal {
-  font-size: 16px;
-  font-weight: 500;
-  line-height: 1.45;
-  color: var(--band-dark-ink);
-}
-
-.infraGrid,
-.storesGrid {
+  padding: clamp(48px, 6vw, 84px) var(--margin);
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px;
+  grid-template-columns: minmax(0, 50%) minmax(0, 50%);
+  gap: clamp(28px, 4.5vw, 64px);
+  align-items: stretch;
 }
 
-.infraCard,
-.storeCard {
-  background: var(--surface-white);
-  padding: 26px;
+.portraitFrame {
+  position: relative;
+  width: 100%;
+  min-height: clamp(380px, 66svh, 660px);
+  background: var(--band-dark-surface);
+  overflow: hidden;
+}
+
+.screenTwoCopy {
   display: flex;
   flex-direction: column;
+  justify-content: flex-end;
+  padding-bottom: clamp(8px, 2vw, 24px);
+}
+
+.manifestoTight {
+  font-size: clamp(1.9rem, 3.6vw, 3.45rem);
+  color: inherit;
+  line-height: 1.08;
+  max-width: 18ch;
+}
+
+/* Screen 3: Pure white gallery — right-offset statement + offset inset plate */
+.screenThree {
+  min-height: 88svh;
+  background: var(--bg-0);
+  color: var(--ink-1);
+  padding: clamp(56px, 8vw, 108px) var(--margin);
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: clamp(28px, 4vw, 48px) 0;
+  align-content: center;
+}
+
+.screenThreeHead {
+  grid-column: 3 / 13;
+}
+
+.manifestoWide {
+  font-size: clamp(1.85rem, 3.4vw, 3.2rem);
+  color: inherit;
+  line-height: 1.12;
+  max-width: 24ch;
+}
+
+.insetPlate {
+  grid-column: 4 / 13;
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--bg-2);
+  overflow: hidden;
+}
+
+/* Screen 4: Tinted neutral finale — left centered statement + CTA, right flush full-height photo */
+.screenFour {
+  min-height: 84svh;
+  background: var(--bg-2);
+  color: var(--ink-1);
+  display: grid;
+  grid-template-columns: minmax(0, 44%) minmax(0, 56%);
+  align-items: stretch;
+}
+
+.screenFourCopy {
+  padding: clamp(48px, 6vw, 88px) clamp(24px, 4vw, 56px) clamp(48px, 6vw, 88px) var(--margin);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 28px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
   gap: 12px;
-  transition: background-color var(--t-hover) ease;
 }
 
-.storeCard:hover {
-  background: var(--surface-subtle);
+.finalePhoto {
+  position: relative;
+  width: 100%;
+  min-height: clamp(340px, 64svh, 640px);
+  background: var(--bg-3);
+  overflow: hidden;
 }
 
-.storeHead {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.storeName {
-  font-size: 20px;
-  font-weight: 500;
-  color: var(--ink-strong);
-}
-
-.storeHost {
-  font-size: 14px;
-  color: var(--ink-secondary);
-}
-
-.storeLink {
-  margin-top: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 16px;
-  font-weight: 500;
-  color: var(--accent);
-}
-
-.timelineSurface {
-  background: var(--surface-white);
-  padding: clamp(24px, 3vw, 36px);
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-
-.stepRow {
-  padding-left: 18px;
-  border-left: 3px solid var(--accent);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.ctaBand {
-  margin-top: clamp(56px, 7vw, 96px);
-  background: var(--accent-tint);
-  padding: clamp(26px, 3.5vw, 40px);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 20px;
-}
-
-.ctaText {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.ctaHeading {
-  font-size: 20px;
-  font-weight: 500;
-  line-height: 1.25;
-  color: var(--ink-strong);
-}
-
-.ctaSub {
-  font-size: 16px;
-  line-height: 1.5;
-  color: var(--ink);
-  max-width: 54ch;
-}
-
-.ctaLinks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-@media (max-width: 1080px) {
-  .heroGrid,
-  .storyLeadGrid,
-  .infraGrid,
-  .storesGrid {
-    grid-template-columns: 1fr;
-    gap: 24px;
+@media (max-width: 960px) {
+  .screenOne {
+    min-height: auto;
+    padding-top: calc(64px + 28px);
   }
 
-  .heroText,
-  .heroVisuals,
-  .pillarsCol,
-  .videoCol {
-    grid-column: auto;
-  }
-}
-
-@media (max-width: 768px) {
-  .page {
-    padding: 20px 20px 56px;
+  .displayTitle {
+    font-size: clamp(1.65rem, 6.4vw, 2.5rem);
   }
 
-  .lead {
-    font-size: 16px;
+  .screenTwo,
+  .screenFour {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: auto;
   }
 
-  .tabBtn {
-    min-height: 44px;
+  .screenTwoCopy {
+    justify-content: flex-start;
+    padding-bottom: 0;
+  }
+
+  .screenThree {
+    min-height: auto;
+  }
+
+  .screenThreeHead,
+  .insetPlate {
+    grid-column: 1 / -1;
+  }
+
+  .screenFourCopy {
+    padding: 44px var(--margin);
+  }
+
+  .finalePhoto {
+    min-height: 320px;
   }
 }

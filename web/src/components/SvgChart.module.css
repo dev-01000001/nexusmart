@@ -2,6 +2,7 @@
   position: relative;
   width: 100%;
   min-width: 0;
+  font-family: var(--font-sans);
   font-variant-numeric: tabular-nums;
 }
 
@@ -11,18 +12,71 @@
   overflow: visible;
 }
 
+.areaPath {
+  opacity: 0.09;
+}
+
+.plotRevealRect {
+  transform: scaleX(1);
+}
+
+.barRect {
+  transition: opacity var(--t-hover) var(--ease-out);
+}
+
+.guideGroup {
+  pointer-events: none;
+}
+
+@media screen and (prefers-reduced-motion: no-preference) {
+  .chartBox:not(.entered) .plotRevealRect {
+    transform: scaleX(0);
+  }
+
+  .entered .plotRevealRect {
+    animation: nm-chart-plot-reveal var(--t-reveal) var(--ease-expo) backwards;
+  }
+
+  .chartBox:not(.entered) .barRect {
+    transform: scaleY(0);
+  }
+
+  .entered .barRect {
+    animation: nm-chart-bar 620ms var(--ease-expo) backwards;
+    animation-delay: calc(var(--bar-idx, 0) * 35ms);
+  }
+}
+
+@keyframes nm-chart-plot-reveal {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes nm-chart-bar {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
 .tooltip {
   position: absolute;
-  top: 0;
+  top: 4px;
   pointer-events: none;
-  padding: 6px 10px;
-  font-size: 12px;
+  padding: 8px 12px;
+  font-size: 13px;
   line-height: 1.4;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   white-space: nowrap;
   background: var(--card);
   color: var(--ink);
-  border: 1px solid var(--border); /* taste-skill-ignore: floating chart tooltip */
+  border: 1px solid var(--border);
   z-index: 5;
   font-variant-numeric: tabular-nums;
 }
@@ -45,13 +99,13 @@
 
 .legend {
   list-style: none;
-  margin: 0 0 8px;
+  margin: 0 0 10px;
   padding: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 6px 16px;
-  font-size: 12px;
-  line-height: 16px;
+  font-size: 13px;
+  line-height: 1.35;
   color: var(--muted);
 }
 
@@ -68,7 +122,7 @@
   display: inline-block;
 }
 
-/* Ranked bar list */
+/* Ranked bar list (GPU scaleX draw-in once) */
 .barList {
   list-style: none;
   margin: 0;
@@ -83,7 +137,7 @@
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: baseline;
   column-gap: 12px;
-  row-gap: 5px;
+  row-gap: 6px;
 }
 
 .barListLabel {
@@ -95,14 +149,14 @@
 }
 
 .barListSub {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   margin-left: 6px;
 }
 
 .barListValue {
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 560;
   color: var(--ink);
   text-align: right;
   white-space: nowrap;
@@ -110,7 +164,7 @@
 
 .barListTrack {
   grid-column: 1 / -1;
-  height: 3px;
+  height: 4px;
   background: var(--rule);
   width: 100%;
   overflow: hidden;
@@ -118,11 +172,21 @@
 
 .barListFill {
   display: block;
+  width: 100%;
   height: 100%;
-  transition: width 240ms var(--ease-out);
+  transform-origin: left center;
+  transform: scaleX(var(--ratio, 0));
+  transition: transform 640ms var(--ease-expo);
+  transition-delay: calc(var(--bar-idx, 0) * 45ms);
 }
 
-/* Progress bar */
+@media screen and (prefers-reduced-motion: no-preference) {
+  :not(.entered) > .barList .barListFill {
+    transform: scaleX(0);
+  }
+}
+
+/* Progress bar (GPU scaleX) */
 .progressWrap {
   display: grid;
   gap: 6px;
@@ -140,7 +204,7 @@
 
 .progressLeft {
   color: var(--ink);
-  font-weight: 500;
+  font-weight: 560;
 }
 
 .progressRight {
@@ -151,16 +215,18 @@
 .progressTrack {
   height: 8px;
   width: 100%;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--rule);
   overflow: hidden;
 }
 
 .progressFill {
+  width: 100%;
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--chart-1);
-  transition: width 240ms var(--ease-out);
+  transform-origin: left center;
+  transition: transform var(--t-ui) var(--ease-out);
 }
 
 /* Ring chart */
@@ -169,6 +235,16 @@
   display: inline-grid;
   place-items: center;
   font-variant-numeric: tabular-nums;
+}
+
+.ringArc {
+  transition: stroke-dashoffset var(--t-reveal) var(--ease-expo);
+}
+
+@media screen and (prefers-reduced-motion: no-preference) {
+  :global(html.js) .ringWrap:not(.entered) .ringArc {
+    stroke-dashoffset: var(--ring-c);
+  }
 }
 
 .ringCenter {
@@ -183,13 +259,13 @@
 }
 
 .ringValue {
-  font-weight: 600;
+  font-weight: 650;
   color: var(--ink);
   line-height: 1.1;
 }
 
 .ringSub {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   margin-top: 3px;
 }

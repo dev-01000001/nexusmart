@@ -2,8 +2,10 @@
   display: inline-flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px 8px;
+  font-family: var(--font-sans);
   font-variant-numeric: tabular-nums;
+  line-height: 1.2;
 }
 
 .current {
@@ -12,7 +14,7 @@
 }
 
 .sm .current {
-  font-size: 16px;
+  font-size: 15px;
 }
 
 .md .current {
@@ -21,7 +23,8 @@
 
 .lg .current {
   font-size: 24px;
-  font-weight: 600;
+  font-stretch: 92%;
+  font-weight: 650;
   letter-spacing: -0.015em;
 }
 
@@ -49,8 +52,18 @@
   font-weight: 600;
 }
 
-@media (max-width: 480px) {
-  .sm .current {
-    font-size: 14px;
-  }
+.toneAccent .current {
+  color: var(--accent);
+}
+
+.toneInverted .current {
+  color: var(--band-dark-ink);
+}
+
+.toneInverted .original {
+  color: var(--band-dark-muted);
+}
+
+.toneInverted .discount {
+  color: var(--band-dark-accent);
 }

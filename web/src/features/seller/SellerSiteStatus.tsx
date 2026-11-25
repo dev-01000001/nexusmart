@@ -8,8 +8,8 @@ import common from "./SellerCommon.module.css";
 import styles from "@/app/(seller)/seller/page.module.css";
 
 /**
- * Overview band telling the seller whether buyers can reach the shop's site. Without a published
- * site there is nowhere to buy, so the unpublished states are written as a clear call to action.
+ * Compact storefront live status bar on Seller Overview.
+ * Keeps published state quiet (1 line) and highlights unpublished/suspended states with 1 direct CTA.
  */
 export function SellerSiteStatus() {
   const { site } = useSellerContext();
@@ -17,14 +17,11 @@ export function SellerSiteStatus() {
   if (site.state === "published") {
     return (
       <section className={styles.siteBand} aria-labelledby="site-status-heading">
-        <div className={styles.siteBandText}>
-          <span className={`${common.pill} ${common.pillPos}`}>Đang hoạt động</span>
+        <div className={styles.siteBandInline}>
+          <span className={`${common.pill} ${common.pillPos}`}>Đang mở bán</span>
           <h2 id="site-status-heading" className={styles.siteBandHost}>
             {site.host}
           </h2>
-          <p className={styles.siteBandNote}>
-            Site đã xuất bản. Người mua truy cập trực tiếp địa chỉ này để xem hàng và đặt đơn.
-          </p>
         </div>
         <div className={styles.siteBandActions}>
           <Link href="/seller/site" className={styles.siteBandSecondary}>
@@ -47,23 +44,21 @@ export function SellerSiteStatus() {
   if (site.state === "suspended") {
     return (
       <section
-        className={`${styles.siteBand} ${styles.siteBandAlert}`}
+        className={`${styles.siteBand} ${styles.siteBandDanger}`}
         aria-labelledby="site-status-heading"
       >
-        <div className={styles.siteBandText}>
+        <div className={styles.siteBandInline}>
           <span className={`${common.pill} ${common.pillNeg}`}>Tạm khóa</span>
           <h2 id="site-status-heading" className={styles.siteBandHost}>
-            {site.host || "Site của gian hàng"}
+            {site.host || "Site gian hàng"}
           </h2>
-          <p className={styles.siteBandNote}>
-            Site đang bị NexusMart tạm khóa
-            {site.suspendedReason ? ` vì: ${site.suspendedReason}` : ""}. Trong thời gian tạm khóa,
-            người mua chưa thể truy cập và mua hàng.
-          </p>
+          {site.suspendedReason && (
+            <span className={styles.siteBandNote}>{site.suspendedReason}</span>
+          )}
         </div>
         <div className={styles.siteBandActions}>
           <Link href="/seller/site" className={styles.siteBandPrimary}>
-            Xem tình trạng site
+            Xem tình trạng
           </Link>
         </div>
       </section>
@@ -76,20 +71,14 @@ export function SellerSiteStatus() {
       className={`${styles.siteBand} ${styles.siteBandAlert}`}
       aria-labelledby="site-status-heading"
     >
-      <div className={styles.siteBandText}>
+      <div className={styles.siteBandInline}>
         <span className={`${common.pill} ${common.pillWarn}`}>
-          {isDraft ? "Bản nháp" : "Chưa thiết lập"}
+          {isDraft ? "Bản nháp" : "Chưa có site"}
         </span>
-        <h2 id="site-status-heading" className={styles.siteBandHeadline}>
-          {isDraft ? "Site của bạn chưa xuất bản" : "Gian hàng chưa có site bán hàng"}
+        <h2 id="site-status-heading" className={styles.siteBandHost}>
+          {isDraft ? site.host || "Site chưa xuất bản" : "Chưa mở bán công khai"}
         </h2>
-        <p className={styles.siteBandNote}>
-          Chưa xuất bản site thì người mua chưa thể truy cập và mua hàng: mọi đơn hàng chỉ phát sinh
-          trên site riêng của gian hàng.{" "}
-          {isDraft
-            ? `Hoàn thiện và xuất bản ${site.host || "site"} để bắt đầu mở bán.`
-            : "Chọn tên miền phụ, bảng màu và sản phẩm nổi bật rồi xuất bản để mở bán."}
-        </p>
+        <span className={styles.siteBandNote}>Xuất bản site để nhận đơn hàng từ người mua.</span>
       </div>
       <div className={styles.siteBandActions}>
         <Link href="/seller/site" className={styles.siteBandPrimary}>

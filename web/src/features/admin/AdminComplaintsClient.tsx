@@ -2,13 +2,14 @@
 
 import React, { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Button, IconClose, IconSearch, StateView } from "@/components";
+import { Button, IconSearch, StateView } from "@/components";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import { sanitizeSafeUrl } from "@/lib/site/theme";
 import { EMPTY_DASH, formatShortTimeDateVi } from "./adminMeta";
 import { AdminStateGate, AdminSuspenseFallback } from "./AdminStateGate";
 import { useAdminContext } from "./AdminShell";
+import { AdminDrawer, SlidingTabBar } from "./AdminUi";
 import { StatusPill } from "./StatusPill";
 import {
   getComplaintResolutionLabelVi,
@@ -32,17 +33,17 @@ const RESOLUTION_OPTIONS: Array<{
   {
     value: "REFUND",
     title: "Hoàn tiền cho người mua",
-    hint: "Hoàn toàn bộ giá trị đơn hàng cho người mua (hoàn ngay hoặc sau khi nhận hàng hoàn trả).",
+    hint: "Hoàn toàn bộ giá trị đơn hàng (ngay hoặc sau khi nhận hàng hoàn).",
   },
   {
     value: "REPLACE",
     title: "Đổi sản phẩm thay thế",
-    hint: "Tạo vận đơn chiều ngược để người mua gửi trả và nhận sản phẩm thay thế từ gian hàng.",
+    hint: "Tạo vận đơn chiều ngược để người mua gửi trả và nhận hàng thay thế.",
   },
   {
     value: "DISMISS",
     title: "Bác khiếu nại",
-    hint: "Giữ nguyên đơn hoàn tất và giải ngân cho gian hàng khi bằng chứng không đủ thuyết phục.",
+    hint: "Giữ nguyên đơn hoàn tất và giải ngân cho gian hàng.",
   },
 ];
 
@@ -74,9 +75,7 @@ function ComplaintsWorkspace({
   const [complaints, setComplaints] = useState<AdminComplaint[]>(initialComplaints);
   const [activeTab, setActiveTab] = useState<ComplaintFilterTab>("all");
   const [query, setQuery] = useState(initialQuery);
-  const [selectedId, setSelectedId] = useState<string | null>(
-    initialSelected ?? initialComplaints[0]?.id ?? null
-  );
+  const [selectedId, setSelectedId] = useState<string | null>(initialSelected);
   const [drawerOpen, setDrawerOpen] = useState(Boolean(initialSelected));
 
   const [resolution, setResolution] = useState<ComplaintResolution>("REFUND");
@@ -119,13 +118,9 @@ function ComplaintsWorkspace({
   }, [complaints, activeTab, query]);
 
   const activeComplaint = useMemo(() => {
-    if (filtered.length === 0) return null;
-    if (selectedId) {
-      const exact = filtered.find((c) => c.id === selectedId);
-      if (exact) return exact;
-    }
-    return filtered[0];
-  }, [filtered, selectedId]);
+    if (!selectedId) return null;
+    return complaints.find((c) => c.id === selectedId) ?? null;
+  }, [complaints, selectedId]);
 
   useEffect(() => {
     setFormError(null);
@@ -134,45 +129,29 @@ function ComplaintsWorkspace({
     setRequireReturnShipping(false);
   }, [activeComplaint?.id]);
 
-  useEffect(() => {
-    if (!drawerOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDrawerOpen(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [drawerOpen]);
-
   if (loadError) {
     return (
       <div className={shared.page}>
         <header className={shared.titleRow}>
           <div className={shared.titleBlock}>
             <h1 className={shared.pageTitle}>Khiếu nại</h1>
-            <p className={shared.pageSubtitle}>
-              Phân xử tranh chấp trả hàng, hoàn tiền giữa người mua và gian hàng.
-            </p>
           </div>
         </header>
-        <div className={shared.stateWrap}>
-          <StateView
-            kind="error"
-            surface="app"
-            title="Không thể tải danh sách khiếu nại"
-            message={loadError}
-            actionLabel="Thử tải lại"
-            onAction={() => router.refresh()}
-          />
-        </div>
+        <StateView
+          kind="error"
+          surface="app"
+          title="Không thể tải danh sách khiếu nại"
+          message={loadError}
+          actionLabel="Thử lại"
+          onAction={() => router.refresh()}
+        />
       </div>
     );
   }
 
-  const handleSelectComplaint = (item: AdminComplaint, openMobileDrawer = false) => {
+  const handleOpenComplaint = (item: AdminComplaint) => {
     setSelectedId(item.id);
-    if (openMobileDrawer) {
-      setDrawerOpen(true);
-    }
+    setDrawerOpen(true);
   };
 
   const handleResolveSubmit = async (e: React.FormEvent, target: AdminComplaint) => {
@@ -221,7 +200,7 @@ function ComplaintsWorkspace({
       setNote("");
       setRequireReturnShipping(false);
       showToast(
-        `Đã phân xử khiếu nại ${target.complaint_code}: ${getComplaintResolutionLabelVi(resolution)}.`
+        `Đã phân xử ${target.complaint_code}: ${getComplaintResolutionLabelVi(resolution)}.`
       );
       router.refresh();
     } catch (err) {
@@ -234,46 +213,38 @@ function ComplaintsWorkspace({
     }
   };
 
-  const renderInspectorBody = (complaint: AdminComplaint) => {
-    const meta = getComplaintStatusMeta(complaint.status);
+  const renderDrawerBody = (complaint: AdminComplaint) => {
     const resolved = isComplaintResolved(complaint.status);
     const safePhotos = complaint.evidence_urls
       .map((u) => sanitizeSafeUrl(u))
       .filter((u) => u.length > 0);
 
     return (
-      <div className={styles.inspectorCard}>
-        <div className={styles.inspectorTop}>
-          <div className={styles.inspectorTitleGroup}>
-            <h2 className={styles.inspectorTitle}>{complaint.complaint_code || complaint.id}</h2>
-            <span className={styles.inspectorMetaLine}>
-              Đơn hàng {complaint.order_code || EMPTY_DASH} · Tạo lúc{" "}
-              {complaint.created_at ? formatDateTimeVi(complaint.created_at) : EMPTY_DASH}
-            </span>
-          </div>
-          <StatusPill label={meta.label} tone={meta.tone} />
-        </div>
-
-        <div className={styles.metaGrid}>
-          <div className={shared.detailField}>
-            <span className={shared.detailKey}>Giá trị tranh chấp</span>
-            <span className={shared.detailVal}>
-              {complaint.dispute_amount_vnd > 0
-                ? formatVnd(complaint.dispute_amount_vnd)
-                : EMPTY_DASH}
-            </span>
-          </div>
-          <div className={shared.detailField}>
-            <span className={shared.detailKey}>Mã đơn hàng</span>
-            <span className={shared.detailVal}>{complaint.order_code || EMPTY_DASH}</span>
-          </div>
-          <div className={shared.detailField}>
-            <span className={shared.detailKey}>Người mua</span>
-            <span className={shared.detailValPlain}>{complaint.buyer_name || EMPTY_DASH}</span>
-          </div>
-          <div className={shared.detailField}>
-            <span className={shared.detailKey}>Gian hàng</span>
-            <span className={shared.detailValPlain}>{complaint.shop_name || EMPTY_DASH}</span>
+      <>
+        <div className={shared.detailWell}>
+          <div className={shared.detailGrid}>
+            <div className={shared.detailField}>
+              <span className={shared.detailKey}>Giá trị tranh chấp</span>
+              <span className={`${shared.detailVal} num`}>
+                {complaint.dispute_amount_vnd > 0
+                  ? formatVnd(complaint.dispute_amount_vnd)
+                  : EMPTY_DASH}
+              </span>
+            </div>
+            <div className={shared.detailField}>
+              <span className={shared.detailKey}>Mã đơn hàng</span>
+              <span className={`${shared.detailVal} num`}>
+                {complaint.order_code || EMPTY_DASH}
+              </span>
+            </div>
+            <div className={shared.detailField}>
+              <span className={shared.detailKey}>Người mua</span>
+              <span className={shared.detailValPlain}>{complaint.buyer_name || EMPTY_DASH}</span>
+            </div>
+            <div className={shared.detailField}>
+              <span className={shared.detailKey}>Gian hàng</span>
+              <span className={shared.detailValPlain}>{complaint.shop_name || EMPTY_DASH}</span>
+            </div>
           </div>
         </div>
 
@@ -281,7 +252,7 @@ function ComplaintsWorkspace({
           <div className={styles.statementBox}>
             <span className={styles.statementTitle}>Lý do khiếu nại</span>
             <p className={styles.statementBody}>
-              {complaint.buyer_reason || "Chưa có mô tả chi tiết cho khiếu nại này."}
+              {complaint.buyer_reason || "Chưa có mô tả chi tiết."}
             </p>
           </div>
 
@@ -296,7 +267,7 @@ function ComplaintsWorkspace({
         <div className={styles.photoSection}>
           <span className={shared.fieldLabel}>Ảnh bằng chứng ({formatInt(safePhotos.length)})</span>
           {safePhotos.length === 0 ? (
-            <p className={styles.fieldHint}>Chưa có ảnh bằng chứng hợp lệ đính kèm hồ sơ này.</p>
+            <p className={styles.fieldHint}>Chưa có ảnh bằng chứng đính kèm.</p>
           ) : (
             <div className={styles.photoGrid}>
               {safePhotos.map((url, idx) => (
@@ -327,7 +298,7 @@ function ComplaintsWorkspace({
                 <li key={ev.id} className={styles.timelineItem}>
                   <div className={styles.timelineHead}>
                     <span className={styles.timelineActor}>
-                      {ev.actor_name || ev.actor_role} · {ev.action}
+                      {ev.actor_name || ev.actor_role}: {ev.action}
                     </span>
                     <span className={styles.timelineTime}>
                       {ev.created_at ? formatShortTimeDateVi(ev.created_at) : EMPTY_DASH}
@@ -349,7 +320,7 @@ function ComplaintsWorkspace({
               Ghi chú quản trị: {complaint.resolution_note || EMPTY_DASH}
             </p>
             {complaint.resolved_at && (
-              <span className={styles.inspectorMetaLine}>
+              <span className={styles.fieldHint}>
                 Hoàn tất lúc {formatDateTimeVi(complaint.resolved_at)}
               </span>
             )}
@@ -413,7 +384,7 @@ function ComplaintsWorkspace({
                     Yêu cầu người mua gửi trả hàng trước khi hoàn tiền
                   </span>
                   <span className={styles.radioHint}>
-                    Bật để tạo vận đơn hoàn hàng trước; bỏ chọn để hoàn tiền ngay cho người mua.
+                    Bật để tạo vận đơn hoàn hàng trước; bỏ chọn để hoàn tiền ngay.
                   </span>
                 </span>
               </label>
@@ -431,64 +402,44 @@ function ComplaintsWorkspace({
                   setNote(e.target.value);
                   setFormError(null);
                 }}
-                placeholder="Ghi rõ căn cứ bằng chứng và hướng xử lý để lưu vào nhật ký kiểm toán..."
+                placeholder="Ghi rõ căn cứ bằng chứng và hướng xử lý để lưu kiểm toán..."
               />
             </div>
 
             {formError && <p className={shared.validationError}>{formError}</p>}
 
             <div className={styles.formActions}>
-              <Button type="submit" variant="primary" size="sm" shape="app" disabled={submitting}>
-                {submitting ? "Đang lưu quyết định..." : "Xác nhận phân xử"}
+              <Button type="submit" variant="primary" size="sm" shape="app" loading={submitting}>
+                Xác nhận phân xử
               </Button>
             </div>
           </form>
         )}
-      </div>
+      </>
     );
   };
 
-  const tabs: Array<{ id: ComplaintFilterTab; label: string }> = [
-    { id: "all", label: "Tất cả" },
-    { id: "OPEN", label: "Chờ xử lý" },
-    { id: "RESOLVED", label: "Đã giải quyết" },
-    { id: "DISMISSED", label: "Đã bác" },
+  const tabs: Array<{ id: ComplaintFilterTab; label: string; count: number }> = [
+    { id: "all", label: "Tất cả", count: counts.all },
+    { id: "OPEN", label: "Chờ xử lý", count: counts.OPEN },
+    { id: "RESOLVED", label: "Đã giải quyết", count: counts.RESOLVED },
+    { id: "DISMISSED", label: "Đã bác", count: counts.DISMISSED },
   ];
-
-  const subtitle =
-    counts.OPEN > 0
-      ? `${formatInt(counts.OPEN)} khiếu nại chờ xử lý, ${formatInt(counts.RESOLVED)} đã giải quyết và ${formatInt(counts.DISMISSED)} đã bác.`
-      : `Không có khiếu nại tồn đọng; đã xử lý ${formatInt(counts.RESOLVED + counts.DISMISSED)} hồ sơ tranh chấp.`;
 
   return (
     <div className={shared.page}>
       <header className={shared.titleRow}>
         <div className={shared.titleBlock}>
           <h1 className={shared.pageTitle}>Khiếu nại</h1>
-          <p className={shared.pageSubtitle}>{subtitle}</p>
         </div>
       </header>
 
-      <div className={shared.tabsBar}>
-        <div className={shared.tabList} role="tablist" aria-label="Lọc trạng thái khiếu nại">
-          {tabs.map((tab) => {
-            const active = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                className={`${shared.tabBtn} ${active ? shared.tabBtnActive : ""}`}
-                onClick={() => setActiveTab(tab.id)}
-              >
-                <span>{tab.label}</span>
-                <span className={shared.tabCount}>{counts[tab.id]}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <SlidingTabBar
+        tabs={tabs}
+        activeId={activeTab}
+        onChange={setActiveTab}
+        ariaLabel="Lọc trạng thái khiếu nại"
+      />
 
       <div className={shared.toolbar}>
         <div className={shared.toolbarLeft}>
@@ -512,150 +463,127 @@ function ComplaintsWorkspace({
       </div>
 
       {complaints.length === 0 ? (
-        <div className={shared.stateWrap}>
-          <StateView
-            kind="empty"
-            surface="app"
-            title="Chưa có khiếu nại nào cần phân xử"
-            message="Khi người mua khiếu nại quyết định từ chối trả hàng từ gian hàng, hồ sơ sẽ xuất hiện tại đây."
-          />
-        </div>
+        <StateView
+          kind="empty"
+          surface="app"
+          title="Chưa có khiếu nại cần phân xử"
+          message="Hồ sơ tranh chấp từ người mua sẽ xuất hiện tại đây."
+        />
       ) : filtered.length === 0 ? (
-        <p className={shared.emptyRow}>Không tìm thấy hồ sơ khiếu nại phù hợp với bộ lọc.</p>
+        <p className={shared.emptyRow}>Không tìm thấy hồ sơ khiếu nại phù hợp.</p>
       ) : (
         <>
-          <div className={styles.splitGrid}>
-            <div className={styles.masterPane}>
-              <div className={shared.tableWrap}>
-                <table className={shared.dataTable}>
-                  <thead>
-                    <tr>
-                      <th>Khiếu nại &amp; đơn hàng</th>
-                      <th>Người mua &amp; gian hàng</th>
-                      <th className={shared.colNum}>Tranh chấp</th>
-                      <th>Trạng thái</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filtered.map((item) => {
-                      const meta = getComplaintStatusMeta(item.status);
-                      const isSelected = activeComplaint?.id === item.id;
-                      return (
-                        <tr
-                          key={item.id}
-                          className={`${shared.rowInteractive} ${isSelected ? shared.rowSelected : ""}`}
-                          onClick={() => handleSelectComplaint(item, true)}
-                        >
-                          <td>
-                            <div className={shared.cellPrimary}>
-                              {item.complaint_code || item.id.slice(0, 12)}
-                            </div>
-                            <div className={shared.cellSub}>
-                              Đơn {item.order_code || EMPTY_DASH} ·{" "}
-                              {item.created_at
-                                ? formatShortTimeDateVi(item.created_at)
-                                : EMPTY_DASH}
-                            </div>
-                          </td>
-                          <td>
-                            <div className={shared.cellPrimary}>
-                              {item.buyer_name || EMPTY_DASH}
-                            </div>
-                            <div className={shared.cellSub}>
-                              Shop: {item.shop_name || EMPTY_DASH}
-                            </div>
-                          </td>
-                          <td className={shared.colNum}>
-                            {item.dispute_amount_vnd > 0
-                              ? formatVnd(item.dispute_amount_vnd)
-                              : EMPTY_DASH}
-                          </td>
-                          <td>
-                            <StatusPill label={meta.label} tone={meta.tone} />
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className={shared.mobileList}>
+          <div className={shared.tableWrap}>
+            <table className={shared.dataTable}>
+              <thead>
+                <tr>
+                  <th>Khiếu nại &amp; đơn hàng</th>
+                  <th>Người mua &amp; gian hàng</th>
+                  <th className={shared.colNum}>Tranh chấp</th>
+                  <th>Trạng thái</th>
+                  <th className={shared.colAction}>Thao tác</th>
+                </tr>
+              </thead>
+              <tbody>
                 {filtered.map((item) => {
                   const meta = getComplaintStatusMeta(item.status);
+                  const isSelected = drawerOpen && activeComplaint?.id === item.id;
                   return (
-                    <div key={item.id} className={shared.mobileItem}>
-                      <button
-                        type="button"
-                        className={shared.mobileItemBtn}
-                        onClick={() => handleSelectComplaint(item, true)}
-                      >
-                        <div className={shared.mobileLine1}>
-                          <span className={shared.mobileIdentity}>
-                            {item.complaint_code || item.id.slice(0, 12)} · {item.order_code}
-                          </span>
-                          <span className={shared.mobileMetric}>
-                            {item.dispute_amount_vnd > 0
-                              ? formatVnd(item.dispute_amount_vnd)
-                              : EMPTY_DASH}
-                          </span>
+                    <tr
+                      key={item.id}
+                      className={`${shared.rowInteractive} ${isSelected ? shared.rowSelected : ""}`}
+                      onClick={() => handleOpenComplaint(item)}
+                    >
+                      <td>
+                        <div className={shared.cellPrimary}>
+                          {item.complaint_code || item.id.slice(0, 12)}
                         </div>
-                        <div className={shared.mobileLine2}>
-                          <span className={shared.mobileMetaText}>
-                            {item.buyer_name} · {item.shop_name}
-                          </span>
-                          <StatusPill label={meta.label} tone={meta.tone} />
+                        <div className={shared.cellSub}>
+                          Đơn {item.order_code || EMPTY_DASH}
+                          {item.created_at ? `, ${formatShortTimeDateVi(item.created_at)}` : ""}
                         </div>
-                      </button>
-                    </div>
+                      </td>
+                      <td>
+                        <div className={shared.cellPrimary}>{item.buyer_name || EMPTY_DASH}</div>
+                        <div className={shared.cellSub}>Shop: {item.shop_name || EMPTY_DASH}</div>
+                      </td>
+                      <td className={shared.colNum}>
+                        {item.dispute_amount_vnd > 0
+                          ? formatVnd(item.dispute_amount_vnd)
+                          : EMPTY_DASH}
+                      </td>
+                      <td>
+                        <StatusPill label={meta.label} tone={meta.tone} />
+                      </td>
+                      <td className={shared.colAction}>
+                        <button
+                          type="button"
+                          className={shared.rowActionBtn}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenComplaint(item);
+                          }}
+                        >
+                          {isComplaintResolved(item.status) ? "Xem hồ sơ" : "Phân xử"}
+                        </button>
+                      </td>
+                    </tr>
                   );
                 })}
-              </div>
-            </div>
-
-            {activeComplaint && (
-              <aside
-                className={styles.inspectorDesktop}
-                aria-label="Chi tiết hồ sơ khiếu nại và phân xử"
-              >
-                {renderInspectorBody(activeComplaint)}
-              </aside>
-            )}
+              </tbody>
+            </table>
           </div>
 
-          {drawerOpen && activeComplaint && (
-            <>
-              <div
-                className={styles.mobileDrawerBackdrop}
-                onClick={() => setDrawerOpen(false)}
-                aria-hidden="true"
-              />
-              <div
-                className={styles.mobileDrawer}
-                role="dialog"
-                aria-modal="true"
-                aria-label={`Chi tiết khiếu nại ${activeComplaint.complaint_code}`}
-              >
-                <div className={styles.mobileDrawerHeader}>
-                  <span className={styles.inspectorTitle}>
-                    Hồ sơ {activeComplaint.complaint_code}
-                  </span>
+          <div className={shared.mobileList}>
+            {filtered.map((item) => {
+              const meta = getComplaintStatusMeta(item.status);
+              return (
+                <div key={item.id} className={shared.mobileItem}>
                   <button
                     type="button"
-                    className={styles.drawerCloseBtn}
-                    onClick={() => setDrawerOpen(false)}
-                    aria-label="Đóng chi tiết khiếu nại"
+                    className={shared.mobileItemBtn}
+                    onClick={() => handleOpenComplaint(item)}
                   >
-                    <IconClose size={18} />
+                    <span className={shared.mobileLine1}>
+                      <span className={shared.mobileIdentity}>
+                        {item.complaint_code || item.id.slice(0, 12)} ({item.order_code})
+                      </span>
+                      <span className={shared.mobileMetric}>
+                        {item.dispute_amount_vnd > 0
+                          ? formatVnd(item.dispute_amount_vnd)
+                          : EMPTY_DASH}
+                      </span>
+                    </span>
+                    <span className={shared.mobileLine2}>
+                      <span className={shared.mobileMetaText}>
+                        {[item.buyer_name, item.shop_name].filter(Boolean).join(", ") || EMPTY_DASH}
+                      </span>
+                      <StatusPill label={meta.label} tone={meta.tone} />
+                    </span>
                   </button>
                 </div>
-                <div className={styles.mobileDrawerBody}>
-                  {renderInspectorBody(activeComplaint)}
-                </div>
-              </div>
-            </>
-          )}
+              );
+            })}
+          </div>
         </>
+      )}
+
+      {activeComplaint && (
+        <AdminDrawer
+          open={drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          title={activeComplaint.complaint_code || activeComplaint.id}
+          subtitle={`Đơn ${activeComplaint.order_code || EMPTY_DASH}${activeComplaint.created_at ? `, ${formatDateTimeVi(activeComplaint.created_at)}` : ""}`}
+          headerBadge={
+            <StatusPill
+              label={getComplaintStatusMeta(activeComplaint.status).label}
+              tone={getComplaintStatusMeta(activeComplaint.status).tone}
+            />
+          }
+          width="lg"
+        >
+          {renderDrawerBody(activeComplaint)}
+        </AdminDrawer>
       )}
     </div>
   );
@@ -666,11 +594,10 @@ export function AdminComplaintsClient(props: AdminComplaintsClientProps) {
     <Suspense fallback={<AdminSuspenseFallback title="Khiếu nại" />}>
       <AdminStateGate
         title="Khiếu nại"
-        subtitle="Phân xử tranh chấp trả hàng, hoàn tiền giữa người mua và gian hàng."
-        emptyTitle="Chưa có khiếu nại nào cần phân xử"
+        emptyTitle="Chưa có khiếu nại cần phân xử"
         emptyMessage="Tất cả hồ sơ tranh chấp đã được giải quyết."
         errorTitle="Không thể tải danh sách khiếu nại"
-        errorMessage="Dịch vụ khiếu nại tạm thời không phản hồi. Vui lòng thử tải lại."
+        errorMessage="Dịch vụ khiếu nại tạm gián đoạn. Vui lòng thử lại."
         loadingRows={5}
       >
         {({ initialQuery, initialSelected }) => (

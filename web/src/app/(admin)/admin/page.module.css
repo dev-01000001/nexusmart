@@ -1,231 +1,283 @@
-/* Tổng quan quản trị (/admin) — Framed sheet overview pattern (admin-sheet.md §5).
-   Grid arithmetic at 1440px: 1154px sheet inner width = 746px main (1fr) + 24px gap + 384px rail. */
+/* Tổng quan quản trị (/admin) — Queue-First Hero + Single-Question Health Chart */
 
-.overviewGrid {
+.heroGrid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 384px;
-  gap: 24px;
+  grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.95fr);
+  gap: 20px;
   align-items: start;
-  margin-top: 20px;
 }
 
-.mainCol {
+.queuePanel {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  min-width: 0;
 }
 
-.rightRail {
+.queueBody {
   display: flex;
   flex-direction: column;
-  min-width: 0;
-}
-
-.railSection + .railSection {
-  margin-top: 16px;
-}
-
-.railHeading {
-  font-size: var(--fs-section);
-  font-weight: 500;
-  line-height: 22px;
-  color: var(--ink);
-  margin-bottom: 8px;
-}
-
-.railCard {
-  background: var(--card);
-  border: 1px solid #e6ecee; /* taste-skill-ignore: app rail card 1px edge per admin-sheet.md */
-  border-radius: var(--radius-card);
-  padding: 4px 16px 12px;
-}
-
-.railList {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.railRow {
-  border-bottom: 1px solid #eaeaea; /* taste-skill-ignore: app rail row rule per admin-sheet.md */
-}
-
-.railRow:last-child {
-  border-bottom: 0;
-}
-
-.railItemLink {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  min-height: 52px;
-  padding: 8px 0;
-  gap: 3px;
-  transition: color var(--t-hover) ease;
-}
-
-.railItemLink:hover .railPrimary {
-  color: var(--accent);
-}
-
-.railItemStatic {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  min-height: 52px;
-  padding: 8px 0;
-  gap: 3px;
-}
-
-.railTopLine {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.railPrimary {
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 19px;
-  color: var(--ink);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.railTime {
-  font-size: 12px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.railSub {
-  font-size: 13px;
-  line-height: 18px;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
-.chartFooter {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  margin-top: 8px;
-  font-size: 13px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
+}
+
+.chipRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
-.channelTable {
-  width: 100%;
-  border-collapse: collapse;
+.filterChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  background: var(--bg-1);
+  color: var(--ink-3);
+  font-size: var(--fs-small);
+  font-weight: 500;
+  transition:
+    background-color var(--t-hover) var(--ease-out),
+    color var(--t-hover) var(--ease-out);
+}
+
+.filterChip:hover {
+  background: var(--bg-2);
+  color: var(--ink-1);
+}
+
+.filterChipActive {
+  background: var(--ink);
+  color: var(--band-dark-ink);
+}
+
+.filterChipActive:hover {
+  background: var(--ink-1);
+  color: var(--band-dark-ink);
+}
+
+.filterChipCount {
   font-variant-numeric: tabular-nums;
+  opacity: 0.85;
 }
 
-.channelTable thead th {
-  height: 32px;
-  padding: 0 10px 6px;
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--muted);
-  text-align: left;
-  border-bottom: 1px solid #e6ecee;
-  white-space: nowrap;
+.queueList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
 
-.channelTable thead th:first-child {
-  padding-left: 0;
-}
-
-.channelTable thead th:last-child {
-  padding-right: 0;
-}
-
-.channelTable tbody td {
-  padding: 10px;
-  font-size: 14px;
-  line-height: 20px;
-  color: var(--ink);
-  border-bottom: 1px solid #eaeaea;
-}
-
-.channelTable tbody td:first-child {
-  padding-left: 0;
-}
-
-.channelTable tbody td:last-child {
-  padding-right: 0;
-}
-
-.channelTable tfoot td {
-  padding: 10px 10px 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--ink);
-  border-top: 1px solid #dde4e8;
-}
-
-.channelTable tfoot td:first-child {
-  padding-left: 0;
-}
-
-.channelTable tfoot td:last-child {
-  padding-right: 0;
-}
-
-.channelMeta {
-  margin-left: 8px;
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--muted);
-}
-
-.channelMobileList {
-  display: none;
-}
-
-.channelMobileRow {
-  padding: 10px 0;
-  border-bottom: 1px solid #eaeaea; /* taste-skill-ignore: mobile channel breakdown rule per admin-sheet.md */
+.queueRow {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rule);
+  animation: admin-queue-row-in var(--t-ui) var(--ease-out) backwards;
+  animation-delay: calc(var(--i, 0) * 55ms);
 }
 
-.channelMobileRow:last-child {
+@keyframes admin-queue-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.queueRow:first-child {
+  padding-top: 2px;
+}
+
+.queueRow:last-child {
   border-bottom: 0;
   padding-bottom: 0;
 }
 
-.channelMobileLine {
+.queueRowLeft {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.queueTypeTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: var(--radius-chip);
+  background: var(--bg-2);
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.queueTypeTagUrgent {
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+}
+
+.queueText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.queueTitle {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--ink-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queueMeta {
+  font-size: var(--fs-small);
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 
-.freshness {
-  font-size: 12px;
-  color: var(--muted);
+.queueClearBanner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: var(--radius-control);
+  background: var(--pill-positive-bg);
+  color: var(--pill-positive-ink);
+  font-size: var(--fs-body);
+  font-weight: 500;
+}
+
+.queueCalmNote {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--bg-1);
+  color: var(--ink-3);
+  font-size: var(--fs-small);
+  font-weight: 500;
+}
+
+.queueSummaryGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--rule);
+}
+
+.queueSummaryTile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  border-radius: var(--radius-control);
+  background: var(--bg-1);
+  transition: background-color var(--t-hover) var(--ease-out);
+}
+
+.queueSummaryTile:hover {
+  background: var(--bg-2);
+}
+
+.queueSummaryLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-small);
+  color: var(--ink-3);
+  font-weight: 500;
+}
+
+.queueSummaryVal {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-1);
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+}
+
+/* Health Chart Segmented Switch */
+.segmentSwitch {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+  gap: 2px;
+}
+
+.segmentBtn {
+  height: 28px;
+  padding: 0 11px;
+  border-radius: 4px;
+  font-size: var(--fs-small);
+  font-weight: 500;
+  color: var(--ink-3);
+  transition:
+    background-color var(--t-hover) var(--ease-out),
+    color var(--t-hover) var(--ease-out);
+}
+
+.segmentBtn:hover {
+  color: var(--ink-1);
+}
+
+.segmentBtnActive {
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-weight: 600;
+}
+
+.healthFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
+  flex-wrap: wrap;
+}
+
+.healthStat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.healthStatLabel {
+  font-size: var(--fs-small);
+  color: var(--muted);
+}
+
+.healthStatVal {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--ink-1);
 }
 
 .panelControls {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
@@ -236,23 +288,91 @@
   flex-wrap: wrap;
 }
 
+/* Bottom Operational Grid */
+.bottomGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.9fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.auditFeed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.auditRow {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.auditRow:first-child {
+  padding-top: 0;
+}
+
+.auditRow:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.auditTopLine {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.auditAction {
+  font-size: var(--fs-body);
+  font-weight: 500;
+  color: var(--ink-1);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auditTime {
+  font-size: var(--fs-small);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.auditSub {
+  font-size: var(--fs-small);
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 1120px) {
-  .overviewGrid {
+  .heroGrid,
+  .bottomGrid {
     grid-template-columns: minmax(0, 1fr);
-    gap: 20px;
   }
 }
 
 @media (max-width: 720px) {
-  .channelTableWrap {
-    display: none;
+  .queueRow {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
   }
 
-  .channelMobileList {
-    display: block;
+  .queueRowLeft {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
   }
 
-  .freshness {
-    display: none;
+  .queueSummaryGrid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

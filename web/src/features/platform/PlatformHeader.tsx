@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSession } from "@/components/SessionProvider";
 import { IconChevronDown, IconClose, IconMenu, IconUser, NexusMark } from "@/components/Icons";
+import { useModalFocusTrap } from "@/components/modalFocus";
 import styles from "./PlatformHeader.module.css";
 
 interface NavItem {
@@ -14,8 +15,7 @@ interface NavItem {
 }
 
 const NAV_ITEMS: readonly NavItem[] = [
-  { label: "Danh bạ gian hàng", href: "/#danh-ba-gian-hang" },
-  { label: "Dành cho người bán", href: "/#danh-cho-nguoi-ban" },
+  { label: "Cửa hàng", href: "/#danh-ba-gian-hang" },
   { label: "Về NexusMart", href: "/ve-nexusmart", matchPath: "/ve-nexusmart" },
   { label: "Trợ giúp", href: "/tro-giup", matchPath: "/tro-giup" },
 ];
@@ -35,21 +35,104 @@ export function PlatformHeader() {
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [atTop, setAtTop] = useState(true);
+  const [hidden, setHidden] = useState(false);
+
   const headerRef = useRef<HTMLElement>(null);
+  const mobileSheetRef = useRef<HTMLDivElement | null>(null);
+  const drawerRestoreFocusRef = useRef(true);
+  const lastScrollY = useRef(0);
 
   const isSeller = user?.role === "seller";
   const isAdmin = user?.role === "admin" || user?.role === "super_admin";
   const displayName = user ? shortName(user.fullName, user.email) : "";
+  const isHome = pathname === "/";
+
+  const openDrawer = useCallback(() => {
+    drawerRestoreFocusRef.current = true;
+    setDrawerOpen(true);
+  }, []);
+
+  const blurInsideSheet = useCallback(() => {
+    const sheet = mobileSheetRef.current;
+    const active = typeof document !== "undefined" ? document.activeElement : null;
+    if (sheet && active instanceof HTMLElement && sheet.contains(active)) {
+      active.blur();
+    }
+  }, []);
+
+  const closeDrawer = useCallback(
+    (restoreFocus = true) => {
+      drawerRestoreFocusRef.current = restoreFocus;
+      if (!restoreFocus) {
+        blurInsideSheet();
+      }
+      setDrawerOpen(false);
+    },
+    [blurInsideSheet]
+  );
 
   useEffect(() => {
+    drawerRestoreFocusRef.current = false;
+    blurInsideSheet();
     setDrawerOpen(false);
     setUserMenuOpen(false);
-  }, [pathname]);
+    setHidden(false);
+  }, [pathname, blurInsideSheet]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    lastScrollY.current = window.scrollY;
+    setAtTop(window.scrollY < 24);
+
+    let rafId = 0;
+    const onScroll = () => {
+      if (rafId) return;
+      rafId = window.requestAnimationFrame(() => {
+        rafId = 0;
+        const y = window.scrollY;
+        const delta = y - lastScrollY.current;
+        setAtTop(y < 24);
+
+        if (drawerOpen || userMenuOpen) {
+          setHidden(false);
+        } else if (y < 72) {
+          setHidden(false);
+        } else if (delta > 6) {
+          setHidden(true);
+        } else if (delta < -4) {
+          setHidden(false);
+        }
+        lastScrollY.current = y;
+      });
+    };
+
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      if (rafId) window.cancelAnimationFrame(rafId);
+    };
+  }, [drawerOpen, userMenuOpen]);
+
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [drawerOpen]);
+
+  useModalFocusTrap({
+    open: drawerOpen,
+    containerRef: mobileSheetRef,
+    onEscape: () => closeDrawer(true),
+    shouldRestoreFocusRef: drawerRestoreFocusRef,
+  });
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        setDrawerOpen(false);
         setUserMenuOpen(false);
       }
     };
@@ -71,7 +154,7 @@ export function PlatformHeader() {
 
   const handleLogout = async () => {
     setUserMenuOpen(false);
-    setDrawerOpen(false);
+    closeDrawer(false);
     await logout("/");
   };
 
@@ -84,43 +167,48 @@ export function PlatformHeader() {
     }
   };
 
+  const surfaceState = atTop && isHome ? "transparent" : atTop ? "flat" : "solid";
+
   return (
     <>
       <a href="#main-content" className={styles.skipLink} onClick={handleSkipToMain}>
         Bỏ qua đến nội dung
       </a>
 
-      <header ref={headerRef} className={styles.headerShell}>
+      <header
+        ref={headerRef}
+        className={styles.headerShell}
+        data-surface={surfaceState}
+        data-hidden={hidden && !drawerOpen ? "true" : "false"}
+      >
         <div className={styles.inner}>
-          <div className={styles.leftCluster}>
-            <Link href="/" className={styles.brand} aria-label="NexusMart trang chủ">
-              <NexusMark size={22} />
-              <span className={styles.brandWord}>NexusMart</span>
-            </Link>
+          <Link href="/" className={styles.brand} aria-label="NexusMart trang chủ">
+            <NexusMark size={20} />
+            <span className={`${styles.brandWord} type-wide`}>NexusMart</span>
+          </Link>
 
-            <nav className={styles.navDesktop} aria-label="Điều hướng nền tảng">
-              {NAV_ITEMS.map((item) => (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={`${styles.navLink} ${isActive(item.matchPath) ? styles.navLinkActive : ""}`}
-                >
-                  {item.label}
-                </Link>
-              ))}
-            </nav>
-          </div>
+          <nav className={styles.navDesktop} aria-label="Điều hướng nền tảng">
+            {NAV_ITEMS.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`${styles.navLink} ${isActive(item.matchPath) ? styles.navLinkActive : ""}`}
+              >
+                {item.label}
+              </Link>
+            ))}
+          </nav>
 
           <div className={styles.actionsDesktop}>
             {isAuthenticated && user ? (
               <>
                 {isSeller && (
-                  <Link href="/seller" className={styles.workspaceLink}>
+                  <Link href="/seller" className={styles.loginLink}>
                     Kênh người bán
                   </Link>
                 )}
                 {isAdmin && (
-                  <Link href="/admin" className={styles.workspaceLink}>
+                  <Link href="/admin" className={styles.loginLink}>
                     Cổng quản trị
                   </Link>
                 )}
@@ -134,7 +222,7 @@ export function PlatformHeader() {
                     aria-controls="platform-user-menu"
                     onClick={() => setUserMenuOpen((v) => !v)}
                   >
-                    <IconUser size={16} />
+                    <IconUser size={15} />
                     <span className={styles.userName}>{displayName}</span>
                     <IconChevronDown
                       size={13}
@@ -229,115 +317,123 @@ export function PlatformHeader() {
             <button
               type="button"
               className={styles.menuBtn}
-              onClick={() => setDrawerOpen(true)}
+              onClick={openDrawer}
               aria-expanded={drawerOpen}
+              aria-controls="platform-mobile-sheet"
               aria-label="Mở trình đơn điều hướng"
             >
               <IconMenu size={18} />
-              <span>Menu</span>
             </button>
           </div>
         </div>
       </header>
 
-      {drawerOpen && (
-        <div
-          className={styles.drawerBackdrop}
-          role="presentation"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setDrawerOpen(false);
-          }}
-        >
-          <div
-            className={styles.drawerPanel}
-            data-ui="platform-drawer"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Điều hướng nền tảng NexusMart"
-          >
-            <div className={styles.drawerHead}>
-              <Link href="/" className={styles.brand} onClick={() => setDrawerOpen(false)}>
-                <NexusMark size={20} />
-                <span className={styles.brandWord}>NexusMart</span>
-              </Link>
-              <button
-                type="button"
-                className={styles.drawerClose}
-                onClick={() => setDrawerOpen(false)}
-                aria-label="Đóng trình đơn"
+      <div
+        ref={mobileSheetRef}
+        id="platform-mobile-sheet"
+        tabIndex={-1}
+        className={styles.sheet}
+        data-open={drawerOpen ? "true" : "false"}
+        role="dialog"
+        aria-modal="true"
+        aria-hidden={!drawerOpen}
+        inert={!drawerOpen || undefined}
+        aria-label="Điều hướng nền tảng NexusMart"
+      >
+        <div className={styles.sheetInner}>
+          <div className={styles.sheetHead}>
+            <Link
+              href="/"
+              className={styles.sheetBrand}
+              tabIndex={drawerOpen ? 0 : -1}
+              onClick={() => closeDrawer(false)}
+            >
+              <NexusMark size={20} accentColor="var(--band-dark-accent)" />
+              <span className={`${styles.brandWord} type-wide`}>NexusMart</span>
+            </Link>
+            <button
+              type="button"
+              className={styles.sheetClose}
+              tabIndex={drawerOpen ? 0 : -1}
+              onClick={() => closeDrawer(true)}
+              aria-label="Đóng trình đơn"
+            >
+              <IconClose size={20} />
+            </button>
+          </div>
+
+          <nav className={styles.sheetNav} aria-label="Điều hướng di động">
+            {NAV_ITEMS.map((item, idx) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                tabIndex={drawerOpen ? 0 : -1}
+                className={`${styles.sheetLink} type-wide`}
+                style={{ "--i": idx } as React.CSSProperties}
+                onClick={() => closeDrawer(false)}
               >
-                <IconClose size={18} />
-              </button>
-            </div>
+                {item.label}
+              </Link>
+            ))}
+          </nav>
 
-            <nav className={styles.drawerNav} aria-label="Điều hướng di động">
-              {NAV_ITEMS.map((item) => (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={styles.drawerLink}
-                  onClick={() => setDrawerOpen(false)}
+          <div className={styles.sheetActions}>
+            {isAuthenticated && user ? (
+              <>
+                <p className={styles.sheetUserMeta}>{user.email}</p>
+                {isSeller && (
+                  <Link
+                    href="/seller"
+                    tabIndex={drawerOpen ? 0 : -1}
+                    className={styles.sheetPrimary}
+                    onClick={() => closeDrawer(false)}
+                  >
+                    Kênh người bán
+                  </Link>
+                )}
+                {isAdmin && (
+                  <Link
+                    href="/admin"
+                    tabIndex={drawerOpen ? 0 : -1}
+                    className={styles.sheetPrimary}
+                    onClick={() => closeDrawer(false)}
+                  >
+                    Cổng quản trị
+                  </Link>
+                )}
+                <button
+                  type="button"
+                  tabIndex={drawerOpen ? 0 : -1}
+                  className={styles.sheetSecondary}
+                  onClick={handleLogout}
+                  disabled={sessionLoading}
                 >
-                  {item.label}
+                  {sessionLoading ? "Đang đăng xuất..." : "Đăng xuất"}
+                </button>
+              </>
+            ) : (
+              <>
+                <Link
+                  href="/dang-ky?role=seller"
+                  tabIndex={drawerOpen ? 0 : -1}
+                  className={styles.sheetPrimary}
+                  onClick={() => closeDrawer(false)}
+                >
+                  Mở gian hàng
                 </Link>
-              ))}
-            </nav>
-
-            <div className={styles.drawerActions}>
-              {isAuthenticated && user ? (
-                <>
-                  <p className={styles.drawerUserMeta}>
-                    Đang đăng nhập: <strong>{user.email}</strong>
-                  </p>
-                  {isSeller && (
-                    <Link
-                      href="/seller"
-                      className={styles.drawerPrimary}
-                      onClick={() => setDrawerOpen(false)}
-                    >
-                      Vào Kênh người bán
-                    </Link>
-                  )}
-                  {isAdmin && (
-                    <Link
-                      href="/admin"
-                      className={styles.drawerPrimary}
-                      onClick={() => setDrawerOpen(false)}
-                    >
-                      Vào Cổng quản trị
-                    </Link>
-                  )}
-                  <button
-                    type="button"
-                    className={styles.drawerSecondary}
-                    onClick={handleLogout}
-                    disabled={sessionLoading}
-                  >
-                    {sessionLoading ? "Đang đăng xuất..." : "Đăng xuất"}
-                  </button>
-                </>
-              ) : (
-                <>
-                  <Link
-                    href="/dang-ky?role=seller"
-                    className={styles.drawerPrimary}
-                    onClick={() => setDrawerOpen(false)}
-                  >
-                    Mở gian hàng
-                  </Link>
-                  <Link
-                    href="/dang-nhap"
-                    className={styles.drawerSecondary}
-                    onClick={() => setDrawerOpen(false)}
-                  >
-                    Đăng nhập
-                  </Link>
-                </>
-              )}
-            </div>
+                <Link
+                  href="/dang-nhap"
+                  tabIndex={drawerOpen ? 0 : -1}
+                  className={styles.sheetSecondary}
+                  onClick={() => closeDrawer(false)}
+                >
+                  Đăng nhập
+                </Link>
+              </>
+            )}
           </div>
         </div>
-      )}
+      </div>
     </>
   );
 }

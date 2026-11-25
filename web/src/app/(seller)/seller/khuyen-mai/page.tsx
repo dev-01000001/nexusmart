@@ -39,6 +39,7 @@ export default async function SellerPromotionsPage() {
         initialFlashSales={flashRes.data ?? []}
         shopProducts={productsRes.data?.items ?? []}
         loadError={vouchersRes.error ?? flashRes.error ?? productsRes.error}
+        serverNowMs={Date.now()}
       />
     </SellerSuspense>
   );

@@ -10,6 +10,7 @@ import type { SessionUser } from "@/lib/server/session";
 import { sanitizeSafeUrl } from "@/lib/site/theme";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { useSellerContext } from "@/features/seller/SellerShell";
+import { SellerSlidingTabs, statusPillClass } from "@/features/seller/SellerUiPrimitives";
 import { getShopStatusLabel, type GwSellerShop } from "@/features/seller/sellerApiTypes";
 import {
   normalizeAutoReplyConfig,
@@ -43,13 +44,6 @@ export interface SellerProfileClientProps {
   site: SellerSiteSummary;
 }
 
-function pillCls(tone: "pos" | "warn" | "neg" | "neutral"): string {
-  if (tone === "pos") return `${common.pill} ${common.pillPos}`;
-  if (tone === "warn") return `${common.pill} ${common.pillWarn}`;
-  if (tone === "neg") return `${common.pill} ${common.pillNeg}`;
-  return common.pill;
-}
-
 function siteStateLabel(state: SellerSiteSummary["state"]): {
   label: string;
   tone: "pos" | "warn" | "neg" | "neutral";
@@ -58,7 +52,7 @@ function siteStateLabel(state: SellerSiteSummary["state"]): {
     case "published":
       return { label: "Đang mở bán", tone: "pos" };
     case "draft":
-      return { label: "Bản nháp chưa xuất bản", tone: "warn" };
+      return { label: "Bản nháp", tone: "warn" };
     case "suspended":
       return { label: "Đang tạm khóa", tone: "neg" };
     default:
@@ -84,14 +78,12 @@ function SellerProfileContent({
     tabParam && ["shop", "warehouse", "autoreply"].includes(tabParam) ? tabParam : "shop"
   );
 
-  // Tab 1: Editable owner contact info via PATCH /api/auth/me
   const [owner, setOwner] = useState<SessionUser>(initialUser);
   const [fullName, setFullName] = useState(initialUser.fullName);
   const [phone, setPhone] = useState(initialUser.phone);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileError, setProfileError] = useState("");
 
-  // Tab 3: Chat auto-reply via GET/PUT /api/seller/chat/auto-reply
   const [autoReplyLoaded, setAutoReplyLoaded] = useState(false);
   const [autoReplyLoading, setAutoReplyLoading] = useState(false);
   const [autoReplyUnavailable, setAutoReplyUnavailable] = useState(false);
@@ -139,7 +131,7 @@ function SellerProfileContent({
     return () => ctrl.abort();
   }, [tab, autoReplyLoaded, loadAutoReply]);
 
-  const shopDisplayName = shop?.name || "Gian hàng chưa kích hoạt";
+  const shopDisplayName = shop?.name || "Gian hàng";
   const shopStatusMeta = shop ? getShopStatusLabel(shop.status) : null;
   const siteMeta = siteStateLabel(site.state);
   const safeLicenseUrl = sanitizeSafeUrl(shop?.business_license_doc);
@@ -188,7 +180,7 @@ function SellerProfileContent({
     if (autoReplySaving) return;
     const trimmedMsg = autoReplyMessage.trim();
     if (autoReplyEnabled && trimmedMsg.length < 5) {
-      setAutoReplyError("Khi bật trả lời tự động, nội dung lời chào cần tối thiểu 5 ký tự.");
+      setAutoReplyError("Khi bật trả lời tự động, lời chào cần tối thiểu 5 ký tự.");
       return;
     }
     if (trimmedMsg.length > 500) {
@@ -223,21 +215,21 @@ function SellerProfileContent({
     }
   };
 
+  const profileTabs: ReadonlyArray<{ key: ProfileTab; label: string; count?: number }> = [
+    { key: "shop", label: "Gian hàng" },
+    { key: "warehouse", label: "Kho lấy hàng", count: addresses.length },
+    { key: "autoreply", label: "Trả lời tự động" },
+  ];
+
   return (
     <div className={common.page}>
       <header className={common.pageHeader}>
         <div className={common.headerText}>
-          <h1 className={common.title}>Hồ sơ gian hàng &amp; Vận hành</h1>
-          <p className={common.finding}>
-            {shopDisplayName}
-            {shopStatusMeta ? ` · ${shopStatusMeta.label}` : ""}
-            {` · ${formatInt(addresses.length)} địa chỉ kho đã lưu`}
-            {` · Site riêng: ${siteMeta.label}`}
-          </p>
+          <h1 className={common.title}>Hồ sơ</h1>
         </div>
         <div className={common.headerActions}>
           <Button variant="outline" size="sm" shape="app" href="/seller/site">
-            <span>Tùy chỉnh site gian hàng</span>
+            <span>Site bán hàng</span>
             <IconArrowUpRight size={14} />
           </Button>
         </div>
@@ -247,7 +239,8 @@ function SellerProfileContent({
         <StateView
           kind="loading"
           surface="app"
-          title="Đang tải hồ sơ gian hàng và danh sách kho lấy hàng..."
+          skeletonVariant="table"
+          title="Đang tải hồ sơ gian hàng..."
           rows={5}
         />
       )}
@@ -257,7 +250,7 @@ function SellerProfileContent({
           kind="error"
           surface="app"
           title="Không thể tải hồ sơ gian hàng"
-          message={shopError ?? "Hệ thống gian hàng tạm thời chưa phản hồi. Vui lòng thử lại."}
+          message={shopError ?? "Hệ thống gian hàng tạm thời chưa phản hồi."}
           actionLabel="Thử lại"
           onAction={() => router.refresh()}
         />
@@ -276,49 +269,24 @@ function SellerProfileContent({
 
       {!uiState && (
         <>
-          <div
-            className={common.underlineTabs}
-            role="tablist"
-            aria-label="Phân mục hồ sơ gian hàng"
-          >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "shop"}
-              className={`${common.underlineTab} ${tab === "shop" ? common.underlineTabActive : ""}`}
-              onClick={() => setTab("shop")}
-            >
-              Thông tin gian hàng
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "warehouse"}
-              className={`${common.underlineTab} ${tab === "warehouse" ? common.underlineTabActive : ""}`}
-              onClick={() => setTab("warehouse")}
-            >
-              Kho lấy hàng &amp; Địa chỉ ({formatInt(addresses.length)})
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "autoreply"}
-              className={`${common.underlineTab} ${tab === "autoreply" ? common.underlineTabActive : ""}`}
-              onClick={() => setTab("autoreply")}
-            >
-              Trả lời tự động chat
-            </button>
-          </div>
+          <SellerSlidingTabs
+            tabs={profileTabs}
+            value={tab}
+            onChange={setTab}
+            ariaLabel="Phân mục hồ sơ gian hàng"
+          />
 
           {tab === "shop" && (
             <div className={styles.twoCol}>
               <section className={common.card} aria-labelledby="shop-info-heading">
                 <div className={common.cardHeader}>
                   <h2 id="shop-info-heading" className={common.cardTitle}>
-                    Hồ sơ đăng ký gian hàng
+                    Hồ sơ gian hàng
                   </h2>
                   {shopStatusMeta && (
-                    <span className={pillCls(shopStatusMeta.tone)}>{shopStatusMeta.label}</span>
+                    <span className={statusPillClass(shopStatusMeta.tone)}>
+                      {shopStatusMeta.label}
+                    </span>
                   )}
                 </div>
 
@@ -339,7 +307,7 @@ function SellerProfileContent({
                   <>
                     {shop.rejection_reason && (
                       <div className={styles.alertBanner} role="alert">
-                        <strong>Lý do từ chối phê duyệt gian hàng:</strong> {shop.rejection_reason}
+                        <strong>Lý do từ chối:</strong> {shop.rejection_reason}
                       </div>
                     )}
 
@@ -349,22 +317,20 @@ function SellerProfileContent({
                         <span className={styles.kvVal}>{shop.name}</span>
                       </div>
                       <div className={styles.kvRow}>
-                        <span className={styles.kvKey}>Trạng thái vận hành</span>
+                        <span className={styles.kvKey}>Trạng thái</span>
                         <span className={styles.kvVal}>
                           {shopStatusMeta ? shopStatusMeta.label : shop.status}
                         </span>
                       </div>
                       <div className={styles.kvRow}>
-                        <span className={styles.kvKey}>Số điện thoại liên hệ</span>
+                        <span className={styles.kvKey}>Số điện thoại</span>
                         <span className={styles.kvVal}>
                           {shop.contact_phone || "Chưa cập nhật"}
                         </span>
                       </div>
                       <div className={styles.kvRow}>
-                        <span className={styles.kvKey}>Mô tả gian hàng</span>
-                        <span className={styles.kvVal}>
-                          {shop.description || "Chưa có mô tả giới thiệu"}
-                        </span>
+                        <span className={styles.kvKey}>Mô tả</span>
+                        <span className={styles.kvVal}>{shop.description || "Chưa cập nhật"}</span>
                       </div>
                       <div className={styles.kvRow}>
                         <span className={styles.kvKey}>Giấy phép kinh doanh</span>
@@ -376,7 +342,7 @@ function SellerProfileContent({
                               rel="noopener noreferrer"
                               className={common.cellLink}
                             >
-                              Xem chứng từ đã nộp
+                              Xem chứng từ
                             </a>
                           ) : (
                             shop.business_license_doc || "Chưa đính kèm"
@@ -390,7 +356,7 @@ function SellerProfileContent({
                         </span>
                       </div>
                       <div className={styles.kvRow}>
-                        <span className={styles.kvKey}>Kho lấy hàng mặc định</span>
+                        <span className={styles.kvKey}>Kho mặc định</span>
                         <span className={styles.kvVal}>
                           {pickupAddress
                             ? `${pickupAddress.street_address}, ${pickupAddress.ward_name}, ${pickupAddress.province_name}`
@@ -400,12 +366,9 @@ function SellerProfileContent({
                     </div>
 
                     <div className={styles.cardFootNote}>
-                      <span>
-                        Để chỉnh sửa giao diện, giới thiệu thương hiệu và chính sách đổi trả trên
-                        site riêng của shop:
-                      </span>
+                      <span>Chỉnh giao diện &amp; chính sách trên site riêng</span>
                       <Link href="/seller/site" className={common.cardLink}>
-                        Mở trình chỉnh sửa site
+                        Mở Site Studio
                       </Link>
                     </div>
                   </>
@@ -419,9 +382,9 @@ function SellerProfileContent({
               >
                 <div className={common.cardHeader}>
                   <h2 id="owner-contact-heading" className={common.cardTitle}>
-                    Tài khoản chủ gian hàng
+                    Chủ gian hàng
                   </h2>
-                  <span className={pillCls(owner.phoneVerified ? "pos" : "neutral")}>
+                  <span className={statusPillClass(owner.phoneVerified ? "pos" : "neutral")}>
                     {owner.phoneVerified ? "Đã xác thực SĐT" : "Chưa xác thực SĐT"}
                   </span>
                 </div>
@@ -439,9 +402,6 @@ function SellerProfileContent({
                       disabled
                       readOnly
                     />
-                    <span className={common.fieldHint}>
-                      Email định danh tài khoản quản trị gian hàng, không thể thay đổi trực tiếp.
-                    </span>
                   </div>
 
                   <div className={common.field}>
@@ -501,14 +461,9 @@ function SellerProfileContent({
             <div className={styles.twoCol}>
               <section className={common.card} aria-labelledby="warehouse-heading">
                 <div className={common.cardHeader}>
-                  <div>
-                    <h2 id="warehouse-heading" className={common.cardTitle}>
-                      Danh sách kho lấy hàng &amp; địa chỉ
-                    </h2>
-                    <span className={common.cardMeta}>
-                      Đồng bộ trực tiếp từ sổ địa chỉ tài khoản chủ gian hàng
-                    </span>
-                  </div>
+                  <h2 id="warehouse-heading" className={common.cardTitle}>
+                    Kho lấy hàng ({formatInt(addresses.length)})
+                  </h2>
                 </div>
 
                 {addressesError ? (
@@ -522,7 +477,7 @@ function SellerProfileContent({
                   />
                 ) : addresses.length === 0 ? (
                   <div className={common.inlineEmpty}>
-                    Chưa có địa chỉ kho lấy hàng nào được lưu trong tài khoản của bạn.
+                    Chưa có địa chỉ kho lấy hàng nào được lưu.
                   </div>
                 ) : (
                   <div className={styles.addressList}>
@@ -546,7 +501,7 @@ function SellerProfileContent({
                             <div className={styles.badgeRow}>
                               {isPickup && (
                                 <span className={`${common.pill} ${common.pillPos}`}>
-                                  Kho lấy hàng mặc định
+                                  Kho mặc định
                                 </span>
                               )}
                               {addr.is_default && (
@@ -565,50 +520,43 @@ function SellerProfileContent({
               <section className={common.card} aria-labelledby="site-policy-heading">
                 <div className={common.cardHeader}>
                   <h2 id="site-policy-heading" className={common.cardTitle}>
-                    Site bán hàng &amp; Chính sách công khai
+                    Site bán hàng
                   </h2>
-                  <span className={pillCls(siteMeta.tone)}>{siteMeta.label}</span>
+                  <span className={statusPillClass(siteMeta.tone)}>{siteMeta.label}</span>
                 </div>
 
                 <div className={styles.kvList}>
                   <div className={styles.kvRow}>
-                    <span className={styles.kvKey}>Tên miền gian hàng</span>
-                    <span className={styles.kvVal}>{site.host || "Chưa thiết lập tên miền"}</span>
+                    <span className={styles.kvKey}>Tên miền</span>
+                    <span className={styles.kvVal}>{site.host || "Chưa thiết lập"}</span>
                   </div>
                   <div className={styles.kvRow}>
-                    <span className={styles.kvKey}>Trạng thái xuất bản</span>
+                    <span className={styles.kvKey}>Trạng thái</span>
                     <span className={styles.kvVal}>{siteMeta.label}</span>
                   </div>
                   {site.suspendedReason && (
                     <div className={styles.kvRow}>
-                      <span className={styles.kvKey}>Lý do tạm khóa site</span>
+                      <span className={styles.kvKey}>Lý do tạm khóa</span>
                       <span className={styles.kvVal}>{site.suspendedReason}</span>
                     </div>
                   )}
                 </div>
 
-                <div className={styles.previewWell}>
-                  <span className={styles.previewHeading}>Quản trị giao diện và chính sách</span>
-                  <p className={styles.previewLine}>
-                    Chính sách đổi trả, giới thiệu xưởng, bộ sưu tập và tên miền tùy chỉnh được quản
-                    lý tập trung tại mục Site bán hàng để đồng bộ tức thì tới người mua.
-                  </p>
-                  <div className={styles.inlineActions}>
-                    <Button variant="ink" size="sm" shape="app" href="/seller/site">
-                      <span>Mở cấu hình site</span>
-                      <IconArrowUpRight size={14} />
-                    </Button>
-                    {site.url && (
-                      <a
-                        href={site.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className={common.cardLink}
-                      >
-                        Xem site đang chạy
-                      </a>
-                    )}
-                  </div>
+                <div className={styles.inlineActions}>
+                  <Button variant="ink" size="sm" shape="app" href="/seller/site">
+                    <span>Mở Site Studio</span>
+                    <IconArrowUpRight size={14} />
+                  </Button>
+                  {site.url && (
+                    <a
+                      href={site.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className={common.cardLink}
+                    >
+                      Xem site đang chạy
+                    </a>
+                  )}
                 </div>
               </section>
             </div>
@@ -622,14 +570,9 @@ function SellerProfileContent({
                 aria-labelledby="autoreply-heading"
               >
                 <div className={common.cardHeader}>
-                  <div>
-                    <h2 id="autoreply-heading" className={common.cardTitle}>
-                      Trả lời tự động khi ngoại tuyến
-                    </h2>
-                    <span className={common.cardMeta}>
-                      Tự động gửi lời chào tới người mua khi gian hàng chưa trực tuyến trên hộp chat
-                    </span>
-                  </div>
+                  <h2 id="autoreply-heading" className={common.cardTitle}>
+                    Trả lời tự động khi ngoại tuyến
+                  </h2>
                   <Button
                     variant="outline"
                     size="sm"
@@ -645,7 +588,7 @@ function SellerProfileContent({
                 {autoReplyUnavailable && (
                   <div className={styles.noticeWell} role="status">
                     Dịch vụ chat hiện chưa phản hồi. Bạn vẫn có thể soạn sẵn lời chào và thử lưu lại
-                    khi hộp chat hoạt động.
+                    sau.
                   </div>
                 )}
 
@@ -654,7 +597,7 @@ function SellerProfileContent({
                     <div className={styles.switchText}>
                       <span className={styles.switchTitle}>Bật trả lời tự động</span>
                       <span className={styles.switchDesc}>
-                        Gửi tin nhắn chào mừng ngay khi khách mở hội thoại mới ngoài giờ trực.
+                        Gửi lời chào ngay khi khách mở hội thoại ngoài giờ trực.
                       </span>
                     </div>
                     <input
@@ -668,7 +611,7 @@ function SellerProfileContent({
 
                   <div className={common.field}>
                     <label htmlFor="auto-reply-msg" className={common.fieldLabel}>
-                      Nội dung tin nhắn tự động ({formatInt(autoReplyMessage.length)} / 500 ký tự)
+                      Nội dung lời chào ({formatInt(autoReplyMessage.length)} / 500)
                     </label>
                     <textarea
                       id="auto-reply-msg"
@@ -679,11 +622,8 @@ function SellerProfileContent({
                         if (autoReplyError) setAutoReplyError("");
                       }}
                       maxLength={500}
-                      placeholder="Nhập lời chào khi gian hàng ngoại tuyến, giờ làm việc và thời gian phản hồi dự kiến..."
+                      placeholder="Nhập lời chào khi ngoại tuyến và giờ làm việc..."
                     />
-                    <span className={common.fieldHint}>
-                      Viết ngắn gọn, rõ khung giờ hỗ trợ để người mua yên tâm chờ phản hồi.
-                    </span>
                   </div>
 
                   <div className={styles.presetRow}>
@@ -711,7 +651,7 @@ function SellerProfileContent({
                   <div className={styles.formActions}>
                     {autoReplyUpdatedAt && (
                       <span className={common.cardMeta}>
-                        Cập nhật lúc {formatDateTimeVi(autoReplyUpdatedAt)}
+                        Cập nhật {formatDateTimeVi(autoReplyUpdatedAt)}
                       </span>
                     )}
                     <Button
@@ -722,7 +662,7 @@ function SellerProfileContent({
                       disabled={autoReplySaving || autoReplyLoading}
                     >
                       <IconCheck size={14} />
-                      <span>{autoReplySaving ? "Đang lưu..." : "Lưu cấu hình trả lời"}</span>
+                      <span>{autoReplySaving ? "Đang lưu..." : "Lưu cấu hình"}</span>
                     </Button>
                   </div>
                 </div>
@@ -731,9 +671,9 @@ function SellerProfileContent({
               <section className={common.card} aria-labelledby="autoreply-preview-heading">
                 <div className={common.cardHeader}>
                   <h2 id="autoreply-preview-heading" className={common.cardTitle}>
-                    Xem trước hiển thị trên hộp chat
+                    Xem trước hộp chat
                   </h2>
-                  <span className={pillCls(autoReplyEnabled ? "pos" : "neutral")}>
+                  <span className={statusPillClass(autoReplyEnabled ? "pos" : "neutral")}>
                     {autoReplyEnabled ? "Đang bật" : "Đang tắt"}
                   </span>
                 </div>
@@ -742,19 +682,14 @@ function SellerProfileContent({
                   <span className={styles.previewHeading}>{shopDisplayName}</span>
                   <p className={styles.previewBubble}>
                     {autoReplyMessage.trim() ||
-                      "Chưa có nội dung lời chào. Nhập nội dung bên trái để xem trước tin nhắn tự động."}
+                      "Nhập lời chào bên trái để xem trước tin nhắn tự động."}
                   </p>
-                  <span className={styles.previewLine}>
-                    {autoReplyEnabled
-                      ? "Khách sẽ nhận tin nhắn này tự động khi nhắn tin ngoài giờ trực."
-                      : "Trả lời tự động đang tắt. Tin nhắn khách gửi sẽ chờ nhân viên phản hồi trực tiếp trong mục Tin nhắn."}
-                  </span>
                 </div>
 
                 <div className={styles.cardFootNote}>
-                  <span>Quản lý hội thoại trực tiếp với người mua tại hộp thư gian hàng:</span>
+                  <span>Hội thoại trực tiếp với khách hàng</span>
                   <Link href="/seller/chat" className={common.cardLink}>
-                    Mở hộp Tin nhắn
+                    Mở Tin nhắn
                   </Link>
                 </div>
               </section>

@@ -105,6 +105,41 @@ test("normalizeSearchResponse maps gateway SearchResponse, sanitizes URLs and fi
   assert.equal(res.facets.priceRanges.length, 1);
 });
 
+test("normalizeSearchResponse preserves camelCase BFF item fields (priceVnd, originalPriceVnd, maxPriceVnd, totalStock)", () => {
+  const bffPayload = {
+    items: [
+      {
+        id: "p-camel-1",
+        slug: "ao-thun-cotton-compact-xanh-than",
+        shopId: "shop-a",
+        categorySlug: "ao-thun",
+        categoryName: "Áo thun",
+        name: "Áo thun Cotton Compact 220gsm Xanh than",
+        description: "Cotton 220gsm",
+        image: "/products/ao-thun-cotton-xanh-than.png",
+        images: ["/products/ao-thun-cotton-xanh-than.png", "/models/model-ao-thun-xanh-than.jpg"],
+        priceVnd: 189000,
+        maxPriceVnd: 209000,
+        originalPriceVnd: 229000,
+        totalStock: 178,
+        inStock: true,
+      },
+    ],
+    total: 1,
+    page: 1,
+    page_size: 12,
+    facets: { categories: [], priceRanges: [] },
+  };
+
+  const res = normalizeSearchResponse(bffPayload, { shopId: "shop-a" });
+  assert.equal(res.items.length, 1);
+  assert.equal(res.items[0].priceVnd, 189000);
+  assert.equal(res.items[0].maxPriceVnd, 209000);
+  assert.equal(res.items[0].originalPriceVnd, 229000);
+  assert.equal(res.items[0].totalStock, 178);
+  assert.equal(res.items[0].inStock, true);
+});
+
 test("normalizeSuggestResponse handles strings and objects, deduplicates and caps at 8", () => {
   const res = normalizeSuggestResponse({
     suggestions: [

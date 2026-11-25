@@ -1,10 +1,10 @@
-/* Admin Site Management (/admin/sites) — Framed sheet specifics */
+/* Admin Site Management (/admin/sites) — Sticky Table + Detail Drawer (>= 13px floor) */
 
 .hostLink {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 13px;
+  gap: 5px;
+  font-size: var(--fs-body);
   font-weight: 500;
   color: var(--accent);
   text-underline-offset: 2px;
@@ -16,55 +16,33 @@
 }
 
 .hostPlain {
-  font-size: 13px;
-  color: var(--muted);
+  font-size: var(--fs-body);
+  color: var(--ink-3);
   word-break: break-all;
 }
 
 .reasonText {
-  font-size: 13px;
-  line-height: 19px;
+  font-size: var(--fs-body);
+  line-height: 1.45;
   color: var(--negative);
 }
 
-.mobilePillRow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.inlineActionRow {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
 .versionTag {
-  font-size: 13px;
+  font-size: var(--fs-small);
   font-weight: 500;
-  color: var(--ink);
+  color: var(--ink-1);
   font-variant-numeric: tabular-nums;
 }
 
 .versionMuted {
-  font-size: 13px;
+  font-size: var(--fs-small);
   color: var(--muted);
 }
 
-.validationError {
-  font-size: 12px;
-  color: var(--negative);
-}
-
-/* Site domains inspection block inside Admin detail well */
 .domainsSection {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding-top: 14px;
-  border-top: 1px solid #e3e8eb; /* taste-skill-ignore: admin detail divider */
 }
 
 .domainsHeader {
@@ -79,29 +57,28 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-weight: 600;
-  line-height: 18px;
-  color: var(--ink);
+  color: var(--ink-1);
 }
 
 .domainsReloadBtn {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 28px;
-  padding: 0 9px;
+  height: 30px;
+  padding: 0 10px;
   border-radius: var(--radius-control);
-  border: 1px solid #d4dde1; /* taste-skill-ignore: compact admin reload action */
-  background: var(--card);
-  color: var(--ink);
-  font-size: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-size: var(--fs-small);
   font-weight: 500;
-  transition: background-color var(--t-hover) ease;
+  transition: background-color var(--t-hover) var(--ease-out);
 }
 
 .domainsReloadBtn:hover:not(:disabled) {
-  background: var(--surface);
+  background: var(--bg-2);
 }
 
 .domainsReloadBtn:disabled {
@@ -110,8 +87,7 @@
 }
 
 .domainsStateText {
-  font-size: 13px;
-  line-height: 19px;
+  font-size: var(--fs-small);
   color: var(--muted);
 }
 
@@ -125,13 +101,12 @@
   border-radius: var(--radius-control);
   background: var(--pill-negative-bg);
   color: var(--pill-negative-ink);
-  font-size: 13px;
-  line-height: 18px;
+  font-size: var(--fs-small);
 }
 
 .domainsList {
-  background: var(--card);
-  border: 1px solid #e6ecee; /* taste-skill-ignore: admin domains flat list */
+  background: var(--bg-0);
+  border: 1px solid var(--border);
   border-radius: var(--radius-control);
   overflow: hidden;
 }
@@ -140,11 +115,11 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 11px 14px;
+  padding: 12px 14px;
 }
 
 .domainItem + .domainItem {
-  border-top: 1px solid #eaeaea; /* taste-skill-ignore: admin domain row hairline */
+  border-top: 1px solid var(--rule);
 }
 
 .domainRowMain {
@@ -160,7 +135,7 @@
   flex-direction: column;
   gap: 4px;
   min-width: 0;
-  flex: 1 1 220px;
+  flex: 1 1 200px;
 }
 
 .domainHostRow {
@@ -168,16 +143,13 @@
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  min-width: 0;
 }
 
 .domainHost {
-  font-size: 14px;
+  font-size: var(--fs-body);
   font-weight: 500;
-  line-height: 20px;
-  color: var(--ink);
+  color: var(--ink-1);
   word-break: break-all;
-  overflow-wrap: anywhere;
 }
 
 .domainMetaRow {
@@ -185,8 +157,7 @@
   align-items: center;
   gap: 8px 14px;
   flex-wrap: wrap;
-  font-size: 12px;
-  line-height: 17px;
+  font-size: var(--fs-small);
   color: var(--muted);
 }
 
@@ -203,42 +174,14 @@
 }
 
 .domainErrorNote {
-  font-size: 12px;
-  line-height: 17px;
+  font-size: var(--fs-small);
   color: var(--negative);
 }
 
-.domainRemoveBtn {
-  color: var(--negative);
-}
-
-.domainConfirmBar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
+.confirmReasonBox {
   padding: 10px 12px;
   border-radius: var(--radius-control);
-  background: var(--pill-negative-bg);
-  color: var(--pill-negative-ink);
-}
-
-.domainConfirmText {
-  font-size: 13px;
-  line-height: 18px;
-  min-width: 0;
-  flex: 1 1 200px;
-}
-
-.domainConfirmHost {
-  font-weight: 600;
-  word-break: break-all;
-}
-
-.domainConfirmActions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
+  background: var(--bg-1);
+  font-size: var(--fs-small);
+  color: var(--ink-2);
 }

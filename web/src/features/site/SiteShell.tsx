@@ -2,9 +2,8 @@ import React from "react";
 import Link from "next/link";
 import { buildSiteThemeVars, isDarkHex } from "@/lib/site/theme";
 import type { SiteConfig } from "@/lib/site/types";
-import { SiteAssistantWidget } from "@/features/assistant";
-import { SiteChatWidget } from "@/features/chat";
-import { SiteHeaderActions, SiteMotion, SiteNav, SiteToast } from "./SiteChrome";
+import { SiteHeaderActions, SiteNav, SiteToast } from "./SiteChrome";
+import { SiteSupportDock } from "./SiteSupportDock";
 import { SITE_NAV_ITEMS } from "./siteNav";
 import type { SiteSectionV2, SiteTemplateConfig } from "./templateTypes";
 import {
@@ -19,7 +18,7 @@ import tplStyles from "./siteTemplates.module.css";
 export interface SiteShellProps {
   config: SiteConfig | SiteTemplateConfig;
   shopName: string;
-  /** Backend shop ID (enables Swarm G search suggestions & AI assistant). */
+  /** Backend shop ID (enables Swarm G search suggestions, chat & AI assistant). */
   shopId?: string;
   /** Origin of the NexusMart root host (footer "Vận hành trên NexusMart" link). */
   platformOrigin: string;
@@ -30,19 +29,18 @@ export interface SiteShellProps {
 
 const FOOTER_LINKS: ReadonlyArray<{ label: string; href: string }> = [
   ...SITE_NAV_ITEMS.map(({ label, href }) => ({ label, href })),
-  { label: "Chính sách mua hàng", href: "/chinh-sach" },
+  { label: "Chính sách", href: "/chinh-sach" },
 ];
 
 const BUYER_LINKS: ReadonlyArray<{ label: string; href: string }> = [
   { label: "Giỏ hàng", href: "/gio-hang" },
-  { label: "Đơn hàng của tôi", href: "/don-hang" },
-  { label: "Tra cứu đơn hàng", href: "/tra-cuu-don-hang" },
+  { label: "Đơn hàng", href: "/don-hang" },
+  { label: "Tra cứu đơn", href: "/tra-cuu-don-hang" },
   { label: "Tài khoản", href: "/tai-khoan" },
 ];
 
 function buildAnchorItems(sections: SiteSectionV2[]): Array<{ id: string; label: string }> {
   const labelsByType: Record<string, string> = {
-    featured_products: "Sản phẩm",
     metrics_strip: "Thông số",
     testimonials: "Đánh giá",
     voucher_strip: "Ưu đãi",
@@ -59,14 +57,15 @@ function buildAnchorItems(sections: SiteSectionV2[]): Array<{ id: string; label:
     if (!label) continue;
     if (out.some((x) => x.label === label)) continue;
     out.push({ id: sec.id, label });
-    if (out.length >= 4) break;
+    if (out.length >= 3) break;
   }
   return out;
 }
 
 /**
  * Multi-template storefront shell supporting all 8 layout archetypes, 8 header styles,
- * 6 footer styles, Swarm G search/assistant integration, and lossless v1 compatibility.
+ * 6 footer styles, unified floating support dock, clip-path search overlay,
+ * and lossless v1 compatibility.
  */
 export function SiteShell({
   config,
@@ -91,7 +90,6 @@ export function SiteShell({
   const logoUrl = sanitizeSafeImageUrl(theme.logo_url);
   const themeVars = buildSiteThemeVars(theme);
   const isDark = isDarkHex(themeVars["--site-bg"]);
-  const monogram = brandName.slice(0, 1).toUpperCase();
   const radius = theme.radius || "none";
   const density = theme.density || "balanced";
   const headerStyle = layout.header_style;
@@ -106,17 +104,6 @@ export function SiteShell({
     if (opts.centeredWordmark === "maison") {
       return (
         <span className={tplStyles.mastheadCenterBrand}>
-          {logoUrl && (
-            <span className={styles.brandLogoWrap}>
-              <img
-                src={logoUrl}
-                alt={`Logo ${brandName}`}
-                width={36}
-                height={36}
-                className={styles.brandLogoImg}
-              />
-            </span>
-          )}
           <span className={tplStyles.maisonWordmark}>{brandName}</span>
         </span>
       );
@@ -125,17 +112,6 @@ export function SiteShell({
     if (opts.centeredWordmark === "editorial") {
       return (
         <span className={tplStyles.mastheadCenterBrand}>
-          {logoUrl && (
-            <span className={styles.brandLogoWrap}>
-              <img
-                src={logoUrl}
-                alt={`Logo ${brandName}`}
-                width={36}
-                height={36}
-                className={styles.brandLogoImg}
-              />
-            </span>
-          )}
           <span className={tplStyles.mastheadWordmark}>{brandName}</span>
         </span>
       );
@@ -143,26 +119,25 @@ export function SiteShell({
 
     return (
       <>
-        {headerStyle === "bold-dark" && (
-          <span className={tplStyles.boldAccentPip} aria-hidden="true" />
-        )}
-        {logoUrl ? (
+        {logoUrl && (
           <span className={styles.brandLogoWrap}>
             <img
               src={logoUrl}
               alt={`Logo ${brandName}`}
-              width={40}
-              height={40}
+              width={36}
+              height={36}
               className={styles.brandLogoImg}
             />
           </span>
-        ) : (
-          <span className={styles.brandMonogram} aria-hidden="true">
-            {monogram}
-          </span>
         )}
         <span className={styles.brandText}>
-          <span className={styles.brandName}>{brandName}</span>
+          <span
+            className={`${styles.brandName} ${
+              headerStyle === "bold-dark" ? tplStyles.brandNamePoster : ""
+            } ${headerStyle === "atelier-framed" ? tplStyles.brandNameWide : ""}`}
+          >
+            {brandName}
+          </span>
           {opts.withTagline && tagline && (
             <span className={tplStyles.brandTaglineInline}>{tagline}</span>
           )}
@@ -197,7 +172,9 @@ export function SiteShell({
         <header className={tplStyles.header} data-site-header="centered-masthead">
           <div className={tplStyles.mastheadTopRow}>
             <span className={tplStyles.mastheadLeftNote}>
-              {tagline || `Cửa hàng chính hãng ${brandName}`}
+              {layout.show_announcement && layout.announcement_text.trim()
+                ? layout.announcement_text
+                : brandName}
             </span>
             {wrapBrand(renderBrandMark({ centeredWordmark: "editorial" }))}
             <div className={tplStyles.mastheadRightActions}>
@@ -206,7 +183,6 @@ export function SiteShell({
                   brandName={brandName}
                   shopId={shopId}
                   showSearchSlot={showSearchSlot}
-                  hideDesktopSearch
                 />
               )}
             </div>
@@ -224,10 +200,10 @@ export function SiteShell({
           <div className={tplStyles.mastheadTopRow}>
             <span className={tplStyles.mastheadLeftNote}>
               {previewMode ? (
-                "Phòng trưng bày"
+                "Maison"
               ) : (
                 <Link href="/gioi-thieu" className={styles.headerTextAction}>
-                  Câu chuyện Maison
+                  Giới thiệu
                 </Link>
               )}
             </span>
@@ -238,7 +214,6 @@ export function SiteShell({
                   brandName={brandName}
                   shopId={shopId}
                   showSearchSlot={showSearchSlot}
-                  hideDesktopSearch
                 />
               )}
             </div>
@@ -257,7 +232,7 @@ export function SiteShell({
           <div className={tplStyles.headerInner}>
             {wrapBrand(renderBrandMark())}
             {anchors.length >= 2 ? (
-              <nav className={tplStyles.anchorNav} aria-label="Mục nổi bật trên trang">
+              <nav className={tplStyles.anchorNav} aria-label="Điều hướng cửa hàng">
                 {anchors.map((a) =>
                   previewMode ? (
                     <span key={a.id} className={tplStyles.anchorLink}>
@@ -274,10 +249,10 @@ export function SiteShell({
                   )
                 )}
                 {previewMode ? (
-                  <span className={tplStyles.anchorLink}>Danh mục</span>
+                  <span className={tplStyles.anchorLink}>Sản phẩm</span>
                 ) : (
                   <Link href="/san-pham" className={tplStyles.anchorLink}>
-                    Danh mục
+                    Sản phẩm
                   </Link>
                 )}
               </nav>
@@ -301,14 +276,16 @@ export function SiteShell({
         <header className={tplStyles.header} data-site-header="catalog-rail">
           <div className={tplStyles.headerInner}>
             {wrapBrand(renderBrandMark())}
-            {previewMode ? (
-              <span className={tplStyles.catalogQuickBtn}>Bảng SKU</span>
-            ) : (
-              <Link href="/san-pham" className={tplStyles.catalogQuickBtn}>
-                Bảng SKU
-              </Link>
-            )}
-            <SiteNav previewMode={previewMode} />
+            <div className={tplStyles.catalogHeaderCluster}>
+              {previewMode ? (
+                <span className={tplStyles.catalogQuickBtn}>Bảng SKU</span>
+              ) : (
+                <Link href="/san-pham" className={tplStyles.catalogQuickBtn}>
+                  Bảng SKU
+                </Link>
+              )}
+              <SiteNav previewMode={previewMode} />
+            </div>
             {!previewMode && (
               <SiteHeaderActions
                 brandName={brandName}
@@ -325,7 +302,7 @@ export function SiteShell({
     return (
       <header className={tplStyles.header} data-site-header={headerStyle}>
         <div className={tplStyles.headerInner}>
-          {wrapBrand(renderBrandMark({ withTagline: headerStyle === "atelier-framed" }))}
+          {wrapBrand(renderBrandMark())}
           <SiteNav previewMode={previewMode} />
           {!previewMode && (
             <SiteHeaderActions
@@ -362,7 +339,7 @@ export function SiteShell({
       return (
         <footer className={tplStyles.footer} data-site-footer="minimal-row">
           <div className={tplStyles.footerMinimalRow}>
-            <div>
+            <div className={tplStyles.footerBrandSlim}>
               <p className={styles.footerBrandName}>{brandName}</p>
               {tagline && <p className={styles.footerTagline}>{tagline}</p>}
             </div>
@@ -387,7 +364,6 @@ export function SiteShell({
                 {BUYER_LINKS.map(footerLink)}
               </div>
             </div>
-            {tagline && <p className={styles.footerTagline}>{tagline}</p>}
           </div>
           {renderFooterBottom()}
         </footer>
@@ -399,7 +375,6 @@ export function SiteShell({
         <footer className={tplStyles.footer} data-site-footer="maison-minimal">
           <div className={tplStyles.footerMaisonWrap}>
             <p className={tplStyles.footerMaisonWordmark}>{brandName}</p>
-            {tagline && <p className={styles.footerTagline}>{tagline}</p>}
             <div className={tplStyles.footerMaisonLinks}>
               {FOOTER_LINKS.map(footerLink)}
               {BUYER_LINKS.slice(0, 3).map(footerLink)}
@@ -414,19 +389,19 @@ export function SiteShell({
       return (
         <footer className={tplStyles.footer} data-site-footer="editorial-cols">
           <div className={tplStyles.footerColsGrid}>
-            <div className={tplStyles.footerEditorialBrand} data-reveal="">
-              <p className={styles.footerBrandName}>{brandName}</p>
+            <div className={tplStyles.footerEditorialBrand}>
+              <p className={tplStyles.footerEditorialWordmark}>{brandName}</p>
               {tagline && <p className={styles.footerTagline}>{tagline}</p>}
             </div>
-            <div className={tplStyles.footerEditorialCol} data-reveal="">
+            <div className={tplStyles.footerEditorialCol}>
               <p className={styles.footerColTitle}>Cửa hàng</p>
               {FOOTER_LINKS.slice(0, 3).map(footerLink)}
             </div>
-            <div className={tplStyles.footerEditorialCol} data-reveal="">
+            <div className={tplStyles.footerEditorialCol}>
               <p className={styles.footerColTitle}>Thông tin</p>
               {FOOTER_LINKS.slice(3).map(footerLink)}
             </div>
-            <div className={tplStyles.footerEditorialWideCol} data-reveal="">
+            <div className={tplStyles.footerEditorialWideCol}>
               <p className={styles.footerColTitle}>Khách hàng</p>
               {BUYER_LINKS.map(footerLink)}
             </div>
@@ -440,16 +415,16 @@ export function SiteShell({
       return (
         <footer className={tplStyles.footer} data-site-footer="atelier-footer">
           <div className={tplStyles.footerColsGrid}>
-            <div className={tplStyles.footerAtelierCallout} data-reveal="">
+            <div className={tplStyles.footerAtelierBrand}>
               <p className={styles.footerBrandName}>{brandName}</p>
               {tagline && <p className={styles.footerTagline}>{tagline}</p>}
             </div>
-            <div className={styles.footerNavCol} data-reveal="">
+            <div className={styles.footerNavCol}>
               <p className={styles.footerColTitle}>Cửa hàng xưởng</p>
               {FOOTER_LINKS.map(footerLink)}
             </div>
-            <div className={styles.footerMetaCol} data-reveal="">
-              <p className={styles.footerColTitle}>Mua hàng & Đổi cỡ</p>
+            <div className={styles.footerMetaCol}>
+              <p className={styles.footerColTitle}>Đơn hàng</p>
               {BUYER_LINKS.map(footerLink)}
             </div>
           </div>
@@ -458,20 +433,20 @@ export function SiteShell({
       );
     }
 
-    // bold-dark & default fallback
+    // bold-dark & fallback
     return (
       <footer className={tplStyles.footer} data-site-footer={footerStyle}>
         <div className={tplStyles.footerColsGrid}>
-          <div className={styles.footerBrandCol} data-reveal="">
-            <p className={styles.footerBrandName}>{brandName}</p>
+          <div className={styles.footerBrandCol}>
+            <p className={tplStyles.footerPosterBrand}>{brandName}</p>
             {tagline && <p className={styles.footerTagline}>{tagline}</p>}
           </div>
-          <div className={styles.footerNavCol} data-reveal="">
+          <div className={styles.footerNavCol}>
             <p className={styles.footerColTitle}>Cửa hàng</p>
             {FOOTER_LINKS.map(footerLink)}
           </div>
-          <div className={styles.footerMetaCol} data-reveal="">
-            <p className={styles.footerColTitle}>Mua hàng</p>
+          <div className={styles.footerMetaCol}>
+            <p className={styles.footerColTitle}>Khách hàng</p>
             {BUYER_LINKS.map(footerLink)}
           </div>
         </div>
@@ -479,6 +454,11 @@ export function SiteShell({
       </footer>
     );
   };
+
+  const showAnnouncementStrip =
+    layout.show_announcement &&
+    layout.announcement_text.trim().length > 0 &&
+    headerStyle !== "centered-masthead";
 
   return (
     <div
@@ -495,9 +475,7 @@ export function SiteShell({
       data-site-density={density}
       style={themeVars as unknown as React.CSSProperties}
     >
-      <SiteMotion depKey={`${tpl.template_id}-${tpl.sections.length}`} />
-
-      {layout.show_announcement && layout.announcement_text.trim() && (
+      {showAnnouncementStrip && (
         <div className={tplStyles.announcementBar} role="note">
           {layout.announcement_text}
         </div>
@@ -512,11 +490,13 @@ export function SiteShell({
       {renderFooter()}
 
       {!previewMode && <SiteToast />}
-      {!previewMode && shopId && showAssistantSlot && (
-        <SiteAssistantWidget shopId={shopId} brandName={brandName} />
-      )}
-      {!previewMode && shopId && showChatSlot && (
-        <SiteChatWidget shopId={shopId} brandName={brandName} />
+      {!previewMode && shopId && (showAssistantSlot || showChatSlot) && (
+        <SiteSupportDock
+          shopId={shopId}
+          brandName={brandName}
+          showChat={showChatSlot}
+          showAssistant={showAssistantSlot}
+        />
       )}
     </div>
   );

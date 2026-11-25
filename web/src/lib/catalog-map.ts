@@ -18,6 +18,7 @@ import type {
 import type { Shop } from "../data/shops";
 import type { Voucher, VoucherScope } from "../data/vouchers";
 import type { FlashSaleItem, FlashSaleSlot, FlashSlotStatus } from "../data/flash-sale";
+import { getVnDateParts } from "./format.ts";
 
 export interface GwCategory {
   id: string;
@@ -140,7 +141,7 @@ export function mergeShops(gw: GwShop[], content: Shop[]): Shop[] {
         city: "",
         provinceCode: "",
         specialty: s.description ?? "",
-        foundedYear: new Date().getFullYear(),
+        foundedYear: getVnDateParts(Date.now())?.year ?? 2026,
         responseTime: "",
         fulfillmentRate: "",
         returnPolicy: "",

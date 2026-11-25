@@ -3,20 +3,16 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Button, IconClose } from "@/components";
 import { cloneTemplateConfigForShop } from "@/features/site/templateCatalog";
+import { sanitizeSafeImageUrl } from "@/features/site/templateValidator";
 import common from "@/features/seller/SellerCommon.module.css";
 import type { PlatformTemplateDTO, SiteTemplateConfig, TemplatePageKey } from "./siteEditorTypes";
-import {
-  ARCHETYPE_OPTIONS,
-  CART_LAYOUT_OPTIONS,
-  CATALOG_LAYOUT_OPTIONS,
-  HEADER_STYLE_OPTIONS,
-  INFO_LAYOUT_OPTIONS,
-  PDP_LAYOUT_OPTIONS,
-  TEMPLATE_PAGE_TABS,
-} from "./siteEditorUtils";
+import { ARCHETYPE_OPTIONS, TEMPLATE_PAGE_TABS } from "./siteEditorUtils";
 import type { PreviewStorefrontDataset } from "./previewData";
 import { SitePreviewContent } from "./SitePreviewContent";
+import { SitePreviewFrame, type DevicePreviewWidth } from "./SitePreviewFrame";
 import styles from "./SellerSiteEditor.module.css";
+
+export type { DevicePreviewWidth };
 
 export interface TemplateGalleryTabProps {
   templates: PlatformTemplateDTO[];
@@ -28,11 +24,50 @@ export interface TemplateGalleryTabProps {
   onApplyTemplate: (template: PlatformTemplateDTO) => Promise<void>;
 }
 
+/** Distinct real storefront/atmosphere photographs for each of the 8 platform templates. */
+const TEMPLATE_GALLERY_PHOTOS: Record<string, string> = {
+  "minimal-fashion": "/banners/campaign-everyday.jpg",
+  editorial: "/banners/campaign-office.jpg",
+  "dense-grid": "/banners/campaign-green-fiber.jpg",
+  "craft-atelier": "/banners/vietnam-workshop.jpg",
+  "sport-active": "/banners/campaign-running.jpg",
+  "luxury-maison": "/banners/fabric-closeup.jpg",
+  "one-page-launch": "/atmosphere/cotton-twill-slate.jpg",
+  "multi-sku-catalog": "/atmosphere/jacquard-loom-poster.jpg",
+};
+
+/** Crisp <= 8-word one-line summaries for each template card. */
+const TEMPLATE_SHORT_NOTES: Record<string, string> = {
+  "minimal-fashion": "Lưới 3 cột so le, chữ tinh gọn",
+  editorial: "Đầu trang tạp chí, ảnh lệch tầng",
+  "dense-grid": "Thanh lọc dính, lưới 5 cột dày",
+  "craft-atelier": "Ảnh chất vải tràn màn, dải công đoạn",
+  "sport-active": "Nền tối tương phản, ảnh cắt chéo",
+  "luxury-maison": "Khung ảnh thoáng rộng, lưới 2 cột",
+  "one-page-launch": "Tập trung một sản phẩm, chốt đơn nhanh",
+  "multi-sku-catalog": "Mục lục hàng ngang, bảng chọn SKU",
+};
+
 function labelOf<T extends string>(
   options: ReadonlyArray<{ value: T; label: string }>,
   val: T
 ): string {
   return options.find((o) => o.value === val)?.label ?? val;
+}
+
+function getTemplatePhoto(tpl: PlatformTemplateDTO): string {
+  return (
+    sanitizeSafeImageUrl(TEMPLATE_GALLERY_PHOTOS[tpl.id]) ||
+    sanitizeSafeImageUrl(tpl.preview_image_url) ||
+    sanitizeSafeImageUrl(tpl.config.theme.banner_url) ||
+    "/banners/campaign-everyday.jpg"
+  );
+}
+
+function getTemplateShortNote(tpl: PlatformTemplateDTO): string {
+  if (TEMPLATE_SHORT_NOTES[tpl.id]) return TEMPLATE_SHORT_NOTES[tpl.id];
+  const words = (tpl.description || "").trim().split(/\s+/).filter(Boolean);
+  return words.slice(0, 8).join(" ");
 }
 
 export function TemplateGalleryTab({
@@ -44,24 +79,10 @@ export function TemplateGalleryTab({
   applyingTemplateId,
   onApplyTemplate,
 }: TemplateGalleryTabProps) {
-  const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [previewTemplate, setPreviewTemplate] = useState<PlatformTemplateDTO | null>(null);
   const [previewPage, setPreviewPage] = useState<TemplatePageKey>("home");
-  const [previewViewport, setPreviewViewport] = useState<"desktop" | "mobile">("desktop");
+  const [previewDevice, setPreviewDevice] = useState<DevicePreviewWidth>("1440");
   const [confirmApplyId, setConfirmApplyId] = useState<string | null>(null);
-
-  const categories = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const tpl of templates) {
-      counts.set(tpl.category, (counts.get(tpl.category) ?? 0) + 1);
-    }
-    return Array.from(counts.entries()).map(([name, count]) => ({ name, count }));
-  }, [templates]);
-
-  const filteredTemplates = useMemo(() => {
-    if (selectedCategory === "all") return templates;
-    return templates.filter((t) => t.category === selectedCategory);
-  }, [templates, selectedCategory]);
 
   const previewConfig = useMemo(() => {
     if (!previewTemplate) return null;
@@ -93,221 +114,136 @@ export function TemplateGalleryTab({
 
   return (
     <div className={styles.fieldStack}>
-      <section className={common.card} aria-label="Thư viện mẫu giao diện cửa hàng">
-        <div className={common.cardHeader}>
-          <div>
-            <h2 className={common.cardTitle}>
-              Thư viện mẫu giao diện ({templates.length} mẫu bố cục riêng biệt)
-            </h2>
-            <p className={common.cardMeta}>
-              Mỗi mẫu thiết kế cấu trúc riêng cho cả 5 trang: Trang chủ, Danh sách sản phẩm, Chi
-              tiết sản phẩm, Giỏ hàng và Trang thông tin. Áp dụng mẫu chỉ cập nhật bản nháp và không
-              ảnh hưởng trang công khai cho đến khi bạn Xuất bản.
-            </p>
-          </div>
-        </div>
+      <div className={styles.templateGrid}>
+        {templates.map((tpl) => {
+          const isActive = currentTemplateId === tpl.id;
+          const isApplying = applyingTemplateId === tpl.id;
+          const isConfirming = confirmApplyId === tpl.id;
+          const theme = tpl.config.theme;
+          const photoUrl = getTemplatePhoto(tpl);
+          const shortNote = getTemplateShortNote(tpl);
 
-        <div className={styles.categoryFilterBar} role="group" aria-label="Lọc mẫu theo ngành hàng">
-          <button
-            type="button"
-            className={`${styles.filterPill} ${selectedCategory === "all" ? styles.filterPillActive : ""}`}
-            onClick={() => setSelectedCategory("all")}
-          >
-            Tất cả ({templates.length})
-          </button>
-          {categories.map((cat) => (
-            <button
-              key={cat.name}
-              type="button"
-              className={`${styles.filterPill} ${selectedCategory === cat.name ? styles.filterPillActive : ""}`}
-              onClick={() => setSelectedCategory(cat.name)}
+          return (
+            <article
+              key={tpl.id}
+              className={`${styles.templateCard} ${isActive ? styles.templateCardActive : ""}`}
             >
-              {cat.name} ({cat.count})
-            </button>
-          ))}
-        </div>
-
-        <div className={styles.templateGrid}>
-          {filteredTemplates.map((tpl) => {
-            const isActive = currentTemplateId === tpl.id;
-            const isApplying = applyingTemplateId === tpl.id;
-            const isConfirming = confirmApplyId === tpl.id;
-            const theme = tpl.config.theme;
-
-            return (
-              <article
-                key={tpl.id}
-                className={`${styles.templateCard} ${isActive ? styles.templateCardActive : ""}`}
-              >
-                {/* Miniature visual token & layout header preview */}
-                <div
-                  className={styles.templatePreviewStrip}
-                  style={{
-                    backgroundColor: theme.bg_color,
-                    color: theme.text_color,
-                  }}
-                >
-                  <div className={styles.templateStripTop}>
-                    <span className={styles.templateStripBrand} style={{ color: theme.text_color }}>
-                      {tpl.name}
-                    </span>
-                    <span
-                      className={styles.templateStripCta}
-                      style={{
-                        backgroundColor: theme.accent_color,
-                        color: theme.accent_text_color,
-                      }}
-                    >
-                      {labelOf(ARCHETYPE_OPTIONS, tpl.archetype)}
-                    </span>
-                  </div>
-                  <div
-                    className={styles.templateStripMock}
-                    style={{ backgroundColor: theme.surface_color }}
+              <div className={styles.templatePhotoWrap}>
+                <img
+                  src={photoUrl}
+                  alt={`Ảnh minh họa mẫu ${tpl.name}`}
+                  className={styles.templatePhoto}
+                  width={640}
+                  height={400}
+                />
+                <div className={styles.templatePhotoBadges}>
+                  <span
+                    className={styles.templateArchetypeBadge}
+                    style={{
+                      backgroundColor: theme.accent_color,
+                      color: theme.accent_text_color,
+                    }}
                   >
-                    <span className={styles.templateStripCols}>
-                      Danh mục: {tpl.config.pages.catalog.columns} cột ·{" "}
-                      {tpl.config.sections.length} khối trang chủ
-                    </span>
-                    <span className={styles.presetDots} aria-label="Bảng màu mẫu">
-                      <span
-                        className={styles.presetDot}
-                        style={{ backgroundColor: theme.bg_color }}
-                        title={`Nền ${theme.bg_color}`}
-                      />
-                      <span
-                        className={styles.presetDot}
-                        style={{ backgroundColor: theme.surface_color }}
-                        title={`Thẻ ${theme.surface_color}`}
-                      />
-                      <span
-                        className={styles.presetDot}
-                        style={{ backgroundColor: theme.text_color }}
-                        title={`Chữ ${theme.text_color}`}
-                      />
-                      <span
-                        className={styles.presetDot}
-                        style={{ backgroundColor: theme.accent_color }}
-                        title={`Nhấn ${theme.accent_color}`}
-                      />
-                    </span>
+                    {labelOf(ARCHETYPE_OPTIONS, tpl.archetype)}
+                  </span>
+                  {isActive && (
+                    <span className={`${common.pill} ${common.pillPos}`}>Đang dùng</span>
+                  )}
+                </div>
+              </div>
+
+              <div className={styles.templateCardBody}>
+                <div className={styles.templateCardHead}>
+                  <div className={styles.templateCardTitleGroup}>
+                    <h3 className={styles.templateCardName}>{tpl.name}</h3>
+                    {shortNote && <p className={styles.templateCardNote}>{shortNote}</p>}
                   </div>
+                  <span className={styles.presetDots} aria-label="Bảng màu mẫu">
+                    <span
+                      className={styles.presetDot}
+                      style={{ backgroundColor: theme.bg_color }}
+                      title={`Nền ${theme.bg_color}`}
+                    />
+                    <span
+                      className={styles.presetDot}
+                      style={{ backgroundColor: theme.surface_color }}
+                      title={`Thẻ ${theme.surface_color}`}
+                    />
+                    <span
+                      className={styles.presetDot}
+                      style={{ backgroundColor: theme.text_color }}
+                      title={`Chữ ${theme.text_color}`}
+                    />
+                    <span
+                      className={styles.presetDot}
+                      style={{ backgroundColor: theme.accent_color }}
+                      title={`Nhấn ${theme.accent_color}`}
+                    />
+                  </span>
                 </div>
 
-                <div className={styles.templateCardBody}>
-                  <div className={styles.templateCardHead}>
-                    <div>
-                      <h3 className={styles.templateCardName}>{tpl.name}</h3>
-                      <span className={styles.templateCardCategory}>{tpl.category}</span>
-                    </div>
-                    {isActive && (
-                      <span className={`${common.pill} ${common.pillPos}`}>Đang dùng</span>
-                    )}
-                  </div>
-
-                  <p className={styles.templateCardDesc}>{tpl.description}</p>
-
-                  <dl className={styles.templateSpecList}>
-                    <div className={styles.templateSpecRow}>
-                      <dt>Đầu trang</dt>
-                      <dd>{labelOf(HEADER_STYLE_OPTIONS, tpl.config.layout.header_style)}</dd>
-                    </div>
-                    <div className={styles.templateSpecRow}>
-                      <dt>Danh sách</dt>
-                      <dd>
-                        {labelOf(CATALOG_LAYOUT_OPTIONS, tpl.config.pages.catalog.layout)} (
-                        {tpl.config.pages.catalog.columns} cột)
-                      </dd>
-                    </div>
-                    <div className={styles.templateSpecRow}>
-                      <dt>Chi tiết SP</dt>
-                      <dd>{labelOf(PDP_LAYOUT_OPTIONS, tpl.config.pages.pdp.layout)}</dd>
-                    </div>
-                    <div className={styles.templateSpecRow}>
-                      <dt>Giỏ hàng</dt>
-                      <dd>{labelOf(CART_LAYOUT_OPTIONS, tpl.config.pages.cart.layout)}</dd>
-                    </div>
-                    <div className={styles.templateSpecRow}>
-                      <dt>Thông tin</dt>
-                      <dd>{labelOf(INFO_LAYOUT_OPTIONS, tpl.config.pages.info.layout)}</dd>
-                    </div>
-                  </dl>
-
-                  {tpl.tags.length > 0 && (
-                    <div className={styles.templateTagRow}>
-                      {tpl.tags.map((tag) => (
-                        <span key={tag} className={styles.templateTag}>
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {isConfirming ? (
-                    <div className={styles.confirmApplyBox}>
-                      <p className={styles.confirmApplyText}>
-                        Áp dụng mẫu <strong>{tpl.name}</strong> chỉ cập nhật{" "}
-                        <strong>bản nháp</strong> (giữ tên thương hiệu của bạn); trang đang công
-                        khai không bị ghi đè cho tới khi bạn bấm Xuất bản.
-                      </p>
-                      <div className={styles.confirmApplyBtns}>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          shape="app"
-                          disabled={Boolean(applyingTemplateId)}
-                          onClick={() => setConfirmApplyId(null)}
-                        >
-                          Hủy
-                        </Button>
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          shape="app"
-                          disabled={Boolean(applyingTemplateId)}
-                          onClick={() => void handleConfirmApply(tpl)}
-                        >
-                          {isApplying ? "Đang áp dụng..." : "Xác nhận áp dụng nháp"}
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className={styles.templateCardActions}>
+                {isConfirming ? (
+                  <div className={styles.confirmApplyBox}>
+                    <p className={styles.confirmApplyText}>
+                      Áp dụng mẫu <strong>{tpl.name}</strong> vào <strong>bản nháp</strong>? Trang
+                      công khai giữ nguyên tới khi bạn bấm Xuất bản.
+                    </p>
+                    <div className={styles.confirmApplyBtns}>
                       <Button
                         variant="outline"
                         size="sm"
                         shape="app"
-                        onClick={() => {
-                          setPreviewTemplate(tpl);
-                          setPreviewPage("home");
-                          setPreviewViewport("desktop");
-                        }}
+                        disabled={Boolean(applyingTemplateId)}
+                        onClick={() => setConfirmApplyId(null)}
                       >
-                        Xem trước
+                        Hủy
                       </Button>
                       <Button
-                        variant={isActive ? "secondary" : "primary"}
+                        variant="primary"
                         size="sm"
                         shape="app"
                         disabled={Boolean(applyingTemplateId)}
-                        onClick={() => setConfirmApplyId(tpl.id)}
+                        onClick={() => void handleConfirmApply(tpl)}
                       >
-                        {isApplying
-                          ? "Đang áp dụng..."
-                          : isActive
-                            ? "Áp dụng lại mẫu gốc"
-                            : "Áp dụng vào bản nháp"}
+                        {isApplying ? "Đang áp dụng..." : "Xác nhận áp dụng nháp"}
                       </Button>
                     </div>
-                  )}
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      </section>
+                  </div>
+                ) : (
+                  <div className={styles.templateCardActions}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      shape="app"
+                      onClick={() => {
+                        setPreviewTemplate(tpl);
+                        setPreviewPage("home");
+                        setPreviewDevice("1440");
+                      }}
+                    >
+                      Xem trước
+                    </Button>
+                    <Button
+                      variant={isActive ? "secondary" : "primary"}
+                      size="sm"
+                      shape="app"
+                      disabled={Boolean(applyingTemplateId)}
+                      onClick={() => setConfirmApplyId(tpl.id)}
+                    >
+                      {isApplying
+                        ? "Đang áp dụng..."
+                        : isActive
+                          ? "Áp dụng lại mẫu gốc"
+                          : "Áp dụng vào bản nháp"}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </div>
 
-      {/* Interactive 5-page Template Preview Modal */}
       {previewTemplate && previewConfig && (
         <div
           className={styles.previewModalBackdrop}
@@ -321,12 +257,9 @@ export function TemplateGalleryTab({
           <div className={styles.previewModalPanel}>
             <div className={styles.previewModalHeader}>
               <div className={styles.previewModalMeta}>
-                <strong className={styles.previewModalTitle}>
-                  Xem trước: {previewTemplate.name}
-                </strong>
+                <strong className={styles.previewModalTitle}>{previewTemplate.name}</strong>
                 <span className={styles.previewModalHint}>
-                  Hiển thị trực tiếp với tên thương hiệu &amp; sản phẩm của gian hàng (chưa thay đổi
-                  site công khai)
+                  Xem trước với dữ liệu gian hàng, chưa thay đổi site công khai
                 </span>
               </div>
               <div className={styles.previewModalRight}>
@@ -375,34 +308,29 @@ export function TemplateGalleryTab({
               </div>
 
               <div className={styles.viewportGroup} role="group" aria-label="Kích thước khung xem">
-                <button
-                  type="button"
-                  className={`${styles.viewportBtn} ${
-                    previewViewport === "desktop" ? styles.viewportBtnActive : ""
-                  }`}
-                  onClick={() => setPreviewViewport("desktop")}
-                >
-                  Máy tính
-                </button>
-                <button
-                  type="button"
-                  className={`${styles.viewportBtn} ${
-                    previewViewport === "mobile" ? styles.viewportBtnActive : ""
-                  }`}
-                  onClick={() => setPreviewViewport("mobile")}
-                >
-                  Di động 390px
-                </button>
+                {(["390", "768", "1440"] as const).map((w) => (
+                  <button
+                    key={w}
+                    type="button"
+                    aria-pressed={previewDevice === w}
+                    className={`${styles.viewportBtn} ${
+                      previewDevice === w ? styles.viewportBtnActive : ""
+                    }`}
+                    onClick={() => setPreviewDevice(w)}
+                  >
+                    {w}
+                  </button>
+                ))}
               </div>
             </div>
 
             <div className={styles.previewModalBody}>
-              <div
-                className={
-                  previewViewport === "mobile"
-                    ? styles.previewCanvasMobile
-                    : styles.previewCanvasDesktop
-                }
+              <SitePreviewFrame
+                device={previewDevice}
+                title={`Xem trước mẫu ${previewTemplate.name} (${previewDevice}px)`}
+                resetScrollKey={`${previewTemplate.id}:${previewPage}:${previewDevice}`}
+                viewportHeight={640}
+                onEscape={() => setPreviewTemplate(null)}
               >
                 <SitePreviewContent
                   config={previewConfig}
@@ -413,7 +341,7 @@ export function TemplateGalleryTab({
                   vouchers={previewDataset.vouchers}
                   platformOrigin={platformOrigin}
                 />
-              </div>
+              </SitePreviewFrame>
             </div>
           </div>
         </div>

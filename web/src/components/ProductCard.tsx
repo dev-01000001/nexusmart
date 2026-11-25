@@ -1,30 +1,28 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BADGE_LABELS, getSku, type Product, type SizeCode } from "@/data/products";
-import type { Shop } from "@/data/shops";
+import { getSku, type Product, type SizeCode } from "@/data/products";
+import { stripInternalSitePrefix } from "@/features/site/siteNav";
 import { formatDiscountPercent } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";
-import { IconHeart } from "./Icons";
+import { IconClose, IconHeart, IconPlus } from "./Icons";
+import { hasOpenModal } from "./modalFocus";
 import { Price } from "./Price";
 import styles from "./ProductCard.module.css";
 
 export interface ProductCardProps {
   product: Product;
-  shop?: Shop;
   overridePrice?: number;
   overrideOriginalPrice?: number;
   quotaLabel?: string;
-  showSpec?: boolean;
   priority?: boolean;
   enableQuickAdd?: boolean;
   enableInteractiveSwatches?: boolean;
   showWishlist?: boolean;
   showBadges?: boolean;
-  showSla?: boolean;
   maxVisibleSwatches?: number;
   isFlashSaleItem?: boolean;
   isShockDeal?: boolean;
@@ -35,25 +33,16 @@ type ProductWithOnModel = Product & {
   onModelImage?: string;
 };
 
-function stripInternalSitePrefix(rawPath: string | null): string {
-  const path = rawPath || "/";
-  const m = path.match(/^\/s\/[^/]+(\/.*)?$/);
-  return m ? m[1] || "/" : path;
-}
-
 export function ProductCard({
   product,
-  shop,
   overridePrice,
   overrideOriginalPrice,
   quotaLabel,
-  showSpec = false,
   priority = false,
   enableQuickAdd = true,
   enableInteractiveSwatches = true,
   showWishlist = true,
   showBadges = true,
-  showSla = false,
   maxVisibleSwatches = 4,
   isFlashSaleItem = false,
   isShockDeal = false,
@@ -68,8 +57,23 @@ export function ProductCard({
   const [hoverQuickOpen, setHoverQuickOpen] = useState(false);
   const [focusQuickOpen, setFocusQuickOpen] = useState(false);
   const [touchQuickOpen, setTouchQuickOpen] = useState(false);
+  const addedTimerRef = useRef<number | null>(null);
+  const mediaLinkRef = useRef<HTMLAnchorElement | null>(null);
+  const touchQuickBtnRef = useRef<HTMLButtonElement | null>(null);
+  const quickOverlayRef = useRef<HTMLDivElement | null>(null);
+  const comboLinkRef = useRef<HTMLAnchorElement | null>(null);
+  const sizeButtonsRef = useRef<HTMLDivElement | null>(null);
+  const quickCloseBtnRef = useRef<HTMLButtonElement | null>(null);
+  const pendingFocusRef = useRef<"tray" | "trigger" | null>(null);
+  const suppressNextFocusOpenRef = useRef(false);
 
-  const showQuickOverlay = hoverQuickOpen || focusQuickOpen || touchQuickOpen || addedSize !== null;
+  useEffect(() => {
+    return () => {
+      if (addedTimerRef.current !== null) {
+        window.clearTimeout(addedTimerRef.current);
+      }
+    };
+  }, []);
 
   const activeColor = useMemo(
     () => product.colors.find((c) => c.code === selectedColorCode) ?? product.colors[0],
@@ -85,19 +89,101 @@ export function ProductCard({
   const displayPrice = overridePrice ?? product.price;
   const displayOriginal = overrideOriginalPrice ?? product.originalPrice;
   const hasDiscount = displayOriginal != null && displayOriginal > displayPrice;
-  const discountLabel = hasDiscount ? formatDiscountPercent(displayOriginal, displayPrice) : null;
+  const discountLabel =
+    showBadges && hasDiscount ? formatDiscountPercent(displayOriginal, displayPrice) : null;
 
   const wishlisted = isWishlisted(product.id);
-  const primaryBadge = showBadges ? product.badges?.[0] : undefined;
   const visibleColors = product.colors.slice(0, maxVisibleSwatches);
   const extraColorCount = Math.max(0, product.colors.length - maxVisibleSwatches);
   const isComboProduct = Boolean(
     product.isCombo || (product.comboSlots && product.comboSlots.length > 0)
   );
-  const hasAnyInStockForColor = product.sizes.some((sz) => {
+
+  const activeColorStock = useMemo(() => {
+    if (!activeColor) {
+      return product.skus.reduce((sum, s) => sum + Math.max(0, s.stock), 0);
+    }
+    return product.sizes.reduce((sum, sz) => {
+      const sku = getSku(product, activeColor.code, sz);
+      return sum + (sku ? Math.max(0, sku.stock) : 0);
+    }, 0);
+  }, [activeColor, product]);
+
+  const hasAnyInStockForColor = activeColorStock > 0;
+  const hasQuickAddSku = product.sizes.some((sz) => {
     const sku = activeColor ? getSku(product, activeColor.code, sz) : undefined;
     return Boolean(sku && sku.stock > 0 && sku.skuId);
   });
+
+  // Only show quick-add tray when actionable (live SKU or combo)
+  const canQuickAdd = enableQuickAdd && (isComboProduct || hasQuickAddSku);
+  const canShowQuickOverlay =
+    canQuickAdd && (hoverQuickOpen || focusQuickOpen || touchQuickOpen || addedSize !== null);
+  const accessibleName = product.shortName || product.name;
+
+  useEffect(() => {
+    const targetKind = pendingFocusRef.current;
+    if (!targetKind) return;
+    if (targetKind === "tray" && touchQuickOpen) {
+      pendingFocusRef.current = null;
+      const target = isComboProduct
+        ? comboLinkRef.current
+        : (sizeButtonsRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)") ??
+          quickCloseBtnRef.current);
+      target?.focus();
+    } else if (targetKind === "trigger" && !touchQuickOpen) {
+      pendingFocusRef.current = null;
+      touchQuickBtnRef.current?.focus();
+    }
+  }, [touchQuickOpen, isComboProduct]);
+
+  useEffect(() => {
+    if (!canShowQuickOverlay) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing || e.defaultPrevented || hasOpenModal()) return;
+      const wasTouchOpen = touchQuickOpen;
+      const focusInsideOverlay = Boolean(quickOverlayRef.current?.contains(document.activeElement));
+      if (focusInsideOverlay) {
+        e.preventDefault();
+      }
+      if (addedTimerRef.current !== null) {
+        window.clearTimeout(addedTimerRef.current);
+        addedTimerRef.current = null;
+      }
+      if (wasTouchOpen && (focusInsideOverlay || document.activeElement === document.body)) {
+        pendingFocusRef.current = "trigger";
+      }
+      setTouchQuickOpen(false);
+      setFocusQuickOpen(false);
+      setHoverQuickOpen(false);
+      setAddedSize(null);
+      if (!wasTouchOpen && focusInsideOverlay) {
+        suppressNextFocusOpenRef.current = true;
+        mediaLinkRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [canShowQuickOverlay, touchQuickOpen]);
+
+  const closeTouchTray = () => {
+    if (addedTimerRef.current !== null) {
+      window.clearTimeout(addedTimerRef.current);
+      addedTimerRef.current = null;
+    }
+    pendingFocusRef.current = "trigger";
+    setTouchQuickOpen(false);
+    setFocusQuickOpen(false);
+    setHoverQuickOpen(false);
+    setAddedSize(null);
+  };
+
+  // Per design.md §4: never show "Sẵn hàng"; only show "Hết hàng" or "Còn N" when N <= 5
+  const stockNotice = !hasAnyInStockForColor
+    ? "Hết hàng"
+    : activeColorStock <= 5
+      ? `Còn ${activeColorStock}`
+      : null;
 
   const productHref =
     activeColor && activeColor.code !== product.colors[0]?.code
@@ -127,7 +213,11 @@ export function ProductCard({
       }
       if (res.ok) {
         setAddedSize(size);
-        window.setTimeout(() => {
+        if (addedTimerRef.current !== null) {
+          window.clearTimeout(addedTimerRef.current);
+        }
+        addedTimerRef.current = window.setTimeout(() => {
+          addedTimerRef.current = null;
           setAddedSize((cur) => (cur === size ? null : cur));
         }, 1500);
       }
@@ -135,13 +225,6 @@ export function ProductCard({
       setAddingSize(null);
     }
   };
-
-  const specParts = [
-    shop?.shortName,
-    product.fabric || undefined,
-    product.gsm > 0 ? `${product.gsm}gsm` : undefined,
-    showSpec ? product.fit || undefined : undefined,
-  ].filter(Boolean);
 
   return (
     <article
@@ -156,9 +239,16 @@ export function ProductCard({
     >
       <div className={`${styles.mediaWrap} ${hoverImage ? styles.hasHoverImage : ""}`}>
         <Link
+          ref={mediaLinkRef}
           href={productHref}
           className={styles.mediaLink}
-          onFocus={() => setFocusQuickOpen(true)}
+          onFocus={() => {
+            if (suppressNextFocusOpenRef.current) {
+              suppressNextFocusOpenRef.current = false;
+              return;
+            }
+            setFocusQuickOpen(true);
+          }}
         >
           <Image
             src={displayImage}
@@ -179,27 +269,14 @@ export function ProductCard({
           )}
         </Link>
 
-        {(discountLabel || primaryBadge) && (
-          <div className={styles.badgeCluster}>
-            {discountLabel && (
-              <span
-                className={`${styles.discountBadge} ${
-                  isFlashSaleItem || isShockDeal ? styles.discountBadgeAccent : ""
-                } num`}
-              >
-                {discountLabel}
-              </span>
-            )}
-            {primaryBadge && (
-              <span
-                className={`${styles.badge} ${
-                  primaryBadge === "outlet" ? styles.badgeOutlet : ""
-                } ${primaryBadge === "pre-order" ? styles.badgePreorder : ""}`}
-              >
-                {BADGE_LABELS[primaryBadge]}
-              </span>
-            )}
-          </div>
+        {discountLabel && (
+          <span
+            className={`${styles.discountTag} ${
+              isFlashSaleItem || isShockDeal ? styles.discountTagAccent : ""
+            } num`}
+          >
+            {discountLabel}
+          </span>
         )}
 
         {showWishlist && (
@@ -214,33 +291,73 @@ export function ProductCard({
             }
             aria-pressed={wishlisted}
           >
-            <IconHeart size={15} filled={wishlisted} />
+            <IconHeart size={18} filled={wishlisted} />
           </button>
         )}
 
-        {enableQuickAdd && showQuickOverlay && (
-          <div className={styles.quickOverlay}>
+        {canQuickAdd && !touchQuickOpen && (
+          <button
+            ref={touchQuickBtnRef}
+            type="button"
+            className={styles.touchQuickBtn}
+            onClick={() => {
+              pendingFocusRef.current = "tray";
+              setTouchQuickOpen(true);
+            }}
+            aria-label={`Thêm nhanh ${accessibleName}`}
+            aria-expanded={false}
+          >
+            <IconPlus size={18} />
+          </button>
+        )}
+
+        {canShowQuickOverlay && (
+          <div
+            ref={quickOverlayRef}
+            className={`${styles.quickOverlay} ${
+              touchQuickOpen || addedSize !== null ? styles.quickOverlayOpen : ""
+            } ${touchQuickOpen ? styles.quickOverlayTouch : ""}`}
+          >
             {isComboProduct ? (
-              <Link href={productHref} className={styles.comboLink}>
-                Chọn size combo
-              </Link>
-            ) : !hasAnyInStockForColor ? (
-              <Link href={productHref} className={styles.comboLink}>
-                Tạm hết hàng
-              </Link>
+              <div className={styles.quickOverlayRow}>
+                <Link ref={comboLinkRef} href={productHref} className={styles.comboLink}>
+                  Chọn size combo
+                </Link>
+                {touchQuickOpen && (
+                  <button
+                    ref={quickCloseBtnRef}
+                    type="button"
+                    className={styles.quickCloseBtn}
+                    onClick={closeTouchTray}
+                    aria-label="Đóng chọn size"
+                  >
+                    <IconClose size={16} />
+                  </button>
+                )}
+              </div>
             ) : (
               <>
-                <p className={styles.quickOverlayLabel}>
-                  {addedSize
-                    ? `Đã thêm size ${addedSize}`
-                    : addingSize
-                      ? "Đang thêm vào giỏ..."
-                      : "Thêm nhanh theo size"}
-                </p>
+                <div className={styles.quickOverlayHead}>
+                  <p className={styles.quickOverlayLabel}>
+                    {addedSize ? `Đã thêm ${addedSize}` : addingSize ? "Đang thêm..." : "Chọn size"}
+                  </p>
+                  {touchQuickOpen && (
+                    <button
+                      ref={quickCloseBtnRef}
+                      type="button"
+                      className={styles.quickCloseBtn}
+                      onClick={closeTouchTray}
+                      aria-label="Đóng chọn size"
+                    >
+                      <IconClose size={15} />
+                    </button>
+                  )}
+                </div>
                 <div
+                  ref={sizeButtonsRef}
                   className={styles.sizeButtons}
                   role="group"
-                  aria-label={`Thêm nhanh ${product.shortName}`}
+                  aria-label={`Thêm nhanh ${accessibleName}`}
                 >
                   {product.sizes.map((sz) => {
                     const sku = activeColor ? getSku(product, activeColor.code, sz) : undefined;
@@ -253,14 +370,10 @@ export function ProductCard({
                         disabled={outOfStock || addingSize !== null}
                         className={`${styles.sizeBtn} ${justAdded ? styles.sizeBtnAdded : ""}`}
                         onClick={() => handleQuickAdd(sz)}
-                        title={
-                          outOfStock
-                            ? `Size ${sz} đã hết hàng`
-                            : `Thêm nhanh ${product.shortName} size ${sz} vào giỏ`
-                        }
+                        title={outOfStock ? `Size ${sz} hết hàng` : `Thêm size ${sz}`}
                         aria-label={
                           outOfStock
-                            ? `${product.shortName} size ${sz} hết hàng`
+                            ? `${accessibleName} size ${sz} hết hàng`
                             : `Thêm nhanh size ${sz}`
                         }
                       >
@@ -276,63 +389,53 @@ export function ProductCard({
       </div>
 
       <div className={styles.body}>
-        {product.colors.length > 0 && (
-          <div className={styles.metaRow}>
-            <div
-              className={styles.swatches}
-              role="group"
-              aria-label={`Chọn màu ${product.shortName}`}
-            >
-              {visibleColors.map((c) => {
-                const isActive = c.code === activeColor?.code;
-                if (!enableInteractiveSwatches) {
-                  return (
-                    <span
-                      key={c.code}
-                      className={styles.swatch}
-                      style={{ backgroundColor: c.hex }}
-                      title={c.name}
-                    />
-                  );
-                }
+        {product.colors.length > 1 && (
+          <div
+            className={styles.swatches}
+            role="group"
+            aria-label={`Chọn màu ${product.shortName}`}
+          >
+            {visibleColors.map((c) => {
+              const isActive = c.code === activeColor?.code;
+              if (!enableInteractiveSwatches) {
                 return (
-                  <button
+                  <span
                     key={c.code}
-                    type="button"
-                    className={`${styles.swatchBtn} ${isActive ? styles.swatchBtnActive : ""}`}
-                    onClick={() => setSelectedColorCode(c.code)}
-                    aria-label={`Xem màu ${c.name}`}
-                    aria-pressed={isActive}
+                    className={styles.swatch}
+                    style={{ backgroundColor: c.hex }}
                     title={c.name}
-                  >
-                    <span className={styles.swatch} style={{ backgroundColor: c.hex }} />
-                  </button>
+                  />
                 );
-              })}
-              {extraColorCount > 0 && (
-                <Link
-                  href={productHref}
-                  className={styles.swatchMore}
-                  aria-label={`Xem thêm ${extraColorCount} màu khác`}
+              }
+              return (
+                <button
+                  key={c.code}
+                  type="button"
+                  className={`${styles.swatchBtn} ${isActive ? styles.swatchBtnActive : ""}`}
+                  onClick={() => setSelectedColorCode(c.code)}
+                  aria-label={`Xem màu ${c.name}`}
+                  aria-pressed={isActive}
+                  title={c.name}
                 >
-                  +{extraColorCount}
-                </Link>
-              )}
-            </div>
+                  <span className={styles.swatch} style={{ backgroundColor: c.hex }} />
+                </button>
+              );
+            })}
+            {extraColorCount > 0 && (
+              <Link
+                href={productHref}
+                className={styles.swatchMore}
+                aria-label={`Xem thêm ${extraColorCount} màu khác`}
+              >
+                +{extraColorCount}
+              </Link>
+            )}
           </div>
         )}
 
-        <Link href={productHref} className={styles.titleLink}>
+        <Link href={productHref} className={styles.titleLink} title={product.name}>
           {product.name}
         </Link>
-
-        {specParts.length > 0 && (
-          <p className={showSpec ? styles.specLine : styles.shopName}>{specParts.join(" · ")}</p>
-        )}
-
-        {(showSla || showSpec) && product.slaText && (
-          <p className={styles.slaLine}>{product.slaText}</p>
-        )}
 
         <div className={styles.footerRow}>
           <Price
@@ -341,43 +444,16 @@ export function ProductCard({
             size="sm"
             showDiscount={false}
           />
-          {quotaLabel && <span className={styles.quotaText}>{quotaLabel}</span>}
+          {quotaLabel ? (
+            <span className={styles.quotaText}>{quotaLabel}</span>
+          ) : stockNotice ? (
+            <span
+              className={`${styles.stockText} ${!hasAnyInStockForColor ? styles.stockOut : ""}`}
+            >
+              {stockNotice}
+            </span>
+          ) : null}
         </div>
-
-        {enableQuickAdd && (
-          <div className={styles.touchQuickWrap}>
-            {isComboProduct ? (
-              <Link href={productHref} className={styles.touchQuickBtn}>
-                Chọn size combo
-              </Link>
-            ) : !hasAnyInStockForColor ? (
-              <Link href={productHref} className={styles.touchQuickBtn}>
-                Tạm hết hàng
-              </Link>
-            ) : (
-              <button
-                type="button"
-                className={styles.touchQuickBtn}
-                aria-expanded={touchQuickOpen}
-                onClick={(e) => {
-                  const next = !touchQuickOpen;
-                  setTouchQuickOpen(next);
-                  if (!next) {
-                    setFocusQuickOpen(false);
-                    setHoverQuickOpen(false);
-                    e.currentTarget.blur();
-                  }
-                }}
-              >
-                {addedSize
-                  ? `Đã thêm size ${addedSize}`
-                  : touchQuickOpen
-                    ? "Đóng chọn size"
-                    : "Thêm nhanh"}
-              </button>
-            )}
-          </div>
-        )}
       </div>
     </article>
   );

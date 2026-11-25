@@ -7,12 +7,15 @@ import {
   translatePromotionWarning,
 } from "./checkoutErrors.ts";
 import {
+  buildCheckoutPreviewKey,
   enrichCartGroups,
   formatAddressLine,
   formatCarrierLabel,
   formatServiceLabel,
   formatVoucherHeadline,
   formatVoucherIneligibleReason,
+  shortVoucherHint,
+  splitVariantParts,
 } from "./cartEnrich.ts";
 
 test("translatePromotionWarning maps English promotion warnings to clean Vietnamese without raw internals", () => {
@@ -225,4 +228,71 @@ test("formatAddressLine avoids duplicating ward or province already embedded in 
     formatAddressLine("Số 12 Hàng Trống, Phường Hoàn Kiếm", "Phường Hoàn Kiếm", "Thành phố Hà Nội"),
     "Số 12 Hàng Trống, Phường Hoàn Kiếm, Thành phố Hà Nội"
   );
+});
+
+test("shortVoucherHint covers inactive, expired, quota, per-user limit, and formatted min-order shortfall", () => {
+  const base = {
+    id: "v1",
+    code: "SAVE50",
+    name: "Giảm 50k",
+    scope: "SHOP",
+    shop_id: "shop-1",
+    discount_type: "FIXED",
+    value_vnd: 50000,
+    discount_percent: 0,
+    max_discount_vnd: 0,
+    min_order_vnd: 300000,
+    quota: 50,
+    used_count: 5,
+    remaining_quota: 45,
+    per_user_limit: 1,
+    budget_vnd: 0,
+    used_budget_vnd: 0,
+    is_active: true,
+    saved: false,
+    eligible: false,
+    ineligible_reason: "",
+  };
+  const now = Date.parse("2026-11-25T12:00:00Z");
+
+  assert.equal(shortVoucherHint({ ...base, is_active: false }, 400000, now), "Hết hiệu lực");
+  assert.equal(shortVoucherHint({ ...base, remaining_quota: 0 }, 400000, now), "Hết lượt");
+  assert.equal(
+    shortVoucherHint({ ...base, ends_at: "2026-11-24T23:59:59Z" }, 400000, now),
+    "Hết hạn"
+  );
+  assert.equal(shortVoucherHint(base, 175000, now), "Thêm 125.000₫");
+  assert.equal(
+    shortVoucherHint({ ...base, ineligible_reason: "per-user limit reached" }, 400000, now),
+    "Đã dùng"
+  );
+  assert.equal(
+    shortVoucherHint({ ...base, ineligible_reason: "voucher expired" }, 400000, now),
+    "Hết hạn"
+  );
+  assert.equal(
+    shortVoucherHint({ ...base, ineligible_reason: "voucher inactive" }, 400000, now),
+    "Hết hiệu lực"
+  );
+  assert.equal(shortVoucherHint(base, 400000, now), "Chưa đủ");
+});
+
+test("splitVariantParts and buildCheckoutPreviewKey normalize variant labels and voucher preview keys", () => {
+  assert.deepEqual(splitVariantParts("Màu: Trắng tinh · Size L"), ["Màu: Trắng tinh", "Size L"]);
+  assert.deepEqual(splitVariantParts("  Phân loại tiêu chuẩn ·  "), ["Phân loại tiêu chuẩn"]);
+
+  const baseInput = {
+    shopId: "shop-1",
+    rawSubtotal: 358000,
+    cartItemsSignature: "sku-1:2",
+    quotedShippingFee: 22000,
+    voucherId: null,
+    flashKey: "{}",
+  };
+  const keyNoVoucher = buildCheckoutPreviewKey(baseInput);
+  const keyWithVoucher = buildCheckoutPreviewKey({ ...baseInput, voucherId: "v-1" });
+  const keyPendingQuote = buildCheckoutPreviewKey({ ...baseInput, quotedShippingFee: null });
+  assert.notEqual(keyNoVoucher, keyWithVoucher);
+  assert.notEqual(keyNoVoucher, keyPendingQuote);
+  assert.equal(keyWithVoucher, buildCheckoutPreviewKey({ ...baseInput, voucherId: "v-1" }));
 });

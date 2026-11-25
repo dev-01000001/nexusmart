@@ -6,3 +6,12 @@ export const SITE_NAV_ITEMS: ReadonlyArray<{ key: SiteNavKey; label: string; hre
   { key: "vouchers", label: "Mã giảm giá", href: "/voucher" },
   { key: "about", label: "Giới thiệu", href: "/gioi-thieu" },
 ];
+
+/**
+ * Strips the internal `/s/<host>` rewrite prefix so storefront paths stay visible-relative (`/`..).
+ */
+export function stripInternalSitePrefix(rawPath: string | null | undefined): string {
+  const path = rawPath || "/";
+  const m = path.match(/^\/s\/[^/]+(\/.*)?$/);
+  return m ? m[1] || "/" : path;
+}

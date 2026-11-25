@@ -44,7 +44,7 @@ export function RetryPaymentBox({ order, paymentId, onCompleted, onCancel }: Ret
           body: { method: "VIETQR" },
         }
       );
-      showToast("Đã tạo mã VietQR mới cho đơn hàng của bạn.");
+      showToast("Đã tạo mã VietQR mới.");
       onCompleted?.(res.payment);
       if (res.payment?.payment_id) {
         router.push(
@@ -52,11 +52,7 @@ export function RetryPaymentBox({ order, paymentId, onCompleted, onCancel }: Ret
         );
       }
     } catch (err) {
-      setError(
-        err instanceof ApiError
-          ? err.message
-          : "Chưa thể tạo lại mã thanh toán lúc này. Bạn vui lòng thử lại."
-      );
+      setError(err instanceof ApiError ? err.message : "Chưa thể tạo lại mã thanh toán lúc này.");
     } finally {
       setSubmitting(false);
     }
@@ -70,18 +66,18 @@ export function RetryPaymentBox({ order, paymentId, onCompleted, onCancel }: Ret
     >
       <div className={styles.retryHead}>
         <p className={styles.retryTitle}>
-          Đơn <span className="num">{order.orderCode}</span> đang chờ thanh toán VietQR
+          Đơn <span className="num">{order.orderCode}</span> chờ thanh toán VietQR
         </p>
         <span className={`${styles.statusTag} ${styles.toneWarn} num`}>
-          Cần thanh toán: {formatVnd(order.total)}
+          {formatVnd(order.total)}
         </span>
       </div>
 
-      <p className={styles.retryText}>
-        Sản phẩm đúng màu và size đang được giữ riêng cho bạn
-        {order.paymentDueAt ? ` đến ${formatDateTimeVi(order.paymentDueAt)}` : ""}. Mở lại trang mã
-        VietQR để chuyển khoản hoặc tạo mã mới nếu mã cũ đã hết hạn.
-      </p>
+      {order.paymentDueAt && (
+        <p className={styles.retryText}>
+          Giữ tồn kho đến <span className="num">{formatDateTimeVi(order.paymentDueAt)}</span>.
+        </p>
+      )}
 
       {error && (
         <p className={`${styles.feedbackBox} ${styles.feedbackError}`} role="alert">
@@ -98,21 +94,22 @@ export function RetryPaymentBox({ order, paymentId, onCompleted, onCancel }: Ret
               className={styles.wrapBtn}
               onClick={handleOpenWaiting}
             >
-              Mở mã VietQR · {formatVnd(order.total)}
+              Mở mã VietQR ({formatVnd(order.total)})
             </Button>
             <Button
               variant="secondary"
               size="md"
               className={styles.wrapBtn}
-              disabled={submitting}
+              loading={submitting}
+              loadingLabel="Đang tạo mã mới"
               onClick={handleCreateNewQr}
             >
-              {submitting ? "Đang tạo mã mới..." : "Tạo mã VietQR mới"}
+              Tạo mã VietQR mới
             </Button>
           </>
         ) : (
           <Button variant="primary" size="md" href="/don-hang">
-            Kiểm tra trạng thái đơn hàng
+            Xem đơn hàng
           </Button>
         )}
         {onCancel && (

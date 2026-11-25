@@ -25,6 +25,7 @@ export default async function AdminFlashSalePage() {
       initialFlashSales={flashSalesRes.data ?? []}
       shopNames={shopNames}
       loadError={flashSalesRes.error}
+      serverNowMs={Date.now()}
     />
   );
 }

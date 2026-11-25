@@ -30,8 +30,9 @@ export default async function SellerFinancePage() {
     <SellerSuspense>
       <SellerFinanceClient
         initialBalance={balanceRes.data}
+        balanceError={balanceRes.error}
         initialOrders={ordersRes.data?.items ?? []}
-        loadError={balanceRes.error ?? ordersRes.error}
+        loadError={ordersRes.error}
       />
     </SellerSuspense>
   );

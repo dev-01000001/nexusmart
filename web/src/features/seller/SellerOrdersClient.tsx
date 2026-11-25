@@ -3,11 +3,13 @@
 import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Button, IconCheck, IconSearch, StateView } from "@/components";
+import { Button, IconCheck, IconPackage, IconSearch, StateView } from "@/components";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import { getSalesChannelMeta } from "@/lib/salesChannel";
+import { SellerOrderQuickDrawer } from "./SellerOrderQuickDrawer";
 import { useSellerContext } from "./SellerShell";
+import { SellerBulkBar, statusPillClass } from "./SellerUiPrimitives";
 import {
   computeSellerNetReceivable,
   formatPaymentMethodVi,
@@ -42,19 +44,26 @@ function bucketOf(status: string): OrderFilterKey {
 
 export interface SellerOrdersClientProps {
   initialOrders: GwSellerOrder[];
+  productImages?: Record<string, string>;
   loadError: string | null;
 }
 
-export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersClientProps) {
+export function SellerOrdersClient({
+  initialOrders,
+  productImages = {},
+  loadError,
+}: SellerOrdersClientProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const uiState = parseUiState(searchParams.get("state"));
   const initialStatus = searchParams.get("status")?.toUpperCase();
-  const { shop, showToast } = useSellerContext();
+  const { showToast } = useSellerContext();
 
   const [orders, setOrders] = useState<GwSellerOrder[]>(initialOrders);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [drawerOrderId, setDrawerOrderId] = useState<string | null>(null);
 
   const [filter, setFilter] = useState<OrderFilterKey>(
     initialStatus &&
@@ -102,9 +111,61 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
     });
   }, [orders, filter, paymentFilter, query]);
 
+  const visibleConfirmable = useMemo(
+    () => filteredOrders.filter((o) => o.status.toUpperCase() === "CONFIRMED"),
+    [filteredOrders]
+  );
+  const selectedConfirmable = useMemo(
+    () => visibleConfirmable.filter((o) => selectedIds.has(o.id)),
+    [visibleConfirmable, selectedIds]
+  );
+  const allVisibleSelected =
+    visibleConfirmable.length > 0 && visibleConfirmable.every((o) => selectedIds.has(o.id));
+
+  const drawerOrder = useMemo(
+    () => (drawerOrderId ? (orders.find((o) => o.id === drawerOrderId) ?? null) : null),
+    [orders, drawerOrderId]
+  );
+
+  const handleFilterChange = (next: OrderFilterKey) => {
+    setFilter(next);
+    setSelectedIds(new Set());
+  };
+
+  const handlePaymentFilterChange = (next: "all" | "COD" | "VIETQR") => {
+    setPaymentFilter(next);
+    setSelectedIds(new Set());
+  };
+
+  const toggleSelectRow = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAllVisible = () => {
+    if (visibleConfirmable.length === 0) return;
+    if (allVisibleSelected) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        for (const o of visibleConfirmable) next.delete(o.id);
+        return next;
+      });
+    } else {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        for (const o of visibleConfirmable) next.add(o.id);
+        return next;
+      });
+    }
+  };
+
   const handleAction = async (order: GwSellerOrder) => {
     const action = getNextBackendOrderAction(order.status);
-    if (!action || busyId) return;
+    if (!action || busyId || bulkBusy) return;
     setBusyId(order.id);
     try {
       const url =
@@ -124,9 +185,8 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
     }
   };
 
-  const handleConfirmAllPending = async () => {
-    const targets = orders.filter((o) => o.status.toUpperCase() === "CONFIRMED");
-    if (targets.length === 0 || bulkBusy) return;
+  const runBulkConfirm = async (targets: GwSellerOrder[]) => {
+    if (targets.length === 0 || bulkBusy || busyId) return;
     setBulkBusy(true);
     let okCount = 0;
     let failCount = 0;
@@ -145,16 +205,24 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
     }
     if (updatedMap.size > 0) {
       setOrders((prev) => prev.map((o) => updatedMap.get(o.id) ?? o));
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        for (const id of updatedMap.keys()) next.delete(id);
+        return next;
+      });
       router.refresh();
     }
     if (failCount === 0) {
-      showToast(`Đã xác nhận ${formatInt(okCount)} đơn chờ và chuyển sang đóng gói.`);
+      showToast(`Đã xác nhận ${formatInt(okCount)} đơn hàng.`);
     } else {
-      showToast(
-        `Đã xác nhận ${formatInt(okCount)} đơn; ${formatInt(failCount)} đơn chưa thể cập nhật.`
-      );
+      showToast(`Đã xác nhận ${formatInt(okCount)} đơn; ${formatInt(failCount)} đơn lỗi.`);
     }
     setBulkBusy(false);
+  };
+
+  const handleConfirmAllPending = async () => {
+    const targets = orders.filter((o) => o.status.toUpperCase() === "CONFIRMED");
+    await runBulkConfirm(targets);
   };
 
   const countCards: Array<{ key: OrderFilterKey; label: string; count: number }> = [
@@ -166,32 +234,24 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
     { key: "CLOSED", label: "Trả hàng / Hủy", count: counts.CLOSED },
   ];
 
-  const pillCls = (tone: "neutral" | "warn" | "pos" | "neg") =>
-    tone === "pos"
-      ? `${common.pill} ${common.pillPos}`
-      : tone === "warn"
-        ? `${common.pill} ${common.pillWarn}`
-        : tone === "neg"
-          ? `${common.pill} ${common.pillNeg}`
-          : common.pill;
+  const orderThumbOf = (order: GwSellerOrder): string | null => {
+    const firstProdId = order.items?.[0]?.product_id;
+    return (firstProdId && productImages[firstProdId]) || null;
+  };
+
+  const isAnyOrderBusy = bulkBusy || busyId !== null;
 
   return (
     <div className={common.page}>
       <header className={common.pageHeader}>
-        <div className={common.headerText}>
-          <h1 className={common.title}>Quản lý đơn hàng</h1>
-          <p className={common.finding}>
-            {shop?.name ?? "Gian hàng"} · {formatInt(confirmableCount)} đơn chờ xác nhận,{" "}
-            {formatInt(counts.PREPARING)} đơn đang chuẩn bị bàn giao vận chuyển
-          </p>
-        </div>
+        <h1 className={common.title}>Đơn hàng</h1>
         <div className={common.headerActions}>
           {confirmableCount > 0 && (
             <Button
-              variant="ink"
+              variant="primary"
               size="sm"
               shape="app"
-              disabled={bulkBusy}
+              disabled={isAnyOrderBusy}
               onClick={() => void handleConfirmAllPending()}
             >
               <IconCheck size={14} />
@@ -209,8 +269,9 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
         <StateView
           kind="loading"
           surface="app"
-          title="Đang đồng bộ danh sách đơn hàng và trạng thái vận chuyển..."
-          rows={5}
+          skeletonVariant="table"
+          title="Đang tải đơn hàng..."
+          rows={6}
         />
       )}
 
@@ -219,7 +280,7 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
           kind="error"
           surface="app"
           title="Không thể tải danh sách đơn hàng"
-          message={loadError ?? "Kết nối đến hệ thống xử lý đơn hàng tạm thời gián đoạn."}
+          message={loadError ?? "Hệ thống đơn hàng tạm gián đoạn."}
           actionLabel="Thử lại"
           onAction={() => router.refresh()}
         />
@@ -229,9 +290,8 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
         <StateView
           kind="empty"
           surface="app"
-          title="Chưa có đơn hàng nào trong giai đoạn này"
-          message="Khi người mua đặt hàng từ gian hàng, đơn sẽ xuất hiện tại đây theo thời gian thực."
-          actionLabel="Xem sản phẩm đang bán"
+          title="Chưa có đơn hàng nào."
+          actionLabel="Xem sản phẩm"
           actionHref="/seller/san-pham"
         />
       )}
@@ -248,7 +308,7 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
                   role="tab"
                   aria-selected={selected}
                   className={`${common.countCard} ${selected ? common.countCardSelected : ""}`}
-                  onClick={() => setFilter(c.key)}
+                  onClick={() => handleFilterChange(c.key)}
                 >
                   <span className={common.countCardLabel}>{c.label}</span>
                   <span className={common.countCardValue}>{formatInt(c.count)}</span>
@@ -267,7 +327,7 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
                   role="tab"
                   aria-selected={selected}
                   className={`${common.chipBtn} ${selected ? common.chipBtnActive : ""}`}
-                  onClick={() => setFilter(c.key)}
+                  onClick={() => handleFilterChange(c.key)}
                 >
                   <span>{c.label}</span>
                   <span className={common.chipCount}>{formatInt(c.count)}</span>
@@ -276,7 +336,7 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
             })}
           </div>
 
-          <section className={common.card} aria-label="Bảng đơn hàng gian hàng">
+          <section className={common.card} aria-label="Bảng đơn hàng">
             <div className={common.toolbar} style={{ marginBottom: 14 }}>
               <div className={common.toolbarLeft}>
                 <div className={common.searchWrap}>
@@ -296,33 +356,42 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
                 <select
                   className={common.filterSelect}
                   value={paymentFilter}
-                  onChange={(e) => setPaymentFilter(e.target.value as "all" | "COD" | "VIETQR")}
-                  aria-label="Lọc theo phương thức thanh toán"
+                  onChange={(e) =>
+                    handlePaymentFilterChange(e.target.value as "all" | "COD" | "VIETQR")
+                  }
+                  aria-label="Lọc phương thức thanh toán"
                 >
-                  <option value="all">Mọi hình thức thanh toán</option>
+                  <option value="all">Mọi thanh toán</option>
                   <option value="VIETQR">VietQR</option>
                   <option value="COD">Thu hộ COD</option>
                 </select>
               </div>
-              <span className={common.cardMeta}>
-                Hiển thị {formatInt(filteredOrders.length)} trên {formatInt(orders.length)} đơn hàng
+              <span className={common.toolbarMeta}>
+                {formatInt(filteredOrders.length)} / {formatInt(orders.length)} đơn
               </span>
             </div>
 
             {filteredOrders.length === 0 ? (
-              <div className={common.inlineEmpty}>
-                Không có đơn hàng nào khớp bộ lọc trạng thái hiện tại.
-              </div>
+              <div className={common.inlineEmpty}>Không có đơn hàng khớp bộ lọc.</div>
             ) : (
               <>
                 <div className={`${common.tableWrap} ${common.tableWrapDesktop}`}>
                   <table className={common.dataTable}>
                     <thead>
                       <tr>
+                        <th className={common.checkCol}>
+                          <input
+                            type="checkbox"
+                            className={common.rowCheck}
+                            checked={allVisibleSelected}
+                            disabled={visibleConfirmable.length === 0 || bulkBusy}
+                            onChange={toggleSelectAllVisible}
+                            aria-label="Chọn tất cả đơn chờ xác nhận đang hiển thị"
+                          />
+                        </th>
                         <th>Mã đơn</th>
-                        <th>Kênh bán</th>
                         <th>Người mua</th>
-                        <th>Sản phẩm & thanh toán</th>
+                        <th>Sản phẩm &amp; thanh toán</th>
                         <th className={common.numCol}>SL</th>
                         <th className={common.numCol}>Tiền hàng</th>
                         <th className={common.numCol}>Thực nhận</th>
@@ -339,43 +408,93 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
                         const netVnd = computeSellerNetReceivable(o);
                         const summary = summarizeOrderItems(o.items);
                         const recipient = o.shipping_address?.recipient_name || "Người mua";
-                        const location = [
+                        const province = o.shipping_address?.province_name || "";
+                        const fullLocation = [
                           o.shipping_address?.ward_name,
                           o.shipping_address?.province_name,
                         ]
                           .filter(Boolean)
                           .join(", ");
+                        const paymentLine = [
+                          formatPaymentMethodVi(o.payment_method),
+                          formatPaymentStatusVi(o.payment_status),
+                          o.tracking_code || "",
+                        ]
+                          .filter(Boolean)
+                          .join(", ");
+                        const canSelectConfirm = o.status.toUpperCase() === "CONFIRMED";
+                        const isChecked = canSelectConfirm && selectedIds.has(o.id);
+                        const thumb = orderThumbOf(o);
 
                         return (
-                          <tr key={o.id}>
+                          <tr key={o.id} className={isChecked ? common.rowSelected : undefined}>
+                            <td className={common.checkCol}>
+                              <input
+                                type="checkbox"
+                                className={common.rowCheck}
+                                checked={isChecked}
+                                disabled={!canSelectConfirm || bulkBusy}
+                                onChange={() => toggleSelectRow(o.id)}
+                                aria-label={`Chọn đơn ${o.order_code}`}
+                              />
+                            </td>
                             <td className={styles.orderCodeCell}>
-                              <Link href={`/seller/don-hang/${o.id}`} className={common.cellLink}>
-                                {o.order_code}
-                              </Link>
-                              <span className={common.cellSub}>
-                                {o.created_at ? formatDateTimeVi(o.created_at) : ""}
+                              <div className={styles.orderIdentity}>
+                                {thumb ? (
+                                  <img
+                                    src={thumb}
+                                    alt={o.items?.[0]?.product_name || o.order_code}
+                                    className={styles.orderThumb}
+                                    width={32}
+                                    height={40}
+                                  />
+                                ) : (
+                                  <span
+                                    className={`${common.thumbPlaceholder} ${styles.orderThumb}`}
+                                    aria-hidden="true"
+                                  >
+                                    <IconPackage size={15} />
+                                  </span>
+                                )}
+                                <div className={styles.orderMetaStack}>
+                                  <button
+                                    type="button"
+                                    className={`${common.rowTriggerBtn} ${styles.orderCodeBtn}`}
+                                    onClick={() => setDrawerOrderId(o.id)}
+                                  >
+                                    {o.order_code}
+                                  </button>
+                                  <span
+                                    className={`${common.channelTag} ${common.channelTagCompact} ${styles.orderChannelInline} ${channelMeta.isStorefront ? common.channelTagStorefront : ""}`}
+                                    data-sales-channel={channelMeta.value}
+                                  >
+                                    {channelMeta.label}
+                                  </span>
+                                  <span className={`${common.cellSub} ${styles.orderDateSub}`}>
+                                    {o.created_at ? formatDateTimeVi(o.created_at) : ""}
+                                  </span>
+                                </div>
+                              </div>
+                            </td>
+                            <td className={styles.buyerCell}>
+                              <span className={styles.buyerName} title={recipient}>
+                                {recipient}
                               </span>
+                              {province && (
+                                <span
+                                  className={styles.buyerProvince}
+                                  title={fullLocation || province}
+                                >
+                                  {province}
+                                </span>
+                              )}
                             </td>
-                            <td>
-                              <span
-                                className={`${common.channelTag} ${channelMeta.isStorefront ? common.channelTagStorefront : ""}`}
-                                data-sales-channel={channelMeta.value}
-                              >
-                                {channelMeta.label}
-                              </span>
-                            </td>
-                            <td>
-                              <span>{recipient}</span>
-                              {location && <span className={common.cellSub}>{location}</span>}
-                            </td>
-                            <td>
+                            <td className={styles.itemColCell}>
                               <div className={styles.itemSummaryCell} title={summary}>
                                 {summary}
                               </div>
-                              <span className={common.cellSub}>
-                                {formatPaymentMethodVi(o.payment_method)} ·{" "}
-                                {formatPaymentStatusVi(o.payment_status)}
-                                {o.tracking_code ? ` · ${o.tracking_code}` : ""}
+                              <span className={styles.itemSubCell} title={paymentLine}>
+                                {paymentLine}
                               </span>
                             </td>
                             <td className={common.numCol}>{formatInt(totalQty)}</td>
@@ -384,18 +503,18 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
                               <strong>{formatVnd(netVnd)}</strong>
                             </td>
                             <td>
-                              <span className={pillCls(meta.tone)}>{meta.label}</span>
+                              <span className={statusPillClass(meta.tone)}>{meta.label}</span>
                             </td>
                             <td className={common.numCol}>
-                              <div className={styles.actionGroup}>
+                              <div className={common.rowHoverActions}>
                                 {nextAction && (
                                   <button
                                     type="button"
                                     className={styles.rowAdvanceBtn}
-                                    disabled={busyId === o.id}
+                                    disabled={isAnyOrderBusy}
                                     onClick={() => void handleAction(o)}
                                   >
-                                    {busyId === o.id ? "Đang xử lý..." : nextAction.shortLabel}
+                                    {busyId === o.id ? "Đang lưu..." : nextAction.shortLabel}
                                   </button>
                                 )}
                                 <Link
@@ -420,20 +539,51 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
                     const nextAction = getNextBackendOrderAction(o.status);
                     const recipient = o.shipping_address?.recipient_name || "Người mua";
                     const province = o.shipping_address?.province_name || "";
+                    const canSelectConfirm = o.status.toUpperCase() === "CONFIRMED";
+                    const isChecked = canSelectConfirm && selectedIds.has(o.id);
+                    const thumb = orderThumbOf(o);
                     return (
                       <div key={o.id} className={common.mobileRow}>
                         <div className={common.mobileRowTop}>
-                          <div>
-                            <Link
-                              href={`/seller/don-hang/${o.id}`}
-                              className={styles.mobileOrderCode}
-                            >
-                              {o.order_code}
-                            </Link>
-                            <span className={common.cellSub}>
-                              {recipient}
-                              {province ? ` · ${province}` : ""}
-                            </span>
+                          <div className={styles.orderIdentity}>
+                            {canSelectConfirm && (
+                              <input
+                                type="checkbox"
+                                className={common.rowCheck}
+                                checked={isChecked}
+                                disabled={bulkBusy}
+                                onChange={() => toggleSelectRow(o.id)}
+                                aria-label={`Chọn đơn ${o.order_code}`}
+                              />
+                            )}
+                            {thumb ? (
+                              <img
+                                src={thumb}
+                                alt={o.items?.[0]?.product_name || o.order_code}
+                                className={styles.orderThumb}
+                                width={34}
+                                height={44}
+                              />
+                            ) : (
+                              <span
+                                className={`${common.thumbPlaceholder} ${styles.orderThumb}`}
+                                aria-hidden="true"
+                              >
+                                <IconPackage size={15} />
+                              </span>
+                            )}
+                            <div>
+                              <Link
+                                href={`/seller/don-hang/${o.id}`}
+                                className={styles.mobileOrderCode}
+                              >
+                                {o.order_code}
+                              </Link>
+                              <span className={common.cellSub}>
+                                {recipient}
+                                {province ? `, ${province}` : ""}
+                              </span>
+                            </div>
                           </div>
                           <span className={styles.mobileOrderTotal}>
                             {formatVnd(o.subtotal_vnd)}
@@ -442,7 +592,7 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
                         <p className={styles.mobileOrderSummary}>{summarizeOrderItems(o.items)}</p>
                         <div className={common.mobileRowMeta}>
                           <div className={styles.actionGroup}>
-                            <span className={pillCls(meta.tone)}>{meta.label}</span>
+                            <span className={statusPillClass(meta.tone)}>{meta.label}</span>
                             <span
                               className={`${common.channelTag} ${channelMeta.isStorefront ? common.channelTagStorefront : ""}`}
                               data-sales-channel={channelMeta.value}
@@ -455,10 +605,10 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
                               <button
                                 type="button"
                                 className={styles.rowAdvanceBtn}
-                                disabled={busyId === o.id}
+                                disabled={isAnyOrderBusy}
                                 onClick={() => void handleAction(o)}
                               >
-                                {busyId === o.id ? "Đang xử lý..." : nextAction.shortLabel}
+                                {busyId === o.id ? "Đang lưu..." : nextAction.shortLabel}
                               </button>
                             )}
                             <Link
@@ -478,6 +628,34 @@ export function SellerOrdersClient({ initialOrders, loadError }: SellerOrdersCli
           </section>
         </>
       )}
+
+      {/* Multi-select Slide-Up Bulk Action Bar (confirm pending orders only) */}
+      <SellerBulkBar
+        count={selectedConfirmable.length}
+        label="đơn chờ xác nhận"
+        onClear={() => setSelectedIds(new Set())}
+      >
+        <button
+          type="button"
+          className={common.bulkPrimaryBtn}
+          disabled={isAnyOrderBusy}
+          onClick={() => void runBulkConfirm(selectedConfirmable)}
+        >
+          <IconCheck size={14} />
+          <span>
+            {bulkBusy ? "Đang xử lý..." : `Xác nhận (${formatInt(selectedConfirmable.length)})`}
+          </span>
+        </button>
+      </SellerBulkBar>
+
+      {/* Slide-over Quick Order Detail Drawer */}
+      <SellerOrderQuickDrawer
+        order={drawerOrder}
+        onClose={() => setDrawerOrderId(null)}
+        onAction={(order) => void handleAction(order)}
+        actionBusy={Boolean(drawerOrder && busyId === drawerOrder.id)}
+        actionDisabled={isAnyOrderBusy}
+      />
     </div>
   );
 }

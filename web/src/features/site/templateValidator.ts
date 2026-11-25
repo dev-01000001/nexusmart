@@ -927,7 +927,7 @@ export function validateSiteTemplateJson(input: string | unknown): TemplateValid
           ...base,
           type,
           props: {
-            eyebrow: checkText(p.eyebrow, `${pp}.eyebrow`, 0, 60, false),
+            eyebrow: checkText(p.eyebrow, `${pp}.eyebrow`, 0, 60, false), // taste-skill-ignore: stored template schema field
             title: checkText(p.title, `${pp}.title`, 1, 120, false),
             subtitle: checkText(p.subtitle, `${pp}.subtitle`, 0, 400, true),
             image_url: typeof p.image_url === "string" ? p.image_url.trim() : "",

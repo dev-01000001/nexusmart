@@ -1,30 +1,60 @@
 /* Seller Interaction, Returns, AI Review Summaries & Notifications (/seller/tuong-tac) */
 
+.thumbCell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.rowThumb {
+  width: 32px;
+  height: 40px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--bg-2);
+  flex: none;
+}
+
+.itemSummaryText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 280px;
+  color: var(--ink-1);
+}
+
+@media (max-width: 1340px) {
+  .itemSummaryText {
+    max-width: 190px;
+  }
+}
+
 .itemList {
   display: flex;
   flex-direction: column;
 }
 
 .itemRow {
-  padding: 16px 0;
+  padding: 14px 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .itemRow + .itemRow {
-  border-top: 1px solid var(--rule); /* taste-skill-ignore: list item horizontal divider */
+  border-top: 1px solid var(--rule);
 }
 
 .notifUnread {
-  background: var(--bg);
+  background: var(--bg-1);
   margin: 0 calc(var(--card-pad) * -1);
-  padding: 16px var(--card-pad);
+  padding: 14px var(--card-pad);
 }
 
 .itemTop {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 14px;
 }
@@ -32,7 +62,7 @@
 .itemMain {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
   min-width: 0;
   flex: 1;
 }
@@ -47,13 +77,13 @@
 .itemSub {
   font-size: 14px;
   line-height: 20px;
-  color: var(--ink);
+  color: var(--ink-2);
 }
 
 .itemMeta {
   font-size: 13px;
   line-height: 18px;
-  color: var(--muted);
+  color: var(--ink-3);
   font-variant-numeric: tabular-nums;
 }
 
@@ -68,8 +98,8 @@
 .detailPanel {
   padding: 14px 16px;
   border-radius: var(--radius-control);
-  background: var(--bg);
-  border: 1px solid var(--border); /* taste-skill-ignore: expanded detail container */
+  background: var(--bg-1);
+  border: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -78,7 +108,7 @@
 .mutedLine {
   font-size: 13px;
   line-height: 19px;
-  color: var(--muted);
+  color: var(--ink-3);
 }
 
 .errorRow {
@@ -100,8 +130,8 @@
 .returnCard {
   padding: 14px;
   border-radius: var(--radius-control);
-  background: var(--card);
-  border: 1px solid var(--border); /* taste-skill-ignore: return request detail card */
+  background: var(--bg-1);
+  border: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -118,27 +148,27 @@
 .returnCode {
   font-size: 14px;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--ink-1);
 }
 
 .returnGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px 16px;
+  gap: 12px 14px;
 }
 
 .returnLabel {
   display: block;
-  font-size: 12px;
-  line-height: 16px;
-  color: var(--muted);
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ink-3);
   margin-bottom: 2px;
 }
 
 .returnValue {
   font-size: 14px;
   line-height: 20px;
-  color: var(--ink);
+  color: var(--ink-1);
   font-variant-numeric: tabular-nums;
 }
 
@@ -154,7 +184,7 @@
   flex-direction: column;
   gap: 10px;
   padding-top: 10px;
-  border-top: 1px solid var(--rule); /* taste-skill-ignore: return decision bar divider */
+  border-top: 1px solid var(--rule);
 }
 
 .formActions {
@@ -174,7 +204,7 @@
 .summaryLead {
   font-size: 14px;
   line-height: 21px;
-  color: var(--ink);
+  color: var(--ink-1);
 }
 
 .prosConsGrid {
@@ -187,8 +217,8 @@
 .consBox {
   padding: 12px 14px;
   border-radius: var(--radius-control);
-  background: var(--card);
-  border: 1px solid var(--border); /* taste-skill-ignore: review summary pros/cons panel */
+  background: var(--bg-0);
+  border: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -214,7 +244,7 @@
   gap: 4px;
   font-size: 13px;
   line-height: 19px;
-  color: var(--ink);
+  color: var(--ink-1);
 }
 
 .unreadDot {
@@ -228,7 +258,7 @@
 .notifTitle {
   font-size: 14px;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--ink-1);
 }
 
 @media (max-width: 720px) {

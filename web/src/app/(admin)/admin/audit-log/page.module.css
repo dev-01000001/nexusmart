@@ -1,10 +1,10 @@
-/* Nhật ký kiểm toán (/admin/audit-log) — Work Sans tabular-nums audit table (zero monospace) */
+/* Nhật ký kiểm toán (/admin/audit-log) — Archivo tabular-nums (zero monospace) */
 
 .timeCol {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
-  color: var(--muted);
-  font-size: 13px;
+  color: var(--ink-3);
+  font-size: var(--fs-small);
 }
 
 .targetCol {
@@ -18,8 +18,49 @@
 }
 
 .mobileAuditSummary {
-  margin-top: 4px;
-  font-size: 13px;
-  line-height: 18px;
-  color: var(--ink);
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-small);
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+
+.diffBox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+}
+
+.diffList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.diffRow {
+  display: grid;
+  grid-template-columns: minmax(110px, 140px) minmax(0, 1fr);
+  gap: 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--rule);
+}
+
+.diffRow:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.diffKey {
+  font-size: var(--fs-small);
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.diffVal {
+  font-size: var(--fs-small);
+  color: var(--ink-1);
+  word-break: break-word;
 }

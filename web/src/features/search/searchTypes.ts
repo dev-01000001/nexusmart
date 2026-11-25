@@ -18,7 +18,8 @@ export const MAX_SEARCH_QUERY_LEN = 200;
 export const MAX_SUGGEST_QUERY_LEN = 120;
 export const MAX_RECENT_SEARCHES = 6;
 const MAX_PRICE_VND = 1_000_000_000;
-const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F]/g;
+const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F]/;
+const CONTROL_CHAR_GLOBAL_RE = /[\u0000-\u001F\u007F]/g;
 
 export interface SearchQueryParams {
   q: string;
@@ -126,7 +127,7 @@ export const SEARCH_PRICE_PRESETS: readonly PricePreset[] = [
 
 function cleanText(raw: unknown, maxLen: number): string {
   if (typeof raw !== "string") return "";
-  return raw.replace(CONTROL_CHAR_RE, " ").replace(/\s+/g, " ").trim().slice(0, maxLen);
+  return raw.replace(CONTROL_CHAR_GLOBAL_RE, " ").replace(/\s+/g, " ").trim().slice(0, maxLen);
 }
 
 export function normalizeSearchSort(raw: unknown): SearchSort {
@@ -269,14 +270,18 @@ function normalizeSearchItem(raw: unknown): SearchResultItem | null {
   );
   const categoryName = cleanText(obj.category_name ?? obj.categoryName, 120);
 
-  const rawPrice = Number(obj.min_price_vnd ?? obj.price_vnd ?? obj.price ?? obj.minPriceVnd ?? 0);
+  const rawPrice = Number(
+    obj.min_price_vnd ?? obj.price_vnd ?? obj.price ?? obj.minPriceVnd ?? obj.priceVnd ?? 0
+  );
   const priceVnd = Number.isFinite(rawPrice) && rawPrice > 0 ? Math.trunc(rawPrice) : 0;
 
   const rawMaxPrice = Number(obj.max_price_vnd ?? obj.maxPriceVnd ?? 0);
   const maxPriceVnd =
     Number.isFinite(rawMaxPrice) && rawMaxPrice > priceVnd ? Math.trunc(rawMaxPrice) : undefined;
 
-  const rawOriginal = Number(obj.original_price_vnd ?? obj.originalPrice ?? 0);
+  const rawOriginal = Number(
+    obj.original_price_vnd ?? obj.originalPrice ?? obj.originalPriceVnd ?? 0
+  );
   const originalPriceVnd =
     Number.isFinite(rawOriginal) && rawOriginal > priceVnd ? Math.trunc(rawOriginal) : undefined;
 
@@ -291,7 +296,7 @@ function normalizeSearchItem(raw: unknown): SearchResultItem | null {
   const images = Array.from(new Set(imageCandidates.map(sanitizeSearchImageUrl).filter(Boolean)));
   const image = images[0] ?? "";
 
-  const rawStock = Number(obj.total_stock ?? obj.stock ?? NaN);
+  const rawStock = Number(obj.total_stock ?? obj.stock ?? obj.totalStock ?? NaN);
   const inStock =
     typeof obj.in_stock === "boolean"
       ? obj.in_stock

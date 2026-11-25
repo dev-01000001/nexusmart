@@ -8,5 +8,11 @@ export default async function AdminReconciliationPage() {
   await requireAdminPage();
   const ledgerRes = await loadAdminLedgerSummary();
 
-  return <AdminReconciliationClient initialLedger={ledgerRes.data} loadError={ledgerRes.error} />;
+  return (
+    <AdminReconciliationClient
+      initialLedger={ledgerRes.data}
+      loadError={ledgerRes.error}
+      serverNowMs={Date.now()}
+    />
+  );
 }

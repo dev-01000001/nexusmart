@@ -3,12 +3,13 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Button, IconArrowUpRight, IconPlus, StateView } from "@/components";
+import { Button, IconArrowUpRight, IconChevronDown, IconPlus, StateView } from "@/components";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTimeVi } from "@/lib/format";
 import type { SiteDomainDTO } from "@/lib/site/domains";
 import { PLATFORM_TEMPLATES, cloneTemplateConfigForShop } from "@/features/site/templateCatalog";
 import { useSellerContext } from "@/features/seller/SellerShell";
+import { SellerSlidingTabs } from "@/features/seller/SellerUiPrimitives";
 import type { GwCategory, GwSellerProduct, GwSellerShop } from "@/features/seller/sellerApiTypes";
 import common from "@/features/seller/SellerCommon.module.css";
 import type {
@@ -25,7 +26,6 @@ import type {
   SiteCatalogLayout,
   SiteContainerWidth,
   SiteDensity,
-  SiteFontFamily,
   SiteFooterStyle,
   SiteHeaderStyle,
   SiteInfoLayout,
@@ -40,7 +40,6 @@ import type {
   TemplatePageKey,
 } from "./siteEditorTypes";
 import {
-  ALLOWED_FONTS,
   ARCHETYPE_OPTIONS,
   CARD_STYLE_OPTIONS,
   CART_LAYOUT_OPTIONS,
@@ -81,6 +80,8 @@ import {
 import { buildPreviewStorefrontDataset } from "./previewData";
 import { SectionEditorPanel } from "./SectionEditorPanel";
 import { SellerSiteDomainsSection } from "./SellerSiteDomainsSection";
+import { SitePreviewContent } from "./SitePreviewContent";
+import { SitePreviewFrame, type DevicePreviewWidth } from "./SitePreviewFrame";
 import { TemplateGalleryTab } from "./TemplateGalleryTab";
 import { TemplateCodeEditorTab } from "./TemplateCodeEditorTab";
 import { buildPublicSiteUrl } from "./siteSummary";
@@ -153,6 +154,10 @@ export function SellerSiteEditorClient({
   );
   const [newSectionType, setNewSectionType] = useState<SiteSectionV2Type>("banner");
 
+  // Shared live preview state for Theme & Sections studio split
+  const [previewPage, setPreviewPage] = useState<TemplatePageKey>("home");
+  const [previewDevice, setPreviewDevice] = useState<DevicePreviewWidth>("1440");
+
   const [dirty, setDirty] = useState<boolean>(!initialSite);
   const [formError, setFormError] = useState<string | null>(null);
   const [savingDraft, setSavingDraft] = useState<boolean>(false);
@@ -198,6 +203,7 @@ export function SellerSiteEditorClient({
   const isPublished = (site?.status ?? "").toUpperCase() === "PUBLISHED";
   const cleanSub = normalizeSubdomainInput(subdomain);
   const previewHost = cleanSub ? `${cleanSub}.${rootDomain}` : `<ten-mien>.${rootDomain}`;
+  const activeHostDisplay = site?.primary_host || previewHost;
 
   const activePageMeta = useMemo(
     () => TEMPLATE_PAGE_TABS.find((t) => t.key === sectionPageKey) ?? TEMPLATE_PAGE_TABS[0],
@@ -208,7 +214,6 @@ export function SellerSiteEditorClient({
     [config, sectionPageKey]
   );
   const totalSectionsCount = useMemo(() => countAllSections(config), [config]);
-  const visibleHomeSectionsCount = config.sections.filter((s) => s.visible).length;
 
   const selectedSection = useMemo(() => {
     if (activePageSections.length === 0) return null;
@@ -377,10 +382,11 @@ export function SellerSiteEditorClient({
         setConfig(appliedCfg);
         setSubdomain(res.site.subdomain || cleanSub);
         setSectionPageKey("home");
+        setPreviewPage("home");
         setSelectedSectionId(appliedCfg.sections[0]?.id ?? null);
         setDirty(false);
         showToast(
-          `Đã áp dụng mẫu "${template.name}" vào bản nháp. Trang công khai giữ nguyên cho đến khi bạn Xuất bản.`
+          `Đã áp dụng mẫu "${template.name}" vào bản nháp. Trang công khai giữ nguyên tới khi Xuất bản.`
         );
         router.refresh();
       }
@@ -445,7 +451,7 @@ export function SellerSiteEditorClient({
   const handleSaveDraftClick = async () => {
     const saved = await saveDraftInternal();
     if (saved) {
-      showToast("Đã lưu bản nháp site riêng. Bạn có thể xem trước đủ 5 trang trước khi xuất bản.");
+      showToast("Đã lưu bản nháp site riêng.");
       router.refresh();
     }
   };
@@ -475,9 +481,7 @@ export function SellerSiteEditorClient({
       setPublishOpen(false);
       await refreshVersions();
       const verLabel = res.version?.version_number ? `v${res.version.version_number}` : "mới nhất";
-      showToast(
-        `Đã xuất bản phiên bản ${verLabel} lên tên miền ${res.site?.primary_host || previewHost}.`
-      );
+      showToast(`Đã xuất bản phiên bản ${verLabel} lên ${res.site?.primary_host || previewHost}.`);
       router.refresh();
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : "Không thể xuất bản site riêng lúc này.";
@@ -508,6 +512,7 @@ export function SellerSiteEditorClient({
         if (res.site.draft_config) {
           setConfig(res.site.draft_config);
           setSectionPageKey("home");
+          setPreviewPage("home");
           setSelectedSectionId(res.site.draft_config.sections[0]?.id ?? null);
         }
         setSubdomain(res.site.subdomain || subdomain);
@@ -577,34 +582,116 @@ export function SellerSiteEditorClient({
 
   const colorFields: Array<{ key: keyof SiteThemeV2; label: string }> = [
     { key: "bg_color", label: "Nền trang" },
-    { key: "surface_color", label: "Nền thẻ nội dung" },
-    { key: "text_color", label: "Màu chữ chính" },
-    { key: "accent_color", label: "Màu nhấn / Nút" },
-    { key: "accent_text_color", label: "Chữ trên nút nhấn" },
+    { key: "surface_color", label: "Nền thẻ" },
+    { key: "text_color", label: "Chữ chính" },
+    { key: "accent_color", label: "Màu nhấn" },
+    { key: "accent_text_color", label: "Chữ trên nút" },
   ];
 
   const brandUnsafe = checkUnsafeText(config.theme.brand_name);
   const taglineUnsafe = checkUnsafeText(config.theme.tagline ?? "");
   const announceUnsafe = checkUnsafeText(config.layout.announcement_text ?? "");
 
+  const studioTabs: ReadonlyArray<{ key: EditorTab; label: string; count?: number }> = [
+    { key: "templates", label: "Thư viện mẫu", count: templates.length },
+    { key: "theme", label: "Giao diện & Bố cục" },
+    { key: "sections", label: "Khối & Block", count: totalSectionsCount },
+    { key: "code", label: "Mã template" },
+    { key: "domains", label: "Tên miền" },
+    { key: "versions", label: "Phiên bản", count: versions.length },
+  ];
+
+  const renderLivePreviewPane = () => (
+    <aside className={styles.previewPaneCol} aria-label="Xem trước trực tiếp site">
+      <div className={styles.previewPaneSticky}>
+        <div className={styles.previewPaneBar}>
+          <div
+            className={styles.pageSwitcherGroup}
+            role="tablist"
+            aria-label="Chọn trang xem trước"
+          >
+            {TEMPLATE_PAGE_TABS.map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                role="tab"
+                aria-selected={previewPage === tab.key}
+                className={`${styles.pageSwitchBtn} ${
+                  previewPage === tab.key ? styles.pageSwitchBtnActive : ""
+                }`}
+                onClick={() => {
+                  setPreviewPage(tab.key);
+                  if (activeTab === "sections") {
+                    setSectionPageKey(tab.key);
+                    const nextSecs = getPageSections(config, tab.key);
+                    setSelectedSectionId(nextSecs[0]?.id ?? null);
+                  }
+                }}
+              >
+                {tab.shortLabel}
+              </button>
+            ))}
+          </div>
+
+          <div
+            className={styles.viewportGroup}
+            role="group"
+            aria-label="Chọn chiều rộng khung xem trước"
+          >
+            {(["390", "768", "1440"] as const).map((w) => (
+              <button
+                key={w}
+                type="button"
+                aria-pressed={previewDevice === w}
+                className={`${styles.viewportBtn} ${
+                  previewDevice === w ? styles.viewportBtnActive : ""
+                }`}
+                onClick={() => setPreviewDevice(w)}
+              >
+                {w}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className={styles.previewStage}>
+          <SitePreviewFrame
+            device={previewDevice}
+            title={`Xem trước trực tiếp site (${previewDevice}px)`}
+            hostLabel={activeHostDisplay}
+            showChromeBar={true}
+            resetScrollKey={`${config.template_id}:${previewPage}:${previewDevice}`}
+            viewportHeight={600}
+          >
+            <SitePreviewContent
+              config={config}
+              page={previewPage}
+              shop={previewDataset.shop}
+              products={previewDataset.products}
+              categories={previewDataset.categories}
+              vouchers={previewDataset.vouchers}
+              platformOrigin={platformOrigin}
+            />
+          </SitePreviewFrame>
+        </div>
+      </div>
+    </aside>
+  );
+
   return (
     <div className={common.page}>
       <header className={common.pageHeader}>
         <div className={common.headerText}>
-          <h1 className={common.title}>Site riêng &amp; Template</h1>
-          <p className={common.finding}>
-            Chọn mẫu giao diện, tùy chỉnh bố cục 5 trang, chỉnh sửa trực quan hoặc mã JSON v2 cho{" "}
-            {activeShop?.name || "gian hàng của bạn"}.
-          </p>
+          <h1 className={common.title}>Site bán hàng</h1>
         </div>
         <div className={common.headerActions}>
           {site ? (
             <Button variant="outline" size="sm" shape="app" href="/seller/site/xem-truoc">
-              Xem trước bản nháp
+              Xem trước
             </Button>
           ) : (
             <Button variant="outline" size="sm" shape="app" disabled>
-              Xem trước bản nháp
+              Xem trước
             </Button>
           )}
           <Button
@@ -628,67 +715,51 @@ export function SellerSiteEditorClient({
         </div>
       </header>
 
-      <section className={common.balanceStrip} aria-label="Tóm tắt trạng thái site riêng">
-        <div className={common.balanceCell}>
-          <span className={common.balanceLabel}>Trạng thái</span>
-          <div>
-            <span className={`${common.pill} ${pillToneClass}`}>{statusMeta.label}</span>
-          </div>
-          <span className={common.balanceCaption}>
-            {dirty ? "Có thay đổi chưa lưu nháp" : "Bản nháp đã đồng bộ"}
+      {/* Compact single-row Draft / Published status bar */}
+      <section className={styles.studioStatusBar} aria-label="Trạng thái xuất bản site">
+        <div className={styles.studioStatusLeft}>
+          <span className={`${common.pill} ${pillToneClass}`}>
+            {statusMeta.label}
+            {activePublishedVersionNumber ? ` v${activePublishedVersionNumber}` : ""}
           </span>
-        </div>
-
-        <div className={common.balanceCell}>
-          <span className={common.balanceLabel}>Địa chỉ site riêng</span>
-          <span className={styles.hostPreviewUrl}>{site?.primary_host || previewHost}</span>
-          <div className={domainStyles.summaryActionRow}>
-            {isPublished && site?.primary_host ? (
-              <a
-                href={buildPublicSiteUrl(site.primary_host, requestHost, requestProto) || "#"}
-                target="_blank"
-                rel="noopener noreferrer"
-                className={styles.publicLink}
-              >
-                <span>Xem site công khai</span>
-                <IconArrowUpRight size={13} />
-              </a>
-            ) : (
-              <span className={common.balanceCaption}>Hiển thị công khai sau khi xuất bản</span>
-            )}
-            <button
-              type="button"
-              className={domainStyles.summaryManageBtn}
-              onClick={() => setActiveTab("domains")}
+          <span className={styles.syncIndicator}>
+            <span
+              className={`${styles.syncDot} ${dirty ? styles.syncDotDirty : ""}`}
+              aria-hidden="true"
+            />
+            <span>{dirty ? "Bản nháp chưa lưu" : "Đã đồng bộ"}</span>
+          </span>
+          <span className={styles.statusDivider} aria-hidden="true">
+            |
+          </span>
+          <span className={styles.hostPreviewUrl}>{activeHostDisplay}</span>
+          {isPublished && site?.primary_host && (
+            <a
+              href={buildPublicSiteUrl(site.primary_host, requestHost, requestProto) || "#"}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={styles.publicLink}
             >
-              Quản lý tên miền
-            </button>
-          </div>
+              <span>Mở site</span>
+              <IconArrowUpRight size={13} />
+            </a>
+          )}
         </div>
 
-        <div className={common.balanceCell}>
-          <span className={common.balanceLabel}>Mẫu đang dùng / Phiên bản</span>
-          <span className={common.balanceValue}>
-            {activePublishedVersionNumber
-              ? `v${activePublishedVersionNumber}`
-              : site?.published_version_id
-                ? "Đang phát hành"
-                : "Bản nháp"}
-          </span>
-          <span className={common.balanceCaption}>
+        <div className={styles.studioStatusRight}>
+          <span className={styles.studioMetaText}>
             Mẫu: {currentTemplateMeta?.name || config.template_id}
-            {site?.published_at ? ` · ${formatDateTimeVi(site.published_at)}` : ""}
           </span>
-        </div>
-
-        <div className={common.balanceCell}>
-          <span className={common.balanceLabel}>Khối nội dung toàn site</span>
-          <span className={common.balanceValue}>
-            {totalSectionsCount}/{MAX_TOTAL_SECTIONS}
+          <span className={styles.studioMetaText}>
+            {totalSectionsCount}/{MAX_TOTAL_SECTIONS} khối
           </span>
-          <span className={common.balanceCaption}>
-            {visibleHomeSectionsCount}/{config.sections.length} khối trang chủ đang bật
-          </span>
+          <button
+            type="button"
+            className={domainStyles.summaryManageBtn}
+            onClick={() => setActiveTab("domains")}
+          >
+            Tên miền
+          </button>
         </div>
       </section>
 
@@ -707,7 +778,7 @@ export function SellerSiteEditorClient({
         <div className={styles.publishDrawer} role="region" aria-label="Xác nhận xuất bản site">
           <div className={styles.publishNoteField}>
             <label htmlFor="publish-note-input" className={common.fieldLabel}>
-              Ghi chú cho phiên bản xuất bản (tùy chọn)
+              Ghi chú phiên bản xuất bản (tùy chọn)
             </label>
             <input
               id="publish-note-input"
@@ -716,7 +787,7 @@ export function SellerSiteEditorClient({
               value={publishNote}
               maxLength={300}
               onChange={(e) => setPublishNote(e.target.value)}
-              placeholder="Ví dụ: Áp dụng mẫu Xưởng thủ công và cập nhật bảng màu mới"
+              placeholder="Ví dụ: Cập nhật mẫu và bảng màu mới"
             />
           </div>
           <div className={styles.publishButtons}>
@@ -739,7 +810,7 @@ export function SellerSiteEditorClient({
               {publishing
                 ? "Đang xuất bản..."
                 : dirty
-                  ? "Lưu nháp & Xuất bản ngay"
+                  ? "Lưu nháp & Xuất bản"
                   : "Xác nhận xuất bản"}
             </Button>
           </div>
@@ -752,68 +823,19 @@ export function SellerSiteEditorClient({
         </div>
       )}
 
-      <div
-        className={`${common.underlineTabs} ${styles.studioTabs}`}
-        role="tablist"
-        aria-label="Các mục cấu hình site riêng"
-      >
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === "templates"}
-          className={`${common.underlineTab} ${activeTab === "templates" ? common.underlineTabActive : ""}`}
-          onClick={() => setActiveTab("templates")}
-        >
-          Thư viện mẫu ({templates.length})
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === "theme"}
-          className={`${common.underlineTab} ${activeTab === "theme" ? common.underlineTabActive : ""}`}
-          onClick={() => setActiveTab("theme")}
-        >
-          Giao diện &amp; Bố cục
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === "sections"}
-          className={`${common.underlineTab} ${activeTab === "sections" ? common.underlineTabActive : ""}`}
-          onClick={() => setActiveTab("sections")}
-        >
-          Khối &amp; Block ({totalSectionsCount})
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === "code"}
-          className={`${common.underlineTab} ${activeTab === "code" ? common.underlineTabActive : ""}`}
-          onClick={() => setActiveTab("code")}
-        >
-          Mã template
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === "domains"}
-          className={`${common.underlineTab} ${activeTab === "domains" ? common.underlineTabActive : ""}`}
-          onClick={() => setActiveTab("domains")}
-        >
-          Tên miền
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === "versions"}
-          className={`${common.underlineTab} ${activeTab === "versions" ? common.underlineTabActive : ""}`}
-          onClick={() => setActiveTab("versions")}
-        >
-          Lịch sử phiên bản ({versions.length})
-        </button>
-      </div>
+      <SellerSlidingTabs
+        tabs={studioTabs}
+        value={activeTab}
+        onChange={(nextTab) => {
+          setActiveTab(nextTab);
+          if (nextTab === "sections") {
+            setPreviewPage(sectionPageKey);
+          }
+        }}
+        ariaLabel="Các mục cấu hình site bán hàng"
+      />
 
-      {/* TAB 1: Template Gallery */}
+      {/* TAB 1: Real-Photo Template Gallery */}
       {activeTab === "templates" && (
         <TemplateGalleryTab
           templates={templates}
@@ -826,17 +848,21 @@ export function SellerSiteEditorClient({
         />
       )}
 
-      {/* TAB 2: Theme, Chrome Layout & 4 Sub-Page Layout Controls */}
+      {/* TAB 2: Studio Split — Left Collapsible Inspector (36%) + Right Live Preview (64%) */}
       {activeTab === "theme" && (
-        <div className={styles.fieldStack}>
-          <div className={styles.twoCol}>
-            <section className={common.card} aria-label="Tên miền phụ và nhận diện thương hiệu">
-              <div className={common.cardHeader}>
-                <h2 className={common.cardTitle}>Tên miền phụ &amp; Thương hiệu</h2>
-                {dirty && <span className={styles.dirtyNotice}>Chưa lưu</span>}
-              </div>
-
-              <div className={styles.fieldStack}>
+        <div className={styles.studioWorkspace}>
+          <div className={styles.inspectorCol}>
+            {/* Group 1: Brand & Subdomain (no font selector) */}
+            <details className={common.accordion} open>
+              <summary className={common.accordionSummary}>
+                <span className={styles.inspectorAccordionTitle}>
+                  <span>Thương hiệu &amp; Tên miền phụ</span>
+                </span>
+                <span className={common.accordionChevron} aria-hidden="true">
+                  <IconChevronDown size={16} />
+                </span>
+              </summary>
+              <div className={common.accordionBody}>
                 <div className={common.field}>
                   <label htmlFor="site-subdomain" className={common.fieldLabel}>
                     Tên miền phụ
@@ -867,52 +893,30 @@ export function SellerSiteEditorClient({
                   )}
                 </div>
 
-                <div className={styles.fields2}>
-                  <div className={common.field}>
-                    <div className={styles.charRow}>
-                      <label htmlFor="site-brand" className={common.fieldLabel}>
-                        Tên thương hiệu hiển thị
-                      </label>
-                      <span className={styles.charCount}>{config.theme.brand_name.length}/80</span>
-                    </div>
-                    <input
-                      id="site-brand"
-                      type="text"
-                      className={common.textInput}
-                      value={config.theme.brand_name}
-                      maxLength={80}
-                      onChange={(e) => updateTheme({ brand_name: e.target.value })}
-                    />
-                    {brandUnsafe && (
-                      <span className={common.fieldError}>Bị chặn vì {brandUnsafe}.</span>
-                    )}
-                  </div>
-
-                  <div className={common.field}>
-                    <label htmlFor="site-font" className={common.fieldLabel}>
-                      Phông chữ cửa hàng
+                <div className={common.field}>
+                  <div className={styles.charRow}>
+                    <label htmlFor="site-brand" className={common.fieldLabel}>
+                      Tên thương hiệu
                     </label>
-                    <select
-                      id="site-font"
-                      className={common.textInput}
-                      value={config.theme.font_family}
-                      onChange={(e) =>
-                        updateTheme({ font_family: e.target.value as SiteFontFamily })
-                      }
-                    >
-                      {ALLOWED_FONTS.map((f) => (
-                        <option key={f.value} value={f.value}>
-                          {f.label} ({f.hint})
-                        </option>
-                      ))}
-                    </select>
+                    <span className={styles.charCount}>{config.theme.brand_name.length}/80</span>
                   </div>
+                  <input
+                    id="site-brand"
+                    type="text"
+                    className={common.textInput}
+                    value={config.theme.brand_name}
+                    maxLength={80}
+                    onChange={(e) => updateTheme({ brand_name: e.target.value })}
+                  />
+                  {brandUnsafe && (
+                    <span className={common.fieldError}>Bị chặn vì {brandUnsafe}.</span>
+                  )}
                 </div>
 
                 <div className={styles.fields2}>
                   <div className={common.field}>
                     <label htmlFor="site-radius" className={common.fieldLabel}>
-                      Bo góc thành phần (radius)
+                      Bo góc
                     </label>
                     <select
                       id="site-radius"
@@ -930,7 +934,7 @@ export function SellerSiteEditorClient({
 
                   <div className={common.field}>
                     <label htmlFor="site-density" className={common.fieldLabel}>
-                      Mật độ hiển thị (density)
+                      Mật độ
                     </label>
                     <select
                       id="site-density"
@@ -950,7 +954,7 @@ export function SellerSiteEditorClient({
                 <div className={common.field}>
                   <div className={styles.charRow}>
                     <label htmlFor="site-tagline" className={common.fieldLabel}>
-                      Khẩu hiệu ngắn (tagline)
+                      Khẩu hiệu ngắn
                     </label>
                     <span className={styles.charCount}>
                       {(config.theme.tagline ?? "").length}/160
@@ -963,7 +967,7 @@ export function SellerSiteEditorClient({
                     value={config.theme.tagline ?? ""}
                     maxLength={160}
                     onChange={(e) => updateTheme({ tagline: e.target.value })}
-                    placeholder="Áo thun cotton 220gsm may trực tiếp tại xưởng Việt Nam"
+                    placeholder="Áo thun cotton 220gsm may trực tiếp tại xưởng"
                   />
                   {taglineUnsafe && (
                     <span className={common.fieldError}>Bị chặn vì {taglineUnsafe}.</span>
@@ -972,7 +976,7 @@ export function SellerSiteEditorClient({
 
                 <div className={common.field}>
                   <label htmlFor="site-logo-url" className={common.fieldLabel}>
-                    Đường dẫn ảnh logo (chặn SVG &amp; địa chỉ nội bộ)
+                    Ảnh logo
                   </label>
                   <input
                     id="site-logo-url"
@@ -981,7 +985,7 @@ export function SellerSiteEditorClient({
                     value={config.theme.logo_url ?? ""}
                     maxLength={500}
                     onChange={(e) => updateTheme({ logo_url: e.target.value })}
-                    placeholder="/banners/vietnam-workshop.jpg hoặc https://..."
+                    placeholder="/banners/vietnam-workshop.jpg"
                   />
                   {logoUrlError ? (
                     <span className={common.fieldError}>{logoUrlError}</span>
@@ -1005,7 +1009,7 @@ export function SellerSiteEditorClient({
 
                 <div className={common.field}>
                   <label htmlFor="site-banner-url" className={common.fieldLabel}>
-                    Đường dẫn ảnh bìa mặc định (tùy chọn)
+                    Ảnh bìa mặc định
                   </label>
                   <input
                     id="site-banner-url"
@@ -1014,7 +1018,7 @@ export function SellerSiteEditorClient({
                     value={config.theme.banner_url ?? ""}
                     maxLength={500}
                     onChange={(e) => updateTheme({ banner_url: e.target.value })}
-                    placeholder="/banners/campaign-everyday.jpg hoặc https://..."
+                    placeholder="/banners/campaign-everyday.jpg"
                   />
                   {bannerUrlError ? (
                     <span className={common.fieldError}>{bannerUrlError}</span>
@@ -1036,53 +1040,54 @@ export function SellerSiteEditorClient({
                   )}
                 </div>
               </div>
-            </section>
+            </details>
 
-            <section className={common.card} aria-label="Bảng màu và kiểm tra độ tương phản">
-              <div className={common.cardHeader}>
-                <h2 className={common.cardTitle}>Bảng màu &amp; Độ tương phản WCAG</h2>
-                <span
-                  className={`${common.pill} ${allContrastPass ? common.pillPos : common.pillNeg}`}
-                >
-                  {allContrastPass ? "Đạt chuẩn đọc rõ" : "Cần tăng tương phản"}
+            {/* Group 2: Colors & WCAG Contrast */}
+            <details className={common.accordion} open>
+              <summary className={common.accordionSummary}>
+                <span className={styles.inspectorAccordionTitle}>
+                  <span>Bảng màu &amp; WCAG</span>
+                  <span
+                    className={`${common.pill} ${allContrastPass ? common.pillPos : common.pillNeg}`}
+                  >
+                    {allContrastPass ? "Đạt chuẩn" : "Cần sửa"}
+                  </span>
                 </span>
-              </div>
-
-              <div className={styles.fieldStack}>
-                <div className={common.field}>
-                  <span className={common.fieldLabel}>Bộ màu gợi ý (đạt chuẩn ≥ 4,5:1)</span>
-                  <div className={styles.presetGrid}>
-                    {THEME_PRESETS.map((preset) => {
-                      const active = activePresetId === preset.id;
-                      return (
-                        <button
-                          key={preset.id}
-                          type="button"
-                          className={`${styles.presetBtn} ${active ? styles.presetBtnActive : ""}`}
-                          onClick={() => updateTheme(preset.colors)}
-                        >
-                          <div className={styles.presetHead}>
-                            <span className={styles.presetName}>{preset.name}</span>
-                            <span className={styles.presetDots} aria-hidden="true">
-                              <span
-                                className={styles.presetDot}
-                                style={{ backgroundColor: preset.colors.bg_color }}
-                              />
-                              <span
-                                className={styles.presetDot}
-                                style={{ backgroundColor: preset.colors.text_color }}
-                              />
-                              <span
-                                className={styles.presetDot}
-                                style={{ backgroundColor: preset.colors.accent_color }}
-                              />
-                            </span>
-                          </div>
-                          <span className={styles.presetDesc}>{preset.description}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
+                <span className={common.accordionChevron} aria-hidden="true">
+                  <IconChevronDown size={16} />
+                </span>
+              </summary>
+              <div className={common.accordionBody}>
+                <div className={styles.presetGrid}>
+                  {THEME_PRESETS.map((preset) => {
+                    const active = activePresetId === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        className={`${styles.presetBtn} ${active ? styles.presetBtnActive : ""}`}
+                        onClick={() => updateTheme(preset.colors)}
+                      >
+                        <div className={styles.presetHead}>
+                          <span className={styles.presetName}>{preset.name}</span>
+                          <span className={styles.presetDots} aria-hidden="true">
+                            <span
+                              className={styles.presetDot}
+                              style={{ backgroundColor: preset.colors.bg_color }}
+                            />
+                            <span
+                              className={styles.presetDot}
+                              style={{ backgroundColor: preset.colors.text_color }}
+                            />
+                            <span
+                              className={styles.presetDot}
+                              style={{ backgroundColor: preset.colors.accent_color }}
+                            />
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
 
                 <div className={styles.colorGrid}>
@@ -1122,9 +1127,7 @@ export function SellerSiteEditorClient({
                 </div>
 
                 <div className={styles.contrastList} aria-live="polite">
-                  <span className={styles.contrastTitle}>
-                    Kiểm tra tương phản chữ / nền (≥ 4,5:1)
-                  </span>
+                  <span className={styles.contrastTitle}>Tương phản chữ / nền (≥ 4,5:1)</span>
                   {contrastChecks.map((check) => (
                     <div key={check.id} className={styles.contrastRow}>
                       <span className={styles.contrastLabel}>{check.label}</span>
@@ -1137,147 +1140,102 @@ export function SellerSiteEditorClient({
                             check.passes ? common.pillPos : common.pillNeg
                           }`}
                         >
-                          {check.passes ? "Đạt chuẩn" : "Dưới 4,5:1"}
+                          {check.passes ? "Đạt" : "Thấp"}
                         </span>
                       </span>
                     </div>
                   ))}
                 </div>
+              </div>
+            </details>
 
-                <div
-                  className={styles.themeSample}
-                  style={{
-                    backgroundColor: isValidHexColor(config.theme.bg_color)
-                      ? config.theme.bg_color
-                      : "#F7F9FA",
-                    color: isValidHexColor(config.theme.text_color)
-                      ? config.theme.text_color
-                      : "#1F3038",
-                  }}
-                >
-                  <div
-                    className={styles.themeSampleCard}
-                    style={{
-                      backgroundColor: isValidHexColor(config.theme.surface_color)
-                        ? config.theme.surface_color
-                        : "#FFFFFF",
-                    }}
-                  >
-                    <span className={styles.themeSampleBrand}>
-                      {config.theme.brand_name || "Tên thương hiệu"}
-                    </span>
-                    <span className={styles.themeSampleTagline}>
-                      {config.theme.tagline || "Xem nhanh phối màu chữ, nền thẻ và nút hành động."}
-                    </span>
+            {/* Group 3: Global Chrome & Storefront Widgets */}
+            <details className={common.accordion}>
+              <summary className={common.accordionSummary}>
+                <span>Khung giao diện &amp; Tiện ích</span>
+                <span className={common.accordionChevron} aria-hidden="true">
+                  <IconChevronDown size={16} />
+                </span>
+              </summary>
+              <div className={common.accordionBody}>
+                <div className={styles.fields2}>
+                  <div className={common.field}>
+                    <label htmlFor="layout-archetype" className={common.fieldLabel}>
+                      Phong cách
+                    </label>
+                    <select
+                      id="layout-archetype"
+                      className={common.textInput}
+                      value={config.layout.archetype}
+                      onChange={(e) => updateLayout({ archetype: e.target.value as SiteArchetype })}
+                    >
+                      {ARCHETYPE_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
                   </div>
-                  <span
-                    className={styles.themeSampleBtn}
-                    style={{
-                      backgroundColor: isValidHexColor(config.theme.accent_color)
-                        ? config.theme.accent_color
-                        : "#0D7480",
-                      color: isValidHexColor(config.theme.accent_text_color)
-                        ? config.theme.accent_text_color
-                        : "#FFFFFF",
-                    }}
-                  >
-                    Xem sản phẩm
-                  </span>
-                </div>
-              </div>
-            </section>
-          </div>
 
-          {/* Layout Chrome & Swarm G Slots Card */}
-          <section className={common.card} aria-label="Cấu hình khung giao diện toàn site">
-            <div className={common.cardHeader}>
-              <div>
-                <h2 className={common.cardTitle}>Khung giao diện toàn site &amp; Tiện ích</h2>
-                <p className={common.cardMeta}>
-                  Điều chỉnh cấu trúc đầu trang, chân trang, độ rộng khung, thẻ sản phẩm và các
-                  thành phần tìm kiếm/chat/trợ lý AI.
-                </p>
-              </div>
-            </div>
+                  <div className={common.field}>
+                    <label htmlFor="layout-header" className={common.fieldLabel}>
+                      Đầu trang
+                    </label>
+                    <select
+                      id="layout-header"
+                      className={common.textInput}
+                      value={config.layout.header_style}
+                      onChange={(e) =>
+                        updateLayout({ header_style: e.target.value as SiteHeaderStyle })
+                      }
+                    >
+                      {HEADER_STYLE_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-            <div className={styles.fieldStack}>
-              <div className={styles.settingsGrid3}>
-                <div className={common.field}>
-                  <label htmlFor="layout-archetype" className={common.fieldLabel}>
-                    Phong cách bố cục (archetype)
-                  </label>
-                  <select
-                    id="layout-archetype"
-                    className={common.textInput}
-                    value={config.layout.archetype}
-                    onChange={(e) => updateLayout({ archetype: e.target.value as SiteArchetype })}
-                  >
-                    {ARCHETYPE_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                  <div className={common.field}>
+                    <label htmlFor="layout-footer" className={common.fieldLabel}>
+                      Chân trang
+                    </label>
+                    <select
+                      id="layout-footer"
+                      className={common.textInput}
+                      value={config.layout.footer_style}
+                      onChange={(e) =>
+                        updateLayout({ footer_style: e.target.value as SiteFooterStyle })
+                      }
+                    >
+                      {FOOTER_STYLE_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-                <div className={common.field}>
-                  <label htmlFor="layout-header" className={common.fieldLabel}>
-                    Kiểu đầu trang (header)
-                  </label>
-                  <select
-                    id="layout-header"
-                    className={common.textInput}
-                    value={config.layout.header_style}
-                    onChange={(e) =>
-                      updateLayout({ header_style: e.target.value as SiteHeaderStyle })
-                    }
-                  >
-                    {HEADER_STYLE_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className={common.field}>
-                  <label htmlFor="layout-footer" className={common.fieldLabel}>
-                    Kiểu chân trang (footer)
-                  </label>
-                  <select
-                    id="layout-footer"
-                    className={common.textInput}
-                    value={config.layout.footer_style}
-                    onChange={(e) =>
-                      updateLayout({ footer_style: e.target.value as SiteFooterStyle })
-                    }
-                  >
-                    {FOOTER_STYLE_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className={common.field}>
-                  <label htmlFor="layout-width" className={common.fieldLabel}>
-                    Độ rộng khung nội dung
-                  </label>
-                  <select
-                    id="layout-width"
-                    className={common.textInput}
-                    value={config.layout.container_width}
-                    onChange={(e) =>
-                      updateLayout({ container_width: e.target.value as SiteContainerWidth })
-                    }
-                  >
-                    {CONTAINER_WIDTH_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
+                  <div className={common.field}>
+                    <label htmlFor="layout-width" className={common.fieldLabel}>
+                      Độ rộng khung
+                    </label>
+                    <select
+                      id="layout-width"
+                      className={common.textInput}
+                      value={config.layout.container_width}
+                      onChange={(e) =>
+                        updateLayout({ container_width: e.target.value as SiteContainerWidth })
+                      }
+                    >
+                      {CONTAINER_WIDTH_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
                 <div className={common.field}>
@@ -1297,47 +1255,44 @@ export function SellerSiteEditorClient({
                     ))}
                   </select>
                 </div>
-              </div>
 
-              <div className={styles.announcementRow}>
-                <label className={styles.checkRow}>
-                  <input
-                    type="checkbox"
-                    checked={config.layout.show_announcement}
-                    onChange={(e) => updateLayout({ show_announcement: e.target.checked })}
-                  />
-                  <span>Hiển thị thanh thông báo phía trên đầu trang</span>
-                </label>
-
-                {config.layout.show_announcement && (
-                  <div className={common.field}>
-                    <div className={styles.charRow}>
-                      <label htmlFor="layout-announce-text" className={common.fieldLabel}>
-                        Nội dung thanh thông báo
-                      </label>
-                      <span className={styles.charCount}>
-                        {(config.layout.announcement_text ?? "").length}/140
-                      </span>
-                    </div>
+                <div className={styles.announcementRow}>
+                  <label className={styles.checkRow}>
                     <input
-                      id="layout-announce-text"
-                      type="text"
-                      className={common.textInput}
-                      value={config.layout.announcement_text ?? ""}
-                      maxLength={140}
-                      onChange={(e) => updateLayout({ announcement_text: e.target.value })}
-                      placeholder="Ví dụ: Giao hàng toàn quốc 1–3 ngày · Đổi size tận nơi 45 ngày"
+                      type="checkbox"
+                      checked={config.layout.show_announcement}
+                      onChange={(e) => updateLayout({ show_announcement: e.target.checked })}
                     />
-                    {announceUnsafe && (
-                      <span className={common.fieldError}>Bị chặn vì {announceUnsafe}.</span>
-                    )}
-                  </div>
-                )}
-              </div>
+                    <span>Hiển thị thanh thông báo đầu trang</span>
+                  </label>
 
-              <div className={styles.slotsBar}>
-                <span className={common.fieldLabel}>Tiện ích tích hợp trên cửa hàng (Swarm G)</span>
-                <div className={styles.slotsToggleGrid}>
+                  {config.layout.show_announcement && (
+                    <div className={common.field}>
+                      <div className={styles.charRow}>
+                        <label htmlFor="layout-announce-text" className={common.fieldLabel}>
+                          Nội dung thông báo
+                        </label>
+                        <span className={styles.charCount}>
+                          {(config.layout.announcement_text ?? "").length}/140
+                        </span>
+                      </div>
+                      <input
+                        id="layout-announce-text"
+                        type="text"
+                        className={common.textInput}
+                        value={config.layout.announcement_text ?? ""}
+                        maxLength={140}
+                        onChange={(e) => updateLayout({ announcement_text: e.target.value })}
+                        placeholder="Giao toàn quốc 1-3 ngày, đổi size 45 ngày"
+                      />
+                      {announceUnsafe && (
+                        <span className={common.fieldError}>Bị chặn vì {announceUnsafe}.</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className={styles.slotsToggleStack}>
                   <label className={styles.slotToggleCard}>
                     <input
                       type="checkbox"
@@ -1346,8 +1301,8 @@ export function SellerSiteEditorClient({
                       onChange={(e) => updateSlots({ search: e.target.checked })}
                     />
                     <span>
-                      <strong>Thanh tìm kiếm nhanh</strong>
-                      <small>Tìm kiếm sản phẩm ngay trên đầu trang cửa hàng</small>
+                      <strong>Tìm kiếm nhanh</strong>
+                      <small>Thanh tìm sản phẩm trên đầu trang</small>
                     </span>
                   </label>
                   <label className={styles.slotToggleCard}>
@@ -1359,7 +1314,7 @@ export function SellerSiteEditorClient({
                     />
                     <span>
                       <strong>Khung chat gian hàng</strong>
-                      <small>Cho phép người mua nhắn trực tiếp với cửa hàng</small>
+                      <small>Người mua nhắn trực tiếp với cửa hàng</small>
                     </span>
                   </label>
                   <label className={styles.slotToggleCard}>
@@ -1371,473 +1326,480 @@ export function SellerSiteEditorClient({
                     />
                     <span>
                       <strong>Trợ lý AI tư vấn</strong>
-                      <small>Hỗ trợ chọn cỡ và giải đáp chính sách bằng JWT người mua</small>
+                      <small>Hỗ trợ chọn cỡ và chính sách</small>
                     </span>
                   </label>
                 </div>
               </div>
-            </div>
-          </section>
+            </details>
 
-          {/* Per-page layout controls (Catalog, PDP, Cart, Info) */}
-          <section className={common.card} aria-label="Bố cục 4 trang phụ">
-            <div className={common.cardHeader}>
-              <div>
-                <h2 className={common.cardTitle}>Bố cục chi tiết 4 trang phụ</h2>
-                <p className={common.cardMeta}>
-                  Mỗi mẫu định hình bố cục riêng cho Danh sách sản phẩm, Chi tiết sản phẩm, Giỏ hàng
-                  và Trang thông tin.
-                </p>
-              </div>
-            </div>
-
-            <div className={styles.pagesGrid2}>
-              {/* Catalog page */}
-              <div className={styles.subpageCard}>
-                <h3 className={styles.subpageCardTitle}>Trang danh sách sản phẩm (/san-pham)</h3>
-                <div className={styles.fields2}>
-                  <div className={common.field}>
-                    <label htmlFor="pg-cat-layout" className={common.fieldLabel}>
-                      Bố cục danh sách
-                    </label>
-                    <select
-                      id="pg-cat-layout"
-                      className={common.textInput}
-                      value={config.pages.catalog.layout}
-                      onChange={(e) =>
-                        updateCatalogPage({ layout: e.target.value as SiteCatalogLayout })
-                      }
-                    >
-                      {CATALOG_LAYOUT_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
+            {/* Group 4: 4 Sub-Page Layouts */}
+            <details className={common.accordion}>
+              <summary className={common.accordionSummary}>
+                <span>Bố cục 4 trang phụ</span>
+                <span className={common.accordionChevron} aria-hidden="true">
+                  <IconChevronDown size={16} />
+                </span>
+              </summary>
+              <div className={common.accordionBody}>
+                <div className={styles.subpageStack}>
+                  {/* Catalog */}
+                  <div className={styles.subpageCard}>
+                    <h3 className={styles.subpageCardTitle}>Danh sách (/san-pham)</h3>
+                    <div className={styles.fields2}>
+                      <div className={common.field}>
+                        <label htmlFor="pg-cat-layout" className={common.fieldLabel}>
+                          Bố cục
+                        </label>
+                        <select
+                          id="pg-cat-layout"
+                          className={common.textInput}
+                          value={config.pages.catalog.layout}
+                          onChange={(e) =>
+                            updateCatalogPage({ layout: e.target.value as SiteCatalogLayout })
+                          }
+                        >
+                          {CATALOG_LAYOUT_OPTIONS.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className={common.field}>
+                        <label htmlFor="pg-cat-cols" className={common.fieldLabel}>
+                          Số cột (1-5)
+                        </label>
+                        <input
+                          id="pg-cat-cols"
+                          type="number"
+                          min={1}
+                          max={5}
+                          className={common.textInput}
+                          value={config.pages.catalog.columns}
+                          onChange={(e) =>
+                            updateCatalogPage({
+                              columns: Math.max(
+                                1,
+                                Math.min(5, Math.trunc(Number(e.target.value) || 3))
+                              ),
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+                    <div className={common.field}>
+                      <label htmlFor="pg-cat-title" className={common.fieldLabel}>
+                        Tiêu đề đầu trang
+                      </label>
+                      <input
+                        id="pg-cat-title"
+                        type="text"
+                        className={common.textInput}
+                        maxLength={120}
+                        value={config.pages.catalog.intro_title}
+                        onChange={(e) => updateCatalogPage({ intro_title: e.target.value })}
+                      />
+                    </div>
+                    <div className={common.field}>
+                      <label htmlFor="pg-cat-sub" className={common.fieldLabel}>
+                        Mô tả ngắn
+                      </label>
+                      <input
+                        id="pg-cat-sub"
+                        type="text"
+                        className={common.textInput}
+                        maxLength={300}
+                        value={config.pages.catalog.intro_subtitle}
+                        onChange={(e) => updateCatalogPage({ intro_subtitle: e.target.value })}
+                      />
+                    </div>
+                    <div className={styles.checkStack}>
+                      <label className={styles.checkRow}>
+                        <input
+                          type="checkbox"
+                          checked={config.pages.catalog.show_filters}
+                          onChange={(e) => updateCatalogPage({ show_filters: e.target.checked })}
+                        />
+                        <span>Hiện bộ lọc danh mục</span>
+                      </label>
+                      <label className={styles.checkRow}>
+                        <input
+                          type="checkbox"
+                          checked={config.pages.catalog.show_search}
+                          onChange={(e) => updateCatalogPage({ show_search: e.target.checked })}
+                        />
+                        <span>Hiện ô tìm kiếm</span>
+                      </label>
+                      <label className={styles.checkRow}>
+                        <input
+                          type="checkbox"
+                          checked={config.pages.catalog.show_sku_matrix}
+                          onChange={(e) => updateCatalogPage({ show_sku_matrix: e.target.checked })}
+                        />
+                        <span>Chế độ bảng ma trận SKU</span>
+                      </label>
+                    </div>
                   </div>
-                  <div className={common.field}>
-                    <label htmlFor="pg-cat-cols" className={common.fieldLabel}>
-                      Số cột lưới (1–5)
-                    </label>
-                    <input
-                      id="pg-cat-cols"
-                      type="number"
-                      min={1}
-                      max={5}
-                      className={common.textInput}
-                      value={config.pages.catalog.columns}
-                      onChange={(e) =>
-                        updateCatalogPage({
-                          columns: Math.max(
-                            1,
-                            Math.min(5, Math.trunc(Number(e.target.value) || 3))
-                          ),
-                        })
-                      }
-                    />
+
+                  {/* PDP */}
+                  <div className={styles.subpageCard}>
+                    <h3 className={styles.subpageCardTitle}>Chi tiết sản phẩm (PDP)</h3>
+                    <div className={styles.fields2}>
+                      <div className={common.field}>
+                        <label htmlFor="pg-pdp-layout" className={common.fieldLabel}>
+                          Bố cục PDP
+                        </label>
+                        <select
+                          id="pg-pdp-layout"
+                          className={common.textInput}
+                          value={config.pages.pdp.layout}
+                          onChange={(e) =>
+                            updatePdpPage({ layout: e.target.value as SitePdpLayout })
+                          }
+                        >
+                          {PDP_LAYOUT_OPTIONS.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className={common.field}>
+                        <label htmlFor="pg-pdp-gal" className={common.fieldLabel}>
+                          Bộ ảnh SP
+                        </label>
+                        <select
+                          id="pg-pdp-gal"
+                          className={common.textInput}
+                          value={config.pages.pdp.gallery_style}
+                          onChange={(e) =>
+                            updatePdpPage({ gallery_style: e.target.value as SitePdpGalleryStyle })
+                          }
+                        >
+                          {PDP_GALLERY_OPTIONS.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <div className={styles.checkStack}>
+                      <label className={styles.checkRow}>
+                        <input
+                          type="checkbox"
+                          checked={config.pages.pdp.show_vouchers}
+                          onChange={(e) => updatePdpPage({ show_vouchers: e.target.checked })}
+                        />
+                        <span>Hiện mã giảm giá</span>
+                      </label>
+                      <label className={styles.checkRow}>
+                        <input
+                          type="checkbox"
+                          checked={config.pages.pdp.show_sku_table}
+                          onChange={(e) => updatePdpPage({ show_sku_table: e.target.checked })}
+                        />
+                        <span>Hiện bảng tồn kho SKU</span>
+                      </label>
+                      <label className={styles.checkRow}>
+                        <input
+                          type="checkbox"
+                          checked={config.pages.pdp.show_story_band}
+                          onChange={(e) => updatePdpPage({ show_story_band: e.target.checked })}
+                        />
+                        <span>Hiện dải chất liệu &amp; xưởng</span>
+                      </label>
+                      <label className={styles.checkRow}>
+                        <input
+                          type="checkbox"
+                          checked={config.pages.pdp.show_related}
+                          onChange={(e) => updatePdpPage({ show_related: e.target.checked })}
+                        />
+                        <span>Hiện sản phẩm liên quan</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Cart */}
+                  <div className={styles.subpageCard}>
+                    <h3 className={styles.subpageCardTitle}>Giỏ hàng (/gio-hang)</h3>
+                    <div className={common.field}>
+                      <label htmlFor="pg-cart-layout" className={common.fieldLabel}>
+                        Bố cục giỏ hàng
+                      </label>
+                      <select
+                        id="pg-cart-layout"
+                        className={common.textInput}
+                        value={config.pages.cart.layout}
+                        onChange={(e) =>
+                          updateCartPage({ layout: e.target.value as SiteCartLayout })
+                        }
+                      >
+                        {CART_LAYOUT_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className={common.field}>
+                      <label htmlFor="pg-cart-trust" className={common.fieldLabel}>
+                        Cam kết dưới nút thanh toán
+                      </label>
+                      <textarea
+                        id="pg-cart-trust"
+                        className={common.textArea}
+                        rows={2}
+                        maxLength={240}
+                        value={config.pages.cart.trust_note}
+                        onChange={(e) => updateCartPage({ trust_note: e.target.value })}
+                      />
+                    </div>
+                    <div className={styles.checkStack}>
+                      <label className={styles.checkRow}>
+                        <input
+                          type="checkbox"
+                          checked={config.pages.cart.show_vouchers}
+                          onChange={(e) => updateCartPage({ show_vouchers: e.target.checked })}
+                        />
+                        <span>Hiện khung áp dụng voucher</span>
+                      </label>
+                      <label className={styles.checkRow}>
+                        <input
+                          type="checkbox"
+                          checked={config.pages.cart.show_addons}
+                          onChange={(e) => updateCartPage({ show_addons: e.target.checked })}
+                        />
+                        <span>Gợi ý mua kèm</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Info */}
+                  <div className={styles.subpageCard}>
+                    <h3 className={styles.subpageCardTitle}>Thông tin (/gioi-thieu)</h3>
+                    <div className={common.field}>
+                      <label htmlFor="pg-info-layout" className={common.fieldLabel}>
+                        Bố cục trang thông tin
+                      </label>
+                      <select
+                        id="pg-info-layout"
+                        className={common.textInput}
+                        value={config.pages.info.layout}
+                        onChange={(e) =>
+                          updateInfoPage({ layout: e.target.value as SiteInfoLayout })
+                        }
+                      >
+                        {INFO_LAYOUT_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className={styles.checkStack}>
+                      <label className={styles.checkRow}>
+                        <input
+                          type="checkbox"
+                          checked={config.pages.info.show_factory_profile}
+                          onChange={(e) =>
+                            updateInfoPage({ show_factory_profile: e.target.checked })
+                          }
+                        />
+                        <span>Hồ sơ xưởng sản xuất</span>
+                      </label>
+                      <label className={styles.checkRow}>
+                        <input
+                          type="checkbox"
+                          checked={config.pages.info.show_toc}
+                          onChange={(e) => updateInfoPage({ show_toc: e.target.checked })}
+                        />
+                        <span>Mục lục điều hướng</span>
+                      </label>
+                      <label className={styles.checkRow}>
+                        <input
+                          type="checkbox"
+                          checked={config.pages.info.show_showcase}
+                          onChange={(e) => updateInfoPage({ show_showcase: e.target.checked })}
+                        />
+                        <span>Sản phẩm tiêu biểu cuối trang</span>
+                      </label>
+                    </div>
                   </div>
                 </div>
-                <div className={common.field}>
-                  <label htmlFor="pg-cat-title" className={common.fieldLabel}>
-                    Tiêu đề đầu trang danh sách
-                  </label>
-                  <input
-                    id="pg-cat-title"
-                    type="text"
-                    className={common.textInput}
-                    maxLength={120}
-                    value={config.pages.catalog.intro_title}
-                    onChange={(e) => updateCatalogPage({ intro_title: e.target.value })}
-                    placeholder="Ví dụ: Tủ đồ tối giản"
-                  />
-                </div>
-                <div className={common.field}>
-                  <label htmlFor="pg-cat-sub" className={common.fieldLabel}>
-                    Mô tả ngắn đầu trang danh sách
-                  </label>
-                  <input
-                    id="pg-cat-sub"
-                    type="text"
-                    className={common.textInput}
-                    maxLength={300}
-                    value={config.pages.catalog.intro_subtitle}
-                    onChange={(e) => updateCatalogPage({ intro_subtitle: e.target.value })}
-                  />
-                </div>
-                <div className={styles.checkStack}>
-                  <label className={styles.checkRow}>
-                    <input
-                      type="checkbox"
-                      checked={config.pages.catalog.show_filters}
-                      onChange={(e) => updateCatalogPage({ show_filters: e.target.checked })}
-                    />
-                    <span>Hiển thị bộ lọc danh mục</span>
-                  </label>
-                  <label className={styles.checkRow}>
-                    <input
-                      type="checkbox"
-                      checked={config.pages.catalog.show_search}
-                      onChange={(e) => updateCatalogPage({ show_search: e.target.checked })}
-                    />
-                    <span>Hiển thị ô tìm kiếm trong trang danh sách</span>
-                  </label>
-                  <label className={styles.checkRow}>
-                    <input
-                      type="checkbox"
-                      checked={config.pages.catalog.show_sku_matrix}
-                      onChange={(e) => updateCatalogPage({ show_sku_matrix: e.target.checked })}
-                    />
-                    <span>Bật chế độ xem bảng ma trận SKU nhiều biến thể</span>
-                  </label>
-                </div>
               </div>
+            </details>
+          </div>
 
-              {/* PDP page */}
-              <div className={styles.subpageCard}>
-                <h3 className={styles.subpageCardTitle}>Trang chi tiết sản phẩm (PDP)</h3>
-                <div className={styles.fields2}>
-                  <div className={common.field}>
-                    <label htmlFor="pg-pdp-layout" className={common.fieldLabel}>
-                      Bố cục PDP
-                    </label>
-                    <select
-                      id="pg-pdp-layout"
-                      className={common.textInput}
-                      value={config.pages.pdp.layout}
-                      onChange={(e) => updatePdpPage({ layout: e.target.value as SitePdpLayout })}
-                    >
-                      {PDP_LAYOUT_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className={common.field}>
-                    <label htmlFor="pg-pdp-gal" className={common.fieldLabel}>
-                      Kiểu bộ ảnh sản phẩm
-                    </label>
-                    <select
-                      id="pg-pdp-gal"
-                      className={common.textInput}
-                      value={config.pages.pdp.gallery_style}
-                      onChange={(e) =>
-                        updatePdpPage({ gallery_style: e.target.value as SitePdpGalleryStyle })
-                      }
-                    >
-                      {PDP_GALLERY_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-                <div className={styles.checkStack}>
-                  <label className={styles.checkRow}>
-                    <input
-                      type="checkbox"
-                      checked={config.pages.pdp.show_vouchers}
-                      onChange={(e) => updatePdpPage({ show_vouchers: e.target.checked })}
-                    />
-                    <span>Hiển thị mã giảm giá của gian hàng</span>
-                  </label>
-                  <label className={styles.checkRow}>
-                    <input
-                      type="checkbox"
-                      checked={config.pages.pdp.show_sku_table}
-                      onChange={(e) => updatePdpPage({ show_sku_table: e.target.checked })}
-                    />
-                    <span>Hiển thị bảng ma trận tồn kho từng SKU màu/size</span>
-                  </label>
-                  <label className={styles.checkRow}>
-                    <input
-                      type="checkbox"
-                      checked={config.pages.pdp.show_story_band}
-                      onChange={(e) => updatePdpPage({ show_story_band: e.target.checked })}
-                    />
-                    <span>Hiển thị dải thông số chất liệu &amp; xưởng sản xuất</span>
-                  </label>
-                  <label className={styles.checkRow}>
-                    <input
-                      type="checkbox"
-                      checked={config.pages.pdp.show_related}
-                      onChange={(e) => updatePdpPage({ show_related: e.target.checked })}
-                    />
-                    <span>Hiển thị sản phẩm liên quan cuối trang</span>
-                  </label>
-                </div>
-              </div>
-
-              {/* Cart page */}
-              <div className={styles.subpageCard}>
-                <h3 className={styles.subpageCardTitle}>Trang giỏ hàng (/gio-hang)</h3>
-                <div className={common.field}>
-                  <label htmlFor="pg-cart-layout" className={common.fieldLabel}>
-                    Bố cục giỏ hàng
-                  </label>
-                  <select
-                    id="pg-cart-layout"
-                    className={common.textInput}
-                    value={config.pages.cart.layout}
-                    onChange={(e) => updateCartPage({ layout: e.target.value as SiteCartLayout })}
-                  >
-                    {CART_LAYOUT_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className={common.field}>
-                  <label htmlFor="pg-cart-trust" className={common.fieldLabel}>
-                    Ghi chú cam kết dưới nút thanh toán (tối đa 240 ký tự)
-                  </label>
-                  <textarea
-                    id="pg-cart-trust"
-                    className={common.textArea}
-                    rows={2}
-                    maxLength={240}
-                    value={config.pages.cart.trust_note}
-                    onChange={(e) => updateCartPage({ trust_note: e.target.value })}
-                    placeholder="Ví dụ: Đồng kiểm COD trước thanh toán · Đổi size 45 ngày tận nơi"
-                  />
-                </div>
-                <div className={styles.checkStack}>
-                  <label className={styles.checkRow}>
-                    <input
-                      type="checkbox"
-                      checked={config.pages.cart.show_vouchers}
-                      onChange={(e) => updateCartPage({ show_vouchers: e.target.checked })}
-                    />
-                    <span>Hiển thị khung áp dụng mã giảm giá gian hàng</span>
-                  </label>
-                  <label className={styles.checkRow}>
-                    <input
-                      type="checkbox"
-                      checked={config.pages.cart.show_addons}
-                      onChange={(e) => updateCartPage({ show_addons: e.target.checked })}
-                    />
-                    <span>Gợi ý sản phẩm mua kèm trong giỏ hàng</span>
-                  </label>
-                </div>
-              </div>
-
-              {/* Info page */}
-              <div className={styles.subpageCard}>
-                <h3 className={styles.subpageCardTitle}>
-                  Trang thông tin &amp; chính sách (/gioi-thieu)
-                </h3>
-                <div className={common.field}>
-                  <label htmlFor="pg-info-layout" className={common.fieldLabel}>
-                    Bố cục trang thông tin
-                  </label>
-                  <select
-                    id="pg-info-layout"
-                    className={common.textInput}
-                    value={config.pages.info.layout}
-                    onChange={(e) => updateInfoPage({ layout: e.target.value as SiteInfoLayout })}
-                  >
-                    {INFO_LAYOUT_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className={styles.checkStack}>
-                  <label className={styles.checkRow}>
-                    <input
-                      type="checkbox"
-                      checked={config.pages.info.show_factory_profile}
-                      onChange={(e) => updateInfoPage({ show_factory_profile: e.target.checked })}
-                    />
-                    <span>Hiển thị hồ sơ xưởng sản xuất &amp; quy chuẩn chất liệu</span>
-                  </label>
-                  <label className={styles.checkRow}>
-                    <input
-                      type="checkbox"
-                      checked={config.pages.info.show_toc}
-                      onChange={(e) => updateInfoPage({ show_toc: e.target.checked })}
-                    />
-                    <span>Hiển thị thanh mục lục điều hướng bên trái</span>
-                  </label>
-                  <label className={styles.checkRow}>
-                    <input
-                      type="checkbox"
-                      checked={config.pages.info.show_showcase}
-                      onChange={(e) => updateInfoPage({ show_showcase: e.target.checked })}
-                    />
-                    <span>Hiển thị sản phẩm tiêu biểu ở cuối trang thông tin</span>
-                  </label>
-                </div>
-              </div>
-            </div>
-          </section>
+          {renderLivePreviewPane()}
         </div>
       )}
 
-      {/* TAB 3: Visual Section + Block Editor across all 5 pages */}
+      {/* TAB 3: Studio Split — Section & Block Inspector (36%) + Live Preview (64%) */}
       {activeTab === "sections" && (
-        <div className={styles.fieldStack}>
-          <div
-            className={styles.sectionPageBar}
-            role="tablist"
-            aria-label="Chọn trang cần chỉnh khối"
-          >
-            {TEMPLATE_PAGE_TABS.map((tab) => {
-              const count = getPageSections(config, tab.key).length;
-              const active = sectionPageKey === tab.key;
-              return (
-                <button
-                  key={tab.key}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  className={`${styles.pageSwitchBtn} ${active ? styles.pageSwitchBtnActive : ""}`}
-                  onClick={() => {
-                    setSectionPageKey(tab.key);
-                    const nextSecs = getPageSections(config, tab.key);
-                    setSelectedSectionId(nextSecs[0]?.id ?? null);
-                  }}
-                >
-                  <span>{tab.label}</span>
-                  <span className={styles.pageCountBadge}>
-                    {count}/{tab.maxSections}
+        <div className={styles.studioWorkspace}>
+          <div className={styles.inspectorCol}>
+            <details className={common.accordion} open>
+              <summary className={common.accordionSummary}>
+                <span className={styles.inspectorAccordionTitle}>
+                  <span>
+                    Khối trang ({activePageSections.length}/{activePageMeta.maxSections})
                   </span>
-                </button>
-              );
-            })}
-          </div>
-
-          <div className={styles.sectionsGrid}>
-            <section
-              className={common.card}
-              aria-label={`Danh sách khối của ${activePageMeta.label}`}
-            >
-              <div className={common.cardHeader}>
-                <h2 className={common.cardTitle}>
-                  {activePageMeta.label} ({activePageSections.length}/{activePageMeta.maxSections})
-                </h2>
-                <span className={common.cardMeta}>
-                  Tổng: {totalSectionsCount}/{MAX_TOTAL_SECTIONS}
+                  <span className={common.accordionMeta}>
+                    Tổng {totalSectionsCount}/{MAX_TOTAL_SECTIONS}
+                  </span>
                 </span>
-              </div>
+                <span className={common.accordionChevron} aria-hidden="true">
+                  <IconChevronDown size={16} />
+                </span>
+              </summary>
 
-              <div className={styles.addSectionBar}>
-                <select
-                  className={common.textInput}
-                  value={newSectionType}
-                  onChange={(e) => setNewSectionType(e.target.value as SiteSectionV2Type)}
-                  aria-label="Chọn loại khối nội dung muốn thêm"
+              <div className={common.accordionBody}>
+                <div
+                  className={styles.sectionPageBar}
+                  role="tablist"
+                  aria-label="Chọn trang cần chỉnh khối"
                 >
-                  {SECTION_V2_TYPE_ORDER.map((t) => (
-                    <option key={t} value={t}>
-                      {SECTION_V2_TYPE_META[t].label}
-                    </option>
-                  ))}
-                </select>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  shape="app"
-                  disabled={
-                    activePageSections.length >= activePageMeta.maxSections ||
-                    totalSectionsCount >= MAX_TOTAL_SECTIONS
-                  }
-                  onClick={handleAddSection}
-                >
-                  <IconPlus size={14} />
-                  <span>Thêm khối</span>
-                </Button>
-              </div>
-
-              {activePageSections.length === 0 ? (
-                <div className={common.inlineEmpty}>
-                  {sectionPageKey === "home"
-                    ? 'Chưa có khối nội dung nào trên Trang chủ. Hãy chọn loại khối ở trên và bấm "Thêm khối".'
-                    : `${activePageMeta.label} hiện chỉ dùng bố cục chính của mẫu. Bạn có thể thêm khối bổ sung (tối đa ${activePageMeta.maxSections}) tại đây.`}
-                </div>
-              ) : (
-                <div className={styles.sectionList}>
-                  {activePageSections.map((sec, idx) => {
-                    const isSelected = selectedSection?.id === sec.id;
-                    const blockCount = sec.blocks?.length ?? 0;
-                    const variantLabel = sec.variant
-                      ? (SECTION_VARIANT_LABELS[sec.variant] ?? sec.variant)
-                      : "";
+                  {TEMPLATE_PAGE_TABS.map((tab) => {
+                    const count = getPageSections(config, tab.key).length;
+                    const active = sectionPageKey === tab.key;
                     return (
-                      <div
-                        key={sec.id}
-                        className={`${styles.sectionItem} ${isSelected ? styles.sectionItemActive : ""}`}
+                      <button
+                        key={tab.key}
+                        type="button"
+                        role="tab"
+                        aria-selected={active}
+                        className={`${styles.pageSwitchBtn} ${active ? styles.pageSwitchBtnActive : ""}`}
+                        onClick={() => {
+                          setSectionPageKey(tab.key);
+                          setPreviewPage(tab.key);
+                          const nextSecs = getPageSections(config, tab.key);
+                          setSelectedSectionId(nextSecs[0]?.id ?? null);
+                        }}
                       >
-                        <div className={styles.sectionItemHead}>
-                          <button
-                            type="button"
-                            className={styles.sectionSelectBtn}
-                            onClick={() => setSelectedSectionId(sec.id)}
-                          >
-                            <span className={styles.sectionItemTitle}>
-                              {getSectionHeadingPreview(sec)}
-                            </span>
-                            <span className={styles.sectionItemMeta}>
-                              {SECTION_V2_TYPE_META[sec.type].label}
-                              {variantLabel ? ` · ${variantLabel}` : ""}
-                              {blockCount > 0 ? ` · ${blockCount} block` : ""} ·{" "}
-                              {sec.visible ? "Đang bật" : "Đang ẩn"}
-                            </span>
-                          </button>
-                        </div>
-
-                        <div className={styles.sectionItemActions}>
-                          <div className={styles.sectionMoveGroup}>
-                            <button
-                              type="button"
-                              className={styles.miniBtn}
-                              disabled={idx === 0}
-                              onClick={() => handleMoveSection(idx, -1)}
-                              aria-label="Di chuyển khối lên trên"
-                            >
-                              Lên
-                            </button>
-                            <button
-                              type="button"
-                              className={styles.miniBtn}
-                              disabled={idx === activePageSections.length - 1}
-                              onClick={() => handleMoveSection(idx, 1)}
-                              aria-label="Di chuyển khối xuống dưới"
-                            >
-                              Xuống
-                            </button>
-                            <button
-                              type="button"
-                              className={styles.miniBtn}
-                              onClick={() =>
-                                updateActivePageSections((prev) =>
-                                  prev.map((item) =>
-                                    item.id === sec.id ? { ...item, visible: !item.visible } : item
-                                  )
-                                )
-                              }
-                            >
-                              {sec.visible ? "Ẩn" : "Hiện"}
-                            </button>
-                          </div>
-
-                          <button
-                            type="button"
-                            className={`${styles.miniBtn} ${styles.miniBtnDanger}`}
-                            onClick={() => handleDeleteSection(sec.id)}
-                          >
-                            Xóa
-                          </button>
-                        </div>
-                      </div>
+                        <span>{tab.shortLabel}</span>
+                        <span className={styles.pageCountBadge}>{count}</span>
+                      </button>
                     );
                   })}
                 </div>
-              )}
-            </section>
+
+                <div className={styles.addSectionBar}>
+                  <select
+                    className={common.textInput}
+                    value={newSectionType}
+                    onChange={(e) => setNewSectionType(e.target.value as SiteSectionV2Type)}
+                    aria-label="Chọn loại khối nội dung muốn thêm"
+                  >
+                    {SECTION_V2_TYPE_ORDER.map((t) => (
+                      <option key={t} value={t}>
+                        {SECTION_V2_TYPE_META[t].label}
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    shape="app"
+                    disabled={
+                      activePageSections.length >= activePageMeta.maxSections ||
+                      totalSectionsCount >= MAX_TOTAL_SECTIONS
+                    }
+                    onClick={handleAddSection}
+                  >
+                    <IconPlus size={14} />
+                    <span>Thêm</span>
+                  </Button>
+                </div>
+
+                {activePageSections.length === 0 ? (
+                  <div className={common.inlineEmpty}>
+                    Chưa có khối nội dung cho {activePageMeta.label}.
+                  </div>
+                ) : (
+                  <div className={styles.sectionList}>
+                    {activePageSections.map((sec, idx) => {
+                      const isSelected = selectedSection?.id === sec.id;
+                      const blockCount = sec.blocks?.length ?? 0;
+                      const variantLabel = sec.variant
+                        ? (SECTION_VARIANT_LABELS[sec.variant] ?? sec.variant)
+                        : "";
+                      return (
+                        <div
+                          key={sec.id}
+                          className={`${styles.sectionItem} ${isSelected ? styles.sectionItemActive : ""}`}
+                        >
+                          <div className={styles.sectionItemHead}>
+                            <button
+                              type="button"
+                              className={styles.sectionSelectBtn}
+                              onClick={() => setSelectedSectionId(sec.id)}
+                            >
+                              <span className={styles.sectionItemTitle}>
+                                {getSectionHeadingPreview(sec)}
+                              </span>
+                              <span className={styles.sectionItemMeta}>
+                                {SECTION_V2_TYPE_META[sec.type].label}
+                                {variantLabel ? `, ${variantLabel}` : ""}
+                                {blockCount > 0 ? `, ${blockCount} block` : ""},{" "}
+                                {sec.visible ? "Hiện" : "Ẩn"}
+                              </span>
+                            </button>
+                          </div>
+
+                          <div className={styles.sectionItemActions}>
+                            <div className={styles.sectionMoveGroup}>
+                              <button
+                                type="button"
+                                className={styles.miniBtn}
+                                disabled={idx === 0}
+                                onClick={() => handleMoveSection(idx, -1)}
+                                aria-label="Di chuyển khối lên trên"
+                              >
+                                Lên
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.miniBtn}
+                                disabled={idx === activePageSections.length - 1}
+                                onClick={() => handleMoveSection(idx, 1)}
+                                aria-label="Di chuyển khối xuống dưới"
+                              >
+                                Xuống
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.miniBtn}
+                                onClick={() =>
+                                  updateActivePageSections((prev) =>
+                                    prev.map((item) =>
+                                      item.id === sec.id
+                                        ? { ...item, visible: !item.visible }
+                                        : item
+                                    )
+                                  )
+                                }
+                              >
+                                {sec.visible ? "Ẩn" : "Hiện"}
+                              </button>
+                            </div>
+
+                            <button
+                              type="button"
+                              className={`${styles.miniBtn} ${styles.miniBtnDanger}`}
+                              onClick={() => handleDeleteSection(sec.id)}
+                            >
+                              Xóa
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </details>
 
             <SectionEditorPanel
               section={selectedSection}
@@ -1850,10 +1812,12 @@ export function SellerSiteEditorClient({
               }
             />
           </div>
+
+          {renderLivePreviewPane()}
         </div>
       )}
 
-      {/* TAB 4: Line-Aware JSON v2 Code Editor + Live Preview */}
+      {/* TAB 4: Line-Aware JSON v2 Code Editor + Live Preview (>= 60%) */}
       {activeTab === "code" && (
         <TemplateCodeEditorTab
           config={config}
@@ -1869,7 +1833,7 @@ export function SellerSiteEditorClient({
         />
       )}
 
-      {/* TAB 5: Domains (intact) */}
+      {/* TAB 5: Domains */}
       {activeTab === "domains" && (
         <SellerSiteDomainsSection
           site={site}
@@ -1887,16 +1851,10 @@ export function SellerSiteEditorClient({
       {activeTab === "versions" && (
         <section className={common.card} aria-label="Lịch sử phiên bản đã xuất bản">
           <div className={common.cardHeader}>
-            <div>
-              <h2 className={common.cardTitle}>Lịch sử phiên bản &amp; Khôi phục</h2>
-              <p className={common.cardMeta}>
-                Mỗi lần xuất bản lưu một bản chụp bất biến (bao gồm mẫu, bố cục 5 trang và toàn bộ
-                block). Bạn có thể quay về bất kỳ phiên bản cũ nào bất cứ lúc nào.
-              </p>
-            </div>
+            <h2 className={common.cardTitle}>Lịch sử phiên bản</h2>
             {site && (
               <Link href="/seller/site/xem-truoc" className={common.cardLink}>
-                Xem trước bản nháp hiện tại
+                Xem trước bản nháp
               </Link>
             )}
           </div>
@@ -1922,8 +1880,7 @@ export function SellerSiteEditorClient({
 
           {versions.length === 0 ? (
             <div className={common.inlineEmpty}>
-              Chưa có phiên bản nào được xuất bản. Hãy lưu bản nháp và bấm &ldquo;Xuất bản&rdquo; để
-              tạo phiên bản v1.
+              Chưa có phiên bản xuất bản. Lưu nháp và bấm &ldquo;Xuất bản&rdquo; để tạo v1.
             </div>
           ) : (
             <>
@@ -1932,8 +1889,8 @@ export function SellerSiteEditorClient({
                   <thead>
                     <tr>
                       <th>Phiên bản</th>
-                      <th>Mẫu giao diện</th>
-                      <th>Thời gian xuất bản</th>
+                      <th>Mẫu</th>
+                      <th>Thời gian</th>
                       <th>Ghi chú</th>
                       <th>Trạng thái</th>
                       <th className={common.numCol}>Thao tác</th>
@@ -1954,26 +1911,30 @@ export function SellerSiteEditorClient({
                             <span className={styles.templateTag}>{tplLabel}</span>
                           </td>
                           <td>{ver.created_at ? formatDateTimeVi(ver.created_at) : "Chưa rõ"}</td>
-                          <td>{ver.note || "Xuất bản cập nhật giao diện"}</td>
+                          <td>{ver.note || "Xuất bản cập nhật"}</td>
                           <td>
                             <span className={`${common.pill} ${isActive ? common.pillPos : ""}`}>
-                              {isActive ? "Đang hiển thị" : "Bản lưu trữ"}
+                              {isActive ? "Đang hiển thị" : "Lưu trữ"}
                             </span>
                           </td>
                           <td className={common.numCol}>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              shape="app"
-                              disabled={isSuspended || isRolling || Boolean(rollingBackId)}
-                              onClick={() => void handleRollback(ver)}
+                            <div
+                              className={`${common.rowHoverActions} ${isRolling ? common.rowHoverActionsVisible : ""}`}
                             >
-                              {isRolling
-                                ? "Đang khôi phục..."
-                                : isActive
-                                  ? "Đưa về nháp & phát hành lại"
-                                  : "Khôi phục phiên bản này"}
-                            </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                shape="app"
+                                disabled={isSuspended || isRolling || Boolean(rollingBackId)}
+                                onClick={() => void handleRollback(ver)}
+                              >
+                                {isRolling
+                                  ? "Đang khôi phục..."
+                                  : isActive
+                                    ? "Phát hành lại"
+                                    : "Khôi phục"}
+                              </Button>
+                            </div>
                           </td>
                         </tr>
                       );
@@ -1995,14 +1956,14 @@ export function SellerSiteEditorClient({
                           <span className={styles.versionNum}>Phiên bản v{ver.version_number}</span>
                           <span className={common.cellSub}>
                             {tplLabel}
-                            {ver.created_at ? ` · ${formatDateTimeVi(ver.created_at)}` : ""}
+                            {ver.created_at ? `, ${formatDateTimeVi(ver.created_at)}` : ""}
                           </span>
                         </div>
                         <span className={`${common.pill} ${isActive ? common.pillPos : ""}`}>
-                          {isActive ? "Đang hiển thị" : "Bản lưu trữ"}
+                          {isActive ? "Đang hiển thị" : "Lưu trữ"}
                         </span>
                       </div>
-                      <p className={common.cardMeta}>{ver.note || "Xuất bản cập nhật giao diện"}</p>
+                      <p className={common.cardMeta}>{ver.note || "Xuất bản cập nhật"}</p>
                       <div>
                         <Button
                           variant="outline"
@@ -2011,7 +1972,7 @@ export function SellerSiteEditorClient({
                           disabled={isSuspended || isRolling || Boolean(rollingBackId)}
                           onClick={() => void handleRollback(ver)}
                         >
-                          {isRolling ? "Đang khôi phục..." : "Khôi phục phiên bản này"}
+                          {isRolling ? "Đang khôi phục..." : "Khôi phục"}
                         </Button>
                       </div>
                     </div>

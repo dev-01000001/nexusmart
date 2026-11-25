@@ -441,12 +441,7 @@ export function SellerSiteDomainsSection({
       {/* Section A: Địa chỉ mặc định */}
       <section className={common.card} aria-label="Địa chỉ mặc định của cửa hàng">
         <div className={common.cardHeader}>
-          <div>
-            <h2 className={common.cardTitle}>Địa chỉ mặc định</h2>
-            <p className={common.cardMeta}>
-              Địa chỉ cửa hàng được NexusMart cấp sẵn theo tên miền phụ bạn đã chọn.
-            </p>
-          </div>
+          <h2 className={common.cardTitle}>Địa chỉ mặc định</h2>
           <span className={`${common.pill} ${getToneClass(siteStatusMeta.tone)}`}>
             {siteStatusMeta.label}
           </span>
@@ -505,12 +500,7 @@ export function SellerSiteDomainsSection({
       {/* Section B: Tên miền riêng */}
       <section className={common.card} aria-label="Quản lý tên miền riêng">
         <div className={common.cardHeader}>
-          <div>
-            <h2 className={common.cardTitle}>Tên miền riêng</h2>
-            <p className={common.cardMeta}>
-              Gắn tên miền thương hiệu của riêng bạn để khách truy cập trực tiếp vào cửa hàng.
-            </p>
-          </div>
+          <h2 className={common.cardTitle}>Tên miền riêng</h2>
         </div>
 
         {domainsError && (

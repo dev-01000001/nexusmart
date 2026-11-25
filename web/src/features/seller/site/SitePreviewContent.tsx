@@ -78,7 +78,7 @@ export function SitePreviewContent({
                   <div className={styles.cartPreviewItemBody}>
                     <div className={styles.cartPreviewItemName}>{item.name}</div>
                     <div className={styles.cartPreviewItemMeta}>
-                      {item.colors[0]?.name || "Mặc định"} · Size {item.sizes[0] || "M"} · SL: {qty}
+                      {item.colors[0]?.name || "Mặc định"}, Size {item.sizes[0] || "M"}, SL: {qty}
                     </div>
                   </div>
                   <div className={styles.cartPreviewItemPrice}>{formatVnd(item.price * qty)}</div>
@@ -272,6 +272,7 @@ export function SitePreviewContent({
 
       {page === "catalog" && (
         <SiteCatalogView
+          key={`${config.pages.catalog.layout}:${config.pages.catalog.show_sku_matrix}`}
           brandName={brandName}
           products={products}
           categories={categories}

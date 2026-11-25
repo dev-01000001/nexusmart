@@ -2,6 +2,7 @@
 // Backend remains the sole source of truth for prices, stock, totals, and voucher eligibility.
 import type { Product } from "@/data/products";
 import type { Shop } from "@/data/shops";
+import { formatVnd } from "../../lib/format.ts";
 import type { GwCartItem, GwCartShopGroup, GwVoucher } from "./types";
 
 export interface EnrichedCartItem {
@@ -91,10 +92,15 @@ export function formatVoucherHeadline(v: GwVoucher): string {
   return `Giảm ${v.value_vnd.toLocaleString("vi-VN")}₫`;
 }
 
-export function formatVoucherIneligibleReason(v: GwVoucher, currentAmount: number): string | null {
+export function formatVoucherIneligibleReason(
+  v: GwVoucher,
+  currentAmount: number,
+  nowMs?: number
+): string | null {
   if (!v.is_active) return "Mã ưu đãi hiện không còn hiệu lực.";
   if (v.remaining_quota <= 0) return "Mã ưu đãi đã hết lượt sử dụng.";
-  if (v.ends_at && Date.parse(v.ends_at) < Date.now()) return "Mã ưu đãi đã hết hạn sử dụng.";
+  const referenceNow = nowMs ?? Date.now();
+  if (v.ends_at && Date.parse(v.ends_at) < referenceNow) return "Mã ưu đãi đã hết hạn sử dụng.";
   if (v.min_order_vnd > 0 && currentAmount < v.min_order_vnd) {
     const missing = v.min_order_vnd - currentAmount;
     return `Mua thêm ${missing.toLocaleString("vi-VN")}₫ để đạt mức tối thiểu ${v.min_order_vnd.toLocaleString("vi-VN")}₫.`;
@@ -109,6 +115,42 @@ export function formatVoucherIneligibleReason(v: GwVoucher, currentAmount: numbe
   if (raw.includes("expired")) return "Mã ưu đãi đã hết hạn sử dụng.";
   if (raw.includes("inactive")) return "Mã ưu đãi hiện không còn hiệu lực.";
   return null;
+}
+
+export function splitVariantParts(label: string): string[] {
+  return label
+    .split(/\s*·\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+export function shortVoucherHint(v: GwVoucher, currentAmount: number, nowMs?: number): string {
+  if (!v.is_active) return "Hết hiệu lực";
+  if (v.remaining_quota <= 0) return "Hết lượt";
+  const referenceNow = nowMs ?? Date.now();
+  if (v.ends_at && Date.parse(v.ends_at) < referenceNow) return "Hết hạn";
+  if (v.min_order_vnd > 0 && currentAmount < v.min_order_vnd) {
+    return `Thêm ${formatVnd(v.min_order_vnd - currentAmount)}`;
+  }
+  const raw = (v.ineligible_reason ?? "").toLowerCase();
+  if (raw.includes("limit") || raw.includes("per-user")) return "Đã dùng";
+  if (raw.includes("quota") || raw.includes("budget")) return "Hết lượt";
+  if (raw.includes("expired")) return "Hết hạn";
+  if (raw.includes("inactive")) return "Hết hiệu lực";
+  return "Chưa đủ";
+}
+
+export interface CheckoutPreviewKeyInput {
+  shopId: string;
+  rawSubtotal: number;
+  cartItemsSignature: string;
+  quotedShippingFee: number | null;
+  voucherId: string | null | undefined;
+  flashKey: string;
+}
+
+export function buildCheckoutPreviewKey(input: CheckoutPreviewKeyInput): string {
+  return `${input.shopId}:${input.rawSubtotal}:${input.cartItemsSignature}:${input.quotedShippingFee ?? "none"}:${input.voucherId || ""}:${input.flashKey}`;
 }
 
 function foldVietnamese(input: string): string {

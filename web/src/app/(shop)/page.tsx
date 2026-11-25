@@ -1,9 +1,16 @@
+import type { Metadata } from "next";
 import React from "react";
 import { directoryContext, loadSiteDirectory } from "@/features/platform/directory.server";
 import { parseDirectoryPage } from "@/features/platform/directoryModel";
 import { PlatformHome } from "@/features/platform/PlatformHome";
 
 export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = {
+  title: {
+    absolute: "NexusMart: cửa hàng mang tên bạn",
+  },
+};
 
 interface HomePageProps {
   searchParams?: Promise<{ trang?: string | string[] }>;

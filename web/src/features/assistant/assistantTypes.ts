@@ -17,8 +17,6 @@ export interface SiteAssistantWidgetProps {
   shopId: string;
   brandName: string;
   productContext?: SiteAssistantProductContext;
-  /** Called after successful handoff to a live shop chat conversation. */
-  onHandoffToChat?: (conversationId: string) => void;
   defaultOpen?: boolean;
   offsetBottomPx?: number;
   className?: string;

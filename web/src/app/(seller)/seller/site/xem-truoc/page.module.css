@@ -35,7 +35,7 @@
   border-radius: 999px;
   background: var(--band-dark-elevated);
   color: var(--band-dark-ink);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -67,10 +67,10 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 28px;
+  height: 30px;
   padding: 0 10px;
   border-radius: 4px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--band-dark-muted);
   white-space: nowrap;

@@ -56,7 +56,7 @@ export default async function SellerSiteDraftPreviewPage({
         <div className={styles.previewBanner}>
           <div className={styles.bannerLeft}>
             <span className={styles.bannerTitle}>
-              Chế độ xem trước bản nháp — chưa hiển thị công khai
+              Chế độ xem trước bản nháp, chưa hiển thị công khai
             </span>
           </div>
           <div className={styles.bannerActions}>
@@ -86,7 +86,7 @@ export default async function SellerSiteDraftPreviewPage({
         <div className={styles.previewBanner}>
           <div className={styles.bannerLeft}>
             <span className={styles.bannerTitle}>
-              Chế độ xem trước bản nháp — chưa hiển thị công khai
+              Chế độ xem trước bản nháp, chưa hiển thị công khai
             </span>
           </div>
           <div className={styles.bannerActions}>
@@ -137,10 +137,10 @@ export default async function SellerSiteDraftPreviewPage({
         <div className={styles.bannerLeft}>
           <span className={styles.bannerBadge}>{statusMeta.label}</span>
           <span className={styles.bannerTitle}>
-            Chế độ xem trước bản nháp — chưa hiển thị công khai
+            Chế độ xem trước bản nháp, chưa hiển thị công khai
           </span>
           <span className={styles.bannerHost}>
-            ({hostDisplay} · Mẫu: {draftConfig.template_id})
+            ({hostDisplay}, mẫu: {draftConfig.template_id})
           </span>
         </div>
 

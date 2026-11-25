@@ -13,11 +13,11 @@ export const ALLOWED_SITE_FONTS = [
 export type SiteFontFamily = (typeof ALLOWED_SITE_FONTS)[number];
 
 export const SITE_FONT_LABELS: Record<SiteFontFamily, string> = {
-  "work-sans": "Work Sans",
-  "be-vietnam-pro": "Be Vietnam Pro",
-  inter: "Inter",
-  "ibm-plex-sans": "IBM Plex Sans",
-  "plus-jakarta-sans": "Plus Jakarta Sans",
+  "work-sans": "Archivo",
+  "be-vietnam-pro": "Archivo",
+  inter: "Archivo",
+  "ibm-plex-sans": "Archivo",
+  "plus-jakarta-sans": "Archivo",
 };
 
 export const ALLOWED_SITE_SECTION_TYPES = [

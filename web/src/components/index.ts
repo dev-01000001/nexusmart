@@ -4,3 +4,6 @@ export * from "./Price";
 export * from "./ProductCard";
 export * from "./StateView";
 export * from "./SvgChart";
+export * from "./Reveal";
+export * from "./PageTransition";
+export * from "./modalFocus";

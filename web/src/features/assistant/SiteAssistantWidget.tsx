@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { IconBag, IconChat, IconClose, IconSend, IconSpark } from "@/components/Icons";
+import { getFocusableElements, hasOpenModal } from "@/components/modalFocus";
 import { useSession } from "@/components/SessionProvider";
 import { useStore } from "@/context/StoreContext";
 import { ApiError, api } from "@/lib/api";
@@ -28,6 +29,15 @@ interface HandoffApiResponse {
   conversation_id: string;
   summary?: string;
   estimated_response?: string;
+}
+
+export interface SiteAssistantWidgetComponentProps extends SiteAssistantWidgetProps {
+  /** Render inside SiteSupportDock without a standalone fixed launcher. */
+  embedded?: boolean;
+  /** Whether the embedded panel is currently visible (allows preserving history/stream when hidden). */
+  active?: boolean;
+  /** Invoked when user closes the panel in embedded mode. */
+  onClose?: () => void;
 }
 
 function makeMessageId(prefix: string): string {
@@ -101,16 +111,18 @@ export function SiteAssistantWidget({
   shopId,
   brandName,
   productContext,
-  onHandoffToChat,
   defaultOpen = false,
   offsetBottomPx = 76,
   className,
-}: SiteAssistantWidgetProps) {
+  embedded = false,
+  active = true,
+  onClose,
+}: SiteAssistantWidgetComponentProps) {
   const pathname = usePathname();
   const { isAuthenticated } = useSession();
   const { addToCart, showToast } = useStore();
 
-  const [open, setOpen] = useState(defaultOpen);
+  const [open, setOpen] = useState(embedded ? true : defaultOpen);
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -122,8 +134,22 @@ export function SiteAssistantWidget({
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const launcherRef = useRef<HTMLButtonElement | null>(null);
+  const wasOpenRef = useRef(false);
+  const restoreFocusOnCloseRef = useRef(true);
   const lastShopIdRef = useRef(shopId);
   const conversationIdRef = useRef<string>("");
+
+  const effectiveOpen = embedded ? active : open;
+
+  const handleClose = useCallback(() => {
+    if (onClose) {
+      onClose();
+    } else {
+      setOpen(false);
+    }
+  }, [onClose]);
 
   const loginHref = useMemo(() => {
     const nextPath = pathname && pathname.startsWith("/") ? pathname : "/";
@@ -133,17 +159,13 @@ export function SiteAssistantWidget({
   const starterPrompts = useMemo(() => {
     if (productContext?.name) {
       return [
-        `Tư vấn chọn size và chất liệu cho ${productContext.name}`,
-        "Gợi ý áo mặc mát dưới 300k",
-        "Chính sách đổi trả của cửa hàng",
-        "Kiểm tra đơn hàng gần nhất của tôi",
+        `Chọn size cho ${productContext.name}`,
+        "Áo mặc mát dưới 300k",
+        "Chính sách đổi trả",
+        "Kiểm tra đơn gần nhất",
       ];
     }
-    return [
-      "Gợi ý áo mặc mát dưới 300k",
-      "Chính sách đổi trả của cửa hàng",
-      "Kiểm tra đơn hàng gần nhất của tôi",
-    ];
+    return ["Áo mặc mát dưới 300k", "Chính sách đổi trả", "Kiểm tra đơn gần nhất"];
   }, [productContext?.name]);
 
   // Reset conversation state if shopId switches across tenant contexts.
@@ -169,31 +191,50 @@ export function SiteAssistantWidget({
 
   // Scroll transcript to latest message/chunk.
   useEffect(() => {
-    if (!open) return;
+    if (!effectiveOpen) return;
     const el = scrollRef.current;
     if (el) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messages, open]);
+  }, [messages, effectiveOpen]);
 
-  // Escape key closes panel.
+  // Escape key closes panel (standalone mode; dock manages Escape when embedded).
   useEffect(() => {
-    if (!open) return;
+    if (!effectiveOpen || embedded) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setOpen(false);
+      if (e.key === "Escape" && !hasOpenModal()) {
+        e.preventDefault();
+        handleClose();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open]);
+  }, [effectiveOpen, embedded, handleClose]);
 
-  // Focus composer when opening panel.
+  // Focus composer when opening panel; restore launcher focus on close in standalone mode.
   useEffect(() => {
-    if (open) {
-      inputRef.current?.focus();
+    if (effectiveOpen) {
+      wasOpenRef.current = true;
+      restoreFocusOnCloseRef.current = true;
+      const input = inputRef.current;
+      if (input && !input.disabled) {
+        input.focus({ preventScroll: true });
+      } else if (panelRef.current) {
+        (getFocusableElements(panelRef.current)[0] ?? panelRef.current).focus({
+          preventScroll: true,
+        });
+      }
+      return;
     }
-  }, [open]);
+    if (wasOpenRef.current) {
+      wasOpenRef.current = false;
+      const shouldRestore = restoreFocusOnCloseRef.current;
+      restoreFocusOnCloseRef.current = true;
+      if (!embedded && shouldRestore && launcherRef.current?.isConnected) {
+        launcherRef.current.focus({ preventScroll: true });
+      }
+    }
+  }, [effectiveOpen, embedded]);
 
   const stopStreaming = useCallback(() => {
     abortRef.current?.abort();
@@ -348,7 +389,7 @@ export function SiteAssistantWidget({
             m.orders?.length ||
             m.pendingCartActions?.length
               ? m.content
-              : "Mình đã tiếp nhận câu hỏi nhưng chưa có nội dung trả lời phù hợp. Bạn thử diễn đạt cụ thể hơn nhé.",
+              : "Chưa có câu trả lời phù hợp. Bạn thử diễn đạt cụ thể hơn nhé.",
         }));
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
@@ -356,14 +397,14 @@ export function SiteAssistantWidget({
             ...m,
             streaming: false,
             toolStatus: null,
-            content: m.content || "Đã dừng phản hồi theo yêu cầu của bạn.",
+            content: m.content || "Đã dừng phản hồi.",
           }));
         } else {
           patchAssistant((m) => ({
             ...m,
             streaming: false,
             toolStatus: null,
-            error: "Không kết nối được tới trợ lý. Bạn kiểm tra mạng và thử lại nhé.",
+            error: "Không kết nối được tới trợ lý. Vui lòng thử lại.",
           }));
         }
       } finally {
@@ -406,18 +447,18 @@ export function SiteAssistantWidget({
       if (result.ok) {
         updateAction({
           status: "added",
-          statusMessage: result.message || "Đã thêm vào giỏ hàng của bạn.",
+          statusMessage: result.message || "Đã thêm vào giỏ hàng.",
         });
       } else if (result.unauthenticated) {
         updateAction({
           status: "pending",
           requiresAuth: true,
-          statusMessage: "Vui lòng đăng nhập để thêm sản phẩm vào giỏ hàng.",
+          statusMessage: "Đăng nhập để thêm sản phẩm vào giỏ.",
         });
       } else {
         updateAction({
           status: "error",
-          statusMessage: result.message || "Chưa thể thêm sản phẩm vào giỏ lúc này.",
+          statusMessage: result.message || "Chưa thể thêm sản phẩm lúc này.",
         });
       }
     },
@@ -478,11 +519,8 @@ export function SiteAssistantWidget({
       });
 
       const conversationId = res.conversation_id;
-      setHandoffSummary(
-        res.summary || "Đã chuyển tóm tắt cuộc trò chuyện sang nhân viên gian hàng."
-      );
+      setHandoffSummary(res.summary || "Đã chuyển tóm tắt sang nhân viên cửa hàng.");
       if (conversationId) {
-        onHandoffToChat?.(conversationId);
         if (typeof window !== "undefined") {
           window.dispatchEvent(
             new CustomEvent("nexusmart:open-chat", {
@@ -490,8 +528,11 @@ export function SiteAssistantWidget({
             })
           );
         }
-        showToast("Đã chuyển cuộc trò chuyện tới nhân viên gian hàng.");
-        setOpen(false);
+        showToast("Đã chuyển cuộc trò chuyện tới nhân viên cửa hàng.");
+        if (!embedded) {
+          restoreFocusOnCloseRef.current = false;
+          setOpen(false);
+        }
       }
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
@@ -500,13 +541,13 @@ export function SiteAssistantWidget({
         const msg =
           err instanceof ApiError
             ? sanitizeAssistantError(err.code, err.message)
-            : "Chưa thể kết nối tới nhân viên lúc này. Bạn có thể mở khung chat góc dưới để nhắn trực tiếp.";
+            : "Chưa kết nối được nhân viên lúc này. Bạn có thể mở mục nhắn tin trực tiếp.";
         setHandoffError(msg);
       }
     } finally {
       setHandoffBusy(false);
     }
-  }, [handoffBusy, isAuthenticated, messages, onHandoffToChat, productContext?.name, showToast]);
+  }, [embedded, handoffBusy, isAuthenticated, messages, productContext?.name, showToast]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -520,14 +561,22 @@ export function SiteAssistantWidget({
     }
   };
 
-  const rootStyle = {
-    "--assistant-offset-bottom": `${Math.max(16, Math.trunc(offsetBottomPx))}px`,
-  } as React.CSSProperties;
+  const rootStyle = embedded
+    ? undefined
+    : ({
+        "--assistant-offset-bottom": `${Math.max(16, Math.trunc(offsetBottomPx))}px`,
+      } as React.CSSProperties);
 
   return (
-    <div className={`${styles.root} ${className ?? ""}`} style={rootStyle} data-ui="site-assistant">
-      {open && (
+    <div
+      className={`${styles.root} ${embedded ? styles.rootEmbedded : ""} ${className ?? ""}`}
+      style={rootStyle}
+      data-ui="site-assistant"
+    >
+      {(embedded || effectiveOpen) && (
         <section
+          ref={panelRef}
+          tabIndex={-1}
           id="site-assistant-panel"
           className={styles.panel}
           role="dialog"
@@ -556,7 +605,7 @@ export function SiteAssistantWidget({
               <button
                 type="button"
                 className={styles.closeBtn}
-                onClick={() => setOpen(false)}
+                onClick={handleClose}
                 aria-label="Đóng khung trợ lý"
               >
                 <IconClose size={16} />
@@ -577,12 +626,9 @@ export function SiteAssistantWidget({
           <div ref={scrollRef} className={styles.transcript} aria-live="polite">
             {messages.length === 0 ? (
               <div className={styles.welcome}>
-                <p className={styles.welcomeTitle}>
-                  Xin chào! Mình có thể giúp gì tại {brandName}?
-                </p>
+                <p className={styles.welcomeTitle}>Hỏi nhanh tại {brandName}</p>
                 <p className={styles.welcomeDesc}>
-                  Hỏi nhanh về sản phẩm phù hợp, chất liệu, chọn size, chính sách đổi trả hoặc tình
-                  trạng đơn hàng của bạn.
+                  Tìm mẫu phù hợp, chọn size, xem chính sách hoặc tra đơn hàng.
                 </p>
                 <div className={styles.starterList}>
                   {starterPrompts.map((prompt) => (
@@ -608,7 +654,7 @@ export function SiteAssistantWidget({
                     {msg.content && <p className={styles.msgText}>{msg.content}</p>}
 
                     {msg.streaming && !msg.content && !msg.toolStatus && (
-                      <p className={styles.statusNote}>Đang soạn câu trả lời...</p>
+                      <p className={styles.statusNote}>Đang soạn trả lời...</p>
                     )}
 
                     {msg.toolStatus && <p className={styles.statusNote}>{msg.toolStatus}</p>}
@@ -622,16 +668,16 @@ export function SiteAssistantWidget({
                           onClick={() => void handleHandoff()}
                           disabled={handoffBusy}
                         >
-                          Gặp nhân viên gian hàng
+                          Gặp nhân viên cửa hàng
                         </button>
                       </div>
                     )}
 
                     {msg.requiresAuthPrompt && !isAuthenticated && (
                       <div className={styles.authNotice}>
-                        <span>Đăng nhập để xem thông tin đơn hàng và thao tác giỏ hàng.</span>
+                        <span>Đăng nhập để xem đơn hàng và thao tác giỏ.</span>
                         <Link href={loginHref} className={styles.authLink}>
-                          Đăng nhập ngay
+                          Đăng nhập
                         </Link>
                       </div>
                     )}
@@ -703,32 +749,31 @@ export function SiteAssistantWidget({
                           <div key={action.id} className={styles.cartConfirmCard}>
                             <div className={styles.cartConfirmHead}>
                               <IconBag size={14} />
-                              <span>Xác nhận thêm vào giỏ hàng</span>
+                              <span>Xác nhận thêm vào giỏ</span>
                             </div>
                             <div className={styles.cartConfirmDetail}>
                               <span className={styles.cartConfirmName}>{action.productName}</span>
                               <span className={styles.cartConfirmMeta}>
-                                {action.variantLabel ? `${action.variantLabel} · ` : ""}
-                                Số lượng: {action.quantity}
-                                {action.priceVnd ? ` · ${formatVnd(action.priceVnd)}` : ""}
+                                {action.variantLabel ? `${action.variantLabel}, ` : ""}
+                                SL: {action.quantity}
+                                {action.priceVnd ? `, ${formatVnd(action.priceVnd)}` : ""}
                               </span>
                             </div>
                             <p className={styles.cartConfirmHint}>
-                              Bạn kiểm tra lại phân loại trước khi thêm. Trợ lý không tự đặt đơn hay
-                              thanh toán.
+                              Kiểm tra phân loại trước khi thêm. Trợ lý không tự đặt đơn.
                             </p>
 
                             {action.status === "added" ? (
                               <div className={styles.cartDoneRow}>
                                 <span className={styles.cartDoneText}>
-                                  {action.statusMessage ?? "Đã thêm vào giỏ hàng."}
+                                  {action.statusMessage ?? "Đã thêm vào giỏ."}
                                 </span>
                                 <Link href="/gio-hang" className={styles.authLink}>
                                   Xem giỏ hàng
                                 </Link>
                               </div>
                             ) : action.status === "dismissed" ? (
-                              <p className={styles.cartDismissedText}>Đã bỏ qua đề xuất này.</p>
+                              <p className={styles.cartDismissedText}>Đã bỏ qua đề xuất.</p>
                             ) : (
                               <>
                                 {action.statusMessage && (
@@ -748,9 +793,7 @@ export function SiteAssistantWidget({
                                     disabled={action.status === "adding"}
                                     onClick={() => void handleConfirmCartAction(msg.id, action)}
                                   >
-                                    {action.status === "adding"
-                                      ? "Đang thêm..."
-                                      : "Xác nhận thêm vào giỏ"}
+                                    {action.status === "adding" ? "Đang thêm..." : "Thêm vào giỏ"}
                                   </button>
                                   <button
                                     type="button"
@@ -825,9 +868,7 @@ export function SiteAssistantWidget({
                       >
                         Chưa đúng
                       </button>
-                      {msg.feedback && (
-                        <span className={styles.feedbackNote}>Cảm ơn phản hồi của bạn.</span>
-                      )}
+                      {msg.feedback && <span className={styles.feedbackNote}>Đã ghi nhận.</span>}
                     </div>
                   )}
                 </div>
@@ -836,7 +877,7 @@ export function SiteAssistantWidget({
 
             {handoffLoginHint && (
               <div className={styles.handoffBanner} role="status">
-                <span>Vui lòng đăng nhập để trao đổi trực tiếp với nhân viên {brandName}.</span>
+                <span>Đăng nhập để nhắn trực tiếp với {brandName}.</span>
                 <Link href={loginHref} className={styles.authLink}>
                   Đăng nhập
                 </Link>
@@ -859,21 +900,21 @@ export function SiteAssistantWidget({
           <footer className={styles.footer}>
             {streaming ? (
               <div className={styles.stopRow}>
-                <span className={styles.streamingHint}>Trợ lý đang trả lời...</span>
+                <span className={styles.streamingHint}>Đang trả lời...</span>
                 <button type="button" className={styles.stopBtn} onClick={stopStreaming}>
-                  Dừng trả lời
+                  Dừng
                 </button>
               </div>
             ) : (
               <div className={styles.handoffStrip}>
-                <span className={styles.disclaimerText}>Gợi ý tự động theo dữ liệu cửa hàng</span>
+                <span className={styles.disclaimerText}>Gợi ý theo dữ liệu cửa hàng</span>
                 <button
                   type="button"
                   className={styles.handoffInlineBtn}
                   onClick={() => void handleHandoff()}
                   disabled={handoffBusy}
                 >
-                  {handoffBusy ? "Đang kết nối..." : "Gặp nhân viên gian hàng"}
+                  {handoffBusy ? "Đang kết nối..." : "Gặp nhân viên"}
                 </button>
               </div>
             )}
@@ -886,7 +927,7 @@ export function SiteAssistantWidget({
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Hỏi về sản phẩm, size, đổi trả..."
+                placeholder="Hỏi về mẫu, size, đổi trả..."
                 maxLength={2000}
                 disabled={streaming}
                 aria-label="Nhập câu hỏi cho trợ lý mua sắm"
@@ -904,17 +945,20 @@ export function SiteAssistantWidget({
         </section>
       )}
 
-      <button
-        type="button"
-        className={styles.launcher}
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-controls="site-assistant-panel"
-        aria-label={open ? "Thu gọn trợ lý mua sắm" : `Mở trợ lý mua sắm ${brandName}`}
-      >
-        <IconSpark size={16} />
-        <span>{open ? "Đóng trợ lý" : "Trợ lý AI"}</span>
-      </button>
+      {!embedded && (
+        <button
+          ref={launcherRef}
+          type="button"
+          className={styles.launcher}
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          aria-controls="site-assistant-panel"
+          aria-label={open ? "Thu gọn trợ lý mua sắm" : `Mở trợ lý mua sắm ${brandName}`}
+        >
+          <IconSpark size={16} />
+          <span>{open ? "Đóng trợ lý" : "Trợ lý AI"}</span>
+        </button>
+      )}
     </div>
   );
 }

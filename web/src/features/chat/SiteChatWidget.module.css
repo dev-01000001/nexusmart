@@ -1,5 +1,6 @@
-/* Buyer floating chat widget (data-ui="site-chat").
-   Inherits every shop template theme via --site-* custom properties with Frost & Slate fallbacks. */
+/* Buyer chat widget (data-ui="site-chat").
+   Flat tonal surfaces, >=13px typography floor, zero resting shadows.
+   Inherits every shop template theme via --site-* tokens with Frost & Slate fallbacks. */
 
 .root {
   position: fixed;
@@ -9,27 +10,35 @@
   color: var(--site-ink, var(--ink, #1f3038));
 }
 
+.rootEmbedded {
+  position: static;
+  right: auto;
+  left: auto;
+  bottom: auto;
+  z-index: auto;
+  width: 100%;
+}
+
 .root[data-ui="site-chat"] .triggerBtn {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   height: 44px;
-  padding: 0 16px;
-  border-radius: var(--radius-control, 6px);
+  padding: 0 18px;
+  border-radius: 999px;
   border: 1px solid var(--site-divider, var(--border, #dde4e8));
   background: var(--site-band-bg, var(--primary-ink-bg, #1f3038));
   color: var(--site-band-ink, var(--primary-ink-fg, #ffffff));
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
-  box-shadow: 0 8px 22px rgba(21, 34, 41, 0.14);
   transition:
     opacity var(--t-hover, 180ms) var(--ease-out, ease-out),
     transform var(--t-press, 140ms) var(--ease-out, ease-out);
 }
 
 .root[data-ui="site-chat"] .triggerBtn:hover {
-  opacity: 0.94;
+  opacity: 0.92;
 }
 
 .root[data-ui="site-chat"] .triggerBtn:active {
@@ -37,16 +46,44 @@
 }
 
 .root[data-ui="site-chat"] .panel {
-  width: 376px;
+  width: 380px;
   max-width: calc(100vw - 24px);
-  height: min(560px, calc(100svh - 32px));
+  height: min(560px, calc(100svh - 110px));
   display: flex;
   flex-direction: column;
   background: var(--site-surface, var(--card, #ffffff));
   border: 1px solid var(--site-divider, var(--border, #dde4e8));
-  border-radius: var(--radius-card, 8px);
+  border-radius: var(--site-radius, var(--radius-card, 0px));
   overflow: hidden;
-  box-shadow: 0 14px 36px rgba(21, 34, 41, 0.16);
+  animation: chatPanelIn 260ms var(--ease-expo, cubic-bezier(0.16, 1, 0.3, 1)) both;
+}
+
+.rootEmbedded[data-ui="site-chat"] .panel {
+  width: 100%;
+  max-width: 100%;
+  height: min(540px, calc(100svh - 128px));
+}
+
+@keyframes chatPanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes chatRowIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .root[data-ui="site-chat"] .header {
@@ -54,7 +91,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 14px;
+  padding: 14px 16px;
   background: var(--site-band-bg, var(--primary-ink-bg, #1f3038));
   color: var(--site-band-ink, var(--primary-ink-fg, #ffffff));
   flex: none;
@@ -82,8 +119,8 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
-  line-height: 16px;
+  font-size: 13px;
+  line-height: 18px;
   opacity: 0.88;
 }
 
@@ -107,9 +144,9 @@
 }
 
 .closeBtn {
-  width: 30px;
-  height: 30px;
-  border-radius: var(--radius-control, 6px);
+  width: 32px;
+  height: 32px;
+  border-radius: var(--site-btn-radius, var(--radius-control, 0px));
   border: 0;
   background: transparent;
   color: inherit;
@@ -133,49 +170,50 @@
   justify-content: center;
   text-align: center;
   padding: 28px 22px;
-  gap: 10px;
+  gap: 12px;
   background: var(--site-surface, var(--card, #ffffff));
 }
 
 .guestIcon {
   width: 44px;
   height: 44px;
-  border-radius: var(--radius-card, 8px);
+  border-radius: var(--site-radius, var(--radius-card, 0px));
   background: var(--site-surface-alt, var(--surface, #ecf0f2));
   color: var(--site-ink, var(--ink, #1f3038));
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 
 .guestTitle {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
+  line-height: 22px;
   font-weight: 600;
   color: var(--site-ink, var(--ink, #1f3038));
 }
 
 .guestDesc {
   margin: 0;
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 21px;
   color: var(--site-muted, var(--muted, #5d6b72));
   max-width: 280px;
 }
 
 .loginBtn {
-  margin-top: 8px;
+  margin-top: 6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 38px;
-  padding: 0 18px;
-  border-radius: var(--radius-control, 6px);
+  min-height: 42px;
+  padding: 0 20px;
+  border-radius: var(--site-btn-radius, var(--radius-control, 0px));
   background: var(--site-accent, var(--accent, #0d7480));
   color: var(--site-accent-ink, var(--accent-ink, #ffffff));
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   text-decoration: none;
 }
 
@@ -185,7 +223,7 @@
 
 /* Product / Order quick context strip */
 .root[data-ui="site-chat"] .contextBar {
-  padding: 10px 12px;
+  padding: 10px 14px;
   background: var(--site-bg, var(--bg, #f7f9fa));
   border-bottom: 1px solid var(--site-divider, var(--border, #dde4e8));
   display: flex;
@@ -204,23 +242,23 @@
 .contextMain {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   min-width: 0;
 }
 
 .contextThumb {
   width: 34px;
-  height: 42px;
-  border-radius: 4px;
+  height: 44px;
+  border-radius: var(--site-radius, 0px);
   object-fit: cover;
   background: var(--site-surface-alt, var(--surface, #ecf0f2));
   flex: none;
 }
 
 .contextOrderIcon {
-  width: 30px;
-  height: 30px;
-  border-radius: 4px;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--site-radius, 0px);
   background: var(--site-surface-alt, var(--surface, #ecf0f2));
   color: var(--site-ink, var(--ink, #1f3038));
   display: inline-flex;
@@ -233,12 +271,12 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
 }
 
 .contextName {
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--site-ink, var(--ink, #1f3038));
   white-space: nowrap;
   overflow: hidden;
@@ -246,27 +284,28 @@
 }
 
 .contextSub {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--site-muted, var(--muted, #5d6b72));
   font-variant-numeric: tabular-nums;
 }
 
 .root[data-ui="site-chat"] .contextActionBtn {
-  height: 28px;
-  padding: 0 10px;
-  border-radius: var(--radius-control, 6px);
-  border: 1px solid var(--site-divider, var(--border, #dde4e8));
-  background: var(--site-surface, var(--card, #ffffff));
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: var(--site-btn-radius, var(--radius-control, 0px));
+  border: 0;
+  background: var(--site-surface-alt, var(--surface, #ecf0f2));
   color: var(--site-ink, var(--ink, #1f3038));
-  font-size: 12px;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
   flex: none;
 }
 
 .root[data-ui="site-chat"] .contextActionBtn:hover:not(:disabled) {
-  background: var(--site-surface-alt, var(--surface, #ecf0f2));
+  background: var(--site-accent-soft, var(--accent-tint));
+  color: var(--site-accent-soft-ink, var(--site-ink));
 }
 
 .root[data-ui="site-chat"] .contextActionBtn:disabled {
@@ -279,25 +318,25 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 14px 12px;
+  padding: 14px 14px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   background: var(--site-surface, var(--card, #ffffff));
 }
 
 .emptyNotice {
-  margin: auto 8px;
+  margin: auto 10px;
   text-align: center;
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 21px;
   color: var(--site-muted, var(--muted, #5d6b72));
 }
 
 .errorBox {
   margin: auto 8px;
-  padding: 14px;
-  border-radius: var(--radius-control, 6px);
+  padding: 16px;
+  border-radius: var(--site-radius, var(--radius-card, 0px));
   background: var(--site-bg, var(--bg, #f7f9fa));
   display: flex;
   flex-direction: column;
@@ -308,8 +347,8 @@
 
 .errorText {
   margin: 0;
-  font-size: 13px;
-  line-height: 19px;
+  font-size: 14px;
+  line-height: 20px;
   color: var(--site-ink, var(--ink, #1f3038));
 }
 
@@ -317,22 +356,23 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 32px;
-  padding: 0 12px;
-  border-radius: var(--radius-control, 6px);
-  border: 1px solid var(--site-divider, var(--border, #dde4e8));
-  background: var(--site-surface, var(--card, #ffffff));
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: var(--site-btn-radius, var(--radius-control, 0px));
+  border: 0;
+  background: var(--site-surface-alt, var(--surface, #ecf0f2));
   color: var(--site-ink, var(--ink, #1f3038));
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
 }
 
 .msgRow {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  max-width: 84%;
+  gap: 4px;
+  max-width: 86%;
+  animation: chatRowIn 240ms var(--ease-out, ease-out) both;
 }
 
 .msgOwn {
@@ -346,10 +386,10 @@
 }
 
 .bubble {
-  padding: 9px 12px;
-  border-radius: var(--radius-card, 8px);
-  font-size: 13px;
-  line-height: 19px;
+  padding: 10px 13px;
+  border-radius: var(--site-radius, var(--radius-card, 0px));
+  font-size: 14px;
+  line-height: 20px;
   word-break: break-word;
 }
 
@@ -369,8 +409,8 @@
 }
 
 .mutedInline {
-  font-size: 12px;
-  opacity: 0.8;
+  font-size: 13px;
+  opacity: 0.85;
 }
 
 .imageLink {
@@ -381,14 +421,14 @@
   display: block;
   max-width: 210px;
   max-height: 220px;
-  border-radius: 4px;
+  border-radius: var(--site-radius, 0px);
   object-fit: cover;
 }
 
 .refCard {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   text-decoration: none;
   color: inherit;
   min-width: 180px;
@@ -397,16 +437,16 @@
 .refThumb {
   width: 40px;
   height: 48px;
-  border-radius: 4px;
+  border-radius: var(--site-radius, 0px);
   object-fit: cover;
   background: var(--site-bg, var(--bg, #f7f9fa));
   flex: none;
 }
 
 .refOrderIcon {
-  width: 32px;
-  height: 32px;
-  border-radius: 4px;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--site-radius, 0px);
   background: rgba(255, 255, 255, 0.16);
   display: inline-flex;
   align-items: center;
@@ -422,25 +462,26 @@
 }
 
 .refCardKind {
-  font-size: 11px;
+  font-size: 13px;
   opacity: 0.8;
 }
 
 .refCardTitle {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
-  line-height: 17px;
+  line-height: 19px;
 }
 
 .refCardPrice,
 .refCardMeta {
-  font-size: 12px;
-  opacity: 0.88;
+  font-size: 13px;
+  opacity: 0.9;
   font-variant-numeric: tabular-nums;
 }
 
 .msgTime {
-  font-size: 11px;
+  font-size: 13px;
+  line-height: 18px;
   color: var(--site-muted, var(--muted, #5d6b72));
   font-variant-numeric: tabular-nums;
 }
@@ -450,12 +491,12 @@
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 8px 12px;
+  padding: 10px 14px;
   background: var(--pill-warning-bg, #f5efe2);
   color: var(--pill-warning-ink, #754c09);
   border-top: 1px solid var(--site-divider, var(--border, #dde4e8));
-  font-size: 12px;
-  line-height: 17px;
+  font-size: 13px;
+  line-height: 18px;
   flex: none;
 }
 
@@ -465,12 +506,12 @@
 }
 
 .root[data-ui="site-chat"] .sendError {
-  padding: 6px 12px;
+  padding: 8px 14px;
   background: var(--pill-negative-bg, #f8e7e7);
   color: var(--pill-negative-ink, #8c2626);
   border-top: 1px solid var(--site-divider, var(--border, #dde4e8));
-  font-size: 12px;
-  line-height: 17px;
+  font-size: 13px;
+  line-height: 18px;
   flex: none;
 }
 
@@ -479,7 +520,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 10px;
+  padding: 8px 12px;
   background: var(--site-bg, var(--bg, #f7f9fa));
   border-top: 1px solid var(--site-divider, var(--border, #dde4e8));
   flex: none;
@@ -488,24 +529,24 @@
 .root[data-ui="site-chat"] input.imageInput {
   flex: 1;
   min-width: 0;
-  height: 32px;
-  padding: 0 9px;
+  height: 36px;
+  padding: 0 10px;
   border: 1px solid var(--site-divider, var(--control, #c5cfd5));
-  border-radius: var(--radius-control, 6px);
+  border-radius: var(--site-btn-radius, var(--radius-control, 0px));
   background: var(--site-surface, var(--card, #ffffff));
   color: var(--site-ink, var(--ink, #1f3038));
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .imageSubmitBtn {
-  height: 32px;
-  padding: 0 10px;
+  height: 36px;
+  padding: 0 12px;
   border: 0;
-  border-radius: var(--radius-control, 6px);
+  border-radius: var(--site-btn-radius, var(--radius-control, 0px));
   background: var(--site-accent, var(--accent, #0d7480));
   color: var(--site-accent-ink, var(--accent-ink, #ffffff));
-  font-size: 12px;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -516,13 +557,13 @@
 }
 
 .imageCancelBtn {
-  height: 32px;
-  padding: 0 8px;
+  height: 36px;
+  padding: 0 10px;
   border: 0;
-  border-radius: var(--radius-control, 6px);
+  border-radius: var(--site-btn-radius, var(--radius-control, 0px));
   background: transparent;
   color: var(--site-muted, var(--muted, #5d6b72));
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
 }
 
@@ -530,22 +571,22 @@
 .root[data-ui="site-chat"] .composer {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 10px;
+  gap: 8px;
+  padding: 10px 12px;
   background: var(--site-surface, var(--card, #ffffff));
   border-top: 1px solid var(--site-divider, var(--border, #dde4e8));
   flex: none;
 }
 
 .root[data-ui="site-chat"] .attachBtn {
-  height: 36px;
-  padding: 0 10px;
-  border-radius: var(--radius-control, 6px);
-  border: 1px solid var(--site-divider, var(--control, #c5cfd5));
-  background: var(--site-bg, var(--bg, #f7f9fa));
+  height: 40px;
+  padding: 0 12px;
+  border-radius: var(--site-btn-radius, var(--radius-control, 0px));
+  border: 0;
+  background: var(--site-surface-alt, var(--surface, #ecf0f2));
   color: var(--site-ink, var(--ink, #1f3038));
-  font-size: 12px;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
   flex: none;
 }
@@ -558,13 +599,13 @@
 .root[data-ui="site-chat"] input.input {
   flex: 1;
   min-width: 0;
-  height: 36px;
-  padding: 0 10px;
+  height: 40px;
+  padding: 0 12px;
   border: 1px solid var(--site-divider, var(--control, #c5cfd5));
-  border-radius: var(--radius-control, 6px);
-  background: var(--site-surface, var(--card, #ffffff));
+  border-radius: var(--site-btn-radius, var(--radius-control, 0px));
+  background: var(--site-bg, var(--bg, #f7f9fa));
   color: var(--site-ink, var(--ink, #1f3038));
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .input::placeholder {
@@ -572,10 +613,10 @@
 }
 
 .sendBtn {
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   border: 0;
-  border-radius: var(--radius-control, 6px);
+  border-radius: var(--site-btn-radius, var(--radius-control, 0px));
   background: var(--site-accent, var(--accent, #0d7480));
   color: var(--site-accent-ink, var(--accent-ink, #ffffff));
   display: inline-flex;
@@ -591,7 +632,7 @@
 }
 
 @media (max-width: 480px) {
-  .root {
+  .root:not(.rootEmbedded) {
     right: 12px;
     left: 12px;
     display: flex;
@@ -601,6 +642,13 @@
   .root[data-ui="site-chat"] .panel {
     width: 100%;
     max-width: 100%;
-    height: min(540px, calc(100svh - 24px));
+    height: min(520px, calc(100svh - 110px));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .root[data-ui="site-chat"] .panel,
+  .msgRow {
+    animation: none;
   }
 }

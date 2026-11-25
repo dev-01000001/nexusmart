@@ -12,8 +12,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
     name: "Thời trang tối giản",
     category: "Thời trang",
     archetype: "minimal-fashion",
-    description:
-      "Bố cục gallery thoáng rộng, chữ tinh gọn, lưới sản phẩm 3 cột không viền nặng, tập trung tuyệt đối vào phom dáng và chất liệu.",
+    description: "Ảnh đứng giữa, chữ tinh gọn, lưới 3 cột so le độ cao.",
     preview_image_url: "/banners/campaign-everyday.jpg",
     tags: ["Tối giản", "Lưới 3 cột", "Gallery thoáng"],
     config: {
@@ -29,7 +28,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
         logo_url: "",
         banner_url: "/banners/campaign-everyday.jpg",
         brand_name: "Studio Tối Giản",
-        tagline: "Trang phục cơ bản tỉ lệ chuẩn, cắt may tối giản mặc bền nhiều mùa.",
+        tagline: "Trang phục cơ bản tỉ lệ chuẩn, mặc bền nhiều mùa.",
         radius: "none",
         density: "airy",
       },
@@ -51,11 +50,10 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "centered",
           settings: { surface: "bg", padding: "generous", align: "center" },
           props: {
-            eyebrow: "Bộ sưu tập mới",
-            title: "Phom dáng tinh gọn cho tủ đồ hằng ngày",
-            subtitle:
-              "Chọn lọc cotton chải kỹ và linen tự nhiên, giữ bề mặt vải phẳng mịn và đường may tối giản.",
-            image_url: "/banners/campaign-everyday.jpg",
+            eyebrow: "",
+            title: "Phom dáng tinh gọn mặc mỗi ngày",
+            subtitle: "Cotton chải kỹ và linen giữ phom phẳng mịn.",
+            image_url: "/models/model-ao-thun-trang.jpg",
             cta_label: "Xem bộ sưu tập",
             cta_href: "/san-pham",
           },
@@ -63,7 +61,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
             {
               id: "mf-hero-b1",
               type: "badge",
-              props: { label: "Cotton Compact 220gsm", tone: "neutral" },
+              props: { label: "Cotton 220gsm", tone: "neutral" },
             },
           ],
         },
@@ -75,7 +73,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           settings: { surface: "surface", padding: "generous", columns: 3 },
           props: {
             title: "Thiết kế tuyển chọn",
-            subtitle: "Ba cột sản phẩm thoáng mắt, tôn màu vải và tỷ lệ phom mặc thật.",
+            subtitle: "",
             product_ids: [],
             limit: 6,
           },
@@ -87,8 +85,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "centered",
           settings: { surface: "bg", padding: "generous", align: "center" },
           props: {
-            title: "Ít chi tiết hơn, bền dáng hơn",
-            body: "Mỗi thiết kế được lược bỏ họa tiết thừa để tập trung vào độ đứng vai, độ rủ của sợi vải và khả năng phối linh hoạt từ công sở đến cuối tuần.",
+            title: "Ít chi tiết, bền dáng hơn",
+            body: "Lược bỏ họa tiết thừa để tập trung vào độ đứng vai, độ rủ sợi vải và khả năng phối hằng ngày.",
             align: "center",
           },
         },
@@ -103,15 +101,15 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
             items: [
               {
                 heading: "Đổi size 45 ngày",
-                detail: "Hỗ trợ đổi cỡ tận nơi không phát sinh phí hai chiều.",
+                detail: "Đổi cỡ tận nơi miễn phí hai chiều.",
               },
               {
                 heading: "Đồng kiểm khi nhận",
-                detail: "Kiểm tra đúng phom dáng và chất vải trước khi thanh toán.",
+                detail: "Kiểm tra vải và phom trước khi trả tiền.",
               },
               {
-                heading: "Minh bạch chất liệu",
-                detail: "Công bố định lượng GSM và tỷ lệ sợi rõ ràng trên từng mẫu.",
+                heading: "Rõ định lượng vải",
+                detail: "Công bố định lượng GSM và tỷ lệ sợi từng mẫu.",
               },
             ],
           },
@@ -125,7 +123,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           show_search: true,
           show_sku_matrix: false,
           intro_title: "Tủ đồ tối giản",
-          intro_subtitle: "Lọc nhanh theo danh mục và xem phom mặc ở tỷ lệ ảnh đứng 3:4.",
+          intro_subtitle: "",
           sections: [],
         },
         pdp: {
@@ -141,7 +139,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           layout: "split-summary",
           show_vouchers: true,
           show_addons: true,
-          trust_note: "Đóng gói hộp giấy gọn gàng, hỗ trợ đổi size trong 45 ngày.",
+          trust_note: "Hộp giấy gọn, đổi size 45 ngày.",
           sections: [],
         },
         info: {
@@ -160,8 +158,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
     name: "Tạp chí Editorial",
     category: "Biên tập & Lookbook",
     archetype: "editorial",
-    description:
-      "Đầu trang masthead căn giữa kiểu tạp chí, lookbook bất đối xứng 1 lớn 2 nhỏ, trích dẫn nhấn mạnh và trang sản phẩm ảnh cuộn dọc.",
+    description: "Đầu trang masthead, tiêu đề lớn chồng ảnh lệch tầng, lưới tạp chí.",
     preview_image_url: "/banners/campaign-office.jpg",
     tags: ["Tạp chí", "Lookbook bất đối xứng", "Đầu trang căn giữa"],
     config: {
@@ -177,7 +174,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
         logo_url: "",
         banner_url: "/banners/campaign-office.jpg",
         brand_name: "Tạp Chí Phom Dáng",
-        tagline: "Ấn phẩm thời trang công sở và dạo phố kể chuyện qua từng khung hình.",
+        tagline: "Ấn phẩm thời trang công sở kể chuyện qua khung hình.",
         radius: "none",
         density: "airy",
       },
@@ -188,7 +185,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
         container_width: "wide",
         card_style: "editorial",
         show_announcement: true,
-        announcement_text: "Số Thu Đông 2026 · Giao tiêu chuẩn toàn quốc 1–3 ngày",
+        announcement_text: "Số Thu Đông 2026, giao toàn quốc 1 đến 3 ngày",
         slots: { search: true, chat: true, assistant: true },
       },
       sections: [
@@ -199,12 +196,11 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "editorial",
           settings: { surface: "bg", padding: "generous" },
           props: {
-            eyebrow: "Số phát hành 04 · Thu Đông",
-            title: "Đường cắt công sở nhẹ vai giữa nhịp sống đô thị",
-            subtitle:
-              "Khám phá cách phối polo dệt kim, quần linen thoáng khí và áo khoác nhẹ trong 4 bối cảnh di chuyển.",
+            eyebrow: "",
+            title: "Đường cắt nhẹ vai giữa phố",
+            subtitle: "Polo dệt kim, linen thoáng và áo khoác nhẹ.",
             image_url: "/banners/campaign-office.jpg",
-            cta_label: "Đọc & mua theo bộ",
+            cta_label: "Xem ấn phẩm",
             cta_href: "/san-pham",
           },
           blocks: [
@@ -212,8 +208,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
               id: "ed-hero-b1",
               type: "quote",
               props: {
-                body: "Một chiếc áo mặc suốt 10 tiếng cần nhẹ ở vai và giữ phom cổ đến cuối ngày.",
-                author: "Ban biên tập sản phẩm",
+                body: "Chiếc áo mặc 10 tiếng cần nhẹ vai và đứng cổ tới cuối ngày.",
+                author: "Ban biên tập",
                 role: "Ghi chú chất liệu",
               },
             },
@@ -226,9 +222,9 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "asym-3",
           settings: { surface: "surface", padding: "generous" },
           props: {
-            title: "Khung hình Lookbook mùa này",
-            subtitle: "Bố cục bất đối xứng 1 khung ảnh chủ đạo kết hợp 2 cận cảnh chất liệu.",
-            cta_label: "Xem toàn bộ danh mục",
+            title: "Lookbook mùa này",
+            subtitle: "",
+            cta_label: "Xem danh mục",
             cta_href: "/san-pham",
           },
           blocks: [
@@ -238,7 +234,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
               props: {
                 image_url: "/banners/campaign-office.jpg",
                 alt: "Trang phục công sở gọn gàng",
-                caption: "Khung 01 · Phom đứng gọn gàng cho ngày làm việc",
+                caption: "Phom đứng cho ngày làm việc",
                 aspect: "3:4",
               },
             },
@@ -248,7 +244,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
               props: {
                 image_url: "/banners/fabric-closeup.jpg",
                 alt: "Cận cảnh bề mặt sợi vải",
-                caption: "Khung 02 · Sợi dệt thoáng mịn giảm nhăn tự nhiên",
+                caption: "Sợi dệt thoáng, ít nhăn",
                 aspect: "4:3",
               },
             },
@@ -258,7 +254,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
               props: {
                 image_url: "/banners/vietnam-workshop.jpg",
                 alt: "Xưởng may hoàn thiện sản phẩm",
-                caption: "Khung 03 · Cắt rập và kiểm định tại xưởng nội địa",
+                caption: "Cắt rập tại xưởng nội địa",
                 aspect: "4:3",
               },
             },
@@ -271,8 +267,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "editorial-asym",
           settings: { surface: "bg", padding: "generous", columns: 3 },
           props: {
-            title: "Gợi ý từ ban biên tập",
-            subtitle: "Các thiết kế tiêu biểu xuất hiện trong ấn phẩm mới nhất.",
+            title: "Tuyển chọn biên tập",
+            subtitle: "",
             product_ids: [],
             limit: 6,
           },
@@ -284,8 +280,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "cards",
           settings: { surface: "surface", padding: "normal" },
           props: {
-            title: "Ưu đãi dành cho độc giả cửa hàng",
-            subtitle: "Lưu mã giảm giá trực tiếp từ gian hàng trước khi đặt mua.",
+            title: "Ưu đãi cửa hàng",
+            subtitle: "",
             limit: 4,
           },
         },
@@ -296,8 +292,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "pullquote",
           settings: { surface: "bg", padding: "generous" },
           props: {
-            title: "Từ bản phác thảo đến tủ đồ mặc hằng ngày",
-            body: "Thay vì chạy theo xu hướng ngắn hạn, chúng tôi ghi lại câu chuyện của từng mẻ vải, độ bền màu sau giặt và trải nghiệm thực tế của người mặc trong khí hậu nhiệt đới ẩm.",
+            title: "Từ bản phác thảo đến tủ đồ hằng ngày",
+            body: "Chúng tôi ghi lại từng mẻ vải, độ bền màu sau giặt và trải nghiệm mặc thực tế trong khí hậu nhiệt đới ẩm.",
             align: "left",
           },
         },
@@ -310,7 +306,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           show_search: true,
           show_sku_matrix: false,
           intro_title: "Danh mục ấn phẩm",
-          intro_subtitle: "Hai cột lớn giàu khoảng thở kèm ghi chú chất liệu cho từng thiết kế.",
+          intro_subtitle: "",
           sections: [],
         },
         pdp: {
@@ -326,7 +322,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           layout: "editorial-ledger",
           show_vouchers: true,
           show_addons: true,
-          trust_note: "Mỗi đơn hàng đi kèm hướng dẫn chăm sóc chất liệu in riêng.",
+          trust_note: "Kèm hướng dẫn chăm sóc chất liệu in riêng.",
           sections: [],
         },
         info: {
@@ -345,10 +341,9 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
     name: "Lưới dày hiệu suất",
     category: "Bán lẻ nhanh",
     archetype: "dense-grid",
-    description:
-      "Mật độ hiển thị cao, thanh tiện ích gọn, đưa mã ưu đãi lên ngay đầu trang cùng lưới 4–5 cột tối ưu tốc độ quét và chọn mua.",
+    description: "Vào thẳng ô tìm lớn, lọc dính và tường sản phẩm 5 cột.",
     preview_image_url: "/banners/campaign-green-fiber.jpg",
-    tags: ["Lưới 4–5 cột", "Mật độ cao", "Chốt đơn nhanh"],
+    tags: ["Lưới 5 cột", "Mật độ cao", "Chốt đơn nhanh"],
     config: {
       schema_version: 2,
       template_id: "dense-grid",
@@ -362,7 +357,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
         logo_url: "",
         banner_url: "/banners/campaign-green-fiber.jpg",
         brand_name: "Kho Sẵn Giao Nhanh",
-        tagline: "Hàng cơ bản sẵn kho đủ size S–2XL, cập nhật tồn thực tế từng phút.",
+        tagline: "Hàng cơ bản đủ size S tới 2XL, cập nhật tồn thực tế.",
         radius: "sm",
         density: "compact",
       },
@@ -373,7 +368,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
         container_width: "full",
         card_style: "dense",
         show_announcement: true,
-        announcement_text: "Đơn đặt trước 17h bàn giao vận chuyển trong ngày · Đồng kiểm toàn quốc",
+        announcement_text: "Đặt trước 17h giao trong ngày, đồng kiểm toàn quốc",
         slots: { search: true, chat: true, assistant: true },
       },
       sections: [
@@ -384,12 +379,11 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "compact-bar",
           settings: { surface: "surface", padding: "compact" },
           props: {
-            eyebrow: "Sẵn kho hôm nay",
-            title: "Đầy đủ size từ S đến 2XL — giao nhanh từ kho",
-            subtitle:
-              "Xem giá niêm yết, tồn kho thực tế và mã giảm giá của cửa hàng trên cùng một màn hình.",
+            eyebrow: "",
+            title: "Kho sẵn đủ size S đến 2XL",
+            subtitle: "Tìm nhanh theo tên, chất liệu hoặc mã mẫu.",
             image_url: "/banners/campaign-green-fiber.jpg",
-            cta_label: "Mở toàn bộ kho hàng",
+            cta_label: "Mở kho hàng",
             cta_href: "/san-pham",
           },
         },
@@ -400,8 +394,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "compact-bar",
           settings: { surface: "accent-soft", padding: "compact" },
           props: {
-            title: "Mã giảm giá áp dụng ngay",
-            subtitle: "Lưu nhanh mã riêng của cửa hàng cho đơn hàng hôm nay.",
+            title: "Mã giảm giá hôm nay",
+            subtitle: "",
             limit: 6,
           },
         },
@@ -412,8 +406,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "dense-5",
           settings: { surface: "bg", padding: "compact", columns: 5 },
           props: {
-            title: "Toàn bộ sản phẩm bán chạy",
-            subtitle: "Lưới mật độ cao giúp so sánh giá, màu và tồn kho trong một lượt cuộn.",
+            title: "Sản phẩm bán chạy",
+            subtitle: "",
             product_ids: [],
             limit: 10,
           },
@@ -425,8 +419,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "compact",
           settings: { surface: "surface", padding: "compact", columns: 4 },
           props: {
-            title: "Dòng áo thun mặc mỗi ngày",
-            subtitle: "Sẵn số lượng lớn cho mua lẻ và mua theo bộ.",
+            title: "Áo thun mặc mỗi ngày",
+            subtitle: "",
             collection_slug: "co-ban-hang-ngay",
             category_slug: "ao-thun",
             image_url: "/banners/campaign-everyday.jpg",
@@ -444,19 +438,19 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
             items: [
               {
                 heading: "Xuất kho trong ngày",
-                detail: "Đơn trước 17h được đóng gói và bàn giao ngay trong ngày.",
+                detail: "Đơn trước 17h bàn giao vận chuyển ngay.",
               },
               {
                 heading: "Tồn kho đồng bộ",
-                detail: "Số lượng hiển thị khớp trực tiếp tồn kho thực tế từng SKU.",
+                detail: "Hiển thị đúng số lượng sẵn từng SKU.",
               },
               {
                 heading: "Đổi size 45 ngày",
-                detail: "Đổi cỡ tận nơi cho sản phẩm chưa sử dụng còn nguyên tem.",
+                detail: "Đổi tận nơi với sản phẩm nguyên tem.",
               },
               {
-                heading: "Thanh toán linh hoạt",
-                detail: "Hỗ trợ COD đồng kiểm và chuyển khoản VietQR tự động.",
+                heading: "COD & VietQR",
+                detail: "Đồng kiểm khi nhận hoặc chuyển khoản nhanh.",
               },
             ],
           },
@@ -470,7 +464,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           show_search: true,
           show_sku_matrix: false,
           intro_title: "Kho hàng sẵn giao",
-          intro_subtitle: "Lọc nhanh theo danh mục, từ khóa và sắp xếp theo giá.",
+          intro_subtitle: "",
           sections: [],
         },
         pdp: {
@@ -486,7 +480,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           layout: "compact-table",
           show_vouchers: true,
           show_addons: true,
-          trust_note: "Kiểm hàng trước khi thanh toán COD · Tự động trừ mã giảm giá gian hàng.",
+          trust_note: "Đồng kiểm COD, áp mã gian hàng tự động.",
           sections: [],
         },
         info: {
@@ -505,10 +499,9 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
     name: "Xưởng thủ công",
     category: "Xưởng sản xuất",
     archetype: "craft-atelier",
-    description:
-      "Tôn vinh quy trình dệt may Việt Nam: dải thông số kỹ thuật vải GSM/co rút, sidebar lọc theo danh mục bên trái và dòng thời gian xưởng.",
+    description: "Ảnh chất vải tràn màn, chữ góc dưới trái và dải phim công đoạn.",
     preview_image_url: "/banners/vietnam-workshop.jpg",
-    tags: ["Xưởng may", "Sidebar trái", "Thông số chất liệu"],
+    tags: ["Xưởng may", "Dải công đoạn", "Thông số chất liệu"],
     config: {
       schema_version: 2,
       template_id: "craft-atelier",
@@ -522,7 +515,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
         logo_url: "/banners/vietnam-workshop.jpg",
         banner_url: "/banners/vietnam-workshop.jpg",
         brand_name: "Xưởng Dệt Thủ Công",
-        tagline: "Chủ động từ khâu dệt vải, xử lý co rút đến đường kim hoàn thiện tại Việt Nam.",
+        tagline: "Dệt vải, xử lý co rút và hoàn thiện tại Việt Nam.",
         radius: "sm",
         density: "balanced",
       },
@@ -544,12 +537,11 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "atelier",
           settings: { surface: "bg", padding: "generous" },
           props: {
-            eyebrow: "Trực tiếp từ xưởng dệt Việt Nam",
-            title: "Từng mẻ vải kiểm định 3 bước trước khi lên rập",
-            subtitle:
-              "Minh bạch định lượng 220gsm, tỷ lệ sợi tự nhiên và tiêu chuẩn đường may 4 kim 6 chỉ ngay trên trang cửa hàng.",
-            image_url: "/banners/vietnam-workshop.jpg",
-            cta_label: "Khám phá sản phẩm xưởng",
+            eyebrow: "",
+            title: "Dệt tại xưởng, kiểm từng mẻ vải",
+            subtitle: "Cotton 220gsm xử lý co rút trước khi lên rập.",
+            image_url: "/banners/fabric-closeup.jpg",
+            cta_label: "Xem sản phẩm xưởng",
             cta_href: "/san-pham",
           },
           blocks: [
@@ -558,7 +550,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
               type: "feature",
               props: {
                 title: "Dệt kim tròn chủ động",
-                detail: "Kiểm soát độ khít mặt vải và độ thoáng khí theo khí hậu Việt Nam.",
+                detail: "Kiểm soát độ khít mặt vải và độ thoáng khí.",
                 tag: "Xưởng nguồn",
               },
             },
@@ -572,7 +564,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           settings: { surface: "surface", padding: "normal", columns: 4 },
           props: {
             title: "Chuẩn kiểm định tại xưởng",
-            subtitle: "Thông số đo thực tế trên mỗi lô vải trước khi xuất hàng.",
+            subtitle: "",
           },
           blocks: [
             {
@@ -583,29 +575,17 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
             {
               id: "ca-m2",
               type: "stat",
-              props: {
-                value: "< 2%",
-                label: "Độ co rút sau giặt",
-                note: "Xử lý pre-shrunk 3 chu kỳ",
-              },
+              props: { value: "< 2%", label: "Độ co rút", note: "Giặt thử 3 chu kỳ" },
             },
             {
               id: "ca-m3",
               type: "stat",
-              props: {
-                value: "45 ngày",
-                label: "Đổi size tận nơi",
-                note: "Bưu tá nhận đổi hai chiều",
-              },
+              props: { value: "45 ngày", label: "Đổi size tận nhà", note: "Bưu tá đổi hai chiều" },
             },
             {
               id: "ca-m4",
               type: "stat",
-              props: {
-                value: "100%",
-                label: "Kiểm QC từng chiếc",
-                note: "Soi mật độ mũi kim trước đóng gói",
-              },
+              props: { value: "100%", label: "Kiểm từng chiếc", note: "Soi mũi kim trước đóng" },
             },
           ],
         },
@@ -616,8 +596,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "grid-3",
           settings: { surface: "bg", padding: "normal", columns: 3 },
           props: {
-            title: "Sản phẩm xuất xưởng trực tiếp",
-            subtitle: "Giá gốc từ xưởng, minh bạch thông số sợi và bảng cỡ.",
+            title: "Xuất xưởng trực tiếp",
+            subtitle: "",
             product_ids: [],
             limit: 6,
           },
@@ -629,9 +609,9 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "split-image",
           settings: { surface: "band", padding: "normal" },
           props: {
-            title: "Tìm hiểu quy trình dệt & hoàn thiện của xưởng",
-            subtitle: "Từ sợi bông chải kỹ đến kiểm bền màu và đóng gói giao tận tay người mặc.",
-            image_url: "/banners/fabric-closeup.jpg",
+            title: "Quy trình dệt và hoàn thiện",
+            subtitle: "Từ sợi bông chải kỹ đến kiểm bền màu trước đóng gói.",
+            image_url: "/banners/vietnam-workshop.jpg",
             cta_label: "Xem hồ sơ xưởng",
             cta_href: "/gioi-thieu",
           },
@@ -643,23 +623,23 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "timeline",
           settings: { surface: "surface", padding: "normal" },
           props: {
-            title: "Quy trình 4 bước trước khi đến tay bạn",
+            title: "Công đoạn tại xưởng",
             items: [
               {
-                heading: "01. Chọn sợi & dệt mộc",
-                detail: "Chọn sợi bông Compact và Modal gỗ sồi đạt chuẩn OEKO-TEX.",
+                heading: "Chọn sợi & dệt mộc",
+                detail: "Sợi bông Compact và Modal gỗ sồi chuẩn OEKO-TEX.",
               },
               {
-                heading: "02. Giặt thử chống co rút",
-                detail: "Đo co rút 3 chu kỳ giúp giữ ổn định chiều dài và cổ áo.",
+                heading: "Giặt thử chống co rút",
+                detail: "Đo co rút 3 chu kỳ giữ ổn định cổ và chiều dài áo.",
               },
               {
-                heading: "03. Cắt rập & may chập phẳng",
-                detail: "Đường may êm mịn, giảm cọ xát ở vai và nách áo.",
+                heading: "Cắt rập & may chập phẳng",
+                detail: "Đường may êm, giảm cọ xát ở vai và nách.",
               },
               {
-                heading: "04. Đồng kiểm & hậu mãi 45 ngày",
-                detail: "Hỗ trợ đổi cỡ tận nhà khi sản phẩm còn nguyên tem.",
+                heading: "Đồng kiểm & đổi 45 ngày",
+                detail: "Đổi cỡ tận nhà khi sản phẩm còn nguyên tem.",
               },
             ],
           },
@@ -672,8 +652,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           show_filters: true,
           show_search: true,
           show_sku_matrix: false,
-          intro_title: "Danh mục sản phẩm xưởng",
-          intro_subtitle: "Thanh lọc cố định bên trái giúp chuyển nhanh giữa các dòng chất liệu.",
+          intro_title: "Sản phẩm từ xưởng",
+          intro_subtitle: "",
           sections: [],
         },
         pdp: {
@@ -689,7 +669,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           layout: "atelier-bag",
           show_vouchers: true,
           show_addons: true,
-          trust_note: "Xuất trực tiếp từ xưởng may, bảo hành đường kim mũi chỉ.",
+          trust_note: "Xuất trực tiếp từ xưởng may, bảo hành đường chỉ.",
           sections: [],
         },
         info: {
@@ -708,10 +688,9 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
     name: "Thể thao năng động",
     category: "Thể thao & Vận động",
     archetype: "sport-active",
-    description:
-      "Nền tối tương phản cao, hero chéo đậm nhịp vận động, dải chỉ số hiệu năng (Dry-Fit/thoát ẩm) và bố cục PDP tập trung thông số thi đấu.",
+    description: "Nền tối, tiêu đề nén cao giọng poster, ảnh cắt chéo mở theo cuộn.",
     preview_image_url: "/banners/campaign-running.jpg",
-    tags: ["Nền tối", "Hiệu năng", "Thể thao"],
+    tags: ["Nền tối", "Poster nén", "Thể thao"],
     config: {
       schema_version: 2,
       template_id: "sport-active",
@@ -725,8 +704,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
         logo_url: "/banners/campaign-running.jpg",
         banner_url: "/banners/campaign-running.jpg",
         brand_name: "Phòng Chạy Active",
-        tagline:
-          "Trang phục Dry-Fit siêu nhẹ, thoát ẩm nhanh cho chạy bộ và tập luyện cường độ cao.",
+        tagline: "Dry-Fit siêu nhẹ, thoát ẩm nhanh cho chạy bộ và tập luyện.",
         radius: "none",
         density: "balanced",
       },
@@ -737,7 +715,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
         container_width: "wide",
         card_style: "sport",
         show_announcement: true,
-        announcement_text: "Giao nhanh 2–4h nội thành cho đơn thể thao đặt trước 17h",
+        announcement_text: "Giao nhanh 2 đến 4 giờ nội thành cho đơn đặt trước 17h",
         slots: { search: true, chat: true, assistant: true },
       },
       sections: [
@@ -748,12 +726,11 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "sport-diagonal",
           settings: { surface: "bg", padding: "generous" },
           props: {
-            eyebrow: "Dry-Fit 145gsm · Running & Gym",
-            title: "Nhẹ bước chạy, khô thoáng suốt cung đường nắng nóng",
-            subtitle:
-              "Sợi Micro-mesh thoát ẩm nhanh, đường may phẳng chống ma sát cho cự ly 5K tới bán marathon.",
+            eyebrow: "",
+            title: "Nhẹ bước chạy khô thoáng",
+            subtitle: "Dry-Fit 145gsm thoát ẩm nhanh cho cự ly 5K tới 21K.",
             image_url: "/banners/campaign-running.jpg",
-            cta_label: "Chọn đồ tập ngay",
+            cta_label: "Chọn đồ tập",
             cta_href: "/san-pham",
           },
           blocks: [
@@ -768,33 +745,29 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "telemetry",
           settings: { surface: "surface", padding: "normal", columns: 4 },
           props: {
-            title: "Thông số hiệu năng chất liệu",
-            subtitle: "Kiểm thử thực tế trên đường chạy nhiệt đới.",
+            title: "Thông số hiệu năng",
+            subtitle: "",
           },
           blocks: [
             {
               id: "sp-t1",
               type: "stat",
-              props: { value: "145g", label: "Trọng lượng áo", note: "Nhẹ không bám mồ hôi" },
+              props: { value: "145g", label: "Trọng lượng áo", note: "Không bám mồ hôi" },
             },
             {
               id: "sp-t2",
               type: "stat",
-              props: { value: "45 phút", label: "Khô phơi gió", note: "Cấu trúc lỗ thoáng khí" },
+              props: { value: "45 phút", label: "Khô phơi gió", note: "Sợi lưới thoáng khí" },
             },
             {
               id: "sp-t3",
               type: "stat",
-              props: { value: "4-Way", label: "Độ đàn hồi", note: "Phục hồi phom tức thì" },
+              props: { value: "4 chiều", label: "Độ đàn hồi", note: "Hồi phom tức thì" },
             },
             {
               id: "sp-t4",
               type: "stat",
-              props: {
-                value: "Flatlock",
-                label: "Đường may phẳng",
-                note: "Giảm ma sát khi chạy dài",
-              },
+              props: { value: "Flatlock", label: "Đường may phẳng", note: "Giảm ma sát chạy dài" },
             },
           ],
         },
@@ -805,8 +778,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "grid-4",
           settings: { surface: "bg", padding: "normal", columns: 4 },
           props: {
-            title: "Trang bị tập luyện bán chạy",
-            subtitle: "Sẵn size cho cả nam và nữ vận động viên phong trào.",
+            title: "Trang bị tập luyện",
+            subtitle: "",
             product_ids: [],
             limit: 8,
           },
@@ -818,8 +791,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "grid",
           settings: { surface: "surface", padding: "normal" },
           props: {
-            title: "Mã ưu đãi đồng hành đường chạy",
-            subtitle: "Lưu mã giảm giá của cửa hàng cho đơn mua theo bộ chạy bộ.",
+            title: "Mã ưu đãi đường chạy",
+            subtitle: "",
             limit: 4,
           },
         },
@@ -830,10 +803,10 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "band",
           settings: { surface: "band", padding: "normal" },
           props: {
-            title: "Phối trọn bộ chạy bộ 5K — 21K",
-            subtitle: "Áo Dry-Fit, quần short 5 inch túi khóa kéo và áo khoác gió gấp gọn.",
+            title: "Trọn bộ chạy 5K đến 21K",
+            subtitle: "Áo Dry-Fit, quần short túi khóa và áo khoác gió.",
             image_url: "/banners/campaign-green-fiber.jpg",
-            cta_label: "Xem danh mục chạy bộ",
+            cta_label: "Xem danh mục",
             cta_href: "/san-pham",
           },
         },
@@ -846,7 +819,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           show_search: true,
           show_sku_matrix: false,
           intro_title: "Trang bị vận động",
-          intro_subtitle: "Lọc nhanh theo hạng mục tập luyện và chọn cỡ sẵn kho.",
+          intro_subtitle: "",
           sections: [],
         },
         pdp: {
@@ -862,7 +835,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           layout: "express-bar",
           show_vouchers: true,
           show_addons: true,
-          trust_note: "Hỗ trợ giao nhanh nội thành và đổi size tận nơi trong 45 ngày.",
+          trust_note: "Giao nhanh nội thành, đổi size 45 ngày.",
           sections: [],
         },
         info: {
@@ -881,10 +854,9 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
     name: "Cao cấp Maison",
     category: "Cao cấp & Boutique",
     archetype: "luxury-maison",
-    description:
-      "Thẩm mỹ boutique sang trọng với nền than trầm ánh vàng đồng, khung ảnh viền đôi, lưới trưng bày 2 cột rộng và trang PDP dạng phòng trưng bày.",
+    description: "Ảnh đóng khung giữa khoảng lặng rộng, mở chậm 1200ms, lưới 2 cột lớn.",
     preview_image_url: "/banners/fabric-closeup.jpg",
-    tags: ["Boutique", "Lưới 2 cột", "Khung ảnh trưng bày"],
+    tags: ["Boutique", "Lưới 2 cột", "Khung tĩnh"],
     config: {
       schema_version: 2,
       template_id: "luxury-maison",
@@ -898,7 +870,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
         logo_url: "",
         banner_url: "/banners/fabric-closeup.jpg",
         brand_name: "Maison Dệt Kim",
-        tagline: "Phiên bản giới hạn từ sợi tuyển chọn, hoàn thiện tỉ mỉ theo chuẩn may đo.",
+        tagline: "Phiên bản giới hạn hoàn thiện theo chuẩn may đo.",
         radius: "none",
         density: "airy",
       },
@@ -920,12 +892,11 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "luxury-framed",
           settings: { surface: "bg", padding: "generous", align: "center" },
           props: {
-            eyebrow: "Atelier Edition · 2026",
-            title: "Sự tĩnh lặng của chất liệu thượng hạng",
-            subtitle:
-              "Mỗi phiên bản được sản xuất theo lô nhỏ, kiểm soát từng mũi dệt và đóng gói hộp cứng cao cấp.",
+            eyebrow: "",
+            title: "Sự tĩnh lặng của chất liệu",
+            subtitle: "Sản xuất lô nhỏ, kiểm soát từng mũi dệt.",
             image_url: "/banners/fabric-closeup.jpg",
-            cta_label: "Khám phá bộ sưu tập",
+            cta_label: "Khám phá",
             cta_href: "/san-pham",
           },
         },
@@ -937,7 +908,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           settings: { surface: "surface", padding: "generous", columns: 2 },
           props: {
             title: "Tuyển tập giới hạn",
-            subtitle: "Trưng bày hai cột khổ lớn làm nổi bật kết cấu bề mặt sợi.",
+            subtitle: "",
             product_ids: [],
             limit: 4,
           },
@@ -949,9 +920,9 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "duo-split",
           settings: { surface: "bg", padding: "generous" },
           props: {
-            title: "Góc nhìn từ phòng mẫu",
-            subtitle: "Hai khung hình song song giới thiệu độ rủ và hoàn thiện cổ áo.",
-            cta_label: "Xem câu chuyện Maison",
+            title: "Từ phòng mẫu",
+            subtitle: "",
+            cta_label: "Câu chuyện Maison",
             cta_href: "/gioi-thieu",
           },
           blocks: [
@@ -961,7 +932,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
               props: {
                 image_url: "/banners/campaign-office.jpg",
                 alt: "Phom áo thanh lịch",
-                caption: "Cấu trúc vai tự nhiên, đường nẹp giấu chỉ tinh tế",
+                caption: "Cấu trúc vai tự nhiên, nẹp giấu chỉ",
                 aspect: "3:4",
               },
             },
@@ -971,7 +942,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
               props: {
                 image_url: "/banners/vietnam-workshop.jpg",
                 alt: "Không gian hoàn thiện xưởng may",
-                caption: "Kiểm định thủ công từng thành phẩm trước khi niêm phong",
+                caption: "Kiểm định thủ công từng thành phẩm",
                 aspect: "3:4",
               },
             },
@@ -984,8 +955,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "monograph",
           settings: { surface: "surface", padding: "generous", align: "center" },
           props: {
-            title: "Tuyên ngôn thủ công của Maison",
-            body: "Chúng tôi tin vào những thiết kế không cần phô trương nhãn hiệu. Giá trị nằm ở cảm giác chạm tay ngay khoảnh khắc mở hộp và sự bền bỉ của phom dáng sau nhiều năm mặc.",
+            title: "Tuyên ngôn thủ công",
+            body: "Giá trị nằm ở cảm giác chạm tay ngay lúc mở hộp và sự bền bỉ của phom dáng sau nhiều năm mặc.",
             align: "center",
           },
         },
@@ -996,19 +967,19 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "cards",
           settings: { surface: "bg", padding: "normal", columns: 3 },
           props: {
-            title: "Dịch vụ chăm sóc riêng",
+            title: "Chăm sóc riêng",
             items: [
               {
                 heading: "Tư vấn cỡ cá nhân",
-                detail: "Hỗ trợ chọn phom theo số đo vai, ngực và thói quen mặc.",
+                detail: "Chọn phom theo số đo vai và ngực.",
               },
               {
-                heading: "Đổi cỡ tận nơi 45 ngày",
-                detail: "Xử lý ưu tiên đổi size hai chiều tại địa chỉ khách yêu cầu.",
+                heading: "Đổi cỡ tận nơi",
+                detail: "Hỗ trợ ưu tiên hai chiều trong 45 ngày.",
               },
               {
-                heading: "Đóng gói bảo vệ",
-                detail: "Hộp cứng chống ẩm kèm giấy lụa bảo vệ sợi vải tự nhiên.",
+                heading: "Hộp bảo vệ sợi",
+                detail: "Hộp cứng chống ẩm kèm giấy lụa.",
               },
             ],
           },
@@ -1021,8 +992,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           show_filters: true,
           show_search: false,
           show_sku_matrix: false,
-          intro_title: "Phòng trưng bày sản phẩm",
-          intro_subtitle: "Hai cột khổ lớn với khoảng thở rộng dành cho từng thiết kế.",
+          intro_title: "Phòng trưng bày",
+          intro_subtitle: "",
           sections: [],
         },
         pdp: {
@@ -1038,7 +1009,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           layout: "luxury-folio",
           show_vouchers: true,
           show_addons: false,
-          trust_note: "Miễn phí hộp quà bảo vệ sợi và hỗ trợ đổi cỡ ưu tiên.",
+          trust_note: "Miễn phí hộp cứng và đổi cỡ ưu tiên.",
           sections: [],
         },
         info: {
@@ -1057,10 +1028,9 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
     name: "Một trang (Landing)",
     category: "Ra mắt sản phẩm",
     archetype: "one-page-launch",
-    description:
-      "Bố cục một trang liên hoàn tối ưu chuyển đổi: điều hướng neo cuộn mượt, sản phẩm tâm điểm, đánh giá khách hàng, mã giảm giá và cam kết trên một mạch dọc.",
+    description: "Một sản phẩm giữ chân giữa màn, 3 chặng cuộn đổi góc, nút mua luôn thấy.",
     preview_image_url: "/banners/campaign-everyday.jpg",
-    tags: ["Một trang", "Landing chuyển đổi", "Đánh giá thực tế"],
+    tags: ["Một trang", "3 chặng cuộn", "Nút mua dính"],
     config: {
       schema_version: 2,
       template_id: "one-page-launch",
@@ -1074,7 +1044,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
         logo_url: "",
         banner_url: "/banners/campaign-everyday.jpg",
         brand_name: "Bộ Sưu Tập Ra Mắt",
-        tagline: "Trải nghiệm trọn vẹn dòng sản phẩm chủ lực trên một trang gọn rõ.",
+        tagline: "Dòng sản phẩm chủ lực trên một mạch cuộn gọn rõ.",
         radius: "md",
         density: "balanced",
       },
@@ -1085,7 +1055,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
         container_width: "standard",
         card_style: "minimal",
         show_announcement: true,
-        announcement_text: "Đợt mở bán mới · Lưu mã giảm giá ngay bên dưới",
+        announcement_text: "Đợt mở bán mới, lưu mã giảm giá bên dưới",
         slots: { search: true, chat: true, assistant: true },
       },
       sections: [
@@ -1094,21 +1064,20 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           type: "hero",
           visible: true,
           variant: "fullbleed",
-          settings: { surface: "band", padding: "generous" },
+          settings: { surface: "bg", padding: "generous" },
           props: {
-            eyebrow: "Phiên bản chủ lực",
-            title: "Một dòng áo làm tốt mọi nhu cầu mặc hằng ngày",
-            subtitle:
-              "Xem nhanh điểm nổi bật, đánh giá khách hàng, ưu đãi và đặt mua ngay mà không phải chuyển qua nhiều trang.",
-            image_url: "/banners/campaign-everyday.jpg",
-            cta_label: "Chọn sản phẩm ngay",
+            eyebrow: "",
+            title: "Một dòng áo cho mọi ngày",
+            subtitle: "Cotton chải kỹ, giữ phom cổ và đổi cỡ 45 ngày.",
+            image_url: "/models/model-ao-thun-xam-da.jpg",
+            cta_label: "Mua ngay",
             cta_href: "/san-pham",
           },
           blocks: [
             {
               id: "op-h-b1",
               type: "cta",
-              props: { label: "Xem chính sách đổi trả", href: "/chinh-sach", style: "secondary" },
+              props: { label: "Chính sách đổi trả", href: "/chinh-sach", style: "secondary" },
             },
           ],
         },
@@ -1119,32 +1088,28 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "cards-3",
           settings: { surface: "surface", padding: "normal", columns: 3 },
           props: {
-            title: "Vì sao khách hàng quay lại đặt thêm",
-            subtitle: "Số liệu thực tế từ đơn hàng trên cửa hàng.",
+            title: "Điểm cốt lõi",
+            subtitle: "",
           },
           blocks: [
             {
               id: "op-m1",
               type: "stat",
-              props: {
-                value: "45 ngày",
-                label: "Đổi size tận nhà",
-                note: "Không cần giải thích phức tạp",
-              },
+              props: { value: "45 ngày", label: "Đổi size tận nhà", note: "Nhanh gọn hai chiều" },
             },
             {
               id: "op-m2",
               type: "stat",
               props: {
-                value: "1–3 ngày",
+                value: "1 đến 3 ngày",
                 label: "Giao toàn quốc",
-                note: "Đóng gói trực tiếp tại kho",
+                note: "Xuất trực tiếp tại kho",
               },
             },
             {
               id: "op-m3",
               type: "stat",
-              props: { value: "100%", label: "Đồng kiểm COD", note: "Xem vải và cỡ trước khi trả" },
+              props: { value: "100%", label: "Đồng kiểm COD", note: "Kiểm vải trước khi trả" },
             },
           ],
         },
@@ -1156,7 +1121,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           settings: { surface: "bg", padding: "normal", columns: 3 },
           props: {
             title: "Chọn phiên bản của bạn",
-            subtitle: "Đủ màu cơ bản và kích cỡ sẵn giao trực tiếp.",
+            subtitle: "",
             product_ids: [],
             limit: 6,
           },
@@ -1168,35 +1133,35 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "grid-3",
           settings: { surface: "surface", padding: "normal", columns: 3 },
           props: {
-            title: "Khách hàng nhận xét gì sau khi mặc",
-            subtitle: "Phản hồi thực tế sau nhiều lần giặt máy.",
+            title: "Nhận xét sau khi mặc",
+            subtitle: "",
           },
           blocks: [
             {
               id: "op-q1",
               type: "quote",
               props: {
-                body: "Vải dày vừa tay, giặt máy hơn mười lần cổ áo vẫn đứng phẳng như mới mua.",
+                body: "Vải dày vừa tay, giặt máy hơn mười lần cổ áo vẫn phẳng.",
                 author: "Nguyễn Minh Quân",
-                role: "Đặt 4 chiếc · Hà Nội",
+                role: "Hà Nội",
               },
             },
             {
               id: "op-q2",
               type: "quote",
               props: {
-                body: "Đổi từ size M sang L chỉ mất một ngày bưu tá ghé tận nhà rất tiện.",
+                body: "Đổi size M sang L chỉ mất một ngày bưu tá ghé tận nhà.",
                 author: "Trần Hải Anh",
-                role: "Khách mua lần 2 · TP.HCM",
+                role: "TP.HCM",
               },
             },
             {
               id: "op-q3",
               type: "quote",
               props: {
-                body: "Màu đúng ảnh, nhận hàng được mở kiểm tra chất vải ngay trước khi thanh toán.",
+                body: "Màu đúng ảnh, nhận hàng được mở kiểm tra chất vải ngay.",
                 author: "Lê Hoàng Nam",
-                role: "Đơn giao nhanh · Đà Nẵng",
+                role: "Đà Nẵng",
               },
             },
           ],
@@ -1208,8 +1173,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "grid",
           settings: { surface: "accent-soft", padding: "normal" },
           props: {
-            title: "Nhận mã giảm giá cho đơn đầu tiên",
-            subtitle: "Lưu mã của gian hàng và áp dụng ngay trong giỏ hàng.",
+            title: "Mã giảm giá đợt mở bán",
+            subtitle: "",
             limit: 4,
           },
         },
@@ -1220,16 +1185,15 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "grid",
           settings: { surface: "bg", padding: "normal", columns: 2 },
           props: {
-            title: "Câu hỏi thường gặp & Cam kết",
+            title: "Hỏi đáp & Cam kết",
             items: [
               {
-                heading: "Làm sao chọn đúng size?",
-                detail:
-                  "Mỗi trang sản phẩm đều ghi rõ phom mặc và chất liệu; bạn được đổi size miễn phí trong 45 ngày.",
+                heading: "Chọn đúng size thế nào?",
+                detail: "Mỗi mẫu ghi rõ phom mặc và hỗ trợ đổi cỡ 45 ngày.",
               },
               {
-                heading: "Có được kiểm hàng trước không?",
-                detail: "Mọi đơn COD đều hỗ trợ đồng kiểm đúng mẫu, đúng màu và đúng kích cỡ.",
+                heading: "Có kiểm hàng trước không?",
+                detail: "Mọi đơn COD đều đồng kiểm đúng mẫu, màu và cỡ.",
               },
             ],
           },
@@ -1243,7 +1207,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           show_search: true,
           show_sku_matrix: false,
           intro_title: "Danh sách tinh gọn",
-          intro_subtitle: "Mỗi sản phẩm trình bày ngang kèm mô tả ngắn và nút chọn cỡ trực tiếp.",
+          intro_subtitle: "",
           sections: [],
         },
         pdp: {
@@ -1259,7 +1223,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           layout: "express-bar",
           show_vouchers: true,
           show_addons: true,
-          trust_note: "Một bước xác nhận giỏ hàng, giữ tồn kho thực tế và áp mã gian hàng tự động.",
+          trust_note: "Giữ tồn thực tế, áp mã gian hàng tự động.",
           sections: [],
         },
         info: {
@@ -1278,10 +1242,9 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
     name: "Catalog nhiều SKU",
     category: "Kho sỉ & Đa biến thể",
     archetype: "multi-sku-catalog",
-    description:
-      "Thiết kế chuyên cho gian hàng nhiều màu/size: bảng ma trận SKU hiển thị tồn kho từng biến thể ngay trên trang chủ, danh mục và PDP.",
+    description: "Mục lục chữ từng hàng hover neo ảnh kèm bảng SKU đặt nhanh.",
     preview_image_url: "/banners/vietnam-workshop.jpg",
-    tags: ["Ma trận SKU", "Đa biến thể", "Bảng tồn kho"],
+    tags: ["Mục lục neo ảnh", "Ma trận SKU", "Đặt nhanh"],
     config: {
       schema_version: 2,
       template_id: "multi-sku-catalog",
@@ -1295,7 +1258,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
         logo_url: "",
         banner_url: "/banners/vietnam-workshop.jpg",
         brand_name: "Tổng Kho Đa SKU",
-        tagline: "Tra cứu nhanh tồn kho theo màu, kích cỡ và đặt hàng nhiều biến thể chuẩn xác.",
+        tagline: "Tra tồn kho theo màu, size và đặt nhanh từng SKU.",
         radius: "sm",
         density: "compact",
       },
@@ -1306,8 +1269,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
         container_width: "full",
         card_style: "compact-row",
         show_announcement: true,
-        announcement_text:
-          "Cập nhật tồn kho trực tiếp theo từng SKU · Xuất hóa đơn & giao toàn quốc",
+        announcement_text: "Cập nhật tồn kho thực tế từng SKU, giao toàn quốc",
         slots: { search: true, chat: true, assistant: true },
       },
       sections: [
@@ -1318,12 +1280,11 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "compact-bar",
           settings: { surface: "surface", padding: "compact" },
           props: {
-            eyebrow: "Catalog trực tuyến",
-            title: "Tra cứu nhanh hàng trăm biến thể màu & size",
-            subtitle:
-              "Xem bảng ma trận SKU kèm tồn kho trực tiếp ngay bên dưới hoặc chuyển sang trang danh mục có thanh lọc danh mục.",
+            eyebrow: "",
+            title: "Mục lục SKU sẵn kho",
+            subtitle: "Tồn kho theo màu, cỡ và đơn giá cập nhật trực tiếp.",
             image_url: "/banners/vietnam-workshop.jpg",
-            cta_label: "Mở bảng Catalog đầy đủ",
+            cta_label: "Mở toàn bộ bảng SKU",
             cta_href: "/san-pham",
           },
         },
@@ -1334,9 +1295,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "compact-table",
           settings: { surface: "surface", padding: "normal", max_items: 16 },
           props: {
-            title: "Bảng tồn kho nhanh theo SKU",
-            subtitle:
-              "Hiển thị mã màu, dải size sẵn hàng, đơn giá VND và liên kết đặt mua trực tiếp.",
+            title: "Bảng SKU đặt nhanh",
+            subtitle: "",
             category_slug: "",
             limit: 16,
             show_out_of_stock: true,
@@ -1349,8 +1309,8 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "list-sku",
           settings: { surface: "bg", padding: "compact", columns: 4 },
           props: {
-            title: "Sản phẩm nhập kho mới nhất",
-            subtitle: "Dạng thẻ ngang kèm tổng quan biến thể và tồn kho.",
+            title: "Nhập kho mới nhất",
+            subtitle: "",
             product_ids: [],
             limit: 8,
           },
@@ -1362,19 +1322,19 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           variant: "compact-list",
           settings: { surface: "surface", padding: "compact", columns: 3 },
           props: {
-            title: "Chính sách kho vận & đổi trả",
+            title: "Chính sách kho vận",
             items: [
               {
                 heading: "Tồn kho thời gian thực",
-                detail: "Mỗi biến thể màu và size được khóa tồn kho tự động khi đặt đơn.",
+                detail: "Khóa tồn theo từng SKU ngay khi xác nhận đơn.",
               },
               {
-                heading: "Đóng gói chuẩn mã SKU",
-                detail: "Dán nhãn mã phân loại rõ ràng giúp kiểm nhận nhanh cho đơn nhiều món.",
+                heading: "Đóng gói đúng mã SKU",
+                detail: "Dán nhãn mã phân loại giúp kiểm nhận nhanh.",
               },
               {
-                heading: "Hỗ trợ đổi cỡ 45 ngày",
-                detail: "Đổi size linh hoạt theo chính sách minh bạch của gian hàng.",
+                heading: "Đổi cỡ 45 ngày",
+                detail: "Hỗ trợ đổi size linh hoạt cho đơn còn tem.",
               },
             ],
           },
@@ -1388,7 +1348,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           show_search: true,
           show_sku_matrix: true,
           intro_title: "Catalog đầy đủ theo SKU",
-          intro_subtitle: "Chuyển đổi giữa chế độ bảng SKU chi tiết từng size và chế độ lưới thẻ.",
+          intro_subtitle: "",
           sections: [],
         },
         pdp: {
@@ -1404,7 +1364,7 @@ export const PLATFORM_TEMPLATES: readonly PlatformTemplateDTO[] = [
           layout: "compact-table",
           show_vouchers: true,
           show_addons: false,
-          trust_note: "Tự động kiểm tra giới hạn tồn từng SKU và giữ hàng trong giỏ.",
+          trust_note: "Kiểm tra giới hạn tồn từng SKU tự động.",
           sections: [],
         },
         info: {

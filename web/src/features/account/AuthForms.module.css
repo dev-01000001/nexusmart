@@ -1,17 +1,99 @@
-/* Shared login / register (OTP) form panel.
-   Uses only global tokens (--ink, --accent, --surface-white…); on a shop site SiteShell remaps
-   those tokens to the shop theme, so the same panel follows each shop's palette and type. */
+/* Shared login / register / 6-box OTP form & site auth layout.
+   Global tokens automatically remap to --site-* inside SiteShell and stay Frost & Slate on platform.
+   Floating labels (>= 13px floor), inline errors with <= 4px shake, zero left accent stripes. */
 
+.siteAuthSection {
+  width: 100%;
+  max-width: var(--site-max-w, 1240px);
+  margin-inline: auto;
+  padding: clamp(28px, 4vw, 56px) var(--margin) clamp(56px, 7vw, 88px);
+}
+
+.siteAuthGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 520px) minmax(0, 1fr);
+  gap: clamp(32px, 5vw, 72px);
+  align-items: center;
+}
+
+.siteAuthGridReverse {
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 560px);
+}
+
+.siteAuthFormCol {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+
+.siteAuthHead {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.siteAuthTitle {
+  font-family: var(--font-sans);
+  font-size: clamp(2rem, 1.45rem + 2.2vw, 3.25rem);
+  font-stretch: var(--type-wide-wdth);
+  font-weight: var(--type-wide-weight);
+  letter-spacing: var(--type-wide-tracking);
+  line-height: 1.08;
+  color: var(--ink-strong);
+}
+
+.siteAuthLead {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 46ch;
+}
+
+.siteAuthVisual {
+  position: sticky;
+  top: 96px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.siteAuthPhotoFrame {
+  width: 100%;
+  aspect-ratio: 4 / 4.8;
+  max-height: 540px;
+  overflow: hidden;
+  background: var(--surface-subtle);
+  border-radius: var(--radius-shop);
+}
+
+.siteAuthPhoto {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 18%;
+}
+
+/* Auth form panel */
 .panel {
   background: var(--surface-white);
   color: var(--ink);
-  padding: clamp(22px, 2.8vw, 32px);
+  border-radius: var(--radius-shop);
+  padding: clamp(24px, 3vw, 36px);
   display: flex;
   flex-direction: column;
   gap: 18px;
   min-width: 0;
 }
 
+.fieldRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16.5rem), 1fr));
+  gap: 16px;
+}
+
+/* Floating label field */
 .field {
   display: flex;
   flex-direction: column;
@@ -19,119 +101,295 @@
   min-width: 0;
 }
 
-.fieldRow {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.label {
-  font-size: var(--step-small);
-  font-weight: 500;
-  color: var(--ink);
-}
-
-input.input {
-  width: 100%;
-  height: 44px;
-  padding: 0 14px;
-  background: var(--card);
-  border: 1px solid var(--control);
-  border-radius: var(--radius-shop);
-  color: var(--ink);
-  font-size: 16px;
-  line-height: 1.4;
-  transition: border-color var(--t-hover) ease;
-}
-
-input.input::placeholder {
-  color: var(--muted);
-  opacity: 1;
-}
-
-input.input:focus {
-  border-color: var(--accent);
-}
-
-input.otp {
-  letter-spacing: 0.18em;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.passwordWrap {
+.floatingWrap {
+  position: relative;
   display: flex;
-  gap: 8px;
+  align-items: stretch;
+  min-width: 0;
+}
+
+input.floatingInput {
+  width: 100%;
+  height: 58px;
+  padding: 24px 16px 8px;
+  background: var(--card);
+  border: 1.5px solid var(--control);
+  border-radius: var(--radius-shop);
+  color: var(--ink-strong);
+  font-size: 16px;
+  line-height: 1.35;
+  transition:
+    border-color var(--t-hover) var(--ease-out),
+    background-color var(--t-hover) var(--ease-out);
+}
+
+input.floatingInputPassword {
+  padding-right: 76px;
+}
+
+input.floatingInput:hover:not(:disabled) {
+  border-color: var(--ink);
+}
+
+input.floatingInput:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+input.floatingInput:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input.floatingInputInvalid {
+  border-color: var(--negative);
+}
+
+.floatingLabel {
+  position: absolute;
+  left: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 16px;
+  font-weight: 450;
+  color: var(--muted);
+  line-height: 1.2;
+  pointer-events: none;
+  max-width: calc(100% - 32px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform-origin: left top;
+  transition:
+    top var(--t-hover) var(--ease-out),
+    transform var(--t-hover) var(--ease-out),
+    font-size var(--t-hover) var(--ease-out),
+    color var(--t-hover) var(--ease-out);
+}
+
+.floatingWrapPassword .floatingLabel {
+  max-width: calc(100% - 82px);
+}
+
+/* Floated label state (>= 13px floor enforced) */
+input.floatingInput:focus + .floatingLabel,
+input.floatingInput:not(:placeholder-shown) + .floatingLabel,
+input.floatingInput:-webkit-autofill + .floatingLabel,
+.floatingLabelUp {
+  top: 8px;
+  transform: translateY(0);
+  font-size: 13px;
+  font-weight: 560;
+}
+
+input.floatingInput:focus + .floatingLabel {
+  color: var(--accent);
+}
+
+input.floatingInputInvalid + .floatingLabel {
+  color: var(--negative);
 }
 
 .toggleBtn {
-  flex: none;
-  padding: 0 16px;
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  min-width: 56px;
   min-height: 44px;
-  background: var(--surface);
-  color: var(--ink);
+  padding: 0 12px;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--muted);
   font-size: var(--step-small);
-  font-weight: 500;
+  font-weight: 560;
   white-space: nowrap;
-  transition: background-color var(--t-hover) ease;
+  transition:
+    background-color var(--t-hover) var(--ease-out),
+    color var(--t-hover) var(--ease-out);
 }
 
 .toggleBtn:hover {
-  background: var(--surface-muted);
+  background: var(--surface-subtle);
+  color: var(--ink-strong);
 }
 
+/* 6-box separated OTP input with native #otp-code overlay */
+.otpField {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.otpLabel {
+  font-size: var(--step-small);
+  font-weight: 560;
+  color: var(--ink-strong);
+}
+
+.otpStage {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: clamp(6px, 1.4vw, 12px);
+}
+
+.otpCell {
+  height: clamp(54px, 10vw, 66px);
+  background: var(--card);
+  border: 1.5px solid var(--control);
+  border-radius: var(--radius-shop);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-sans);
+  font-stretch: var(--type-tight-wdth);
+  font-size: clamp(1.375rem, 1.1rem + 1vw, 1.75rem);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-strong);
+  position: relative;
+  transition:
+    border-color var(--t-hover) var(--ease-out),
+    background-color var(--t-hover) var(--ease-out),
+    transform var(--t-press) var(--ease-out);
+}
+
+.otpCellFilled {
+  border-color: var(--ink);
+  background: var(--surface-subtle);
+}
+
+.otpCellActive {
+  border-color: var(--accent);
+  border-width: 2px;
+  background: var(--card);
+}
+
+.otpCellInvalid {
+  border-color: var(--negative);
+}
+
+.otpCaret {
+  width: 2px;
+  height: 24px;
+  background: var(--accent);
+  animation: nm-caret-blink 1050ms steps(1, end) infinite;
+}
+
+@keyframes nm-caret-blink {
+  0%,
+  55% {
+    opacity: 1;
+  }
+  56%,
+  100% {
+    opacity: 0;
+  }
+}
+
+input.otpOverlayInput {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
+  font-size: 16px;
+  letter-spacing: 0.2em;
+  z-index: 2;
+  cursor: text;
+}
+
+input.otpOverlayInput:focus {
+  outline: none;
+}
+
+input.otpOverlayInput::selection {
+  background: transparent;
+  color: transparent;
+}
+
+/* Status & notices (tonal surface, zero left stripe) */
 .note {
   background: var(--accent-tint);
-  border-left: 4px solid var(--accent);
-  padding: 14px 18px;
-  font-size: 16px;
-  line-height: 1.55;
   color: var(--accent-tint-ink);
+  border-radius: var(--radius-shop);
+  padding: 14px 16px;
+  font-size: var(--step-small);
+  line-height: 1.5;
 }
 
 .sessionBar {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  font-size: 16px;
 }
 
 .sessionActions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
 .error {
   font-size: var(--step-small);
   color: var(--negative);
-  font-weight: 500;
+  font-weight: 560;
+  line-height: 1.4;
 }
 
 .notice {
   font-size: var(--step-small);
   color: var(--positive);
-  font-weight: 500;
+  font-weight: 560;
+  line-height: 1.4;
 }
 
 .errorStack {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  padding: 12px 14px;
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+  border-radius: var(--radius-shop);
+}
+
+.errorStack .error {
+  color: inherit;
 }
 
 .switchLine {
-  font-size: 16px;
-  line-height: 1.55;
-  color: var(--ink);
-  max-width: 54ch;
+  display: flex;
+  align-items: center;
+  gap: 6px 16px;
+  flex-wrap: wrap;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--muted);
 }
 
 .switchLink {
-  color: var(--accent);
-  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding-block: 2px;
+  color: var(--ink-strong);
+  font-weight: 600;
   text-decoration: underline;
   text-underline-offset: 3px;
+  transition: color var(--t-hover) var(--ease-out);
+}
+
+.switchLink:hover {
+  color: var(--accent);
 }
 
 .otpActions {
@@ -146,19 +404,50 @@ input.otp {
   background: transparent;
   color: var(--ink);
   font-size: var(--step-small);
-  font-weight: 500;
+  font-weight: 560;
   text-decoration: underline;
   text-underline-offset: 3px;
-  min-height: 36px;
+  min-height: 44px;
   padding: 0 4px;
+  transition: color var(--t-hover) var(--ease-out);
 }
 
 .textBtn:hover {
   color: var(--accent);
 }
 
-@media (max-width: 640px) {
-  .fieldRow {
+@media (max-width: 900px) {
+  .siteAuthGrid,
+  .siteAuthGridReverse {
     grid-template-columns: 1fr;
+    gap: 28px;
+  }
+
+  .siteAuthVisual {
+    position: static;
+    order: 2;
+  }
+
+  .siteAuthPhotoFrame {
+    aspect-ratio: 16 / 9;
+    max-height: 260px;
+  }
+}
+
+@media (max-width: 768px) {
+  .siteAuthVisual {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .panel {
+    padding: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .otpCaret {
+    animation: none;
   }
 }

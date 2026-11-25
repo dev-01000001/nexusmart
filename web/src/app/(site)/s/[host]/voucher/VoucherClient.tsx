@@ -1,12 +1,11 @@
 "use client";
 
-import React, { useMemo, useRef, useState } from "react";
+import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { Voucher } from "@/data/vouchers";
 import { useStore } from "@/context/StoreContext";
 import { Button, StateView } from "@/components";
-import { useRevealObserver } from "@/features/catalog/useRevealObserver";
 import { formatDateVi, formatVnd } from "@/lib/format";
 import styles from "./page.module.css";
 
@@ -18,7 +17,6 @@ export interface VoucherClientProps {
 
 export function VoucherClient({ brandName, vouchers, loadError }: VoucherClientProps) {
   const router = useRouter();
-  const rootRef = useRef<HTMLDivElement>(null);
   const { saveVoucher, setSelectedVoucher, selectedVoucherId, showToast } = useStore();
 
   // Defense in depth: strictly render SHOP vouchers only.
@@ -37,8 +35,6 @@ export function VoucherClient({ brandName, vouchers, loadError }: VoucherClientP
     return init;
   });
 
-  useRevealObserver(rootRef, String(shopVouchers.length));
-
   if (loadError) {
     return (
       <div className={styles.page}>
@@ -46,7 +42,7 @@ export function VoucherClient({ brandName, vouchers, loadError }: VoucherClientP
           kind="error"
           title="Không thể tải mã ưu đãi lúc này"
           message={loadError}
-          actionLabel="Tải lại trang"
+          actionLabel="Tải lại"
           onAction={() => router.refresh()}
         />
       </div>
@@ -111,7 +107,7 @@ export function VoucherClient({ brandName, vouchers, loadError }: VoucherClientP
   };
 
   return (
-    <div ref={rootRef} className={styles.page}>
+    <div className={styles.page}>
       <nav className={styles.breadcrumb} aria-label="Đường dẫn">
         <Link href="/" className={styles.crumbLink}>
           Trang chủ
@@ -122,28 +118,17 @@ export function VoucherClient({ brandName, vouchers, loadError }: VoucherClientP
 
       <section className={styles.heroBand} aria-label={`Mã giảm giá của ${brandName}`}>
         <div className={styles.heroText}>
-          <h1 className={`${styles.title} lines`}>
-            <span className="line">
-              <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
-                Mã giảm giá · {brandName}
-              </span>
-            </span>
-          </h1>
-          <p className={styles.lead} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
-            Lưu trước ưu đãi riêng của {brandName} và áp dụng trực tiếp khi kiểm tra giỏ hàng hoặc
-            thanh toán trên website này.
+          <h1 className={styles.title}>Mã giảm giá {brandName}</h1>
+          <p className={styles.lead}>
+            Lưu ưu đãi riêng của {brandName} và áp dụng ngay khi thanh toán.
           </p>
         </div>
-        <div
-          className={styles.heroActions}
-          data-rise=""
-          style={{ "--i": 2 } as React.CSSProperties}
-        >
+        <div className={styles.heroActions}>
           <Button variant="primary" size="lg" href="/gio-hang">
-            Mở giỏ hàng áp mã
+            Mở giỏ hàng
           </Button>
           <Button variant="secondary" size="lg" href="/san-pham">
-            Xem sản phẩm cửa hàng
+            Xem sản phẩm
           </Button>
         </div>
       </section>
@@ -158,14 +143,14 @@ export function VoucherClient({ brandName, vouchers, loadError }: VoucherClientP
         {shopVouchers.length === 0 ? (
           <StateView
             kind="empty"
-            title={`${brandName} hiện chưa có mã giảm giá mới`}
-            message="Bạn có thể xem toàn bộ sản phẩm đang bán hoặc quay lại sau khi đợt ưu đãi tiếp theo mở."
+            title={`${brandName} chưa có mã giảm giá mới`}
+            message="Xem toàn bộ sản phẩm đang bán hoặc quay lại vào đợt ưu đãi tới."
             actionLabel="Xem sản phẩm"
             actionHref="/san-pham"
           />
         ) : (
-          <div className={styles.voucherGrid}>
-            {shopVouchers.map((v, idx) => {
+          <div className={styles.voucherList}>
+            {shopVouchers.map((v) => {
               const isSaved = Boolean(savedKeys[v.code] || (v.id && savedKeys[v.id]));
               const applied = isApplied(v);
               const exhausted = v.remainingUses <= 0;
@@ -175,72 +160,77 @@ export function VoucherClient({ brandName, vouchers, loadError }: VoucherClientP
                   : 100;
 
               return (
-                <article
-                  key={v.id ?? v.code}
-                  className={styles.voucherCard}
-                  data-cat-reveal=""
-                  style={{ "--stagger": idx % 2 } as React.CSSProperties}
-                >
-                  <div className={styles.voucherHeader}>
-                    <div className={styles.codeGroup}>
-                      <span className={styles.codeBadge}>{v.code}</span>
-                      <span className={styles.scopeLabel}>{brandName}</span>
-                    </div>
-                    <span className={`${styles.discountSummary} num`}>
+                <article key={v.id ?? v.code} className={styles.voucherTicket}>
+                  <div className={styles.ticketStub}>
+                    <span className={`${styles.discountValue} num`}>
                       {v.discountType === "percent"
-                        ? `Giảm ${v.discountValue}%`
-                        : `Giảm ${formatVnd(v.discountValue)}`}
+                        ? `-${v.discountValue}%`
+                        : `-${formatVnd(v.discountValue)}`}
                     </span>
+                    <span className={styles.codeDisplay}>{v.code}</span>
+                    <span className={styles.scopeLabel}>{brandName}</span>
                   </div>
 
-                  <h3 className={styles.voucherTitle}>{v.title}</h3>
-                  <p className={styles.voucherDesc}>{v.description}</p>
+                  <div className={styles.ticketBody}>
+                    <h3 className={styles.voucherTitle}>{v.title}</h3>
+                    {v.description && <p className={styles.voucherDesc}>{v.description}</p>}
 
-                  <div className={styles.metaRow}>
-                    <span>Đơn tối thiểu {formatVnd(v.minOrderValue)}</span>
-                    {v.maxDiscount ? <span>Giảm tối đa {formatVnd(v.maxDiscount)}</span> : null}
-                    {v.expiresAt ? <span>HSD {formatDateVi(v.expiresAt)}</span> : null}
-                  </div>
-
-                  <div className={styles.quotaWrap}>
-                    <div className={styles.quotaTop}>
-                      <span>
-                        Còn <strong className="num">{v.remainingUses}</strong> / {v.totalUses} lượt
-                      </span>
-                      <span className="num">Đã dùng {usedRatio}%</span>
+                    <div className={styles.metaRow}>
+                      <span>Đơn từ {formatVnd(v.minOrderValue)}</span>
+                      {v.maxDiscount ? <span>Tối đa {formatVnd(v.maxDiscount)}</span> : null}
+                      {v.expiresAt ? <span>HSD {formatDateVi(v.expiresAt)}</span> : null}
                     </div>
-                    <div
-                      className={styles.quotaTrack}
-                      role="progressbar"
-                      aria-valuemin={0}
-                      aria-valuemax={v.totalUses}
-                      aria-valuenow={v.totalUses - v.remainingUses}
-                      aria-label={`Lượt còn lại của mã ${v.code}`}
-                    >
-                      <div className={styles.quotaFill} style={{ width: `${usedRatio}%` }} />
+
+                    <div className={styles.quotaWrap}>
+                      <div className={styles.quotaTop}>
+                        <span>
+                          Còn <strong className="num">{v.remainingUses}</strong> / {v.totalUses}{" "}
+                          lượt
+                        </span>
+                        <span className="num">Đã dùng {usedRatio}%</span>
+                      </div>
+                      <div
+                        className={styles.quotaTrack}
+                        role="progressbar"
+                        aria-valuemin={0}
+                        aria-valuemax={v.totalUses}
+                        aria-valuenow={v.totalUses - v.remainingUses}
+                        aria-label={`Lượt còn lại của mã ${v.code}`}
+                      >
+                        <div className={styles.quotaFill} style={{ width: `${usedRatio}%` }} />
+                      </div>
                     </div>
                   </div>
 
-                  <div className={styles.actions}>
+                  <div className={styles.ticketActions}>
                     <Button
                       variant={applied ? "ink" : "primary"}
-                      size="sm"
+                      size="md"
+                      fullWidth
                       disabled={exhausted || savingCode === v.code}
                       onClick={() => handleApplyToCart(v)}
                     >
                       {exhausted ? "Đã hết lượt" : applied ? "Đã chọn cho giỏ" : "Dùng cho giỏ"}
                     </Button>
-                    <Button
-                      variant={isSaved ? "ink" : "secondary"}
-                      size="sm"
-                      disabled={exhausted || isSaved || savingCode === v.code}
-                      onClick={() => handleSave(v)}
-                    >
-                      {isSaved ? "Đã lưu" : savingCode === v.code ? "Đang lưu..." : "Lưu mã"}
-                    </Button>
-                    <Button variant="secondary" size="sm" onClick={() => handleCopy(v.code)}>
-                      {copiedCode === v.code ? "Đã chép" : "Sao chép"}
-                    </Button>
+                    <div className={styles.secondaryActionRow}>
+                      <Button
+                        variant={isSaved ? "ink" : "secondary"}
+                        size="sm"
+                        fullWidth
+                        disabled={exhausted || isSaved || savingCode === v.code}
+                        onClick={() => handleSave(v)}
+                      >
+                        {isSaved ? "Đã lưu" : savingCode === v.code ? "Đang lưu..." : "Lưu mã"}
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        fullWidth
+                        onClick={() => handleCopy(v.code)}
+                      >
+                        {copiedCode === v.code ? "Đã chép" : "Sao chép"}
+                      </Button>
+                    </div>
                   </div>
                 </article>
               );

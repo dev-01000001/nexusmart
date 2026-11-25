@@ -1,6 +1,8 @@
 // Run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/features/admin/adminComplaints.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { getAdminOrderStatusMeta } from "./adminApiTypes.ts";
+import { localVnInputToIso } from "./adminMeta.ts";
 import {
   canModifyUserAccount,
   formatCommissionBps,
@@ -387,4 +389,47 @@ test("canModifyUserAccount blocks self-lock and self-role edits while permitting
 
   const otherUser = canModifyUserAccount("usr-admin-1", "usr-buyer-99", "status");
   assert.deepEqual(otherUser, { allowed: true });
+});
+
+test("getAdminOrderStatusMeta localizes every proto OrderStatus enum value into Vietnamese", () => {
+  const expected = {
+    PENDING: { label: "Chờ thanh toán", tone: "warning" },
+    CONFIRMED: { label: "Chờ xác nhận", tone: "warning" },
+    PREPARING: { label: "Đang chuẩn bị", tone: "neutral" },
+    SHIPPING: { label: "Đang giao", tone: "neutral" },
+    DELIVERED: { label: "Đã giao", tone: "positive" },
+    COMPLETED: { label: "Hoàn tất", tone: "positive" },
+    CANCELLED: { label: "Đã hủy", tone: "negative" },
+    RETURN_REQUESTED: { label: "Yêu cầu trả hàng", tone: "warning" },
+    RETURN_APPROVED: { label: "Đã duyệt trả hàng", tone: "warning" },
+    RETURN_REJECTED: { label: "Từ chối trả hàng", tone: "negative" },
+    RETURNING: { label: "Đang hoàn hàng", tone: "warning" },
+    RETURNED: { label: "Đã trả hàng", tone: "negative" },
+    REFUNDED: { label: "Đã hoàn tiền", tone: "positive" },
+    UNSPECIFIED: { label: "Đang xử lý", tone: "neutral" },
+  };
+
+  for (const [code, want] of Object.entries(expected)) {
+    assert.deepEqual(getAdminOrderStatusMeta(code), want, `status ${code}`);
+    assert.deepEqual(
+      getAdminOrderStatusMeta(`ORDER_STATUS_${code}`),
+      want,
+      `prefixed ORDER_STATUS_${code}`
+    );
+  }
+
+  assert.deepEqual(getAdminOrderStatusMeta("return_rejected"), {
+    label: "Từ chối trả hàng",
+    tone: "negative",
+  });
+  assert.deepEqual(getAdminOrderStatusMeta(""), { label: "Đang xử lý", tone: "neutral" });
+});
+
+test("localVnInputToIso converts UTC+7 datetime-local inputs to UTC ISO timestamps", () => {
+  assert.equal(localVnInputToIso("2026-11-25T12:00"), "2026-11-25T05:00:00.000Z");
+  assert.equal(localVnInputToIso("2026-11-25T00:30"), "2026-11-24T17:30:00.000Z");
+  assert.equal(localVnInputToIso("2026-11-25T23:59:30"), "2026-11-25T16:59:30.000Z");
+  assert.equal(localVnInputToIso("  2026-11-25T07:00  "), "2026-11-25T00:00:00.000Z");
+  assert.equal(localVnInputToIso(""), "");
+  assert.equal(localVnInputToIso("not-a-date"), "");
 });

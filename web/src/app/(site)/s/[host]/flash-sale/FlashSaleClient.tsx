@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -10,7 +10,6 @@ import { pickDefaultFlashSlot, secondsUntilSlotEdge } from "@/lib/catalog-map";
 import { formatDiscountPercent } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";
 import { Button, Price, StateView } from "@/components";
-import { useRevealObserver } from "@/features/catalog/useRevealObserver";
 import styles from "./page.module.css";
 
 export interface FlashSaleClientProps {
@@ -21,9 +20,49 @@ export interface FlashSaleClientProps {
   serverNowMs: number;
 }
 
+const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
+
 function twoDigit(n: number): string {
   const safe = Math.max(0, Math.trunc(n));
   return safe < 10 ? `0${safe}` : `${safe}`;
+}
+
+function vnDayKey(ms: number): string {
+  const d = new Date(ms + VN_OFFSET_MS);
+  return `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}-${d.getUTCDate()}`;
+}
+
+function vnShortDate(ms: number): string {
+  const d = new Date(ms + VN_OFFSET_MS);
+  return `${twoDigit(d.getUTCDate())}/${twoDigit(d.getUTCMonth() + 1)}`;
+}
+
+function formatSlotWindowLabel(slot: FlashSaleSlot, nowMs: number): string {
+  const startMs = slot.startsAt ? Date.parse(slot.startsAt) : Number.NaN;
+  const endMs = slot.endsAt ? Date.parse(slot.endsAt) : Number.NaN;
+  const hasStart = Number.isFinite(startMs);
+  const hasEnd = Number.isFinite(endMs);
+  const crossDay = hasStart && hasEnd && vnDayKey(startMs) !== vnDayKey(endMs);
+
+  if (slot.status === "live") {
+    if (hasEnd && (vnDayKey(endMs) !== vnDayKey(nowMs) || crossDay)) {
+      return `đến ${slot.endTime}, ${vnShortDate(endMs)}`;
+    }
+    return `${slot.startTime} đến ${slot.endTime}`;
+  }
+  if (slot.status === "upcoming") {
+    if (hasStart && vnDayKey(startMs) !== vnDayKey(nowMs)) {
+      return `mở lúc ${slot.startTime}, ${vnShortDate(startMs)}`;
+    }
+    if (hasEnd && crossDay) {
+      return `${slot.startTime} đến ${slot.endTime}, ${vnShortDate(endMs)}`;
+    }
+    return `${slot.startTime} đến ${slot.endTime}`;
+  }
+  if (hasEnd && (vnDayKey(endMs) !== vnDayKey(nowMs) || crossDay)) {
+    return `kết thúc ${slot.endTime}, ${vnShortDate(endMs)}`;
+  }
+  return `${slot.startTime} đến ${slot.endTime}`;
 }
 
 export function FlashSaleClient({
@@ -35,7 +74,6 @@ export function FlashSaleClient({
 }: FlashSaleClientProps) {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const rootRef = useRef<HTMLDivElement>(null);
 
   const { addToCart, cartItems, flashSaleItemBySku, showToast } = useStore();
 
@@ -64,9 +102,10 @@ export function FlashSaleClient({
     [activeSlotId, defaultSlot, slots]
   );
 
+  const liveNowMs = serverNowMs + nowOffsetSec * 1000;
   const secondsLeft = useMemo(
-    () => secondsUntilSlotEdge(activeSlot, serverNowMs + nowOffsetSec * 1000),
-    [activeSlot, nowOffsetSec, serverNowMs]
+    () => secondsUntilSlotEdge(activeSlot, liveNowMs),
+    [activeSlot, liveNowMs]
   );
 
   const flashCountInCart = useMemo(
@@ -76,8 +115,6 @@ export function FlashSaleClient({
         .reduce((sum, it) => sum + it.quantity, 0),
     [cartItems, flashSaleItemBySku]
   );
-
-  useRevealObserver(rootRef, `${activeSlot?.id ?? "none"}|${stateParam ?? ""}`);
 
   const hrs = twoDigit(Math.floor(secondsLeft / 3600));
   const mins = twoDigit(Math.floor((secondsLeft % 3600) / 60));
@@ -97,8 +134,8 @@ export function FlashSaleClient({
         <StateView
           kind="error"
           title="Không thể tải phiên Flash sale"
-          message={loadError ?? "Hệ thống ưu đãi tạm gián đoạn. Vui lòng thử tải lại."}
-          actionLabel="Tải lại Flash sale"
+          message={loadError ?? "Hệ thống ưu đãi tạm gián đoạn. Vui lòng thử lại."}
+          actionLabel="Tải lại"
           onAction={() => (loadError ? router.refresh() : router.replace("/flash-sale"))}
         />
       </div>
@@ -110,9 +147,9 @@ export function FlashSaleClient({
       <div className={styles.stateWrap}>
         <StateView
           kind="empty"
-          title={`${brandName} hiện chưa mở khung giờ Flash sale`}
-          message={`Bạn có thể xem toàn bộ sản phẩm hiện có hoặc lưu mã giảm giá riêng của ${brandName}.`}
-          actionLabel="Xem sản phẩm cửa hàng"
+          title={`${brandName} chưa mở khung Flash sale`}
+          message={`Xem toàn bộ sản phẩm hoặc lưu mã giảm giá riêng của ${brandName}.`}
+          actionLabel="Xem sản phẩm"
           actionHref="/san-pham"
         />
       </div>
@@ -187,31 +224,34 @@ export function FlashSaleClient({
     });
   };
 
+  const renderableItems = activeSlot.items
+    .map((item) => {
+      const product = productById.get(item.productId);
+      return product ? { item, product } : null;
+    })
+    .filter((entry): entry is { item: FlashSaleItem; product: Product } => entry !== null);
+
+  const gridVariantClass =
+    renderableItems.length === 1
+      ? styles.cardsGridSingle
+      : renderableItems.length === 2
+        ? styles.cardsGridTwo
+        : renderableItems.length === 3
+          ? styles.cardsGridThree
+          : styles.cardsGrid;
+
+  const slotCols = Math.max(1, Math.min(4, slots.length));
+  const activeWindowLabel = formatSlotWindowLabel(activeSlot, liveNowMs);
+
   return (
-    <div ref={rootRef} className={styles.page}>
+    <div className={styles.page}>
       <section className={styles.heroBand} aria-label={`Flash sale của ${brandName}`}>
         <div className={styles.headerGrid}>
           <div className={styles.titleBlock}>
-            <h1 className={`${styles.title} lines`}>
-              <span className="line">
-                <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
-                  Flash sale · {brandName}
-                </span>
-              </span>
-            </h1>
-            <p className={styles.lead} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
-              Khung giờ giá tốt trực tiếp từ kho của {brandName} với số suất cập nhật theo thời gian
-              thực.
-            </p>
-            <div
-              className={styles.heroActionRow}
-              data-rise=""
-              style={{ "--i": 2 } as React.CSSProperties}
-            >
-              <a href="#flash-slot-heading" className={styles.heroBtnPrimary}>
-                Khung {activeSlot.label}
-              </a>
-              <Link href="/voucher" className={styles.heroBtnDark}>
+            <h1 className={styles.title}>Flash sale {brandName}</h1>
+            <p className={styles.lead}>Giá ưu đãi theo khung giờ, suất cập nhật trực tiếp.</p>
+            <div className={styles.heroActionRow}>
+              <Link href="/voucher" className={styles.heroBtnPrimary}>
                 Mã giảm giá cửa hàng
               </Link>
               <Link href="/san-pham" className={styles.heroBtnDark}>
@@ -220,8 +260,8 @@ export function FlashSaleClient({
             </div>
           </div>
 
-          <div className={styles.timerBox} data-rise="" style={{ "--i": 2 } as React.CSSProperties}>
-            <div className={styles.timerClockRow} aria-live="off">
+          <div className={styles.timerBox}>
+            <div className={styles.timerMetaRow}>
               <span className={styles.timerHeading}>
                 {activeSlot.status === "live"
                   ? "Kết thúc sau"
@@ -229,28 +269,41 @@ export function FlashSaleClient({
                     ? "Mở bán sau"
                     : "Đã kết thúc"}
               </span>
-              <span
-                className={styles.timerBadge}
-                aria-label={`${hrs} giờ ${mins} phút ${secs} giây`}
-              >
-                {`${hrs}:${mins}:${secs}`}
+              <span className={styles.timerSlotLine}>
+                {activeWindowLabel}, {activeSlot.statusLabel.toLowerCase()}
               </span>
             </div>
 
-            <span className={styles.timerSlotLine}>
-              Khung {activeSlot.startTime} – {activeSlot.endTime} · {activeSlot.statusLabel}
-            </span>
+            <div
+              className={styles.posterClock}
+              aria-live="off"
+              aria-label={`${hrs} giờ ${mins} phút ${secs} giây`}
+            >
+              <span>{hrs}</span>
+              <span className={styles.clockSep} aria-hidden="true">
+                :
+              </span>
+              <span>{mins}</span>
+              <span className={styles.clockSep} aria-hidden="true">
+                :
+              </span>
+              <span>{secs}</span>
+            </div>
 
             <div className={styles.quotaStatusStrip}>
               <span>
-                Flash sale trong giỏ: {flashCountInCart}/{FLASH_SALE_RULES.maxItemsPerOrder} SP
+                Trong giỏ: {flashCountInCart}/{FLASH_SALE_RULES.maxItemsPerOrder} SP Flash sale
               </span>
             </div>
           </div>
         </div>
 
-        <nav className={styles.slotGrid} aria-label="Chọn khung giờ Flash sale">
-          {slots.map((slot, idx) => {
+        <nav
+          className={styles.slotGrid}
+          style={{ "--slot-cols": slotCols } as React.CSSProperties}
+          aria-label="Chọn khung giờ Flash sale"
+        >
+          {slots.map((slot) => {
             const isActive = slot.id === activeSlot.id;
             return (
               <button
@@ -259,15 +312,13 @@ export function FlashSaleClient({
                 className={`${styles.slotBtn} ${isActive ? styles.slotBtnActive : ""}`}
                 onClick={() => handleSelectSlot(slot.id)}
                 aria-pressed={isActive}
-                data-cat-reveal=""
-                style={{ "--stagger": idx } as React.CSSProperties}
               >
                 <span className={styles.slotTopRow}>
                   <span className={styles.slotTime}>{slot.label}</span>
                   <span className={styles.slotStatus}>{slot.statusLabel}</span>
                 </span>
                 <span className={styles.slotCount}>
-                  {slot.items.length} SP · tối đa {slot.maxItemsPerOrder ?? 3}/đơn
+                  {slot.items.length} SP, tối đa {slot.maxItemsPerOrder ?? 3}/đơn
                 </span>
               </button>
             );
@@ -276,32 +327,26 @@ export function FlashSaleClient({
       </section>
 
       <section className={styles.itemsSection} aria-labelledby="flash-slot-heading">
-        <div
-          className={styles.sectionHeader}
-          data-cat-reveal=""
-          style={{ "--stagger": 0 } as React.CSSProperties}
-        >
+        <div className={styles.sectionHeader}>
           <h2 id="flash-slot-heading" className={styles.sectionTitle}>
-            Khung {activeSlot.startTime} · {activeSlot.statusLabel}
+            Khung {activeSlot.startTime} ({activeWindowLabel})
           </h2>
           <span className={styles.sectionMeta}>
-            {activeSlot.items.length} sản phẩm · Tối đa {FLASH_SALE_RULES.maxItemsPerOrder} SP/đơn
+            {renderableItems.length} sản phẩm, tối đa {FLASH_SALE_RULES.maxItemsPerOrder} SP/đơn
           </span>
         </div>
 
-        {activeSlot.items.length === 0 ? (
+        {renderableItems.length === 0 ? (
           <StateView
             kind="empty"
             title="Khung giờ này chưa có sản phẩm ưu đãi"
-            message={`Bạn có thể chọn khung giờ khác ở phía trên hoặc khám phá toàn bộ sản phẩm của ${brandName}.`}
-            actionLabel="Xem sản phẩm cửa hàng"
+            message={`Chọn khung giờ khác phía trên hoặc xem toàn bộ sản phẩm của ${brandName}.`}
+            actionLabel="Xem sản phẩm"
             actionHref="/san-pham"
           />
         ) : (
-          <div className={styles.cardsGrid}>
-            {activeSlot.items.map((item, idx) => {
-              const product = productById.get(item.productId);
-              if (!product) return null;
+          <div className={gridVariantClass}>
+            {renderableItems.map(({ item, product }, idx) => {
               const claimed = claimedCounts[item.id] ?? 0;
               const liveRemaining = Math.max(0, item.remainingQuota - claimed);
               const soldRatio =
@@ -323,13 +368,12 @@ export function FlashSaleClient({
               const isReminded = Boolean(remindedIds[item.id]);
               const hoverImage = product.onModelImage ?? product.gallery[1];
               const discountTag = formatDiscountPercent(item.originalPrice, item.flashPrice);
+              const singleLayout = renderableItems.length === 1;
 
               return (
                 <article
                   key={item.id}
-                  className={styles.card}
-                  data-cat-reveal=""
-                  style={{ "--stagger": idx % 4 } as React.CSSProperties}
+                  className={`${styles.card} ${singleLayout ? styles.cardWide : ""}`}
                 >
                   <div className={`${styles.mediaWrap} ${hoverImage ? styles.hasHoverImage : ""}`}>
                     <Link href={`/san-pham/${product.slug}`} className={styles.mediaLink}>
@@ -337,7 +381,11 @@ export function FlashSaleClient({
                         src={product.image}
                         alt={product.name}
                         fill
-                        sizes="(max-width: 1023px) 50vw, 25vw"
+                        sizes={
+                          singleLayout
+                            ? "(max-width: 768px) 100vw, 40vw"
+                            : "(max-width: 1023px) 50vw, 25vw"
+                        }
                         priority={idx < 4}
                         className={styles.mediaPrimary}
                       />
@@ -346,19 +394,23 @@ export function FlashSaleClient({
                           src={hoverImage}
                           alt={`${product.name} khi mặc thực tế`}
                           fill
-                          sizes="(max-width: 1023px) 50vw, 25vw"
+                          sizes={
+                            singleLayout
+                              ? "(max-width: 768px) 100vw, 40vw"
+                              : "(max-width: 1023px) 50vw, 25vw"
+                          }
                           className={styles.mediaHover}
                         />
                       )}
                     </Link>
-                    {discountTag && <span className={styles.flashBadge}>{discountTag}</span>}
                   </div>
 
                   <div className={styles.cardBody}>
-                    <span className={styles.cardShop}>
-                      {brandName}
-                      {product.gsm > 0 ? ` · ${product.gsm}gsm` : ""}
-                    </span>
+                    <div className={styles.cardMetaRow}>
+                      <span className={styles.flashTag}>Flash sale</span>
+                      {discountTag && <span className={styles.discountTag}>{discountTag}</span>}
+                    </div>
+
                     <Link href={`/san-pham/${product.slug}`} className={styles.cardName}>
                       {product.name}
                     </Link>

@@ -30,7 +30,6 @@ export interface AccountPageData {
   initialWards: GwWard[];
   initialProvinceCode: string;
   catalogProducts: Product[];
-  suggestedProducts: Product[];
 }
 
 export async function fetchAccountPageData(
@@ -119,6 +118,5 @@ export async function fetchAccountPageData(
     initialWards,
     initialProvinceCode: defaultProv.code,
     catalogProducts: siteProducts,
-    suggestedProducts: siteProducts.slice(0, 4),
   };
 }

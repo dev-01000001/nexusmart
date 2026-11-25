@@ -3,12 +3,21 @@
 import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Button, IconCheck, IconFileText, IconRefresh, IconTruck, StateView } from "@/components";
+import {
+  Button,
+  IconArrowLeft,
+  IconCheck,
+  IconCopy,
+  IconRefresh,
+  IconTruck,
+  StateView,
+} from "@/components";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import { getSalesChannelMeta } from "@/lib/salesChannel";
 import { sanitizeSafeUrl } from "@/lib/site/theme";
 import { useSellerContext } from "./SellerShell";
+import { SellerSlidingTabs, statusPillClass } from "./SellerUiPrimitives";
 import {
   computeSellerNetReceivable,
   formatPaymentMethodVi,
@@ -96,7 +105,8 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
       <StateView
         kind="loading"
         surface="app"
-        title="Đang tải chi tiết đơn hàng và chứng từ vận chuyển..."
+        skeletonVariant="detail"
+        title="Đang tải chi tiết đơn hàng..."
         rows={5}
       />
     );
@@ -108,7 +118,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
         kind="error"
         surface="app"
         title="Không thể tải chi tiết đơn hàng"
-        message={loadError ?? "Hệ thống đơn hàng tạm thời chưa phản hồi. Vui lòng thử tải lại."}
+        message={loadError ?? "Hệ thống đơn hàng tạm gián đoạn."}
         actionLabel="Thử lại"
         onAction={() => router.refresh()}
       />
@@ -118,17 +128,15 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
   if (uiState === "empty" || !order) {
     return (
       <div className={common.page}>
-        <div className={styles.backRow}>
-          <Link href="/seller/don-hang" className={styles.backLink}>
-            Quay lại danh sách đơn hàng
-          </Link>
-        </div>
+        <Link href="/seller/don-hang" className={styles.backLink}>
+          <IconArrowLeft size={14} />
+          <span>Đơn hàng</span>
+        </Link>
         <StateView
           kind="empty"
           surface="app"
-          title="Không tìm thấy mã đơn hàng"
-          message="Đơn hàng không tồn tại hoặc không thuộc gian hàng của bạn."
-          actionLabel="Về danh sách đơn hàng"
+          title="Không tìm thấy mã đơn hàng."
+          actionLabel="Về danh sách"
           actionHref="/seller/don-hang"
         />
       </div>
@@ -148,15 +156,6 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
     : EMPTY_VALUE;
 
   const showReturnsCard = returns.length > 0 || orderStatusUpper === "RETURN_REQUESTED";
-
-  const pillCls = (tone: "neutral" | "warn" | "pos" | "neg") =>
-    tone === "pos"
-      ? `${common.pill} ${common.pillPos}`
-      : tone === "warn"
-        ? `${common.pill} ${common.pillWarn}`
-        : tone === "neg"
-          ? `${common.pill} ${common.pillNeg}`
-          : common.pill;
 
   const handleCopyCode = () => {
     if (typeof navigator !== "undefined" && navigator.clipboard) {
@@ -199,9 +198,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
           item.id === ret.id ? (res.return_request ?? { ...item, status: "APPROVED" }) : item
         )
       );
-      if (rejectOpenId === ret.id) {
-        setRejectOpenId(null);
-      }
+      if (rejectOpenId === ret.id) setRejectOpenId(null);
       showToast(`Đã duyệt yêu cầu đổi trả cho đơn ${order.order_code}.`);
       router.refresh();
     } catch (err) {
@@ -228,11 +225,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
       setReturns((prev) =>
         prev.map((item) =>
           item.id === ret.id
-            ? (res.return_request ?? {
-                ...item,
-                status: "REJECTED",
-                reject_reason: check.value,
-              })
+            ? (res.return_request ?? { ...item, status: "REJECTED", reject_reason: check.value })
             : item
         )
       );
@@ -251,18 +244,17 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
 
   return (
     <div className={common.page}>
-      <div className={styles.backRow}>
-        <Link href="/seller/don-hang" className={styles.backLink}>
-          Quay lại danh sách đơn hàng
-        </Link>
-      </div>
+      <Link href="/seller/don-hang" className={styles.backLink}>
+        <IconArrowLeft size={14} />
+        <span>Đơn hàng</span>
+      </Link>
 
       <header className={styles.objectHeader}>
         <div className={styles.objectIdentity}>
           <div className={styles.objectText}>
             <div className={styles.objectTitleRow}>
               <h1 className={styles.objectTitle}>{order.order_code}</h1>
-              <span className={pillCls(meta.tone)}>{meta.label}</span>
+              <span className={statusPillClass(meta.tone)}>{meta.label}</span>
               <span
                 className={`${common.channelTag} ${channelMeta.isStorefront ? common.channelTagStorefront : ""}`}
                 data-sales-channel={channelMeta.value}
@@ -276,84 +268,66 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
                 title="Sao chép mã đơn"
                 aria-label="Sao chép mã đơn hàng"
               >
-                <IconFileText size={14} />
+                <IconCopy size={14} />
               </button>
             </div>
             <p className={styles.objectMeta}>
-              Đặt lúc {order.created_at ? formatDateTimeVi(order.created_at) : EMPTY_VALUE}
-              {addr?.province_name ? ` · ${addr.ward_name}, ${addr.province_name}` : ""}
+              {order.created_at ? formatDateTimeVi(order.created_at) : EMPTY_VALUE}
+              {addr?.province_name ? `, ${addr.ward_name}, ${addr.province_name}` : ""}
             </p>
           </div>
         </div>
 
         <div className={styles.objectActions}>
           {nextAction && (
-            <button
-              type="button"
-              className={`${styles.actionBtn36} ${styles.actionInk}`}
+            <Button
+              variant="primary"
+              size="sm"
+              shape="app"
               disabled={busy}
               onClick={() => void handleAction()}
             >
               {nextAction.kind === "ship" ? <IconTruck size={14} /> : <IconCheck size={14} />}
               <span>{busy ? "Đang xử lý..." : nextAction.label}</span>
-            </button>
+            </Button>
           )}
         </div>
       </header>
 
-      <div className={common.underlineTabs} role="tablist" aria-label="Phân mục chi tiết đơn hàng">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "overview"}
-          className={`${common.underlineTab} ${tab === "overview" ? common.underlineTabActive : ""}`}
-          onClick={() => setTab("overview")}
-        >
-          Tổng quan đơn
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "shipping"}
-          className={`${common.underlineTab} ${tab === "shipping" ? common.underlineTabActive : ""}`}
-          onClick={() => setTab("shipping")}
-        >
-          Vận chuyển &amp; chứng từ
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "history"}
-          className={`${common.underlineTab} ${tab === "history" ? common.underlineTabActive : ""}`}
-          onClick={() => setTab("history")}
-        >
-          Lịch sử trạng thái ({formatInt(order.timeline?.length ?? 0)})
-        </button>
-      </div>
+      <SellerSlidingTabs
+        ariaLabel="Phân mục chi tiết đơn hàng"
+        value={tab}
+        onChange={setTab}
+        tabs={[
+          { key: "overview", label: "Tổng quan" },
+          { key: "shipping", label: "Vận chuyển" },
+          { key: "history", label: "Lịch sử", count: order.timeline?.length ?? 0 },
+        ]}
+      />
 
       <div className={styles.sixGrid}>
         <div className={`${styles.kpiTile} ${styles.span2}`}>
-          <span className={styles.kpiTileLabel}>Giá trị tiền hàng</span>
+          <span className={styles.kpiTileLabel}>Tiền hàng</span>
           <span className={styles.kpiTileVal}>{formatVnd(order.subtotal_vnd)}</span>
           <span className={styles.kpiTileSub}>
-            {formatInt(totalQty)} sản phẩm · {formatInt(order.items?.length ?? 0)} dòng SKU
+            {formatInt(totalQty)} sản phẩm, {formatInt(order.items?.length ?? 0)} SKU
           </span>
         </div>
 
         <div className={`${styles.kpiTile} ${styles.span2}`}>
-          <span className={styles.kpiTileLabel}>Phí sàn &amp; chiết khấu shop</span>
+          <span className={styles.kpiTileLabel}>Phí &amp; chiết khấu</span>
           <span className={styles.kpiTileVal}>{formatVnd(totalDeductions)}</span>
           <span className={styles.kpiTileSub}>
-            Voucher {formatVnd(order.shop_voucher_discount_vnd)} · Phí sàn{" "}
+            Voucher {formatVnd(order.shop_voucher_discount_vnd)}, Phí sàn{" "}
             {formatVnd(order.commission_vnd)}
           </span>
         </div>
 
         <div className={`${styles.kpiTile} ${styles.span2}`}>
-          <span className={styles.kpiTileLabel}>Thực nhận gian hàng</span>
+          <span className={styles.kpiTileLabel}>Thực nhận</span>
           <span className={styles.kpiTileVal}>{formatVnd(netReceivable)}</span>
           <span className={styles.kpiTileSub}>
-            {formatPaymentMethodVi(order.payment_method)} ·{" "}
+            {formatPaymentMethodVi(order.payment_method)},{" "}
             {formatPaymentStatusVi(order.payment_status)}
           </span>
         </div>
@@ -366,14 +340,9 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
                 aria-labelledby="returns-heading"
               >
                 <div className={common.cardHeader}>
-                  <div>
-                    <h2 id="returns-heading" className={common.cardTitle}>
-                      Yêu cầu đổi trả từ khách hàng
-                    </h2>
-                    <span className={common.cardMeta}>
-                      Kiểm tra lý do, sản phẩm hoàn và minh chứng trước khi phê duyệt
-                    </span>
-                  </div>
+                  <h2 id="returns-heading" className={common.cardTitle}>
+                    Yêu cầu đổi trả
+                  </h2>
                   <Button
                     variant="outline"
                     size="sm"
@@ -387,12 +356,12 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
                 </div>
 
                 {returnsLoading && returns.length === 0 ? (
-                  <div className={common.inlineEmpty}>Đang tải chi tiết yêu cầu đổi trả...</div>
+                  <div className={common.inlineEmpty}>Đang tải yêu cầu đổi trả...</div>
                 ) : returns.length === 0 ? (
                   <div className={common.inlineEmpty}>
                     {returnsUnavailable
-                      ? "Đơn hàng đang ở trạng thái yêu cầu đổi trả, nhưng dịch vụ đổi trả tạm thời chưa phản hồi. Vui lòng thử làm mới sau."
-                      : "Chưa tìm thấy hồ sơ đổi trả chi tiết cho đơn hàng này."}
+                      ? "Dịch vụ đổi trả tạm thời chưa phản hồi."
+                      : "Chưa có hồ sơ đổi trả chi tiết."}
                   </div>
                 ) : (
                   <div className={styles.kvList}>
@@ -406,27 +375,25 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
                         <div key={ret.id} className={styles.giftBox}>
                           <div className={styles.giftRow}>
                             <div>
-                              <strong>Mã yêu cầu: {ret.id}</strong>
+                              <strong>{ret.id}</strong>
                               {ret.created_at && (
                                 <span className={common.cellSub}>
-                                  Gửi lúc {formatDateTimeVi(ret.created_at)}
+                                  {formatDateTimeVi(ret.created_at)}
                                 </span>
                               )}
                             </div>
-                            <span className={pillCls(retMeta.tone)}>{retMeta.label}</span>
+                            <span className={statusPillClass(retMeta.tone)}>{retMeta.label}</span>
                           </div>
 
                           <div className={styles.kvList}>
                             <div className={styles.kvRow}>
-                              <span className={styles.kvKey}>Lý do đổi trả</span>
-                              <span className={styles.kvVal}>
-                                {ret.reason || "Không có ghi chú"}
-                              </span>
+                              <span className={styles.kvKey}>Lý do</span>
+                              <span className={styles.kvVal}>{ret.reason || EMPTY_VALUE}</span>
                             </div>
 
                             {ret.refund_amount_vnd > 0 && (
                               <div className={styles.kvRow}>
-                                <span className={styles.kvKey}>Số tiền hoàn dự kiến</span>
+                                <span className={styles.kvKey}>Hoàn dự kiến</span>
                                 <span className={styles.kvVal}>
                                   {formatVnd(ret.refund_amount_vnd)}
                                 </span>
@@ -435,14 +402,14 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
 
                             {ret.items.length > 0 && (
                               <div className={styles.kvRow}>
-                                <span className={styles.kvKey}>Sản phẩm yêu cầu trả</span>
+                                <span className={styles.kvKey}>Sản phẩm hoàn</span>
                                 <span className={styles.kvVal}>
                                   {ret.items
                                     .map((it) => {
                                       const label = it.product_name || it.sku_name || it.sku_id;
                                       const variant =
                                         it.product_name && it.sku_name ? ` (${it.sku_name})` : "";
-                                      return `${label}${variant} x${formatInt(it.quantity)}`;
+                                      return `${label}${variant} ×${formatInt(it.quantity)}`;
                                     })
                                     .join(", ")}
                                 </span>
@@ -472,14 +439,14 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
 
                             {ret.reject_reason && (
                               <div className={styles.kvRow}>
-                                <span className={styles.kvKey}>Lý do từ chối của gian hàng</span>
+                                <span className={styles.kvKey}>Lý do từ chối</span>
                                 <span className={styles.kvVal}>{ret.reject_reason}</span>
                               </div>
                             )}
 
                             {ret.seller_note && (
                               <div className={styles.kvRow}>
-                                <span className={styles.kvKey}>Ghi chú xử lý</span>
+                                <span className={styles.kvKey}>Ghi chú</span>
                                 <span className={styles.kvVal}>{ret.seller_note}</span>
                               </div>
                             )}
@@ -494,7 +461,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
                                       htmlFor={`reject-reason-${ret.id}`}
                                       className={common.fieldLabel}
                                     >
-                                      Lý do từ chối đổi trả (tối thiểu 5 ký tự)
+                                      Lý do từ chối (tối thiểu 5 ký tự)
                                     </label>
                                     <textarea
                                       id={`reject-reason-${ret.id}`}
@@ -507,7 +474,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
                                           setRejectErrors((prev) => ({ ...prev, [ret.id]: "" }));
                                         }
                                       }}
-                                      placeholder="Nêu rõ lý do từ chối và bằng chứng đối chiếu (ví dụ: sản phẩm đã qua sử dụng, thiếu tem mác)..."
+                                      placeholder="Nêu rõ lý do từ chối..."
                                     />
                                     {rejectErrors[ret.id] && (
                                       <span className={common.fieldError}>
@@ -552,7 +519,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
                                       Từ chối đổi trả
                                     </Button>
                                     <Button
-                                      variant="ink"
+                                      variant="primary"
                                       size="sm"
                                       shape="app"
                                       disabled={isProcessing}
@@ -582,16 +549,15 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
             >
               <div className={common.cardHeader}>
                 <h2 id="items-heading" className={common.cardTitle}>
-                  Sản phẩm và mã SKU
+                  Sản phẩm
                 </h2>
-                <span className={common.cardMeta}>Số liệu đồng bộ từ hệ thống đơn hàng</span>
               </div>
 
               <div className={common.tableWrap}>
                 <table className={common.dataTable}>
                   <thead>
                     <tr>
-                      <th>Sản phẩm &amp; biến thể</th>
+                      <th>Sản phẩm &amp; SKU</th>
                       <th className={common.numCol}>Đơn giá</th>
                       <th className={common.numCol}>SL</th>
                       <th className={common.numCol}>Thành tiền</th>
@@ -601,15 +567,13 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
                     {(order.items ?? []).map((item) => (
                       <tr key={item.id}>
                         <td>
-                          <div>
-                            <Link
-                              href={`/seller/san-pham/${item.product_id}`}
-                              className={common.cellLink}
-                            >
-                              {item.product_name}
-                            </Link>
-                            <span className={common.cellSub}>{item.sku_name || item.sku_id}</span>
-                          </div>
+                          <Link
+                            href={`/seller/san-pham/${item.product_id}`}
+                            className={common.cellLink}
+                          >
+                            {item.product_name}
+                          </Link>
+                          <span className={common.cellSub}>{item.sku_name || item.sku_id}</span>
                         </td>
                         <td className={common.numCol}>
                           {formatVnd(item.effective_unit_price_vnd || item.unit_price_vnd)}
@@ -632,25 +596,25 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
                 {order.flash_sale_discount_vnd > 0 && (
                   <div className={styles.reconRow}>
                     <span>Giảm Flash sale</span>
-                    <span>{`\u2212${formatVnd(order.flash_sale_discount_vnd)}`}</span>
+                    <span>{`−${formatVnd(order.flash_sale_discount_vnd)}`}</span>
                   </div>
                 )}
                 <div className={styles.reconRow}>
-                  <span>Voucher gian hàng tài trợ</span>
+                  <span>Voucher shop</span>
                   <span>
                     {order.shop_voucher_discount_vnd > 0
-                      ? `\u2212${formatVnd(order.shop_voucher_discount_vnd)}`
+                      ? `−${formatVnd(order.shop_voucher_discount_vnd)}`
                       : "0₫"}
                   </span>
                 </div>
                 <div className={styles.reconRow}>
                   <span>Phí hoa hồng sàn</span>
                   <span>
-                    {order.commission_vnd > 0 ? `\u2212${formatVnd(order.commission_vnd)}` : "0₫"}
+                    {order.commission_vnd > 0 ? `−${formatVnd(order.commission_vnd)}` : "0₫"}
                   </span>
                 </div>
                 <div className={`${styles.reconRow} ${styles.reconRowTotal}`}>
-                  <span>Thực nhận về sổ cái gian hàng</span>
+                  <span>Thực nhận</span>
                   <span>{formatVnd(netReceivable)}</span>
                 </div>
               </div>
@@ -662,7 +626,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
             >
               <div className={common.cardHeader}>
                 <h2 id="buyer-heading" className={common.cardTitle}>
-                  Thông tin giao nhận
+                  Giao nhận
                 </h2>
               </div>
 
@@ -687,11 +651,11 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
                   <span className={styles.kvVal}>{addr?.recipient_phone || EMPTY_VALUE}</span>
                 </div>
                 <div className={styles.kvRow}>
-                  <span className={styles.kvKey}>Địa chỉ giao hàng</span>
+                  <span className={styles.kvKey}>Địa chỉ</span>
                   <span className={styles.kvVal}>{fullAddress}</span>
                 </div>
                 <div className={styles.kvRow}>
-                  <span className={styles.kvKey}>Đơn vị vận chuyển</span>
+                  <span className={styles.kvKey}>ĐVVC</span>
                   <span className={styles.kvVal}>{order.carrier_code || "Tiêu chuẩn"}</span>
                 </div>
                 <div className={styles.kvRow}>
@@ -716,7 +680,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
           >
             <div className={common.cardHeader}>
               <h2 id="shipping-heading" className={common.cardTitle}>
-                Thông tin vận đơn &amp; bàn giao ĐVVC
+                Vận đơn &amp; bàn giao
               </h2>
             </div>
 
@@ -731,14 +695,14 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
               </div>
               <div className={styles.kvRow}>
                 <span className={styles.kvKey}>Mã vận đơn</span>
-                <span className={styles.kvVal}>{order.tracking_code || "Chưa tạo vận đơn"}</span>
+                <span className={styles.kvVal}>{order.tracking_code || "Chưa tạo"}</span>
               </div>
               <div className={styles.kvRow}>
-                <span className={styles.kvKey}>Phí vận chuyển khách trả</span>
+                <span className={styles.kvKey}>Phí vận chuyển</span>
                 <span className={styles.kvVal}>{formatVnd(order.shipping_fee_vnd)}</span>
               </div>
               <div className={styles.kvRow}>
-                <span className={styles.kvKey}>Tổng thanh toán của khách</span>
+                <span className={styles.kvKey}>Khách thanh toán</span>
                 <span className={styles.kvVal}>{formatVnd(order.total_payable_vnd)}</span>
               </div>
             </div>
@@ -752,12 +716,12 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
           >
             <div className={common.cardHeader}>
               <h2 id="history-heading" className={common.cardTitle}>
-                Nhật ký chuyển trạng thái đơn hàng
+                Nhật ký trạng thái
               </h2>
             </div>
 
             {(order.timeline ?? []).length === 0 ? (
-              <div className={common.inlineEmpty}>Chưa có mốc cập nhật trạng thái nào.</div>
+              <div className={common.inlineEmpty}>Chưa có mốc trạng thái.</div>
             ) : (
               <div className={styles.kvList}>
                 {order.timeline.map((ev) => {
@@ -769,7 +733,7 @@ export function SellerOrderDetailClient({ initialOrder, loadError }: SellerOrder
                       </span>
                       <span className={styles.kvVal}>
                         <strong>{toMeta.label}</strong>
-                        {ev.note ? ` · ${ev.note}` : ""}
+                        {ev.note ? `, ${ev.note}` : ""}
                       </span>
                     </div>
                   );

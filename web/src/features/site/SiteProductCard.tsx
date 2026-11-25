@@ -13,6 +13,8 @@ export interface SiteProductCardProps {
   cardStyle?: SiteCardStyle;
   /** Shows a short description snippet on editorial / magazine cards. */
   showExcerpt?: boolean;
+  /** Expands to a full-row horizontal layout when a section only contains 1 product (zero orphan). */
+  layoutMode?: "default" | "single-wide";
 }
 
 export function SiteProductCard({
@@ -21,72 +23,105 @@ export function SiteProductCard({
   index = 0,
   cardStyle = "minimal",
   showExcerpt = false,
+  layoutMode = "default",
 }: SiteProductCardProps) {
-  const imageSrc =
-    sanitizeSafeImageUrl(product.onModelImage) ||
-    sanitizeSafeImageUrl(product.image) ||
-    "/banners/fabric-closeup.jpg";
+  const candidates = Array.from(
+    new Set(
+      [
+        product.onModelImage,
+        product.image,
+        ...(product.gallery ?? []),
+        ...product.colors.map((c) => c.image),
+      ]
+        .map((u) => sanitizeSafeImageUrl(u))
+        .filter(Boolean)
+    )
+  );
+  const primaryImg = candidates[0] || "/banners/fabric-closeup.jpg";
+  const secondaryImg = candidates.length > 1 ? candidates[1] : null;
+
   const displayPrice = product.price;
   const comparePrice = product.originalPrice;
   const hasDiscount = typeof comparePrice === "number" && comparePrice > displayPrice;
+  const discountLabel =
+    hasDiscount && comparePrice ? formatDiscountPercent(comparePrice, displayPrice) : "";
+
   const totalStock = product.skus.reduce((sum, sku) => sum + Math.max(0, sku.stock), 0);
+  const stockNotice =
+    totalStock <= 0 ? "Tạm hết hàng" : totalStock <= 5 ? `Còn ${formatInt(totalStock)}` : "";
+
   const availableSizes = Array.from(
     new Set(product.skus.filter((s) => s.stock > 0).map((s) => s.size))
   );
   const href = `/san-pham/${encodeURIComponent(product.slug)}`;
+  const isSingleWide = layoutMode === "single-wide";
 
-  const cardImage = (
+  const mediaContent = (
     <>
       <img
-        src={imageSrc}
+        src={primaryImg}
         alt={product.name}
         width={896}
         height={1200}
-        className={tplStyles.cardImg}
+        className={tplStyles.cardImgPrimary}
         loading={index < 4 ? "eager" : "lazy"}
       />
-      {product.isFlashSale ? (
-        <span className={tplStyles.cardBadge}>Flash sale</span>
-      ) : hasDiscount && comparePrice ? (
-        <span className={tplStyles.cardBadge}>
-          {formatDiscountPercent(comparePrice, displayPrice)}
-        </span>
-      ) : null}
+      {secondaryImg && (
+        <img
+          src={secondaryImg}
+          alt=""
+          aria-hidden="true"
+          width={896}
+          height={1200}
+          className={tplStyles.cardImgSecondary}
+          loading="lazy"
+        />
+      )}
     </>
   );
 
   return (
-    <article className={tplStyles.card} data-card-style={cardStyle} data-reveal="">
+    <article
+      className={`${tplStyles.card} ${isSingleWide ? tplStyles.cardSingleWide : ""}`}
+      data-card-style={cardStyle}
+      data-has-hover={secondaryImg ? "true" : "false"}
+    >
       {previewMode ? (
-        <div className={tplStyles.cardImgWrap}>{cardImage}</div>
+        <div className={tplStyles.cardImgWrap}>{mediaContent}</div>
       ) : (
-        <Link href={href} className={tplStyles.cardImgWrap}>
-          {cardImage}
+        <Link href={href} className={tplStyles.cardImgWrap} tabIndex={-1} aria-hidden="true">
+          {mediaContent}
         </Link>
       )}
 
       <div className={tplStyles.cardBody}>
-        {cardStyle === "atelier" && product.gsm > 0 && (
-          <span className={tplStyles.cardCraftTag}>{product.gsm}gsm · Chuẩn xưởng</span>
-        )}
+        <div className={tplStyles.cardMetaTop}>
+          {product.colors.length > 0 && (
+            <div className={tplStyles.cardSwatchRow} aria-label={`${product.colors.length} màu`}>
+              {product.colors.slice(0, 5).map((c) => (
+                <span
+                  key={c.code}
+                  className={tplStyles.cardSwatchDot}
+                  style={{ backgroundColor: c.hex }}
+                  title={c.name}
+                />
+              ))}
+              {product.colors.length > 5 && (
+                <span className={`${tplStyles.cardSwatchMore} num`}>
+                  +{product.colors.length - 5}
+                </span>
+              )}
+            </div>
+          )}
 
-        {previewMode ? (
-          <h3 className={tplStyles.cardTitle}>{product.name}</h3>
-        ) : (
-          <Link href={href} className={tplStyles.cardTitle}>
-            {product.name}
-          </Link>
-        )}
+          {product.isFlashSale ? (
+            <span className={tplStyles.cardTagText}>Flash sale</span>
+          ) : discountLabel ? (
+            <span className={`${tplStyles.cardTagText} num`}>{discountLabel}</span>
+          ) : null}
+        </div>
 
-        {(product.fabric || product.gsm > 0) && (
-          <p className={tplStyles.cardSpec}>
-            {[product.fabric, product.gsm > 0 && cardStyle !== "atelier" ? `${product.gsm}gsm` : ""]
-              .filter(Boolean)
-              .join(" · ")}
-          </p>
-        )}
-
-        {(showExcerpt || cardStyle === "editorial") && product.description && (
+        {(showExcerpt || isSingleWide) && product.description && (
           <p className={tplStyles.cardExcerpt}>{product.description}</p>
         )}
 
@@ -97,26 +132,33 @@ export function SiteProductCard({
                 {sz}
               </span>
             ))}
-            <span className={`${tplStyles.cardStockPill} num`}>
-              {product.colors.length} màu · {formatInt(totalStock)} sẵn kho
-            </span>
           </div>
         )}
 
         <div className={tplStyles.cardPriceRow}>
           <span className={`${tplStyles.cardPrice} num`}>{formatVnd(displayPrice)}</span>
-          {hasDiscount && comparePrice ? (
+          {hasDiscount && comparePrice && (
             <span className={`${tplStyles.cardComparePrice} num`}>{formatVnd(comparePrice)}</span>
-          ) : (
-            <span className={`${tplStyles.cardStockPill} num`}>
-              {totalStock > 0
-                ? cardStyle === "dense"
-                  ? `Còn ${formatInt(totalStock)}`
-                  : "Sẵn hàng"
-                : "Tạm hết hàng"}
+          )}
+          {stockNotice && (
+            <span
+              className={`${tplStyles.cardStockLabel} ${
+                totalStock <= 0 ? tplStyles.cardStockOut : ""
+              } num`}
+            >
+              {stockNotice}
             </span>
           )}
         </div>
+
+        {/* Keep product title link as the LAST a[href^="/san-pham/"] inside article (buyer-flow E2E invariant). */}
+        {previewMode ? (
+          <h3 className={tplStyles.cardTitle}>{product.name}</h3>
+        ) : (
+          <Link href={href} className={tplStyles.cardTitle}>
+            {product.name}
+          </Link>
+        )}
       </div>
     </article>
   );
