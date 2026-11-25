@@ -9,7 +9,7 @@ import type {
   PaginatedResponse,
 } from "@/lib/gateway-types";
 import { api, getErrorMessage } from "@/lib/api";
-import { useMockStore } from "@/mock/MockStoreContext";
+import { roleHasCapability } from "@/lib/admin-rbac";
 import { Button, IconSearch, StateView } from "@/components";
 import { formatDateTimeVi, formatInt } from "@/lib/format";
 import {
@@ -19,9 +19,9 @@ import {
 } from "./bannedKeywordsHelper";
 import { getAdminProductStatusMeta } from "./types";
 import { StatusPill } from "./StatusPill";
-import { ToggleSwitch } from "./ToggleSwitch";
-import { useAdminCapability } from "./AdminUserContext";
+import { useAdminContext } from "./AdminShell";
 import shared from "./adminShared.module.css";
+import styles from "@/app/(admin)/admin/kiem-duyet/page.module.css";
 
 interface Props {
   onMutated?: () => void;
@@ -48,8 +48,8 @@ function formatActionPill(action: string): { label: string; tone: "negative" | "
 }
 
 export function AdminBannedKeywordsTab({ onMutated }: Props) {
-  const { showToast } = useMockStore();
-  const canWriteKeywords = useAdminCapability("banned_keywords.write");
+  const { user, showToast } = useAdminContext();
+  const canWriteKeywords = roleHasCapability(user.role, "banned_keywords.write");
 
   const [items, setItems] = useState<GatewayBannedKeyword[]>([]);
   const [total, setTotal] = useState(0);
@@ -64,7 +64,6 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
   const loadSeqRef = useRef(0);
   const loadAbortRef = useRef<AbortController | null>(null);
 
-  // Create + preview form
   const [newTerm, setNewTerm] = useState("");
   const [newCategory, setNewCategory] = useState("COUNTERFEIT");
   const [newAction, setNewAction] = useState<GatewayBannedKeywordAction>("BLOCK");
@@ -76,7 +75,6 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
     null
   );
 
-  // Inline edit
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTerm, setEditTerm] = useState("");
   const [editCategory, setEditCategory] = useState("COUNTERFEIT");
@@ -86,7 +84,6 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
-  // Batch rescan (E11: limit 500 per batch, cursor loop, AbortController on stop/unmount)
   const [dryRun, setDryRun] = useState(true);
   const [rescanning, setRescanning] = useState(false);
   const [rescanStatus, setRescanStatus] = useState<
@@ -127,7 +124,7 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
       qs.set("page", "1");
       qs.set("page_size", "100");
       const res = await api<PaginatedResponse<GatewayBannedKeyword>>(
-        `admin/banned-keywords?${qs.toString()}`,
+        `/api/admin/banned-keywords?${qs.toString()}`,
         { signal: controller.signal }
       );
       if (controller.signal.aborted || loadSeqRef.current !== seq) return;
@@ -157,10 +154,13 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
     setFormError(null);
     setPreviewLoading(true);
     try {
-      const res = await api<GatewayPreviewBannedKeywordResponse>("admin/banned-keywords/preview", {
-        method: "POST",
-        json: { term: clean },
-      });
+      const res = await api<GatewayPreviewBannedKeywordResponse>(
+        "/api/admin/banned-keywords/preview",
+        {
+          method: "POST",
+          body: { term: clean },
+        }
+      );
       setPreviewResult(res);
     } catch (err) {
       setFormError(getErrorMessage(err, "Không thể xem trước sản phẩm bị ảnh hưởng."));
@@ -183,9 +183,9 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
     setFormError(null);
     setSubmitting(true);
     try {
-      await api<{ keyword: GatewayBannedKeyword }>("admin/banned-keywords", {
+      await api<{ keyword: GatewayBannedKeyword }>("/api/admin/banned-keywords", {
         method: "POST",
-        json: {
+        body: {
           term: clean,
           category: newCategory,
           action: newAction,
@@ -221,15 +221,18 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
     setEditError(null);
     setBusyId(kwId);
     try {
-      await api<{ keyword: GatewayBannedKeyword }>(`admin/banned-keywords/${kwId}`, {
-        method: "PUT",
-        json: {
-          term: clean,
-          category: editCategory,
-          action: editAction,
-          is_active: editActive,
-        },
-      });
+      await api<{ keyword: GatewayBannedKeyword }>(
+        `/api/admin/banned-keywords/${encodeURIComponent(kwId)}`,
+        {
+          method: "PUT",
+          body: {
+            term: clean,
+            category: editCategory,
+            action: editAction,
+            is_active: editActive,
+          },
+        }
+      );
       setEditingId(null);
       await loadKeywords();
       onMutated?.();
@@ -244,15 +247,18 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
   const handleToggleActive = async (kw: GatewayBannedKeyword) => {
     setBusyId(kw.id);
     try {
-      await api<{ keyword: GatewayBannedKeyword }>(`admin/banned-keywords/${kw.id}`, {
-        method: "PUT",
-        json: {
-          term: kw.term,
-          category: kw.category,
-          action: kw.action,
-          is_active: !kw.is_active,
-        },
-      });
+      await api<{ keyword: GatewayBannedKeyword }>(
+        `/api/admin/banned-keywords/${encodeURIComponent(kw.id)}`,
+        {
+          method: "PUT",
+          body: {
+            term: kw.term,
+            category: kw.category,
+            action: kw.action,
+            is_active: !kw.is_active,
+          },
+        }
+      );
       await loadKeywords();
       onMutated?.();
       showToast(
@@ -270,7 +276,7 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
   const handleDelete = async (kw: GatewayBannedKeyword) => {
     setBusyId(kw.id);
     try {
-      await api<{ ok: boolean }>(`admin/banned-keywords/${kw.id}`, {
+      await api<{ ok: boolean }>(`/api/admin/banned-keywords/${encodeURIComponent(kw.id)}`, {
         method: "DELETE",
       });
       setConfirmDeleteId(null);
@@ -302,9 +308,9 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
     try {
       const result = await runBannedKeywordRescanBatches(
         (req, signal) =>
-          api<GatewayRescanProductsResponse>("admin/banned-keywords/rescan", {
+          api<GatewayRescanProductsResponse>("/api/admin/banned-keywords/rescan", {
             method: "POST",
-            json: req,
+            body: req,
             signal,
           }),
         { dryRun, signal: controller.signal },
@@ -316,10 +322,11 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
         showToast(`Đã dừng quét sau ${formatInt(result.batches)} lô.`);
       } else {
         setRescanStatus("completed");
+        if (!dryRun) onMutated?.();
         showToast(
           dryRun
             ? `Đã chạy thử quét ${formatInt(result.scannedCount)} sản phẩm (${formatInt(result.blockedCount)} chặn, ${formatInt(result.flaggedCount)} gắn cờ).`
-            : `Hoàn tất quét ${formatInt(result.scannedCount)} sản phẩm (${formatInt(result.blockedCount)} từ chối/gỡ, ${formatInt(result.flaggedCount)} đưa về chờ duyệt).`
+            : `Hoàn tất quét ${formatInt(result.scannedCount)} sản phẩm (${formatInt(result.blockedCount)} từ chối, ${formatInt(result.flaggedCount)} đưa về chờ duyệt).`
         );
       }
     } catch (err) {
@@ -348,17 +355,14 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
   };
 
   return (
-    <div className={shared.sectionStack}>
+    <div className={styles.sectionStack}>
       {canWriteKeywords && (
         <section className={shared.panel} aria-labelledby="kw-create-heading">
           <div className={shared.panelHeader}>
             <h2 id="kw-create-heading" className={shared.panelTitle}>
-              Thêm quy tắc từ khoá cấm & xem trước ảnh hưởng
+              Thêm quy tắc từ khoá cấm &amp; xem trước ảnh hưởng
             </h2>
-            <span className={shared.panelMeta}>
-              Từ có dấu so đúng dấu, chữ không dấu khớp cả bản có dấu; cụm từ từ 2 tiếng trở lên
-              khớp cả khi viết không dấu hoặc tách chữ.
-            </span>
+            <span className={shared.panelMeta}>Tối đa 120 ký tự</span>
           </div>
 
           <form onSubmit={(e) => void handleCreate(e)} noValidate className={shared.detailGrid}>
@@ -386,8 +390,7 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
               </label>
               <select
                 id="kw-new-category"
-                className={shared.toolbarSelect}
-                style={{ height: 38 }}
+                className={`${shared.toolbarSelect} ${styles.selectControl}`}
                 value={newCategory}
                 onChange={(e) => setNewCategory(e.target.value)}
               >
@@ -405,12 +408,11 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
               </label>
               <select
                 id="kw-new-action"
-                className={shared.toolbarSelect}
-                style={{ height: 38 }}
+                className={`${shared.toolbarSelect} ${styles.selectControl}`}
                 value={newAction}
                 onChange={(e) => setNewAction(e.target.value as GatewayBannedKeywordAction)}
               >
-                <option value="BLOCK">Chặn đăng bán & đánh giá (BLOCK)</option>
+                <option value="BLOCK">Chặn đăng bán &amp; đánh giá (BLOCK)</option>
                 <option value="REVIEW">Gắn cờ chuyển duyệt thủ công (REVIEW)</option>
               </select>
             </div>
@@ -449,7 +451,7 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
           </form>
 
           {previewResult && (
-            <div className={shared.detailWell} style={{ marginTop: 16 }}>
+            <div className={shared.detailWell}>
               <div className={shared.detailHeader}>
                 <h3 className={shared.detailHeading}>
                   Kết quả xem trước: {formatInt(previewResult.affected_count)} sản phẩm bị ảnh hưởng
@@ -528,33 +530,24 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
         <section className={shared.panel} aria-labelledby="kw-rescan-heading">
           <div className={shared.panelHeader}>
             <h2 id="kw-rescan-heading" className={shared.panelTitle}>
-              Quét lại sản phẩm đang bán theo danh sách từ khoá cấm
+              Quét lại sản phẩm đang bán theo từ khoá cấm
             </h2>
-            <span className={shared.panelMeta}>Xử lý theo lô 500 sản phẩm</span>
+            <span className={shared.panelMeta}>Lô 500 sản phẩm</span>
           </div>
 
-          <p className={shared.pageSubtitle} style={{ marginTop: 0, marginBottom: 12 }}>
-            Quét toàn bộ sản phẩm đang hoạt động theo các quy tắc đang bật và danh mục hàng cấm. Quy
-            tắc BLOCK chuyển sản phẩm sang từ chối; quy tắc REVIEW chuyển về hàng đợi chờ duyệt.
+          <p className={styles.helperText}>
+            Quy tắc BLOCK chuyển sản phẩm sang từ chối; quy tắc REVIEW chuyển về hàng đợi chờ duyệt.
           </p>
 
           <div className={shared.detailButtons}>
-            <label
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                fontSize: 14,
-                cursor: "pointer",
-              }}
-            >
+            <label className={styles.inlineCheck}>
               <input
                 type="checkbox"
                 checked={dryRun}
                 onChange={(e) => setDryRun(e.target.checked)}
                 disabled={rescanning}
               />
-              <span>Chạy thử (chỉ thống kê, không đổi trạng thái sản phẩm)</span>
+              <span>Chạy thử (chỉ thống kê, không đổi trạng thái)</span>
             </label>
 
             <Button
@@ -568,8 +561,8 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
               {rescanning
                 ? `Đang quét lô ${rescanProgress ? rescanProgress.batches + 1 : 1}...`
                 : dryRun
-                  ? "Chạy thử quét lại SP đang bán"
-                  : "Quét lại SP đang bán"}
+                  ? "Chạy thử quét lại"
+                  : "Quét lại sản phẩm"}
             </Button>
             {rescanning && (
               <Button
@@ -585,13 +578,13 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
           </div>
 
           {rescanError && (
-            <p className={shared.validationError} role="alert" style={{ marginTop: 10 }}>
+            <p className={shared.validationError} role="alert">
               {rescanError}
             </p>
           )}
 
           {rescanProgress && (
-            <div className={shared.detailWell} style={{ marginTop: 14 }}>
+            <div className={shared.detailWell}>
               <div className={shared.detailGrid}>
                 <div className={shared.detailField}>
                   <span className={shared.detailKey}>Tiến độ quét</span>
@@ -627,7 +620,7 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
                       <thead>
                         <tr>
                           <th>Sản phẩm (tối đa 20 mẫu)</th>
-                          <th>Trạng thái trước khi quét</th>
+                          <th>Trạng thái trước quét</th>
                           <th>Từ khoá khớp</th>
                           <th>Mức xử lý</th>
                         </tr>
@@ -667,8 +660,7 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
                           </div>
                           <div className={shared.mobileLine2}>
                             <span className={shared.mobileMetaText}>
-                              Trước khi quét: {statusMeta.label} ·{" "}
-                              {(s.matched_terms ?? []).join(", ")}
+                              Trước quét: {statusMeta.label} · {(s.matched_terms ?? []).join(", ")}
                             </span>
                           </div>
                         </article>
@@ -692,7 +684,7 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
           </Button>
         </div>
 
-        <div className={shared.toolbar} style={{ marginTop: 8 }}>
+        <div className={shared.toolbar}>
           <div className={shared.toolbarLeft}>
             <div className={shared.searchWrap}>
               <span className={shared.searchIcon}>
@@ -721,15 +713,7 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
           </div>
 
           <div className={shared.toolbarRight}>
-            <label
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                fontSize: 13,
-                cursor: "pointer",
-              }}
-            >
+            <label className={styles.inlineCheck}>
               <input
                 type="checkbox"
                 checked={includeInactive}
@@ -741,7 +725,7 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
         </div>
 
         {editError && (
-          <p className={shared.validationError} role="alert" style={{ marginBottom: 10 }}>
+          <p className={shared.validationError} role="alert">
             {editError}
           </p>
         )}
@@ -793,7 +777,6 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
                             <input
                               type="text"
                               className={shared.textInput}
-                              style={{ height: 34, maxWidth: 220 }}
                               value={editTerm}
                               onChange={(e) => setEditTerm(e.target.value)}
                               aria-label="Sửa cụm từ cấm"
@@ -845,21 +828,25 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
                         </td>
                         <td>
                           {isEditing ? (
-                            <ToggleSwitch
-                              id={`kw-edit-active-${kw.id}`}
-                              checked={editActive}
-                              onChange={(next) => setEditActive(next)}
-                              label={`Trạng thái từ khoá ${kw.term}`}
-                            />
+                            <label className={styles.inlineCheck}>
+                              <input
+                                type="checkbox"
+                                checked={editActive}
+                                onChange={(e) => setEditActive(e.target.checked)}
+                              />
+                              <span>{editActive ? "Đang bật" : "Đã tắt"}</span>
+                            </label>
                           ) : canWriteKeywords ? (
-                            <ToggleSwitch
-                              id={`kw-active-${kw.id}`}
-                              checked={kw.is_active}
-                              onChange={() => {
-                                if (!isBusy) void handleToggleActive(kw);
-                              }}
-                              label={`Bật hoặc tắt từ khoá ${kw.term}`}
-                            />
+                            <label className={styles.inlineCheck}>
+                              <input
+                                type="checkbox"
+                                checked={kw.is_active}
+                                disabled={isBusy}
+                                onChange={() => void handleToggleActive(kw)}
+                                aria-label={`Bật hoặc tắt từ khoá ${kw.term}`}
+                              />
+                              <span>{kw.is_active ? "Đang bật" : "Đã tắt"}</span>
+                            </label>
                           ) : (
                             <StatusPill
                               label={kw.is_active ? "Đang bật" : "Đã tắt"}
@@ -869,7 +856,7 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
                         </td>
                         <td className={shared.colAction}>
                           {canWriteKeywords ? (
-                            <div style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
+                            <div className={styles.actionRow}>
                               {isEditing ? (
                                 <>
                                   <Button
@@ -925,7 +912,7 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
                                   ) : (
                                     <button
                                       type="button"
-                                      className={shared.rowActionBtn}
+                                      className={`${shared.rowActionBtn} ${shared.rowActionBtnDanger}`}
                                       disabled={isBusy}
                                       onClick={() => setConfirmDeleteId(kw.id)}
                                     >
@@ -973,8 +960,7 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
                           </label>
                           <select
                             id={`m-kw-cat-${kw.id}`}
-                            className={shared.toolbarSelect}
-                            style={{ height: 38 }}
+                            className={`${shared.toolbarSelect} ${styles.selectControl}`}
                             value={editCategory}
                             onChange={(e) => setEditCategory(e.target.value)}
                           >
@@ -991,8 +977,7 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
                           </label>
                           <select
                             id={`m-kw-act-${kw.id}`}
-                            className={shared.toolbarSelect}
-                            style={{ height: 38 }}
+                            className={`${shared.toolbarSelect} ${styles.selectControl}`}
                             value={editAction}
                             onChange={(e) =>
                               setEditAction(e.target.value as GatewayBannedKeywordAction)
@@ -1003,18 +988,18 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
                           </select>
                         </div>
                         <div className={shared.detailField}>
-                          <span className={shared.fieldLabel}>Hiệu lực quy tắc</span>
-                          <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                            <ToggleSwitch
+                          <label
+                            htmlFor={`m-kw-edit-active-${kw.id}`}
+                            className={styles.inlineCheck}
+                          >
+                            <input
                               id={`m-kw-edit-active-${kw.id}`}
+                              type="checkbox"
                               checked={editActive}
-                              onChange={(next) => setEditActive(next)}
-                              label={`Trạng thái từ khoá ${kw.term}`}
+                              onChange={(e) => setEditActive(e.target.checked)}
                             />
-                            <span className={shared.mobileMetaText}>
-                              {editActive ? "Đang bật" : "Đã tắt"}
-                            </span>
-                          </div>
+                            <span>{editActive ? "Đang bật" : "Đã tắt"}</span>
+                          </label>
                         </div>
                         {editError && (
                           <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
@@ -1058,14 +1043,16 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
                             {kw.is_active ? "Đang bật" : "Đã tắt"}
                           </span>
                           {canWriteKeywords && (
-                            <ToggleSwitch
-                              id={`kw-m-active-${kw.id}`}
-                              checked={kw.is_active}
-                              onChange={() => {
-                                if (!isBusy) void handleToggleActive(kw);
-                              }}
-                              label={`Bật hoặc tắt từ khoá ${kw.term}`}
-                            />
+                            <label className={styles.inlineCheck}>
+                              <input
+                                type="checkbox"
+                                checked={kw.is_active}
+                                disabled={isBusy}
+                                onChange={() => void handleToggleActive(kw)}
+                                aria-label={`Bật hoặc tắt từ khoá ${kw.term}`}
+                              />
+                              <span>Bật</span>
+                            </label>
                           )}
                         </div>
                         <div className={shared.mobileLine2}>
@@ -1104,7 +1091,7 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
                               ) : (
                                 <button
                                   type="button"
-                                  className={shared.rowActionBtn}
+                                  className={`${shared.rowActionBtn} ${shared.rowActionBtnDanger}`}
                                   disabled={isBusy}
                                   onClick={() => setConfirmDeleteId(kw.id)}
                                 >

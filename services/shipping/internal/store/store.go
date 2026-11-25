@@ -464,7 +464,30 @@ func (s *PGStore) AcquireOrderDirectionLock(ctx context.Context, orderID, direct
 	return unlock, nil
 }
 
-// MigrateAndSeed applies embedded SQL migrations and idempotently seeds 34 provinces, wards, and legacy mappings.
+const (
+	migration0001Init            = "000001_init.sql"
+	migration0002ReturnShipments = "000002_return_shipments.sql"
+)
+
+// bootstrapMigrationVersions decides which historical migrations are already present on an
+// unversioned database (empty schema_migrations) so MigrateAndSeed never re-runs phase-0b's
+// 000002_return_shipments.sql (which has a lowercase direction CHECK and non-partial unique index).
+func bootstrapMigrationVersions(existingAppliedCount int, hasShipmentsTable, hasDirectionColumn bool) []string {
+	if existingAppliedCount > 0 {
+		return nil
+	}
+	var seeded []string
+	if hasShipmentsTable {
+		seeded = append(seeded, migration0001Init)
+	}
+	if hasDirectionColumn {
+		seeded = append(seeded, migration0002ReturnShipments)
+	}
+	return seeded
+}
+
+// MigrateAndSeed applies embedded SQL migrations tracked in schema_migrations (bootstrapping
+// unversioned phase-0b/legacy databases safely) and idempotently seeds 34 provinces, wards, and legacy mappings.
 // Acquires a session-scoped PostgreSQL advisory lock so concurrent replicas starting simultaneously never race on DDL or seeds.
 func (s *PGStore) MigrateAndSeed(ctx context.Context) error {
 	entries, err := fs.ReadDir(migrations.FS, ".")
@@ -494,14 +517,90 @@ func (s *PGStore) MigrateAndSeed(ctx context.Context) error {
 		_, _ = conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, migrateAdvisoryLockKey)
 	}()
 
+	if _, err := conn.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version TEXT PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)
+	`); err != nil {
+		return fmt.Errorf("create schema_migrations table: %w", err)
+	}
+
+	applied := make(map[string]bool)
+	rows, err := conn.Query(ctx, `SELECT version FROM schema_migrations`)
+	if err != nil {
+		return fmt.Errorf("list applied migrations: %w", err)
+	}
+	for rows.Next() {
+		var ver string
+		if scanErr := rows.Scan(&ver); scanErr != nil {
+			rows.Close()
+			return fmt.Errorf("scan applied migration: %w", scanErr)
+		}
+		applied[ver] = true
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		rows.Close()
+		return fmt.Errorf("iterate applied migrations: %w", rowsErr)
+	}
+	rows.Close()
+
+	if len(applied) == 0 {
+		var hasShipments, hasDirection bool
+		if err := conn.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.tables
+				WHERE table_schema = current_schema() AND table_name = 'shipments'
+			)
+		`).Scan(&hasShipments); err != nil {
+			return fmt.Errorf("check shipments table for migration bootstrap: %w", err)
+		}
+		if hasShipments {
+			if err := conn.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM information_schema.columns
+					WHERE table_schema = current_schema() AND table_name = 'shipments' AND column_name = 'direction'
+				)
+			`).Scan(&hasDirection); err != nil {
+				return fmt.Errorf("check shipments.direction for migration bootstrap: %w", err)
+			}
+		}
+		for _, ver := range bootstrapMigrationVersions(len(applied), hasShipments, hasDirection) {
+			if _, err := conn.Exec(ctx, `
+				INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING
+			`, ver); err != nil {
+				return fmt.Errorf("bootstrap schema_migrations %s: %w", ver, err)
+			}
+			applied[ver] = true
+		}
+	}
+
 	for _, name := range files {
+		if applied[name] {
+			continue
+		}
 		raw, readErr := fs.ReadFile(migrations.FS, name)
 		if readErr != nil {
 			return fmt.Errorf("read migration %s: %w", name, readErr)
 		}
-		if _, execErr := conn.Exec(ctx, string(raw)); execErr != nil {
+		tx, txErr := conn.Begin(ctx)
+		if txErr != nil {
+			return fmt.Errorf("begin migration %s tx: %w", name, txErr)
+		}
+		if _, execErr := tx.Exec(ctx, string(raw)); execErr != nil {
+			_ = tx.Rollback(ctx)
 			return fmt.Errorf("apply migration %s: %w", name, execErr)
 		}
+		if _, recErr := tx.Exec(ctx, `
+			INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING
+		`, name); recErr != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("record migration %s: %w", name, recErr)
+		}
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			return fmt.Errorf("commit migration %s: %w", name, commitErr)
+		}
+		applied[name] = true
 	}
 
 	return s.seedAddressCatalog(ctx, conn)
@@ -815,6 +914,7 @@ func (s *PGStore) MapLegacyAddress(ctx context.Context, legacyProv, legacyDist, 
 		return &address.LegacyMatch{Found: false}, nil
 	}
 
+	// Score best match: exact (prov+dist+ward) > (prov+dist) or (prov+ward) > (prov default).
 	var match address.LegacyMatch
 	err := s.pool.QueryRow(ctx, `
 		SELECT
@@ -828,12 +928,14 @@ func (s *PGStore) MapLegacyAddress(ctx context.Context, legacyProv, legacyDist, 
 		  AND (
 			(m.legacy_district_norm = $2 AND m.legacy_ward_norm = $3)
 			OR (m.legacy_district_norm = $2 AND $2 <> '')
+			OR (m.legacy_ward_norm = $3 AND $3 <> '' AND $2 = '')
 			OR (m.legacy_district_norm = '' AND m.legacy_ward_norm = '')
 		  )
 		ORDER BY
 			CASE
 				WHEN m.legacy_district_norm = $2 AND m.legacy_ward_norm = $3 AND $3 <> '' THEN 3
 				WHEN m.legacy_district_norm = $2 AND $2 <> '' THEN 2
+				WHEN m.legacy_ward_norm = $3 AND $3 <> '' AND $2 = '' THEN 2
 				ELSE 1
 			END DESC,
 			m.id ASC
@@ -904,6 +1006,7 @@ func scanShipment(row pgx.Row) (*Shipment, error) {
 		}
 		return nil, err
 	}
+	sh.Direction = NormalizeDirection(sh.Direction)
 	return &sh, nil
 }
 

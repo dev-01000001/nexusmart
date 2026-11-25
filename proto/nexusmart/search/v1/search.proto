@@ -107,6 +107,8 @@ message HybridSearchRequest {
   int64 max_price_vnd = 4;
   int32 limit = 5;
   bool include_out_of_stock = 6;
+  // Optional shop filter for storefront isolation.
+  string shop_id = 7;
 }
 
 message HybridSearchResponse {
@@ -118,6 +120,8 @@ message HybridSearchResponse {
 message SuggestRequest {
   string query = 1;
   int32 limit = 2;
+  // Optional shop filter for storefront isolation.
+  string shop_id = 3;
 }
 
 message SuggestResponse {
@@ -126,6 +130,21 @@ message SuggestResponse {
   repeated SuggestEntity shops = 3;
   repeated string trending = 4;
   repeated SearchProductHit products = 5;
+}
+
+message SimilarProductsRequest {
+  string product_id = 1;
+  string query = 2;
+  string shop_id = 3;
+  string category = 4;
+  int64 min_price_vnd = 5;
+  int64 max_price_vnd = 6;
+  int32 limit = 7;
+  bool in_stock_only = 8;
+}
+
+message SimilarProductsResponse {
+  repeated SearchProductHit items = 1;
 }
 
 message ListSearchHistoryRequest {
@@ -178,6 +197,7 @@ service SearchService {
   rpc SearchProducts(SearchProductsRequest) returns (SearchProductsResponse);
   rpc HybridSearch(HybridSearchRequest) returns (HybridSearchResponse);
   rpc Suggest(SuggestRequest) returns (SuggestResponse);
+  rpc SimilarProducts(SimilarProductsRequest) returns (SimilarProductsResponse);
   rpc ListSearchHistory(ListSearchHistoryRequest) returns (ListSearchHistoryResponse);
   rpc DeleteSearchHistory(DeleteSearchHistoryRequest) returns (DeleteSearchHistoryResponse);
   rpc ReindexAll(ReindexAllRequest) returns (ReindexAllResponse);

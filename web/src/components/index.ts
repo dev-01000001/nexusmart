@@ -4,5 +4,6 @@ export * from "./Price";
 export * from "./ProductCard";
 export * from "./StateView";
 export * from "./SvgChart";
-export * from "./ShopHeader";
-export * from "./ShopFooter";
+export * from "./Reveal";
+export * from "./PageTransition";
+export * from "./modalFocus";

@@ -202,16 +202,17 @@ func (m *MemoryStore) TransitionReturnRequest(_ context.Context, params ReturnTr
 			(strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") ||
 				statemachine.StringToPaymentMethod(ord.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD)
 		retPayload, err := json.Marshal(events.OrderReturnedPayload{
-			OrderID:         ord.ID,
-			OrderCode:       ord.OrderCode,
-			CheckoutGroupID: ord.CheckoutGroupID,
-			BuyerID:         ord.BuyerID,
-			ShopID:          ord.ShopID,
-			PaymentMethod:   ord.PaymentMethod,
-			FromStatus:      prevOrdStatus,
-			TotalPayableVND: ord.TotalPayableVND,
-			Reason:          params.Note,
-			WasPaid:         wasPaid,
+			OrderID:          ord.ID,
+			OrderCode:        ord.OrderCode,
+			CheckoutGroupID:  ord.CheckoutGroupID,
+			BuyerID:          ord.BuyerID,
+			ShopID:           ord.ShopID,
+			StorefrontShopID: ord.StorefrontShopID,
+			PaymentMethod:    ord.PaymentMethod,
+			FromStatus:       prevOrdStatus,
+			TotalPayableVND:  ord.TotalPayableVND,
+			Reason:           params.Note,
+			WasPaid:          wasPaid,
 		})
 		if err != nil {
 			return nil, err
@@ -371,7 +372,7 @@ func (m *MemoryStore) TransitionReturnRequest(_ context.Context, params ReturnTr
 			outboxReason = eventNote
 		}
 	}
-	ob, err := buildReturnUpdatedOutbox(rr, ord.CheckoutGroupID, prevStatusStr, outboxReason, params.ActorRole, params.TraceID, params.Traceparent)
+	ob, err := buildReturnUpdatedOutbox(rr, ord.CheckoutGroupID, ord.StorefrontShopID, prevStatusStr, outboxReason, params.ActorRole, params.TraceID, params.Traceparent)
 	if err != nil {
 		return nil, err
 	}
@@ -451,11 +452,12 @@ func (m *MemoryStore) SaveReturnShipmentInfo(_ context.Context, params SaveRetur
 		m.returnRequests[rr.ID] = rr
 		updated = true
 
-		var checkoutGroupID string
+		var checkoutGroupID, storefrontShopID string
 		if ord, ok := m.orders[rr.OrderID]; ok {
 			checkoutGroupID = ord.CheckoutGroupID
+			storefrontShopID = ord.StorefrontShopID
 		}
-		ob, obErr := buildReturnUpdatedOutbox(rr, checkoutGroupID, rr.Status, "Return shipping label created", "system", params.TraceID, params.Traceparent)
+		ob, obErr := buildReturnUpdatedOutbox(rr, checkoutGroupID, storefrontShopID, rr.Status, "Return shipping label created", "system", params.TraceID, params.Traceparent)
 		if obErr != nil {
 			return nil, false, obErr
 		}
@@ -660,11 +662,12 @@ func (m *MemoryStore) ApplyReturnShipmentUpdate(_ context.Context, params Return
 		CreatedAt:       now,
 	})
 
-	var checkoutGroupID string
+	var checkoutGroupID, storefrontShopID string
 	if ord, ok := m.orders[rr.OrderID]; ok {
 		checkoutGroupID = ord.CheckoutGroupID
+		storefrontShopID = ord.StorefrontShopID
 	}
-	ob, err := buildReturnUpdatedOutbox(rr, checkoutGroupID, prevStatusStr, note, "system", params.TraceID, params.Traceparent)
+	ob, err := buildReturnUpdatedOutbox(rr, checkoutGroupID, storefrontShopID, prevStatusStr, note, "system", params.TraceID, params.Traceparent)
 	if err != nil {
 		return nil, err
 	}

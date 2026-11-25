@@ -51,6 +51,7 @@ func TestE2E_PaymentFailed_SagaCompensation(t *testing.T) {
 	checkoutResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "saga-fail-" + uuid.NewString(),
 	}, CheckoutRequest{
+		SalesChannel:      "MARKETPLACE",
 		AddressID:         addr.ID,
 		FromCart:          false,
 		Items:             []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: orderQty}},

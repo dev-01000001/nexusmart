@@ -37,7 +37,11 @@ func TestOrderAddressUpdatedNotificationsLabelReprintFeesAndIdempotency(t *testi
 		},
 		txChecker: &repo.inTx,
 	}
-	svc := NewNotificationService(repo, mail, resolver, slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	siteResolver := &stubSiteResolver{
+		hosts: map[string]string{"shop-addr": "trang-an.nexusmart.vn"},
+	}
+	svc := NewNotificationService(repo, mail, resolver, slog.New(slog.NewJSONHandler(&logBuf, nil)),
+		WithSiteLinks(siteResolver, SiteLinkConfig{}))
 
 	// 1. shipment_recreated=true, fee increase (30.000 -> 45.000), tracking_code present.
 	// First simulate transient UserService.GetShop failure -> must return error and NOT mark processed_events.
@@ -46,6 +50,7 @@ func TestOrderAddressUpdatedNotificationsLabelReprintFeesAndIdempotency(t *testi
 		"order_code":         "NM-2026-ADDR1",
 		"buyer_id":           "buyer-addr",
 		"shop_id":            "shop-addr",
+		"storefront_shop_id": "shop-addr",
 		"old_fee_vnd":        30000,
 		"new_fee_vnd":        45000,
 		"tracking_code":      "MOCK-NEW-01",
@@ -99,8 +104,8 @@ func TestOrderAddressUpdatedNotificationsLabelReprintFeesAndIdempotency(t *testi
 		t.Fatalf("expected 1 unread ORDER notification for buyer, got len=%d unread=%d total=%d err=%v", len(buyerNotifs), buyerUnread, buyerTotal, err)
 	}
 	bn := buyerNotifs[0]
-	if bn.Link != "/don-hang/ord-addr-1" {
-		t.Errorf("buyer link = %q, want /don-hang/ord-addr-1", bn.Link)
+	if bn.Link != "https://trang-an.nexusmart.vn/don-hang/ord-addr-1" {
+		t.Errorf("buyer link = %q, want https://trang-an.nexusmart.vn/don-hang/ord-addr-1", bn.Link)
 	}
 	bnAll := bn.Title + " " + bn.Body
 	for _, want := range []string{"NM-2026-ADDR1", "Phường Bến Nghé", "TP. Hồ Chí Minh", "30.000₫", "45.000₫", "MOCK-NEW-01"} {
@@ -151,6 +156,7 @@ func TestOrderAddressUpdatedNotificationsLabelReprintFeesAndIdempotency(t *testi
 		"order_code":         "NM-2026-ADDR2",
 		"buyer_id":           "buyer-addr",
 		"shop_id":            "shop-addr",
+		"storefront_shop_id": "shop-addr",
 		"old_fee_vnd":        45000,
 		"new_fee_vnd":        25000,
 		"tracking_code":      "",
@@ -186,7 +192,7 @@ func TestOrderAddressUpdatedNotificationsLabelReprintFeesAndIdempotency(t *testi
 		t.Errorf("seller queued email must remind seller to reprint label: %+v", smQueued)
 	}
 	buyerNotifs, _, _, _ = svc.ListNotifications(context.Background(), "buyer-addr", store.CategoryOrder, false, 1, 20)
-	if len(buyerNotifs) != 2 || buyerNotifs[1].Link != "/don-hang/ord-addr-2" {
+	if len(buyerNotifs) != 2 || buyerNotifs[1].Link != "https://trang-an.nexusmart.vn/don-hang/ord-addr-2" {
 		t.Fatalf("expected 2 buyer notifications after queued event, got %+v", buyerNotifs)
 	}
 

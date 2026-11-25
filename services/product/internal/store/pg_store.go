@@ -873,7 +873,7 @@ func (p *pgQueries) ReactivateSKUOptimistic(ctx context.Context, s SKU, expected
 			if current.Version != expectedVersion {
 				return SKU{}, ErrVersionConflict
 			}
-			if s.Stock < current.ReservedStock {
+			if s.Stock < current.TotalReservedStock() {
 				return SKU{}, ErrInvalidStock
 			}
 			return SKU{}, ErrVersionConflict
@@ -908,7 +908,7 @@ func (p *pgQueries) ListSKUsByProductIDs(ctx context.Context, productIDs []strin
 	for _, r := range rows {
 		out = append(out, fromSKUContextFields(
 			r.ID, r.ProductID, r.ShopID, r.ProductName, r.SkuCode, r.Name,
-			r.Attributes, r.PriceVnd, r.MinPrice30dVnd, r.Stock, r.ReservedStock, r.Version,
+			r.Attributes, r.PriceVnd, r.MinPrice30dVnd, r.Stock, r.ReservedStock, r.FlashSaleReservedStock, r.Version,
 			r.WeightGrams, r.ImageURL, r.CategoryID, r.CommissionRateBps,
 			r.SkuStatus, r.ProductStatus, r.ProductDeletedAt, r.ProductShopSuspended,
 		))
@@ -930,7 +930,7 @@ func (p *pgQueries) ListAllSKUsByProductID(ctx context.Context, productID string
 	for _, r := range rows {
 		out = append(out, fromSKUContextFields(
 			r.ID, r.ProductID, r.ShopID, r.ProductName, r.SkuCode, r.Name,
-			r.Attributes, r.PriceVnd, r.MinPrice30dVnd, r.Stock, r.ReservedStock, r.Version,
+			r.Attributes, r.PriceVnd, r.MinPrice30dVnd, r.Stock, r.ReservedStock, r.FlashSaleReservedStock, r.Version,
 			r.WeightGrams, r.ImageURL, r.CategoryID, r.CommissionRateBps,
 			r.SkuStatus, r.ProductStatus, r.ProductDeletedAt, r.ProductShopSuspended,
 		))
@@ -955,7 +955,7 @@ func (p *pgQueries) GetSKUsBatch(ctx context.Context, skuIDs []string) ([]SKU, e
 	for _, r := range rows {
 		out = append(out, fromSKUContextFields(
 			r.ID, r.ProductID, r.ShopID, r.ProductName, r.SkuCode, r.Name,
-			r.Attributes, r.PriceVnd, r.MinPrice30dVnd, r.Stock, r.ReservedStock, r.Version,
+			r.Attributes, r.PriceVnd, r.MinPrice30dVnd, r.Stock, r.ReservedStock, r.FlashSaleReservedStock, r.Version,
 			r.WeightGrams, r.ImageURL, r.CategoryID, r.CommissionRateBps,
 			r.SkuStatus, r.ProductStatus, r.ProductDeletedAt, r.ProductShopSuspended,
 		))
@@ -975,7 +975,7 @@ func (p *pgQueries) GetSKUWithContext(ctx context.Context, skuID string) (SKU, e
 	}
 	return fromSKUContextFields(
 		r.ID, r.ProductID, r.ShopID, r.ProductName, r.SkuCode, r.Name,
-		r.Attributes, r.PriceVnd, r.MinPrice30dVnd, r.Stock, r.ReservedStock, r.Version,
+		r.Attributes, r.PriceVnd, r.MinPrice30dVnd, r.Stock, r.ReservedStock, r.FlashSaleReservedStock, r.Version,
 		r.WeightGrams, r.ImageURL, r.CategoryID, r.CommissionRateBps,
 		r.SkuStatus, r.ProductStatus, r.ProductDeletedAt, r.ProductShopSuspended,
 	), nil
@@ -993,7 +993,7 @@ func (p *pgQueries) GetSKUWithContextForUpdate(ctx context.Context, skuID string
 	}
 	return fromSKUContextFields(
 		r.ID, r.ProductID, r.ShopID, r.ProductName, r.SkuCode, r.Name,
-		r.Attributes, r.PriceVnd, r.MinPrice30dVnd, r.Stock, r.ReservedStock, r.Version,
+		r.Attributes, r.PriceVnd, r.MinPrice30dVnd, r.Stock, r.ReservedStock, r.FlashSaleReservedStock, r.Version,
 		r.WeightGrams, r.ImageURL, r.CategoryID, r.CommissionRateBps,
 		r.SkuStatus, r.ProductStatus, r.ProductDeletedAt, r.ProductShopSuspended,
 	), nil
@@ -1021,7 +1021,7 @@ func (p *pgQueries) UpdateSKUStockOptimistic(ctx context.Context, skuID string, 
 			if current.Version != expectedVersion {
 				return SKU{}, ErrVersionConflict
 			}
-			if newStock < current.ReservedStock {
+			if newStock < current.TotalReservedStock() {
 				return SKU{}, ErrInvalidStock
 			}
 			return SKU{}, ErrVersionConflict
@@ -1140,6 +1140,7 @@ func (p *pgQueries) ListReservationsByOrderID(ctx context.Context, orderID strin
 			SKUID:              r.SkuID,
 			Quantity:           r.Quantity,
 			Status:             r.Status,
+			FlashSaleItemID:    r.FlashSaleItemID,
 			CreatedAt:          r.CreatedAt,
 			UpdatedAt:          r.UpdatedAt,
 		})
@@ -1154,6 +1155,7 @@ func (p *pgQueries) CreateStockReservation(ctx context.Context, r StockReservati
 		OrderID:            r.OrderID,
 		SkuID:              r.SKUID,
 		Quantity:           r.Quantity,
+		FlashSaleItemID:    r.FlashSaleItemID,
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -1169,6 +1171,7 @@ func (p *pgQueries) CreateStockReservation(ctx context.Context, r StockReservati
 		SKUID:              row.SkuID,
 		Quantity:           row.Quantity,
 		Status:             row.Status,
+		FlashSaleItemID:    row.FlashSaleItemID,
 		CreatedAt:          row.CreatedAt,
 		UpdatedAt:          row.UpdatedAt,
 	}, nil
@@ -1219,6 +1222,14 @@ func (p *pgQueries) TryInsertRestockHistory(ctx context.Context, h StockHistoryE
 		return false, mapPgError(err)
 	}
 	return n > 0, nil
+}
+
+func (p *pgQueries) NextProductEventVersion(ctx context.Context) (int64, error) {
+	v, err := p.q.NextProductEventVersion(ctx)
+	if err != nil {
+		return 0, mapPgError(err)
+	}
+	return v, nil
 }
 
 func (p *pgQueries) InsertOutboxEvent(ctx context.Context, ev OutboxEvent) error {
@@ -1664,6 +1675,7 @@ func mergeDBSKU(row db.Sku, base SKU) SKU {
 	base.PriceVND = row.PriceVnd
 	base.Stock = row.Stock
 	base.ReservedStock = row.ReservedStock
+	base.FlashSaleReservedStock = row.FlashSaleReservedStock
 	base.Version = row.Version
 	base.WeightGrams = row.WeightGrams
 	base.ImageURL = row.ImageURL
@@ -1675,7 +1687,7 @@ func mergeDBSKU(row db.Sku, base SKU) SKU {
 
 func fromSKUContextFields(
 	id, productID, shopID, productName, skuCode, name string,
-	attrs []byte, priceVND, minPrice30dVND int64, stock, reservedStock int32, version int64,
+	attrs []byte, priceVND, minPrice30dVND int64, stock, reservedStock, flashSaleReservedStock int32, version int64,
 	weightGrams int32, imageURL, categoryID string, commissionRateBps int32,
 	skuStatus, productStatus string, productDeletedAt *time.Time, productShopSuspended bool,
 ) SKU {
@@ -1683,26 +1695,27 @@ func fromSKUContextFields(
 		minPrice30dVND = priceVND
 	}
 	return SKU{
-		ID:                id,
-		ProductID:         productID,
-		ShopID:            shopID,
-		ProductName:       productName,
-		SKUCode:           skuCode,
-		Name:              name,
-		Attributes:        unmarshalStringMap(attrs),
-		PriceVND:          priceVND,
-		MinPrice30dVND:    minPrice30dVND,
-		Stock:             stock,
-		ReservedStock:     reservedStock,
-		Version:           version,
-		WeightGrams:       weightGrams,
-		ImageURL:          imageURL,
-		CategoryID:        categoryID,
-		CommissionRateBps: commissionRateBps,
-		Status:            skuStatus,
-		ProductStatus:     productStatus,
-		ProductDeleted:    productDeletedAt != nil,
-		ShopSuspended:     productShopSuspended,
+		ID:                     id,
+		ProductID:              productID,
+		ShopID:                 shopID,
+		ProductName:            productName,
+		SKUCode:                skuCode,
+		Name:                   name,
+		Attributes:             unmarshalStringMap(attrs),
+		PriceVND:               priceVND,
+		MinPrice30dVND:         minPrice30dVND,
+		Stock:                  stock,
+		ReservedStock:          reservedStock,
+		FlashSaleReservedStock: flashSaleReservedStock,
+		Version:                version,
+		WeightGrams:            weightGrams,
+		ImageURL:               imageURL,
+		CategoryID:             categoryID,
+		CommissionRateBps:      commissionRateBps,
+		Status:                 skuStatus,
+		ProductStatus:          productStatus,
+		ProductDeleted:         productDeletedAt != nil,
+		ShopSuspended:          productShopSuspended,
 	}
 }
 

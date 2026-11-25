@@ -1,0 +1,137 @@
+replicaCount: 1
+revisionHistoryLimit: 5
+terminationGracePeriodSeconds: 30
+
+image:
+  repository: ghcr.io/nexusmart/gateway
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automountServiceAccountToken: false
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+strategy:
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+
+service:
+  type: ClusterIP
+  httpPort: 8080
+
+metrics:
+  enabled: true
+  path: "/metrics"
+
+probes:
+  readiness:
+    path: "/readyz"
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    successThreshold: 1
+    failureThreshold: 3
+  liveness:
+    path: "/healthz"
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 180
+
+pdb:
+  enabled: false
+  minAvailable: 1
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts: []
+  tls: []
+
+# Non-secret configuration rendered into ConfigMap (separated from image).
+config:
+  SERVICE_NAME: "gateway"
+  HTTP_PORT: "8080"
+  REDIS_ADDR: "redis:6379"
+  RATE_LIMIT_IP_PER_MIN: "300"
+  RATE_LIMIT_USER_PER_MIN: "180"
+  RATE_LIMIT_FLASH_SALE_PER_MIN: "60"
+  TRUSTED_PROXIES: "10.0.0.0/8,172.16.0.0/12"
+  SITE_ROOT_DOMAIN: "nexusmart.local"
+  USER_GRPC_ADDR: "user:50051"
+  PRODUCT_GRPC_ADDR: "product:50052"
+  CART_GRPC_ADDR: "cart:50053"
+  PROMOTION_GRPC_ADDR: "promotion:50054"
+  ORDER_GRPC_ADDR: "order:50055"
+  PAYMENT_GRPC_ADDR: "payment:50056"
+  PAYMENT_HTTP_URL: "http://payment:8086"
+  SHIPPING_GRPC_ADDR: "shipping:50057"
+  SHIPPING_HTTP_URL: "http://shipping:8087"
+  NOTIFICATION_GRPC_ADDR: "notification:50058"
+  SEARCH_GRPC_ADDR: "search:50059"
+  CHAT_GRPC_ADDR: "chat:50060"
+  CHAT_HTTP_URL: "http://chat:8090"
+  ASSISTANT_GRPC_ADDR: "assistant:50061"
+  ASSISTANT_HTTP_URL: "http://assistant:8091"
+  GRPC_CALL_TIMEOUT: "10s"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector:4317"
+  OTEL_EXPORTER_OTLP_INSECURE: "true"
+  LOG_LEVEL: "info"
+
+# Runtime secrets injected via pre-created Kubernetes Secret (never committed in Git).
+secrets:
+  existingSecret: "nexusmart-gateway-secret"
+  optional: false
+
+extraEnv: []
+nodeSelector: {}
+tolerations: []
+affinity: {}

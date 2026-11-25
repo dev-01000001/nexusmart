@@ -67,7 +67,7 @@ func (s *Server) GetCart(ctx context.Context, req *cartv1.GetCartRequest) (*cart
 	if err != nil {
 		return nil, err
 	}
-	cart, err := s.buildCart(ctx, userID)
+	cart, err := s.buildCart(ctx, userID, strings.TrimSpace(req.GetShopId()))
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +137,7 @@ func (s *Server) AddItem(ctx context.Context, req *cartv1.AddItemRequest) (*cart
 		return nil, status.Errorf(codes.Internal, "save cart item: %v", err)
 	}
 
-	cart, err := s.buildCart(ctx, userID)
+	cart, err := s.buildCart(ctx, userID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +164,7 @@ func (s *Server) UpdateItemQty(ctx context.Context, req *cartv1.UpdateItemQtyReq
 		if err := s.store.Delete(ctx, userID, skuID); err != nil {
 			return nil, status.Errorf(codes.Internal, "remove cart item: %v", err)
 		}
-		cart, err := s.buildCart(ctx, userID)
+		cart, err := s.buildCart(ctx, userID, "")
 		if err != nil {
 			return nil, err
 		}
@@ -214,7 +214,7 @@ func (s *Server) UpdateItemQty(ctx context.Context, req *cartv1.UpdateItemQtyReq
 		return nil, status.Errorf(codes.Internal, "update cart item: %v", err)
 	}
 
-	cart, err := s.buildCart(ctx, userID)
+	cart, err := s.buildCart(ctx, userID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +238,7 @@ func (s *Server) RemoveItem(ctx context.Context, req *cartv1.RemoveItemRequest) 
 		return nil, status.Errorf(codes.Internal, "remove cart item: %v", err)
 	}
 
-	cart, err := s.buildCart(ctx, userID)
+	cart, err := s.buildCart(ctx, userID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -251,13 +251,9 @@ func (s *Server) ClearItems(ctx context.Context, req *cartv1.ClearItemsRequest) 
 		return nil, err
 	}
 
+	shopID := strings.TrimSpace(req.GetShopId())
 	rawIDs := req.GetSkuIds()
-	if len(rawIDs) == 0 {
-		if err := s.store.ClearAll(ctx, userID); err != nil {
-			return nil, status.Errorf(codes.Internal, "clear cart: %v", err)
-		}
-		return &cartv1.ClearItemsResponse{Ok: true}, nil
-	}
+	hasRawIDs := len(rawIDs) > 0
 
 	cleanIDs := make([]string, 0, len(rawIDs))
 	for _, id := range rawIDs {
@@ -266,9 +262,56 @@ func (s *Server) ClearItems(ctx context.Context, req *cartv1.ClearItemsRequest) 
 			cleanIDs = append(cleanIDs, id)
 		}
 	}
-	if len(cleanIDs) > 0 {
+
+	if !hasRawIDs && shopID == "" {
+		if err := s.store.ClearAll(ctx, userID); err != nil {
+			return nil, status.Errorf(codes.Internal, "clear cart: %v", err)
+		}
+		return &cartv1.ClearItemsResponse{Ok: true}, nil
+	}
+
+	if hasRawIDs && len(cleanIDs) == 0 {
+		return &cartv1.ClearItemsResponse{Ok: true}, nil
+	}
+
+	if shopID == "" {
 		if err := s.store.Delete(ctx, userID, cleanIDs...); err != nil {
 			return nil, status.Errorf(codes.Internal, "clear cart items: %v", err)
+		}
+		return &cartv1.ClearItemsResponse{Ok: true}, nil
+	}
+
+	var candidateIDs []string
+	if len(cleanIDs) > 0 {
+		candidateIDs = cleanIDs
+	} else {
+		storedItems, err := s.store.GetAll(ctx, userID)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "load cart from redis: %v", err)
+		}
+		if len(storedItems) == 0 {
+			return &cartv1.ClearItemsResponse{Ok: true}, nil
+		}
+		candidateIDs = make([]string, 0, len(storedItems))
+		for skuID := range storedItems {
+			candidateIDs = append(candidateIDs, skuID)
+		}
+		sort.Strings(candidateIDs)
+	}
+
+	skuMap, err := s.fetchSKUsBatch(ctx, candidateIDs)
+	if err != nil {
+		return nil, err
+	}
+	toDelete := make([]string, 0, len(candidateIDs))
+	for _, skuID := range candidateIDs {
+		if sku, ok := skuMap[skuID]; ok && sku.GetShopId() == shopID {
+			toDelete = append(toDelete, skuID)
+		}
+	}
+	if len(toDelete) > 0 {
+		if err := s.store.Delete(ctx, userID, toDelete...); err != nil {
+			return nil, status.Errorf(codes.Internal, "clear shop cart items: %v", err)
 		}
 	}
 	return &cartv1.ClearItemsResponse{Ok: true}, nil
@@ -343,7 +386,7 @@ func (s *Server) fetchShopName(ctx context.Context, shopID string) string {
 	return resp.GetShop().GetName()
 }
 
-func (s *Server) buildCart(ctx context.Context, userID string) (*cartv1.Cart, error) {
+func (s *Server) buildCart(ctx context.Context, userID, shopFilter string) (*cartv1.Cart, error) {
 	storedItems, err := s.store.GetAll(ctx, userID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "load cart from redis: %v", err)
@@ -441,6 +484,9 @@ func (s *Server) buildCart(ctx context.Context, userID string) (*cartv1.Cart, er
 				Selected:       stItem.Selected,
 			}
 		}
+		if shopFilter != "" && sku.GetShopId() != shopFilter {
+			continue
+		}
 
 		grp, exists := groupsByShop[shopID]
 		if !exists {
@@ -515,8 +561,8 @@ func resolveUserID(ctx context.Context, reqUserID string) (string, error) {
 		if reqUserID != "" {
 			return reqUserID, nil
 		}
-		if claims.UserID() != "" {
-			return claims.UserID(), nil
+		if uid := strings.TrimSpace(claims.UserID()); uid != "" {
+			return uid, nil
 		}
 		return "", status.Error(codes.InvalidArgument, "user_id is required")
 	}

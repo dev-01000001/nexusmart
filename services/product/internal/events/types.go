@@ -8,6 +8,15 @@ import (
 )
 
 const (
+	// SubjectProductCreated matches docs/contracts.md Section 5.
+	SubjectProductCreated = "product.created"
+
+	// SubjectProductUpdated matches docs/contracts.md Section 5.
+	SubjectProductUpdated = "product.updated"
+
+	// SubjectProductStockChanged matches docs/contracts.md Section 5.
+	SubjectProductStockChanged = "product.stock_changed"
+
 	// SubjectProductReviewed matches docs/contracts.md Section 5.
 	SubjectProductReviewed = "product.reviewed"
 
@@ -26,6 +35,9 @@ const (
 	// SubjectShopStatusChanged matches docs/contracts.md Section 5 / A7 §2.2 (F12).
 	SubjectShopStatusChanged = "user.shop_status_changed"
 
+	// DefaultStreamName is the canonical NexusMart primary JetStream stream name.
+	DefaultStreamName = jetstream.DefaultPrimaryStream
+
 	// DLQStreamName is the canonical NexusMart dead-letter stream name.
 	DLQStreamName = jetstream.DefaultDLQStream
 )
@@ -39,6 +51,14 @@ type Envelope struct {
 	Payload    json.RawMessage `json:"payload"`
 }
 
+// ProductEventPayload is the canonical payload for product.created, product.updated, and product.stock_changed.
+type ProductEventPayload struct {
+	ProductID  string `json:"product_id"`
+	ShopID     string `json:"shop_id"`
+	Version    int64  `json:"version"`
+	OccurredAt string `json:"occurred_at"`
+}
+
 // ProductReviewedPayload matches docs/contracts.md Section 5 for product.reviewed.
 type ProductReviewedPayload struct {
 	ProductID   string `json:"product_id"`
@@ -50,14 +70,14 @@ type ProductReviewedPayload struct {
 }
 
 // ReviewCreatedPayload matches docs/contracts.md Section 5 for review.created (E6).
+// Includes public review comment for downstream summarization and omits buyer_id/order_id PII.
 type ReviewCreatedPayload struct {
 	ReviewID      string `json:"review_id"`
 	ProductID     string `json:"product_id"`
 	ShopID        string `json:"shop_id"`
-	OrderID       string `json:"order_id"`
 	OrderItemID   string `json:"order_item_id"`
-	BuyerID       string `json:"buyer_id"`
 	Rating        int32  `json:"rating"`
+	Comment       string `json:"comment"`
 	ReviewCount   int32  `json:"review_count"`
 	RatingAvgX100 int32  `json:"rating_avg_x100"`
 	OccurredAt    string `json:"occurred_at"`
@@ -106,12 +126,15 @@ type ProductUpsertedPayload struct {
 	UpdatedAt           string   `json:"updated_at"`
 }
 
-// ProductDeletedPayload matches docs/contracts.md Section 5 for product.deleted (B1/G11).
+// ProductDeletedPayload matches docs/contracts.md Section 5 for product.deleted (B1/G11),
+// while also carrying monotonic version and occurred_at for legacy product.* consumers.
 type ProductDeletedPayload struct {
-	ProductID string `json:"product_id"`
-	ShopID    string `json:"shop_id"`
-	Reason    string `json:"reason"`
-	UpdatedAt string `json:"updated_at"`
+	ProductID  string `json:"product_id"`
+	ShopID     string `json:"shop_id"`
+	Reason     string `json:"reason"`
+	UpdatedAt  string `json:"updated_at"`
+	Version    int64  `json:"version,omitempty"`
+	OccurredAt string `json:"occurred_at,omitempty"`
 }
 
 // ProductCategoryUpdatedPayload matches docs/contracts.md Section 5 for product.category_updated (B1/G9).

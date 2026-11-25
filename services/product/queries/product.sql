@@ -358,7 +358,7 @@ WHERE p.deleted_at IS NULL
         SELECT 1 FROM skus s
         WHERE s.product_id = p.id
           AND s.status <> 'INACTIVE'
-          AND (s.stock - s.reserved_stock) <= 5
+          AND (s.stock - s.reserved_stock - s.flash_sale_reserved_stock) <= 5
       )
     )
   )
@@ -413,7 +413,7 @@ WHERE p.deleted_at IS NULL
         SELECT 1 FROM skus s
         WHERE s.product_id = p.id
           AND s.status <> 'INACTIVE'
-          AND (s.stock - s.reserved_stock) <= 5
+          AND (s.stock - s.reserved_stock - s.flash_sale_reserved_stock) <= 5
       )
     )
   )
@@ -527,11 +527,11 @@ OFFSET sqlc.arg(offset_val)::int;
 -- name: CreateSKU :one
 INSERT INTO skus (
     id, product_id, sku_code, name, attributes, price_vnd, stock,
-    reserved_stock, version, weight_grams, image_url, status
+    reserved_stock, flash_sale_reserved_stock, version, weight_grams, image_url, status
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 1, $8, $9, $10)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 0, 1, $8, $9, $10)
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
 
 -- name: InsertSKUPriceHistory :exec
 INSERT INTO sku_price_history (id, sku_id, price_vnd, actor_id, reason, recorded_at)
@@ -548,7 +548,7 @@ SET sku_code = $2,
     updated_at = NOW()
 WHERE id = $1
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
 
 -- name: ReactivateSKUOptimistic :one
 UPDATE skus
@@ -568,9 +568,9 @@ SET sku_code = $2,
 WHERE id = $1
   AND version = $9
   AND status = 'INACTIVE'
-  AND $6 >= reserved_stock
+  AND $6 >= (reserved_stock + flash_sale_reserved_stock)
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
 
 -- name: DeactivateSKUsByProduct :exec
 UPDATE skus
@@ -587,7 +587,7 @@ WHERE id = $1;
 -- name: ListSKUsByProductIDs :many
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
-    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
     s.weight_grams, s.image_url, p.category_id,
     COALESCE(
         (
@@ -632,7 +632,7 @@ ORDER BY s.created_at ASC, s.id ASC;
 -- name: ListAllSKUsByProductID :many
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
-    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
     s.weight_grams, s.image_url, p.category_id,
     COALESCE(
         (
@@ -676,7 +676,7 @@ ORDER BY s.created_at ASC, s.id ASC;
 -- name: GetSKUsBatch :many
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
-    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
     s.weight_grams, s.image_url, p.category_id,
     COALESCE(
         (
@@ -720,7 +720,7 @@ ORDER BY s.id ASC;
 -- name: GetSKUWithContext :one
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
-    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
     s.weight_grams, s.image_url, p.category_id,
     COALESCE(
         (
@@ -763,7 +763,7 @@ WHERE s.id = sqlc.arg(id)::text;
 -- name: GetSKUWithContextForUpdate :one
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
-    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
     s.weight_grams, s.image_url, p.category_id,
     COALESCE(
         (
@@ -823,9 +823,9 @@ SET stock = $1,
 WHERE id = $2
   AND version = $3
   AND status <> 'INACTIVE'
-  AND $1 >= reserved_stock
+  AND $1 >= (reserved_stock + flash_sale_reserved_stock)
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
 
 -- name: ReserveSKUOptimistic :one
 UPDATE skus
@@ -834,9 +834,9 @@ SET reserved_stock = reserved_stock + $1,
     updated_at = NOW()
 WHERE id = $2
   AND version = $3
-  AND (stock - reserved_stock) >= $1
+  AND (stock - reserved_stock - flash_sale_reserved_stock) >= $1
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
 
 -- name: ReleaseSKUOptimistic :one
 UPDATE skus
@@ -846,7 +846,7 @@ SET reserved_stock = GREATEST(0, reserved_stock - $1),
 WHERE id = $2
   AND version = $3
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
 
 -- name: ConfirmSKUOptimistic :one
 UPDATE skus
@@ -862,7 +862,7 @@ SET stock = GREATEST(0, stock - $1),
 WHERE id = $2
   AND version = $3
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
 
 -- name: RestockSKUAtomic :one
 UPDATE skus
@@ -876,7 +876,7 @@ SET stock = stock + $1,
     updated_at = NOW()
 WHERE id = $2
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at;
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock;
 
 -- Stock reservations
 
@@ -894,22 +894,22 @@ SELECT EXISTS (
 )::bool AS exists;
 
 -- name: ListReservationsByOrderID :many
-SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at
+SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at, flash_sale_item_id
 FROM stock_reservations
 WHERE order_id = $1
 ORDER BY sku_id ASC;
 
 -- name: ListReservationsByOrderIDForUpdate :many
-SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at
+SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at, flash_sale_item_id
 FROM stock_reservations
 WHERE order_id = $1
 ORDER BY sku_id ASC
 FOR UPDATE;
 
 -- name: CreateStockReservation :one
-INSERT INTO stock_reservations (id, reservation_group_id, order_id, sku_id, quantity, status)
-VALUES ($1, $2, $3, $4, $5, 'RESERVED')
-RETURNING id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at;
+INSERT INTO stock_reservations (id, reservation_group_id, order_id, sku_id, quantity, status, flash_sale_item_id)
+VALUES ($1, $2, $3, $4, $5, 'RESERVED', $6)
+RETURNING id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at, flash_sale_item_id;
 
 -- name: TransitionStockReservation :execrows
 UPDATE stock_reservations
@@ -937,6 +937,9 @@ VALUES ($1, $2, $3, 'RESTOCK', $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (order_id, sku_id) WHERE change_type = 'RESTOCK' DO NOTHING;
 
 -- Outbox events
+
+-- name: NextProductEventVersion :one
+SELECT nextval('product_event_version_seq')::bigint AS version;
 
 -- name: LockOutboxClaim :exec
 SELECT pg_advisory_xact_lock(7956455656534110829);

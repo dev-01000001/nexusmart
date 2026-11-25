@@ -61,6 +61,37 @@ ORDER BY
     name ASC
 LIMIT $2;
 
+-- name: SuggestCategoriesByShop :many
+SELECT c.category_id, c.name, c.slug
+FROM search_categories c
+WHERE EXISTS (
+    SELECT 1
+    FROM product_embeddings pe
+    WHERE pe.shop_id = $1
+      AND pe.deleted = FALSE
+      AND pe.status IN ('APPROVED', 'OUT_OF_STOCK')
+      AND (pe.category_id = c.category_id OR pe.category_ancestor_ids @> ARRAY[c.category_id])
+)
+  AND ($2::text = '' OR c.name_folded LIKE '%' || $2::text || '%' ESCAPE '\' OR c.slug LIKE '%' || $2::text || '%' ESCAPE '\')
+ORDER BY
+    CASE WHEN $2::text <> '' AND c.name_folded LIKE $2::text || '%' ESCAPE '\' THEN 0 ELSE 1 END,
+    c.sort_order ASC,
+    c.name ASC
+LIMIT $3;
+
+-- name: ListCategoriesByShop :many
+SELECT c.category_id, c.name, c.name_folded, c.slug, c.parent_id, c.sort_order, c.source_updated_at, c.updated_at
+FROM search_categories c
+WHERE EXISTS (
+    SELECT 1
+    FROM product_embeddings pe
+    WHERE pe.shop_id = $1
+      AND pe.deleted = FALSE
+      AND pe.status IN ('APPROVED', 'OUT_OF_STOCK')
+      AND (pe.category_id = c.category_id OR pe.category_ancestor_ids @> ARRAY[c.category_id])
+)
+ORDER BY c.sort_order ASC, c.name ASC;
+
 -- name: UpsertShopMetadata :exec
 INSERT INTO search_shops (shop_id, name, name_folded, slug, status, status_version, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, NOW())
@@ -140,6 +171,18 @@ WHERE product_id = $1;
 SELECT product_id, text_hash, deleted, source_updated_at, (embedding IS NOT NULL)::bool AS has_embedding
 FROM product_embeddings
 WHERE product_id = ANY($1::text[]);
+
+-- name: GetProductEmbeddingForSimilar :one
+SELECT
+    pe.product_id,
+    pe.shop_id,
+    pe.status,
+    pe.deleted,
+    pe.embedding,
+    COALESCE(s.status, 'ACTIVE')::text AS shop_status
+FROM product_embeddings pe
+LEFT JOIN search_shops s ON s.shop_id = pe.shop_id
+WHERE pe.product_id = $1;
 
 -- name: UpsertProductFromEvent :execrows
 INSERT INTO product_embeddings (

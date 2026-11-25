@@ -1,48 +1,43 @@
-/* Hàng đợi duyệt gian hàng (/admin/gian-hang) — List pattern specifics */
+/* Duyệt gian hàng (/admin/gian-hang) — Queue-Left + Inspector-Right Split */
 
-.checklistRow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.docTagOk {
+.stepperBtns {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  height: 24px;
-  padding: 0 8px;
-  border-radius: var(--radius-chip);
-  background: var(--pill-positive-bg);
-  color: var(--pill-positive-ink);
-  font-size: 12px;
-  font-weight: 500;
+  gap: 4px;
 }
 
-.docTagPending {
+.stepperBtn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  height: 24px;
-  padding: 0 8px;
-  border-radius: var(--radius-chip);
-  background: var(--pill-warning-bg);
-  color: var(--pill-warning-ink);
-  font-size: 12px;
-  font-weight: 500;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border);
+  background: var(--bg-0);
+  color: var(--ink-1);
+  transition:
+    background-color var(--t-hover) var(--ease-out),
+    transform var(--t-press) var(--ease-out);
 }
 
-.validationError {
-  font-size: 12px;
-  color: var(--negative);
+.stepperBtn:hover:not(:disabled) {
+  background: var(--bg-2);
 }
 
-.mobilePillRow {
+.stepperBtn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.stepperBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.drawerContent {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
+  flex-direction: column;
+  gap: 18px;
 }
 
 .bankSection {

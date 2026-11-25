@@ -21,7 +21,7 @@ RUN apk add --no-cache ca-certificates wget \
 
 COPY --from=builder /out/notification /usr/local/bin/notification
 
-USER appuser
+USER 10001:10001
 
 EXPOSE 50058 8088
 

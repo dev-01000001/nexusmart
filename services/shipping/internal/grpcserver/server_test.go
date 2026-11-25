@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -18,8 +19,12 @@ import (
 	"github.com/nexusmart/core/services/shipping/internal/carrier"
 	"github.com/nexusmart/core/services/shipping/internal/service"
 	"github.com/nexusmart/core/services/shipping/internal/store"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
 )
 
 type stubRepo struct {
@@ -88,8 +93,9 @@ func (r *stubRepo) GetRepresentativeWard(_ context.Context, provinceCode string)
 	}
 	return best, nil
 }
-func (r *stubRepo) MapLegacyAddress(_ context.Context, _, _, _ string) (*address.LegacyMatch, error) {
-	return &address.LegacyMatch{}, nil
+func (r *stubRepo) MapLegacyAddress(_ context.Context, p, d, w string) (*address.LegacyMatch, error) {
+	m := address.MapLegacyAddress(p, d, w)
+	return &m, nil
 }
 func (r *stubRepo) GetShipmentByOrderID(_ context.Context, orderID, direction string) (*store.Shipment, error) {
 	r.mu.Lock()
@@ -1143,5 +1149,283 @@ func TestShippingGRPC_W2B_ShopFreeshipSettingsAndOrderAccess(t *testing.T) {
 	}
 	if afterGHNStd != baseGHNStd {
 		t.Fatalf("CalculateFee must return unmodified carrier fee %d even with shop freeship enabled, got %d", baseGHNStd, afterGHNStd)
+	}
+}
+
+func TestShippingGRPCTrust_B1RejectsAnonymousAndServiceTokens(t *testing.T) {
+	repo := newStubRepo()
+	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)), carrier.NewGHNAdapter(carrier.GHNConfig{Mode: "mock"}))
+	svc := service.NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := New(svc)
+
+	// Direct handler calls without claims must NEVER be treated as internal/trusted.
+	createReq := &shippingv1.CreateShipmentRequest{
+		OrderId:     "ord-b1-1",
+		ShopId:      "shop-1",
+		CarrierCode: "ghn",
+		WeightGrams: 500,
+	}
+	if _, err := srv.CreateShipment(context.Background(), createReq); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("direct anonymous CreateShipment: want Unauthenticated, got %v", err)
+	}
+	if _, err := srv.CancelShipment(context.Background(), &shippingv1.CancelShipmentRequest{OrderId: "ord-b1-1"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("direct anonymous CancelShipment: want Unauthenticated, got %v", err)
+	}
+	if _, err := srv.GetShipment(context.Background(), &shippingv1.GetShipmentRequest{OrderId: "ord-b1-1"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("direct anonymous GetShipment: want Unauthenticated, got %v", err)
+	}
+
+	// Full gRPC bufconn stack with auth.GRPCUnaryServerInterceptor.
+	users, _ := auth.NewManager("shipping-test-user-key", 15*time.Minute)
+	svcMgr, _ := auth.NewManager("shipping-test-service-key", auth.ServiceTokenTTL)
+
+	lis := bufconn.Listen(1 << 20)
+	gs := grpc.NewServer(grpc.ChainUnaryInterceptor(auth.GRPCUnaryServerInterceptor(users, svcMgr)))
+	shippingv1.RegisterShippingServiceServer(gs, srv)
+	go func() { _ = gs.Serve(lis) }()
+	t.Cleanup(gs.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial bufconn: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	client := shippingv1.NewShippingServiceClient(conn)
+
+	md := func(kv ...string) context.Context {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		t.Cleanup(cancel)
+		return metadata.NewOutgoingContext(ctx, metadata.Pairs(kv...))
+	}
+	bearer := func(tok string, kv ...string) context.Context {
+		return md(append(kv, "authorization", "Bearer "+tok)...)
+	}
+
+	buyerTok, _, _, _ := users.SignAccessToken("buyer-1", "buyer", "")
+	seller1Tok, _, _, _ := users.SignAccessToken("seller-1", "seller", "shop-1")
+	seller2Tok, _, _, _ := users.SignAccessToken("seller-2", "seller", "shop-2")
+	adminTok, _, _, _ := users.SignAccessToken("admin-1", "admin", "")
+	orderSvcTok, _ := svcMgr.SignServiceToken("order-service")
+	otherSvcTok, _ := svcMgr.SignServiceToken("product-service")
+
+	// Spoofed metadata without JWT -> Unauthenticated on all 4 RPCs.
+	spoof := []string{"x-user-id", "attacker", "x-user-role", "admin", "x-shop-id", "shop-1"}
+	if _, err := client.CreateShipment(md(spoof...), createReq); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("bufconn anon CreateShipment: want Unauthenticated, got %v", err)
+	}
+	if _, err := client.CancelShipment(md(spoof...), &shippingv1.CancelShipmentRequest{OrderId: "ord-b1-1"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("bufconn anon CancelShipment: want Unauthenticated, got %v", err)
+	}
+	if _, err := client.GetShipment(md(spoof...), &shippingv1.GetShipmentRequest{OrderId: "ord-b1-1"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("bufconn anon GetShipment: want Unauthenticated, got %v", err)
+	}
+
+	// Non-order service tokens are disallowed on CreateShipment; service tokens are disallowed on user-only/admin RPCs.
+	if _, err := client.CreateShipment(bearer(otherSvcTok), createReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("product-service CreateShipment: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.RequestRedelivery(bearer(orderSvcTok), &shippingv1.RequestRedeliveryRequest{OrderId: "ord-b1-1"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("service token RequestRedelivery: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.UpdateShopShippingSettings(bearer(orderSvcTok), &shippingv1.UpdateShopShippingSettingsRequest{ShopId: "shop-1"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("service token UpdateShopShippingSettings: want PermissionDenied, got %v", err)
+	}
+
+	// Buyer and mismatched seller rejected; owning seller succeeds on CreateShipment & GetShipment.
+	if _, err := client.CreateShipment(bearer(buyerTok), createReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("buyer CreateShipment: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.CreateShipment(bearer(seller2Tok), createReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("other seller CreateShipment: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.CreateShipment(bearer(seller1Tok), createReq); err != nil {
+		t.Fatalf("owner seller CreateShipment: %v", err)
+	}
+	if _, err := client.GetShipment(bearer(seller2Tok), &shippingv1.GetShipmentRequest{OrderId: "ord-b1-1"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("other seller GetShipment: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.GetShipment(bearer(seller1Tok), &shippingv1.GetShipmentRequest{OrderId: "ord-b1-1"}); err != nil {
+		t.Fatalf("owner seller GetShipment: %v", err)
+	}
+	// CancelShipment requires internal service or ops capability (CapOrdersReviewResolve); sellers and buyers are rejected.
+	if _, err := client.CancelShipment(bearer(buyerTok), &shippingv1.CancelShipmentRequest{OrderId: "ord-b1-1"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("buyer CancelShipment: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.CancelShipment(bearer(seller2Tok), &shippingv1.CancelShipmentRequest{OrderId: "ord-b1-1"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("other seller CancelShipment: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.CancelShipment(bearer(seller1Tok), &shippingv1.CancelShipmentRequest{OrderId: "ord-b1-1"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("seller CancelShipment: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.CancelShipment(bearer(orderSvcTok), &shippingv1.CancelShipmentRequest{OrderId: "ord-b1-1"}); err != nil {
+		t.Fatalf("order-service CancelShipment: %v", err)
+	}
+
+	// CreateReturnShipment through bufconn stack: anonymous -> Unauthenticated,
+	// buyer & sellers -> PermissionDenied, admin (ops) & order-service -> succeeds!
+	retReq := &shippingv1.CreateReturnShipmentRequest{
+		OrderId:         "ord-b1-1",
+		ReturnRequestId: "ret-b1-1",
+		ShopId:          "shop-1",
+		CarrierCode:     "ghn",
+		WeightGrams:     500,
+	}
+	if _, err := client.CreateReturnShipment(md(spoof...), retReq); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("bufconn anon CreateReturnShipment: want Unauthenticated, got %v", err)
+	}
+	if _, err := client.CreateReturnShipment(bearer(buyerTok), retReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("buyer CreateReturnShipment: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.CreateReturnShipment(bearer(seller2Tok), retReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("other seller CreateReturnShipment: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.CreateReturnShipment(bearer(seller1Tok), retReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("seller CreateReturnShipment: want PermissionDenied, got %v", err)
+	}
+	retResp, err := client.CreateReturnShipment(bearer(adminTok), retReq)
+	if err != nil {
+		t.Fatalf("admin CreateReturnShipment: %v", err)
+	}
+	if retResp.GetShipment().GetDirection() != shippingv1.ShipmentDirection_SHIPMENT_DIRECTION_RETURN ||
+		retResp.GetShipment().GetReturnRequestId() != "ret-b1-1" || retResp.GetShipment().GetCodAmountVnd() != 0 {
+		t.Fatalf("unexpected CreateReturnShipment response: %+v", retResp)
+	}
+}
+
+func TestCreateReturnShipmentRBACAndGetShipmentDirection(t *testing.T) {
+	repo := newStubRepo()
+	agg := carrier.NewAggregator(
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		carrier.NewGHNAdapter(carrier.GHNConfig{Mode: "mock"}),
+		carrier.NewGHTKAdapter(carrier.GHTKConfig{Mode: "mock"}),
+	)
+	svc := service.NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := New(svc)
+
+	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
+	sellerEmptyShopCtx := ctxWithRole("seller-x", "seller", "")
+	sellerOtherShopCtx := ctxWithRole("seller-2", "seller", "shop-2")
+	sellerOwnerCtx := ctxWithRole("seller-1", "seller", "shop-1")
+	adminCtx := ctxWithRole("admin-1", "admin", "")
+	superAdminCtx := ctxWithRole("sa-1", "super_admin", "")
+
+	// Create forward shipment on ord-dir-1.
+	fwdResp, err := srv.CreateShipment(sellerOwnerCtx, &shippingv1.CreateShipmentRequest{
+		OrderId:      "ord-dir-1",
+		ShopId:       "shop-1",
+		CarrierCode:  "ghtk",
+		CodAmountVnd: 150000,
+		WeightGrams:  600,
+		FromAddress:  &shippingv1.ShipmentAddress{Name: "Shop", ProvinceCode: "79", WardCode: "26740"},
+		ToAddress:    &shippingv1.ShipmentAddress{Name: "Buyer", ProvinceCode: "01", WardCode: "00070"},
+	})
+	if err != nil || fwdResp.GetShipment().GetDirection() != shippingv1.ShipmentDirection_SHIPMENT_DIRECTION_FORWARD {
+		t.Fatalf("forward CreateShipment failed: resp=%+v err=%v", fwdResp, err)
+	}
+
+	retReq := &shippingv1.CreateReturnShipmentRequest{
+		OrderId:         "ord-dir-1",
+		ReturnRequestId: "ret-100",
+		ShopId:          "shop-1",
+		CarrierCode:     "ghtk",
+		ServiceCode:     "ROAD",
+		WeightGrams:     600,
+		FromAddress:     &shippingv1.ShipmentAddress{Name: "Buyer", Phone: "0901", ProvinceCode: "01", WardCode: "00070", StreetAddress: "1 Hang Trong"},
+		ToAddress:       &shippingv1.ShipmentAddress{Name: "Shop", Phone: "0902", ProvinceCode: "79", WardCode: "26740", StreetAddress: "2 Le Loi"},
+		ItemsSummary:    "Return item",
+	}
+
+	// RBAC checks
+	if _, err := srv.CreateReturnShipment(context.Background(), retReq); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("want Unauthenticated, got %v", err)
+	}
+	if _, err := srv.CreateReturnShipment(buyerCtx, retReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied for buyer, got %v", err)
+	}
+	if _, err := srv.CreateReturnShipment(sellerEmptyShopCtx, retReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied for seller without shop, got %v", err)
+	}
+	if _, err := srv.CreateReturnShipment(sellerOtherShopCtx, retReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied for cross-shop seller, got %v", err)
+	}
+	if _, err := srv.CreateReturnShipment(sellerOwnerCtx, retReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied for seller (only internal service or ops staff allowed), got %v", err)
+	}
+
+	// Admin (CapOrdersReviewResolve) creates return shipment
+	retResp, err := srv.CreateReturnShipment(adminCtx, retReq)
+	if err != nil {
+		t.Fatalf("admin CreateReturnShipment failed: %v", err)
+	}
+	if retResp.GetAlreadyExisted() || retResp.GetShipment().GetDirection() != shippingv1.ShipmentDirection_SHIPMENT_DIRECTION_RETURN ||
+		retResp.GetShipment().GetReturnRequestId() != "ret-100" || retResp.GetShipment().GetCodAmountVnd() != 0 {
+		t.Fatalf("unexpected return shipment response: %+v", retResp)
+	}
+
+	// Replay is idempotent (already_existed = true)
+	retReplay, err := srv.CreateReturnShipment(adminCtx, retReq)
+	if err != nil || !retReplay.GetAlreadyExisted() || retReplay.GetShipment().GetTrackingCode() != retResp.GetShipment().GetTrackingCode() {
+		t.Fatalf("expected idempotent replay for admin, got %+v err=%v", retReplay, err)
+	}
+
+	// Super admin can create return shipment on another order
+	retResp2, err := srv.CreateReturnShipment(superAdminCtx, &shippingv1.CreateReturnShipmentRequest{
+		OrderId:         "ord-dir-2",
+		ReturnRequestId: "ret-200",
+		ShopId:          "shop-2",
+		CarrierCode:     "ghtk",
+	})
+	if err != nil || retResp2.GetShipment().GetDirection() != shippingv1.ShipmentDirection_SHIPMENT_DIRECTION_RETURN {
+		t.Fatalf("super_admin CreateReturnShipment failed: %+v err=%v", retResp2, err)
+	}
+
+	// GetShipment direction filtering
+	gotFwd, err := srv.GetShipment(sellerOwnerCtx, &shippingv1.GetShipmentRequest{OrderId: "ord-dir-1"})
+	if err != nil || gotFwd.GetShipment().GetDirection() != shippingv1.ShipmentDirection_SHIPMENT_DIRECTION_FORWARD || gotFwd.GetShipment().GetTrackingCode() != fwdResp.GetShipment().GetTrackingCode() {
+		t.Fatalf("expected default GetShipment to return forward shipment, got %+v err=%v", gotFwd, err)
+	}
+	gotRet, err := srv.GetShipment(sellerOwnerCtx, &shippingv1.GetShipmentRequest{
+		OrderId:   "ord-dir-1",
+		Direction: shippingv1.ShipmentDirection_SHIPMENT_DIRECTION_RETURN,
+	})
+	if err != nil || gotRet.GetShipment().GetDirection() != shippingv1.ShipmentDirection_SHIPMENT_DIRECTION_RETURN || gotRet.GetShipment().GetReturnRequestId() != "ret-100" {
+		t.Fatalf("expected GetShipment(RETURN) to return reverse shipment, got %+v err=%v", gotRet, err)
+	}
+
+	// Public catalog & fee RPCs
+	provs, err := srv.ListProvinces(context.Background(), &shippingv1.ListProvincesRequest{})
+	if err != nil || len(provs.GetProvinces()) == 0 {
+		t.Fatalf("ListProvinces failed: %+v err=%v", provs, err)
+	}
+	wards, err := srv.ListWards(context.Background(), &shippingv1.ListWardsRequest{ProvinceCode: "79"})
+	if err != nil || len(wards.GetWards()) == 0 {
+		t.Fatalf("ListWards failed: %+v err=%v", wards, err)
+	}
+	mapped, err := srv.MapLegacyAddress(context.Background(), &shippingv1.MapLegacyAddressRequest{LegacyProvince: "Binh Duong", LegacyDistrict: "Thu Dau Mot"})
+	if err != nil || !mapped.GetFound() || mapped.GetProvinceCode() != "79" {
+		t.Fatalf("MapLegacyAddress failed: %+v err=%v", mapped, err)
+	}
+	feeResp, err := srv.CalculateFee(context.Background(), &shippingv1.CalculateFeeRequest{
+		FromProvinceCode: "79", FromWardCode: "26740", ToProvinceCode: "01", ToWardCode: "00070", WeightGrams: 1000,
+	})
+	if err != nil || len(feeResp.GetQuotes()) != 4 {
+		t.Fatalf("CalculateFee failed: quotes=%d err=%v", len(feeResp.GetQuotes()), err)
+	}
+
+	// Verify all toProtoStatus & mapError branches.
+	for _, st := range []string{
+		carrier.StatusCreated, carrier.StatusPicking, carrier.StatusDelivering,
+		carrier.StatusDelivered, carrier.StatusFailed, carrier.StatusReturning,
+		carrier.StatusReturned, carrier.StatusCancelled, "unknown",
+	} {
+		_ = toProtoStatus(st)
+	}
+	if status.Code(mapError(store.ErrNotFound)) != codes.NotFound ||
+		status.Code(mapError(service.ErrInvalidArgument)) != codes.InvalidArgument ||
+		status.Code(mapError(service.ErrNotCancellable)) != codes.FailedPrecondition ||
+		status.Code(mapError(context.DeadlineExceeded)) != codes.Internal {
+		t.Fatalf("unexpected mapError codes")
 	}
 }

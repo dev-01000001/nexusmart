@@ -1,60 +1,35 @@
-"use client";
-
 import React from "react";
-import { useParams, useSearchParams } from "next/navigation";
-import { StateView } from "@/components";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { ProductFormView } from "@/features/seller/ProductFormView";
-import { parseUiState } from "@/features/seller/sellerStore";
+import {
+  loadSellerCategories,
+  loadSellerProductById,
+  requireSellerPage,
+} from "@/features/seller/sellerServer";
 
-function EditProductInner() {
-  const params = useParams<{ id: string }>();
-  const searchParams = useSearchParams();
-  const uiState = parseUiState(searchParams.get("state"));
-  const productId = typeof params?.id === "string" ? params.id : "";
+export const dynamic = "force-dynamic";
 
-  if (uiState === "loading") {
-    return (
-      <StateView
-        kind="loading"
-        surface="app"
-        title="Đang tải thông tin sản phẩm và ma trận SKU..."
-        rows={5}
-      />
-    );
-  }
-  if (uiState === "error") {
-    return (
-      <StateView
-        kind="error"
-        surface="app"
-        title="Không thể tải chi tiết sản phẩm"
-        message="Dịch vụ danh mục đang tạm gián đoạn. Vui lòng thử lại."
-        actionLabel="Thử lại"
-        actionHref={`/seller/san-pham/${productId}`}
-      />
-    );
-  }
-  if (uiState === "empty") {
-    return (
-      <StateView
-        kind="empty"
-        surface="app"
-        title="Sản phẩm chưa có biến thể SKU nào"
-        message="Quay về danh sách sản phẩm để kiểm tra lại mã sản phẩm."
-        actionLabel="Về danh sách sản phẩm"
-        actionHref="/seller/san-pham"
-      />
-    );
-  }
+export default async function SellerEditProductPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const session = await requireSellerPage();
+  const { id } = await params;
 
-  return <ProductFormView mode="edit" productId={productId} />;
-}
+  const [productRes, categoriesRes] = await Promise.all([
+    loadSellerProductById(id, session.user.shopId),
+    loadSellerCategories(),
+  ]);
 
-export default function SellerEditProductPage() {
   return (
     <SellerSuspense>
-      <EditProductInner />
+      <ProductFormView
+        mode="edit"
+        initialProduct={productRes.data}
+        categories={categoriesRes.data ?? []}
+        loadError={productRes.error ?? categoriesRes.error}
+      />
     </SellerSuspense>
   );
 }

@@ -108,3 +108,29 @@ func TestLoadW3B3DefaultsAndOverrides(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadTrustedProxiesFallbackToCIDRs(t *testing.T) {
+	t.Run("DefaultEmpty", func(t *testing.T) {
+		t.Setenv("TRUSTED_PROXIES", "")
+		t.Setenv("TRUSTED_PROXY_CIDRS", "")
+		if cfg := Load(); cfg.TrustedProxies != "" {
+			t.Fatalf("TrustedProxies = %q, want empty", cfg.TrustedProxies)
+		}
+	})
+
+	t.Run("FallbackToTrustedProxyCIDRs", func(t *testing.T) {
+		t.Setenv("TRUSTED_PROXIES", "")
+		t.Setenv("TRUSTED_PROXY_CIDRS", "172.31.250.0/28")
+		if cfg := Load(); cfg.TrustedProxies != "172.31.250.0/28" {
+			t.Fatalf("TrustedProxies = %q, want 172.31.250.0/28", cfg.TrustedProxies)
+		}
+	})
+
+	t.Run("TrustedProxiesTakesPrecedence", func(t *testing.T) {
+		t.Setenv("TRUSTED_PROXIES", "10.0.0.0/8,web")
+		t.Setenv("TRUSTED_PROXY_CIDRS", "172.31.250.0/28")
+		if cfg := Load(); cfg.TrustedProxies != "10.0.0.0/8,web" {
+			t.Fatalf("TrustedProxies = %q, want 10.0.0.0/8,web", cfg.TrustedProxies)
+		}
+	})
+}

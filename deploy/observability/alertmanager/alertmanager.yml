@@ -1,0 +1,34 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: telegram-relay
+  group_by: ["alertname", "service"]
+  group_wait: 15s
+  group_interval: 1m
+  repeat_interval: 1h
+  routes:
+    - receiver: telegram-relay
+      continue: true
+    - receiver: aiops
+      continue: false
+
+inhibit_rules:
+  - source_matchers:
+      - alertname="NexusMartServiceDown"
+    target_matchers:
+      - severity="warning"
+    equal: ["service"]
+
+receivers:
+  - name: telegram-relay
+    webhook_configs:
+      - url: "http://telegram-relay:8099/webhook"
+        send_resolved: true
+        max_alerts: 20
+
+  - name: aiops
+    webhook_configs:
+      - url: "http://aiops:8092/api/v1/alerts/webhook"
+        send_resolved: true
+        max_alerts: 20

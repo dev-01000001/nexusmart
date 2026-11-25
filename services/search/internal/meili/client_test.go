@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sony/gobreaker/v2"
 )
 
 func TestBuildFilters_BlocksFilterInjectionAndEnforcesPublicStatus(t *testing.T) {
@@ -646,5 +648,96 @@ func TestMeiliClient_K4_ExplicitSortFallbackToLastOnZeroResults(t *testing.T) {
 	reqs = getRecorded()
 	if len(reqs) != 1 || reqs[0].MatchingStrategy != "" || resRel.Total != 0 {
 		t.Fatalf("K4 relevance path must remain unchanged: calls=%d strategy=%q total=%d", len(reqs), reqs[0].MatchingStrategy, resRel.Total)
+	}
+}
+
+func TestMeiliClient_SearchCircuitBreakerFastFailAndRecovery(t *testing.T) {
+	var (
+		statusCode  atomic.Int32
+		searchCalls atomic.Int32
+	)
+	statusCode.Store(http.StatusOK)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/health":
+			_, _ = w.Write([]byte(`{"status":"available"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/indexes":
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"taskUid":1,"indexUid":"products","status":"enqueued","type":"indexCreation"}`))
+		case r.Method == http.MethodPatch && r.URL.Path == "/indexes/products/settings":
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"taskUid":2,"indexUid":"products","status":"enqueued","type":"settingsUpdate"}`))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/tasks/"):
+			_, _ = w.Write([]byte(`{"uid":1,"indexUid":"products","status":"succeeded","type":"settingsUpdate"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/indexes/products/search":
+			searchCalls.Add(1)
+			code := int(statusCode.Load())
+			if code == http.StatusBadRequest {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"message":"bad limit","code":"invalid_search_limit","type":"invalid_request"}`))
+				return
+			}
+			if code != http.StatusOK {
+				w.WriteHeader(code)
+				_, _ = w.Write([]byte(`{"message":"internal error","code":"internal","type":"internal"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"hits":[],"estimatedTotalHits":0,"query":"ao"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := NewClient(Options{
+		URL:           srv.URL,
+		Timeout:       200 * time.Millisecond,
+		CBMaxFailures: 2,
+		CBTimeout:     120 * time.Millisecond,
+	})
+	if err := client.EnsureConfigured(context.Background()); err != nil {
+		t.Fatalf("EnsureConfigured: %v", err)
+	}
+
+	// 1. 4xx client error must NOT trip the circuit breaker.
+	statusCode.Store(http.StatusBadRequest)
+	for i := 0; i < 3; i++ {
+		if _, err := client.Search(context.Background(), SearchQuery{Query: "ao", Limit: 10}); err == nil {
+			t.Fatalf("expected 400 error on attempt %d", i+1)
+		}
+	}
+	if client.SearchCircuitState() != gobreaker.StateClosed {
+		t.Fatalf("4xx errors must not trip breaker, got state=%s", client.SearchCircuitState())
+	}
+
+	// 2. Consecutive 5xx errors trip breaker to Open -> subsequent Search fails fast with 0 HTTP calls.
+	statusCode.Store(http.StatusServiceUnavailable)
+	for i := 0; i < 2; i++ {
+		if _, err := client.Search(context.Background(), SearchQuery{Query: "ao", Limit: 10}); err == nil {
+			t.Fatalf("expected 503 error on attempt %d", i+1)
+		}
+	}
+	if client.SearchCircuitState() != gobreaker.StateOpen {
+		t.Fatalf("expected circuit breaker Open after 2 consecutive 503s, got %s", client.SearchCircuitState())
+	}
+	callsWhenOpen := searchCalls.Load()
+	_, err := client.Search(context.Background(), SearchQuery{Query: "ao", Limit: 10})
+	if !errors.Is(err, gobreaker.ErrOpenState) {
+		t.Fatalf("expected gobreaker.ErrOpenState while open, got %v", err)
+	}
+	if searchCalls.Load() != callsWhenOpen {
+		t.Fatalf("expected 0 HTTP search calls while breaker open, got delta=%d", searchCalls.Load()-callsWhenOpen)
+	}
+
+	// 3. After CBTimeout, breaker half-opens, probes Meilisearch, and closes on recovery.
+	statusCode.Store(http.StatusOK)
+	time.Sleep(150 * time.Millisecond)
+	if _, err := client.Search(context.Background(), SearchQuery{Query: "ao", Limit: 10}); err != nil {
+		t.Fatalf("expected recovery after CBTimeout, got %v", err)
+	}
+	if client.SearchCircuitState() != gobreaker.StateClosed {
+		t.Fatalf("expected circuit breaker Closed after recovery, got %s", client.SearchCircuitState())
 	}
 }

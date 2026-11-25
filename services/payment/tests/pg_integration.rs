@@ -242,12 +242,16 @@ fn sample_vietqr_input(
             shop_id: shop_id.to_string(),
             subtotal_vnd,
             commission_vnd,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             shipping_fee_vnd,
             platform_discount_vnd,
         }],
         expires_at: Some(Utc::now() + ChronoDuration::minutes(15)),
         idempotency_key,
         supersede_previous: false,
+        sales_channel: String::new(),
+        storefront_shop_id: String::new(),
         trace_id: Uuid::new_v4().simple().to_string(),
     }
 }
@@ -322,6 +326,8 @@ async fn test_pg_d10_payment_refunded_is_post_settlement_all_paths() {
                     shop_id: "shop-d10-1".into(),
                     subtotal_vnd: 280_000,
                     commission_vnd: 20_000,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     shipping_fee_vnd: 20_000,
                     platform_discount_vnd: 0,
                 },
@@ -330,6 +336,8 @@ async fn test_pg_d10_payment_refunded_is_post_settlement_all_paths() {
                     shop_id: "shop-d10-2".into(),
                     subtotal_vnd: 180_000,
                     commission_vnd: 10_000,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     shipping_fee_vnd: 20_000,
                     platform_discount_vnd: 0,
                 },
@@ -337,6 +345,8 @@ async fn test_pg_d10_payment_refunded_is_post_settlement_all_paths() {
             expires_at: Some(Utc::now() + ChronoDuration::minutes(15)),
             idempotency_key: Some(format!("idem-d10-a-{}", Uuid::new_v4())),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: Uuid::new_v4().simple().to_string(),
         })
         .await
@@ -523,7 +533,7 @@ async fn test_pg_d10_payment_refunded_is_post_settlement_all_paths() {
         "auto-cancel refund must emit is_post_settlement=false"
     );
 
-    let summary = svc.get_ledger_summary().await.expect("ledger summary");
+    let summary = svc.get_ledger_summary(None).await.expect("ledger summary");
     assert!(
         summary.is_balanced,
         "ledger must stay balanced: {summary:?}"
@@ -1240,7 +1250,7 @@ async fn test_pg_webhook_20x_parallel_single_ledger_tx() {
     .unwrap();
     assert_eq!(outbox_rows, 1);
 
-    let summary = svc.get_ledger_summary().await.expect("ledger summary");
+    let summary = svc.get_ledger_summary(None).await.expect("ledger summary");
     assert!(summary.is_balanced);
     assert_eq!(summary.total_debits_vnd, 250_000);
     assert_eq!(summary.total_credits_vnd, 250_000);
@@ -1286,7 +1296,7 @@ async fn test_pg_webhook_20x_parallel_single_ledger_tx() {
     statuses.sort();
     assert_eq!(statuses, vec!["late_payment_refund_queued", "processed"]);
 
-    let summary2 = svc.get_ledger_summary().await.unwrap();
+    let summary2 = svc.get_ledger_summary(None).await.unwrap();
     assert!(summary2.is_balanced);
 
     db.cleanup().await;
@@ -1680,7 +1690,7 @@ async fn test_pg_concurrent_refund_races() {
         "order.cancelled must NOT emit payment.refunded after allocation settled"
     );
 
-    let summary = svc.get_ledger_summary().await.unwrap();
+    let summary = svc.get_ledger_summary(None).await.unwrap();
     assert!(summary.is_balanced);
 
     db.cleanup().await;
@@ -1716,6 +1726,8 @@ async fn test_pg_sse_handler_and_grpc_privacy_real_db() {
                     shop_id: "shop-a".into(),
                     subtotal_vnd: 200_000,
                     commission_vnd: 12_000,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     shipping_fee_vnd: 20_000,
                     platform_discount_vnd: 10_000,
                 },
@@ -1724,6 +1736,8 @@ async fn test_pg_sse_handler_and_grpc_privacy_real_db() {
                     shop_id: "shop-b".into(),
                     subtotal_vnd: 500_000,
                     commission_vnd: 35_000,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     shipping_fee_vnd: 30_000,
                     platform_discount_vnd: 0,
                 },
@@ -1731,6 +1745,8 @@ async fn test_pg_sse_handler_and_grpc_privacy_real_db() {
             expires_at: Some(Utc::now() + ChronoDuration::minutes(15)),
             idempotency_key: Some(format!("idem-priv-{}", Uuid::new_v4())),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: Uuid::new_v4().simple().to_string(),
         })
         .await
@@ -2474,6 +2490,8 @@ async fn test_pg_full_money_cod_reconciliation_and_hold_protection_sql() {
                     shop_id: "shop-cod-1".into(),
                     subtotal_vnd: 180_000,
                     commission_vnd: 9_000,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     shipping_fee_vnd: 20_000,
                     platform_discount_vnd: 0,
                 },
@@ -2482,6 +2500,8 @@ async fn test_pg_full_money_cod_reconciliation_and_hold_protection_sql() {
                     shop_id: "shop-cod-2".into(),
                     subtotal_vnd: 130_000,
                     commission_vnd: 6_500,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     shipping_fee_vnd: 20_000,
                     platform_discount_vnd: 0,
                 },
@@ -2489,6 +2509,8 @@ async fn test_pg_full_money_cod_reconciliation_and_hold_protection_sql() {
             expires_at: None,
             idempotency_key: Some(format!("idem-cod-{}", Uuid::new_v4())),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-cod".into(),
         })
         .await
@@ -2732,12 +2754,15 @@ async fn test_pg_full_money_cod_reconciliation_and_hold_protection_sql() {
     assert_eq!(cancelled.payment.id, p_can.payment.id);
 
     // Durable mock reconciliation run for VN today
-    let report = svc.run_reconciliation(vn_today(Utc::now())).await.unwrap();
+    let report = svc
+        .run_reconciliation(vn_today(Utc::now()), None)
+        .await
+        .unwrap();
     assert_eq!(report.run.status, "completed");
     assert!(report.run.matched_count >= 3);
     assert_eq!(report.run.missing_provider_count, 0);
 
-    let summary = svc.get_ledger_summary().await.unwrap();
+    let summary = svc.get_ledger_summary(None).await.unwrap();
     assert!(
         summary.is_balanced,
         "final ledger must be balanced: {summary:?}"
@@ -3237,6 +3262,8 @@ async fn test_pg_p2_7_release_escrow_no_abba_deadlock_with_multi_alloc_update() 
                     shop_id: "shop-p27-1".into(),
                     subtotal_vnd: 200_000,
                     commission_vnd: 10_000,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     shipping_fee_vnd: 0,
                     platform_discount_vnd: 0,
                 },
@@ -3245,6 +3272,8 @@ async fn test_pg_p2_7_release_escrow_no_abba_deadlock_with_multi_alloc_update() 
                     shop_id: "shop-p27-2".into(),
                     subtotal_vnd: 200_000,
                     commission_vnd: 10_000,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     shipping_fee_vnd: 0,
                     platform_discount_vnd: 0,
                 },
@@ -3252,6 +3281,8 @@ async fn test_pg_p2_7_release_escrow_no_abba_deadlock_with_multi_alloc_update() 
             expires_at: Some(Utc::now() + ChronoDuration::minutes(15)),
             idempotency_key: Some(format!("idem-p27-{}", Uuid::new_v4())),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p27".into(),
         })
         .await
@@ -3374,6 +3405,8 @@ async fn test_pg_w3b_e20_cod_reconciliation_lifecycle_race_and_list_runs() {
                     shop_id: shop_a.clone(),
                     subtotal_vnd: 200_000,
                     commission_vnd: 10_000,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     shipping_fee_vnd: 20_000,
                     platform_discount_vnd: 0,
                 },
@@ -3382,6 +3415,8 @@ async fn test_pg_w3b_e20_cod_reconciliation_lifecycle_race_and_list_runs() {
                     shop_id: shop_b.clone(),
                     subtotal_vnd: 300_000,
                     commission_vnd: 15_000,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     shipping_fee_vnd: 30_000,
                     platform_discount_vnd: 10_000,
                 },
@@ -3389,6 +3424,8 @@ async fn test_pg_w3b_e20_cod_reconciliation_lifecycle_race_and_list_runs() {
             expires_at: None,
             idempotency_key: Some(format!("checkout:{grp_ms}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-cod-ms".into(),
         })
         .await
@@ -3532,7 +3569,7 @@ async fn test_pg_w3b_e20_cod_reconciliation_lifecycle_race_and_list_runs() {
     assert_eq!(bal_b_after.available_vnd, 0);
 
     // Verify ledger is strictly balanced and cod_receivable is cleared to 0
-    let sum1 = svc.get_ledger_summary().await.unwrap();
+    let sum1 = svc.get_ledger_summary(None).await.unwrap();
     assert!(sum1.is_balanced);
     assert_eq!(sum1.total_debits_vnd, sum1.total_credits_vnd);
     let cod_recv_1 = sum1
@@ -3652,12 +3689,16 @@ async fn test_pg_w3b_e20_cod_reconciliation_lifecycle_race_and_list_runs() {
                 shop_id: shop_late.clone(),
                 subtotal_vnd: 160_000,
                 commission_vnd: 8_000,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 20_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord_late}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-late".into(),
         })
         .await
@@ -3678,12 +3719,16 @@ async fn test_pg_w3b_e20_cod_reconciliation_lifecycle_race_and_list_runs() {
                 shop_id: shop_legacy.clone(),
                 subtotal_vnd: 130_000,
                 commission_vnd: 6_500,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 20_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord_legacy}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-leg".into(),
         })
         .await
@@ -3811,12 +3856,16 @@ async fn test_pg_w3b_e20_cod_reconciliation_lifecycle_race_and_list_runs() {
                 shop_id: shop_race.clone(),
                 subtotal_vnd: 220_000,
                 commission_vnd: 11_000,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 30_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord_race}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-race".into(),
         })
         .await
@@ -3900,7 +3949,7 @@ async fn test_pg_w3b_e20_cod_reconciliation_lifecycle_race_and_list_runs() {
     assert_eq!(total_cod_txs, 5);
 
     // Final ledger balance check across the entire schema
-    let final_summary = svc.get_ledger_summary().await.unwrap();
+    let final_summary = svc.get_ledger_summary(None).await.unwrap();
     assert!(final_summary.is_balanced);
     assert_eq!(
         final_summary.total_debits_vnd,
@@ -3917,7 +3966,7 @@ async fn test_pg_w3b_e20_cod_reconciliation_lifecycle_race_and_list_runs() {
     // -------------------------------------------------------------------------
     // Scenario 4: ListReconciliationRuns pagination & run_type filtering via gRPC
     // -------------------------------------------------------------------------
-    let _vietqr_run = svc.run_reconciliation(today).await.unwrap();
+    let _vietqr_run = svc.run_reconciliation(today, None).await.unwrap();
 
     // All runs paginated (we have 12 cod_file runs + 1 vietqr run = 13 total)
     let page1 = grpc
@@ -3926,6 +3975,7 @@ async fn test_pg_w3b_e20_cod_reconciliation_lifecycle_race_and_list_runs() {
                 run_type: String::new(),
                 page: 1,
                 page_size: 5,
+                sales_channel: String::new(),
             },
             &admin_tok,
         ))
@@ -3941,6 +3991,7 @@ async fn test_pg_w3b_e20_cod_reconciliation_lifecycle_race_and_list_runs() {
                 run_type: String::new(),
                 page: 2,
                 page_size: 5,
+                sales_channel: String::new(),
             },
             &admin_tok,
         ))
@@ -3956,6 +4007,7 @@ async fn test_pg_w3b_e20_cod_reconciliation_lifecycle_race_and_list_runs() {
                 run_type: String::new(),
                 page: 3,
                 page_size: 5,
+                sales_channel: String::new(),
             },
             &admin_tok,
         ))
@@ -3987,6 +4039,7 @@ async fn test_pg_w3b_e20_cod_reconciliation_lifecycle_race_and_list_runs() {
                 run_type: "vietqr".into(),
                 page: 1,
                 page_size: 10,
+                sales_channel: String::new(),
             },
             &admin_tok,
         ))
@@ -4004,6 +4057,7 @@ async fn test_pg_w3b_e20_cod_reconciliation_lifecycle_race_and_list_runs() {
                 run_type: "cod_file".into(),
                 page: 1,
                 page_size: 50,
+                sales_channel: String::new(),
             },
             &admin_tok,
         ))
@@ -4092,12 +4146,16 @@ async fn test_pg_w3b_r2_cod_carrier_mismatch_queue_persist_and_rpc_cancel() {
                 shop_id: shop_cm_track.clone(),
                 subtotal_vnd: 190_000,
                 commission_vnd: 9_500,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 20_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord_cm_track}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-cm-1".into(),
         })
         .await
@@ -4128,12 +4186,16 @@ async fn test_pg_w3b_r2_cod_carrier_mismatch_queue_persist_and_rpc_cancel() {
                 shop_id: shop_cm_fb.clone(),
                 subtotal_vnd: 150_000,
                 commission_vnd: 7_500,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 20_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord_cm_fb}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-cm-2".into(),
         })
         .await
@@ -4164,12 +4226,16 @@ async fn test_pg_w3b_r2_cod_carrier_mismatch_queue_persist_and_rpc_cancel() {
                 shop_id: shop_no_car.clone(),
                 subtotal_vnd: 110_000,
                 commission_vnd: 5_500,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 20_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord_no_car}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-cm-3".into(),
         })
         .await
@@ -4303,12 +4369,16 @@ async fn test_pg_w3b_r2_cod_carrier_mismatch_queue_persist_and_rpc_cancel() {
                 shop_id: shop_m4.clone(),
                 subtotal_vnd: 230_000,
                 commission_vnd: 11_500,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 20_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord_m4}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-m4".into(),
         })
         .await
@@ -4413,12 +4483,16 @@ async fn test_pg_w3b_r2_cod_carrier_mismatch_queue_persist_and_rpc_cancel() {
                 shop_id: shop_d.clone(),
                 subtotal_vnd: amt - 20_000,
                 commission_vnd: 5_000,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 20_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{oid}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-drop".into(),
         })
         .await
@@ -4521,7 +4595,7 @@ async fn test_pg_w3b_r2_cod_carrier_mismatch_queue_persist_and_rpc_cancel() {
         "detached COD reconciliation run must complete both rows even after caller disconnects"
     );
 
-    let sum = svc.get_ledger_summary().await.unwrap();
+    let sum = svc.get_ledger_summary(None).await.unwrap();
     assert!(sum.is_balanced);
     assert_eq!(sum.total_debits_vnd, sum.total_credits_vnd);
 
@@ -4568,12 +4642,16 @@ async fn test_pg_w3b_r3_indep_review_cod_queue_refunded_stale_and_multi_mismatch
                             shop_id: shop,
                             subtotal_vnd: amt - 20_000,
                             commission_vnd: 5_000,
+                            sales_channel: String::new(),
+                            storefront_shop_id: String::new(),
                             shipping_fee_vnd: 20_000,
                             platform_discount_vnd: 0,
                         }],
                         expires_at: None,
                         idempotency_key: Some(format!("checkout:{oid}")),
                         supersede_previous: false,
+                        sales_channel: String::new(),
+                        storefront_shop_id: String::new(),
                         trace_id: format!("tr-{oid}"),
                     })
                     .await
@@ -4803,12 +4881,16 @@ async fn test_pg_w3b_r3_indep_review_cod_queue_refunded_stale_and_multi_mismatch
                 shop_id: shop_ref.clone(),
                 subtotal_vnd: 240_000,
                 commission_vnd: 12_000,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 20_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord_ref}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-cod-ref".into(),
         })
         .await
@@ -5291,7 +5373,7 @@ async fn test_pg_w3b_r3_indep_review_cod_queue_refunded_stale_and_multi_mismatch
     assert!(db_late_completed.is_some());
 
     // Final global ledger integrity check: cod_receivable == 0 & balanced!
-    let sum = svc.get_ledger_summary().await.unwrap();
+    let sum = svc.get_ledger_summary(None).await.unwrap();
     assert!(sum.is_balanced);
     assert_eq!(sum.total_debits_vnd, sum.total_credits_vnd);
     let cod_recv_final = sum
@@ -5378,23 +5460,25 @@ async fn test_pg_migration_0010_upgrade_from_0009_with_existing_data() {
         .await
         .expect("connect isolated schema pool");
 
-    // 1. Apply migrations 0001..0009 only (pre-0010 live database state).
+    // 1. Apply migrations 0001..0011 only (pre-0012 live database state, including phase-0b 0002..0003).
     let pre_migrations = [
         include_str!("../migrations/0001_init.sql"),
-        include_str!("../migrations/0002_payment_money_model.sql"),
-        include_str!("../migrations/0003_refund_settlement_and_reconciliation.sql"),
-        include_str!("../migrations/0004_reconciliation_queue_unique_tx.sql"),
-        include_str!("../migrations/0005_reconciliation_fixes.sql"),
-        include_str!("../migrations/0006_trim_provider_tx_ids.sql"),
-        include_str!("../migrations/0007_payment_fee_configs.sql"),
-        include_str!("../migrations/0008_outbox_lease_and_fee_config_index.sql"),
-        include_str!("../migrations/0009_cod_reconciliation_and_dlq.sql"),
+        include_str!("../migrations/0002_sales_channel.sql"),
+        include_str!("../migrations/0003_zalopay.sql"),
+        include_str!("../migrations/0004_payment_money_model.sql"),
+        include_str!("../migrations/0005_refund_settlement_and_reconciliation.sql"),
+        include_str!("../migrations/0006_reconciliation_queue_unique_tx.sql"),
+        include_str!("../migrations/0007_reconciliation_fixes.sql"),
+        include_str!("../migrations/0008_trim_provider_tx_ids.sql"),
+        include_str!("../migrations/0009_payment_fee_configs.sql"),
+        include_str!("../migrations/0010_outbox_lease_and_fee_config_index.sql"),
+        include_str!("../migrations/0011_cod_reconciliation_and_dlq.sql"),
     ];
     for sql in pre_migrations {
-        pool.execute(sql).await.expect("apply pre-0010 migration");
+        pool.execute(sql).await.expect("apply pre-0012 migration");
     }
 
-    // 2. Seed existing data (COD + VIETQR payments, multiple refunds, custom fee config).
+    // 2. Seed existing data (COD + VIETQR + legacy phase-0b ZALOPAY payments, multiple refunds).
     let existing_vietqr_id: Uuid = sqlx::query_scalar(
         r#"
         INSERT INTO payments (
@@ -5429,6 +5513,23 @@ async fn test_pg_migration_0010_upgrade_from_0009_with_existing_data() {
     .await
     .expect("insert existing cod payment");
 
+    let existing_p0b_zlp_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO payments (
+            order_group_id, order_id, user_id, method, provider, amount_vnd,
+            status, provider_order_code, qr_url
+        )
+        VALUES (
+            'grp-pre12-zlp', 'ord-pre12-zlp', 'buyer-pre10', 'ZALOPAY', 'zalopay_mock',
+            100000, 'pending', 'ZLP_PRE12', 'https://sbgateway.zalopay.vn/openinapp?order=PRE12'
+        )
+        RETURNING id
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("insert legacy phase-0b ZALOPAY payment with qr_url");
+
     sqlx::query(
         r#"
         INSERT INTO refunds (payment_id, order_id, amount_vnd, reason, status, idempotency_key)
@@ -5442,31 +5543,29 @@ async fn test_pg_migration_0010_upgrade_from_0009_with_existing_data() {
     .await
     .expect("insert existing refunds");
 
-    // Pre-0010 CHECK must reject ZALOPAY on both payments and payment_fee_configs.
+    // Pre-0012 payment_fee_configs CHECK must reject ZALOPAY (0009 only allowed COD/VIETQR).
     assert!(
         sqlx::query(
             r#"
-            INSERT INTO payments (
-                order_group_id, order_id, user_id, method, provider, amount_vnd,
-                status, provider_order_code
-            )
-            VALUES ('grp-pre-zlp', 'ord-pre-zlp', 'u1', 'ZALOPAY', 'zalopay_mock', 100000, 'pending', 'ZLP_PRE')
+            INSERT INTO payment_fee_configs (payment_method, fee_bps, effective_from, created_by, note)
+            VALUES ('ZALOPAY', 0, NOW(), 'test', 'pre-0012')
             "#,
         )
         .execute(&pool)
         .await
         .is_err(),
-        "pre-0010 payments CHECK must reject ZALOPAY"
+        "pre-0012 payment_fee_configs CHECK must reject ZALOPAY"
     );
 
-    // 3. Apply migration 0010 on the populated database.
+    // 3. Apply migration 0012 on the populated database.
     pool.execute(include_str!(
-        "../migrations/0010_zalopay_and_method_configs.sql"
+        "../migrations/0012_zalopay_and_method_configs.sql"
     ))
     .await
-    .expect("apply migration 0010 on populated 0009 schema");
+    .expect("apply migration 0012 on populated 0011 schema");
 
-    // 4. Verify pre-existing data survived cleanly with nullable defaults.
+    // 4. Verify pre-existing data survived cleanly, pay_url backfilled for legacy ZALOPAY,
+    //    and duplicate 0003 CHECK/index removed.
     let existing_pay_url: Option<String> =
         sqlx::query_scalar("SELECT pay_url FROM payments WHERE id = $1")
             .bind(existing_cod_id)
@@ -5474,6 +5573,17 @@ async fn test_pg_migration_0010_upgrade_from_0009_with_existing_data() {
             .await
             .unwrap();
     assert_eq!(existing_pay_url, None);
+
+    let backfilled_zlp_pay_url: Option<String> =
+        sqlx::query_scalar("SELECT pay_url FROM payments WHERE id = $1")
+            .bind(existing_p0b_zlp_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        backfilled_zlp_pay_url.as_deref(),
+        Some("https://sbgateway.zalopay.vn/openinapp?order=PRE12")
+    );
 
     let legacy_refund_nulls: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM refunds WHERE provider_m_refund_id IS NULL AND provider_status IS NULL",

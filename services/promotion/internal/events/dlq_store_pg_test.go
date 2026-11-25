@@ -47,7 +47,7 @@ func TestPostgresDeadLetterStore_E2_MigrationSchemaAndConsumerPersistence(t *tes
 	pgStore, pool := openTestEventsPG(t)
 	ctx := context.Background()
 
-	// 1. Verify 005_dead_letter_events.sql schema matches order_db.dead_letter_events columns exactly.
+	// 1. Verify 006_dead_letter_events.sql schema matches order_db.dead_letter_events columns exactly.
 	rows, err := pool.Query(ctx, `
 		SELECT column_name, data_type, is_nullable
 		FROM information_schema.columns

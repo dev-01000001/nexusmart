@@ -1,11 +1,16 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["dom", "dom.iterable", "esnext"],
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",
@@ -19,9 +24,32 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": [
+        "./src/*"
+      ]
     }
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    ".next-account/types/**/*.ts",
+    ".next-bff/types/**/*.ts",
+    ".next-catalog/types/**/*.ts",
+    ".next-checkout/types/**/*.ts",
+    ".next-coordinator/types/**/*.ts",
+    ".next-gateway/types/**/*.ts",
+    ".next-platform/types/**/*.ts",
+    ".next-qa/types/**/*.ts",
+    ".next-seller/types/**/*.ts",
+    ".next-verifier/types/**/*.ts",
+    ".next/types/**/*.ts",
+    "next-env.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".next/standalone",
+    ".next-*/standalone",
+    ".next/cache",
+    ".next-*/cache"
+  ]
 }

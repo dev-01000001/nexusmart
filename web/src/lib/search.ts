@@ -1,4 +1,5 @@
-import { PRODUCTS, SHOPS, type Product } from "../data";
+import { PRODUCTS, type Product } from "../data/products";
+import { SHOPS } from "../data/shops";
 
 /**
  * Strips Vietnamese diacritics, maps đ/Đ -> d, lowercases and collapses whitespace.

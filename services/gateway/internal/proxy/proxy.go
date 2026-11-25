@@ -60,11 +60,7 @@ func NewWebhookProxy(targetBaseURL string, log *slog.Logger) (http.Handler, erro
 			if ts := pr.In.Header.Get("X-Timestamp"); ts != "" {
 				pr.Out.Header.Set("X-Timestamp", ts)
 			}
-			if tp := pr.In.Header.Get("traceparent"); tp != "" {
-				pr.Out.Header.Set("traceparent", tp)
-			} else {
-				otel.GetTextMapPropagator().Inject(pr.In.Context(), propagation.HeaderCarrier(pr.Out.Header))
-			}
+			otel.GetTextMapPropagator().Inject(pr.In.Context(), propagation.HeaderCarrier(pr.Out.Header))
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			stripSecurityHeaders(resp.Header)

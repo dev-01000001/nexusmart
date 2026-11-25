@@ -221,6 +221,8 @@ fn single_alloc(order_id: &str, shop_id: &str, amount_vnd: i64) -> Vec<ShopAlloc
         shop_id: shop_id.to_string(),
         subtotal_vnd: amount_vnd,
         commission_vnd: amount_vnd / 20,
+        sales_channel: String::new(),
+        storefront_shop_id: String::new(),
         shipping_fee_vnd: 0,
         platform_discount_vnd: 0,
     }]
@@ -297,17 +299,19 @@ async fn test_pg_w3b2_migration_upgrade_0009_to_0010_to_0011_on_populated_db() {
         .await
         .expect("connect schema pool");
 
-    // 1. Apply migrations 0001..0009
+    // 1. Apply migrations 0001..0011 (including phase-0b 0002..0003)
     let pre_migrations = [
         include_str!("../migrations/0001_init.sql"),
-        include_str!("../migrations/0002_payment_money_model.sql"),
-        include_str!("../migrations/0003_refund_settlement_and_reconciliation.sql"),
-        include_str!("../migrations/0004_reconciliation_queue_unique_tx.sql"),
-        include_str!("../migrations/0005_reconciliation_fixes.sql"),
-        include_str!("../migrations/0006_trim_provider_tx_ids.sql"),
-        include_str!("../migrations/0007_payment_fee_configs.sql"),
-        include_str!("../migrations/0008_outbox_lease_and_fee_config_index.sql"),
-        include_str!("../migrations/0009_cod_reconciliation_and_dlq.sql"),
+        include_str!("../migrations/0002_sales_channel.sql"),
+        include_str!("../migrations/0003_zalopay.sql"),
+        include_str!("../migrations/0004_payment_money_model.sql"),
+        include_str!("../migrations/0005_refund_settlement_and_reconciliation.sql"),
+        include_str!("../migrations/0006_reconciliation_queue_unique_tx.sql"),
+        include_str!("../migrations/0007_reconciliation_fixes.sql"),
+        include_str!("../migrations/0008_trim_provider_tx_ids.sql"),
+        include_str!("../migrations/0009_payment_fee_configs.sql"),
+        include_str!("../migrations/0010_outbox_lease_and_fee_config_index.sql"),
+        include_str!("../migrations/0011_cod_reconciliation_and_dlq.sql"),
     ];
     for (idx, sql) in pre_migrations.iter().enumerate() {
         sqlx::raw_sql(sql)
@@ -316,7 +320,7 @@ async fn test_pg_w3b2_migration_upgrade_0009_to_0010_to_0011_on_populated_db() {
             .unwrap_or_else(|e| panic!("apply migration {}: {e}", idx + 1));
     }
 
-    // 2. Seed pre-existing populated data before 0010 & 0011
+    // 2. Seed pre-existing populated data before 0012 & 0013
     let existing_pay_id: Uuid = sqlx::query_scalar(
         r#"
         INSERT INTO payments (
@@ -344,20 +348,20 @@ async fn test_pg_w3b2_migration_upgrade_0009_to_0010_to_0011_on_populated_db() {
     .await
     .expect("insert legacy refund");
 
-    // 3. Apply 0010 then 0011 on populated DB
+    // 3. Apply 0012 then 0013 on populated DB
     sqlx::raw_sql(include_str!(
-        "../migrations/0010_zalopay_and_method_configs.sql"
+        "../migrations/0012_zalopay_and_method_configs.sql"
     ))
     .execute(&pool)
     .await
-    .expect("apply 0010 on populated DB");
+    .expect("apply 0012 on populated DB");
 
     sqlx::raw_sql(include_str!(
-        "../migrations/0011_refund_two_person_approval.sql"
+        "../migrations/0013_refund_two_person_approval.sql"
     ))
     .execute(&pool)
     .await
-    .expect("apply 0011 on populated DB");
+    .expect("apply 0013 on populated DB");
 
     // 4. Verify legacy rows preserved with NULL new columns
     let (legacy_status, legacy_req_by): (String, Option<String>) =
@@ -369,14 +373,14 @@ async fn test_pg_w3b2_migration_upgrade_0009_to_0010_to_0011_on_populated_db() {
     assert_eq!(legacy_status, "pending");
     assert_eq!(legacy_req_by, None);
 
-    // 5. Verify 0010 seeds (`payment_method_configs` + ZALOPAY 0 bps fee)
+    // 5. Verify 0012 seeds (`payment_method_configs` + ZALOPAY 0 bps fee)
     let method_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM payment_method_configs")
         .fetch_one(&pool)
         .await
         .unwrap();
     assert_eq!(method_count, 3);
 
-    // 6. Verify 0011 status CHECK accepts `pending_approval` and `rejected`, and DB CHECK rejects maker == checker
+    // 6. Verify 0013 status CHECK accepts `pending_approval` and `rejected`, and DB CHECK rejects maker == checker
     let pa_id: Uuid = sqlx::query_scalar(
         r#"
         INSERT INTO refunds (
@@ -414,13 +418,13 @@ async fn test_pg_w3b2_migration_upgrade_0009_to_0010_to_0011_on_populated_db() {
     .await
     .expect("different checker must pass chk_refunds_maker_ne_checker");
 
-    // 7. Apply 0012 (p3 Item 1 ZaloPay late-payment sweep) on populated DB
+    // 7. Apply 0014 (p3 Item 1 ZaloPay late-payment sweep) on populated DB
     sqlx::raw_sql(include_str!(
-        "../migrations/0012_zalopay_late_payment_sweep.sql"
+        "../migrations/0014_zalopay_late_payment_sweep.sql"
     ))
     .execute(&pool)
     .await
-    .expect("apply 0012 on populated DB");
+    .expect("apply 0014 on populated DB");
 
     let (legacy_final, legacy_attempts): (Option<String>, i32) = sqlx::query_as(
         "SELECT provider_final_status, provider_check_attempts FROM payments WHERE id = $1",
@@ -439,10 +443,10 @@ async fn test_pg_w3b2_migration_upgrade_0009_to_0010_to_0011_on_populated_db() {
             .await;
     assert!(
         bad_final.is_err(),
-        "0012 CHECK must reject unknown provider_final_status"
+        "0014 CHECK must reject unknown provider_final_status"
     );
 
-    // 8. Apply 0013 (p4 refund lease/CAS + created_by_service) on populated DB
+    // 8. Apply 0015 (p4 refund lease/CAS + created_by_service) on populated DB
     sqlx::query(
         r#"
         INSERT INTO refunds (payment_id, order_id, amount_vnd, reason, status, idempotency_key)
@@ -452,14 +456,14 @@ async fn test_pg_w3b2_migration_upgrade_0009_to_0010_to_0011_on_populated_db() {
     .bind(existing_pay_id)
     .execute(&pool)
     .await
-    .expect("insert pre-0013 auto cancel refund");
+    .expect("insert pre-0015 auto cancel refund");
 
     sqlx::raw_sql(include_str!(
-        "../migrations/0013_p4_refund_lease_and_audit.sql"
+        "../migrations/0015_p4_refund_lease_and_audit.sql"
     ))
     .execute(&pool)
     .await
-    .expect("apply 0013 on populated DB");
+    .expect("apply 0015 on populated DB");
 
     let cancel_by_svc: bool = sqlx::query_scalar(
         "SELECT created_by_service FROM refunds WHERE idempotency_key = 'order-cancel-refund:ord-legacy'",
@@ -475,17 +479,24 @@ async fn test_pg_w3b2_migration_upgrade_0009_to_0010_to_0011_on_populated_db() {
             .unwrap();
     assert!(
         cancel_by_svc,
-        "0013 backfill must mark legacy auto order-cancel-refund rows as created_by_service=true"
+        "0015 backfill must mark legacy auto order-cancel-refund rows as created_by_service=true"
     );
     assert!(!legacy_by_svc);
 
-    // 9. Apply 0014 (p5 durable last /v2/query state) on populated DB
+    // 9. Apply 0016 (p5 durable last /v2/query state) and 0017 (w3b3 COD fee adjustments) on populated DB
     sqlx::raw_sql(include_str!(
-        "../migrations/0014_zalopay_last_query_state.sql"
+        "../migrations/0016_zalopay_last_query_state.sql"
     ))
     .execute(&pool)
     .await
-    .expect("apply 0014 on populated DB");
+    .expect("apply 0016 on populated DB");
+
+    sqlx::raw_sql(include_str!(
+        "../migrations/0017_w3b3_cod_fee_adjustments.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("apply 0017 on populated DB");
 
     let (legacy_last_rc, legacy_last_proc): (Option<i32>, Option<bool>) = sqlx::query_as(
         "SELECT provider_last_query_return_code, provider_last_query_is_processing FROM payments WHERE id = $1",
@@ -542,6 +553,8 @@ async fn test_pg_w3b2_f2_zalopay_ipn_attacks_replay_skew_and_amount_mismatch() {
             expires_at: None,
             idempotency_key: Some("idem-zp-replay".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-zp-1".into(),
         })
         .await
@@ -563,6 +576,8 @@ async fn test_pg_w3b2_f2_zalopay_ipn_attacks_replay_skew_and_amount_mismatch() {
             expires_at: None,
             idempotency_key: Some("idem-zp-skew".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-zp-2".into(),
         })
         .await
@@ -579,6 +594,8 @@ async fn test_pg_w3b2_f2_zalopay_ipn_attacks_replay_skew_and_amount_mismatch() {
             expires_at: None,
             idempotency_key: Some("idem-zp-mm".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-zp-3".into(),
         })
         .await
@@ -838,7 +855,7 @@ async fn test_pg_w3b2_f2_zalopay_ipn_attacks_replay_skew_and_amount_mismatch() {
             .unwrap();
     assert_eq!(ledger_count_for_replay, 1);
 
-    let summary = svc.get_ledger_summary().await.unwrap();
+    let summary = svc.get_ledger_summary(None).await.unwrap();
     assert!(summary.is_balanced);
     assert_eq!(summary.total_debits_vnd, summary.total_credits_vnd);
     // p_skew (180k) + p_replay (250k) = 430k
@@ -872,6 +889,8 @@ async fn test_pg_w3b2_f5_b25_zalopay_superseded_late_ipn_race() {
             expires_at: None,
             idempotency_key: Some("idem-b25-zp".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-b25-1".into(),
         })
         .await
@@ -888,6 +907,8 @@ async fn test_pg_w3b2_f5_b25_zalopay_superseded_late_ipn_race() {
             expires_at: p_zp.payment.expires_at,
             idempotency_key: Some("idem-b25-qr".into()),
             supersede_previous: true,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-b25-2".into(),
         })
         .await
@@ -973,6 +994,8 @@ async fn test_pg_w3b2_f5_b25_zalopay_superseded_late_ipn_race() {
             expires_at: None,
             idempotency_key: Some("idem-b25-zp2".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-b25-3".into(),
         })
         .await
@@ -989,6 +1012,8 @@ async fn test_pg_w3b2_f5_b25_zalopay_superseded_late_ipn_race() {
             expires_at: None,
             idempotency_key: Some("idem-b25-cod".into()),
             supersede_previous: true,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-b25-4".into(),
         })
         .await
@@ -1019,7 +1044,7 @@ async fn test_pg_w3b2_f5_b25_zalopay_superseded_late_ipn_race() {
         "pending"
     );
 
-    let summary = svc.get_ledger_summary().await.unwrap();
+    let summary = svc.get_ledger_summary(None).await.unwrap();
     assert!(summary.is_balanced);
     assert_eq!(summary.total_debits_vnd, summary.total_credits_vnd);
 
@@ -1055,6 +1080,8 @@ async fn test_pg_w3b2_f3_expiry_scanner_zalopay_query_1_2_3_and_network_error() 
                 expires_at: Some(past),
                 idempotency_key: Some(format!("idem-f3-{i}")),
                 supersede_previous: false,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 trace_id: format!("tr-f3-{i}"),
             })
             .await
@@ -1122,7 +1149,7 @@ async fn test_pg_w3b2_f3_expiry_scanner_zalopay_query_1_2_3_and_network_error() 
         ZaloPayCallbackOutcome::LateRefundQueued { .. }
     ));
 
-    let summary = svc.get_ledger_summary().await.unwrap();
+    let summary = svc.get_ledger_summary(None).await.unwrap();
     assert!(summary.is_balanced);
 
     db.cleanup().await;
@@ -1157,6 +1184,8 @@ async fn test_pg_w3b2_f4_zalopay_wallet_refund_async_skip_locked_race_and_manual
                     expires_at: None,
                     idempotency_key: Some(format!("idem-{ord}")),
                     supersede_previous: false,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     trace_id: format!("tr-{ord}"),
                 })
                 .await
@@ -1316,7 +1345,7 @@ async fn test_pg_w3b2_f4_zalopay_wallet_refund_async_skip_locked_race_and_manual
     assert!(c_mref.is_some());
     assert_eq!(c_st, "completed");
 
-    let summary = svc.get_ledger_summary().await.unwrap();
+    let summary = svc.get_ledger_summary(None).await.unwrap();
     assert!(summary.is_balanced);
 
     db.cleanup().await;
@@ -1386,6 +1415,8 @@ async fn test_pg_w3b2_f6_f7_method_configs_disable_inflight_ipn_and_concurrent_v
             expires_at: None,
             idempotency_key: Some("idem-f7-inflight".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-f7-1".into(),
         })
         .await
@@ -1442,6 +1473,8 @@ async fn test_pg_w3b2_f6_f7_method_configs_disable_inflight_ipn_and_concurrent_v
             expires_at: None,
             idempotency_key: Some("idem-f7-blocked".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-f7-2".into(),
         })
         .await
@@ -1477,6 +1510,8 @@ async fn test_pg_w3b2_f6_f7_method_configs_disable_inflight_ipn_and_concurrent_v
             expires_at: None,
             idempotency_key: Some("idem-f6-cod-over".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-f6-cod".into(),
         })
         .await
@@ -1578,6 +1613,8 @@ async fn test_pg_w3b2_f11_two_person_refund_approval_attacks_and_races() {
                     expires_at: None,
                     idempotency_key: Some(format!("idem-{ord}")),
                     supersede_previous: false,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     trace_id: format!("tr-{ord}"),
                 })
                 .await
@@ -1873,7 +1910,7 @@ async fn test_pg_w3b2_f11_two_person_refund_approval_attacks_and_races() {
     .unwrap();
     assert_eq!(approved_outbox_cnt, 1);
 
-    let summary = svc.get_ledger_summary().await.unwrap();
+    let summary = svc.get_ledger_summary(None).await.unwrap();
     assert!(summary.is_balanced);
 
     db.cleanup().await;
@@ -1906,6 +1943,8 @@ async fn test_pg_p3_item2_decide_refund_approval_reject_emits_outbox_once_under_
             expires_at: None,
             idempotency_key: Some("idem-p3-rej-pay-1".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p3-rej-pay".into(),
         })
         .await
@@ -2112,6 +2151,8 @@ async fn test_pg_p3_item3_moderator_own_payment_sse_and_refunds_vs_others_forbid
                     expires_at: None,
                     idempotency_key: Some(format!("idem-{ord_s}")),
                     supersede_previous: false,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     trace_id: format!("tr-{ord_s}"),
                 })
                 .await
@@ -2369,6 +2410,8 @@ async fn test_pg_p3_item1_zalopay_lost_callbacks_discovered_by_scanner() {
             expires_at: None,
             idempotency_key: Some("idem-p3-lost-zp".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p3-lost-1".into(),
         })
         .await
@@ -2385,6 +2428,8 @@ async fn test_pg_p3_item1_zalopay_lost_callbacks_discovered_by_scanner() {
             expires_at: p_zp.payment.expires_at,
             idempotency_key: Some("idem-p3-lost-qr".into()),
             supersede_previous: true,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p3-lost-2".into(),
         })
         .await
@@ -2465,6 +2510,8 @@ async fn test_pg_p3_item1_zalopay_lost_callbacks_discovered_by_scanner() {
             expires_at: None,
             idempotency_key: Some("idem-p3-cancel-2".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p3-cancel-2".into(),
         })
         .await
@@ -2512,6 +2559,8 @@ async fn test_pg_p3_item1_zalopay_lost_callbacks_discovered_by_scanner() {
             expires_at: Some(Utc::now() - ChronoDuration::minutes(2)),
             idempotency_key: Some("idem-p3-exp-err".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p3-exp-err".into(),
         })
         .await
@@ -2599,7 +2648,7 @@ async fn test_pg_p3_item1_zalopay_lost_callbacks_discovered_by_scanner() {
     .unwrap();
     assert_eq!(exp_late_cnt, 1);
 
-    let summary = svc.get_ledger_summary().await.unwrap();
+    let summary = svc.get_ledger_summary(None).await.unwrap();
     assert!(summary.is_balanced);
 
     db.cleanup().await;
@@ -2635,6 +2684,8 @@ async fn test_pg_p3_item1_zalopay_late_sweep_races_callback_and_two_replicas() {
             expires_at: None,
             idempotency_key: Some("idem-p3-race-cb-zp".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p3-race-cb-1".into(),
         })
         .await
@@ -2650,6 +2701,8 @@ async fn test_pg_p3_item1_zalopay_late_sweep_races_callback_and_two_replicas() {
             expires_at: p_race_cb.payment.expires_at,
             idempotency_key: Some("idem-p3-race-cb-qr".into()),
             supersede_previous: true,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p3-race-cb-2".into(),
         })
         .await
@@ -2745,6 +2798,8 @@ async fn test_pg_p3_item1_zalopay_late_sweep_races_callback_and_two_replicas() {
             expires_at: None,
             idempotency_key: Some("idem-p3-2rep-zp".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p3-2rep-1".into(),
         })
         .await
@@ -2760,6 +2815,8 @@ async fn test_pg_p3_item1_zalopay_late_sweep_races_callback_and_two_replicas() {
             expires_at: p_rep.payment.expires_at,
             idempotency_key: Some("idem-p3-2rep-qr".into()),
             supersede_previous: true,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p3-2rep-2".into(),
         })
         .await
@@ -2811,7 +2868,7 @@ async fn test_pg_p3_item1_zalopay_late_sweep_races_callback_and_two_replicas() {
     assert_eq!(rep_attempts, 1);
     assert_eq!(rep_final.as_deref(), Some("late_refund_queued"));
 
-    let summary = svc.get_ledger_summary().await.unwrap();
+    let summary = svc.get_ledger_summary(None).await.unwrap();
     assert!(summary.is_balanced);
 
     db.cleanup().await;
@@ -2849,6 +2906,8 @@ async fn test_pg_p3_item1_zalopay_late_sweep_amount_mismatch_window_exhausted_an
             expires_at: None,
             idempotency_key: Some("idem-p3-mm-zp".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p3-mm-1".into(),
         })
         .await
@@ -2864,6 +2923,8 @@ async fn test_pg_p3_item1_zalopay_late_sweep_amount_mismatch_window_exhausted_an
             expires_at: p_mm.payment.expires_at,
             idempotency_key: Some("idem-p3-mm-qr".into()),
             supersede_previous: true,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p3-mm-2".into(),
         })
         .await
@@ -2928,6 +2989,8 @@ async fn test_pg_p3_item1_zalopay_late_sweep_amount_mismatch_window_exhausted_an
             expires_at: Some(expired_at),
             idempotency_key: Some("idem-p3-win3".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p3-win3".into(),
         })
         .await
@@ -2951,6 +3014,8 @@ async fn test_pg_p3_item1_zalopay_late_sweep_amount_mismatch_window_exhausted_an
             expires_at: Some(expired_at),
             idempotency_key: Some("idem-p3-winnet".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p3-winnet".into(),
         })
         .await
@@ -3015,6 +3080,8 @@ async fn test_pg_p3_item1_zalopay_late_sweep_amount_mismatch_window_exhausted_an
                 expires_at: None,
                 idempotency_key: Some(format!("idem-p3-lim-{i}")),
                 supersede_previous: false,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 trace_id: format!("tr-p3-lim-{i}"),
             })
             .await
@@ -3049,7 +3116,7 @@ async fn test_pg_p3_item1_zalopay_late_sweep_amount_mismatch_window_exhausted_an
         .unwrap();
     assert_eq!(b3.claimed, 0);
 
-    let summary = svc.get_ledger_summary().await.unwrap();
+    let summary = svc.get_ledger_summary(None).await.unwrap();
     assert!(summary.is_balanced);
 
     db.cleanup().await;

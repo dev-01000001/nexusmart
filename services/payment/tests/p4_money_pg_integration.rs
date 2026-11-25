@@ -213,6 +213,8 @@ fn single_alloc(order_id: &str, shop_id: &str, amount_vnd: i64) -> Vec<ShopAlloc
         shop_id: shop_id.to_string(),
         subtotal_vnd: amount_vnd,
         commission_vnd: amount_vnd / 20,
+        sales_channel: String::new(),
+        storefront_shop_id: String::new(),
         shipping_fee_vnd: 0,
         platform_discount_vnd: 0,
     }]
@@ -271,6 +273,8 @@ async fn test_pg_p4_item_a_cancel_payment_zalopay_query_before_cancel() {
             expires_at: None,
             idempotency_key: Some("idem-p4-a1".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p4-a1".into(),
         })
         .await
@@ -314,6 +318,8 @@ async fn test_pg_p4_item_a_cancel_payment_zalopay_query_before_cancel() {
             expires_at: None,
             idempotency_key: Some("idem-p4-a2".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p4-a2".into(),
         })
         .await
@@ -337,7 +343,7 @@ async fn test_pg_p4_item_a_cancel_payment_zalopay_query_before_cancel() {
     let stats = svc.scan_unsettled_zalopay_payments().await.unwrap();
     assert_eq!(stats.late_refunds_queued, 1);
 
-    assert!(svc.get_ledger_summary().await.unwrap().is_balanced);
+    assert!(svc.get_ledger_summary(None).await.unwrap().is_balanced);
     db.cleanup().await;
 }
 
@@ -371,6 +377,8 @@ async fn test_pg_p4_item_a_scan_expired_races_supersede_keeps_payment_evidence()
             expires_at: Some(expired_at),
             idempotency_key: Some("idem-p4-a1-race-zp".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p4-a1-race-1".into(),
         })
         .await
@@ -400,6 +408,8 @@ async fn test_pg_p4_item_a_scan_expired_races_supersede_keeps_payment_evidence()
             expires_at: None,
             idempotency_key: Some("idem-p4-a1-race-cod".into()),
             supersede_previous: true,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p4-a1-race-2".into(),
         })
         .await
@@ -438,6 +448,8 @@ async fn test_pg_p4_item_a_scan_expired_races_supersede_keeps_payment_evidence()
             expires_at: Some(expired_at),
             idempotency_key: Some("idem-p4-a1-mm".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p4-a1-mm".into(),
         })
         .await
@@ -486,7 +498,7 @@ async fn test_pg_p4_item_a_scan_expired_races_supersede_keeps_payment_evidence()
         "Item A1: raced mismatched transfer must be queued into reconciliation_queue"
     );
 
-    assert!(svc.get_ledger_summary().await.unwrap().is_balanced);
+    assert!(svc.get_ledger_summary(None).await.unwrap().is_balanced);
     db.cleanup().await;
 }
 
@@ -522,6 +534,8 @@ async fn test_pg_p4_item_b_c_d_zalopay_refund_lease_settle_guard_and_day_rollove
                     expires_at: None,
                     idempotency_key: Some(format!("idem-{ord}")),
                     supersede_previous: false,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     trace_id: format!("tr-{ord}"),
                 })
                 .await
@@ -902,6 +916,8 @@ async fn test_pg_p4_item_e_f_j_o_refund_guards_escrow_hold_bank_manual_review_an
                     expires_at: None,
                     idempotency_key: Some(format!("idem-{o}")),
                     supersede_previous: false,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     trace_id: format!("tr-{o}"),
                 })
                 .await
@@ -1186,6 +1202,8 @@ async fn test_pg_p4_item_g_h_i_k_collision_method_match_mock_recon_and_supersede
             expires_at: None,
             idempotency_key: Some("idem-p4-g1".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p4-g1".into(),
         })
         .await
@@ -1201,6 +1219,8 @@ async fn test_pg_p4_item_g_h_i_k_collision_method_match_mock_recon_and_supersede
             expires_at: None,
             idempotency_key: Some("idem-p4-g2".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p4-g2".into(),
         })
         .await
@@ -1290,6 +1310,8 @@ async fn test_pg_p4_item_g_h_i_k_collision_method_match_mock_recon_and_supersede
             expires_at: None,
             idempotency_key: Some("idem-p4-g3".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p4-g3".into(),
         })
         .await
@@ -1316,7 +1338,10 @@ async fn test_pg_p4_item_g_h_i_k_collision_method_match_mock_recon_and_supersede
     );
 
     // --- Item I: Mock VietQR reconciliation excludes zalopay% webhooks ---
-    let recon = svc.run_reconciliation(vn_today(Utc::now())).await.unwrap();
+    let recon = svc
+        .run_reconciliation(vn_today(Utc::now()), None)
+        .await
+        .unwrap();
     assert_eq!(
         recon.run.matched_count, 1,
         "Item I: mock VietQR reconciliation must count ONLY the 1 VIETQR payment (exclude zalopay_mock)"
@@ -1335,6 +1360,8 @@ async fn test_pg_p4_item_g_h_i_k_collision_method_match_mock_recon_and_supersede
             expires_at: None,
             idempotency_key: Some("idem-p4-h-qr".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p4-h-1".into(),
         })
         .await
@@ -1350,6 +1377,8 @@ async fn test_pg_p4_item_g_h_i_k_collision_method_match_mock_recon_and_supersede
             expires_at: p_h_qr.payment.expires_at,
             idempotency_key: Some("idem-p4-h-zp".into()),
             supersede_previous: true,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p4-h-2".into(),
         })
         .await
@@ -1429,6 +1458,8 @@ async fn test_pg_p4_item_g_h_i_k_collision_method_match_mock_recon_and_supersede
             expires_at: None,
             idempotency_key: Some("idem-p4-k-cod".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p4-k-1".into(),
         })
         .await
@@ -1444,6 +1475,8 @@ async fn test_pg_p4_item_g_h_i_k_collision_method_match_mock_recon_and_supersede
             expires_at: None,
             idempotency_key: Some("idem-p4-k-cod-sup".into()),
             supersede_previous: true,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p4-k-2".into(),
         })
         .await
@@ -1469,6 +1502,8 @@ async fn test_pg_p4_item_g_h_i_k_collision_method_match_mock_recon_and_supersede
             expires_at: p_h_zp.payment.expires_at,
             idempotency_key: Some("idem-p4-k-amt".into()),
             supersede_previous: true,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p4-k-amt".into(),
         })
         .await
@@ -1493,6 +1528,8 @@ async fn test_pg_p4_item_g_h_i_k_collision_method_match_mock_recon_and_supersede
             expires_at: Some(extended_exp),
             idempotency_key: Some("idem-p4-k-exp".into()),
             supersede_previous: true,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p4-k-exp".into(),
         })
         .await
@@ -1517,6 +1554,8 @@ async fn test_pg_p4_item_g_h_i_k_collision_method_match_mock_recon_and_supersede
             expires_at: p_h_zp.payment.expires_at,
             idempotency_key: Some("idem-p4-k-ok-qr".into()),
             supersede_previous: true,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p4-k-ok-qr".into(),
         })
         .await
@@ -1534,6 +1573,8 @@ async fn test_pg_p4_item_g_h_i_k_collision_method_match_mock_recon_and_supersede
             expires_at: None,
             idempotency_key: Some("idem-p4-k-ok-cod".into()),
             supersede_previous: true,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p4-k-ok-cod".into(),
         })
         .await
@@ -1564,6 +1605,8 @@ async fn test_pg_p4_item_l_cancel_payment_owner_rbac() {
             expires_at: None,
             idempotency_key: Some("idem-p4-l".into()),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "tr-p4-l".into(),
         })
         .await
@@ -1697,6 +1740,8 @@ async fn test_pg_p5_zalopay_window_exhausted_unpaid_vs_processing_and_restart_pe
                     expires_at: Some(expires_at),
                     idempotency_key: Some(format!("idem-p5-{tag}")),
                     supersede_previous: false,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     trace_id: format!("tr-p5-{tag}"),
                 })
                 .await
@@ -1973,7 +2018,7 @@ async fn test_pg_p5_zalopay_window_exhausted_unpaid_vs_processing_and_restart_pe
 
     assert!(
         svc_replica_b
-            .get_ledger_summary()
+            .get_ledger_summary(None)
             .await
             .unwrap()
             .is_balanced

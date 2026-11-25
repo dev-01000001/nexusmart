@@ -14,6 +14,7 @@ import (
 
 	"github.com/meilisearch/meilisearch-go"
 	searchcfg "github.com/nexusmart/core/services/search/config"
+	"github.com/sony/gobreaker/v2"
 )
 
 const (
@@ -21,10 +22,13 @@ const (
 	defaultReconnectInterval = 3 * time.Second
 	httpWriteTimeout         = 5 * time.Second
 	// K3: Event path task wait is 15s (HTTP 5s + wait 15s = 20s < consumer procCtx 25s).
-	EventTaskWaitTimeout    = 15 * time.Second
-	ReindexTaskWaitTimeout  = 60 * time.Second
-	settingsTaskWaitTimeout = 15 * time.Second
-	defaultTaskPollInterval = 25 * time.Millisecond
+	EventTaskWaitTimeout       = 15 * time.Second
+	ReindexTaskWaitTimeout     = 60 * time.Second
+	settingsTaskWaitTimeout    = 15 * time.Second
+	defaultTaskPollInterval    = 25 * time.Millisecond
+	defaultSearchCBMaxFailures = 5
+	defaultSearchCBTimeout     = 15 * time.Second
+	defaultSearchCBInterval    = 60 * time.Second
 )
 
 type taskWaitTimeoutKey struct{}
@@ -119,7 +123,7 @@ type Engine interface {
 	DeleteProducts(ctx context.Context, productIDs []string, wait bool) error
 }
 
-// Client wraps meilisearch-go with auto-configuration, timeout enforcement, and
+// Client wraps meilisearch-go with auto-configuration, timeout enforcement, circuit breaking, and
 // resilient startup/reconnect behavior (G13/K3/K4).
 type Client struct {
 	svc               meilisearch.ServiceManager
@@ -128,6 +132,7 @@ type Client struct {
 	reconnectInterval time.Duration
 	synonyms          map[string][]string
 	logger            *slog.Logger
+	searchCB          *gobreaker.CircuitBreaker[*SearchResult]
 
 	cfgMu                  sync.Mutex
 	configured             atomic.Bool
@@ -144,6 +149,8 @@ type Options struct {
 	IndexUID          string
 	Timeout           time.Duration
 	ReconnectInterval time.Duration
+	CBMaxFailures     uint32
+	CBTimeout         time.Duration
 	Synonyms          map[string][]string
 	HTTPClient        *http.Client
 	Logger            *slog.Logger
@@ -163,6 +170,14 @@ func NewClient(opts Options) *Client {
 	if reconnect <= 0 {
 		reconnect = defaultReconnectInterval
 	}
+	cbMaxFailures := opts.CBMaxFailures
+	if cbMaxFailures == 0 {
+		cbMaxFailures = defaultSearchCBMaxFailures
+	}
+	cbTimeout := opts.CBTimeout
+	if cbTimeout <= 0 {
+		cbTimeout = defaultSearchCBTimeout
+	}
 	syns := opts.Synonyms
 	if syns == nil {
 		syns = searchcfg.MustLoadSynonyms()
@@ -181,6 +196,33 @@ func NewClient(opts Options) *Client {
 		meiliOpts = append(meiliOpts, meilisearch.WithAPIKey(opts.APIKey))
 	}
 
+	searchCB := gobreaker.NewCircuitBreaker[*SearchResult](gobreaker.Settings{
+		Name:        "search-meilisearch",
+		MaxRequests: 1,
+		Interval:    defaultSearchCBInterval,
+		Timeout:     cbTimeout,
+		ReadyToTrip: func(counts gobreaker.Counts) bool {
+			return counts.ConsecutiveFailures >= cbMaxFailures
+		},
+		IsSuccessful: func(err error) bool {
+			if err == nil || errors.Is(err, context.Canceled) {
+				return true
+			}
+			var meiliErr *meilisearch.Error
+			if errors.As(err, &meiliErr) && meiliErr.StatusCode >= 400 && meiliErr.StatusCode < 500 && meiliErr.APIError.Code != "index_not_found" {
+				return true
+			}
+			return false
+		},
+		OnStateChange: func(name string, from, to gobreaker.State) {
+			logger.Warn("meilisearch circuit breaker state changed",
+				slog.String("breaker", name),
+				slog.String("from", from.String()),
+				slog.String("to", to.String()),
+			)
+		},
+	})
+
 	return &Client{
 		svc:               meilisearch.New(strings.TrimRight(opts.URL, "/"), meiliOpts...),
 		indexUID:          indexUID,
@@ -188,7 +230,13 @@ func NewClient(opts Options) *Client {
 		reconnectInterval: reconnect,
 		synonyms:          syns,
 		logger:            logger,
+		searchCB:          searchCB,
 	}
+}
+
+// SearchCircuitState exposes the read-path circuit breaker state for diagnostics and tests.
+func (c *Client) SearchCircuitState() gobreaker.State {
+	return c.searchCB.State()
 }
 
 func maxDuration(a, b time.Duration) time.Duration {
@@ -408,7 +456,7 @@ func (c *Client) StartReconnectLoop(ctx context.Context) {
 	}
 }
 
-// Search executes a filtered keyword search against Meilisearch (bounded by c.timeout).
+// Search executes a filtered keyword search against Meilisearch (bounded by c.timeout and protected by searchCB).
 func (c *Client) Search(ctx context.Context, req SearchQuery) (*SearchResult, error) {
 	filters, err := BuildFilters(req)
 	if err != nil {
@@ -430,6 +478,12 @@ func (c *Client) Search(ctx context.Context, req SearchQuery) (*SearchResult, er
 		return nil, fmt.Errorf("unsupported sort_by %q", req.SortBy)
 	}
 
+	return c.searchCB.Execute(func() (*SearchResult, error) {
+		return c.searchOnce(ctx, req, filters, sortExpr)
+	})
+}
+
+func (c *Client) searchOnce(ctx context.Context, req SearchQuery, filters, sortExpr []string) (*SearchResult, error) {
 	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 

@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
+	"github.com/nexusmart/core/services/user/internal/cloudflare"
 	"github.com/nexusmart/core/services/user/internal/db"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -53,6 +54,18 @@ const (
 	ApprovalStatusRejected = "REJECTED"
 
 	mdClientIP = "x-client-ip"
+
+	SiteStatusDraft     = "DRAFT"
+	SiteStatusPublished = "PUBLISHED"
+	SiteStatusSuspended = "SUSPENDED"
+
+	DomainKindSubdomain = "SUBDOMAIN"
+	DomainKindCustom    = "CUSTOM"
+
+	DomainStatusPending  = "PENDING"
+	DomainStatusActive   = "ACTIVE"
+	DomainStatusFailed   = "FAILED"
+	DomainStatusRemoving = "REMOVING"
 )
 
 var vnPhoneRegexp = regexp.MustCompile(`^(?:0|\+?84)(?:[35789]\d{8}|2\d{9})$`)
@@ -98,6 +111,14 @@ func isCheckViolation(err error) bool {
 		return pgErr.Code == "23514"
 	}
 	return false
+}
+
+func uniqueConstraintName(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return pgErr.ConstraintName
+	}
+	return ""
 }
 
 func isNotFoundErr(err error) bool {
@@ -662,4 +683,111 @@ func auditShopSnapshot(s db.Shop) map[string]any {
 		out["suspended_at"] = s.SuspendedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
 	}
 	return out
+}
+
+func siteStatusToProto(st string) userv1.SiteStatus {
+	switch strings.ToUpper(strings.TrimSpace(st)) {
+	case SiteStatusDraft:
+		return userv1.SiteStatus_SITE_STATUS_DRAFT
+	case SiteStatusPublished:
+		return userv1.SiteStatus_SITE_STATUS_PUBLISHED
+	case SiteStatusSuspended:
+		return userv1.SiteStatus_SITE_STATUS_SUSPENDED
+	default:
+		return userv1.SiteStatus_SITE_STATUS_UNSPECIFIED
+	}
+}
+
+func siteStatusFromProto(st userv1.SiteStatus) string {
+	switch st {
+	case userv1.SiteStatus_SITE_STATUS_DRAFT:
+		return SiteStatusDraft
+	case userv1.SiteStatus_SITE_STATUS_PUBLISHED:
+		return SiteStatusPublished
+	case userv1.SiteStatus_SITE_STATUS_SUSPENDED:
+		return SiteStatusSuspended
+	default:
+		return ""
+	}
+}
+
+func toProtoSiteVersion(v db.SiteVersion) *userv1.SiteVersion {
+	return &userv1.SiteVersion{
+		Id:            v.ID,
+		SiteId:        v.SiteID,
+		VersionNumber: v.VersionNumber,
+		ConfigJson:    string(v.Config),
+		PublishedBy:   v.PublishedBy,
+		Note:          v.Note,
+		CreatedAt:     timestamppb.New(v.CreatedAt),
+	}
+}
+
+func auditSiteSnapshot(s db.Site) map[string]any {
+	var pubVerID string
+	if s.PublishedVersionID != nil {
+		pubVerID = *s.PublishedVersionID
+	}
+	return map[string]any{
+		"id":                   s.ID,
+		"shop_id":              s.ShopID,
+		"subdomain":            s.Subdomain,
+		"status":               s.Status,
+		"published_version_id": pubVerID,
+		"suspended_reason":     s.SuspendedReason,
+	}
+}
+
+func toProtoDomain(d db.Domain) *userv1.Domain {
+	var records []*userv1.DomainVerificationRecord
+	if len(d.Verification) > 0 {
+		var parsed []cloudflare.VerificationRecord
+		if err := json.Unmarshal(d.Verification, &parsed); err == nil && len(parsed) > 0 {
+			records = make([]*userv1.DomainVerificationRecord, 0, len(parsed))
+			for _, rec := range parsed {
+				records = append(records, &userv1.DomainVerificationRecord{
+					Type:  rec.Type,
+					Name:  rec.Name,
+					Value: rec.Value,
+				})
+			}
+		}
+	}
+
+	out := &userv1.Domain{
+		Id:           d.ID,
+		Host:         d.Host,
+		Kind:         d.Kind,
+		Status:       d.Status,
+		IsPrimary:    d.IsPrimary,
+		Verification: records,
+		CreatedAt:    timestamppb.New(d.CreatedAt),
+	}
+	if d.LastError != nil {
+		out.LastError = *d.LastError
+	}
+	if d.VerifiedAt != nil {
+		out.VerifiedAt = timestamppb.New(*d.VerifiedAt)
+	}
+	return out
+}
+
+func auditDomainSnapshot(d db.Domain) map[string]any {
+	var cfHostnameID, lastErr string
+	if d.CfCustomHostnameID != nil {
+		cfHostnameID = *d.CfCustomHostnameID
+	}
+	if d.LastError != nil {
+		lastErr = *d.LastError
+	}
+	return map[string]any{
+		"id":                    d.ID,
+		"site_id":               d.SiteID,
+		"host":                  d.Host,
+		"kind":                  d.Kind,
+		"status":                d.Status,
+		"is_primary":            d.IsPrimary,
+		"cf_custom_hostname_id": cfHostnameID,
+		"last_error":            lastErr,
+	}
 }

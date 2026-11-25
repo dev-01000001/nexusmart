@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { formatDateTimeVi, formatVnd } from "@/lib/format";
 import { Button } from "@/components/Button";
+import { IconCheck, IconCopy } from "@/components/Icons";
 import styles from "./commerce.module.css";
 
 export interface VietQrPreviewProps {
@@ -31,7 +32,24 @@ const BANK_BIN_NAMES: Record<string, string> = {
   "970423": "TPBank",
 };
 
-function parseQrUrlMeta(qrUrl: string | undefined, fallbackRef: string): ParsedBankMeta {
+function parseSafeQrImageUrl(raw: string | undefined): string {
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("/") && !trimmed.startsWith("//") && !trimmed.includes("\\")) {
+    return trimmed;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return "";
+    }
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+export function parseQrUrlMeta(qrUrl: string | undefined, fallbackRef: string): ParsedBankMeta {
   const empty: ParsedBankMeta = {
     bankName: null,
     accountNo: null,
@@ -73,63 +91,80 @@ function parseQrUrlMeta(qrUrl: string | undefined, fallbackRef: string): ParsedB
   }
 }
 
+type CopyKey = "amount" | "account" | "reference" | "qr";
+
 /**
- * Displays the real VietQR image when available and falls back to an explicit error + reload state
- * with real transfer metadata (never shows fake hardcoded bank accounts or unscannable noise QR).
+ * Displays the real VietQR image with one-click copy actions for transfer metadata.
+ * Falls back to an explicit error + reload state when the image is unavailable
+ * (never renders hardcoded fake bank accounts or unscannable noise QR).
  */
 export function VietQrPreview({ amount, reference, qrUrl, qrCode, expiresAt }: VietQrPreviewProps) {
   const [imgFailed, setImgFailed] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
-  const [copiedField, setCopiedField] = useState<"ref" | "qr" | null>(null);
+  const [copiedKey, setCopiedKey] = useState<CopyKey | null>(null);
+  const timerRef = useRef<number | null>(null);
 
-  const bankMeta = useMemo(() => parseQrUrlMeta(qrUrl, reference), [qrUrl, reference]);
+  useEffect(() => {
+    setImgFailed(false);
+  }, [qrUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  const safeQrUrl = useMemo(() => parseSafeQrImageUrl(qrUrl), [qrUrl]);
+  const bankMeta = useMemo(() => parseQrUrlMeta(safeQrUrl, reference), [safeQrUrl, reference]);
 
   const effectiveQrUrl = useMemo(() => {
-    if (!qrUrl) return "";
-    if (reloadNonce === 0) return qrUrl;
+    if (!safeQrUrl) return "";
+    if (reloadNonce === 0) return safeQrUrl;
     try {
-      const u = new URL(qrUrl);
+      const u = new URL(safeQrUrl, "https://nexusmart.local");
       u.searchParams.set("_r", String(reloadNonce));
-      return u.toString();
+      return safeQrUrl.startsWith("/") ? `${u.pathname}${u.search}` : u.toString();
     } catch {
-      return qrUrl;
+      return safeQrUrl;
     }
-  }, [qrUrl, reloadNonce]);
+  }, [safeQrUrl, reloadNonce]);
 
-  const copyText = async (value: string, field: "ref" | "qr") => {
+  const handleCopy = async (key: CopyKey, rawValue: string) => {
     try {
-      await navigator.clipboard.writeText(value);
-      setCopiedField(field);
-      window.setTimeout(() => {
-        setCopiedField((cur) => (cur === field ? null : cur));
-      }, 2500);
+      await navigator.clipboard.writeText(rawValue);
+      setCopiedKey(key);
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(() => setCopiedKey(null), 2200);
     } catch {
-      setCopiedField(field);
+      setCopiedKey(key);
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(() => setCopiedKey(null), 2200);
     }
   };
 
   const showRemoteQr = Boolean(effectiveQrUrl) && !imgFailed;
 
   return (
-    <div className={styles.qrWrap}>
-      <div className={styles.qrBox}>
+    <div className={styles.qrStage}>
+      <div className={styles.qrFrame} data-reveal="scale">
         {showRemoteQr ? (
           <img
             src={effectiveQrUrl}
             alt={`Mã VietQR thanh toán ${formatVnd(amount)}`}
-            width={148}
-            height={148}
+            width={232}
+            height={232}
+            referrerPolicy="no-referrer"
             className={styles.qrImage}
             onError={() => setImgFailed(true)}
           />
         ) : (
           <div role="status" className={styles.qrFallbackBox}>
             <span className={styles.qrFallbackText}>
-              {qrUrl
+              {safeQrUrl
                 ? "Không tải được ảnh mã VietQR."
                 : "Chưa có ảnh mã VietQR từ cổng thanh toán."}
             </span>
-            {qrUrl && (
+            {safeQrUrl && (
               <Button
                 type="button"
                 variant="secondary"
@@ -146,53 +181,89 @@ export function VietQrPreview({ amount, reference, qrUrl, qrCode, expiresAt }: V
         )}
       </div>
 
-      <div className={styles.qrInfo}>
-        {bankMeta.bankName && (
-          <div className={styles.qrRow}>
-            <span className={styles.qrLabel}>Ngân hàng thụ hưởng</span>
-            <span className={styles.qrVal}>{bankMeta.bankName}</span>
-          </div>
-        )}
-        {bankMeta.accountNo && (
-          <div className={styles.qrRow}>
-            <span className={styles.qrLabel}>Số tài khoản</span>
-            <span className={`${styles.qrVal} num`}>{bankMeta.accountNo}</span>
-          </div>
-        )}
-        {bankMeta.accountName && (
-          <div className={styles.qrRow}>
-            <span className={styles.qrLabel}>Chủ tài khoản</span>
-            <span className={styles.qrVal}>{bankMeta.accountName}</span>
-          </div>
-        )}
+      <div className={styles.qrDetails}>
         <div className={styles.qrRow}>
-          <span className={styles.qrLabel}>Số tiền chuyển khoản</span>
-          <span className={`${styles.qrAmount} num`}>{formatVnd(amount)}</span>
+          <div className={styles.qrRowMain}>
+            <span className={styles.qrLabel}>Số tiền chuyển khoản</span>
+            <span className={`${styles.qrAmount} num`}>{formatVnd(amount)}</span>
+          </div>
+          <button
+            type="button"
+            className={`${styles.copyBtn} ${copiedKey === "amount" ? styles.copyBtnDone : ""}`}
+            onClick={() => void handleCopy("amount", String(amount))}
+          >
+            {copiedKey === "amount" ? <IconCheck size={14} /> : <IconCopy size={14} />}
+            <span>{copiedKey === "amount" ? "Đã chép" : "Chép số tiền"}</span>
+          </button>
         </div>
+
         <div className={styles.qrRow}>
-          <span className={styles.qrLabel}>Nội dung bắt buộc</span>
-          <span className={`${styles.qrVal} num`}>{bankMeta.transferNote}</span>
+          <div className={styles.qrRowMain}>
+            <span className={styles.qrLabel}>Nội dung bắt buộc</span>
+            <span className={`${styles.qrVal} num`}>{bankMeta.transferNote}</span>
+          </div>
+          <button
+            type="button"
+            className={`${styles.copyBtn} ${copiedKey === "reference" ? styles.copyBtnDone : ""}`}
+            onClick={() => void handleCopy("reference", bankMeta.transferNote)}
+          >
+            {copiedKey === "reference" ? <IconCheck size={14} /> : <IconCopy size={14} />}
+            <span>{copiedKey === "reference" ? "Đã chép" : "Chép nội dung"}</span>
+          </button>
         </div>
+
+        {(bankMeta.bankName || bankMeta.accountNo || bankMeta.accountName) && (
+          <div className={styles.qrRow}>
+            <div className={styles.qrRowMain}>
+              {bankMeta.bankName && <span className={styles.qrLabel}>{bankMeta.bankName}</span>}
+              {bankMeta.accountNo && (
+                <span className={`${styles.qrVal} num`}>{bankMeta.accountNo}</span>
+              )}
+              {bankMeta.accountName && (
+                <span className={styles.qrLabel}>{bankMeta.accountName}</span>
+              )}
+            </div>
+            {bankMeta.accountNo && (
+              <button
+                type="button"
+                className={`${styles.copyBtn} ${copiedKey === "account" ? styles.copyBtnDone : ""}`}
+                onClick={() => void handleCopy("account", bankMeta.accountNo!.replace(/\s+/g, ""))}
+              >
+                {copiedKey === "account" ? <IconCheck size={14} /> : <IconCopy size={14} />}
+                <span>{copiedKey === "account" ? "Đã chép" : "Chép STK"}</span>
+              </button>
+            )}
+          </div>
+        )}
+
+        {qrCode && (
+          <div className={styles.qrRow}>
+            <div className={styles.qrRowMain}>
+              <span className={styles.qrLabel}>Chuỗi dữ liệu VietQR</span>
+              <span className={`${styles.qrVal} num`}>
+                {qrCode.length > 36 ? `${qrCode.slice(0, 36)}…` : qrCode}
+              </span>
+            </div>
+            <button
+              type="button"
+              className={`${styles.copyBtn} ${copiedKey === "qr" ? styles.copyBtnDone : ""}`}
+              onClick={() => void handleCopy("qr", qrCode)}
+            >
+              {copiedKey === "qr" ? <IconCheck size={14} /> : <IconCopy size={14} />}
+              <span>{copiedKey === "qr" ? "Đã chép" : "Chép chuỗi QR"}</span>
+            </button>
+          </div>
+        )}
+
         {expiresAt && (
           <div className={styles.qrRow}>
-            <span className={styles.qrLabel}>Hạn thanh toán</span>
-            <span className={`${styles.qrVal} num`}>{formatDateTimeVi(expiresAt)}</span>
+            <div className={styles.qrRowMain}>
+              <span className={styles.qrLabel}>Hạn chuyển khoản</span>
+              <span className={`${styles.qrVal} num`}>{formatDateTimeVi(expiresAt)}</span>
+            </div>
           </div>
         )}
-        <div className={styles.formActions}>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => void copyText(bankMeta.transferNote, "ref")}
-          >
-            {copiedField === "ref" ? "Đã sao chép nội dung" : "Sao chép nội dung"}
-          </Button>
-          {qrCode && (
-            <Button variant="secondary" size="sm" onClick={() => void copyText(qrCode, "qr")}>
-              {copiedField === "qr" ? "Đã sao chép chuỗi QR" : "Sao chép chuỗi QR"}
-            </Button>
-          )}
-        </div>
+
         <p className={styles.qrNote}>
           Mở ứng dụng ngân hàng để quét mã và chuyển đúng số tiền cùng nội dung chuyển khoản. Đơn
           hàng sẽ được xác nhận tự động, không cần nhập số thẻ.

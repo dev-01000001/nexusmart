@@ -166,6 +166,15 @@ func (m *MemoryStore) SetOrderPaymentExpiresAt(orderID string, t time.Time) {
 	}
 }
 
+// SeedLegacyOrder inserts a raw order (potentially with empty SalesChannel simulating a pre-migration row) for tests.
+func (m *MemoryStore) SeedLegacyOrder(group db.CheckoutGroup, ord db.Order, items []db.OrderItem) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.groups[group.ID] = group
+	m.orders[ord.ID] = ord
+	m.items[ord.ID] = append([]db.OrderItem(nil), items...)
+}
+
 // SetCheckoutGroupUpdatedAt overrides updated_at for testing stale checkout group cleanup.
 func (m *MemoryStore) SetCheckoutGroupUpdatedAt(groupID string, t time.Time) {
 	m.mu.Lock()
@@ -289,16 +298,22 @@ func (m *MemoryStore) CreateCheckoutGroup(_ context.Context, arg db.CreateChecko
 		}
 	}
 	now := time.Now().UTC()
+	ch := arg.SalesChannel
+	if ch == "" {
+		ch = "MARKETPLACE"
+	}
 	g := db.CheckoutGroup{
-		ID:              arg.ID,
-		BuyerID:         arg.BuyerID,
-		IdempotencyKey:  arg.IdempotencyKey,
-		RequestHash:     arg.RequestHash,
-		Status:          arg.Status,
-		PaymentMethod:   arg.PaymentMethod,
-		TotalPayableVND: arg.TotalPayableVND,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:               arg.ID,
+		BuyerID:          arg.BuyerID,
+		IdempotencyKey:   arg.IdempotencyKey,
+		RequestHash:      arg.RequestHash,
+		Status:           arg.Status,
+		PaymentMethod:    arg.PaymentMethod,
+		TotalPayableVND:  arg.TotalPayableVND,
+		SalesChannel:     ch,
+		StorefrontShopID: arg.StorefrontShopID,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	m.groups[g.ID] = g
 	cp := g
@@ -383,6 +398,10 @@ func (m *MemoryStore) PersistCheckoutBatch(_ context.Context, batch CheckoutBatc
 	out := make([]OrderAggregate, 0, len(batch.Orders))
 
 	for _, rec := range batch.Orders {
+		ordChannel := rec.Order.SalesChannel
+		if ordChannel == "" {
+			ordChannel = "MARKETPLACE"
+		}
 		ord := db.Order{
 			ID:                         rec.Order.ID,
 			OrderCode:                  rec.Order.OrderCode,
@@ -414,6 +433,8 @@ func (m *MemoryStore) PersistCheckoutBatch(_ context.Context, batch CheckoutBatc
 			ShippingAddressJSON:        rec.Order.ShippingAddressJSON,
 			PaymentExpiresAt:           rec.Order.PaymentExpiresAt,
 			ConfirmedAt:                rec.Order.ConfirmedAt,
+			SalesChannel:               ordChannel,
+			StorefrontShopID:           rec.Order.StorefrontShopID,
 			CreatedAt:                  now,
 			UpdatedAt:                  now,
 		}
@@ -832,12 +853,13 @@ func (m *MemoryStore) UpdateGroupPaymentOnRetry(_ context.Context, params RetryP
 				CreatedAt:  now,
 			})
 			payloadBytes, err := json.Marshal(events.OrderConfirmedPayload{
-				OrderID:         ord.ID,
-				OrderCode:       ord.OrderCode,
-				BuyerID:         ord.BuyerID,
-				ShopID:          ord.ShopID,
-				PaymentMethod:   ord.PaymentMethod,
-				TotalPayableVND: ord.TotalPayableVND,
+				OrderID:          ord.ID,
+				OrderCode:        ord.OrderCode,
+				BuyerID:          ord.BuyerID,
+				ShopID:           ord.ShopID,
+				StorefrontShopID: ord.StorefrontShopID,
+				PaymentMethod:    ord.PaymentMethod,
+				TotalPayableVND:  ord.TotalPayableVND,
 			})
 			if err != nil {
 				return fmt.Errorf("marshal order.confirmed on COD switch: %w", err)
@@ -1231,22 +1253,24 @@ func (m *MemoryStore) TransitionOrdersPaymentResult(_ context.Context, params Pa
 		if targetStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
 			eventType = events.SubjectOrderConfirmed
 			payloadBytes, _ = json.Marshal(events.OrderConfirmedPayload{
-				OrderID:         ord.ID,
-				OrderCode:       ord.OrderCode,
-				BuyerID:         ord.BuyerID,
-				ShopID:          ord.ShopID,
-				PaymentMethod:   ord.PaymentMethod,
-				TotalPayableVND: ord.TotalPayableVND,
+				OrderID:          ord.ID,
+				OrderCode:        ord.OrderCode,
+				BuyerID:          ord.BuyerID,
+				ShopID:           ord.ShopID,
+				StorefrontShopID: ord.StorefrontShopID,
+				PaymentMethod:    ord.PaymentMethod,
+				TotalPayableVND:  ord.TotalPayableVND,
 			})
 		} else {
 			eventType = events.SubjectOrderCancelled
 			payloadBytes, _ = json.Marshal(events.OrderCancelledPayload{
-				OrderID:   ord.ID,
-				OrderCode: ord.OrderCode,
-				BuyerID:   ord.BuyerID,
-				ShopID:    ord.ShopID,
-				Reason:    note,
-				WasPaid:   false,
+				OrderID:          ord.ID,
+				OrderCode:        ord.OrderCode,
+				BuyerID:          ord.BuyerID,
+				ShopID:           ord.ShopID,
+				StorefrontShopID: ord.StorefrontShopID,
+				Reason:           note,
+				WasPaid:          false,
 			})
 		}
 		m.appendOutboxLocked(db.OutboxEvent{
@@ -2152,12 +2176,13 @@ func (m *MemoryStore) transitionOrderToShippingLocked(ord db.Order, carrierCode,
 		CreatedAt:  now,
 	})
 	payloadBytes, _ := json.Marshal(events.OrderShippedPayload{
-		OrderID:      ord.ID,
-		OrderCode:    ord.OrderCode,
-		BuyerID:      ord.BuyerID,
-		ShopID:       ord.ShopID,
-		CarrierCode:  ord.CarrierCode,
-		TrackingCode: ord.TrackingCode,
+		OrderID:          ord.ID,
+		OrderCode:        ord.OrderCode,
+		BuyerID:          ord.BuyerID,
+		ShopID:           ord.ShopID,
+		StorefrontShopID: ord.StorefrontShopID,
+		CarrierCode:      ord.CarrierCode,
+		TrackingCode:     ord.TrackingCode,
 	})
 	m.appendOutboxLocked(db.OutboxEvent{
 		ID:          uuid.NewString(),
@@ -2413,12 +2438,13 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 				deliveredCarrier = evCarrier
 			}
 			payloadBytes, _ := json.Marshal(events.OrderDeliveredPayload{
-				OrderID:      ord.ID,
-				OrderCode:    ord.OrderCode,
-				BuyerID:      ord.BuyerID,
-				ShopID:       ord.ShopID,
-				CarrierCode:  deliveredCarrier,
-				TrackingCode: ord.TrackingCode,
+				OrderID:          ord.ID,
+				OrderCode:        ord.OrderCode,
+				BuyerID:          ord.BuyerID,
+				ShopID:           ord.ShopID,
+				StorefrontShopID: ord.StorefrontShopID,
+				CarrierCode:      deliveredCarrier,
+				TrackingCode:     ord.TrackingCode,
 			})
 			m.appendOutboxLocked(db.OutboxEvent{
 				ID:          uuid.NewString(),
@@ -2483,16 +2509,17 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 				CreatedAt:  now,
 			})
 			payloadBytes, _ := json.Marshal(events.OrderReturnedPayload{
-				OrderID:         ord.ID,
-				OrderCode:       ord.OrderCode,
-				CheckoutGroupID: ord.CheckoutGroupID,
-				BuyerID:         ord.BuyerID,
-				ShopID:          ord.ShopID,
-				PaymentMethod:   ord.PaymentMethod,
-				FromStatus:      statemachine.StatusToString(cur),
-				TotalPayableVND: ord.TotalPayableVND,
-				Reason:          note,
-				WasPaid:         wasPaid,
+				OrderID:          ord.ID,
+				OrderCode:        ord.OrderCode,
+				CheckoutGroupID:  ord.CheckoutGroupID,
+				BuyerID:          ord.BuyerID,
+				ShopID:           ord.ShopID,
+				StorefrontShopID: ord.StorefrontShopID,
+				PaymentMethod:    ord.PaymentMethod,
+				FromStatus:       statemachine.StatusToString(cur),
+				TotalPayableVND:  ord.TotalPayableVND,
+				Reason:           note,
+				WasPaid:          wasPaid,
 			})
 			m.appendOutboxLocked(db.OutboxEvent{
 				ID:          uuid.NewString(),

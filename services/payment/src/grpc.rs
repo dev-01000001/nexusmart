@@ -23,8 +23,9 @@ use crate::domain::{
     PaymentFeeConfigRecord, PaymentMethod as DomainMethod, PaymentMethodConfigRecord,
     PaymentWithAllocations, ReconciliationActionKind, ReconciliationItemRecord,
     ReconciliationQueueItem as DomainQueueItem, ReconciliationRunRecord, RefundRecord,
-    ResolveReconciliationInput, SellerLedgerEntryRecord, SetFeeConfigInput, SettleRefundInput,
-    ShopAllocationInput, SubmitRefundBankAccountInput, UpdatePaymentMethodConfigInput,
+    ResolveReconciliationInput, SalesChannel, SellerLedgerEntryRecord, SetFeeConfigInput,
+    SettleRefundInput, ShopAllocationInput, SubmitRefundBankAccountInput,
+    UpdatePaymentMethodConfigInput,
 };
 use crate::service::PaymentService;
 use crate::telemetry::{attach_parent_context, extract_context_from_grpc};
@@ -44,10 +45,12 @@ use pb::{
     GetPaymentMethodConfigsResponse, GetPaymentRequest, GetPaymentResponse,
     GetSellerBalanceRequest, GetSellerBalanceResponse, ImportCodReconciliationRequest,
     ImportCodReconciliationResponse, ListReconciliationQueueRequest,
-    ListReconciliationQueueResponse, ListReconciliationRunsRequest, ListReconciliationRunsResponse,
-    ListRefundsRequest, ListRefundsResponse, ListSellerLedgerRequest, ListSellerLedgerResponse,
-    Payment, PaymentFeeConfigItem, PaymentMethod, PaymentMethodConfig, PaymentStatus,
-    ReconciliationAction, ReconciliationItem, ReconciliationQueueItem, ReconciliationRunSummary,
+    ListReconciliationQueueResponse, ListReconciliationReportsRequest,
+    ListReconciliationReportsResponse, ListReconciliationRunsRequest,
+    ListReconciliationRunsResponse, ListRefundsRequest, ListRefundsResponse,
+    ListSellerLedgerRequest, ListSellerLedgerResponse, Payment, PaymentFeeConfigItem,
+    PaymentMethod, PaymentMethodConfig, PaymentStatus, ReconciliationAction, ReconciliationItem,
+    ReconciliationQueueItem, ReconciliationReportSummary, ReconciliationRunSummary,
     ReconciliationStatus, Refund, RefundStatus, ReleaseEscrowRequest, ReleaseEscrowResponse,
     ResolveReconciliationItemRequest, ResolveReconciliationItemResponse, RunReconciliationRequest,
     RunReconciliationResponse, SellerLedgerEntry, SetFeeConfigRequest, SetFeeConfigResponse,
@@ -56,7 +59,7 @@ use pb::{
     UpdatePaymentMethodConfigResponse,
 };
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct CallerAuth {
     caller: Caller,
 }
@@ -109,7 +112,7 @@ impl CallerAuth {
     fn require_payment_owner(&self, owner_user_id: &str, op: &str) -> Result<(), Status> {
         if self.caller.is_service
             || self.caller.is_admin_role()
-            || (!self.caller.user_id.is_empty() && owner_user_id == self.caller.user_id)
+            || (!self.caller.user_id.is_empty() && owner_user_id.trim() == self.caller.user_id)
         {
             return Ok(());
         }
@@ -125,6 +128,7 @@ impl CallerAuth {
         }
         if self.caller.role == "seller"
             && !self.caller.shop_id.is_empty()
+            && !target_shop_id.is_empty()
             && self.caller.shop_id == target_shop_id
         {
             return Ok(());
@@ -160,11 +164,12 @@ impl PaymentGrpcServer {
     ) {
         let elapsed = start.elapsed().as_secs_f64();
         let duration_ms = (elapsed * 1000.0 * 1000.0).round() / 1000.0;
+        let full_method = format!("/nexusmart.payment.v1.PaymentService/{method}");
         match res {
             Ok(_) => {
                 self.service
                     .metrics()
-                    .record_grpc(method, "OK", false, elapsed);
+                    .record_grpc(&full_method, "OK", false, elapsed);
                 span.in_scope(|| {
                     info!(
                         service = "payment",
@@ -180,7 +185,7 @@ impl PaymentGrpcServer {
                 let code = format!("{:?}", status.code());
                 self.service
                     .metrics()
-                    .record_grpc(method, &code, true, elapsed);
+                    .record_grpc(&full_method, &code, true, elapsed);
                 span.in_scope(|| {
                     if matches!(
                         status.code(),
@@ -259,6 +264,8 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                     commission_vnd: a.commission_vnd,
                     shipping_fee_vnd: a.shipping_fee_vnd,
                     platform_discount_vnd: a.platform_discount_vnd,
+                    sales_channel: a.sales_channel,
+                    storefront_shop_id: a.storefront_shop_id,
                 })
                 .collect();
 
@@ -281,6 +288,8 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                     expires_at,
                     idempotency_key,
                     supersede_previous: req.supersede_previous,
+                    sales_channel: req.sales_channel,
+                    storefront_shop_id: req.storefront_shop_id,
                     trace_id: trace_id.clone(),
                 })
                 .await
@@ -449,14 +458,18 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         let start = Instant::now();
         let (span, trace_id) = start_rpc_span("GetLedgerSummary", &request);
         let caller = CallerAuth::from_request(&self.auth, &request, "GetLedgerSummary");
+        let req = request.into_inner();
 
         let result = async {
             let caller = caller?;
             caller.require_capability(CAP_LEDGER_READ, "GetLedgerSummary")?;
 
+            let channel_filter =
+                SalesChannel::parse_filter(&req.sales_channel).map_err(|e| e.to_tonic_status())?;
+
             let summary = self
                 .service
-                .get_ledger_summary()
+                .get_ledger_summary(channel_filter)
                 .await
                 .map_err(|e| e.to_tonic_status())?;
 
@@ -477,6 +490,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 total_credits_vnd: summary.total_credits_vnd,
                 is_balanced: summary.is_balanced,
                 accounts,
+                sales_channel: summary.sales_channel,
             }))
         }
         .instrument(span.clone())
@@ -566,9 +580,12 @@ impl PaymentServiceTrait for PaymentGrpcServer {
             let run_date = parse_and_validate_reconciliation_date(&req.date, Utc::now())
                 .map_err(|e| e.to_tonic_status())?;
 
+            let channel_filter =
+                SalesChannel::parse_filter(&req.sales_channel).map_err(|e| e.to_tonic_status())?;
+
             let report = self
                 .service
-                .run_reconciliation(run_date)
+                .run_reconciliation(run_date, channel_filter)
                 .await
                 .map_err(|e| e.to_tonic_status())?;
 
@@ -585,6 +602,8 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 missing_provider_count: report.run.missing_provider_count,
                 amount_mismatch_count: report.run.amount_mismatch_count,
                 items,
+                sales_channel: report.run.sales_channel,
+                auto_healed_count: report.run.auto_healed_count,
             }))
         }
         .instrument(span.clone())
@@ -1074,11 +1093,14 @@ impl PaymentServiceTrait for PaymentGrpcServer {
 
             let run_type = parse_reconciliation_run_type_filter(&req.run_type)
                 .map_err(|e| e.to_tonic_status())?;
+            let sales_channel =
+                SalesChannel::parse_filter(&req.sales_channel).map_err(|e| e.to_tonic_status())?;
 
             let out = self
                 .service
                 .list_reconciliation_runs(ListReconciliationRunsFilter {
                     run_type,
+                    sales_channel,
                     page: req.page,
                     page_size: req.page_size,
                 })
@@ -1291,6 +1313,48 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         .await;
 
         self.finish_rpc(&span, "AdjustCODShippingFee", start, &trace_id, &result);
+        result
+    }
+
+    async fn list_reconciliation_reports(
+        &self,
+        request: Request<ListReconciliationReportsRequest>,
+    ) -> Result<Response<ListReconciliationReportsResponse>, Status> {
+        let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("ListReconciliationReports", &request);
+        let caller = CallerAuth::from_request(&self.auth, &request, "ListReconciliationReports");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            caller.require_capability(CAP_LEDGER_READ, "ListReconciliationReports")?;
+
+            let channel_filter =
+                SalesChannel::parse_filter(&req.sales_channel).map_err(|e| e.to_tonic_status())?;
+
+            let rows = self
+                .service
+                .list_reconciliation_reports(req.limit, channel_filter)
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            let reports = rows
+                .into_iter()
+                .map(to_proto_reconciliation_report_summary)
+                .collect();
+
+            Ok(Response::new(ListReconciliationReportsResponse { reports }))
+        }
+        .instrument(span.clone())
+        .await;
+
+        self.finish_rpc(
+            &span,
+            "ListReconciliationReports",
+            start,
+            &trace_id,
+            &result,
+        );
         result
     }
 }
@@ -1530,6 +1594,19 @@ fn to_proto_payment_for_caller(pwa: PaymentWithAllocations, caller: &Caller) -> 
         .clone()
         .unwrap_or_else(|| p.provider_order_code.clone());
 
+    let payment_channel = if p.sales_channel.trim().is_empty() {
+        SalesChannel::Marketplace.as_str().to_string()
+    } else {
+        p.sales_channel
+    };
+    let normalize_alloc_channel = |ch: String| {
+        if ch.trim().is_empty() {
+            SalesChannel::Marketplace.as_str().to_string()
+        } else {
+            ch
+        }
+    };
+
     let (amount_vnd, order_id, qr_url, qr_code, pay_url, provider_ref, shop_allocations) =
         match scope {
             Some(PaymentViewScope::Full) => {
@@ -1543,6 +1620,8 @@ fn to_proto_payment_for_caller(pwa: PaymentWithAllocations, caller: &Caller) -> 
                         commission_vnd: a.commission_vnd,
                         shipping_fee_vnd: a.shipping_fee_vnd,
                         platform_discount_vnd: a.platform_discount_vnd,
+                        sales_channel: normalize_alloc_channel(a.sales_channel),
+                        storefront_shop_id: a.storefront_shop_id,
                     })
                     .collect();
                 (
@@ -1566,6 +1645,8 @@ fn to_proto_payment_for_caller(pwa: PaymentWithAllocations, caller: &Caller) -> 
                         commission_vnd: 0,
                         shipping_fee_vnd: a.shipping_fee_vnd,
                         platform_discount_vnd: a.platform_discount_vnd,
+                        sales_channel: normalize_alloc_channel(a.sales_channel),
+                        storefront_shop_id: a.storefront_shop_id,
                     })
                     .collect();
                 (
@@ -1590,6 +1671,8 @@ fn to_proto_payment_for_caller(pwa: PaymentWithAllocations, caller: &Caller) -> 
                         commission_vnd: a.commission_vnd,
                         shipping_fee_vnd: a.shipping_fee_vnd,
                         platform_discount_vnd: a.platform_discount_vnd,
+                        sales_channel: normalize_alloc_channel(a.sales_channel),
+                        storefront_shop_id: a.storefront_shop_id,
                     })
                     .collect();
                 (
@@ -1630,6 +1713,8 @@ fn to_proto_payment_for_caller(pwa: PaymentWithAllocations, caller: &Caller) -> 
         created_at: Some(chrono_to_proto(p.created_at)),
         updated_at: Some(chrono_to_proto(p.updated_at)),
         pay_url,
+        sales_channel: payment_channel,
+        storefront_shop_id: p.storefront_shop_id,
     }
 }
 
@@ -1723,6 +1808,9 @@ fn to_proto_reconciliation_run_summary(run: ReconciliationRunRecord) -> Reconcil
         created_by: run.created_by,
         created_at: Some(chrono_to_proto(run.created_at)),
         not_delivered_count: run.not_delivered_count,
+        sales_channel: run.sales_channel,
+        auto_healed_count: run.auto_healed_count,
+        completed_at: run.completed_at.map(chrono_to_proto),
     }
 }
 
@@ -1747,6 +1835,27 @@ fn to_proto_reconciliation_item(item: ReconciliationItemRecord) -> Reconciliatio
         tracking_code: item.tracking_code,
         order_id: item.order_id,
         line_number: item.line_number,
+        sales_channel: item.sales_channel,
+        storefront_shop_id: item.storefront_shop_id,
+    }
+}
+
+fn to_proto_reconciliation_report_summary(
+    r: ReconciliationRunRecord,
+) -> ReconciliationReportSummary {
+    ReconciliationReportSummary {
+        run_id: r.id.to_string(),
+        provider: r.provider,
+        run_date: r.run_date.format("%Y-%m-%d").to_string(),
+        sales_channel: r.sales_channel,
+        matched_count: r.matched_count,
+        missing_local_count: r.missing_local_count,
+        missing_provider_count: r.missing_provider_count,
+        amount_mismatch_count: r.amount_mismatch_count,
+        auto_healed_count: r.auto_healed_count,
+        status: r.status,
+        created_at: Some(chrono_to_proto(r.created_at)),
+        completed_at: r.completed_at.map(chrono_to_proto),
     }
 }
 
@@ -1759,6 +1868,7 @@ mod tests {
     use tonic::metadata::MetadataValue;
 
     const TEST_USER_KEY: &str = "grpc-test-user-key";
+    const TEST_SVC_KEY: &str = "grpc-test-service-key";
 
     fn test_grpc_server() -> (PaymentGrpcServer, Metrics) {
         crate::telemetry::init_test_tracing();
@@ -1770,8 +1880,39 @@ mod tests {
             .expect("lazy pool");
         let metrics = Metrics::new();
         let svc = PaymentService::new(pool, cfg, metrics.clone());
-        let auth = GrpcAuth::new(TEST_USER_KEY, "grpc-test-service-key").unwrap();
+        let auth = GrpcAuth::new(TEST_USER_KEY, TEST_SVC_KEY).unwrap();
         (PaymentGrpcServer::new(svc, auth), metrics)
+    }
+
+    fn with_service_auth<T>(payload: T) -> Request<T> {
+        let tok = crate::auth::sign_hs256(
+            TEST_SVC_KEY,
+            serde_json::json!({
+                "sub": "order-service",
+                "role": "admin",
+                "service": "order-service",
+                "exp": Utc::now().timestamp() + 60,
+            }),
+        );
+        let mut req = Request::new(payload);
+        req.metadata_mut().insert(
+            "authorization",
+            MetadataValue::try_from(format!("Bearer {tok}")).unwrap(),
+        );
+        req
+    }
+
+    fn with_spoofed_metadata<T>(payload: T) -> Request<T> {
+        let mut req = Request::new(payload);
+        for (k, v) in [
+            ("x-user-id", "attacker"),
+            ("x-user-role", "admin"),
+            ("x-shop-id", "shop-b"),
+        ] {
+            req.metadata_mut()
+                .insert(k, MetadataValue::try_from(v).unwrap());
+        }
+        req
     }
 
     /// Request carrying a valid end-user JWT (the only identity the server trusts).
@@ -1826,6 +1967,8 @@ mod tests {
                     expires_at: None,
                     idempotency_key: String::new(),
                     supersede_previous: false,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                 },
                 "admin",
                 "admin-1",
@@ -1839,6 +1982,7 @@ mod tests {
             .run_reconciliation(with_auth(
                 RunReconciliationRequest {
                     date: "20-11-2026".into(),
+                    sales_channel: String::new(),
                 },
                 "admin",
                 "admin-1",
@@ -1867,7 +2011,7 @@ mod tests {
         assert!(prom.contains("grpc_requests_total"));
         assert!(prom.contains("grpc_errors_total"));
         assert!(prom.contains("grpc_request_duration_seconds"));
-        assert!(prom.contains("method=\"CreatePayment\""));
+        assert!(prom.contains("method=\"/nexusmart.payment.v1.PaymentService/CreatePayment\""));
     }
 
     #[tokio::test]
@@ -1876,7 +2020,14 @@ mod tests {
 
         // Buyer cannot read global ledger summary
         let err = server
-            .get_ledger_summary(with_auth(GetLedgerSummaryRequest {}, "buyer", "u-1", ""))
+            .get_ledger_summary(with_auth(
+                GetLedgerSummaryRequest {
+                    sales_channel: String::new(),
+                },
+                "buyer",
+                "u-1",
+                "",
+            ))
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::PermissionDenied);
@@ -1906,6 +2057,7 @@ mod tests {
             .run_reconciliation(with_auth(
                 RunReconciliationRequest {
                     date: "2026-11-20".into(),
+                    sales_channel: String::new(),
                 },
                 "buyer",
                 "u-1",
@@ -1924,6 +2076,20 @@ mod tests {
                 "seller",
                 "u-2",
                 "shop-mine",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+
+        // Seller with empty shop_id in JWT cannot bypass by sending empty shop_id
+        let err = server
+            .get_seller_balance(with_auth(
+                GetSellerBalanceRequest {
+                    shop_id: String::new(),
+                },
+                "seller",
+                "u-2",
+                "",
             ))
             .await
             .unwrap_err();
@@ -1956,6 +2122,8 @@ mod tests {
                     expires_at: None,
                     idempotency_key: String::new(),
                     supersede_previous: false,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                 },
                 "buyer",
                 "u-attacker",
@@ -1998,28 +2166,705 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_grpc_spoofed_metadata_without_jwt_is_unauthenticated() {
+    async fn test_b1_all_rpcs_reject_anonymous_and_spoofed_metadata_and_disallowed_service_tokens()
+    {
         let (server, _) = test_grpc_server();
-        let mut req = Request::new(GetLedgerSummaryRequest {});
-        for (k, v) in [
-            ("x-user-id", "attacker"),
-            ("x-user-role", "admin"),
-            ("x-shop-id", "shop-b"),
-        ] {
-            req.metadata_mut()
-                .insert(k, MetadataValue::try_from(v).unwrap());
-        }
-        let err = server.get_ledger_summary(req).await.unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unauthenticated);
 
-        let err = server
-            .release_escrow(Request::new(ReleaseEscrowRequest {
+        // Every single RPC MUST reject anonymous callers AND spoofed x-user-* metadata without JWT
+        for req in [
+            Request::new(CreatePaymentRequest {
+                order_group_id: "grp-1".into(),
+                order_id: "ord-1".into(),
+                user_id: "u-1".into(),
+                amount_vnd: 100_000,
+                method: PaymentMethod::Cod as i32,
+                shop_allocations: vec![],
+                expires_at: None,
+                idempotency_key: String::new(),
+                supersede_previous: false,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
+            }),
+            with_spoofed_metadata(CreatePaymentRequest {
+                order_group_id: "grp-1".into(),
+                order_id: "ord-1".into(),
+                user_id: "u-1".into(),
+                amount_vnd: 100_000,
+                method: PaymentMethod::Cod as i32,
+                shop_allocations: vec![],
+                expires_at: None,
+                idempotency_key: String::new(),
+                supersede_previous: false,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
+            }),
+        ] {
+            assert_eq!(
+                server.create_payment(req).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        for req in [
+            Request::new(GetPaymentRequest {
+                payment_id: String::new(),
+                order_group_id: "grp-1".into(),
+                order_id: String::new(),
+            }),
+            with_spoofed_metadata(GetPaymentRequest {
+                payment_id: String::new(),
+                order_group_id: "grp-1".into(),
+                order_id: String::new(),
+            }),
+        ] {
+            assert_eq!(
+                server.get_payment(req).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        for req in [
+            Request::new(CancelPaymentRequest {
+                payment_id: String::new(),
+                order_group_id: "grp-1".into(),
+                reason: "test".into(),
+            }),
+            with_spoofed_metadata(CancelPaymentRequest {
+                payment_id: String::new(),
+                order_group_id: "grp-1".into(),
+                reason: "test".into(),
+            }),
+        ] {
+            assert_eq!(
+                server.cancel_payment(req).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        for req in [
+            Request::new(CreateRefundRequest {
+                payment_id: String::new(),
+                order_id: "ord-1".into(),
+                amount_vnd: 10_000,
+                reason: "test".into(),
+                idempotency_key: "k1".into(),
+                require_approval_if_large: false,
+                requested_by: String::new(),
+            }),
+            with_spoofed_metadata(CreateRefundRequest {
+                payment_id: String::new(),
+                order_id: "ord-1".into(),
+                amount_vnd: 10_000,
+                reason: "test".into(),
+                idempotency_key: "k1".into(),
+                require_approval_if_large: false,
+                requested_by: String::new(),
+            }),
+        ] {
+            assert_eq!(
+                server.create_refund(req).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        for req in [
+            Request::new(GetLedgerSummaryRequest {
+                sales_channel: String::new(),
+            }),
+            with_spoofed_metadata(GetLedgerSummaryRequest {
+                sales_channel: String::new(),
+            }),
+        ] {
+            assert_eq!(
+                server.get_ledger_summary(req).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        for req in [
+            Request::new(GetSellerBalanceRequest {
+                shop_id: "shop-1".into(),
+            }),
+            with_spoofed_metadata(GetSellerBalanceRequest {
+                shop_id: "shop-1".into(),
+            }),
+        ] {
+            assert_eq!(
+                server.get_seller_balance(req).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        for req in [
+            Request::new(ReleaseEscrowRequest {
                 order_id: "ord-1".into(),
                 shop_id: "shop-1".into(),
-            }))
+            }),
+            with_spoofed_metadata(ReleaseEscrowRequest {
+                order_id: "ord-1".into(),
+                shop_id: "shop-1".into(),
+            }),
+        ] {
+            assert_eq!(
+                server.release_escrow(req).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        for req in [
+            Request::new(RunReconciliationRequest {
+                date: "2026-11-20".into(),
+                sales_channel: String::new(),
+            }),
+            with_spoofed_metadata(RunReconciliationRequest {
+                date: "2026-11-20".into(),
+                sales_channel: String::new(),
+            }),
+        ] {
+            assert_eq!(
+                server.run_reconciliation(req).await.unwrap_err().code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        // Disallowed service token (non-order-service) MUST be rejected with PermissionDenied on CreatePayment
+        let other_svc_tok = crate::auth::sign_hs256(
+            TEST_SVC_KEY,
+            serde_json::json!({
+                "sub": "product-service",
+                "role": "admin",
+                "service": "product-service",
+                "exp": Utc::now().timestamp() + 60,
+            }),
+        );
+        let mut other_svc_create = Request::new(CreatePaymentRequest {
+            order_group_id: "grp-1".into(),
+            order_id: "ord-1".into(),
+            user_id: "u-1".into(),
+            amount_vnd: 100_000,
+            method: PaymentMethod::Cod as i32,
+            shop_allocations: vec![],
+            expires_at: None,
+            idempotency_key: "checkout:grp-1".into(),
+            supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
+        });
+        other_svc_create.metadata_mut().insert(
+            "authorization",
+            MetadataValue::try_from(format!("Bearer {other_svc_tok}")).unwrap(),
+        );
+        assert_eq!(
+            server
+                .create_payment(other_svc_create)
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            server
+                .get_ledger_summary(with_service_auth(GetLedgerSummaryRequest {
+                    sales_channel: String::new(),
+                }))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            server
+                .get_seller_balance(with_service_auth(GetSellerBalanceRequest {
+                    shop_id: "shop-1".into(),
+                }))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            server
+                .run_reconciliation(with_service_auth(RunReconciliationRequest {
+                    date: "2026-11-20".into(),
+                    sales_channel: String::new(),
+                }))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+    }
+
+    #[tokio::test]
+    async fn test_grpc_sales_channel_validation_on_create_summary_and_reconcile() {
+        let (server, _) = test_grpc_server();
+
+        // Unknown sales_channel -> InvalidArgument
+        let err = server
+            .create_payment(with_auth(
+                CreatePaymentRequest {
+                    order_group_id: "grp-1".into(),
+                    order_id: "ord-1".into(),
+                    user_id: "u-1".into(),
+                    amount_vnd: 100_000,
+                    method: PaymentMethod::Cod as i32,
+                    shop_allocations: vec![],
+                    expires_at: None,
+                    idempotency_key: String::new(),
+                    supersede_previous: false,
+                    sales_channel: "DIRECT".into(),
+                    storefront_shop_id: String::new(),
+                },
+                "buyer",
+                "u-1",
+                "",
+            ))
             .await
             .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        // STOREFRONT without storefront_shop_id -> InvalidArgument
+        let err = server
+            .create_payment(with_auth(
+                CreatePaymentRequest {
+                    order_group_id: "grp-1".into(),
+                    order_id: "ord-1".into(),
+                    user_id: "u-1".into(),
+                    amount_vnd: 100_000,
+                    method: PaymentMethod::Cod as i32,
+                    shop_allocations: vec![],
+                    expires_at: None,
+                    idempotency_key: String::new(),
+                    supersede_previous: false,
+                    sales_channel: "STOREFRONT".into(),
+                    storefront_shop_id: String::new(),
+                },
+                "buyer",
+                "u-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        // STOREFRONT with cross-shop allocation -> InvalidArgument
+        let err = server
+            .create_payment(with_auth(
+                CreatePaymentRequest {
+                    order_group_id: "grp-1".into(),
+                    order_id: "ord-1".into(),
+                    user_id: "u-1".into(),
+                    amount_vnd: 100_000,
+                    method: PaymentMethod::Cod as i32,
+                    shop_allocations: vec![ShopAllocation {
+                        order_id: "sub-1".into(),
+                        shop_id: "shop-B".into(),
+                        subtotal_vnd: 80_000,
+                        commission_vnd: 4_000,
+                        shipping_fee_vnd: 20_000,
+                        platform_discount_vnd: 0,
+                        sales_channel: "STOREFRONT".into(),
+                        storefront_shop_id: "shop-A".into(),
+                    }],
+                    expires_at: None,
+                    idempotency_key: String::new(),
+                    supersede_previous: false,
+                    sales_channel: "STOREFRONT".into(),
+                    storefront_shop_id: "shop-A".into(),
+                },
+                "buyer",
+                "u-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        // Invalid sales_channel filter on GetLedgerSummary & RunReconciliation -> InvalidArgument
+        let err = server
+            .get_ledger_summary(with_auth(
+                GetLedgerSummaryRequest {
+                    sales_channel: "UNKNOWN".into(),
+                },
+                "admin",
+                "admin-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        let err = server
+            .run_reconciliation(with_auth(
+                RunReconciliationRequest {
+                    date: "2026-11-20".into(),
+                    sales_channel: "UNKNOWN".into(),
+                },
+                "admin",
+                "admin-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn test_to_proto_payment_legacy_default_and_storefront_mapping() {
+        let now = Utc::now();
+        let pid = Uuid::new_v4();
+        let admin_caller = Caller {
+            role: "admin".into(),
+            user_id: "admin-1".into(),
+            ..Default::default()
+        };
+        let legacy = to_proto_payment_for_caller(
+            PaymentWithAllocations {
+                payment: crate::domain::PaymentRecord {
+                    id: pid,
+                    order_group_id: "grp-legacy".into(),
+                    order_id: "ord-legacy".into(),
+                    user_id: "u-1".into(),
+                    method: "COD".into(),
+                    provider: "cod".into(),
+                    amount_vnd: 100_000,
+                    status: "succeeded".into(),
+                    provider_tx_id: None,
+                    provider_order_code: "NM0000000001".into(),
+                    qr_code: None,
+                    qr_url: None,
+                    pay_url: None,
+                    idempotency_key: None,
+                    expires_at: None,
+                    paid_at: Some(now),
+                    trace_id: String::new(),
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
+                    created_at: now,
+                    updated_at: now,
+                },
+                allocations: vec![crate::domain::ShopAllocationRecord {
+                    id: Uuid::new_v4(),
+                    payment_id: pid,
+                    order_id: "sub-legacy".into(),
+                    shop_id: "shop-1".into(),
+                    subtotal_vnd: 80_000,
+                    commission_vnd: 4_000,
+                    shipping_fee_vnd: 20_000,
+                    platform_discount_vnd: 0,
+                    escrow_status: "held".into(),
+                    settled_at: None,
+                    released_at: None,
+                    tracking_code: None,
+                    carrier_code: None,
+                    order_code: None,
+                    cod_reconciled_at: None,
+                    cod_reconciliation_run_id: None,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
+                    created_at: now,
+                }],
+            },
+            &admin_caller,
+        );
+        assert_eq!(legacy.sales_channel, "MARKETPLACE");
+        assert_eq!(legacy.storefront_shop_id, "");
+        assert_eq!(legacy.shop_allocations[0].sales_channel, "MARKETPLACE");
+        assert_eq!(legacy.shop_allocations[0].storefront_shop_id, "");
+
+        let sf = to_proto_payment_for_caller(
+            PaymentWithAllocations {
+                payment: crate::domain::PaymentRecord {
+                    id: pid,
+                    order_group_id: "grp-sf".into(),
+                    order_id: "ord-sf".into(),
+                    user_id: "u-1".into(),
+                    method: "VIETQR".into(),
+                    provider: "vietqr_mock".into(),
+                    amount_vnd: 120_000,
+                    status: "pending".into(),
+                    provider_tx_id: None,
+                    provider_order_code: "NM0000000002".into(),
+                    qr_code: None,
+                    qr_url: None,
+                    pay_url: None,
+                    idempotency_key: None,
+                    expires_at: None,
+                    paid_at: None,
+                    trace_id: String::new(),
+                    sales_channel: "STOREFRONT".into(),
+                    storefront_shop_id: "shop-sf".into(),
+                    created_at: now,
+                    updated_at: now,
+                },
+                allocations: vec![crate::domain::ShopAllocationRecord {
+                    id: Uuid::new_v4(),
+                    payment_id: pid,
+                    order_id: "sub-sf".into(),
+                    shop_id: "shop-sf".into(),
+                    subtotal_vnd: 100_000,
+                    commission_vnd: 5_000,
+                    shipping_fee_vnd: 20_000,
+                    platform_discount_vnd: 0,
+                    escrow_status: "held".into(),
+                    settled_at: None,
+                    released_at: None,
+                    tracking_code: None,
+                    carrier_code: None,
+                    order_code: None,
+                    cod_reconciled_at: None,
+                    cod_reconciliation_run_id: None,
+                    sales_channel: "STOREFRONT".into(),
+                    storefront_shop_id: "shop-sf".into(),
+                    created_at: now,
+                }],
+            },
+            &admin_caller,
+        );
+        assert_eq!(sf.sales_channel, "STOREFRONT");
+        assert_eq!(sf.storefront_shop_id, "shop-sf");
+        assert_eq!(sf.shop_allocations[0].sales_channel, "STOREFRONT");
+        assert_eq!(sf.shop_allocations[0].storefront_shop_id, "shop-sf");
+
+        // ZALOPAY mapping & proto helpers roundtrip
+        let zp = to_proto_payment_for_caller(
+            PaymentWithAllocations {
+                payment: crate::domain::PaymentRecord {
+                    id: pid,
+                    order_group_id: "grp-zp".into(),
+                    order_id: "ord-zp".into(),
+                    user_id: "u-zp".into(),
+                    method: "ZALOPAY".into(),
+                    provider: "zalopay_mock".into(),
+                    amount_vnd: 250_000,
+                    status: "refunded".into(),
+                    provider_tx_id: Some("ZP-TX-99".into()),
+                    provider_order_code: "261121_NM1122334455".into(),
+                    qr_code: Some("ZPTOK123".into()),
+                    qr_url: None,
+                    pay_url: Some("https://sbgateway.zalopay.vn/openinapp?order=ZPTOK123".into()),
+                    idempotency_key: None,
+                    expires_at: Some(now),
+                    paid_at: Some(now),
+                    trace_id: String::new(),
+                    sales_channel: "MARKETPLACE".into(),
+                    storefront_shop_id: String::new(),
+                    created_at: now,
+                    updated_at: now,
+                },
+                allocations: vec![],
+            },
+            &admin_caller,
+        );
+        assert_eq!(zp.method, PaymentMethod::Zalopay as i32);
+        assert_eq!(zp.status, PaymentStatus::Refunded as i32);
+        assert_eq!(zp.provider_ref, "ZP-TX-99");
+        assert_eq!(zp.qr_code, "ZPTOK123");
+        assert_eq!(
+            zp.pay_url,
+            "https://sbgateway.zalopay.vn/openinapp?order=ZPTOK123"
+        );
+
+        let refund_pb = to_proto_refund(
+            RefundRecord {
+                id: Uuid::new_v4(),
+                payment_id: pid,
+                order_id: "ord-zp".into(),
+                amount_vnd: 50_000,
+                reason: "return".into(),
+                status: "completed".into(),
+                idempotency_key: "ref-k1".into(),
+                provider_refund_id: Some("zpmock_ref_1".into()),
+                provider_m_refund_id: None,
+                provider_status: None,
+                provider_lease_token: None,
+                provider_lease_until: None,
+                provider_dispatch_attempted: false,
+                created_by_service: false,
+                requested_by: None,
+                approved_by: None,
+                approved_at: None,
+                approval_note: None,
+                is_late_payment: false,
+                bank_code: None,
+                bank_account_number: None,
+                bank_account_masked: None,
+                bank_account_name: None,
+                settled_at: Some(now),
+                settlement_note: None,
+                settlement_idempotency_key: None,
+                affects_escrow: true,
+                created_at: now,
+                updated_at: now,
+            },
+            false,
+        );
+        assert_eq!(refund_pb.status, RefundStatus::Done as i32);
+        assert_eq!(refund_pb.amount_vnd, 50_000);
+
+        let item_pb = to_proto_reconciliation_item(ReconciliationItemRecord {
+            id: Uuid::new_v4(),
+            run_id: Uuid::new_v4(),
+            classification: "amount_mismatch".into(),
+            payment_id: Some(pid),
+            provider_tx_id: Some("ZP-TX-99".into()),
+            local_amount_vnd: Some(250_000),
+            provider_amount_vnd: Some(240_000),
+            details: Some("mismatch".into()),
+            tracking_code: String::new(),
+            order_id: String::new(),
+            line_number: 0,
+            sales_channel: "MARKETPLACE".into(),
+            storefront_shop_id: String::new(),
+            created_at: now,
+        });
+        assert_eq!(item_pb.status, ReconciliationStatus::AmountMismatch as i32);
+        assert_eq!(item_pb.local_amount_vnd, 250_000);
+        assert_eq!(item_pb.provider_amount_vnd, 240_000);
+
+        let run_id = Uuid::new_v4();
+        let report_pb = to_proto_reconciliation_report_summary(ReconciliationRunRecord {
+            id: run_id,
+            provider: "vietqr_mock".into(),
+            run_date: chrono::NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
+            sales_channel: "MARKETPLACE".into(),
+            matched_count: 5,
+            missing_local_count: 1,
+            missing_provider_count: 2,
+            amount_mismatch_count: 1,
+            auto_healed_count: 3,
+            status: "completed".into(),
+            run_type: "vietqr".into(),
+            file_sha256: String::new(),
+            file_name: String::new(),
+            total_rows: 9,
+            total_matched_vnd: 500_000,
+            already_reconciled_count: 0,
+            not_delivered_count: 0,
+            created_by: String::new(),
+            created_at: now,
+            completed_at: Some(now),
+        });
+        assert_eq!(report_pb.run_id, run_id.to_string());
+        assert_eq!(report_pb.provider, "vietqr_mock");
+        assert_eq!(report_pb.run_date, "2026-11-21");
+        assert_eq!(report_pb.auto_healed_count, 3);
+        assert_eq!(report_pb.matched_count, 5);
+        assert!(report_pb.created_at.is_some());
+        assert!(report_pb.completed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_grpc_list_reconciliation_reports_rbac_and_zalopay_create_validation() {
+        let (server, _) = test_grpc_server();
+
+        // Anonymous & spoofed metadata -> Unauthenticated
+        for req in [
+            Request::new(ListReconciliationReportsRequest {
+                limit: 10,
+                sales_channel: String::new(),
+            }),
+            with_spoofed_metadata(ListReconciliationReportsRequest {
+                limit: 10,
+                sales_channel: String::new(),
+            }),
+        ] {
+            assert_eq!(
+                server
+                    .list_reconciliation_reports(req)
+                    .await
+                    .unwrap_err()
+                    .code(),
+                tonic::Code::Unauthenticated
+            );
+        }
+
+        // Buyer, Seller, and Service tokens -> PermissionDenied
+        assert_eq!(
+            server
+                .list_reconciliation_reports(with_auth(
+                    ListReconciliationReportsRequest {
+                        limit: 10,
+                        sales_channel: String::new(),
+                    },
+                    "buyer",
+                    "u-1",
+                    "",
+                ))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            server
+                .list_reconciliation_reports(with_auth(
+                    ListReconciliationReportsRequest {
+                        limit: 10,
+                        sales_channel: String::new(),
+                    },
+                    "seller",
+                    "u-2",
+                    "shop-1",
+                ))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            server
+                .list_reconciliation_reports(with_service_auth(ListReconciliationReportsRequest {
+                    limit: 10,
+                    sales_channel: String::new(),
+                }))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+
+        // Admin with invalid sales_channel filter -> InvalidArgument
+        assert_eq!(
+            server
+                .list_reconciliation_reports(with_auth(
+                    ListReconciliationReportsRequest {
+                        limit: 10,
+                        sales_channel: "INVALID".into(),
+                    },
+                    "admin",
+                    "admin-1",
+                    "",
+                ))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::InvalidArgument
+        );
+
+        // CreatePayment with PAYMENT_METHOD_ZALOPAY rejects negative VND amount before DB (R1 allows 0 VND fully subsidized)
+        let err = server
+            .create_payment(with_auth(
+                CreatePaymentRequest {
+                    order_group_id: "grp-zp".into(),
+                    order_id: "ord-zp".into(),
+                    user_id: "u-1".into(),
+                    amount_vnd: -1,
+                    method: PaymentMethod::Zalopay as i32,
+                    shop_allocations: vec![],
+                    expires_at: None,
+                    idempotency_key: String::new(),
+                    supersede_previous: false,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
+                },
+                "buyer",
+                "u-1",
+                "",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 
     #[tokio::test]
@@ -2031,6 +2876,7 @@ mod tests {
             .run_reconciliation(with_auth(
                 RunReconciliationRequest {
                     date: "2099-12-31".into(),
+                    sales_channel: String::new(),
                 },
                 "admin",
                 "admin-1",
@@ -2760,6 +3606,8 @@ mod tests {
                 expires_at: None,
                 paid_at: Some(now),
                 trace_id: "trace-1".into(),
+                sales_channel: "MARKETPLACE".into(),
+                storefront_shop_id: String::new(),
                 created_at: now,
                 updated_at: now,
             },
@@ -2781,6 +3629,8 @@ mod tests {
                     order_code: None,
                     cod_reconciled_at: None,
                     cod_reconciliation_run_id: None,
+                    sales_channel: "MARKETPLACE".into(),
+                    storefront_shop_id: String::new(),
                     created_at: now,
                 },
                 ShopAllocationRecord {
@@ -2800,6 +3650,8 @@ mod tests {
                     order_code: None,
                     cod_reconciled_at: None,
                     cod_reconciliation_run_id: None,
+                    sales_channel: "MARKETPLACE".into(),
+                    storefront_shop_id: String::new(),
                     created_at: now,
                 },
             ],
@@ -2952,6 +3804,8 @@ mod tests {
             expires_at: None,
             idempotency_key: "checkout:grp-123".into(),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
         };
 
         // Valid service forward-recovery request -> Ok
@@ -3048,6 +3902,8 @@ mod tests {
             expires_at: None,
             idempotency_key: "checkout:grp-rec-1".into(),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
         };
 
         for svc_role in ["admin", "service"] {
@@ -3177,6 +4033,7 @@ mod tests {
             run_type: String::new(),
             page: 1,
             page_size: 20,
+            sales_channel: String::new(),
         });
         unauth_list
             .metadata_mut()
@@ -3208,6 +4065,7 @@ mod tests {
                             run_type: "cod_file".into(),
                             page: 1,
                             page_size: 20,
+                            sales_channel: String::new(),
                         },
                         role,
                         uid,
@@ -3248,6 +4106,7 @@ mod tests {
             run_type: String::new(),
             page: 1,
             page_size: 20,
+            sales_channel: String::new(),
         });
         svc_list.metadata_mut().insert(
             "authorization",
@@ -3262,7 +4121,7 @@ mod tests {
             tonic::Code::PermissionDenied
         );
 
-        // 4. Admin validation before DB: empty rows, >5000 rows, future run_date, bad run_type
+        // 4. Admin validation before DB: empty rows, >5000 rows, future run_date, bad run_type, bad sales_channel
         let mut empty_rows = sample_import_req();
         empty_rows.rows.clear();
         assert_eq!(
@@ -3311,6 +4170,25 @@ mod tests {
                         run_type: "invalid_type".into(),
                         page: 1,
                         page_size: 20,
+                        sales_channel: String::new(),
+                    },
+                    "admin",
+                    "admin-1",
+                    "",
+                ))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(
+            server
+                .list_reconciliation_runs(with_auth(
+                    ListReconciliationRunsRequest {
+                        run_type: String::new(),
+                        page: 1,
+                        page_size: 20,
+                        sales_channel: "INVALID_CH".into(),
                     },
                     "admin",
                     "admin-1",
@@ -3339,6 +4217,7 @@ mod tests {
                         run_type: "cod_file".into(),
                         page: 1,
                         page_size: 10,
+                        sales_channel: String::new(),
                     },
                     role,
                     "a-1",
@@ -3357,8 +4236,11 @@ mod tests {
         }
 
         let prom = metrics.render_prometheus();
-        assert!(prom.contains("method=\"ImportCodReconciliation\""));
-        assert!(prom.contains("method=\"ListReconciliationRuns\""));
+        assert!(prom
+            .contains("method=\"/nexusmart.payment.v1.PaymentService/ImportCodReconciliation\""));
+        assert!(
+            prom.contains("method=\"/nexusmart.payment.v1.PaymentService/ListReconciliationRuns\"")
+        );
     }
 
     #[tokio::test]
@@ -3423,10 +4305,32 @@ mod tests {
             // 1. GetLedgerSummary -> ledger.read (super_admin, admin, accountant, ops)
             let allowed = matches!(role, "super_admin" | "admin" | "accountant" | "ops");
             let err = server
-                .get_ledger_summary(with_auth(GetLedgerSummaryRequest {}, role, &uid, sid))
+                .get_ledger_summary(with_auth(
+                    GetLedgerSummaryRequest {
+                        sales_channel: String::new(),
+                    },
+                    role,
+                    &uid,
+                    sid,
+                ))
                 .await
                 .unwrap_err();
             assert_rbac("GetLedgerSummary", role, allowed, err);
+
+            // 1b. ListReconciliationReports -> ledger.read (super_admin, admin, accountant, ops)
+            let err = server
+                .list_reconciliation_reports(with_auth(
+                    ListReconciliationReportsRequest {
+                        limit: 10,
+                        sales_channel: "INVALID".into(),
+                    },
+                    role,
+                    &uid,
+                    sid,
+                ))
+                .await
+                .unwrap_err();
+            assert_rbac("ListReconciliationReports", role, allowed, err);
 
             // 2. ReleaseEscrow -> escrow.release (super_admin, admin, accountant)
             let allowed = matches!(role, "super_admin" | "admin" | "accountant");
@@ -3450,6 +4354,7 @@ mod tests {
                 .run_reconciliation(with_auth(
                     RunReconciliationRequest {
                         date: "bad-date".into(),
+                        sales_channel: String::new(),
                     },
                     role,
                     &uid,
@@ -3732,6 +4637,8 @@ mod tests {
                         expires_at: None,
                         idempotency_key: "idem-staff-attack".into(),
                         supersede_previous: false,
+                        sales_channel: String::new(),
+                        storefront_shop_id: String::new(),
                     },
                     role,
                     &format!("staff-{role}"),
@@ -3915,6 +4822,8 @@ mod tests {
         assert_ne!(err.code(), tonic::Code::InvalidArgument);
 
         let prom = metrics.render_prometheus();
-        assert!(prom.contains("method=\"AdjustCODShippingFee\""));
+        assert!(
+            prom.contains("method=\"/nexusmart.payment.v1.PaymentService/AdjustCODShippingFee\"")
+        );
     }
 }

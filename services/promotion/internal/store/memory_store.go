@@ -516,6 +516,9 @@ func (m *MemoryStore) CreateFlashSale(_ context.Context, fs domain.FlashSale) (*
 	if fs.ID == "" {
 		fs.ID = uuid.NewString()
 	}
+	if fs.Status == "" {
+		fs.Status = domain.FlashWindowStatusActive
+	}
 	now := time.Now().UTC()
 	fs.CreatedAt = now
 	fs.UpdatedAt = now
@@ -550,7 +553,7 @@ func (m *MemoryStore) RegisterFlashSaleItem(_ context.Context, item domain.Flash
 	if !ok {
 		return nil, ErrNotFound
 	}
-	if !fs.EndsAt.After(now) {
+	if fs.Status == domain.FlashWindowStatusEnded || !fs.EndsAt.After(now) {
 		return nil, ErrFlashSaleEnded
 	}
 
@@ -562,6 +565,9 @@ func (m *MemoryStore) RegisterFlashSaleItem(_ context.Context, item domain.Flash
 			continue
 		}
 		otherFS := m.flashSales[existing.FlashSaleID]
+		if otherFS.Status == domain.FlashWindowStatusEnded {
+			continue
+		}
 		if otherFS.StartsAt.Before(fs.EndsAt) && otherFS.EndsAt.After(fs.StartsAt) {
 			return nil, ErrOverlappingFlashSale
 		}
@@ -573,6 +579,7 @@ func (m *MemoryStore) RegisterFlashSaleItem(_ context.Context, item domain.Flash
 	item.RemainingSlots = item.TotalSlots
 	item.Status = domain.FlashStatusPending
 	item.RejectionReason = ""
+	item.WindowStatus = fs.Status
 	item.StartsAt = fs.StartsAt
 	item.EndsAt = fs.EndsAt
 	item.CreatedAt = now.UTC()
@@ -603,8 +610,12 @@ func (m *MemoryStore) ApproveFlashSaleItem(
 	}
 	fs, fsOk := m.flashSales[item.FlashSaleID]
 	if fsOk {
+		item.WindowStatus = fs.Status
 		item.StartsAt = fs.StartsAt
 		item.EndsAt = fs.EndsAt
+	}
+	if approve && fsOk && fs.Status == domain.FlashWindowStatusEnded {
+		return nil, "", ErrFlashSaleEnded
 	}
 
 	prevStatus := item.Status
@@ -632,6 +643,9 @@ func (m *MemoryStore) ApproveFlashSaleItem(
 				continue
 			}
 			otherFS := m.flashSales[other.FlashSaleID]
+			if otherFS.Status == domain.FlashWindowStatusEnded {
+				continue
+			}
 			if otherFS.StartsAt.Before(item.EndsAt) && otherFS.EndsAt.After(item.StartsAt) {
 				return nil, "", ErrOverlappingFlashSale
 			}
@@ -644,12 +658,18 @@ func (m *MemoryStore) ApproveFlashSaleItem(
 		if originalPriceVND > 0 {
 			item.OriginalPriceVND = originalPriceVND
 		}
+		item.StockReleasedAt = nil
 	} else {
 		item.Status = domain.FlashStatusRejected
 		item.RejectionReason = reason
 	}
 	item.ApprovedBy = adminID
 	item.UpdatedAt = time.Now().UTC()
+	if fsOk {
+		item.WindowStatus = fs.Status
+		item.StartsAt = fs.StartsAt
+		item.EndsAt = fs.EndsAt
+	}
 	m.flashItems[itemID] = item
 	cp := item
 	return &cp, prevStatus, nil
@@ -664,6 +684,7 @@ func (m *MemoryStore) GetFlashSaleItem(_ context.Context, itemID string) (*domai
 		return nil, ErrNotFound
 	}
 	if fs, ok := m.flashSales[item.FlashSaleID]; ok {
+		item.WindowStatus = fs.Status
 		item.StartsAt = fs.StartsAt
 		item.EndsAt = fs.EndsAt
 	}
@@ -688,6 +709,7 @@ func (m *MemoryStore) SyncFlashItemRedis(
 		return false, nil
 	}
 	if fs, fsOk := m.flashSales[item.FlashSaleID]; fsOk {
+		item.WindowStatus = fs.Status
 		item.StartsAt = fs.StartsAt
 		item.EndsAt = fs.EndsAt
 	}
@@ -709,6 +731,9 @@ func (m *MemoryStore) ListFlashSales(_ context.Context, now time.Time, includeUp
 	}
 	var out []domain.FlashSale
 	for _, fs := range m.flashSales {
+		if fs.Status == domain.FlashWindowStatusEnded {
+			continue
+		}
 		if includeUpcoming {
 			if !fs.EndsAt.After(now) {
 				continue
@@ -743,15 +768,15 @@ func (m *MemoryStore) ListAllFlashSales(_ context.Context, now time.Time, status
 	for _, fs := range m.flashSales {
 		switch statusFilter {
 		case "UPCOMING":
-			if !fs.StartsAt.After(now) {
+			if fs.Status == domain.FlashWindowStatusEnded || !fs.StartsAt.After(now) {
 				continue
 			}
 		case "ACTIVE":
-			if fs.StartsAt.After(now) || !fs.EndsAt.After(now) {
+			if fs.Status == domain.FlashWindowStatusEnded || fs.StartsAt.After(now) || !fs.EndsAt.After(now) {
 				continue
 			}
 		case "ENDED":
-			if fs.EndsAt.After(now) {
+			if fs.Status != domain.FlashWindowStatusEnded && fs.EndsAt.After(now) {
 				continue
 			}
 		}
@@ -785,6 +810,7 @@ func (m *MemoryStore) attachApprovedFlashItemsLocked(fs domain.FlashSale, exclud
 			if excludeSuspended && m.isShopSuspendedLocked(item.ShopID) {
 				continue
 			}
+			item.WindowStatus = fs.Status
 			item.StartsAt = fs.StartsAt
 			item.EndsAt = fs.EndsAt
 			cp.Items = append(cp.Items, item)
@@ -811,6 +837,7 @@ func (m *MemoryStore) ListFlashSaleItems(_ context.Context, statusFilter, flashS
 			continue
 		}
 		if fs, ok := m.flashSales[it.FlashSaleID]; ok {
+			it.WindowStatus = fs.Status
 			it.StartsAt = fs.StartsAt
 			it.EndsAt = fs.EndsAt
 		}
@@ -839,11 +866,122 @@ func (m *MemoryStore) ListApprovedFlashSaleItems(_ context.Context) ([]domain.Fl
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	now := time.Now().UTC()
 	var out []domain.FlashSaleItem
 	for _, item := range m.flashItems {
-		if item.Status == domain.FlashStatusApproved {
+		if item.Status != domain.FlashStatusApproved {
+			continue
+		}
+		if fs, ok := m.flashSales[item.FlashSaleID]; ok {
+			if fs.Status == domain.FlashWindowStatusEnded || !fs.EndsAt.After(now) {
+				continue
+			}
+			item.WindowStatus = fs.Status
+			item.StartsAt = fs.StartsAt
+			item.EndsAt = fs.EndsAt
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) EndFlashSaleWindow(_ context.Context, windowID string, now time.Time) (*domain.FlashSale, []domain.FlashSaleItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	fs, ok := m.flashSales[windowID]
+	if !ok {
+		return nil, nil, ErrNotFound
+	}
+	fs.Status = domain.FlashWindowStatusEnded
+	if now.After(fs.StartsAt) && now.Before(fs.EndsAt) {
+		fs.EndsAt = now.UTC()
+	}
+	fs.UpdatedAt = now.UTC()
+	m.flashSales[windowID] = fs
+
+	cp := fs
+	cp.CategoryIDs = append([]string(nil), fs.CategoryIDs...)
+	cp.Items = nil
+	var unreleased []domain.FlashSaleItem
+	for _, item := range m.flashItems {
+		if item.FlashSaleID != windowID || item.Status != domain.FlashStatusApproved {
+			continue
+		}
+		item.WindowStatus = fs.Status
+		item.StartsAt = fs.StartsAt
+		item.EndsAt = fs.EndsAt
+		cp.Items = append(cp.Items, item)
+		if item.StockReleasedAt == nil {
+			unreleased = append(unreleased, item)
+		}
+	}
+	sort.Slice(cp.Items, func(i, j int) bool { return cp.Items[i].ID < cp.Items[j].ID })
+	sort.Slice(unreleased, func(i, j int) bool { return unreleased[i].ID < unreleased[j].ID })
+	return &cp, unreleased, nil
+}
+
+func (m *MemoryStore) MarkFlashSaleItemStockReleased(_ context.Context, itemID string, releasedAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if releasedAt.IsZero() {
+		releasedAt = time.Now().UTC()
+	}
+	item, ok := m.flashItems[itemID]
+	if !ok {
+		return nil
+	}
+	if item.StockReleasedAt == nil {
+		t := releasedAt.UTC()
+		item.StockReleasedAt = &t
+		item.UpdatedAt = t
+		m.flashItems[itemID] = item
+	}
+	return nil
+}
+
+func (m *MemoryStore) ListExpiredUnreleasedFlashSaleItems(_ context.Context, now time.Time) ([]domain.FlashSaleItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	for id, fs := range m.flashSales {
+		if fs.Status == domain.FlashWindowStatusActive && !fs.EndsAt.After(now) {
+			fs.Status = domain.FlashWindowStatusEnded
+			fs.UpdatedAt = now.UTC()
+			m.flashSales[id] = fs
+		}
+	}
+	var out []domain.FlashSaleItem
+	for _, item := range m.flashItems {
+		if item.Status != domain.FlashStatusApproved || item.StockReleasedAt != nil {
+			continue
+		}
+		fs, ok := m.flashSales[item.FlashSaleID]
+		if !ok {
+			continue
+		}
+		if fs.Status == domain.FlashWindowStatusEnded || !fs.EndsAt.After(now) {
+			item.WindowStatus = fs.Status
+			item.StartsAt = fs.StartsAt
+			item.EndsAt = fs.EndsAt
 			out = append(out, item)
 		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].EndsAt.Equal(out[j].EndsAt) {
+			return out[i].EndsAt.Before(out[j].EndsAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	if len(out) > 100 {
+		out = out[:100]
 	}
 	return out, nil
 }
@@ -857,7 +995,8 @@ func (m *MemoryStore) ListActiveApprovedFlashSaleItems(_ context.Context, now ti
 		if item.Status != domain.FlashStatusApproved {
 			continue
 		}
-		if fs, ok := m.flashSales[item.FlashSaleID]; ok && fs.EndsAt.After(now) {
+		if fs, ok := m.flashSales[item.FlashSaleID]; ok && fs.Status != domain.FlashWindowStatusEnded && fs.EndsAt.After(now) {
+			item.WindowStatus = fs.Status
 			item.StartsAt = fs.StartsAt
 			item.EndsAt = fs.EndsAt
 			out = append(out, item)
@@ -875,7 +1014,7 @@ func (m *MemoryStore) HasOverlappingApprovedFlashSale(_ context.Context, skuID s
 			continue
 		}
 		fs := m.flashSales[it.FlashSaleID]
-		if fs.EndsAt.After(now) && fs.StartsAt.Before(endsAt) && fs.EndsAt.After(startsAt) {
+		if fs.Status != domain.FlashWindowStatusEnded && fs.EndsAt.After(now) && fs.StartsAt.Before(endsAt) && fs.EndsAt.After(startsAt) {
 			return true, nil
 		}
 	}
@@ -1240,6 +1379,12 @@ func (m *MemoryStore) creditCoinsLocked(userID string, amount int64, reason, ref
 	return m.coinBalances[userID], false
 }
 
+func (m *MemoryStore) IsEventProcessed(_ context.Context, eventID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.processedEvents[eventID], nil
+}
+
 func (m *MemoryStore) ProcessOrderCompletedEvent(_ context.Context, eventID, _, orderID, buyerID string, coinsReward int64) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1381,8 +1526,8 @@ func (m *MemoryStore) CommitReservation(_ context.Context, res domain.PromotionR
 			return nil, false, fmt.Errorf("%w: flash item %s", ErrFlashNotEligibleForCommit, rf.FlashSaleItemID)
 		}
 		if fs, fsOk := m.flashSales[fi.FlashSaleID]; fsOk {
-			if now.Before(fs.StartsAt) || !now.Before(fs.EndsAt) {
-				return nil, false, fmt.Errorf("%w: flash item %s outside window", ErrFlashNotEligibleForCommit, rf.FlashSaleItemID)
+			if fs.Status == domain.FlashWindowStatusEnded || now.Before(fs.StartsAt) || !now.Before(fs.EndsAt) {
+				return nil, false, fmt.Errorf("%w: flash item %s outside window or ended", ErrFlashNotEligibleForCommit, rf.FlashSaleItemID)
 			}
 		}
 		usageChecks = append(usageChecks, usageCheck{
@@ -1529,6 +1674,13 @@ func (m *MemoryStore) ReleaseReservationShop(_ context.Context, orderID, shopID 
 
 	existing, ok := m.reservations[orderID]
 	if !ok {
+		clawedBack := m.clawbackOrderRewardLocked(orderID)
+		if clawedBack > 0 {
+			return &ShopReleaseResult{
+				AlreadyReleased:       false,
+				RewardCoinsClawedBack: clawedBack,
+			}, nil
+		}
 		return &ShopReleaseResult{AlreadyReleased: true}, nil
 	}
 
@@ -1554,6 +1706,10 @@ func (m *MemoryStore) ReleaseReservationShop(_ context.Context, orderID, shopID 
 		AllShopPrograms:             append([]domain.ReservedShopProgramItem(nil), existing.ShopProgramItems...),
 	}
 	if plan.alreadyReleased {
+		if clawedBack := m.clawbackOrderRewardLocked(orderID); clawedBack > 0 {
+			result.AlreadyReleased = false
+			result.RewardCoinsClawedBack = clawedBack
+		}
 		return result, nil
 	}
 
@@ -1563,6 +1719,8 @@ func (m *MemoryStore) ReleaseReservationShop(_ context.Context, orderID, shopID 
 			result.CoinsReturned = 0
 		}
 	}
+
+	result.RewardCoinsClawedBack = m.clawbackOrderRewardLocked(orderID)
 
 	now := time.Now().UTC()
 	m.restoreVouchersAndFlashLocked(plan.vouchersToRelease, plan.flashToRelease, now)
@@ -1576,6 +1734,48 @@ func (m *MemoryStore) ReleaseReservationShop(_ context.Context, orderID, shopID 
 	}
 	m.reservations[orderID] = existing
 	return result, nil
+}
+
+func (m *MemoryStore) clawbackOrderRewardLocked(orderID string) int64 {
+	orderID = strings.TrimSpace(orderID)
+	if orderID == "" {
+		return 0
+	}
+	var rewardUserID string
+	var rewardDelta int64
+	for _, t := range m.coinTxns {
+		if t.ReferenceID == orderID && t.Reason == "order_completed_reward" && t.Delta > 0 {
+			rewardUserID = t.UserID
+			rewardDelta = t.Delta
+			break
+		}
+	}
+	if rewardDelta <= 0 || rewardUserID == "" {
+		return 0
+	}
+	clawbackRef := "order_refund_reward_clawback:" + orderID
+	if m.coinRefIndex[clawbackRef] {
+		return 0
+	}
+	curBal := m.coinBalances[rewardUserID]
+	clawback := rewardDelta
+	if clawback > curBal {
+		clawback = curBal
+	}
+	if clawback <= 0 {
+		return 0
+	}
+	m.coinRefIndex[clawbackRef] = true
+	m.coinBalances[rewardUserID] = curBal - clawback
+	m.coinTxns = append(m.coinTxns, domain.CoinTransaction{
+		ID:          uuid.NewString(),
+		UserID:      rewardUserID,
+		Delta:       -clawback,
+		Reason:      "order_refund_reward_clawback",
+		ReferenceID: clawbackRef,
+		CreatedAt:   time.Now().UTC(),
+	})
+	return clawback
 }
 
 func (m *MemoryStore) lookupFlashShopLocked(itemID string) (string, error) {

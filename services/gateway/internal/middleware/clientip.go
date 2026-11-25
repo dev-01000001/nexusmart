@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -42,7 +43,36 @@ type TrustedProxies struct {
 // NewTrustedProxies parses a comma-separated list of CIDRs, IPs, and hostnames.
 // Empty input returns a TrustedProxies that trusts nothing (RemoteAddr only).
 func NewTrustedProxies(raw string, log *slog.Logger) *TrustedProxies {
-	tp := &TrustedProxies{
+	tp, _ := newTrustedProxies(raw, log, false)
+	return tp
+}
+
+// NewTrustedProxiesValidated parses a comma-separated list of CIDRs, literal IPs,
+// and hostnames, failing fast when any CIDR entry (containing '/') or hostname token is invalid.
+func NewTrustedProxiesValidated(raw string, log *slog.Logger) (*TrustedProxies, error) {
+	return newTrustedProxies(raw, log, true)
+}
+
+// ParseTrustedProxies parses a comma-separated list of strict CIDRs (e.g. "172.31.250.0/28,10.0.0.0/8").
+// Empty input returns a TrustedProxies that trusts no proxy headers; non-CIDR entries return an error.
+func ParseTrustedProxies(raw string) (*TrustedProxies, error) {
+	tp := newEmptyTrustedProxies(nil)
+	for _, item := range strings.Split(raw, ",") {
+		entry := strings.TrimSpace(item)
+		if entry == "" {
+			continue
+		}
+		pfx, err := netip.ParsePrefix(entry)
+		if err != nil {
+			return nil, fmt.Errorf("invalid trusted proxy CIDR %q: %w", entry, err)
+		}
+		tp.prefixes = append(tp.prefixes, normalizePrefix(pfx))
+	}
+	return tp, nil
+}
+
+func newEmptyTrustedProxies(log *slog.Logger) *TrustedProxies {
+	return &TrustedProxies{
 		lookupFn: func(ctx context.Context, host string) ([]netip.Addr, error) {
 			return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 		},
@@ -53,20 +83,33 @@ func NewTrustedProxies(raw string, log *slog.Logger) *TrustedProxies {
 		log:        log,
 		resolved:   make(map[netip.Addr]struct{}),
 	}
+}
 
+func newTrustedProxies(raw string, log *slog.Logger, strict bool) (*TrustedProxies, error) {
+	tp := newEmptyTrustedProxies(log)
 	seenHosts := make(map[string]struct{})
 	for _, item := range strings.Split(raw, ",") {
 		entry := strings.TrimSpace(item)
 		if entry == "" {
 			continue
 		}
-		if pfx, err := netip.ParsePrefix(entry); err == nil {
+		if strings.Contains(entry, "/") {
+			pfx, err := netip.ParsePrefix(entry)
+			if err != nil {
+				if strict {
+					return nil, fmt.Errorf("invalid trusted proxy CIDR %q: %w", entry, err)
+				}
+				continue
+			}
 			tp.prefixes = append(tp.prefixes, normalizePrefix(pfx))
 			continue
 		}
 		if addr, ok := parseIP(entry); ok {
 			tp.prefixes = append(tp.prefixes, netip.PrefixFrom(addr, addr.BitLen()))
 			continue
+		}
+		if strict && !isValidProxyHostname(entry) {
+			return nil, fmt.Errorf("invalid trusted proxy entry %q", entry)
 		}
 		lower := strings.ToLower(entry)
 		if _, dup := seenHosts[lower]; !dup {
@@ -78,7 +121,31 @@ func NewTrustedProxies(raw string, log *slog.Logger) *TrustedProxies {
 	if len(tp.hosts) > 0 {
 		tp.refresh(false)
 	}
-	return tp
+	return tp, nil
+}
+
+func isValidProxyHostname(host string) bool {
+	if host == "" || len(host) > 253 || strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+// Contains reports whether addr belongs to the configured trusted proxy set.
+func (tp *TrustedProxies) Contains(addr netip.Addr) bool {
+	return tp.IsTrusted(addr)
 }
 
 // IsTrusted reports whether addr belongs to the configured trusted proxy set.

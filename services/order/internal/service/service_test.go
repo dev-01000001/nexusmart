@@ -109,8 +109,10 @@ func newMockUserClient() *mockUserClient {
 			},
 		},
 		shops: map[string]*userv1.Shop{
-			"shop-1": {Id: "shop-1", OwnerUserId: "seller-1", Name: "Shop Alpha", PickupAddressId: "addr-shop-1", ContactPhone: "0911111111", Status: userv1.ShopStatus_SHOP_STATUS_ACTIVE},
-			"shop-2": {Id: "shop-2", OwnerUserId: "seller-2", Name: "Shop Beta", PickupAddressId: "addr-shop-2", ContactPhone: "0922222222", Status: userv1.ShopStatus_SHOP_STATUS_ACTIVE},
+			"shop-1":         {Id: "shop-1", OwnerUserId: "seller-1", Name: "Shop Alpha", PickupAddressId: "addr-shop-1", ContactPhone: "0911111111", Status: userv1.ShopStatus_SHOP_STATUS_ACTIVE},
+			"shop-2":         {Id: "shop-2", OwnerUserId: "seller-2", Name: "Shop Beta", PickupAddressId: "addr-shop-2", ContactPhone: "0922222222", Status: userv1.ShopStatus_SHOP_STATUS_ACTIVE},
+			"shop-pending":   {Id: "shop-pending", OwnerUserId: "seller-3", Name: "Pending Shop", Status: userv1.ShopStatus_SHOP_STATUS_PENDING},
+			"shop-suspended": {Id: "shop-suspended", OwnerUserId: "seller-4", Name: "Suspended Shop", Status: userv1.ShopStatus_SHOP_STATUS_SUSPENDED},
 		},
 	}
 }
@@ -345,10 +347,12 @@ func (m *mockProductClient) ConfirmStock(ctx context.Context, req *productv1.Con
 }
 
 type mockCartClient struct {
-	mu           sync.Mutex
-	cart         *cartv1.Cart
-	clearCalls   [][]string
-	onClearItems func(ctx context.Context) error
+	mu            sync.Mutex
+	cart          *cartv1.Cart
+	getCartCalls  []*cartv1.GetCartRequest
+	clearCalls    [][]string
+	clearReqCalls []*cartv1.ClearItemsRequest
+	onClearItems  func(ctx context.Context) error
 }
 
 func newMockCartClient() *mockCartClient {
@@ -373,15 +377,34 @@ func newMockCartClient() *mockCartClient {
 	}
 }
 
-func (m *mockCartClient) GetCart(_ context.Context, _ *cartv1.GetCartRequest, _ ...grpc.CallOption) (*cartv1.GetCartResponse, error) {
+func (m *mockCartClient) GetCart(_ context.Context, req *cartv1.GetCartRequest, _ ...grpc.CallOption) (*cartv1.GetCartResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return &cartv1.GetCartResponse{Cart: m.cart}, nil
+	m.getCartCalls = append(m.getCartCalls, req)
+	if m.cart == nil {
+		return &cartv1.GetCartResponse{}, nil
+	}
+	filterShop := req.GetShopId()
+	if filterShop == "" {
+		return &cartv1.GetCartResponse{Cart: m.cart}, nil
+	}
+	filtered := &cartv1.Cart{UserId: m.cart.GetUserId()}
+	for _, grp := range m.cart.GetShopGroups() {
+		if grp.GetShopId() == filterShop {
+			filtered.ShopGroups = append(filtered.ShopGroups, grp)
+			for _, it := range grp.GetItems() {
+				filtered.TotalItems += it.GetQuantity()
+				filtered.TotalVnd += it.GetPriceVnd() * int64(it.GetQuantity())
+			}
+		}
+	}
+	return &cartv1.GetCartResponse{Cart: filtered}, nil
 }
 
 func (m *mockCartClient) ClearItems(ctx context.Context, req *cartv1.ClearItemsRequest, _ ...grpc.CallOption) (*cartv1.ClearItemsResponse, error) {
 	m.mu.Lock()
 	m.clearCalls = append(m.clearCalls, append([]string(nil), req.GetSkuIds()...))
+	m.clearReqCalls = append(m.clearReqCalls, req)
 	cb := m.onClearItems
 	m.mu.Unlock()
 	if cb != nil {
@@ -389,6 +412,36 @@ func (m *mockCartClient) ClearItems(ctx context.Context, req *cartv1.ClearItemsR
 			return nil, err
 		}
 	}
+	m.mu.Lock()
+	filterShop := strings.TrimSpace(req.GetShopId())
+	if filterShop != "" && m.cart != nil && len(req.GetSkuIds()) > 0 {
+		toRemove := make(map[string]bool, len(req.GetSkuIds()))
+		for _, id := range req.GetSkuIds() {
+			toRemove[id] = true
+		}
+		var remainingGroups []*cartv1.CartShopGroup
+		for _, grp := range m.cart.ShopGroups {
+			if grp.GetShopId() != filterShop {
+				remainingGroups = append(remainingGroups, grp)
+				continue
+			}
+			var kept []*cartv1.CartItem
+			for _, it := range grp.Items {
+				if !toRemove[it.SkuId] {
+					kept = append(kept, it)
+				}
+			}
+			if len(kept) > 0 {
+				remainingGroups = append(remainingGroups, &cartv1.CartShopGroup{
+					ShopId:   grp.GetShopId(),
+					ShopName: grp.GetShopName(),
+					Items:    kept,
+				})
+			}
+		}
+		m.cart.ShopGroups = remainingGroups
+	}
+	m.mu.Unlock()
 	return &cartv1.ClearItemsResponse{Ok: true}, nil
 }
 

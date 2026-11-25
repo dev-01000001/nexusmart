@@ -15,38 +15,3 @@
 .main:focus {
   outline: none;
 }
-
-.toast {
-  position: fixed;
-  right: 24px;
-  bottom: 24px;
-  z-index: 80;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  max-width: min(420px, calc(100vw - 32px));
-  padding: 12px 16px;
-  background: var(--band-dark);
-  color: var(--band-dark-ink);
-  font-size: 14px;
-  line-height: 1.45;
-}
-
-.toastClose {
-  color: var(--band-dark-accent);
-  font-size: 13px;
-  font-weight: 500;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  flex: none;
-}
-
-@media (max-width: 768px) {
-  .toast {
-    right: 16px;
-    left: 16px;
-    bottom: 16px;
-    max-width: none;
-    justify-content: space-between;
-  }
-}

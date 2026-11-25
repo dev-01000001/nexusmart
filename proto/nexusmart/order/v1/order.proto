@@ -17,6 +17,7 @@ enum OrderStatus {
   ORDER_STATUS_CANCELLED = 7;
   ORDER_STATUS_RETURN_REQUESTED = 8;
   ORDER_STATUS_RETURNED = 9;
+  reserved 10 to 13;
 }
 
 enum OrderPaymentMethod {
@@ -141,6 +142,10 @@ message Order {
   bool needs_manual_review = 37;
   // Async shipment creation job status: "", "QUEUED", or "FAILED" (E18).
   string shipment_job_status = 38;
+  // Immutable sales channel recorded at creation: "MARKETPLACE" or "STOREFRONT".
+  string sales_channel = 39;
+  // Immutable shop ID for STOREFRONT orders; empty for MARKETPLACE orders.
+  string storefront_shop_id = 40;
 }
 
 message ReturnEvent {
@@ -205,6 +210,10 @@ message CreateCheckoutRequest {
   int64 coins_to_use = 9;
   OrderPaymentMethod payment_method = 10;
   repeated ShopShippingChoice shipping_choices = 11;
+  // Optional sales channel: "" (defaults to "MARKETPLACE"), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 12;
+  // Required active shop ID when sales_channel is "STOREFRONT"; must be empty for "MARKETPLACE".
+  string storefront_shop_id = 13;
 }
 
 message CreateCheckoutResponse {
@@ -221,6 +230,8 @@ message CreateCheckoutResponse {
   repeated string warnings = 11;
   // Redirect/deep-link URL for e-wallet payments (e.g. ZaloPay; empty for COD/VietQR) (F1/F8).
   string pay_url = 12;
+  string sales_channel = 13;
+  string storefront_shop_id = 14;
 }
 
 message GetOrderRequest {
@@ -248,6 +259,10 @@ message ListOrdersRequest {
   google.protobuf.Timestamp due_before = 10;
   repeated OrderStatus statuses = 11;
   bool include_status_counts = 12;
+  // Optional sales channel filter: "" (all), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 13;
+  // Optional storefront filter: only orders placed on this shop's own site (STOREFRONT channel).
+  string storefront_shop_id = 14;
 }
 
 message ListOrdersResponse {
@@ -591,6 +606,8 @@ message PublicOrderSummary {
 message LookupOrderRequest {
   string order_code = 1;
   string phone = 2;
+  // Optional storefront tenant scope: when set, matches only STOREFRONT orders with matching storefront_shop_id.
+  string storefront_shop_id = 3;
 }
 
 message LookupOrderResponse {

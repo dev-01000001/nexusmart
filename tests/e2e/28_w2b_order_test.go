@@ -442,6 +442,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		// Checkout WITHOUT sending shop_program_item_id: order must resolve it server-side via ListActiveShopDiscounts.
 		idemKey := "ordw2b-c1-" + uuid.NewString()
 		coReq := CheckoutRequest{
+			SalesChannel:      "MARKETPLACE",
 			AddressID:         addr.ID,
 			Items:             []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 			ShopVoucherIDs:    map[string]string{seller.ShopID: shopV.ID},
@@ -609,6 +610,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		codResp, err := env.client.DoJSON(env.ctx(t), http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2b-fs-cod-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: skuActive.ID, Quantity: 1, FlashSaleItemID: activeFSItemID}},
 			PaymentMethod: "COD",
@@ -627,6 +629,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		upResp, err := env.client.DoJSON(env.ctx(t), http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2b-fs-up-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: skuUpcoming.ID, Quantity: 1, FlashSaleItemID: upcomingFSItemID}},
 			PaymentMethod: "VIETQR",
@@ -646,6 +649,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		okResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2b-fs-ok-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: skuActive.ID, Quantity: 1, FlashSaleItemID: activeFSItemID}},
 			PaymentMethod: "VIETQR",
@@ -696,6 +700,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		shortResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2b-fs-short-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: skuShortWin.ID, Quantity: 1, FlashSaleItemID: shortFSItemID}},
 			PaymentMethod: "VIETQR",
@@ -736,6 +741,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		co1Resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2b-rep-o1-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: skuA.ID, Quantity: 2}},
 			PaymentMethod: "COD",
@@ -764,6 +770,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		co2Resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2b-rep-o2-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:      "MARKETPLACE",
 			AddressID:         addr.ID,
 			Items:             []CheckoutItemInputDTO{{SKUID: skuB.ID, Quantity: 1}},
 			PlatformVoucherID: platV.ID,
@@ -798,6 +805,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		co3Resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2b-rep-o3-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: skuB.ID, Quantity: 1}},
 			PaymentMethod: "COD",
@@ -908,6 +916,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		coResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2b-rev-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 			PaymentMethod: "COD",
@@ -987,6 +996,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		co1Resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2b-ref-c1-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 			PaymentMethod: "VIETQR",
@@ -1026,6 +1036,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		co2Resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2b-ref-c2-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 			PaymentMethod: "VIETQR",
@@ -1122,6 +1133,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		coResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2b-zfee-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 			PaymentMethod: "VIETQR",
@@ -1175,6 +1187,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		co1Resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2b-lim-1-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 			PaymentMethod: "VIETQR",
@@ -1203,6 +1216,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		co2Resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2b-lim-2-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 			PaymentMethod: "VIETQR",
@@ -1246,6 +1260,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 
 		idemKey := "ordw2b-conc-" + uuid.NewString()
 		reqBody := CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 2}},
 			PaymentMethod: "COD",
@@ -1380,6 +1395,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer1.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2b-ff-b1-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr1.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1, FlashSaleItemID: fsItemID}},
 			PaymentMethod: "VIETQR",
@@ -1438,6 +1454,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		badCoResp, err := env.client.DoJSON(env.ctx(t), http.MethodPost, "/api/v1/checkout", buyer2.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2b-ff-b2-bad-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr2.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1, FlashSaleItemID: fsItemID}},
 			PaymentMethod: "VIETQR",
@@ -1456,6 +1473,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		coResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer2.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2b-ff-b2-ok-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr2.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 			PaymentMethod: "VIETQR",

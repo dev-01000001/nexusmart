@@ -21,19 +21,17 @@ COPY pkg/common ./pkg/common
 COPY services/order ./services/order
 
 WORKDIR /src/services/order
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/order-server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/order-server ./cmd/server
 
 FROM alpine:3.20
 
 RUN apk add --no-cache ca-certificates wget \
-    && addgroup -S appgroup \
-    && adduser -S -G appgroup appuser
+    && adduser -D -u 10001 -H appuser
 
 WORKDIR /app
 COPY --from=builder /out/order-server /app/order-server
-RUN chown appuser:appgroup /app/order-server
 
-USER appuser
+USER 10001:10001
 
 EXPOSE 50055 8085
 

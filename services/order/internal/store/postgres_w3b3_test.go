@@ -61,7 +61,7 @@ func TestPostgresW3B3_Migration0018_UpgradeAndConstraints(t *testing.T) {
 		dropTempDatabase(adminDSN, tempDBName)
 	})
 
-	// 1. Apply migrations 0001..0017 only.
+	// 1. Apply migrations 0001..0020 only (before 0021_w3b3_address_and_filters.sql).
 	if _, err := pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			filename TEXT PRIMARY KEY,
@@ -74,14 +74,14 @@ func TestPostgresW3B3_Migration0018_UpgradeAndConstraints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read migrations dir: %v", err)
 	}
-	var pre18 []string
+	var pre21 []string
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") && e.Name() < "0018_" {
-			pre18 = append(pre18, e.Name())
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") && e.Name() < "0021_" {
+			pre21 = append(pre21, e.Name())
 		}
 	}
-	sort.Strings(pre18)
-	for _, name := range pre18 {
+	sort.Strings(pre21)
+	for _, name := range pre21 {
 		raw, err := migrations.Files.ReadFile(name)
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)

@@ -260,37 +260,43 @@ type ListBannedKeywordsFilter struct {
 }
 
 type SKU struct {
-	ID                string
-	ProductID         string
-	ShopID            string
-	ProductName       string
-	SKUCode           string
-	Name              string
-	Attributes        map[string]string
-	PriceVND          int64
-	MinPrice30dVND    int64
-	Stock             int32
-	ReservedStock     int32
-	Version           int64
-	WeightGrams       int32
-	ImageURL          string
-	CategoryID        string
-	CommissionRateBps int32
-	Status            string
-	ProductStatus     string
-	ProductDeleted    bool
-	ShopSuspended     bool
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                     string
+	ProductID              string
+	ShopID                 string
+	ProductName            string
+	SKUCode                string
+	Name                   string
+	Attributes             map[string]string
+	PriceVND               int64
+	MinPrice30dVND         int64
+	Stock                  int32
+	ReservedStock          int32
+	FlashSaleReservedStock int32
+	Version                int64
+	WeightGrams            int32
+	ImageURL               string
+	CategoryID             string
+	CommissionRateBps      int32
+	Status                 string
+	ProductStatus          string
+	ProductDeleted         bool
+	ShopSuspended          bool
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
-// AvailableStock returns stock - reserved_stock, clamped at 0.
+// AvailableStock returns stock - reserved_stock - flash_sale_reserved_stock, clamped at 0.
 func (s SKU) AvailableStock() int32 {
-	avail := s.Stock - s.ReservedStock
+	avail := s.Stock - s.ReservedStock - s.FlashSaleReservedStock
 	if avail < 0 {
 		return 0
 	}
 	return avail
+}
+
+// TotalReservedStock returns reserved_stock + flash_sale_reserved_stock.
+func (s SKU) TotalReservedStock() int32 {
+	return s.ReservedStock + s.FlashSaleReservedStock
 }
 
 // IsActive reports whether the SKU belongs to an approved (or out-of-stock) non-deleted product and is not deactivated.
@@ -314,8 +320,20 @@ type StockReservation struct {
 	SKUID              string
 	Quantity           int32
 	Status             string
+	FlashSaleItemID    string
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+}
+
+type FlashSaleStockReservation struct {
+	FlashSaleItemID string
+	SKUID           string
+	ReservedQty     int32
+	ConsumedQty     int32
+	Status          string
+	EndsAt          time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type StockHistoryEntry struct {
@@ -531,6 +549,7 @@ type Queries interface {
 	UpdateProductImportRowOutcome(ctx context.Context, id, status, errCode, errMsg, createdProductID string) (bool, error)
 	GetProductImportRowOutcomeCounts(ctx context.Context, jobID string) (ImportRowOutcomeCounts, error)
 
+	NextProductEventVersion(ctx context.Context) (int64, error)
 	InsertOutboxEvent(ctx context.Context, ev OutboxEvent) error
 
 	LockShopSuspension(ctx context.Context, shopID string) error

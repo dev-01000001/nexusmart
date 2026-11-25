@@ -1,0 +1,113 @@
+/* Quiet architectural footer with edge-to-edge (--margin to --margin) Archivo wide NexusMart wordmark. */
+
+.footer {
+  width: 100%;
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+  padding: clamp(32px, 4vw, 52px) var(--margin) clamp(16px, 2.2vw, 28px);
+  display: flex;
+  flex-direction: column;
+  gap: clamp(32px, 5vw, 60px);
+  overflow: hidden;
+}
+
+.topRow {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 16px 24px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.metaCol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 18px;
+}
+
+.metaText {
+  color: var(--band-dark-muted);
+}
+
+.metaLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding-block: 2px;
+  color: var(--band-dark-ink);
+  font-weight: 500;
+  transition: color var(--t-hover) var(--ease-out);
+}
+
+.metaLink:hover {
+  color: var(--band-dark-accent);
+}
+
+.navRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 24px;
+}
+
+.navLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding-block: 2px;
+  color: var(--band-dark-ink);
+  font-weight: 500;
+  transition: color var(--t-hover) var(--ease-out);
+}
+
+.navLink:hover {
+  color: var(--band-dark-accent);
+}
+
+.rightCol {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 18px;
+}
+
+.year {
+  color: var(--band-dark-muted);
+}
+
+.wordmarkWrap {
+  width: 100%;
+  line-height: 0;
+  user-select: none;
+}
+
+.wordmarkSvg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.wordmarkText {
+  fill: var(--band-dark-ink);
+  font-size: 158px;
+  letter-spacing: -0.02em;
+}
+
+@media (max-width: 900px) {
+  .topRow {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+
+  .navRow {
+    justify-content: flex-start;
+  }
+
+  .rightCol {
+    justify-content: flex-start;
+  }
+}

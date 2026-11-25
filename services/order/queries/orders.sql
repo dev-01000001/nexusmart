@@ -1,8 +1,10 @@
 -- name: CreateCheckoutGroup :one
 INSERT INTO checkout_groups (
-    id, buyer_id, idempotency_key, request_hash, status, payment_method, total_payable_vnd
+    id, buyer_id, idempotency_key, request_hash, status, payment_method, total_payable_vnd,
+    sales_channel, storefront_shop_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7
+    $1, $2, $3, $4, $5, $6, $7,
+    $8, $9
 )
 RETURNING *;
 
@@ -176,7 +178,8 @@ INSERT INTO orders (
     platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd,
     shipping_fee_vnd, commission_vnd, payment_fee_vnd, payment_fee_bps, total_payable_vnd,
     carrier_code, service_code, tracking_code, label_url, cancel_reason,
-    shipping_address_json, payment_expires_at, confirmed_at
+    shipping_address_json, payment_expires_at, confirmed_at,
+    sales_channel, storefront_shop_id
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
     $7, $8, $9,
@@ -185,7 +188,8 @@ INSERT INTO orders (
     $15, $16, $17,
     $18, $19, $20, $21, $22,
     $23, $24, $25, $26, $27,
-    $28, $29, $30
+    $28, $29, $30,
+    $31, $32
 )
 RETURNING *;
 
@@ -275,6 +279,8 @@ WHERE (sqlc.arg(buyer_id)::text = '' OR buyer_id = sqlc.arg(buyer_id)::text)
       sqlc.narg(due_cutoff)::timestamptz IS NULL
       OR COALESCE(confirmed_at, created_at) <= sqlc.narg(due_cutoff)::timestamptz
   )
+  AND (sqlc.arg(sales_channel)::text = '' OR sales_channel = sqlc.arg(sales_channel)::text)
+  AND (sqlc.arg(storefront_shop_id)::text = '' OR storefront_shop_id = sqlc.arg(storefront_shop_id)::text)
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 
@@ -295,13 +301,17 @@ WHERE (sqlc.arg(buyer_id)::text = '' OR buyer_id = sqlc.arg(buyer_id)::text)
   AND (
       sqlc.narg(due_cutoff)::timestamptz IS NULL
       OR COALESCE(confirmed_at, created_at) <= sqlc.narg(due_cutoff)::timestamptz
-  );
+  )
+  AND (sqlc.arg(sales_channel)::text = '' OR sales_channel = sqlc.arg(sales_channel)::text)
+  AND (sqlc.arg(storefront_shop_id)::text = '' OR storefront_shop_id = sqlc.arg(storefront_shop_id)::text);
 
 -- name: CountOrdersByStatus :many
 SELECT status, COUNT(*)::bigint AS count
 FROM orders
 WHERE (sqlc.arg(buyer_id)::text = '' OR buyer_id = sqlc.arg(buyer_id)::text)
   AND (sqlc.arg(shop_id)::text = '' OR shop_id = sqlc.arg(shop_id)::text)
+  AND (sqlc.arg(sales_channel)::text = '' OR sales_channel = sqlc.arg(sales_channel)::text)
+  AND (sqlc.arg(storefront_shop_id)::text = '' OR storefront_shop_id = sqlc.arg(storefront_shop_id)::text)
 GROUP BY status
 ORDER BY status ASC;
 

@@ -324,7 +324,7 @@ func TestW3B3_B1_SearchOutboxSync_AllTransitions(t *testing.T) {
 		t.Fatalf("category outbox events: upserts=%d deletes=%d, want 3 and 1", catUpserts, catDeletes)
 	}
 
-	// 2. CreateProduct (PENDING) must NOT emit product.upserted.
+	// 2. CreateProduct (PENDING) must NOT emit product.upserted (only product.created).
 	beforeCreate := len(st.OutboxEvents())
 	pResp, err := srv.CreateProduct(sellerCtx, &productv1.CreateProductRequest{
 		CategoryId: catAID, Name: "Áo Sync",
@@ -333,8 +333,10 @@ func TestW3B3_B1_SearchOutboxSync_AllTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProduct: %v", err)
 	}
-	if len(st.OutboxEvents()) != beforeCreate {
-		t.Fatalf("CreateProduct (PENDING) must not emit outbox event, got %d new", len(st.OutboxEvents())-beforeCreate)
+	for _, ev := range st.OutboxEvents()[beforeCreate:] {
+		if ev.EventType == events.SubjectProductUpserted {
+			t.Fatalf("CreateProduct (PENDING) must not emit product.upserted, got %+v", ev)
+		}
 	}
 	prodID := pResp.GetProduct().GetId()
 	sku := pResp.GetProduct().GetSkus()[0]

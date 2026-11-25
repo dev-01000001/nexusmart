@@ -62,6 +62,10 @@ message ShopAllocation {
   int64 commission_vnd = 4;
   int64 shipping_fee_vnd = 5;
   int64 platform_discount_vnd = 6;
+  // Immutable sales channel: "MARKETPLACE" or "STOREFRONT".
+  string sales_channel = 7;
+  // Immutable storefront shop ID when sales_channel is "STOREFRONT"; empty otherwise.
+  string storefront_shop_id = 8;
 }
 
 message Payment {
@@ -82,6 +86,8 @@ message Payment {
   google.protobuf.Timestamp updated_at = 15;
   // Redirect/deep-link URL for e-wallet payments (e.g. ZaloPay order_url; empty for COD/VietQR) (F1/F8).
   string pay_url = 16;
+  string sales_channel = 17;
+  string storefront_shop_id = 18;
 }
 
 message Refund {
@@ -130,6 +136,8 @@ message ReconciliationItem {
   string tracking_code = 7;
   string order_id = 8;
   int32 line_number = 9;
+  string sales_channel = 10;
+  string storefront_shop_id = 11;
 }
 
 message ReconciliationQueueItem {
@@ -161,6 +169,10 @@ message CreatePaymentRequest {
   google.protobuf.Timestamp expires_at = 7;
   string idempotency_key = 8;
   bool supersede_previous = 9;
+  // Optional sales channel: "" (defaults to "MARKETPLACE"), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 10;
+  // Required matching shop ID when sales_channel is "STOREFRONT"; empty for "MARKETPLACE".
+  string storefront_shop_id = 11;
 }
 
 message CreatePaymentResponse {
@@ -207,13 +219,18 @@ message CreateRefundResponse {
   bool already_existed = 2;
 }
 
-message GetLedgerSummaryRequest {}
+message GetLedgerSummaryRequest {
+  // Optional sales channel filter: "" (all channels), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 1;
+}
 
 message GetLedgerSummaryResponse {
   int64 total_debits_vnd = 1;
   int64 total_credits_vnd = 2;
   bool is_balanced = 3;
   repeated AccountBalance accounts = 4;
+  // Applied sales channel filter: "" (all), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 5;
 }
 
 message GetSellerBalanceRequest {
@@ -240,6 +257,8 @@ message ReleaseEscrowResponse {
 
 message RunReconciliationRequest {
   string date = 1;
+  // Optional sales channel filter: "" (all channels), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 2;
 }
 
 message RunReconciliationResponse {
@@ -249,6 +268,33 @@ message RunReconciliationResponse {
   int32 missing_provider_count = 4;
   int32 amount_mismatch_count = 5;
   repeated ReconciliationItem items = 6;
+  // Applied sales channel filter: "" (all), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 7;
+  int32 auto_healed_count = 8;
+}
+
+message ReconciliationReportSummary {
+  string run_id = 1;
+  string provider = 2;
+  string run_date = 3;
+  string sales_channel = 4;
+  int32 matched_count = 5;
+  int32 missing_local_count = 6;
+  int32 missing_provider_count = 7;
+  int32 amount_mismatch_count = 8;
+  int32 auto_healed_count = 9;
+  string status = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp completed_at = 12;
+}
+
+message ListReconciliationReportsRequest {
+  int32 limit = 1;
+  string sales_channel = 2;
+}
+
+message ListReconciliationReportsResponse {
+  repeated ReconciliationReportSummary reports = 1;
 }
 
 message ListRefundsRequest {
@@ -405,6 +451,9 @@ message ReconciliationRunSummary {
   string created_by = 14;
   google.protobuf.Timestamp created_at = 15;
   int32 not_delivered_count = 16;
+  string sales_channel = 17;
+  int32 auto_healed_count = 18;
+  google.protobuf.Timestamp completed_at = 19;
 }
 
 message ImportCodReconciliationRequest {
@@ -424,6 +473,7 @@ message ListReconciliationRunsRequest {
   string run_type = 1;
   int32 page = 2;
   int32 page_size = 3;
+  string sales_channel = 4;
 }
 
 message ListReconciliationRunsResponse {
@@ -519,6 +569,7 @@ service PaymentService {
   rpc ListSellerLedger(ListSellerLedgerRequest) returns (ListSellerLedgerResponse);
   rpc ImportCodReconciliation(ImportCodReconciliationRequest) returns (ImportCodReconciliationResponse);
   rpc ListReconciliationRuns(ListReconciliationRunsRequest) returns (ListReconciliationRunsResponse);
+  rpc ListReconciliationReports(ListReconciliationReportsRequest) returns (ListReconciliationReportsResponse);
   rpc GetPaymentMethodConfigs(GetPaymentMethodConfigsRequest) returns (GetPaymentMethodConfigsResponse);
   rpc UpdatePaymentMethodConfig(UpdatePaymentMethodConfigRequest) returns (UpdatePaymentMethodConfigResponse);
   rpc DecideRefundApproval(DecideRefundApprovalRequest) returns (DecideRefundApprovalResponse);

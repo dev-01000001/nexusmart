@@ -106,6 +106,7 @@ func New(deps Dependencies) http.Handler {
 			sse.Use(deps.RED.HTTPMiddleware())
 		}
 		sse.Use(middleware.RequestLogger(deps.Logger, deps.TrustedProxies))
+		sse.Use(middleware.MaxBodyBytes(httpx.MaxBodyBytes))
 		sse.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies))
 		sse.Use(middleware.Auth(deps.AuthManager, deps.RevocationChecker, deps.Logger, true))
 		sse.Use(middleware.RateLimitByUser(deps.RateLimiter, deps.RateLimitUserPerMin, deps.Logger))
@@ -135,6 +136,9 @@ func New(deps Dependencies) http.Handler {
 			deps.PaymentSSEProxy.ServeHTTP(w, req)
 		})
 	})
+
+	mountChatRoutes(r, deps)
+	mountAssistantRoutes(r, deps)
 
 	// All standard REST & webhook routes share OTel trace + RED metrics + structured JSON logger.
 	r.Group(func(main chi.Router) {
@@ -178,12 +182,15 @@ func New(deps Dependencies) http.Handler {
 
 			api.Get("/shops", h.handleListPublicShops)
 			api.Get("/shops/slug/{slug}", h.handleGetShopBySlug)
-			api.Get("/shops/{id}", h.handleGetShop)
 			api.Get("/categories", h.handleListCategories)
 			api.Get("/products", h.handleListProducts)
 			api.Get("/products/slug/{slug}", h.handleGetProductBySlug)
 			api.Get("/products/{id}", h.handleGetProduct)
 			api.Get("/products/{id}/reviews", h.handleListProductReviews)
+			api.Get("/sites", h.handleListPublishedSites)
+			api.Get("/sites/by-host", h.handleGetSiteByHost)
+			api.Get("/sites/by-shop/{shop_id}", h.handleGetSiteByShop)
+			h.mountSiteTemplatePublicRoutes(api)
 
 			api.Get("/shipping/provinces", h.handleListProvinces)
 			api.Get("/shipping/provinces/{code}/wards", h.handleListWards)
@@ -216,11 +223,12 @@ func New(deps Dependencies) http.Handler {
 			// Public search autocomplete (B1 / G13)
 			api.Get("/search/suggest", h.handleSearchSuggest)
 
-			// Optional-auth endpoints (vouchers & search forward JWT claims when present; payment-methods always returns public-only fields).
+			// Optional-auth endpoints (vouchers, shops/{id} & search forward JWT claims when present; payment-methods always returns public-only fields).
 			api.Group(func(opt chi.Router) {
 				opt.Use(middleware.Auth(deps.AuthManager, deps.RevocationChecker, deps.Logger, false))
 				opt.Get("/vouchers", h.handleListVouchers)
 				opt.Get("/payment-methods", h.handleListPublicPaymentMethods)
+				opt.Get("/shops/{id}", h.handleGetShop)
 				opt.Get("/search", h.handleSearchProducts)
 			})
 
@@ -334,7 +342,7 @@ func New(deps Dependencies) http.Handler {
 					seller.Use(middleware.RequireRoles("seller"))
 					seller.Use(middleware.RequireSellerShop())
 
-					// Section 4.1 Seller Shop & Bank Account
+					// Section 4.1 Seller Shop, Bank Account, Sites & Custom Domains
 					seller.Get("/shop", h.handleSellerGetShop)
 					seller.Get("/bank-account", h.handleSellerGetBankAccount)
 					seller.Group(func(bankOTP chi.Router) {
@@ -342,6 +350,16 @@ func New(deps Dependencies) http.Handler {
 						bankOTP.Post("/bank-account", h.handleSellerAddBankAccount)
 						bankOTP.Post("/bank-account/verify-otp", h.handleSellerVerifyBankAccountOTP)
 					})
+					seller.Get("/site", h.handleSellerGetSite)
+					seller.Put("/site/draft", h.handleSellerSaveSiteDraft)
+					seller.Post("/site/publish", h.handleSellerPublishSite)
+					seller.Post("/site/rollback", h.handleSellerRollbackSite)
+					seller.Get("/site/versions", h.handleSellerListSiteVersions)
+					seller.Get("/site/domains", h.handleSellerListSiteDomains)
+					seller.Post("/site/domains", h.handleSellerAddCustomDomain)
+					seller.Post("/site/domains/{id}/check", h.handleSellerCheckCustomDomain)
+					seller.Delete("/site/domains/{id}", h.handleSellerRemoveCustomDomain)
+					h.mountSiteTemplateSellerRoutes(seller)
 
 					// Section 4.2 Seller Categories, Products & Stock
 					seller.Get("/categories", h.handleListCategoriesWithCommission)
@@ -410,7 +428,7 @@ func New(deps Dependencies) http.Handler {
 						}))
 					}
 
-					// Section 4.1 Admin Users, Staff, Shops, Approvals, Bank Accounts & Audit Logs
+					// Section 4.1 Admin Users, Staff, Shops, Sites, Approvals, Bank Accounts & Audit Logs
 					admin.With(middleware.RequireCapability(auth.CapUsersRead)).Get("/users", h.handleAdminListUsers)
 					admin.With(middleware.RequireCapability(auth.CapStaffCreate)).Post("/staff", h.handleAdminCreateStaffUser)
 					admin.With(middleware.RequireCapability(auth.CapUsersRead)).Get("/users/{id}/activities", h.handleAdminListUserActivities)
@@ -422,6 +440,11 @@ func New(deps Dependencies) http.Handler {
 					admin.With(middleware.RequireCapability(auth.CapShopsUnsuspend)).Post("/shops/{id}/unsuspend", h.handleAdminUnsuspendShop)
 					admin.With(middleware.RequireCapability(auth.CapShopsBankRead)).Get("/shops/{id}/bank-account", h.handleAdminGetShopBankAccount)
 					admin.With(middleware.RequireCapability(auth.CapShopsBankReview)).Post("/shops/{id}/bank-account/review", h.handleAdminReviewShopBankAccount)
+					admin.With(middleware.RequireCapability(auth.CapSitesRead)).Get("/sites", h.handleAdminListSites)
+					admin.With(middleware.RequireCapability(auth.CapSitesRead)).Get("/sites/{shop_id}", h.handleAdminGetSiteByShop)
+					admin.With(middleware.RequireCapability(auth.CapSitesRead)).Get("/sites/{shop_id}/domains", h.handleAdminListSiteDomains)
+					admin.With(middleware.RequireCapability(auth.CapSitesDomainsWrite)).Delete("/sites/{shop_id}/domains/{id}", h.handleAdminRemoveCustomDomain)
+					admin.With(middleware.RequireCapability(auth.CapSitesSuspend)).Post("/sites/{site_id}/suspend", h.handleAdminSuspendSite)
 					admin.With(middleware.RequireCapability(auth.CapApprovalsRead)).Get("/approvals", h.handleAdminListApprovals)
 					admin.With(middleware.RequireCapability(auth.CapShopsSuspendDecide)).Post("/approvals/shop/{id}/decide", h.handleAdminDecideShopSuspension)
 					admin.With(middleware.RequireCapability(auth.CapRefundsApprove)).Post("/approvals/refund/{id}/decide", h.handleAdminDecideRefundApproval)
@@ -452,6 +475,7 @@ func New(deps Dependencies) http.Handler {
 					admin.With(middleware.RequireCapability(auth.CapVouchersWrite)).Delete("/vouchers/{id}", h.handleDeleteVoucher)
 					admin.With(middleware.RequireCapability(auth.CapFlashSalesRead)).Get("/flash-sales", h.handleListAllFlashSales)
 					admin.With(middleware.RequireCapability(auth.CapFlashSalesWrite)).Post("/flash-sales", h.handleAdminCreateFlashSale)
+					admin.With(middleware.RequireCapability(auth.CapFlashSalesWrite)).Post("/flash-sales/{id}/end", h.handleAdminEndFlashSaleWindow)
 					admin.With(middleware.RequireCapability(auth.CapFlashSalesRead)).Get("/flash-sale-items", h.handleAdminListFlashSaleItems)
 					admin.With(middleware.RequireCapability(auth.CapFlashSalesItemApprove)).Post("/flash-sale-items/{item_id}/approve", h.handleAdminApproveFlashSaleItem)
 					admin.With(middleware.RequireCapability(auth.CapCoinsCredit)).Post("/coins/credit", h.handleAdminCreditCoins)

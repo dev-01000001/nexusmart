@@ -1,42 +1,26 @@
-"use client";
-
-import React, { useEffect } from "react";
-import { ShopHeader } from "@/components/ShopHeader";
-import { ShopFooter } from "@/components/ShopFooter";
-import { BuyerChatPanel } from "@/features/commerce/BuyerChatPanel";
-import { AiAssistantPanel } from "@/features/commerce/AiAssistantPanel";
-import { useMockStore } from "@/mock/MockStoreContext";
+import type { Metadata } from "next";
+import React from "react";
+import { PlatformFooter } from "@/features/platform/PlatformFooter";
+import { PlatformHeader } from "@/features/platform/PlatformHeader";
 import styles from "./layout.module.css";
 
-export default function ShopLayout({ children }: { children: React.ReactNode }) {
-  const { toastMessage, dismissToast } = useMockStore();
+export const metadata: Metadata = {
+  title: {
+    default: "Nền tảng cửa hàng độc lập",
+    template: "%s | NexusMart",
+  },
+  description:
+    "Nền tảng thương mại điện tử giúp mỗi thương hiệu và xưởng sản xuất tự vận hành cửa hàng trực tuyến trên tên miền phụ riêng, tích hợp thanh toán COD, VietQR và đối soát minh bạch.",
+};
 
-  useEffect(() => {
-    if (!toastMessage) return;
-    const timer = window.setTimeout(() => {
-      dismissToast();
-    }, 3600);
-    return () => window.clearTimeout(timer);
-  }, [toastMessage, dismissToast]);
-
+export default function PlatformLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className={styles.shell}>
-      <ShopHeader />
+      <PlatformHeader />
       <main id="main-content" tabIndex={-1} className={styles.main}>
         {children}
       </main>
-      <ShopFooter />
-      <BuyerChatPanel />
-      <AiAssistantPanel />
-
-      {toastMessage && (
-        <div className={styles.toast} role="status" aria-live="polite">
-          <span>{toastMessage}</span>
-          <button type="button" className={styles.toastClose} onClick={dismissToast}>
-            Đóng
-          </button>
-        </div>
-      )}
+      <PlatformFooter />
     </div>
   );
 }

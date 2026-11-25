@@ -41,6 +41,7 @@ export interface ShopInternalMenuItem {
 
 export interface Shop {
   id: string;
+  backendId?: string; // backend shop id when loaded from the gateway
   slug: string;
   name: string;
   shortName: string;

@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import type { Order } from "@/data/orders";
 import type {
   GatewayOrder,
   GatewayPayment,
@@ -27,18 +28,24 @@ import {
   resolveStableReferenceKey,
   shouldApplyPaymentFetchResult,
 } from "@/features/checkout/helpers";
+import type { GwPayment } from "./types";
 import styles from "./commerce.module.css";
 
 export interface RetryPaymentBoxProps {
-  paymentId: string;
+  paymentId?: string;
+  order?: Order & { paymentId?: string };
   onPaid?: () => void;
   /** Optional server-fetched payment snapshot used by the dedicated waiting page. */
-  initialPayment?: GatewayPayment;
+  initialPayment?: GatewayPayment | GwPayment | null;
   /** Optional callback invoked when retry generates a replacement payment ID. */
   onPaymentReplaced?: (nextPayment: GatewayPayment) => void;
+  /** Backwards-compatible callback alias when retry generates a replacement payment. */
+  onCompleted?: (nextPayment?: GatewayPayment) => void;
   /** Optional callback invoked when retry switches the order group to COD. */
   onSwitchedToCod?: (orders: GatewayOrder[]) => void;
-  /** Hide shortcut link to `/thanh-toan/cho-thanh-toan/[paymentId]` when already there. */
+  /** Optional close callback when displayed inline. */
+  onCancel?: () => void;
+  /** Hide shortcut link to `/thanh-toan/cho/[paymentId]` when already on the waiting page. */
   hideWaitingPageLink?: boolean;
 }
 
@@ -58,20 +65,56 @@ function getMethodHeading(method: string): string {
   return GATEWAY_PAYMENT_METHOD_LABELS[key] ?? "Thanh toán trực tuyến";
 }
 
+function normalizeGatewayPayment(
+  raw: GatewayPayment | GwPayment | null | undefined
+): GatewayPayment | null {
+  if (!raw?.payment_id) return null;
+  return {
+    payment_id: raw.payment_id,
+    order_group_id: raw.order_group_id ?? "",
+    order_id: raw.order_id ?? "",
+    user_id: raw.user_id ?? "",
+    amount_vnd: raw.amount_vnd ?? 0,
+    method: raw.method ?? "VIETQR",
+    status: raw.status ?? "PENDING",
+    qr_url: raw.qr_url ?? "",
+    qr_code: raw.qr_code ?? "",
+    pay_url: raw.pay_url,
+    provider: raw.provider ?? "",
+    provider_ref: raw.provider_ref ?? "",
+    shop_allocations: raw.shop_allocations ?? [],
+    expires_at: raw.expires_at,
+    created_at: raw.created_at,
+    updated_at: raw.updated_at,
+  };
+}
+
 export function RetryPaymentBox({
   paymentId,
+  order,
   onPaid,
   initialPayment,
   onPaymentReplaced,
+  onCompleted,
   onSwitchedToCod,
+  onCancel,
   hideWaitingPageLink = false,
 }: RetryPaymentBoxProps) {
   const router = useRouter();
-  const [activePaymentId, setActivePaymentId] = useState<string>(
-    initialPayment?.payment_id || paymentId
+  const normalizedInitial = useMemo(
+    () => normalizeGatewayPayment(initialPayment),
+    [initialPayment]
   );
-  const [payment, setPayment] = useState<GatewayPayment | null>(initialPayment ?? null);
-  const [loading, setLoading] = useState<boolean>(!initialPayment);
+  const resolvedInitialId = (
+    normalizedInitial?.payment_id ||
+    paymentId ||
+    order?.paymentId ||
+    ""
+  ).trim();
+
+  const [activePaymentId, setActivePaymentId] = useState<string>(resolvedInitialId);
+  const [payment, setPayment] = useState<GatewayPayment | null>(normalizedInitial);
+  const [loading, setLoading] = useState<boolean>(!normalizedInitial && Boolean(resolvedInitialId));
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retryingMethod, setRetryingMethod] = useState<GatewayPaymentMethod | null>(null);
   const [codConfirmOpen, setCodConfirmOpen] = useState<boolean>(false);
@@ -85,33 +128,33 @@ export function RetryPaymentBox({
   const [nowMs, setNowMs] = useState<number | null>(null);
   const [enabledMethods, setEnabledMethods] = useState<GatewayPaymentMethodConfig[]>([]);
 
-  const activePaymentIdRef = useRef<string>(initialPayment?.payment_id || paymentId);
+  const activePaymentIdRef = useRef<string>(resolvedInitialId);
   const fetchSeqRef = useRef<number>(0);
   const retryingRef = useRef<boolean>(false);
   const paidNotifiedRef = useRef<boolean>(
-    (initialPayment?.status ?? "").toUpperCase() === "SUCCEEDED"
+    (normalizedInitial?.status ?? "").toUpperCase() === "SUCCEEDED"
   );
   const retryIdempotencyCacheRef = useRef<StableReferenceCache | null>(null);
   const onPaidRef = useRef(onPaid);
   onPaidRef.current = onPaid;
 
   useEffect(() => {
-    const nextId = initialPayment?.payment_id || paymentId;
+    const nextId = (normalizedInitial?.payment_id || paymentId || order?.paymentId || "").trim();
     activePaymentIdRef.current = nextId;
     fetchSeqRef.current += 1;
     setActivePaymentId(nextId);
-    if (initialPayment) {
-      setPayment(initialPayment);
+    if (normalizedInitial) {
+      setPayment(normalizedInitial);
       setLoading(false);
       setLoadError(null);
-      paidNotifiedRef.current = initialPayment.status.toUpperCase() === "SUCCEEDED";
+      paidNotifiedRef.current = normalizedInitial.status.toUpperCase() === "SUCCEEDED";
     }
-  }, [paymentId, initialPayment]);
+  }, [paymentId, order?.paymentId, normalizedInitial]);
 
   // Fetch active payment methods so buyer only sees enabled methods when switching/retrying
   useEffect(() => {
     let active = true;
-    api<GatewayPaymentMethodsResponse>("payment-methods", { retryOn401: false })
+    api<GatewayPaymentMethodsResponse>("/api/payment-methods", { retryOn401: false })
       .then((res) => {
         if (active && Array.isArray(res?.methods)) {
           setEnabledMethods(res.methods.filter((m) => m.enabled));
@@ -143,7 +186,9 @@ export function RetryPaymentBox({
         setLoadError(null);
       }
       try {
-        const res = await api<GatewayPaymentResponse>(`payments/${encodeURIComponent(targetId)}`);
+        const res = await api<GatewayPaymentResponse>(
+          `/api/payments/${encodeURIComponent(targetId)}`
+        );
         if (
           !shouldApplyPaymentFetchResult({
             targetId,
@@ -192,11 +237,15 @@ export function RetryPaymentBox({
 
   // Initial load when no SSR snapshot is provided
   useEffect(() => {
-    if (initialPayment && initialPayment.payment_id === activePaymentId) {
+    if (!activePaymentId) {
+      setLoading(false);
+      return;
+    }
+    if (normalizedInitial && normalizedInitial.payment_id === activePaymentId) {
       return;
     }
     void fetchPayment(activePaymentId, false);
-  }, [activePaymentId, fetchPayment, initialPayment]);
+  }, [activePaymentId, fetchPayment, normalizedInitial]);
 
   const normalizedStatus = (payment?.status ?? "").toUpperCase();
   const normalizedMethod = (payment?.method ?? "VIETQR").toUpperCase();
@@ -214,7 +263,7 @@ export function RetryPaymentBox({
     return () => window.clearInterval(timer);
   }, [tracksExpiry, payment?.expires_at]);
 
-  // Live SSE subscription while PENDING
+  // Live SSE subscription while PENDING via explicit BFF route
   useEffect(() => {
     if (!isPending || !activePaymentId) return;
 
@@ -272,7 +321,7 @@ export function RetryPaymentBox({
 
       try {
         const nextSource = new EventSource(
-          `/api/gw/payments/${encodeURIComponent(activePaymentId)}/events`,
+          `/api/payments/${encodeURIComponent(activePaymentId)}/events`,
           { withCredentials: true }
         );
         source = nextSource;
@@ -403,13 +452,13 @@ export function RetryPaymentBox({
       });
       retryIdempotencyCacheRef.current = cache;
       const res = await api<GatewayRetryPaymentResponse>(
-        `payments/${encodeURIComponent(activePaymentId)}/retry`,
+        `/api/payments/${encodeURIComponent(activePaymentId)}/retry`,
         {
           method: "POST",
           headers: {
             "Idempotency-Key": idempotencyKey,
           },
-          json: { method: targetMethod },
+          body: { method: targetMethod },
         }
       );
 
@@ -427,18 +476,26 @@ export function RetryPaymentBox({
           onSwitchedToCod(orders);
         } else {
           const nextHref =
-            orders.length === 1 ? `/don-hang/${encodeURIComponent(orders[0].id)}` : "/don-hang";
+            orders.length === 1
+              ? `/don-hang/${encodeURIComponent(orders[0].id)}`
+              : order?.id
+                ? `/don-hang/${encodeURIComponent(order.id)}`
+                : "/don-hang";
           router.replace(nextHref);
         }
         return;
       }
 
       if (res?.payment) {
-        paidNotifiedRef.current = res.payment.status.toUpperCase() === "SUCCEEDED";
-        activePaymentIdRef.current = res.payment.payment_id;
+        const mergedPayment: GatewayPayment = {
+          ...res.payment,
+          pay_url: res.payment.pay_url || res.pay_url,
+        };
+        paidNotifiedRef.current = mergedPayment.status.toUpperCase() === "SUCCEEDED";
+        activePaymentIdRef.current = mergedPayment.payment_id;
         fetchSeqRef.current += 1;
-        setActivePaymentId(res.payment.payment_id);
-        setPayment(res.payment);
+        setActivePaymentId(mergedPayment.payment_id);
+        setPayment(mergedPayment);
         setRetryFeedback({
           tone: "success",
           message:
@@ -446,7 +503,8 @@ export function RetryPaymentBox({
               ? "Đã tạo liên kết thanh toán ZaloPay mới. Nhấn Thanh toán qua ZaloPay trong thời hạn đếm ngược."
               : "Đã tạo mã VietQR mới. Vui lòng quét mã trong thời hạn đếm ngược trên màn hình.",
         });
-        onPaymentReplaced?.(res.payment);
+        onPaymentReplaced?.(mergedPayment);
+        onCompleted?.(mergedPayment);
       }
     } catch (err) {
       setCodConfirmOpen(false);
@@ -496,14 +554,15 @@ export function RetryPaymentBox({
     return <StateView kind="loading" title="Đang tải thông tin giao dịch thanh toán..." rows={3} />;
   }
 
-  if (loadError || !payment) {
+  if (!activePaymentId || loadError || !payment) {
     return (
       <StateView
         kind="error"
         title="Không thể tải thông tin thanh toán"
         message={loadError ?? "Giao dịch không tồn tại hoặc không thuộc tài khoản của bạn."}
-        actionLabel="Thử tải lại"
-        onAction={() => void fetchPayment(activePaymentId, false)}
+        actionLabel={activePaymentId ? "Thử tải lại" : "Xem đơn hàng"}
+        onAction={activePaymentId ? () => void fetchPayment(activePaymentId, false) : undefined}
+        actionHref={activePaymentId ? undefined : "/don-hang"}
       />
     );
   }
@@ -518,7 +577,13 @@ export function RetryPaymentBox({
     )
   );
   const orderIds =
-    allocatedOrderIds.length > 0 ? allocatedOrderIds : payment.order_id ? [payment.order_id] : [];
+    allocatedOrderIds.length > 0
+      ? allocatedOrderIds
+      : payment.order_id
+        ? [payment.order_id]
+        : order?.id
+          ? [order.id]
+          : [];
   const primaryOrderHref =
     orderIds.length === 1 ? `/don-hang/${encodeURIComponent(orderIds[0])}` : "/don-hang";
   const canRetry = canRetryPayment(normalizedStatus, countdownExpired);
@@ -540,6 +605,11 @@ export function RetryPaymentBox({
     (m) => m !== currentRetryMethod && availableMethodSet.has(m)
   );
   const canRetryCurrentMethod = availableMethodSet.has(currentRetryMethod);
+
+  const waitingHref =
+    orderIds.length === 1
+      ? `/thanh-toan/cho/${encodeURIComponent(activePaymentId)}?order=${encodeURIComponent(orderIds[0])}`
+      : `/thanh-toan/cho/${encodeURIComponent(activePaymentId)}`;
 
   return (
     <div
@@ -574,7 +644,7 @@ export function RetryPaymentBox({
       <p className={styles.retryText}>{statusView.description}</p>
 
       {isPending && isZaloPay && (
-        <div className={styles.surfacePanel} style={{ marginTop: 12, marginBottom: 12 }}>
+        <div className={styles.surfacePanel}>
           <p className={styles.fieldLabel}>Liên kết thanh toán Ví ZaloPay</p>
           <p className={styles.fieldHint} style={{ marginTop: 6 }}>
             Mã tham chiếu giao dịch: <strong className="num">{transferRef}</strong> · Số tiền:{" "}
@@ -586,16 +656,7 @@ export function RetryPaymentBox({
                 href={validatedPayUrl.href}
                 target={validatedPayUrl.isExternal ? "_blank" : undefined}
                 rel={validatedPayUrl.isExternal ? "noopener noreferrer" : undefined}
-                className={`${styles.wrapBtn}`}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: "10px 18px",
-                  background: "var(--accent)",
-                  color: "var(--accent-fg)",
-                  fontWeight: 500,
-                }}
+                className={`${styles.wrapBtn} ${styles.zaloPayLinkBtn}`}
               >
                 Thanh toán qua ZaloPay
               </a>
@@ -668,7 +729,7 @@ export function RetryPaymentBox({
             <Button variant="primary" size="md" href={primaryOrderHref}>
               {orderIds.length > 1 ? "Xem các đơn hàng của bạn" : "Xem chi tiết đơn hàng"}
             </Button>
-            <Button variant="secondary" size="md" href="/danh-muc">
+            <Button variant="secondary" size="md" href="/san-pham">
               Tiếp tục mua sắm
             </Button>
           </>
@@ -733,11 +794,7 @@ export function RetryPaymentBox({
               </Button>
             )}
             {!hideWaitingPageLink && isPending && (
-              <Button
-                variant="ink"
-                size="md"
-                href={`/thanh-toan/cho-thanh-toan/${encodeURIComponent(activePaymentId)}`}
-              >
+              <Button variant="ink" size="md" href={waitingHref}>
                 Mở trang chờ thanh toán
               </Button>
             )}
@@ -749,6 +806,11 @@ export function RetryPaymentBox({
             {(isExpiredState || normalizedStatus === "CANCELLED") && (
               <Button variant="secondary" size="md" href="/don-hang">
                 Xem danh sách đơn hàng
+              </Button>
+            )}
+            {onCancel && (
+              <Button variant="ghost" size="md" onClick={onCancel}>
+                Đóng
               </Button>
             )}
           </>

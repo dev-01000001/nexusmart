@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/logger"
+	"github.com/nexusmart/core/pkg/common/telemetry"
 )
 
 func TestWebhookProxyPreservesRawBodyAndHeaders(t *testing.T) {
@@ -247,5 +249,56 @@ func TestShippingLabelProxyBatchPDFRewritesPathAndStripsAllXUserHeaders(t *testi
 	}
 	if gotNosniff := rec.Header().Values("X-Content-Type-Options"); len(gotNosniff) != 1 || gotNosniff[0] != "nosniff" {
 		t.Fatalf("X-Content-Type-Options = %v, want single [nosniff]", gotNosniff)
+	}
+}
+
+func TestWebhookProxyPropagatesChildSpanAndTracestate(t *testing.T) {
+	shutdown, err := telemetry.Init(context.Background(), telemetry.Config{ServiceName: "gateway-proxy-test"})
+	if err != nil {
+		t.Fatalf("telemetry.Init: %v", err)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
+
+	const parentTraceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+	const parentSpanID = "00f067aa0ba902b7"
+	const incomingTP = "00-" + parentTraceID + "-" + parentSpanID + "-01"
+	const incomingTS = "vendor=ghn"
+
+	var gotTP, gotTS string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTP = r.Header.Get("traceparent")
+		gotTS = r.Header.Get("tracestate")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	log := logger.New("proxy-test", logger.WithWriter(io.Discard))
+	wp, err := NewWebhookProxy(upstream.URL, log)
+	if err != nil {
+		t.Fatalf("NewWebhookProxy: %v", err)
+	}
+	h := telemetry.HTTPMiddleware("gateway")(wp)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/shipping/ghn", strings.NewReader(`{"status":"delivered"}`))
+	req.Header.Set("traceparent", incomingTP)
+	req.Header.Set("tracestate", incomingTS)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	parts := strings.Split(gotTP, "-")
+	if len(parts) != 4 {
+		t.Fatalf("invalid upstream traceparent %q", gotTP)
+	}
+	if parts[1] != parentTraceID {
+		t.Fatalf("upstream trace_id = %q, want %q", parts[1], parentTraceID)
+	}
+	if parts[2] == parentSpanID {
+		t.Fatalf("upstream traceparent kept external span ID %q instead of gateway child span", gotTP)
+	}
+	if gotTS != incomingTS {
+		t.Fatalf("upstream tracestate = %q, want %q", gotTS, incomingTS)
 	}
 }

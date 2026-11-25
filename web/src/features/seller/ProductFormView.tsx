@@ -1,24 +1,34 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type {
-  GatewayCategory,
-  GatewayProduct,
-  GatewaySellerSKUInput,
-  GatewayShop,
-} from "@/lib/gateway-types";
-import { ApiError, api, getErrorMessage } from "@/lib/api";
-import { useMockStore } from "@/mock/MockStoreContext";
-import { Button, IconCheck, IconClose, IconPlus, StateView } from "@/components";
+import {
+  Button,
+  IconArrowLeft,
+  IconCheck,
+  IconChevronDown,
+  IconPlus,
+  IconSpark,
+  StateView,
+} from "@/components";
+import { api, ApiError, getErrorMessage } from "@/lib/api";
 import { formatInt, formatVnd } from "@/lib/format";
-import { SellerShopGate } from "./SellerContext";
-import { getAllowedSellerStatuses, getProductStatusMeta } from "./types";
+import {
+  normalizeDescribeProduct,
+  type DescribeProductResult,
+} from "@/features/assistant/assistantTypes";
+import { useSellerContext } from "./SellerShell";
+import { statusPillClass } from "./SellerUiPrimitives";
+import {
+  getSellerProductStatusMeta,
+  type GwCategory,
+  type GwSellerProduct,
+  type GwSellerSku,
+} from "./sellerApiTypes";
+import { EMPTY_DASH, getAllowedSellerStatuses } from "./types";
 import common from "./SellerCommon.module.css";
 import styles from "./ProductFormView.module.css";
-
-const ALL_SIZE_OPTIONS = ["S", "M", "L", "XL", "2XL"];
 
 const GALLERY_CHOICES = [
   { label: "Áo thun Trắng", path: "/products/ao-thun-cotton-trang.png" },
@@ -35,29 +45,22 @@ const GALLERY_CHOICES = [
   { label: "Áo khoác Gió", path: "/products/ao-khoac-gio-xam-tro.png" },
 ];
 
-interface EditableSkuRow {
-  localKey: string;
-  id?: string;
-  sku_code: string;
-  name: string;
-  color: string;
-  size: string;
-  priceStr: string;
-  stockStr: string;
-  weightStr: string;
-  image_url: string;
-  reservedStock: number;
-  availableStock: number;
-}
+const AI_TONE_OPTIONS = [
+  { value: "practical", label: "Gọn gàng, thực tế" },
+  { value: "material", label: "Chi tiết chất liệu" },
+  { value: "active", label: "Năng động, thể thao" },
+] as const;
 
-function slugifyCode(input: string): string {
-  return input
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/đ/gi, "d")
-    .replace(/[^a-zA-Z0-9]+/g, "")
-    .toUpperCase()
-    .slice(0, 8);
+function buildDraftCopy(draft: DescribeProductResult): string {
+  const parts: string[] = [];
+  if (draft.description.trim()) {
+    parts.push(draft.description.trim());
+  }
+  if (draft.highlights.length > 0) {
+    const bulletBlock = draft.highlights.map((item) => `- ${item}`).join("\n");
+    parts.push(`Điểm nổi bật:\n${bulletBlock}`);
+  }
+  return parts.join("\n\n");
 }
 
 function slugifyUrl(input: string): string {
@@ -70,383 +73,376 @@ function slugifyUrl(input: string): string {
     .toLowerCase();
 }
 
-export interface ProductFormViewProps {
-  mode: "create" | "edit";
-  productId?: string;
+const DEFAULT_WEIGHT_GRAMS = 250;
+const MIN_WEIGHT_GRAMS = 1;
+
+function clampWeightGrams(raw: string | number): number {
+  const trimmed = typeof raw === "number" ? String(raw) : raw.trim();
+  if (!trimmed) return DEFAULT_WEIGHT_GRAMS;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) return DEFAULT_WEIGHT_GRAMS;
+  return Math.max(MIN_WEIGHT_GRAMS, Math.trunc(parsed));
 }
 
-function ProductFormInner({ mode, productId, shop }: ProductFormViewProps & { shop: GatewayShop }) {
+interface EditableSkuRow {
+  localKey: string;
+  id?: string;
+  version?: number;
+  reservedStock: number;
+  skuCode: string;
+  name: string;
+  color: string;
+  colorName: string;
+  colorHex: string;
+  size: string;
+  priceVnd: number;
+  stock: number;
+  weightGrams: string;
+  imageUrl: string;
+}
+
+function toEditableRows(
+  product?: GwSellerProduct | null,
+  defaultSkuStamp?: string
+): EditableSkuRow[] {
+  if (product && product.skus?.length > 0) {
+    const activeSkus = product.skus.filter((s) => s.is_active);
+    const sourceSkus = activeSkus.length > 0 ? activeSkus : product.skus;
+    return sourceSkus.map((s) => ({
+      localKey: s.id,
+      id: s.id,
+      version: s.version,
+      reservedStock: s.reserved_stock,
+      skuCode: s.sku_code,
+      name: s.name || `${s.attributes?.color_name ?? "Mặc định"} / ${s.attributes?.size ?? "L"}`,
+      color: s.attributes?.color ?? "mac-dinh",
+      colorName: s.attributes?.color_name ?? s.attributes?.color ?? "Tiêu chuẩn",
+      colorHex: s.attributes?.color_hex ?? "#9aa5ac",
+      size: s.attributes?.size ?? "L",
+      priceVnd: s.price_vnd,
+      stock: s.stock,
+      weightGrams: String(
+        s.weight_grams > 0 ? clampWeightGrams(s.weight_grams) : DEFAULT_WEIGHT_GRAMS
+      ),
+      imageUrl: s.image_url || product.images?.[0] || GALLERY_CHOICES[0].path,
+    }));
+  }
+  const sizes = ["S", "M", "L", "XL"];
+  const stamp = defaultSkuStamp?.trim() || "1001";
+  return sizes.map((sz) => ({
+    localKey: `new-trang-${sz}`,
+    reservedStock: 0,
+    skuCode: `NM-${stamp}-TRANG-${sz}`,
+    name: `Trắng tinh / ${sz}`,
+    color: "trang",
+    colorName: "Trắng tinh",
+    colorHex: "#f4f6f7",
+    size: sz,
+    priceVnd: 189000,
+    stock: 20,
+    weightGrams: String(DEFAULT_WEIGHT_GRAMS),
+    imageUrl: GALLERY_CHOICES[0].path,
+  }));
+}
+
+export interface ProductFormViewProps {
+  mode: "create" | "edit";
+  initialProduct?: GwSellerProduct | null;
+  categories: GwCategory[];
+  loadError?: string | null;
+  defaultSkuStamp?: string;
+}
+
+export function ProductFormView({
+  mode,
+  initialProduct,
+  categories,
+  loadError,
+  defaultSkuStamp,
+}: ProductFormViewProps) {
   const router = useRouter();
-  const { showToast } = useMockStore();
+  const { shop, showToast } = useSellerContext();
 
-  const [categories, setCategories] = useState<GatewayCategory[]>([]);
-  const [loadedProduct, setLoadedProduct] = useState<GatewayProduct | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [notFound, setNotFound] = useState(false);
-
-  // Core product fields
-  const [name, setName] = useState("");
-  const [slug, setSlug] = useState("");
-  const [categoryId, setCategoryId] = useState("");
-  const [description, setDescription] = useState(
-    "Sản phẩm mặc hằng ngày hoàn thiện kỹ đường may, kiểm soát độ co rút và giữ phom sau nhiều lần giặt."
+  const [currentProduct, setCurrentProduct] = useState<GwSellerProduct | null>(
+    initialProduct ?? null
   );
-  const [status, setStatus] = useState("PENDING");
-  const [selectedImage, setSelectedImage] = useState(GALLERY_CHOICES[0].path);
-  const [customImageUrl, setCustomImageUrl] = useState("");
-  const [extraImages, setExtraImages] = useState<string[]>([]);
-
-  // SKU rows
-  const [skuRows, setSkuRows] = useState<EditableSkuRow[]>(() => [
-    {
-      localKey: "init-1",
-      sku_code: "NM-M-TRANG",
-      name: "Trắng tinh / Size M",
-      color: "Trắng tinh",
-      size: "M",
-      priceStr: "199000",
-      stockStr: "20",
-      weightStr: "250",
-      image_url: GALLERY_CHOICES[0].path,
-      reservedStock: 0,
-      availableStock: 20,
-    },
-    {
-      localKey: "init-2",
-      sku_code: "NM-L-TRANG",
-      name: "Trắng tinh / Size L",
-      color: "Trắng tinh",
-      size: "L",
-      priceStr: "199000",
-      stockStr: "20",
-      weightStr: "260",
-      image_url: GALLERY_CHOICES[0].path,
-      reservedStock: 0,
-      availableStock: 20,
-    },
-  ]);
-
-  // Quick matrix generator controls
-  const [genColor, setGenColor] = useState("Xám đá");
-  const [genSizes, setGenSizes] = useState<string[]>(["M", "L"]);
-  const [genPriceStr, setGenPriceStr] = useState("199000");
-  const [genStockStr, setGenStockStr] = useState("15");
-  const genWeightStr = "250";
+  const [productStatus, setProductStatus] = useState(initialProduct?.status ?? "PENDING");
+  const [name, setName] = useState(initialProduct?.name ?? "");
+  const [slug, setSlug] = useState(initialProduct?.slug ?? "");
+  const [categoryId, setCategoryId] = useState(() => {
+    if (initialProduct?.category_id) return initialProduct.category_id;
+    const firstAllowed = categories.find((c) => !c.is_prohibited);
+    return firstAllowed?.id ?? categories[0]?.id ?? "";
+  });
+  const [description, setDescription] = useState(
+    initialProduct?.description ??
+      "Sản phẩm đồ mặc hằng ngày hoàn thiện tại xưởng, kiểm soát độ co rút và giữ phom sau nhiều lần giặt."
+  );
+  const [selectedImage, setSelectedImage] = useState(
+    initialProduct?.images?.[0] ?? GALLERY_CHOICES[0].path
+  );
+  const [skuRows, setSkuRows] = useState<EditableSkuRow[]>(() =>
+    toEditableRows(initialProduct, defaultSkuStamp)
+  );
   const [bulkStockStr, setBulkStockStr] = useState("20");
-
-  // Submission / delete state
-  const [submitting, setSubmitting] = useState(false);
+  const [newSkuSize, setNewSkuSize] = useState("2XL");
+  const [newSkuColorName, setNewSkuColorName] = useState("Xám đá");
+  const [saving, setSaving] = useState(false);
+  const [busyStockId, setBusyStockId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [savedNotice, setSavedNotice] = useState<{ text: string; createdId?: string } | null>(null);
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
 
-  const hydrateFromProduct = useCallback((prod: GatewayProduct) => {
-    setLoadedProduct(prod);
-    setName(prod.name);
-    setSlug(prod.slug ?? "");
-    setCategoryId(prod.category_id);
-    setDescription(prod.description ?? "");
-    setStatus(prod.status);
-    const cover = prod.images?.[0] || GALLERY_CHOICES[0].path;
-    setSelectedImage(cover);
-    setExtraImages((prod.images ?? []).slice(1));
-    const activeSkus = (prod.skus ?? []).filter((s) => s.is_active);
-    const sourceSkus = activeSkus.length > 0 ? activeSkus : (prod.skus ?? []);
-    setSkuRows(
-      sourceSkus.map((s, idx) => ({
-        localKey: s.id || `sku-${idx}`,
-        id: s.id,
-        sku_code: s.sku_code,
-        name: s.name,
-        color: s.attributes?.color ?? "",
-        size: s.attributes?.size ?? "",
-        priceStr: String(s.price_vnd),
-        stockStr: String(s.stock),
-        weightStr: String(s.weight_grams || 250),
-        image_url: s.image_url || cover,
-        reservedStock: s.reserved_stock,
-        availableStock: s.available_stock,
-      }))
-    );
-  }, []);
-
-  const loadInitial = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    setNotFound(false);
-    try {
-      const catRes = await api<{ categories: GatewayCategory[] }>("seller/categories");
-      const cats = catRes.categories ?? [];
-      setCategories(cats);
-
-      if (mode === "edit" && productId) {
-        try {
-          const prodRes = await api<{ product: GatewayProduct }>(`seller/products/${productId}`);
-          if (!prodRes.product) {
-            setNotFound(true);
-          } else {
-            hydrateFromProduct(prodRes.product);
-          }
-        } catch (err) {
-          if (err instanceof ApiError && (err.status === 404 || err.status === 403)) {
-            setNotFound(true);
-          } else {
-            throw err;
-          }
-        }
-      } else if (cats.length > 0) {
-        const firstAllowed = cats.find((c) => !c.is_prohibited) ?? cats[0];
-        setCategoryId((prev) => prev || firstAllowed.id);
-      }
-    } catch (err) {
-      setLoadError(getErrorMessage(err, "Không thể tải danh mục và thông tin sản phẩm."));
-    } finally {
-      setLoading(false);
-    }
-  }, [mode, productId, hydrateFromProduct]);
-
-  useEffect(() => {
-    void loadInitial();
-  }, [loadInitial]);
+  // AI description helper state (phase-0b)
+  const [aiTone, setAiTone] = useState<string>("practical");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiDraft, setAiDraft] = useState<DescribeProductResult | null>(null);
 
   const totalStock = useMemo(
-    () => skuRows.reduce((s, r) => s + Math.max(0, Math.trunc(Number(r.stockStr) || 0)), 0),
+    () => skuRows.reduce((s, r) => s + Math.max(0, Math.trunc(r.stock)), 0),
+    [skuRows]
+  );
+  const lowSkuCount = useMemo(
+    () => skuRows.filter((r) => Math.max(0, r.stock - r.reservedStock) <= 5).length,
+    [skuRows]
+  );
+  const priceRangeLabel = useMemo(() => {
+    if (skuRows.length === 0) return EMPTY_DASH;
+    const minP = Math.min(...skuRows.map((r) => r.priceVnd));
+    const maxP = Math.max(...skuRows.map((r) => r.priceVnd));
+    return minP === maxP ? formatVnd(minP) : `${formatVnd(minP)} đến ${formatVnd(maxP)}`;
+  }, [skuRows]);
+
+  const activeCategoryName = useMemo(
+    () => categories.find((c) => c.id === categoryId)?.name ?? "Chưa chọn ngành hàng",
+    [categories, categoryId]
+  );
+
+  const activeImageLabel = useMemo(
+    () => GALLERY_CHOICES.find((g) => g.path === selectedImage)?.label ?? "Ảnh sản phẩm",
+    [selectedImage]
+  );
+
+  const previewColors = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const row of skuRows) {
+      const label = row.colorName.trim();
+      if (label && !map.has(label)) {
+        map.set(label, row.colorHex || "#9aa5ac");
+      }
+    }
+    return Array.from(map.entries()).map(([label, hex]) => ({ label, hex }));
+  }, [skuRows]);
+
+  const previewSizes = useMemo(
+    () => Array.from(new Set(skuRows.map((r) => r.size.trim()).filter(Boolean))),
     [skuRows]
   );
 
-  const priceRangeLabel = useMemo(() => {
-    const prices = skuRows.map((r) => Math.trunc(Number(r.priceStr) || 0)).filter((v) => v > 0);
-    if (prices.length === 0) return "—";
-    const minP = Math.min(...prices);
-    const maxP = Math.max(...prices);
-    return minP === maxP ? formatVnd(minP) : `${formatVnd(minP)} - ${formatVnd(maxP)}`;
-  }, [skuRows]);
-
   const allowedStatuses = useMemo(
-    () => (loadedProduct ? getAllowedSellerStatuses(loadedProduct.status) : []),
-    [loadedProduct]
+    () => getAllowedSellerStatuses(currentProduct?.status ?? productStatus),
+    [currentProduct?.status, productStatus]
   );
 
-  const updateSkuRow = (localKey: string, patch: Partial<EditableSkuRow>) => {
-    setSkuRows((prev) =>
-      prev.map((row) => (row.localKey === localKey ? { ...row, ...patch } : row))
+  if (loadError) {
+    return (
+      <div className={common.page}>
+        <StateView
+          kind="error"
+          surface="app"
+          title="Không thể tải thông tin sản phẩm"
+          message={loadError}
+          actionLabel="Thử lại"
+          onAction={() => router.refresh()}
+        />
+      </div>
     );
+  }
+
+  if (mode === "edit" && !currentProduct) {
+    return (
+      <div className={common.page}>
+        <div className={common.pageHeader}>
+          <div className={common.headerText}>
+            <Link href="/seller/san-pham" className={styles.backLink}>
+              <IconArrowLeft size={14} />
+              <span>Sản phẩm</span>
+            </Link>
+            <h1 className={common.title}>Không tìm thấy sản phẩm</h1>
+          </div>
+        </div>
+        <StateView
+          kind="empty"
+          surface="app"
+          title="Mã sản phẩm không tồn tại trong gian hàng"
+          message="Sản phẩm có thể đã bị gỡ hoặc không thuộc gian hàng của bạn."
+          actionLabel="Về danh sách sản phẩm"
+          actionHref="/seller/san-pham"
+        />
+      </div>
+    );
+  }
+
+  const updateRow = (localKey: string, patch: Partial<EditableSkuRow>) => {
+    setSkuRows((prev) => prev.map((r) => (r.localKey === localKey ? { ...r, ...patch } : r)));
   };
 
-  const removeSkuRow = (localKey: string) => {
-    setSkuRows((prev) => {
-      if (prev.length <= 1) return prev;
-      return prev.filter((row) => row.localKey !== localKey);
-    });
-  };
-
-  const handleAddEmptySku = () => {
-    const idx = skuRows.length + 1;
-    const prefix = slugifyCode(name || "NM") || "NM";
+  const handleAddSkuRow = () => {
+    const colorClean = newSkuColorName.trim() || "Mặc định";
+    const sizeClean = newSkuSize.trim().toUpperCase() || "L";
+    const colorSlug =
+      colorClean
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/đ/gi, "d")
+        .replace(/[^a-zA-Z0-9]+/g, "")
+        .toLowerCase()
+        .slice(0, 8) || "mau";
+    const baseCode = `NM-${String(Date.now()).slice(-4)}-${colorSlug.toUpperCase()}-${sizeClean}`;
+    const basePrice = skuRows[0]?.priceVnd ?? 189000;
     setSkuRows((prev) => [
       ...prev,
       {
-        localKey: `custom-${Date.now()}-${idx}`,
-        sku_code: `${prefix}-SKU-${idx}`,
-        name: `Biến thể ${idx}`,
-        color: "",
-        size: "",
-        priceStr: genPriceStr || "199000",
-        stockStr: genStockStr || "10",
-        weightStr: genWeightStr || "250",
-        image_url: selectedImage,
+        localKey: `new-${Date.now()}-${prev.length}`,
         reservedStock: 0,
-        availableStock: Math.max(0, Math.trunc(Number(genStockStr) || 10)),
+        skuCode: baseCode,
+        name: `${colorClean} / ${sizeClean}`,
+        color: colorSlug,
+        colorName: colorClean,
+        colorHex: "#9aa5ac",
+        size: sizeClean,
+        priceVnd: basePrice,
+        stock: 15,
+        weightGrams: String(DEFAULT_WEIGHT_GRAMS),
+        imageUrl: selectedImage,
       },
     ]);
   };
 
-  const handleToggleGenSize = (sz: string) => {
-    setGenSizes((prev) =>
-      prev.includes(sz) ? (prev.length > 1 ? prev.filter((x) => x !== sz) : prev) : [...prev, sz]
-    );
-  };
-
-  const handleGenerateMatrix = () => {
-    const colorLabel = genColor.trim() || "Mặc định";
-    const colorCode = slugifyCode(colorLabel) || "MAU";
-    const prefix = slugifyCode(name || "NM") || "NM";
-    const existingCodes = new Set(skuRows.map((r) => r.sku_code.trim().toUpperCase()));
-    const created: EditableSkuRow[] = [];
-
-    for (const sz of genSizes) {
-      let code = `${prefix}-${colorCode}-${sz}`;
-      if (existingCodes.has(code.toUpperCase())) {
-        code = `${code}-${String(Date.now()).slice(-3)}`;
-      }
-      existingCodes.add(code.toUpperCase());
-      created.push({
-        localKey: `gen-${Date.now()}-${sz}-${Math.random().toString(36).slice(2, 6)}`,
-        sku_code: code,
-        name: `${colorLabel} / Size ${sz}`,
-        color: colorLabel,
-        size: sz,
-        priceStr: genPriceStr || "199000",
-        stockStr: genStockStr || "15",
-        weightStr: genWeightStr || "250",
-        image_url: selectedImage,
-        reservedStock: 0,
-        availableStock: Math.max(0, Math.trunc(Number(genStockStr) || 15)),
-      });
-    }
-
-    setSkuRows((prev) => [...prev, ...created]);
-    showToast(`Đã bổ sung ${formatInt(created.length)} biến thể SKU cho màu ${colorLabel}.`);
+  const handleRemoveRow = (localKey: string) => {
+    if (skuRows.length <= 1) return;
+    setSkuRows((prev) => prev.filter((r) => r.localKey !== localKey));
   };
 
   const handleBulkStock = () => {
     const val = Math.max(0, Math.trunc(Number(bulkStockStr) || 0));
-    setSkuRows((prev) =>
-      prev.map((row) => ({
-        ...row,
-        stockStr: String(Math.max(val, row.reservedStock)),
-      }))
-    );
-    showToast(`Đã áp dụng tồn kho ${formatInt(val)} chiếc cho tất cả biến thể.`);
+    setSkuRows((prev) => prev.map((r) => ({ ...r, stock: Math.max(r.reservedStock, val) })));
+    showToast(`Đã đặt tồn kho ${formatInt(val)} chiếc cho ${skuRows.length} biến thể SKU.`);
   };
 
-  const handleAddCustomImage = () => {
-    const clean = customImageUrl.trim();
-    if (!clean) return;
-    setSelectedImage(clean);
-    setExtraImages((prev) => (prev.includes(clean) ? prev : [...prev, clean]));
-    setCustomImageUrl("");
+  const handleQuickSaveSkuStock = async (row: EditableSkuRow) => {
+    if (!row.id || !row.version || busyStockId) return;
+    setBusyStockId(row.id);
+    setErrorMsg(null);
+    try {
+      const res = await api<{ sku: GwSellerSku }>(
+        `/api/seller/skus/${encodeURIComponent(row.id)}/stock`,
+        {
+          method: "PATCH",
+          body: {
+            new_stock: Math.max(0, Math.trunc(row.stock)),
+            expected_version: row.version,
+          },
+        }
+      );
+      const updated = res.sku;
+      updateRow(row.localKey, {
+        stock: updated.stock,
+        reservedStock: updated.reserved_stock,
+        version: updated.version,
+      });
+      showToast(
+        `Đã lưu tồn kho ${updated.sku_code}: ${formatInt(updated.available_stock)} chiếc khả dụng.`
+      );
+    } catch (err) {
+      const msg = getErrorMessage(err, "Không thể cập nhật tồn kho SKU.");
+      setErrorMsg(msg);
+      showToast(msg);
+    } finally {
+      setBusyStockId(null);
+    }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleGenerateDescription = async () => {
     const cleanName = name.trim();
     if (cleanName.length < 3) {
-      setErrorMsg("Tên sản phẩm cần tối thiểu 3 ký tự.");
+      setAiError("Tên sản phẩm cần tối thiểu 3 ký tự trước khi tạo mô tả bằng AI.");
       return;
     }
-    if (!categoryId) {
-      setErrorMsg("Vui lòng chọn danh mục ngành hàng.");
-      return;
-    }
-    if (skuRows.length === 0) {
-      setErrorMsg("Cần tối thiểu 1 biến thể SKU để lưu sản phẩm.");
-      return;
-    }
+    setAiError(null);
+    setAiLoading(true);
+    try {
+      const colors = Array.from(new Set(skuRows.map((r) => r.colorName.trim()).filter(Boolean)));
+      const sizes = Array.from(new Set(skuRows.map((r) => r.size.trim()).filter(Boolean)));
+      const prices = skuRows.map((r) => Math.trunc(r.priceVnd)).filter((p) => p > 0);
+      const minPrice = prices.length > 0 ? Math.min(...prices) : 0;
 
-    const seenCodes = new Set<string>();
-    const parsedSkus: GatewaySellerSKUInput[] = [];
-    for (const row of skuRows) {
-      const code = row.sku_code.trim();
-      const skuName = row.name.trim();
-      const priceVnd = Math.trunc(Number(row.priceStr) || 0);
-      const stock = Math.trunc(Number(row.stockStr));
-      const weightGrams = Math.trunc(Number(row.weightStr) || 0);
-
-      if (!code || !skuName) {
-        setErrorMsg("Mỗi biến thể SKU cần có đầy đủ mã SKU và tên biến thể.");
-        return;
-      }
-      if (seenCodes.has(code.toUpperCase())) {
-        setErrorMsg(`Mã SKU "${code}" bị trùng lặp trong danh sách.`);
-        return;
-      }
-      seenCodes.add(code.toUpperCase());
-
-      if (priceVnd < 1000) {
-        setErrorMsg(`Giá bán của SKU ${code} phải là số nguyên tối thiểu 1.000₫.`);
-        return;
-      }
-      if (!Number.isFinite(stock) || stock < 0) {
-        setErrorMsg(`Tồn kho của SKU ${code} phải là số nguyên không âm.`);
-        return;
-      }
-      if (stock < row.reservedStock) {
-        setErrorMsg(
-          `Tồn kho của SKU ${code} không được nhỏ hơn số đang giữ (${formatInt(row.reservedStock)}).`
+      const raw = await api<unknown>("/api/seller/assistant/describe-product", {
+        method: "POST",
+        body: {
+          name: cleanName,
+          category_name: categories.find((c) => c.id === categoryId)?.name ?? "",
+          attributes: {
+            sku_count: String(skuRows.length),
+          },
+          colors,
+          sizes,
+          price_vnd: minPrice,
+          tone: aiTone,
+        },
+      });
+      const draft = normalizeDescribeProduct(raw);
+      if (!draft.description && draft.highlights.length === 0) {
+        setAiError(
+          "AI chưa trả về nội dung mô tả phù hợp. Bạn thử bổ sung tên sản phẩm chi tiết hơn."
         );
         return;
       }
-      if (weightGrams <= 0) {
-        setErrorMsg(`Khối lượng của SKU ${code} phải lớn hơn 0 gram.`);
-        return;
-      }
-
-      const attributes: Record<string, string> = {};
-      if (row.color.trim()) attributes.color = row.color.trim();
-      if (row.size.trim()) attributes.size = row.size.trim();
-
-      parsedSkus.push({
-        ...(row.id ? { id: row.id } : {}),
-        sku_code: code,
-        name: skuName,
-        attributes,
-        price_vnd: priceVnd,
-        stock,
-        weight_grams: weightGrams,
-        image_url: row.image_url.trim() || selectedImage,
-      });
-    }
-
-    const images = Array.from(
-      new Set([selectedImage, ...extraImages].map((u) => u.trim()).filter(Boolean))
-    );
-
-    setErrorMsg(null);
-    setSubmitting(true);
-
-    try {
-      if (mode === "create") {
-        const res = await api<{ product: GatewayProduct }>("seller/products", {
-          method: "POST",
-          json: {
-            category_id: categoryId,
-            name: cleanName,
-            slug: slug.trim() || undefined,
-            description: description.trim() || cleanName,
-            images,
-            skus: parsedSkus,
-          },
-        });
-        const created = res.product;
-        const msg = `Đã tạo sản phẩm "${created.name}" (${formatInt(parsedSkus.length)} SKU) ở trạng thái Chờ duyệt.`;
-        setSavedNotice({ text: msg, createdId: created.id });
-        showToast(msg);
-      } else if (productId) {
-        const res = await api<{ product: GatewayProduct }>(`seller/products/${productId}`, {
-          method: "PUT",
-          json: {
-            category_id: categoryId,
-            name: cleanName,
-            slug: slug.trim() || undefined,
-            description: description.trim() || cleanName,
-            images,
-            status,
-            skus: parsedSkus,
-          },
-        });
-        if (res.product) {
-          hydrateFromProduct(res.product);
-        }
-        const msg = `Đã lưu thay đổi sản phẩm "${cleanName}" (${formatInt(totalStock)} chiếc tồn kho).`;
-        setSavedNotice({ text: msg });
-        showToast(msg);
-      }
+      setAiDraft(draft);
     } catch (err) {
-      setErrorMsg(getErrorMessage(err, "Không thể lưu sản phẩm lúc này."));
+      if (err instanceof ApiError && err.status === 429) {
+        setAiError(
+          err.message ||
+            "Bạn đã dùng hết lượt tạo mô tả AI trong ngày. Vui lòng thử lại vào ngày mai."
+        );
+      } else {
+        setAiError(
+          getErrorMessage(
+            err,
+            "Trợ lý viết mô tả sản phẩm đang tạm gián đoạn. Bạn vui lòng thử lại sau."
+          )
+        );
+      }
     } finally {
-      setSubmitting(false);
+      setAiLoading(false);
     }
   };
 
-  const handleDelete = async () => {
-    if (!productId) return;
+  const handleApplyAiDraft = (applyMode: "replace" | "append") => {
+    if (!aiDraft) return;
+    const text = buildDraftCopy(aiDraft);
+    if (!text) return;
+    if (applyMode === "replace") {
+      setDescription(text);
+      showToast("Đã áp dụng bản nháp AI vào mô tả.");
+    } else {
+      setDescription((prev) => (prev.trim() ? `${prev.trim()}\n\n${text}` : text));
+      showToast("Đã chèn thêm bản nháp AI vào cuối mô tả.");
+    }
+    setAiDraft(null);
+  };
+
+  const handleDeleteProduct = async () => {
+    if (!currentProduct || deleting) return;
     setDeleting(true);
+    setErrorMsg(null);
     try {
-      await api<{ ok: boolean }>(`seller/products/${productId}`, { method: "DELETE" });
-      showToast(`Đã xóa sản phẩm "${name}".`);
+      await api(`/api/seller/products/${encodeURIComponent(currentProduct.id)}`, {
+        method: "DELETE",
+      });
+      showToast(`Đã xóa sản phẩm "${currentProduct.name}".`);
       router.push("/seller/san-pham");
     } catch (err) {
       setErrorMsg(getErrorMessage(err, "Không thể xóa sản phẩm lúc này."));
@@ -455,642 +451,937 @@ function ProductFormInner({ mode, productId, shop }: ProductFormViewProps & { sh
     }
   };
 
-  if (loading) {
-    return (
-      <StateView
-        kind="loading"
-        surface="app"
-        title="Đang tải danh mục ngành hàng và cấu hình sản phẩm..."
-        rows={5}
-      />
-    );
-  }
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const normalizedRows = skuRows.map((r) => ({
+      ...r,
+      weightGrams: String(clampWeightGrams(r.weightGrams)),
+    }));
+    if (normalizedRows.some((r, idx) => r.weightGrams !== skuRows[idx].weightGrams)) {
+      setSkuRows(normalizedRows);
+    }
 
-  if (loadError) {
-    return (
-      <StateView
-        kind="error"
-        surface="app"
-        title="Không thể tải biểu mẫu sản phẩm"
-        message={loadError}
-        actionLabel="Thử lại"
-        onAction={() => void loadInitial()}
-      />
-    );
-  }
+    const cleanName = name.trim();
+    if (cleanName.length < 3) {
+      setErrorMsg("Tên sản phẩm cần tối thiểu 3 ký tự.");
+      return;
+    }
+    if (!categoryId) {
+      setErrorMsg("Vui lòng chọn danh mục sản phẩm.");
+      return;
+    }
+    const chosenCat = categories.find((c) => c.id === categoryId);
+    if (chosenCat?.is_prohibited) {
+      setErrorMsg("Danh mục này thuộc danh mục cấm kinh doanh trên sàn.");
+      return;
+    }
+    if (normalizedRows.length === 0) {
+      setErrorMsg("Cần ít nhất 1 biến thể SKU để lưu sản phẩm.");
+      return;
+    }
+    const seenCodes = new Set<string>();
+    for (const r of normalizedRows) {
+      const code = r.skuCode.trim();
+      if (!code) {
+        setErrorMsg("Mỗi biến thể cần có mã SKU không rỗng.");
+        return;
+      }
+      if (seenCodes.has(code.toUpperCase())) {
+        setErrorMsg(`Mã SKU "${code}" bị trùng lặp.`);
+        return;
+      }
+      seenCodes.add(code.toUpperCase());
+      if (r.priceVnd < 1000) {
+        setErrorMsg(`Đơn giá của SKU ${code} phải là số nguyên tối thiểu 1.000₫.`);
+        return;
+      }
+      if (r.stock < r.reservedStock) {
+        setErrorMsg(
+          `Tồn kho của SKU ${code} không được nhỏ hơn số lượng đang giữ (${r.reservedStock}).`
+        );
+        return;
+      }
+    }
 
-  if (mode === "edit" && notFound) {
-    return (
-      <div className={common.page}>
-        <div className={common.pageHeader}>
-          <div className={common.headerText}>
-            <Link href="/seller/san-pham" className={styles.backLink}>
-              Quay lại danh sách sản phẩm
-            </Link>
-            <h1 className={common.title}>Không tìm thấy sản phẩm</h1>
-          </div>
-        </div>
-        <StateView
-          kind="empty"
-          surface="app"
-          title="Sản phẩm không tồn tại trong gian hàng"
-          message="Sản phẩm có thể đã bị xóa hoặc thuộc gian hàng khác."
-          actionLabel="Về danh sách sản phẩm"
-          actionHref="/seller/san-pham"
-        />
-      </div>
-    );
-  }
+    setErrorMsg(null);
+    setSaving(true);
+    try {
+      const cleanSlug = slug.trim();
+      const payload = {
+        category_id: categoryId,
+        name: cleanName,
+        ...(cleanSlug ? { slug: cleanSlug } : {}),
+        description: description.trim() || cleanName,
+        images: Array.from(
+          new Set([selectedImage, ...normalizedRows.map((r) => r.imageUrl).filter(Boolean)])
+        ),
+        status: mode === "edit" ? productStatus : undefined,
+        skus: normalizedRows.map((r) => ({
+          id: r.id,
+          sku_code: r.skuCode.trim(),
+          name: r.name.trim() || `${r.colorName} / ${r.size}`,
+          attributes: {
+            color: r.color,
+            color_name: r.colorName,
+            color_hex: r.colorHex,
+            size: r.size,
+          },
+          price_vnd: Math.trunc(r.priceVnd),
+          stock: Math.max(0, Math.trunc(r.stock)),
+          weight_grams: clampWeightGrams(r.weightGrams),
+          image_url: r.imageUrl || selectedImage,
+        })),
+      };
 
-  const currentStatusMeta = loadedProduct ? getProductStatusMeta(loadedProduct.status) : null;
+      if (mode === "create") {
+        const res = await api<{ product: GwSellerProduct }>("/api/seller/products", {
+          method: "POST",
+          body: payload,
+        });
+        const msg = `Đã tạo sản phẩm "${res.product.name}" (${res.product.skus.length} SKU). Đang chờ quản trị duyệt hiển thị.`;
+        showToast(msg);
+        setSavedNotice(msg);
+        router.push(`/seller/san-pham/${res.product.id}`);
+      } else if (currentProduct) {
+        const res = await api<{ product: GwSellerProduct }>(
+          `/api/seller/products/${encodeURIComponent(currentProduct.id)}`,
+          {
+            method: "PUT",
+            body: payload,
+          }
+        );
+        setCurrentProduct(res.product);
+        setSkuRows(toEditableRows(res.product));
+        setProductStatus(res.product.status);
+        setSlug(res.product.slug ?? "");
+        const msg = `Đã lưu cập nhật "${res.product.name}" (${formatInt(totalStock)} tồn kho).`;
+        showToast(msg);
+        setSavedNotice(msg);
+        router.refresh();
+      }
+    } catch (err) {
+      // Preserves sanitized BFF messages for BANNED_CONTENT / PROHIBITED_CATEGORY
+      const msg = getErrorMessage(err, "Không thể lưu sản phẩm lúc này.");
+      setErrorMsg(msg);
+      showToast(msg);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const statusMeta = getSellerProductStatusMeta(productStatus);
 
   return (
     <form className={common.page} onSubmit={(e) => void handleSubmit(e)} noValidate>
-      <div className={common.pageHeader}>
+      <header className={common.pageHeader}>
         <div className={common.headerText}>
           <Link href="/seller/san-pham" className={styles.backLink}>
-            Quay lại danh sách sản phẩm
+            <IconArrowLeft size={14} />
+            <span>Sản phẩm</span>
           </Link>
-          <h1 className={common.title}>
-            {mode === "create" ? "Thêm sản phẩm mới" : loadedProduct?.name || "Chỉnh sửa sản phẩm"}
-          </h1>
-          <p className={common.finding}>
-            {shop.name} · {formatInt(skuRows.length)} biến thể SKU · Tổng tồn{" "}
-            {formatInt(totalStock)} chiếc
-            {currentStatusMeta
-              ? ` · Trạng thái: ${currentStatusMeta.label}`
-              : " · Gửi duyệt ngay sau khi tạo"}
-          </p>
+          <div className={styles.titleRow}>
+            <h1 className={common.title}>
+              {mode === "create" ? "Thêm sản phẩm mới" : currentProduct?.name}
+            </h1>
+            <span className={statusPillClass(statusMeta.tone)}>{statusMeta.label}</span>
+          </div>
         </div>
-        <div className={common.headerActions}>
-          {mode === "edit" && (
-            <>
-              {confirmDelete ? (
-                <>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    shape="app"
-                    disabled={deleting}
-                    onClick={() => void handleDelete()}
-                  >
-                    {deleting ? "Đang xóa..." : "Xác nhận xóa"}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    shape="app"
-                    onClick={() => setConfirmDelete(false)}
-                  >
-                    Giữ lại
-                  </Button>
-                </>
-              ) : (
+        {mode === "edit" && currentProduct && (
+          <div className={common.headerActions}>
+            {confirmDelete ? (
+              <>
                 <Button
+                  type="button"
+                  variant="danger"
+                  size="sm"
+                  shape="app"
+                  disabled={deleting}
+                  onClick={() => void handleDeleteProduct()}
+                >
+                  {deleting ? "Đang xóa..." : "Xác nhận xóa"}
+                </Button>
+                <Button
+                  type="button"
                   variant="outline"
                   size="sm"
                   shape="app"
-                  onClick={() => setConfirmDelete(true)}
+                  onClick={() => setConfirmDelete(false)}
                 >
-                  Xóa sản phẩm
+                  Giữ lại
                 </Button>
-              )}
-            </>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            shape="app"
-            onClick={() => router.push("/seller/san-pham")}
-          >
-            Quay lại
-          </Button>
-          <Button type="submit" variant="ink" size="sm" shape="app" disabled={submitting}>
-            <IconCheck size={14} />
-            <span>
-              {submitting
-                ? "Đang lưu..."
-                : mode === "create"
-                  ? "Tạo sản phẩm & gửi duyệt"
-                  : "Lưu thay đổi"}
-            </span>
-          </Button>
-        </div>
-      </div>
+              </>
+            ) : (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                shape="app"
+                onClick={() => setConfirmDelete(true)}
+              >
+                Xóa sản phẩm
+              </Button>
+            )}
+          </div>
+        )}
+      </header>
 
       {savedNotice && (
         <div className={styles.noticeBar} role="status">
-          <span>{savedNotice.text}</span>
-          <div style={{ display: "inline-flex", gap: 12 }}>
-            {savedNotice.createdId && (
-              <Link
-                href={`/seller/san-pham/${savedNotice.createdId}`}
-                className={styles.noticeLink}
-              >
-                Mở trang sửa
-              </Link>
-            )}
-            <Link href="/seller/san-pham" className={styles.noticeLink}>
-              Về danh sách sản phẩm
-            </Link>
-          </div>
+          <span>{savedNotice}</span>
+          <Link href="/seller/san-pham" className={styles.noticeLink}>
+            Về danh sách sản phẩm
+          </Link>
         </div>
       )}
 
-      {loadedProduct?.status === "REJECTED" && loadedProduct.rejection_reason && (
-        <div className={common.card} role="alert">
-          <p className={common.fieldError}>
-            Sản phẩm bị quản trị viên từ chối: {loadedProduct.rejection_reason}. Hãy chỉnh sửa nội
-            dung và chuyển trạng thái sang &ldquo;Gửi duyệt lại&rdquo;.
-          </p>
+      {currentProduct?.status === "REJECTED" && currentProduct.rejection_reason && (
+        <div className={styles.errorBar} role="alert">
+          Sản phẩm bị từ chối: <strong>{currentProduct.rejection_reason}</strong>. Chỉnh sửa nội
+          dung và chuyển trạng thái sang &ldquo;Gửi duyệt lại&rdquo;.
         </div>
       )}
 
-      {Array.isArray(loadedProduct?.flagged_keywords) &&
-        loadedProduct.flagged_keywords.length > 0 && (
+      {Array.isArray(currentProduct?.flagged_keywords) &&
+        currentProduct.flagged_keywords.length > 0 && (
           <div className={common.card} role="status">
             <p className={common.fieldHint}>
-              Sản phẩm đang được gắn cờ kiểm duyệt thủ công do chứa từ khoá:{" "}
-              <strong>{loadedProduct.flagged_keywords.join(", ")}</strong>. Bạn nên rà soát lại tên
+              Sản phẩm đang được gắn cờ kiểm duyệt thủ công do chứa từ khóa:{" "}
+              <strong>{currentProduct.flagged_keywords.join(", ")}</strong>. Bạn nên rà soát lại tên
               và mô tả sản phẩm.
             </p>
           </div>
         )}
 
       {errorMsg && (
-        <div className={common.card} role="alert">
-          <p className={common.fieldError}>{errorMsg}</p>
+        <div className={styles.errorBar} role="alert">
+          {errorMsg}
         </div>
       )}
 
-      {/* Row 1: Basic Info + Cover Image & Summary */}
-      <div className={styles.topRow}>
-        <section className={common.card} aria-labelledby="basic-info-heading">
-          <div className={common.cardHeader}>
-            <h2 id="basic-info-heading" className={common.cardTitle}>
-              Thông tin cơ bản sản phẩm
-            </h2>
-            <span className={common.cardMeta}>
-              Sản phẩm tạo mới vào trạng thái Chờ duyệt trước khi mở bán công khai
-            </span>
-          </div>
+      <div className={styles.workspace}>
+        {/* Left Column: Collapsible Form Groups */}
+        <div className={styles.formCol}>
+          <details className={common.accordion} open>
+            <summary className={common.accordionSummary}>
+              <span className={styles.accordionTitleGroup}>
+                <span>Thông tin &amp; Mô tả</span>
+                <span className={common.accordionMeta}>{activeCategoryName}</span>
+              </span>
+              <span className={common.accordionChevron} aria-hidden="true">
+                <IconChevronDown size={16} />
+              </span>
+            </summary>
 
-          <div className={styles.fieldStack}>
-            <div className={common.field}>
-              <label htmlFor="prod-name" className={common.fieldLabel}>
-                Tên sản phẩm
-              </label>
-              <input
-                id="prod-name"
-                type="text"
-                className={common.textInput}
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Ví dụ: Áo thun Cotton Compact 220gsm Xanh đá"
-                required
-              />
-            </div>
-
-            <div className={styles.fields2}>
+            <div className={common.accordionBody}>
               <div className={common.field}>
-                <label htmlFor="prod-category" className={common.fieldLabel}>
-                  Danh mục ngành hàng
-                </label>
-                <select
-                  id="prod-category"
-                  className={common.textInput}
-                  value={categoryId}
-                  onChange={(e) => setCategoryId(e.target.value)}
-                  required
-                >
-                  {categories.map((cat) => (
-                    <option key={cat.id} value={cat.id} disabled={Boolean(cat.is_prohibited)}>
-                      {typeof cat.commission_rate_bps === "number" &&
-                      Number.isFinite(cat.commission_rate_bps)
-                        ? `${cat.name} (Hoa hồng ${(cat.commission_rate_bps / 100).toFixed(1)}%)`
-                        : cat.name}
-                      {cat.is_prohibited ? " — Danh mục cấm" : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className={common.field}>
-                <label htmlFor="prod-slug" className={common.fieldLabel}>
-                  Đường dẫn tùy chỉnh (tùy chọn)
+                <label htmlFor="prod-name" className={common.fieldLabel}>
+                  Tên sản phẩm
                 </label>
                 <input
-                  id="prod-slug"
+                  id="prod-name"
                   type="text"
                   className={common.textInput}
-                  value={slug}
-                  onChange={(e) => setSlug(e.target.value)}
-                  placeholder={name ? slugifyUrl(name) : "tu-dong-tao-tu-ten-san-pham"}
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Ví dụ: Áo thun Cotton Compact 220gsm Xanh đá"
+                />
+              </div>
+
+              <div className={styles.fields2}>
+                <div className={common.field}>
+                  <label htmlFor="prod-category" className={common.fieldLabel}>
+                    Ngành hàng
+                  </label>
+                  <select
+                    id="prod-category"
+                    className={common.textInput}
+                    value={categoryId}
+                    onChange={(e) => setCategoryId(e.target.value)}
+                  >
+                    {categories.map((cat) => (
+                      <option key={cat.id} value={cat.id} disabled={Boolean(cat.is_prohibited)}>
+                        {typeof cat.commission_rate_bps === "number" &&
+                        Number.isFinite(cat.commission_rate_bps)
+                          ? `${cat.name} (Hoa hồng ${(cat.commission_rate_bps / 100).toFixed(1)}%)`
+                          : cat.name}
+                        {cat.is_prohibited ? " — Danh mục cấm" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className={common.field}>
+                  <label htmlFor="prod-slug" className={common.fieldLabel}>
+                    Đường dẫn tùy chỉnh (tùy chọn)
+                  </label>
+                  <input
+                    id="prod-slug"
+                    type="text"
+                    className={common.textInput}
+                    value={slug}
+                    onChange={(e) => setSlug(e.target.value)}
+                    placeholder={name ? slugifyUrl(name) : "tu-dong-tao-tu-ten-san-pham"}
+                  />
+                </div>
+              </div>
+
+              {mode === "edit" && (
+                <div className={common.field}>
+                  <label htmlFor="prod-status" className={common.fieldLabel}>
+                    Trạng thái hiển thị
+                  </label>
+                  <select
+                    id="prod-status"
+                    className={common.textInput}
+                    value={productStatus}
+                    disabled={allowedStatuses.length <= 1}
+                    onChange={(e) => setProductStatus(e.target.value)}
+                  >
+                    {allowedStatuses.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <span className={common.fieldHint}>
+                    Có thể ẩn/hiện sản phẩm đã duyệt hoặc gửi duyệt lại sản phẩm bị từ chối.
+                  </span>
+                </div>
+              )}
+
+              <div className={common.field}>
+                <label htmlFor="prod-desc" className={common.fieldLabel}>
+                  Mô tả chất liệu &amp; hoàn thiện
+                </label>
+
+                <div data-ui="ai-desc-bar" className={styles.fieldStack}>
+                  <div className={styles.aiDescBar}>
+                    <span className={styles.aiDescLead}>
+                      <IconSpark size={14} />
+                      <span>Gợi ý mô tả AI</span>
+                    </span>
+                    <div className={styles.aiDescControls}>
+                      <select
+                        className={styles.aiToneSelect}
+                        value={aiTone}
+                        onChange={(e) => setAiTone(e.target.value)}
+                        disabled={aiLoading}
+                        aria-label="Chọn văn phong mô tả AI"
+                      >
+                        {AI_TONE_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        shape="app"
+                        disabled={aiLoading}
+                        onClick={() => void handleGenerateDescription()}
+                      >
+                        <IconSpark size={14} />
+                        <span>{aiLoading ? "Đang tạo..." : "Tạo mô tả bằng AI"}</span>
+                      </Button>
+                    </div>
+                  </div>
+
+                  {aiError && (
+                    <p className={styles.aiError} role="alert">
+                      {aiError}
+                    </p>
+                  )}
+
+                  {aiDraft && (
+                    <div
+                      className={styles.aiPreviewCard}
+                      role="region"
+                      aria-label="Bản nháp mô tả từ AI"
+                    >
+                      <div className={styles.aiPreviewHead}>
+                        <span className={styles.aiPreviewTitle}>Bản nháp mô tả từ AI</span>
+                        <span className={styles.aiPreviewNote}>Kiểm tra lại trước khi lưu</span>
+                      </div>
+                      {aiDraft.titleSuggestion && (
+                        <p className={styles.aiPreviewSuggestionTitle}>
+                          Gợi ý tiêu đề: {aiDraft.titleSuggestion}
+                        </p>
+                      )}
+                      {aiDraft.description && (
+                        <p className={styles.aiPreviewText}>{aiDraft.description}</p>
+                      )}
+                      {aiDraft.highlights.length > 0 && (
+                        <ul className={styles.aiHighlightList}>
+                          {aiDraft.highlights.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      )}
+                      <div className={styles.aiPreviewActions}>
+                        <Button
+                          type="button"
+                          variant="ink"
+                          size="sm"
+                          shape="app"
+                          onClick={() => handleApplyAiDraft("replace")}
+                        >
+                          Áp dụng vào mô tả
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          shape="app"
+                          onClick={() => handleApplyAiDraft("append")}
+                        >
+                          Chèn thêm
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          shape="app"
+                          onClick={() => setAiDraft(null)}
+                        >
+                          Đóng
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <textarea
+                  id="prod-desc"
+                  className={common.textArea}
+                  rows={4}
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
                 />
               </div>
             </div>
+          </details>
 
-            {mode === "edit" && loadedProduct && (
-              <div className={common.field}>
-                <label htmlFor="prod-status" className={common.fieldLabel}>
-                  Trạng thái hiển thị
-                </label>
-                <select
-                  id="prod-status"
-                  className={common.textInput}
-                  value={status}
-                  disabled={allowedStatuses.length <= 1}
-                  onChange={(e) => setStatus(e.target.value)}
-                >
-                  {allowedStatuses.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-                <span className={common.fieldHint}>
-                  Người bán chỉ có thể ẩn/hiện sản phẩm đã duyệt hoặc gửi duyệt lại sản phẩm bị từ
-                  chối.
-                </span>
-              </div>
-            )}
+          <details className={common.accordion} open>
+            <summary className={common.accordionSummary}>
+              <span className={styles.accordionTitleGroup}>
+                <span>Hình ảnh sản phẩm</span>
+                <span className={common.accordionMeta}>{activeImageLabel}</span>
+              </span>
+              <span className={common.accordionChevron} aria-hidden="true">
+                <IconChevronDown size={16} />
+              </span>
+            </summary>
 
-            <div className={common.field}>
-              <label htmlFor="prod-desc" className={common.fieldLabel}>
-                Mô tả chi tiết sản phẩm
-              </label>
-              <textarea
-                id="prod-desc"
-                className={common.textArea}
-                rows={4}
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Mô tả chất liệu, định lượng vải, phom dáng và hướng dẫn bảo quản..."
-              />
-            </div>
-          </div>
-        </section>
-
-        <section className={common.card} aria-label="Ảnh đại diện và tổng hợp kho">
-          <div className={common.cardHeader}>
-            <h2 className={common.cardTitle}>Ảnh đại diện và tổng hợp kho</h2>
-          </div>
-
-          <div className={styles.mediaPickerRow}>
-            <div className={styles.previewMedia}>
-              <img
-                src={selectedImage}
-                alt={name || "Ảnh sản phẩm mẫu"}
-                className={styles.previewImg}
-                width={144}
-                height={192}
-              />
-            </div>
-
-            <div className={styles.thumbGrid}>
-              {GALLERY_CHOICES.slice(0, 6).map((img) => (
-                <button
-                  key={img.path}
-                  type="button"
-                  className={`${styles.thumbBtn} ${selectedImage === img.path ? styles.thumbBtnActive : ""}`}
-                  onClick={() => setSelectedImage(img.path)}
-                  title={img.label}
-                  aria-label={`Chọn ảnh ${img.label}`}
-                >
-                  <img
-                    src={img.path}
-                    alt={img.label}
-                    className={styles.thumbImg}
-                    width={64}
-                    height={85}
-                  />
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className={styles.addColorRow} style={{ marginBottom: 14 }}>
-            <input
-              type="text"
-              className={common.textInput}
-              style={{ flex: 1, height: 34, fontSize: 13 }}
-              value={customImageUrl}
-              onChange={(e) => setCustomImageUrl(e.target.value)}
-              placeholder="Hoặc dán đường dẫn ảnh (/products/...)"
-              aria-label="Đường dẫn ảnh sản phẩm tùy chỉnh"
-            />
-            <Button variant="outline" size="sm" shape="app" onClick={handleAddCustomImage}>
-              Dùng ảnh này
-            </Button>
-          </div>
-
-          <div className={styles.summaryList}>
-            <div className={styles.summaryRow}>
-              <span className={styles.summaryKey}>Tổng biến thể SKU</span>
-              <span className={styles.summaryVal}>{formatInt(skuRows.length)}</span>
-            </div>
-            <div className={styles.summaryRow}>
-              <span className={styles.summaryKey}>Khoảng giá bán</span>
-              <span className={styles.summaryVal}>{priceRangeLabel}</span>
-            </div>
-            <div className={styles.summaryRow}>
-              <span className={styles.summaryKey}>Tổng tồn kho khai báo</span>
-              <span className={styles.summaryVal}>{formatInt(totalStock)} chiếc</span>
-            </div>
-            <div className={styles.summaryRow}>
-              <span className={styles.summaryKey}>Gian hàng sở hữu</span>
-              <span className={styles.summaryVal}>{shop.name}</span>
-            </div>
-          </div>
-        </section>
-      </div>
-
-      {/* Row 2: SKU Matrix Editor */}
-      <section className={common.card} aria-labelledby="sku-matrix-heading">
-        <div className={common.cardHeader}>
-          <div>
-            <h2 id="sku-matrix-heading" className={common.cardTitle}>
-              Danh sách biến thể SKU, giá bán và tồn kho
-            </h2>
-            <span className={common.cardMeta}>
-              Mọi giá bán là số nguyên VND; khối lượng tính theo gram để tính phí vận chuyển
-            </span>
-          </div>
-          <Button variant="outline" size="sm" shape="app" onClick={handleAddEmptySku}>
-            <IconPlus size={14} />
-            <span>Thêm dòng SKU</span>
-          </Button>
-        </div>
-
-        {/* Quick generator for Color x Size */}
-        <div className={styles.variantControls}>
-          <div className={styles.controlGroup}>
-            <span className={styles.controlLabel}>Tạo nhanh theo màu sắc & kích cỡ</span>
-            <div className={styles.addColorRow}>
-              <input
-                type="text"
-                className={styles.colorNameInput}
-                value={genColor}
-                onChange={(e) => setGenColor(e.target.value)}
-                placeholder="Tên màu (VD: Xanh than)"
-                aria-label="Tên màu cho biến thể mới"
-              />
-              <div className={styles.sizeRow}>
-                {ALL_SIZE_OPTIONS.map((sz) => {
-                  const active = genSizes.includes(sz);
+            <div className={common.accordionBody}>
+              <div className={styles.galleryGrid} role="radiogroup" aria-label="Chọn ảnh đại diện">
+                {GALLERY_CHOICES.map((img) => {
+                  const active = selectedImage === img.path;
                   return (
                     <button
-                      key={sz}
+                      key={img.path}
                       type="button"
-                      className={`${styles.sizeToggle} ${active ? styles.sizeToggleActive : ""}`}
-                      onClick={() => handleToggleGenSize(sz)}
+                      role="radio"
+                      aria-checked={active}
+                      className={`${styles.thumbBtn} ${active ? styles.thumbBtnActive : ""}`}
+                      onClick={() => setSelectedImage(img.path)}
+                      title={img.label}
+                      aria-label={`Chọn ảnh ${img.label}`}
                     >
-                      {sz}
+                      <img
+                        src={img.path}
+                        alt={img.label}
+                        className={styles.thumbImg}
+                        width={96}
+                        height={128}
+                      />
+                      {active && (
+                        <span className={styles.thumbCheck} aria-hidden="true">
+                          <IconCheck size={12} />
+                        </span>
+                      )}
                     </button>
                   );
                 })}
               </div>
-              <input
-                type="number"
-                className={styles.numCellInput}
-                value={genPriceStr}
-                onChange={(e) => setGenPriceStr(e.target.value)}
-                placeholder="Giá VND"
-                aria-label="Giá mặc định khi tạo nhanh SKU"
-              />
-              <input
-                type="number"
-                className={styles.stockCellInput}
-                value={genStockStr}
-                onChange={(e) => setGenStockStr(e.target.value)}
-                placeholder="Tồn"
-                aria-label="Tồn kho mặc định khi tạo nhanh SKU"
-              />
-              <Button variant="outline" size="sm" shape="app" onClick={handleGenerateMatrix}>
-                <IconPlus size={14} />
-                <span>Tạo tổ hợp SKU</span>
-              </Button>
             </div>
-          </div>
+          </details>
 
-          <div className={styles.bulkRow}>
-            <span className={common.cardMeta}>
-              Đặt nhanh cùng mức tồn kho cho toàn bộ {formatInt(skuRows.length)} dòng SKU bên dưới
-            </span>
-            <div className={styles.bulkControls}>
-              <input
-                type="number"
-                min={0}
-                step={1}
-                className={styles.bulkInput}
-                value={bulkStockStr}
-                onChange={(e) => setBulkStockStr(e.target.value)}
-                aria-label="Số tồn kho áp dụng hàng loạt"
-              />
-              <Button variant="outline" size="sm" shape="app" onClick={handleBulkStock}>
-                Áp dụng toàn bộ
-              </Button>
-            </div>
-          </div>
-        </div>
+          <details className={common.accordion} open>
+            <summary className={common.accordionSummary}>
+              <span className={styles.accordionTitleGroup}>
+                <span>Ma trận biến thể SKU</span>
+                <span className={common.accordionMeta}>
+                  {formatInt(skuRows.length)} SKU, {formatInt(totalStock)} tồn
+                </span>
+              </span>
+              <span className={common.accordionChevron} aria-hidden="true">
+                <IconChevronDown size={16} />
+              </span>
+            </summary>
 
-        {/* Desktop editable table */}
-        <div className={`${common.tableWrap} ${styles.skuTableDesktop}`}>
-          <table className={common.dataTable}>
-            <thead>
-              <tr>
-                <th>Mã SKU</th>
-                <th>Tên biến thể</th>
-                <th>Màu / Size</th>
-                <th className={common.numCol}>Giá bán (VND)</th>
-                <th className={common.numCol}>Tổng tồn</th>
-                <th className={common.numCol}>Khối lượng (g)</th>
-                <th className={common.numCol}>Xóa</th>
-              </tr>
-            </thead>
-            <tbody>
-              {skuRows.map((row) => (
-                <tr key={row.localKey}>
-                  <td>
-                    <input
-                      type="text"
-                      className={styles.skuCodeInput}
-                      value={row.sku_code}
-                      onChange={(e) => updateSkuRow(row.localKey, { sku_code: e.target.value })}
-                      aria-label="Mã SKU"
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="text"
-                      className={styles.skuCodeInput}
-                      value={row.name}
-                      onChange={(e) => updateSkuRow(row.localKey, { name: e.target.value })}
-                      aria-label="Tên biến thể SKU"
-                    />
-                  </td>
-                  <td>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <input
-                        type="text"
-                        className={styles.stockCellInput}
-                        style={{ width: 88, textAlign: "left" }}
-                        value={row.color}
-                        onChange={(e) => updateSkuRow(row.localKey, { color: e.target.value })}
-                        placeholder="Màu"
-                        aria-label="Màu sắc"
-                      />
-                      <input
-                        type="text"
-                        className={styles.stockCellInput}
-                        style={{ width: 60, textAlign: "left" }}
-                        value={row.size}
-                        onChange={(e) => updateSkuRow(row.localKey, { size: e.target.value })}
-                        placeholder="Size"
-                        aria-label="Kích cỡ"
-                      />
-                    </div>
-                  </td>
-                  <td className={common.numCol}>
-                    <input
-                      type="number"
-                      min={1000}
-                      step={1}
-                      className={styles.numCellInput}
-                      value={row.priceStr}
-                      onChange={(e) => updateSkuRow(row.localKey, { priceStr: e.target.value })}
-                      aria-label={`Giá bán của ${row.sku_code}`}
-                    />
-                  </td>
-                  <td className={common.numCol}>
-                    <input
-                      type="number"
-                      min={row.reservedStock}
-                      step={1}
-                      className={`${styles.stockCellInput} ${Number(row.stockStr) === 0 ? styles.stockZero : ""}`}
-                      value={row.stockStr}
-                      onChange={(e) => updateSkuRow(row.localKey, { stockStr: e.target.value })}
-                      aria-label={`Tồn kho của ${row.sku_code}`}
-                    />
-                    {row.reservedStock > 0 && (
-                      <span className={common.cellSub}>Đang giữ: {row.reservedStock}</span>
-                    )}
-                  </td>
-                  <td className={common.numCol}>
-                    <input
-                      type="number"
-                      min={1}
-                      step={1}
-                      className={styles.stockCellInput}
-                      value={row.weightStr}
-                      onChange={(e) => updateSkuRow(row.localKey, { weightStr: e.target.value })}
-                      aria-label={`Khối lượng của ${row.sku_code}`}
-                    />
-                  </td>
-                  <td className={common.numCol}>
-                    <button
-                      type="button"
-                      className={styles.removeColorBtn}
-                      disabled={skuRows.length <= 1}
-                      onClick={() => removeSkuRow(row.localKey)}
-                      aria-label={`Xóa dòng ${row.sku_code}`}
-                    >
-                      <IconClose size={14} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Mobile SKU editor list */}
-        <div className={styles.mobileSkuList}>
-          {skuRows.map((row) => (
-            <div key={row.localKey} className={styles.mobileSkuItem}>
-              <div className={styles.mobileSkuHead}>
-                <span>{row.sku_code || "SKU mới"}</span>
-                {skuRows.length > 1 && (
-                  <button
+            <div className={common.accordionBody}>
+              <div className={styles.bulkBarRow}>
+                <span className={styles.bulkHint}>Đặt nhanh tồn kho đồng loạt</span>
+                <div className={styles.bulkControls}>
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    className={styles.bulkInput}
+                    value={bulkStockStr}
+                    onChange={(e) => setBulkStockStr(e.target.value)}
+                    aria-label="Số lượng áp dụng hàng loạt"
+                  />
+                  <Button
                     type="button"
-                    className={styles.removeColorBtn}
-                    onClick={() => removeSkuRow(row.localKey)}
-                    aria-label="Xóa dòng SKU"
+                    variant="outline"
+                    size="sm"
+                    shape="app"
+                    onClick={handleBulkStock}
                   >
-                    <IconClose size={14} />
-                  </button>
-                )}
+                    Đặt tồn đồng loạt
+                  </Button>
+                </div>
               </div>
-              <input
-                type="text"
-                className={styles.skuCodeInput}
-                value={row.sku_code}
-                onChange={(e) => updateSkuRow(row.localKey, { sku_code: e.target.value })}
-                placeholder="Mã SKU"
-              />
-              <input
-                type="text"
-                className={styles.skuCodeInput}
-                value={row.name}
-                onChange={(e) => updateSkuRow(row.localKey, { name: e.target.value })}
-                placeholder="Tên biến thể"
-              />
-              <div className={styles.mobileSkuInputs}>
-                <div className={common.field}>
-                  <label className={common.fieldHint}>Giá bán (VND)</label>
-                  <input
-                    type="number"
-                    min={1000}
-                    step={1}
-                    className={styles.numCellInput}
-                    value={row.priceStr}
-                    onChange={(e) => updateSkuRow(row.localKey, { priceStr: e.target.value })}
-                  />
-                </div>
-                <div className={common.field}>
-                  <label className={common.fieldHint}>Tồn kho</label>
-                  <input
-                    type="number"
-                    min={row.reservedStock}
-                    step={1}
-                    className={styles.stockCellInput}
-                    value={row.stockStr}
-                    onChange={(e) => updateSkuRow(row.localKey, { stockStr: e.target.value })}
-                  />
-                </div>
-                <div className={common.field}>
-                  <label className={common.fieldHint}>Màu sắc</label>
-                  <input
-                    type="text"
-                    className={styles.skuCodeInput}
-                    value={row.color}
-                    onChange={(e) => updateSkuRow(row.localKey, { color: e.target.value })}
-                  />
-                </div>
-                <div className={common.field}>
-                  <label className={common.fieldHint}>Khối lượng (g)</label>
-                  <input
-                    type="number"
-                    min={1}
-                    step={1}
-                    className={styles.stockCellInput}
-                    value={row.weightStr}
-                    onChange={(e) => updateSkuRow(row.localKey, { weightStr: e.target.value })}
-                  />
-                </div>
+
+              <div className={`${common.tableWrap} ${styles.skuTableDesktop}`}>
+                <table className={common.dataTable}>
+                  <thead>
+                    <tr>
+                      <th>Mã SKU</th>
+                      <th>Màu sắc</th>
+                      <th>Cỡ</th>
+                      <th className={common.numCol}>Giá (VND)</th>
+                      <th className={common.numCol}>Tổng tồn</th>
+                      <th className={common.numCol}>Giữ</th>
+                      <th className={common.numCol}>Gram</th>
+                      <th className={common.numCol}>Thao tác</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {skuRows.map((row) => {
+                      const lowAvail = Math.max(0, row.stock - row.reservedStock) <= 5;
+                      return (
+                        <tr key={row.localKey}>
+                          <td>
+                            <input
+                              type="text"
+                              className={styles.skuCodeInput}
+                              value={row.skuCode}
+                              onChange={(e) => updateRow(row.localKey, { skuCode: e.target.value })}
+                              aria-label={`Mã SKU ${row.name}`}
+                            />
+                          </td>
+                          <td>
+                            <div className={styles.colorCellWrap}>
+                              <span
+                                className={styles.swatchDot}
+                                style={{ backgroundColor: row.colorHex }}
+                                aria-hidden="true"
+                              />
+                              <input
+                                type="text"
+                                className={styles.colorCellInput}
+                                value={row.colorName}
+                                onChange={(e) =>
+                                  updateRow(row.localKey, {
+                                    colorName: e.target.value,
+                                    name: `${e.target.value} / ${row.size}`,
+                                  })
+                                }
+                                aria-label={`Màu sắc ${row.skuCode}`}
+                              />
+                            </div>
+                          </td>
+                          <td>
+                            <input
+                              type="text"
+                              className={styles.sizeCellInput}
+                              value={row.size}
+                              onChange={(e) =>
+                                updateRow(row.localKey, {
+                                  size: e.target.value.toUpperCase(),
+                                  name: `${row.colorName} / ${e.target.value.toUpperCase()}`,
+                                })
+                              }
+                              aria-label={`Kích cỡ ${row.skuCode}`}
+                            />
+                          </td>
+                          <td className={common.numCol}>
+                            <input
+                              type="number"
+                              min={1000}
+                              step={1}
+                              className={styles.priceCellInput}
+                              value={row.priceVnd}
+                              onChange={(e) =>
+                                updateRow(row.localKey, {
+                                  priceVnd: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                                })
+                              }
+                              aria-label={`Đơn giá ${row.skuCode}`}
+                            />
+                          </td>
+                          <td className={common.numCol}>
+                            <input
+                              type="number"
+                              min={row.reservedStock}
+                              step={1}
+                              className={`${styles.stockCellInput} ${lowAvail ? styles.stockLow : ""}`}
+                              value={row.stock}
+                              onChange={(e) =>
+                                updateRow(row.localKey, {
+                                  stock: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                                })
+                              }
+                              aria-label={`Tồn kho ${row.skuCode}`}
+                            />
+                          </td>
+                          <td className={common.numCol}>{formatInt(row.reservedStock)}</td>
+                          <td className={common.numCol}>
+                            <input
+                              type="number"
+                              min={1}
+                              step={1}
+                              className={styles.weightCellInput}
+                              value={row.weightGrams}
+                              onChange={(e) =>
+                                updateRow(row.localKey, { weightGrams: e.target.value })
+                              }
+                              onBlur={(e) =>
+                                updateRow(row.localKey, {
+                                  weightGrams: String(clampWeightGrams(e.currentTarget.value)),
+                                })
+                              }
+                              aria-label={`Khối lượng ${row.skuCode}`}
+                            />
+                          </td>
+                          <td className={common.numCol}>
+                            <div className={styles.rowBtns}>
+                              {mode === "edit" && row.id && row.version ? (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  shape="app"
+                                  disabled={busyStockId === row.id}
+                                  onClick={() => void handleQuickSaveSkuStock(row)}
+                                >
+                                  {busyStockId === row.id ? "Lưu..." : "Lưu tồn"}
+                                </Button>
+                              ) : null}
+                              {skuRows.length > 1 && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  shape="app"
+                                  onClick={() => handleRemoveRow(row.localKey)}
+                                >
+                                  Xóa
+                                </Button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Mobile SKU Editor Cards */}
+              <div className={styles.mobileSkuList}>
+                {skuRows.map((row) => {
+                  const lowAvail = Math.max(0, row.stock - row.reservedStock) <= 5;
+                  return (
+                    <div key={row.localKey} className={styles.mobileSkuCard}>
+                      <div className={styles.mobileSkuHead}>
+                        <span className={styles.colorCellWrap}>
+                          <span
+                            className={styles.swatchDot}
+                            style={{ backgroundColor: row.colorHex }}
+                            aria-hidden="true"
+                          />
+                          <strong>
+                            {row.colorName} / {row.size}
+                          </strong>
+                        </span>
+                        <div className={styles.rowBtns}>
+                          {mode === "edit" && row.id && row.version ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              shape="app"
+                              disabled={busyStockId === row.id}
+                              onClick={() => void handleQuickSaveSkuStock(row)}
+                            >
+                              {busyStockId === row.id ? "Lưu..." : "Lưu tồn"}
+                            </Button>
+                          ) : null}
+                          {skuRows.length > 1 && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              shape="app"
+                              onClick={() => handleRemoveRow(row.localKey)}
+                            >
+                              Xóa
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                      <div className={styles.mobileSkuGrid}>
+                        <label className={common.field}>
+                          <span className={common.fieldLabel}>Mã SKU</span>
+                          <input
+                            type="text"
+                            className={common.textInput}
+                            value={row.skuCode}
+                            onChange={(e) => updateRow(row.localKey, { skuCode: e.target.value })}
+                          />
+                        </label>
+                        <div className={common.field}>
+                          <span className={common.fieldLabel}>Màu / Cỡ</span>
+                          <div className={styles.mobileSplit2}>
+                            <input
+                              type="text"
+                              className={common.textInput}
+                              value={row.colorName}
+                              onChange={(e) =>
+                                updateRow(row.localKey, {
+                                  colorName: e.target.value,
+                                  name: `${e.target.value} / ${row.size}`,
+                                })
+                              }
+                              aria-label={`Màu sắc ${row.skuCode}`}
+                            />
+                            <input
+                              type="text"
+                              className={common.textInput}
+                              value={row.size}
+                              onChange={(e) =>
+                                updateRow(row.localKey, {
+                                  size: e.target.value.toUpperCase(),
+                                  name: `${row.colorName} / ${e.target.value.toUpperCase()}`,
+                                })
+                              }
+                              aria-label={`Kích cỡ ${row.skuCode}`}
+                            />
+                          </div>
+                        </div>
+                        <label className={common.field}>
+                          <span className={common.fieldLabel}>Giá (VND)</span>
+                          <input
+                            type="number"
+                            min={1000}
+                            step={1}
+                            className={common.textInput}
+                            value={row.priceVnd}
+                            onChange={(e) =>
+                              updateRow(row.localKey, {
+                                priceVnd: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                              })
+                            }
+                          />
+                        </label>
+                        <label className={common.field}>
+                          <span className={common.fieldLabel}>
+                            Tồn kho (giữ: {formatInt(row.reservedStock)})
+                          </span>
+                          <input
+                            type="number"
+                            min={row.reservedStock}
+                            step={1}
+                            className={`${common.textInput} ${lowAvail ? styles.stockLow : ""}`}
+                            value={row.stock}
+                            onChange={(e) =>
+                              updateRow(row.localKey, {
+                                stock: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                              })
+                            }
+                          />
+                        </label>
+                        <label className={common.field}>
+                          <span className={common.fieldLabel}>Khối lượng (g)</span>
+                          <input
+                            type="number"
+                            min={1}
+                            step={1}
+                            className={common.textInput}
+                            value={row.weightGrams}
+                            onChange={(e) =>
+                              updateRow(row.localKey, { weightGrams: e.target.value })
+                            }
+                            onBlur={(e) =>
+                              updateRow(row.localKey, {
+                                weightGrams: String(clampWeightGrams(e.currentTarget.value)),
+                              })
+                            }
+                            aria-label={`Khối lượng ${row.skuCode}`}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className={styles.addSkuRow}>
+                <input
+                  type="text"
+                  className={styles.addSkuInput}
+                  value={newSkuColorName}
+                  onChange={(e) => setNewSkuColorName(e.target.value)}
+                  placeholder="Tên màu mới"
+                  aria-label="Tên màu cho SKU mới"
+                />
+                <select
+                  className={common.filterSelect}
+                  value={newSkuSize}
+                  onChange={(e) => setNewSkuSize(e.target.value)}
+                  aria-label="Chọn kích cỡ cho SKU mới"
+                >
+                  {["S", "M", "L", "XL", "2XL"].map((sz) => (
+                    <option key={sz} value={sz}>
+                      Size {sz}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  shape="app"
+                  onClick={handleAddSkuRow}
+                >
+                  <IconPlus size={14} />
+                  <span>Thêm biến thể SKU</span>
+                </Button>
               </div>
             </div>
-          ))}
+          </details>
         </div>
-      </section>
-    </form>
-  );
-}
 
-export function ProductFormView({ mode, productId }: ProductFormViewProps) {
-  return (
-    <SellerShopGate pageTitle={mode === "create" ? "Thêm sản phẩm mới" : "Chỉnh sửa sản phẩm"}>
-      {(shop) => <ProductFormInner mode={mode} productId={productId} shop={shop} />}
-    </SellerShopGate>
+        {/* Right Column: Sticky Storefront Product Card Preview */}
+        <aside className={styles.previewCol} aria-label="Xem trước thẻ sản phẩm">
+          <div className={styles.previewSticky}>
+            <div className={styles.previewHeading}>Xem trước thẻ sản phẩm</div>
+
+            <article className={styles.storeCard}>
+              <div className={styles.storeCardMedia}>
+                <img
+                  src={selectedImage}
+                  alt={name.trim() || "Ảnh sản phẩm"}
+                  className={styles.storeCardImg}
+                  width={320}
+                  height={426}
+                />
+                {totalStock === 0 ? (
+                  <span className={`${styles.storeStockBadge} ${styles.storeStockOut}`}>
+                    Hết hàng
+                  </span>
+                ) : totalStock <= 10 ? (
+                  <span className={styles.storeStockBadge}>Còn {formatInt(totalStock)}</span>
+                ) : null}
+              </div>
+
+              <div className={styles.storeCardBody}>
+                <span className={styles.storeCardCat}>{activeCategoryName}</span>
+                <h2 className={styles.storeCardTitle}>
+                  {name.trim() || "Tên sản phẩm hiển thị tại gian hàng"}
+                </h2>
+                <div className={`${styles.storeCardPrice} num`}>{priceRangeLabel}</div>
+
+                {previewColors.length > 0 && (
+                  <div className={styles.storeSwatches} aria-label="Màu sắc hiển thị">
+                    {previewColors.slice(0, 6).map((c) => (
+                      <span
+                        key={c.label}
+                        className={styles.storeSwatchItem}
+                        title={c.label}
+                        style={{ backgroundColor: c.hex }}
+                      />
+                    ))}
+                    <span className={styles.storeSwatchCount}>
+                      {formatInt(previewColors.length)} màu
+                    </span>
+                  </div>
+                )}
+
+                {previewSizes.length > 0 && (
+                  <div className={styles.storeSizePills}>
+                    {previewSizes.slice(0, 6).map((sz) => (
+                      <span key={sz} className={styles.storeSizePill}>
+                        {sz}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <div className={styles.storeShopFoot}>{shop?.name ?? "Gian hàng NexusMart"}</div>
+              </div>
+            </article>
+
+            <div className={styles.summaryCard}>
+              <div className={styles.summaryRow}>
+                <span className={styles.summaryKey}>Biến thể SKU</span>
+                <span className={styles.summaryVal}>{formatInt(skuRows.length)}</span>
+              </div>
+              <div className={styles.summaryRow}>
+                <span className={styles.summaryKey}>Tổng tồn kho</span>
+                <span className={styles.summaryVal}>{formatInt(totalStock)} chiếc</span>
+              </div>
+              <div className={styles.summaryRow}>
+                <span className={styles.summaryKey}>Khoảng giá</span>
+                <span className={styles.summaryVal}>{priceRangeLabel}</span>
+              </div>
+              <div className={styles.summaryRow}>
+                <span className={styles.summaryKey}>SKU dưới ngưỡng 5</span>
+                <span
+                  className={`${styles.summaryVal} ${lowSkuCount > 0 ? styles.summaryValWarn : ""}`}
+                >
+                  {formatInt(lowSkuCount)}
+                </span>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
+
+      {/* Sticky Bottom Save Bar */}
+      <div className={styles.stickyBar} role="region" aria-label="Thanh lưu sản phẩm">
+        <div className={styles.stickySummary}>
+          <span className="num">
+            {formatInt(skuRows.length)} SKU, {formatInt(totalStock)} tồn
+          </span>
+          <span className="num">{priceRangeLabel}</span>
+          {lowSkuCount > 0 && (
+            <span className={styles.stickyWarn}>{formatInt(lowSkuCount)} SKU sắp hết</span>
+          )}
+        </div>
+        <div className={styles.stickyActions}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            shape="app"
+            onClick={() => router.push("/seller/san-pham")}
+          >
+            Hủy
+          </Button>
+          <Button type="submit" variant="ink" size="sm" shape="app" disabled={saving}>
+            <IconCheck size={14} />
+            <span>
+              {saving ? "Đang lưu..." : mode === "create" ? "Đăng bán sản phẩm" : "Lưu thay đổi"}
+            </span>
+          </Button>
+        </div>
+      </div>
+    </form>
   );
 }

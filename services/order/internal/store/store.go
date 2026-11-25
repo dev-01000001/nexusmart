@@ -330,15 +330,16 @@ func BuildOrderAddressUpdatedOutbox(ord db.Order, change db.OrderAddressChange) 
 		_ = json.Unmarshal(change.NewAddressJSON, &snap)
 	}
 	payloadBytes, err := json.Marshal(events.OrderAddressUpdatedPayload{
-		OrderID:        ord.ID,
-		OrderCode:      ord.OrderCode,
-		BuyerID:        ord.BuyerID,
-		ShopID:         ord.ShopID,
-		OldFeeVND:      change.OldShippingFeeVND,
-		NewFeeVND:      change.AppliedShippingFeeVND,
-		ShipmentQueued: change.HadShipment,
-		ProvinceName:   strings.TrimSpace(snap.GetProvinceName()),
-		WardName:       strings.TrimSpace(snap.GetWardName()),
+		OrderID:          ord.ID,
+		OrderCode:        ord.OrderCode,
+		BuyerID:          ord.BuyerID,
+		ShopID:           ord.ShopID,
+		StorefrontShopID: ord.StorefrontShopID,
+		OldFeeVND:        change.OldShippingFeeVND,
+		NewFeeVND:        change.AppliedShippingFeeVND,
+		ShipmentQueued:   change.HadShipment,
+		ProvinceName:     strings.TrimSpace(snap.GetProvinceName()),
+		WardName:         strings.TrimSpace(snap.GetWardName()),
 	})
 	if err != nil {
 		return db.InsertOutboxEventParams{}, err
@@ -510,12 +511,13 @@ func buildOrderCancelledOutbox(ord db.Order, reason, traceID, traceparent string
 		reason = "Order cancelled before payment creation"
 	}
 	payloadBytes, err := json.Marshal(events.OrderCancelledPayload{
-		OrderID:   ord.ID,
-		OrderCode: ord.OrderCode,
-		BuyerID:   ord.BuyerID,
-		ShopID:    ord.ShopID,
-		Reason:    reason,
-		WasPaid:   false,
+		OrderID:          ord.ID,
+		OrderCode:        ord.OrderCode,
+		BuyerID:          ord.BuyerID,
+		ShopID:           ord.ShopID,
+		StorefrontShopID: ord.StorefrontShopID,
+		Reason:           reason,
+		WasPaid:          false,
 	})
 	if err != nil {
 		return db.InsertOutboxEventParams{}, err
@@ -763,7 +765,7 @@ type CancelGroupOrdersResult struct {
 	HasLiveOrders bool
 }
 
-// OutboxBuilder creates an outbox event payload for a given transitioned order.
+// OutboxSpec creates an outbox event payload for a given transitioned order.
 type OutboxSpec struct {
 	ID          string
 	EventType   string
@@ -1043,7 +1045,7 @@ type PaymentRefundedParams struct {
 	IsPostSettlement *bool
 }
 
-// ExpiredGroupCandidate identifies an expired PENDING VietQR checkout group.
+// ExpiredGroupCandidate identifies an expired PENDING online (VietQR / ZaloPay) checkout group.
 type ExpiredGroupCandidate struct {
 	CheckoutGroupID string
 	PaymentID       string
@@ -1059,6 +1061,8 @@ type OrderListFilter struct {
 	PaymentMethod       string
 	Keyword             string
 	DueCutoff           *time.Time
+	SalesChannel        string
+	StorefrontShopID    string
 	Limit               int32
 	Offset              int32
 	IncludeStatusCounts bool

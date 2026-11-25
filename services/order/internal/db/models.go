@@ -23,6 +23,8 @@ type CheckoutGroup struct {
 	ResponseSnapshotJSON []byte     `json:"response_snapshot_json"`
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
+	SalesChannel         string     `json:"sales_channel"`
+	StorefrontShopID     string     `json:"storefront_shop_id"`
 	RequestHash          string     `json:"request_hash"`
 	RetryIdempotencyKey  string     `json:"retry_idempotency_key"`
 	RetryFromPaymentID   string     `json:"retry_from_payment_id"`
@@ -30,6 +32,22 @@ type CheckoutGroup struct {
 	NeedsCleanup         bool       `json:"needs_cleanup"`
 	WarningsJSON         []byte     `json:"warnings_json"`
 	PayURL               string     `json:"pay_url"`
+}
+
+type Complaint struct {
+	ID               string     `json:"id"`
+	ReturnRequestID  string     `json:"return_request_id"`
+	OrderID          string     `json:"order_id"`
+	BuyerID          string     `json:"buyer_id"`
+	ShopID           string     `json:"shop_id"`
+	Reason           string     `json:"reason"`
+	EvidenceURLsJSON []byte     `json:"evidence_urls_json"`
+	Status           string     `json:"status"`
+	Resolution       string     `json:"resolution"`
+	AdminNote        string     `json:"admin_note"`
+	ResolvedBy       string     `json:"resolved_by"`
+	CreatedAt        time.Time  `json:"created_at"`
+	ResolvedAt       *time.Time `json:"resolved_at"`
 }
 
 type DeadLetterEvent struct {
@@ -72,6 +90,8 @@ type Order struct {
 	CompletedAt                     *time.Time `json:"completed_at"`
 	CreatedAt                       time.Time  `json:"created_at"`
 	UpdatedAt                       time.Time  `json:"updated_at"`
+	SalesChannel                    string     `json:"sales_channel"`
+	StorefrontShopID                string     `json:"storefront_shop_id"`
 	RefundedVND                     int64      `json:"refunded_vnd"`
 	ConfirmedAt                     *time.Time `json:"confirmed_at"`
 	PendingShipmentCancel           bool       `json:"pending_shipment_cancel"`
@@ -198,13 +218,18 @@ type ReturnRequest struct {
 	Status                      string     `json:"status"`
 	CreatedAt                   time.Time  `json:"created_at"`
 	UpdatedAt                   time.Time  `json:"updated_at"`
-	OrderCode                   string     `json:"order_code"`
 	ShopID                      string     `json:"shop_id"`
+	ItemsJSON                   []byte     `json:"items_json"`
+	SellerNote                  string     `json:"seller_note"`
+	ReverseTrackingCode         string     `json:"reverse_tracking_code"`
+	ReverseLabelURL             string     `json:"reverse_label_url"`
+	RefundAmountVND             int64      `json:"refund_amount_vnd"`
+	RefundID                    string     `json:"refund_id"`
+	OrderCode                   string     `json:"order_code"`
 	SellerResponse              string     `json:"seller_response"`
 	SellerEvidenceURLsJSON      []byte     `json:"seller_evidence_urls_json"`
 	DisputeReason               string     `json:"dispute_reason"`
 	AdminNote                   string     `json:"admin_note"`
-	RefundAmountVND             int64      `json:"refund_amount_vnd"`
 	ReturnTrackingCode          string     `json:"return_tracking_code"`
 	ReturnLabelURL              string     `json:"return_label_url"`
 	ReturnFeeVND                int64      `json:"return_fee_vnd"`
@@ -222,7 +247,6 @@ type ReturnRequest struct {
 	EscalatedFromCancelFailure  bool       `json:"escalated_from_cancel_failure"`
 	RequireApprovalIfLarge      bool       `json:"require_approval_if_large"`
 	RefundRequestedBy           string     `json:"refund_requested_by"`
-	RefundID                    string     `json:"refund_id"`
 	RefundApprovalStatus        string     `json:"refund_approval_status"`
 	RefundAttempt               int32      `json:"refund_attempt"`
 }

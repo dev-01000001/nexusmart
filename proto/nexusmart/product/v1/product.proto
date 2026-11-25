@@ -66,6 +66,7 @@ message SKU {
   bool is_active = 17;
   // Lowest recorded price for this SKU in the last 30 days (defaults to price_vnd when no lower history exists).
   int64 min_price_30d_vnd = 18;
+  int32 flash_sale_reserved_stock = 19;
 }
 
 message SKUInput {
@@ -261,6 +262,7 @@ message UpdateStockResponse {
 message StockReservationItem {
   string sku_id = 1;
   int32 quantity = 2;
+  string flash_sale_item_id = 3;
 }
 
 message ReserveStockRequest {

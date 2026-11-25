@@ -42,30 +42,34 @@ func (s *PostgresStore) ListOrdersWithFilter(ctx context.Context, filter OrderLi
 	keywordPattern := EscapeILIKEPattern(filter.Keyword)
 
 	total, err := s.queries.CountOrdersFiltered(ctx, db.CountOrdersFilteredParams{
-		BuyerID:        filter.BuyerID,
-		ShopID:         filter.ShopID,
-		Status:         filter.Status,
-		Statuses:       statuses,
-		CarrierCode:    filter.CarrierCode,
-		PaymentMethod:  filter.PaymentMethod,
-		KeywordPattern: keywordPattern,
-		DueCutoff:      filter.DueCutoff,
+		BuyerID:          filter.BuyerID,
+		ShopID:           filter.ShopID,
+		Status:           filter.Status,
+		Statuses:         statuses,
+		CarrierCode:      filter.CarrierCode,
+		PaymentMethod:    filter.PaymentMethod,
+		KeywordPattern:   keywordPattern,
+		DueCutoff:        filter.DueCutoff,
+		SalesChannel:     filter.SalesChannel,
+		StorefrontShopID: filter.StorefrontShopID,
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	rows, err := s.queries.ListOrdersFiltered(ctx, db.ListOrdersFilteredParams{
-		BuyerID:        filter.BuyerID,
-		ShopID:         filter.ShopID,
-		Status:         filter.Status,
-		Statuses:       statuses,
-		CarrierCode:    filter.CarrierCode,
-		PaymentMethod:  filter.PaymentMethod,
-		KeywordPattern: keywordPattern,
-		DueCutoff:      filter.DueCutoff,
-		PageLimit:      filter.Limit,
-		PageOffset:     filter.Offset,
+		BuyerID:          filter.BuyerID,
+		ShopID:           filter.ShopID,
+		Status:           filter.Status,
+		Statuses:         statuses,
+		CarrierCode:      filter.CarrierCode,
+		PaymentMethod:    filter.PaymentMethod,
+		KeywordPattern:   keywordPattern,
+		DueCutoff:        filter.DueCutoff,
+		SalesChannel:     filter.SalesChannel,
+		StorefrontShopID: filter.StorefrontShopID,
+		PageLimit:        filter.Limit,
+		PageOffset:       filter.Offset,
 	})
 	if err != nil {
 		return nil, err
@@ -74,8 +78,10 @@ func (s *PostgresStore) ListOrdersWithFilter(ctx context.Context, filter OrderLi
 	var statusCounts map[string]int64
 	if filter.IncludeStatusCounts {
 		countRows, err := s.queries.CountOrdersByStatus(ctx, db.CountOrdersByStatusParams{
-			BuyerID: filter.BuyerID,
-			ShopID:  filter.ShopID,
+			BuyerID:          filter.BuyerID,
+			ShopID:           filter.ShopID,
+			SalesChannel:     filter.SalesChannel,
+			StorefrontShopID: filter.StorefrontShopID,
 		})
 		if err != nil {
 			return nil, err

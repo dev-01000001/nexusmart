@@ -1,9 +1,8 @@
 #!/usr/bin/env node
-// Verification suite for NexusMart foundation data integrity (Wave 1 + Wave 2):
-// VND formatting, 34-province 2-level model, 18 products & Wave 2 metadata,
-// cart/voucher/tier/gift-card/coin math, flash sale & shock deals, order totals & retry sample,
-// membership/reviews/QAs/gift-cards, content/CSR statement reconciliation, search & sizing helpers,
-// and seller/admin double-entry ledgers.
+// Verification suite for NexusMart active foundation data integrity:
+// VND formatting, 34-province 2-level model, 18 products & editorial media,
+// voucher/flash-sale/order/seller data, Vietnamese non-diacritic search & sizing helpers,
+// and open-redirect sanitization.
 
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
@@ -59,43 +58,11 @@ const {
   FABRIC_MEDIA,
   MODEL_SHOTS,
 } = await import("../src/data/media.ts");
-const { VOUCHERS, calculateCartSummary, validateVoucher } = await import("../src/data/vouchers.ts");
-const { FLASH_SALE_SLOTS, SHOCK_DEALS, COMBO_OFFERS, FLASH_SALE_RULES } =
-  await import("../src/data/flash-sale.ts");
+const { VOUCHERS, validateVoucher } = await import("../src/data/vouchers.ts");
+const { FLASH_SALE_SLOTS, FLASH_SALE_RULES } = await import("../src/data/flash-sale.ts");
 const { INITIAL_ORDERS, ORDER_STATUS_META } = await import("../src/data/orders.ts");
-const {
-  ANNOUNCEMENT_BAR,
-  MEGA_MENU_GROUPS,
-  TRENDING_KEYWORDS,
-  COLLECTIONS,
-  JOURNAL_ARTICLES,
-  CAMPAIGNS,
-  HELP_FAQ_ITEMS,
-} = await import("../src/data/content.ts");
-const {
-  MEMBERSHIP_TIERS,
-  INITIAL_MEMBERSHIP_STATE,
-  INITIAL_GIFT_CARDS,
-  GIFT_CARD_DENOMINATIONS,
-  GIFT_CARD_POLICY,
-  EDU_DISCOUNT_CONFIG,
-  SAMPLE_REVIEWS,
-  SAMPLE_QAS,
-  computeReviewSummary,
-  getTierBySpend,
-} = await import("../src/data/membership.ts");
 const { normalizeVietnamese, searchProducts, suggestSpelling } =
   await import("../src/lib/search.ts");
-const { recommendSize, estimateDelivery } = await import("../src/lib/sizing.ts");
-const { SELLER_WORKSPACES, computeLowStockAlerts } = await import("../src/data/seller.ts");
-const {
-  ADMIN_SHOP_APPROVALS,
-  ADMIN_DISPUTES,
-  ADMIN_RECONCILIATION,
-  ADMIN_AUDIT_LOGS,
-  computeReconciliationSummary,
-  computeAdminDailySeries,
-} = await import("../src/data/admin.ts");
 const { sanitizeNextPath } = await import("../src/lib/redirect.ts");
 
 let passed = 0;
@@ -120,13 +87,13 @@ check("VND integer formatting", () => {
 
 // 1b. Vietnam timezone (Asia/Ho_Chi_Minh, UTC+7) deterministic date/time formatting across any host TZ
 check("Vietnam timezone (Asia/Ho_Chi_Minh) date/time formatting", () => {
-  assert.equal(formatDateTimeVi("2026-11-22T17:30:00Z"), "00:30 · 23/11/2026");
+  assert.equal(formatDateTimeVi("2026-11-22T17:30:00Z"), "00:30, 23/11/2026");
   assert.equal(formatDateVi("2026-11-22T17:30:00Z"), "23/11/2026");
   assert.equal(formatDayMonthVi("2026-11-22T17:30:00Z"), "23/11");
   assert.equal(formatTimeHmVn("2026-11-22T17:30:00Z"), "00:30");
-  assert.equal(formatShortTimeDateVi("2026-11-22T17:30:00Z"), "00:30 · 23/11");
+  assert.equal(formatShortTimeDateVi("2026-11-22T17:30:00Z"), "00:30 23/11");
   assert.equal(formatVnDayKey("2026-11-22T17:30:00Z"), "2026-11-23");
-  assert.equal(formatDateTimeVi("2026-11-22T17:00:00Z"), "00:00 · 23/11/2026");
+  assert.equal(formatDateTimeVi("2026-11-22T17:00:00Z"), "00:00, 23/11/2026");
   assert.equal(formatDateVi("2026-11-22"), "22/11/2026");
 });
 
@@ -211,73 +178,19 @@ check("18 products, 6 categories, 4 shops, exact image contract, integer VND", (
   assert.equal(usedShops.size, 4, "All 4 shops must have products");
 });
 
-// 4. Cart + multi-shop + vouchers + coins math (Wave 1 backward-compatible contract)
-check("Cart multi-shop voucher, freeship, and coin cap reconciliation", () => {
-  assert.ok(VOUCHERS.length >= 8);
-  const summary = calculateCartSummary({
-    items: [
-      {
-        skuCode: "BD-AT01-TRANG-L",
-        productId: "prod-at-trang",
-        productSlug: "ao-thun-cotton-compact-trang",
-        productName: "Áo thun Cotton Compact 220gsm Trắng",
-        shopId: "shop-bach-dang",
-        colorCode: "trang",
-        colorName: "Trắng tinh",
-        size: "L",
-        image: "/products/ao-thun-cotton-trang.png",
-        unitPrice: 179000,
-        quantity: 2,
-        maxStock: 26,
-        selected: true,
-      },
-      {
-        skuCode: "DN-PL06-KEM-L",
-        productId: "prod-polo-kem",
-        productSlug: "ao-polo-pique-cotton-kem-nhat",
-        productName: "Áo Polo Pique Cotton Kem nhạt",
-        shopId: "shop-da-nang",
-        colorCode: "kem",
-        colorName: "Kem nhạt",
-        size: "L",
-        image: "/products/ao-polo-pique-kem.png",
-        unitPrice: 289000,
-        quantity: 1,
-        maxStock: 23,
-        selected: true,
-      },
-    ],
-    provinceCode: "HCM",
-    selectedShopVouchers: { "shop-bach-dang": "BACHDANG20" },
-    platformVoucherCode: "NEXUS30",
-    freeshipVoucherCode: "FREESHIP25",
-    useCoins: true,
-    availableCoins: 42000,
-  });
-
-  assert.equal(summary.subtotal, 647000);
-  assert.equal(summary.shippingFee, 34000);
-  assert.equal(summary.shopVoucherTotal, 20000);
-  assert.equal(summary.platformVoucherDiscount, 30000);
-  assert.equal(summary.freeshipDiscount, 25000);
-  assert.equal(summary.coinDiscount, 42000);
-  assert.equal(
-    summary.totalDiscount,
-    summary.shopVoucherTotal +
-      summary.platformVoucherDiscount +
-      summary.freeshipDiscount +
-      summary.coinDiscount
-  );
-  assert.equal(summary.grandTotal, summary.subtotal + summary.shippingFee - summary.totalDiscount);
-  assert.equal(summary.grandTotal, 564000);
+// 4. Shop voucher copy & validation helpers
+check("Shop voucher presentation data and validation", () => {
+  const shopVouchers = VOUCHERS.filter((v) => v.scope === "shop");
+  assert.ok(shopVouchers.length >= 4);
+  const okShop = validateVoucher("BACHDANG20", { eligibleAmount: 300000 });
+  assert.equal(okShop.valid, true);
+  assert.equal(okShop.discount, 20000);
 });
 
-// 5. Flash sale quotas, shock deals, combos and product references
-check("Flash sale slots, shock deals, combos, and prices reconcile", () => {
+// 5. Flash sale quotas and product references
+check("Flash sale slots and prices reconcile", () => {
   assert.equal(FLASH_SALE_SLOTS.length, 4);
   assert.equal(FLASH_SALE_RULES.maxItemsPerOrder, 3);
-  assert.equal(FLASH_SALE_RULES.shockDealMaxPerOrder, 1);
-  assert.equal(FLASH_SALE_RULES.shockDealMaxPerDay, 2);
 
   const prodIds = new Set(PRODUCTS.map((p) => p.id));
   for (const slot of FLASH_SALE_SLOTS) {
@@ -294,33 +207,14 @@ check("Flash sale slots, shock deals, combos, and prices reconcile", () => {
       );
     }
   }
-
-  assert.ok(SHOCK_DEALS.length >= 4);
-  for (const deal of SHOCK_DEALS) {
-    assert.ok(prodIds.has(deal.productId), `Unknown shock deal product ${deal.productId}`);
-    assert.equal(deal.limitPerOrder, 1);
-    assert.equal(deal.limitPerDay, 2);
-    assert.equal(deal.returnEligible, false);
-    assert.ok(Number.isInteger(deal.dealPrice) && deal.dealPrice < deal.originalPrice);
-  }
-
-  assert.ok(COMBO_OFFERS.length >= 3);
-  for (const combo of COMBO_OFFERS) {
-    assert.ok(combo.productIds.every((id) => prodIds.has(id)));
-    assert.ok(Number.isInteger(combo.comboPrice) && combo.comboPrice < combo.originalTotalPrice);
-  }
 });
 
-// 6. Orders state coverage, retry payment sample & exact total math
-check("Orders cover all 6 statuses + retry payment sample and totals reconcile", () => {
+// 6. Orders status metadata & sample totals
+check("Orders cover all 6 statuses and totals reconcile", () => {
   const seenStatuses = new Set(INITIAL_ORDERS.map((o) => o.status));
   for (const st of Object.keys(ORDER_STATUS_META)) {
     assert.ok(seenStatuses.has(st), `Missing order sample for status ${st}`);
   }
-  const pendingPay = INITIAL_ORDERS.find((o) => o.paymentStatus === "cho_thanh_toan");
-  assert.ok(pendingPay, "Must include a sample order with paymentStatus cho_thanh_toan");
-  assert.equal(pendingPay.isPaid, false);
-
   for (const order of INITIAL_ORDERS) {
     const lineSum = order.items.reduce((s, it) => s + it.unitPrice * it.quantity, 0);
     assert.equal(order.subtotal, lineSum, `Subtotal mismatch on ${order.orderCode}`);
@@ -337,81 +231,10 @@ check("Orders cover all 6 statuses + retry payment sample and totals reconcile",
   }
 });
 
-// 7. Seller operational metrics & double-entry ledger reconciliation
-check("Seller daily KPIs, order receivables, and double-entry ledger reconcile", () => {
-  for (const shop of SHOPS) {
-    const ws = SELLER_WORKSPACES[shop.id];
-    assert.ok(ws, `Missing workspace for ${shop.id}`);
-
-    const sumGmv = ws.daily7d.reduce((s, d) => s + d.gmv, 0);
-    const sumOrders = ws.daily7d.reduce((s, d) => s + d.orders, 0);
-    const sumNet = ws.daily7d.reduce((s, d) => s + d.netRevenue, 0);
-    assert.equal(ws.total7dGmv, sumGmv);
-    assert.equal(ws.total7dOrders, sumOrders);
-    assert.equal(ws.total7dNetRevenue, sumNet);
-    assert.equal(ws.gmvDelta, ws.total7dGmv - ws.prior7dGmv);
-    assert.equal(ws.ordersDelta, ws.total7dOrders - ws.prior7dOrders);
-
-    for (const ord of ws.orders) {
-      const taxable = ord.subtotal - ord.shopVoucherDiscount;
-      assert.equal(ord.netReceivable, taxable - ord.platformFee);
-    }
-
-    const totalCredits = ws.ledger.reduce((s, e) => s + e.credit, 0);
-    const totalDebits = ws.ledger.reduce((s, e) => s + e.debit, 0);
-    assert.equal(
-      ws.availableBalance + ws.pendingBalance,
-      totalCredits - totalDebits,
-      `Double-entry ledger imbalance on ${shop.id}`
-    );
-  }
-
-  const bd = SELLER_WORKSPACES["shop-bach-dang"];
-  for (const d of bd.daily7d) {
-    assert.equal(d.netRevenue, Math.round(d.gmv * 0.95) - d.refundAmount);
-  }
-  assert.ok(computeLowStockAlerts("shop-bach-dang").length > 0);
-});
-
-// 8. Admin reconciliation & queues
-check("Admin reconciliation double-entry math and queues reconcile", () => {
-  assert.ok(ADMIN_SHOP_APPROVALS.length >= 6);
-  assert.ok(ADMIN_DISPUTES.length >= 6);
-  assert.ok(ADMIN_AUDIT_LOGS.length >= 10);
-
-  for (const row of ADMIN_RECONCILIATION) {
-    assert.equal(
-      row.sellerPayable,
-      row.grossCollected - row.gatewayFee - row.platformCommission - row.refunded,
-      `Reconciliation row mismatch on ${row.batchCode}`
-    );
-  }
-  const summary = computeReconciliationSummary(ADMIN_RECONCILIATION);
-  assert.equal(
-    summary.totalSellerPayable,
-    summary.totalGross - summary.totalGatewayFee - summary.totalCommission - summary.totalRefunded
-  );
-  assert.equal(summary.flaggedBatches, 1);
-  assert.equal(summary.totalDiscrepancy, 149000);
-
-  const daily = computeAdminDailySeries(ADMIN_RECONCILIATION);
-  assert.equal(
-    daily.reduce((s, d) => s + d.grossCollected, 0),
-    summary.totalGross
-  );
-  assert.equal(
-    daily.reduce((s, d) => s + d.sellerPayable, 0),
-    summary.totalSellerPayable
-  );
-});
-
-// 9. Wave 2 product metadata, combos, non-returnable exceptions, shop factory profiles & assets
-check("Wave 2 product metadata, combos, gallery paths, and shop profiles", () => {
+// 7. Product metadata, gallery paths & shop profiles
+check("Product metadata, gallery paths, and shop profiles", () => {
   const prodIds = new Set(PRODUCTS.map((p) => p.id));
   const salesRanks = new Set();
-  let comboCount = 0;
-  let nonReturnableCount = 0;
-  let videoCount = 0;
 
   for (const p of PRODUCTS) {
     assert.ok(p.material && p.materialLabel, `Missing material on ${p.id}`);
@@ -424,24 +247,6 @@ check("Wave 2 product metadata, combos, gallery paths, and shop profiles", () =>
     assert.ok(Number.isInteger(p.salesRank), `Missing salesRank on ${p.id}`);
     salesRanks.add(p.salesRank);
 
-    if (p.gender === "unisex") {
-      assert.ok(
-        p.modelInfo.some((m) => m.gender === "nam") && p.modelInfo.some((m) => m.gender === "nu"),
-        `Unisex product ${p.id} should include both male and female modelInfo`
-      );
-    }
-    if (p.isCombo) {
-      comboCount += 1;
-      assert.ok(p.comboSlots && p.comboSlots.length >= 2, `Combo ${p.id} needs comboSlots`);
-    }
-    if (p.returnEligible === false) {
-      nonReturnableCount += 1;
-      assert.ok(p.returnExclusionReason, `Non-returnable ${p.id} needs reason`);
-    }
-    if (p.hasVideo) {
-      videoCount += 1;
-      assert.ok(existsSync(resolve(PUBLIC_DIR, p.videoUrl.replace(/^\//, ""))));
-    }
     for (const imgPath of p.gallery) {
       assert.ok(
         existsSync(resolve(PUBLIC_DIR, imgPath.replace(/^\//, ""))),
@@ -454,9 +259,6 @@ check("Wave 2 product metadata, combos, gallery paths, and shop profiles", () =>
   }
 
   assert.equal(salesRanks.size, 18, "salesRank must be unique across all 18 products");
-  assert.ok(comboCount >= 2, "At least 2 multi-size combo products");
-  assert.ok(nonReturnableCount >= 2, "At least 2 non-returnable outlet/sealed pack samples");
-  assert.ok(videoCount >= 4, "At least 4 products with video preview");
 
   for (const s of SHOPS) {
     assert.equal(s.returnDays, 7, `Shop ${s.id} must have 7-day return policy`);
@@ -466,161 +268,16 @@ check("Wave 2 product metadata, combos, gallery paths, and shop profiles", () =>
   }
 });
 
-// 10. Wave 2 tier discounts, voucher validation reasons & gift card cart math
-check("Wave 2 tier discounts, voucher validation reasons, and gift cards reconcile", () => {
-  const res = calculateCartSummary({
-    items: [
-      {
-        skuCode: "BD-AT01-TRANG-L",
-        productId: "prod-at-trang",
-        productSlug: "ao-thun-cotton-compact-trang",
-        productName: "Áo thun Cotton Compact 220gsm Trắng",
-        shopId: "shop-bach-dang",
-        colorCode: "trang",
-        colorName: "Trắng tinh",
-        size: "L",
-        image: "/products/ao-thun-cotton-trang.png",
-        unitPrice: 179000,
-        quantity: 3,
-        maxStock: 26,
-        selected: true,
-      },
-    ],
-    provinceCode: "HCM",
-    selectedShopVouchers: { "shop-bach-dang": "BACHDANG20" },
-    platformVoucherCode: "NEXUS30",
-    freeshipVoucherCode: "FREESHIP25",
-    useCoins: false,
-    availableCoins: 42000,
-    applyTierDiscounts: true,
-    giftCardDiscount: 100000,
-    birthdayGiftEligible: true,
-  });
-
-  // 3 * 179000 = 537000; 15% tier discount = floor(537000 * 0.15) = 80550
-  assert.equal(res.subtotal, 537000);
-  assert.equal(res.tierDiscountTotal, 80550);
-  assert.equal(res.giftCardDiscount, 100000);
-  assert.equal(res.freeGifts.length, 2); // order threshold + birthday gift
-  assert.equal(res.grandTotal, res.subtotal + res.shippingFee - res.totalDiscount);
-
-  // B15: retired false-promise membership/student vouchers must not exist in VOUCHERS
-  for (const retiredCode of ["EDU15", "SINHNHAT50", "NEXUSVIP12"]) {
-    assert.equal(
-      VOUCHERS.some((v) => v.code.toUpperCase() === retiredCode),
-      false,
-      `Retired voucher ${retiredCode} must not be present in VOUCHERS`
-    );
-    const retiredCheck = validateVoucher(retiredCode, { eligibleAmount: 500000 });
-    assert.equal(retiredCheck.valid, false);
-  }
-
-  const minReject = validateVoucher("NEXUS30", { eligibleAmount: 200000 });
-  assert.equal(minReject.valid, false);
-  assert.ok(minReject.reason && minReject.reason.includes("150.000₫"));
-});
-
-// 11. Membership (Hội viên Nexus), reviews, QAs & gift cards
-check("Hội viên Nexus tiers, sample reviews/QAs, and gift cards", () => {
-  assert.equal(MEMBERSHIP_TIERS.length, 4);
-  assert.deepEqual(
-    MEMBERSHIP_TIERS.map((t) => t.minSpend4Q),
-    [0, 1000000, 3000000, 6000000]
-  );
-  assert.deepEqual(
-    MEMBERSHIP_TIERS.map((t) => t.cashbackRate),
-    [0.01, 0.02, 0.04, 0.06]
-  );
-  assert.equal(getTierBySpend(INITIAL_MEMBERSHIP_STATE.spend4Q).id, "bac");
-
-  const prodIds = new Set(PRODUCTS.map((p) => p.id));
-  assert.ok(SAMPLE_REVIEWS.length >= 10);
-  for (const rev of SAMPLE_REVIEWS) {
-    assert.ok(prodIds.has(rev.productId), `Invalid review productId ${rev.productId}`);
-    assert.equal(rev.isSampleData, true);
-    for (const img of rev.images) {
-      assert.ok(existsSync(resolve(PUBLIC_DIR, img.replace(/^\//, ""))));
-    }
-  }
-  const revSum = computeReviewSummary(SAMPLE_REVIEWS, "prod-at-trang");
-  assert.equal(revSum.count, 3);
-  assert.ok(revSum.average >= 4.0);
-
-  assert.ok(SAMPLE_QAS.length >= 4);
-  assert.ok(GIFT_CARD_DENOMINATIONS.every((v) => Number.isInteger(v) && v >= 100000));
-  assert.ok(GIFT_CARD_POLICY.validityDays < 365);
-  assert.ok(INITIAL_GIFT_CARDS.every((gc) => Number.isInteger(gc.remainingVnd)));
-  assert.equal(EDU_DISCOUNT_CONFIG.voucherCode.includes("EDU15"), false);
-  assert.equal(
-    MEMBERSHIP_TIERS.some((t) =>
-      t.perks.some((p) => p.includes("SINHNHAT50") || p.includes("NEXUSVIP12"))
-    ),
-    false
-  );
-});
-
-// 12. Content, CSR Sợi Xanh statement math, non-diacritic search & per-shop sizing
-check("Content, CSR Sợi Xanh statement math, search synonyms, and per-shop sizing", () => {
-  const prodIds = new Set(PRODUCTS.map((p) => p.id));
-  assert.ok(ANNOUNCEMENT_BAR.length >= 3);
-  assert.equal(MEGA_MENU_GROUPS.length, 4);
-  assert.ok(TRENDING_KEYWORDS.length >= 6);
-  assert.ok(COLLECTIONS.length >= 5);
-  assert.equal(JOURNAL_ARTICLES.length, 4);
-  for (const art of JOURNAL_ARTICLES) {
-    assert.ok(art.embeddedProductIds.length >= 3);
-    assert.ok(art.embeddedProductIds.every((id) => prodIds.has(id)));
-  }
-
-  const csr = CAMPAIGNS.find((c) => c.slug === "soi-xanh-nexus");
-  assert.ok(csr && csr.csrProgress);
-  const statementSum = csr.csrProgress.statementRows.reduce((s, r) => s + r.amountVnd, 0);
-  assert.equal(
-    statementSum,
-    csr.csrProgress.currentRaisedVnd,
-    "CSR Sợi Xanh statement rows must sum exactly to currentRaisedVnd"
-  );
-
-  const hasPlatformFaq = HELP_FAQ_ITEMS.some((f) => f.scope === "san");
-  const hasShopFaq = HELP_FAQ_ITEMS.some((f) => f.scope === "gian-hang");
-  assert.ok(hasPlatformFaq && hasShopFaq);
-
-  // Search helper tests
+// 8. Non-diacritic Vietnamese search helpers
+check("Vietnamese search synonyms and typo suggestions", () => {
   assert.equal(normalizeVietnamese("Áo Thun Đen"), "ao thun den");
   assert.ok(searchProducts("ao phong").length >= 3, "Synonym ao phong must match áo thun");
   assert.ok(searchProducts("quan dui").length >= 3, "Synonym quan dui must match quần short");
   assert.ok(suggestSpelling("ao thunn"), "Typo ao thunn should yield suggestion");
-
-  // Sizing & delivery helper tests
-  const slimRec = recommendSize({
-    heightCm: 171,
-    weightKg: 66,
-    shape: "day",
-    garmentGroup: "top",
-    shopId: "shop-ha-noi",
-  });
-  const relaxedRec = recommendSize({
-    heightCm: 171,
-    weightKg: 66,
-    shape: "gay",
-    garmentGroup: "top",
-    shopId: "shop-sai-gon",
-  });
-  assert.ok(["S", "M", "L", "XL", "2XL"].includes(slimRec.size));
-  assert.ok(["S", "M", "L", "XL", "2XL"].includes(relaxedRec.size));
-
-  const deliv = estimateDelivery({
-    shopId: "shop-sai-gon",
-    provinceCode: "HCM",
-    orderSubtotal: 250000,
-    deliveryMethod: "fast",
-  });
-  assert.equal(deliv.fastAvailable, true);
-  assert.equal(deliv.isPlatformFreeShipReached, true);
 });
 
-// 13. Wave 3 editorial media: onModelImage, gallery[1], category tiles, banners & workshop assets
-check("Wave 3 editorial models, banners, category tiles, and workshop media exist", () => {
+// 10. Editorial media assets on disk
+check("Editorial models, banners, category tiles, and workshop media exist", () => {
   const seenModels = new Set();
   for (const p of PRODUCTS) {
     assert.ok(p.onModelImage, `Missing onModelImage on ${p.id}`);
@@ -673,7 +330,7 @@ check("Wave 3 editorial models, banners, category tiles, and workshop media exis
   assert.ok(existsSync(resolve(PUBLIC_DIR, WORKSHOP_MEDIA.loomVideo.poster.replace(/^\//, ""))));
 });
 
-// 14. Open-redirect sanitization (dot-segment normalization, protocol-relative, absolute URLs, control chars)
+// 11. Open-redirect sanitization (dot-segment normalization, protocol-relative, absolute URLs, control chars)
 check("sanitizeNextPath blocks open-redirect vectors and preserves internal paths", () => {
   const malicious = [
     "/..//evil.com",

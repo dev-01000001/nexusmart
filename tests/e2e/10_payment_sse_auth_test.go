@@ -165,6 +165,7 @@ func TestE2E_PaymentSSEAuthAndOwnership(t *testing.T) {
 	checkoutResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", owner.AccessToken, map[string]string{
 		"Idempotency-Key": "sse-auth-" + uuid.NewString(),
 	}, CheckoutRequest{
+		SalesChannel:  "MARKETPLACE",
 		AddressID:     addr.ID,
 		FromCart:      false,
 		Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},

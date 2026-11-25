@@ -32,7 +32,11 @@ func TestZaloPayNotificationContentAndEmails(t *testing.T) {
 		},
 		txChecker: &repo.inTx,
 	}
-	svc := NewNotificationService(repo, mail, resolver, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	siteResolver := &stubSiteResolver{
+		hosts: map[string]string{"shop-zp": "binh-minh.nexusmart.vn"},
+	}
+	svc := NewNotificationService(repo, mail, resolver, slog.New(slog.NewTextHandler(io.Discard, nil)),
+		WithSiteLinks(siteResolver, SiteLinkConfig{}))
 
 	// Verify helper retains VietQR & COD labels while adding ZaloPay (case-insensitive).
 	labelCases := []struct {
@@ -54,13 +58,14 @@ func TestZaloPayNotificationContentAndEmails(t *testing.T) {
 
 	// 1. order.created with payment_method = "ZALOPAY" -> in-app + email show "ví ZaloPay" and formatted VND.
 	orderPayload, _ := json.Marshal(map[string]any{
-		"checkout_group_id": "grp-zp-1",
-		"order_id":          "ord-zp-1",
-		"order_code":        "NM-20261124-ZP01",
-		"buyer_id":          "buyer-zp",
-		"shop_id":           "shop-zp",
-		"payment_method":    "ZALOPAY",
-		"total_payable_vnd": 450000,
+		"checkout_group_id":  "grp-zp-1",
+		"order_id":           "ord-zp-1",
+		"order_code":         "NM-20261124-ZP01",
+		"buyer_id":           "buyer-zp",
+		"shop_id":            "shop-zp",
+		"storefront_shop_id": "shop-zp",
+		"payment_method":     "ZALOPAY",
+		"total_payable_vnd":  450000,
 	})
 	if dup, err := svc.ProcessEvent(context.Background(), "order.created", Envelope{
 		EventID:   "evt-zp-order-created-1",
@@ -110,8 +115,8 @@ func TestZaloPayNotificationContentAndEmails(t *testing.T) {
 		t.Fatalf("expected 2 buyer notifications after payment.succeeded, got len=%d total=%d err=%v", len(buyerNotifs), total, err)
 	}
 	payNotif := buyerNotifs[1]
-	if payNotif.Link != "/don-hang/ord-zp-1" {
-		t.Errorf("ZALOPAY payment.succeeded link = %q, want /don-hang/ord-zp-1", payNotif.Link)
+	if payNotif.Link != "https://binh-minh.nexusmart.vn/don-hang/ord-zp-1" {
+		t.Errorf("ZALOPAY payment.succeeded link = %q, want https://binh-minh.nexusmart.vn/don-hang/ord-zp-1", payNotif.Link)
 	}
 	if payNotif.Title != "Thanh toán thành công" || !strings.Contains(payNotif.Body, "ví ZaloPay") || !strings.Contains(payNotif.Body, "450.000₫") || !strings.Contains(payNotif.Body, "261124000000123") {
 		t.Errorf("ZALOPAY payment.succeeded in-app mismatch: title=%q body=%q", payNotif.Title, payNotif.Body)

@@ -10,7 +10,9 @@ import (
 	"github.com/nexusmart/core/pkg/common/auth"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
 )
 
 type fakeUserServer struct {
@@ -18,6 +20,7 @@ type fakeUserServer struct {
 	shopErr error
 	shop    *userv1.Shop
 	user    *userv1.User
+	site    *userv1.Site
 }
 
 func (f *fakeUserServer) GetShop(_ context.Context, req *userv1.GetShopRequest) (*userv1.GetShopResponse, error) {
@@ -35,6 +38,13 @@ func (f *fakeUserServer) GetProfile(_ context.Context, req *userv1.GetProfileReq
 		return &userv1.GetProfileResponse{User: f.user}, nil
 	}
 	return nil, status.Error(codes.NotFound, "user not found")
+}
+
+func (f *fakeUserServer) GetSiteByShop(_ context.Context, req *userv1.GetSiteByShopRequest) (*userv1.GetSiteByShopResponse, error) {
+	if f.site != nil && req.GetShopId() == "shop-42" {
+		return &userv1.GetSiteByShopResponse{Site: f.site}, nil
+	}
+	return nil, status.Error(codes.NotFound, "site not found")
 }
 
 func TestClientGetShopOwnerAndGetUserContactWithAuthInterceptor(t *testing.T) {
@@ -57,6 +67,10 @@ func TestClientGetShopOwnerAndGetUserContactWithAuthInterceptor(t *testing.T) {
 			Id:       "seller-42",
 			Email:    "seller42@nexusmart.local",
 			FullName: "Nguyễn Chủ Shop",
+		},
+		site: &userv1.Site{
+			PrimaryHost: "bach-dang.nexusmart.vn",
+			Status:      userv1.SiteStatus_SITE_STATUS_PUBLISHED,
 		},
 	}
 
@@ -97,9 +111,74 @@ func TestClientGetShopOwnerAndGetUserContactWithAuthInterceptor(t *testing.T) {
 		t.Fatalf("unexpected user contact: email=%q fullName=%q", email, fullName)
 	}
 
-	// 3. Transient error from UserService.GetShop must propagate.
+	// 3. GetSitePrimaryHost must call public GetSiteByShop WITHOUT a token through auth.GRPCUnaryServerInterceptor.
+	host, err := client.GetSitePrimaryHost(context.Background(), "shop-42")
+	if err != nil || host != "bach-dang.nexusmart.vn" {
+		t.Fatalf("GetSitePrimaryHost with auth interceptor: host=%q err=%v", host, err)
+	}
+
+	// 4. Transient error from UserService.GetShop must propagate.
 	fake.shopErr = status.Error(codes.Unavailable, "user service temporarily unavailable")
 	if _, _, err := client.GetShopOwner(context.Background(), "shop-42"); status.Code(err) != codes.Unavailable {
 		t.Fatalf("expected Unavailable error from GetShopOwner, got %v", err)
+	}
+}
+
+type fakeSiteServer struct {
+	userv1.UnimplementedUserServiceServer
+}
+
+func (fakeSiteServer) GetSiteByShop(_ context.Context, req *userv1.GetSiteByShopRequest) (*userv1.GetSiteByShopResponse, error) {
+	switch req.GetShopId() {
+	case "published":
+		return &userv1.GetSiteByShopResponse{Site: &userv1.Site{
+			PrimaryHost: " bach-dang.nexusmart.vn ",
+			Status:      userv1.SiteStatus_SITE_STATUS_PUBLISHED,
+		}}, nil
+	case "draft":
+		return &userv1.GetSiteByShopResponse{Site: &userv1.Site{
+			PrimaryHost: "draft.nexusmart.vn",
+			Status:      userv1.SiteStatus_SITE_STATUS_DRAFT,
+		}}, nil
+	case "broken":
+		return nil, status.Error(codes.Unavailable, "down")
+	default:
+		return nil, status.Error(codes.NotFound, "site not found")
+	}
+}
+
+func TestGetSitePrimaryHost(t *testing.T) {
+	lis := bufconn.Listen(1 << 20)
+	srv := grpc.NewServer()
+	userv1.RegisterUserServiceServer(srv, fakeSiteServer{})
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	c := &Client{conn: conn, client: userv1.NewUserServiceClient(conn), timeout: time.Second}
+
+	cases := []struct {
+		shop    string
+		want    string
+		wantErr bool
+	}{
+		{"published", "bach-dang.nexusmart.vn", false},
+		{"draft", "", false},
+		{"missing", "", false},
+		{"", "", false},
+		{"broken", "", true},
+	}
+	for _, tc := range cases {
+		got, err := c.GetSitePrimaryHost(context.Background(), tc.shop)
+		if (err != nil) != tc.wantErr || got != tc.want {
+			t.Errorf("shop %q: got (%q, %v), want (%q, err=%v)", tc.shop, got, err, tc.want, tc.wantErr)
+		}
 	}
 }

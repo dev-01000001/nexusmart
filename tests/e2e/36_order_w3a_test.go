@@ -119,6 +119,7 @@ func TestE2E_OrderWave3a(t *testing.T) {
 		idemCOD := "w3a-d11-cod-vqr-" + uuid.NewString()
 
 		overCODBody := CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			FromCart:      false,
 			Items:         []CheckoutItemInputDTO{{SKUID: expensiveSKU.ID, Quantity: 2}}, // 24M > 20M COD limit
@@ -161,6 +162,7 @@ func TestE2E_OrderWave3a(t *testing.T) {
 		idemStock := "w3a-d11-stock-" + uuid.NewString()
 
 		overStockBody := CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			FromCart:      false,
 			Items:         []CheckoutItemInputDTO{{SKUID: lowStockSKU.ID, Quantity: 5}}, // exceeds stock=1
@@ -204,6 +206,7 @@ func TestE2E_OrderWave3a(t *testing.T) {
 		raceFailResp, err := env.client.DoJSON(ctx, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": idemRace,
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			FromCart:      false,
 			Items:         []CheckoutItemInputDTO{{SKUID: raceSKU.ID, Quantity: 2}},
@@ -218,6 +221,7 @@ func TestE2E_OrderWave3a(t *testing.T) {
 
 		stockBeforeRace := env.getProductSKU(t, raceProd.ID, raceSKU.ID).AvailableStock
 		raceRetryBody := CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			FromCart:      false,
 			Items:         []CheckoutItemInputDTO{{SKUID: raceSKU.ID, Quantity: 1}},
@@ -295,6 +299,7 @@ func TestE2E_OrderWave3a(t *testing.T) {
 		ordClient := ordW2bDialOrderGRPC(t)
 		rolelessTok := ordW3aMintRolelessBuyerJWT(env.cfg.JWTSecret, buyer.UserID)
 		_, grpcErr := ordClient.CreateCheckout(ordW2bAuthCtx(ctx, rolelessTok), &orderv1.CreateCheckoutRequest{
+			SalesChannel:   "MARKETPLACE",
 			IdempotencyKey: idemPersisted,
 			AddressId:      addr.ID,
 			FromCart:       false,
@@ -320,6 +325,7 @@ func TestE2E_OrderWave3a(t *testing.T) {
 		// Retry the EXACT SAME Idempotency-Key through Gateway with valid buyer JWT & valid COD payload:
 		// MUST return 409 CHECKOUT_FAILED (FAILED) and NEVER create a second order set!
 		retryBody := CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			FromCart:      false,
 			Items:         []CheckoutItemInputDTO{{SKUID: d11SKU.ID, Quantity: 1}},
@@ -369,6 +375,7 @@ func TestE2E_OrderWave3a(t *testing.T) {
 		stockBefore := env.getProductSKU(t, prod.ID, sku.ID).AvailableStock
 		idemInProg := "w3a-inprog-" + uuid.NewString()
 		baseBody := CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			FromCart:      false,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 2}},
@@ -462,6 +469,7 @@ func TestE2E_OrderWave3a(t *testing.T) {
 		stockBeforeSeq := env.getProductSKU(t, prod.ID, sku.ID).AvailableStock
 		idemSeq := "w3a-seq-replay-" + uuid.NewString()
 		seqBody := CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			FromCart:      false,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
@@ -508,6 +516,7 @@ func TestE2E_OrderWave3a(t *testing.T) {
 		coResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3a-d3-voucher-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:      "MARKETPLACE",
 			AddressID:         addr.ID,
 			FromCart:          false,
 			Items:             []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
@@ -568,6 +577,7 @@ func TestE2E_OrderWave3a(t *testing.T) {
 		env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", cartBuyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3a-buynow-keep-cart-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     cartAddr.ID,
 			FromCart:      false,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
@@ -587,6 +597,7 @@ func TestE2E_OrderWave3a(t *testing.T) {
 		env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", cartBuyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3a-fromcart-clear-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     cartAddr.ID,
 			FromCart:      true,
 			PaymentMethod: "COD",

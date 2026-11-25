@@ -1,0 +1,163 @@
+syntax = "proto3";
+
+package nexusmart.assistant.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/nexusmart/core/gen/go/nexusmart/assistant/v1;assistantv1";
+
+message ChatMessage {
+  string role = 1;
+  string content = 2;
+}
+
+message UsageMetrics {
+  int32 input_tokens = 1;
+  int32 output_tokens = 2;
+  int32 total_tokens = 3;
+  int64 cost_vnd = 4;
+}
+
+message HandoffRequest {
+  string shop_id = 1;
+  string conversation_id = 2;
+  string reason = 3;
+  repeated ChatMessage messages = 4;
+}
+
+message HandoffResponse {
+  string ticket_id = 1;
+  string conversation_id = 2;
+  string shop_id = 3;
+  string summary = 4;
+  string status = 5;
+  bool within_business_hours = 6;
+  string estimated_response = 7;
+}
+
+message SellerReportRequest {
+  string question = 1;
+  string period = 2;
+}
+
+message TopProductStat {
+  string product_id = 1;
+  string product_name = 2;
+  int32 units_sold = 3;
+  int64 revenue_vnd = 4;
+}
+
+message SellerReportMetrics {
+  int32 total_orders = 1;
+  int32 completed_orders = 2;
+  int32 cancelled_orders = 3;
+  double cancel_rate_pct = 4;
+  int64 gross_revenue_vnd = 5;
+  int64 available_balance_vnd = 6;
+  int64 pending_balance_vnd = 7;
+  repeated TopProductStat top_products = 8;
+}
+
+message SellerReportResponse {
+  string shop_id = 1;
+  string period = 2;
+  string answer = 3;
+  SellerReportMetrics metrics = 4;
+  UsageMetrics usage = 5;
+}
+
+message DescribeProductRequest {
+  string name = 1;
+  string category = 2;
+  map<string, string> attributes = 3;
+  int64 price_vnd = 4;
+  string tone = 5;
+}
+
+message DescribeProductResponse {
+  string title_suggestion = 1;
+  string description = 2;
+  repeated string highlights = 3;
+  bool ai_generated = 4;
+  UsageMetrics usage = 5;
+}
+
+message ChatHistoryMessage {
+  string sender = 1;
+  string body = 2;
+}
+
+message SuggestReplyRequest {
+  string conversation_id = 1;
+  string product_id = 2;
+  string customer_message = 3;
+  repeated ChatHistoryMessage history = 4;
+}
+
+message ReplySuggestion {
+  string id = 1;
+  string text = 2;
+  string tone = 3;
+}
+
+message SuggestReplyResponse {
+  repeated ReplySuggestion suggestions = 1;
+  bool needs_more_info = 2;
+  bool injection_detected = 3;
+  bool ai_generated = 4;
+  UsageMetrics usage = 5;
+}
+
+message GetReviewSummaryRequest {
+  string product_id = 1;
+}
+
+message GetReviewSummaryResponse {
+  string product_id = 1;
+  bool available = 2;
+  int32 review_count = 3;
+  int32 min_reviews_required = 4;
+  double average_rating = 5;
+  string summary = 6;
+  repeated string pros = 7;
+  repeated string cons = 8;
+  bool ai_generated = 9;
+  google.protobuf.Timestamp updated_at = 10;
+}
+
+message ReviewInput {
+  string review_id = 1;
+  int32 rating = 2;
+  string comment = 3;
+}
+
+message RefreshReviewSummaryRequest {
+  string product_id = 1;
+  string shop_id = 2;
+  repeated ReviewInput reviews = 3;
+}
+
+message RefreshReviewSummaryResponse {
+  GetReviewSummaryResponse summary = 1;
+}
+
+message SubmitFeedbackRequest {
+  string conversation_id = 1;
+  string message_id = 2;
+  bool helpful = 3;
+  string comment = 4;
+}
+
+message SubmitFeedbackResponse {
+  bool ok = 1;
+}
+
+service AssistantService {
+  rpc Handoff(HandoffRequest) returns (HandoffResponse);
+  rpc SellerReport(SellerReportRequest) returns (SellerReportResponse);
+  rpc DescribeProduct(DescribeProductRequest) returns (DescribeProductResponse);
+  rpc SuggestReply(SuggestReplyRequest) returns (SuggestReplyResponse);
+  rpc GetReviewSummary(GetReviewSummaryRequest) returns (GetReviewSummaryResponse);
+  rpc RefreshReviewSummary(RefreshReviewSummaryRequest) returns (RefreshReviewSummaryResponse);
+  rpc SubmitFeedback(SubmitFeedbackRequest) returns (SubmitFeedbackResponse);
+}

@@ -103,6 +103,32 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		return nil, status.Error(codes.InvalidArgument, "coins_to_use cannot be negative")
 	}
 
+	salesChannel, storefrontShopID, err := normalizeSalesChannel(req.GetSalesChannel(), req.GetStorefrontShopId())
+	if err != nil {
+		return nil, err
+	}
+	if salesChannel == SalesChannelStorefront {
+		if req.GetCoinsToUse() > 0 {
+			return nil, status.Error(codes.InvalidArgument, "STOREFRONT_COINS_NOT_ALLOWED: platform coins cannot be used on STOREFRONT orders")
+		}
+		if strings.TrimSpace(req.GetPlatformVoucherId()) != "" {
+			return nil, status.Error(codes.InvalidArgument, "STOREFRONT_PLATFORM_VOUCHER_NOT_ALLOWED: platform vouchers cannot be used on STOREFRONT orders")
+		}
+		if strings.TrimSpace(req.GetFreeshipVoucherId()) != "" {
+			return nil, status.Error(codes.InvalidArgument, "STOREFRONT_FREESHIP_VOUCHER_NOT_ALLOWED: platform freeship vouchers cannot be used on STOREFRONT orders")
+		}
+		for vShopID, vID := range req.GetShopVoucherIds() {
+			if strings.TrimSpace(vID) != "" && strings.TrimSpace(vShopID) != storefrontShopID {
+				return nil, status.Errorf(
+					codes.InvalidArgument,
+					"STOREFRONT_VOUCHER_SHOP_MISMATCH: voucher for shop %s cannot be used on storefront %s",
+					strings.TrimSpace(vShopID),
+					storefrontShopID,
+				)
+			}
+		}
+	}
+
 	reqHash := computeCheckoutRequestHash(buyerID, req)
 
 	// Fast path: check for already completed idempotent checkout without blocking.
@@ -111,7 +137,7 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 			return nil, err
 		}
 	} else if replay != nil {
-		s.clearOrderedCart(ctx, buyerID, req, s.orderedSKUIDsForReplay(ctx, replay))
+		s.clearOrderedCart(ctx, buyerID, req, storefrontShopID, s.orderedSKUIDsForReplay(ctx, replay))
 		return replay, nil
 	}
 
@@ -119,12 +145,12 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	unlock := s.idemLocks.Lock(buyerID + ":" + idemKey)
 	defer unlock()
 
-	checkoutGroupID, replay, err := s.acquireCheckoutGroup(ctx, buyerID, idemKey, reqHash, methodStr, caller)
+	checkoutGroupID, replay, err := s.acquireCheckoutGroup(ctx, buyerID, idemKey, reqHash, methodStr, salesChannel, storefrontShopID, caller)
 	if err != nil {
 		return nil, err
 	}
 	if replay != nil {
-		s.clearOrderedCart(ctx, buyerID, req, s.orderedSKUIDsForReplay(ctx, replay))
+		s.clearOrderedCart(ctx, buyerID, req, storefrontShopID, s.orderedSKUIDsForReplay(ctx, replay))
 		return replay, nil
 	}
 
@@ -189,8 +215,25 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		StreetAddress:  addr.GetStreetAddress(),
 	}
 
+	// For STOREFRONT orders, verify storefront_shop_id is an ACTIVE shop BEFORE touching stock.
+	if salesChannel == SalesChannelStorefront {
+		shopResp, sErr := s.clients.User.GetShop(stripServiceAuth(ctx), &userv1.GetShopRequest{ShopId: storefrontShopID})
+		if sErr != nil {
+			if status.Code(sErr) == codes.NotFound {
+				failGroupBeforePersist("STOREFRONT_SHOP_NOT_FOUND")
+				return nil, status.Errorf(codes.InvalidArgument, "STOREFRONT_SHOP_INACTIVE: storefront shop %s not found or not active", storefrontShopID)
+			}
+			failGroupBeforePersist("STOREFRONT_SHOP_LOOKUP_FAILED")
+			return nil, sErr
+		}
+		if shopResp.GetShop() == nil || shopResp.GetShop().GetStatus() != userv1.ShopStatus_SHOP_STATUS_ACTIVE {
+			failGroupBeforePersist("STOREFRONT_SHOP_INACTIVE")
+			return nil, status.Errorf(codes.InvalidArgument, "STOREFRONT_SHOP_INACTIVE: storefront shop %s is not active", storefrontShopID)
+		}
+	}
+
 	// Step B: Resolve items from cart or explicit items[] and fetch authoritative SKU details.
-	requestedItems, resolveFailReason, err := s.resolveCheckoutInputs(ctx, buyerID, req)
+	requestedItems, resolveFailReason, err := s.resolveCheckoutInputs(ctx, buyerID, req, salesChannel, storefrontShopID)
 	if err != nil {
 		failGroupBeforePersist(fallbackStr(resolveFailReason, "ITEMS_RESOLVE_FAILED"))
 		return nil, err
@@ -211,6 +254,20 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	skuByID := make(map[string]*productv1.SKU, len(skuResp.GetSkus()))
 	for _, sku := range skuResp.GetSkus() {
 		skuByID[sku.GetId()] = sku
+	}
+
+	// For STOREFRONT orders, reject cross-shop items BEFORE shop/stock checks so 0 stock is touched.
+	if salesChannel == SalesChannelStorefront {
+		for _, reqItem := range requestedItems {
+			if sku := skuByID[reqItem.GetSkuId()]; sku != nil && sku.GetShopId() != "" && sku.GetShopId() != storefrontShopID {
+				failGroupBeforePersist("STOREFRONT_SHOP_MISMATCH")
+				return nil, status.Errorf(
+					codes.InvalidArgument,
+					"STOREFRONT_SHOP_MISMATCH: all checkout items must belong to storefront shop %s",
+					storefrontShopID,
+				)
+			}
+		}
 	}
 
 	// F12 + Item G (#8): Synchronously verify every shop in this checkout is ACTIVE via parallel User.GetShop
@@ -238,6 +295,18 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	if err != nil {
 		failGroupBeforePersist("INVALID_ITEMS")
 		return nil, err
+	}
+
+	// Defense-in-depth: for STOREFRONT orders, EVERY plan must belong to storefront_shop_id.
+	if salesChannel == SalesChannelStorefront {
+		if len(plans) != 1 || plans[0].shopID != storefrontShopID {
+			failGroupBeforePersist("STOREFRONT_SHOP_MISMATCH")
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"STOREFRONT_SHOP_MISMATCH: all checkout items must belong to storefront shop %s",
+				storefrontShopID,
+			)
+		}
 	}
 
 	// F6: Read authoritative payment method configuration directly from PaymentService on every checkout
@@ -355,7 +424,7 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 	var breakdown *promotionv1.DiscountBreakdown
 	var promoWarnings []string
 	if hasPromotions {
-		promoReq := buildReservePromotionRequest(checkoutGroupID, buyerID, req, plans, flashSaleItems, shopProgramItems)
+		promoReq := buildReservePromotionRequest(checkoutGroupID, buyerID, req, plans, flashSaleItems, shopProgramItems, salesChannel, storefrontShopID)
 		promoResp, pErr := s.clients.Promotion.ReservePromotion(clients.WithInternalAdminContext(ctx), promoReq)
 		if pErr != nil {
 			s.compensateBeforePersistAndFail(ctx, checkoutGroupID, true, isAmbiguousReserveError(pErr), "PROMOTION_RESERVE_FAILED")
@@ -428,6 +497,8 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		paymentExpiresAt,
 		addrJSON,
 		plans,
+		salesChannel,
+		storefrontShopID,
 		now,
 		traceID,
 		traceparent,
@@ -484,6 +555,8 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		methodStr,
 		paymentExpiresAt,
 		persistedAggs,
+		salesChannel,
+		storefrontShopID,
 	)
 	var (
 		payResp *paymentv1.CreatePaymentResponse
@@ -655,7 +728,7 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 
 	// Saga Step 5 (P1-3): Best-effort ClearCart for ordered SKUs ONLY when checking out from cart
 	// (never on Buy Now / from_cart=false or FAILED), with RetryIdempotent(3) on a detached context.
-	s.clearOrderedCart(ctx, buyerID, req, orderedSKUIDsFromAggs(finalAggs))
+	s.clearOrderedCart(ctx, buyerID, req, storefrontShopID, orderedSKUIDsFromAggs(finalAggs))
 
 	s.notifyOutbox()
 	return resp, nil
@@ -685,6 +758,8 @@ func computeCheckoutRequestHash(buyerID string, req *orderv1.CreateCheckoutReque
 		FreeshipVoucherID string                    `json:"freeship_voucher_id"`
 		CoinsToUse        int64                     `json:"coins_to_use"`
 		PaymentMethod     string                    `json:"payment_method"`
+		SalesChannel      string                    `json:"sales_channel"`
+		StorefrontShopID  string                    `json:"storefront_shop_id"`
 		ShippingChoices   []canonicalShippingChoice `json:"shipping_choices"`
 	}
 
@@ -740,6 +815,7 @@ func computeCheckoutRequestHash(buyerID string, req *orderv1.CreateCheckoutReque
 		return shippingChoices[i].ServiceCode < shippingChoices[j].ServiceCode
 	})
 
+	sc, sfShopID, _ := normalizeSalesChannel(req.GetSalesChannel(), req.GetStorefrontShopId())
 	raw, _ := json.Marshal(canonicalPayload{
 		BuyerID:           strings.TrimSpace(buyerID),
 		AddressID:         strings.TrimSpace(req.GetAddressId()),
@@ -750,6 +826,8 @@ func computeCheckoutRequestHash(buyerID string, req *orderv1.CreateCheckoutReque
 		FreeshipVoucherID: strings.TrimSpace(req.GetFreeshipVoucherId()),
 		CoinsToUse:        req.GetCoinsToUse(),
 		PaymentMethod:     statemachine.PaymentMethodToString(req.GetPaymentMethod()),
+		SalesChannel:      sc,
+		StorefrontShopID:  sfShopID,
 		ShippingChoices:   shippingChoices,
 	})
 	sum := sha256.Sum256(raw)
@@ -839,7 +917,7 @@ func waitCheckoutAcquireBackoff(ctx context.Context, wait time.Duration, deadlin
 	}
 }
 
-func (s *OrderService) acquireCheckoutGroup(ctx context.Context, buyerID, idemKey, reqHash, methodStr string, caller callerIdentity) (string, *orderv1.CreateCheckoutResponse, error) {
+func (s *OrderService) acquireCheckoutGroup(ctx context.Context, buyerID, idemKey, reqHash, methodStr, salesChannel, storefrontShopID string, caller callerIdentity) (string, *orderv1.CreateCheckoutResponse, error) {
 	maxWait, backoff, maxBackoff := s.checkoutAcquireTimings()
 	deadline := time.Now().Add(maxWait)
 
@@ -895,13 +973,15 @@ func (s *OrderService) acquireCheckoutGroup(ctx context.Context, buyerID, idemKe
 
 		groupID := uuid.NewString()
 		_, err = s.store.CreateCheckoutGroup(ctx, db.CreateCheckoutGroupParams{
-			ID:              groupID,
-			BuyerID:         buyerID,
-			IdempotencyKey:  idemKey,
-			RequestHash:     reqHash,
-			Status:          "IN_PROGRESS",
-			PaymentMethod:   statemachine.NormalizePaymentMethod(methodStr),
-			TotalPayableVND: 0,
+			ID:               groupID,
+			BuyerID:          buyerID,
+			IdempotencyKey:   idemKey,
+			RequestHash:      reqHash,
+			Status:           "IN_PROGRESS",
+			PaymentMethod:    statemachine.NormalizePaymentMethod(methodStr),
+			TotalPayableVND:  0,
+			SalesChannel:     salesChannel,
+			StorefrontShopID: storefrontShopID,
 		})
 		if err == nil {
 			return groupID, nil, nil
@@ -930,6 +1010,7 @@ func (s *OrderService) buildReplayResponse(ctx context.Context, group *db.Checko
 	if err != nil {
 		return nil, mapStoreError(err)
 	}
+	groupChannel := effectiveSalesChannel(group.SalesChannel)
 	savedWarnings := parseWarningsJSON(group.WarningsJSON)
 	if len(group.ResponseSnapshotJSON) > 2 {
 		var resp orderv1.CreateCheckoutResponse
@@ -943,6 +1024,12 @@ func (s *OrderService) buildReplayResponse(ctx context.Context, group *db.Checko
 			}
 			if len(resp.Warnings) == 0 && len(savedWarnings) > 0 {
 				resp.Warnings = savedWarnings
+			}
+			if resp.SalesChannel == "" {
+				resp.SalesChannel = groupChannel
+			}
+			if resp.StorefrontShopId == "" {
+				resp.StorefrontShopId = group.StorefrontShopID
 			}
 			orders := make([]*orderv1.Order, 0, len(aggs))
 			for _, agg := range aggs {
@@ -969,7 +1056,7 @@ func parseWarningsJSON(raw []byte) []string {
 	return out
 }
 
-func (s *OrderService) clearOrderedCart(ctx context.Context, buyerID string, req *orderv1.CreateCheckoutRequest, skuIDs []string) {
+func (s *OrderService) clearOrderedCart(ctx context.Context, buyerID string, req *orderv1.CreateCheckoutRequest, storefrontShopID string, skuIDs []string) {
 	if !req.GetFromCart() || s.clients.Cart == nil || len(skuIDs) == 0 {
 		return
 	}
@@ -979,6 +1066,7 @@ func (s *OrderService) clearOrderedCart(ctx context.Context, buyerID string, req
 		_, cErr := s.clients.Cart.ClearItems(c, &cartv1.ClearItemsRequest{
 			UserId: buyerID,
 			SkuIds: skuIDs,
+			ShopId: storefrontShopID,
 		})
 		return cErr
 	}); err != nil {
@@ -1128,6 +1216,8 @@ func buildCheckoutResponseFromState(
 		TotalPayableVnd:  grp.TotalPayableVND,
 		IdempotentReplay: false,
 		Warnings:         append([]string(nil), warnings...),
+		SalesChannel:     effectiveSalesChannel(grp.SalesChannel),
+		StorefrontShopId: grp.StorefrontShopID,
 	}
 	if grp.PaymentExpiresAt != nil {
 		resp.PaymentExpiresAt = timestamppb.New(*grp.PaymentExpiresAt)
@@ -1260,11 +1350,15 @@ func (s *OrderService) compensateBeforePersistAndFail(
 	}
 }
 
-func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string, req *orderv1.CreateCheckoutRequest) ([]*orderv1.CheckoutItemInput, string, error) {
+func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string, req *orderv1.CreateCheckoutRequest, salesChannel, storefrontShopID string) ([]*orderv1.CheckoutItemInput, string, error) {
 	merged := make(map[string]*orderv1.CheckoutItemInput)
 
 	if req.GetFromCart() {
-		cartResp, err := s.clients.Cart.GetCart(ctx, &cartv1.GetCartRequest{UserId: buyerID})
+		cartReq := &cartv1.GetCartRequest{UserId: buyerID}
+		if salesChannel == SalesChannelStorefront {
+			cartReq.ShopId = storefrontShopID
+		}
+		cartResp, err := s.clients.Cart.GetCart(ctx, cartReq)
 		if err != nil {
 			return nil, "ITEMS_RESOLVE_FAILED", err
 		}
@@ -1289,7 +1383,13 @@ func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string
 
 		anySelected := false
 		for _, grp := range cart.GetShopGroups() {
+			if salesChannel == SalesChannelStorefront && grp.GetShopId() != "" && grp.GetShopId() != storefrontShopID {
+				continue
+			}
 			for _, ci := range grp.GetItems() {
+				if salesChannel == SalesChannelStorefront && ci.GetShopId() != "" && ci.GetShopId() != storefrontShopID {
+					continue
+				}
 				if ci.GetQuantity() > 0 && ci.GetSelected() {
 					anySelected = true
 					break
@@ -1304,7 +1404,13 @@ func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string
 		var unavailMissingShopSKUs []string
 		var selectedShopIDs []string
 		for _, grp := range cart.GetShopGroups() {
+			if salesChannel == SalesChannelStorefront && grp.GetShopId() != "" && grp.GetShopId() != storefrontShopID {
+				continue
+			}
 			for _, ci := range grp.GetItems() {
+				if salesChannel == SalesChannelStorefront && ci.GetShopId() != "" && ci.GetShopId() != storefrontShopID {
+					continue
+				}
 				if ci.GetQuantity() <= 0 {
 					continue
 				}
@@ -1358,6 +1464,9 @@ func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string
 				}
 			}
 			return nil, "ITEMS_RESOLVE_FAILED", status.Errorf(codes.FailedPrecondition, "SKU_INACTIVE: SKU %s is not available for purchase", unavailSelectedSKUs[0])
+		}
+		if len(merged) == 0 && salesChannel == SalesChannelStorefront {
+			return nil, "ITEMS_RESOLVE_FAILED", status.Errorf(codes.FailedPrecondition, "shopping cart has no items for storefront shop %s", storefrontShopID)
 		}
 		if len(merged) == 0 {
 			return nil, "ITEMS_RESOLVE_FAILED", status.Error(codes.FailedPrecondition, "shopping cart is empty")
@@ -1681,6 +1790,7 @@ func buildReservePromotionRequest(
 	plans []*shopCheckoutPlan,
 	flashItems []*promotionv1.FlashSaleReservationItem,
 	shopProgramItems []*promotionv1.ShopDiscountProgramReservationItem,
+	salesChannel, storefrontShopID string,
 ) *promotionv1.ReservePromotionRequest {
 	shopInputs := make([]*promotionv1.ShopDiscountInput, 0, len(plans))
 	for _, p := range plans {
@@ -1716,6 +1826,8 @@ func buildReservePromotionRequest(
 		FlashSaleItems:           flashItems,
 		ShopItems:                shopInputs,
 		ShopDiscountProgramItems: shopProgramItems,
+		SalesChannel:             salesChannel,
+		StorefrontShopId:         storefrontShopID,
 	}
 }
 
@@ -2128,6 +2240,7 @@ func buildCheckoutBatch(
 	paymentExpiresAt *time.Time,
 	addrJSON []byte,
 	plans []*shopCheckoutPlan,
+	salesChannel, storefrontShopID string,
 	now time.Time,
 	traceID, traceparent string,
 ) (store.CheckoutBatch, error) {
@@ -2181,6 +2294,8 @@ func buildCheckoutBatch(
 			ShippingAddressJSON:        addrJSON,
 			PaymentExpiresAt:           paymentExpiresAt,
 			ConfirmedAt:                confirmedAt,
+			SalesChannel:               salesChannel,
+			StorefrontShopID:           storefrontShopID,
 		}
 
 		itemParams := make([]db.InsertOrderItemParams, 0, len(p.items))
@@ -2225,13 +2340,14 @@ func buildCheckoutBatch(
 		}
 
 		createdPayload, err := json.Marshal(events.OrderCreatedPayload{
-			CheckoutGroupID: checkoutGroupID,
-			OrderID:         orderID,
-			OrderCode:       orderCode,
-			BuyerID:         buyerID,
-			ShopID:          p.shopID,
-			PaymentMethod:   methodStr,
-			TotalPayableVND: p.totalPayableVND,
+			CheckoutGroupID:  checkoutGroupID,
+			OrderID:          orderID,
+			OrderCode:        orderCode,
+			BuyerID:          buyerID,
+			ShopID:           p.shopID,
+			StorefrontShopID: storefrontShopID,
+			PaymentMethod:    methodStr,
+			TotalPayableVND:  p.totalPayableVND,
 		})
 		if err != nil {
 			return store.CheckoutBatch{}, err
@@ -2249,12 +2365,13 @@ func buildCheckoutBatch(
 
 		if initialStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
 			confirmedPayload, err := json.Marshal(events.OrderConfirmedPayload{
-				OrderID:         orderID,
-				OrderCode:       orderCode,
-				BuyerID:         buyerID,
-				ShopID:          p.shopID,
-				PaymentMethod:   methodStr,
-				TotalPayableVND: p.totalPayableVND,
+				OrderID:          orderID,
+				OrderCode:        orderCode,
+				BuyerID:          buyerID,
+				ShopID:           p.shopID,
+				StorefrontShopID: storefrontShopID,
+				PaymentMethod:    methodStr,
+				TotalPayableVND:  p.totalPayableVND,
 			})
 			if err != nil {
 				return store.CheckoutBatch{}, err
@@ -2291,6 +2408,8 @@ func buildShopAllocation(ord db.Order) *paymentv1.ShopAllocation {
 		CommissionVnd:       commTotal,
 		ShippingFeeVnd:      ship,
 		PlatformDiscountVnd: platformDiscount,
+		SalesChannel:        effectiveSalesChannel(ord.SalesChannel),
+		StorefrontShopId:    ord.StorefrontShopID,
 	}
 }
 
@@ -2300,6 +2419,7 @@ func buildCreatePaymentRequest(
 	method string,
 	expiresAt *time.Time,
 	aggs []store.OrderAggregate,
+	salesChannel, storefrontShopID string,
 ) (*paymentv1.CreatePaymentRequest, error) {
 	payMethod, err := paymentProtoMethod(method)
 	if err != nil {
@@ -2312,13 +2432,15 @@ func buildCreatePaymentRequest(
 	}
 
 	req := &paymentv1.CreatePaymentRequest{
-		OrderGroupId:    checkoutGroupID,
-		OrderId:         checkoutGroupID,
-		UserId:          buyerID,
-		AmountVnd:       totalPayableVND,
-		Method:          payMethod,
-		ShopAllocations: allocs,
-		IdempotencyKey:  "checkout:" + checkoutGroupID,
+		OrderGroupId:     checkoutGroupID,
+		OrderId:          checkoutGroupID,
+		UserId:           buyerID,
+		AmountVnd:        totalPayableVND,
+		Method:           payMethod,
+		ShopAllocations:  allocs,
+		IdempotencyKey:   "checkout:" + checkoutGroupID,
+		SalesChannel:     effectiveSalesChannel(salesChannel),
+		StorefrontShopId: storefrontShopID,
 	}
 	if expiresAt != nil {
 		req.ExpiresAt = timestamppb.New(*expiresAt)

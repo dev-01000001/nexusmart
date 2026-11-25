@@ -633,7 +633,7 @@ func (h *handler) handleSearchProducts(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *handler) fallbackSuggestProducts(w http.ResponseWriter, r *http.Request, query string, cause error) {
+func (h *handler) fallbackSuggestProducts(w http.ResponseWriter, r *http.Request, query, shopID string, cause error) {
 	if h.log != nil {
 		grpcCode := "nil_client"
 		if cause != nil {
@@ -654,6 +654,7 @@ func (h *handler) fallbackSuggestProducts(w http.ResponseWriter, r *http.Request
 
 	resp, err := h.clients.Product.ListProducts(ctx, &productv1.ListProductsRequest{
 		Keyword:  query,
+		ShopId:   shopID,
 		Page:     1,
 		PageSize: suggestFallbackPageSize,
 	})
@@ -682,6 +683,7 @@ func (h *handler) fallbackSuggestProducts(w http.ResponseWriter, r *http.Request
 func (h *handler) handleSearchSuggest(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	query := strings.TrimSpace(q.Get("q"))
+	shopID := strings.TrimSpace(q.Get("shop_id"))
 	limit := defaultSearchSuggestLimit
 	if raw := strings.TrimSpace(q.Get("limit")); raw != "" {
 		v, err := strconv.ParseInt(raw, 10, 32)
@@ -697,19 +699,20 @@ func (h *handler) handleSearchSuggest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.clients == nil || h.clients.Search == nil {
-		h.fallbackSuggestProducts(w, r, query, nil)
+		h.fallbackSuggestProducts(w, r, query, shopID, nil)
 		return
 	}
 
 	ctx, cancel := h.clients.PublicOutgoingContextWithTimeout(r.Context(), h.searchFallbackTimeout)
 	resp, err := h.clients.Search.Suggest(ctx, &searchv1.SuggestRequest{
-		Query: query,
-		Limit: limit,
+		Query:  query,
+		Limit:  limit,
+		ShopId: shopID,
 	})
 	cancel()
 	if err != nil {
 		if shouldFallbackSearch(r.Context(), err) {
-			h.fallbackSuggestProducts(w, r, query, err)
+			h.fallbackSuggestProducts(w, r, query, shopID, err)
 			return
 		}
 		h.writeSearchGRPCError(w, r, err)

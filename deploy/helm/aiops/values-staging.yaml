@@ -1,0 +1,21 @@
+# Staging overrides for aiops (namespace: nexusmart-staging)
+replicaCount: 1
+
+image:
+  tag: "staging"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 300m
+    memory: 256Mi
+
+pdb:
+  enabled: false
+
+config:
+  LLM_MODE: "mock"
+  AIOPS_DRY_RUN: "true"

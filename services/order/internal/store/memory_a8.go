@@ -107,6 +107,18 @@ func (m *MemoryStore) ListOrdersWithFilter(_ context.Context, filter OrderListFi
 		if filter.ShopID != "" && ord.ShopID != filter.ShopID {
 			continue
 		}
+		if filter.StorefrontShopID != "" && ord.StorefrontShopID != filter.StorefrontShopID {
+			continue
+		}
+		if filter.SalesChannel != "" {
+			ordCh := ord.SalesChannel
+			if ordCh == "" {
+				ordCh = "MARKETPLACE"
+			}
+			if ordCh != filter.SalesChannel {
+				continue
+			}
+		}
 		if filter.IncludeStatusCounts {
 			statusCounts[ord.Status]++
 		}

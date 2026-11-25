@@ -1,17 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
-import type {
-  GatewayCreateStaffResponse,
-  GatewayUser,
-  GatewayUserActivitiesResponse,
-  PaginatedResponse,
-  UserRole,
-} from "@/lib/gateway-types";
-import { api, getErrorMessage } from "@/lib/api";
-import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconSearch, StateView } from "@/components";
-import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import {
   ALL_USER_ROLES,
   ASSIGNABLE_USER_ROLES,
@@ -20,21 +10,38 @@ import {
   canActOnTargetRole,
   roleHasCapability,
 } from "@/lib/admin-rbac";
+import { api, getErrorMessage } from "@/lib/api";
+import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
+import type {
+  GatewayCreateStaffResponse,
+  GatewayUser,
+  GatewayUserActivitiesResponse,
+  PaginatedResponse,
+  UserRole,
+} from "@/lib/gateway-types";
 import { getPaymentMethodLabel } from "@/features/account/orderMeta";
+import { EMPTY_DASH } from "./adminMeta";
+import { useAdminContext } from "./AdminShell";
+import { AdminConfirmDialog, AdminDrawer } from "./AdminUi";
+import { useAdminUser } from "./AdminUserContext";
+import { StatusPill } from "./StatusPill";
 import {
   ADMIN_USER_ROLE_LABELS,
   formatUserActivityEventType,
   getAdminOrderStatusMeta,
   getAdminUserStatusMeta,
 } from "./types";
-import { StatusPill } from "./StatusPill";
-import { useAdminUser } from "./AdminUserContext";
 import shared from "./adminShared.module.css";
+import styles from "@/app/(admin)/admin/cau-hinh/page.module.css";
 
 const PAGE_SIZE = 20;
 
-export function AdminUsersPanel() {
-  const { showToast } = useMockStore();
+export interface AdminUsersPanelProps {
+  initialQuery?: string;
+}
+
+export function AdminUsersPanel({ initialQuery = "" }: AdminUsersPanelProps) {
+  const { showToast } = useAdminContext();
   const currentUser = useAdminUser();
   const currentRole = currentUser?.role ?? "";
   const currentUserId = currentUser?.id ?? "";
@@ -50,12 +57,12 @@ export function AdminUsersPanel() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const [queryInput, setQueryInput] = useState("");
-  const [appliedQuery, setAppliedQuery] = useState("");
+  const [queryInput, setQueryInput] = useState(initialQuery);
+  const [appliedQuery, setAppliedQuery] = useState(initialQuery.trim());
   const [roleFilter, setRoleFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
 
-  // Create internal staff form (super_admin only; strictly NO password field per F14)
+  // Create internal staff form (super_admin only; strictly NO password input per F14)
   const [showCreateStaff, setShowCreateStaff] = useState(false);
   const [staffFullName, setStaffFullName] = useState("");
   const [staffEmail, setStaffEmail] = useState("");
@@ -65,11 +72,12 @@ export function AdminUsersPanel() {
   const [staffError, setStaffError] = useState<string | null>(null);
   const [staffSuccessMsg, setStaffSuccessMsg] = useState<string | null>(null);
 
-  // Selected user inspection & actions
+  // Selected user drawer & mutations
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [reasonDraft, setReasonDraft] = useState("");
   const [targetRoleDraft, setTargetRoleDraft] = useState<UserRole>("buyer");
   const [actionBusy, setActionBusy] = useState(false);
+  const [confirmLockTarget, setConfirmLockTarget] = useState<GatewayUser | null>(null);
 
   // User activity log state (F13)
   const [activities, setActivities] = useState<GatewayUserActivitiesResponse | null>(null);
@@ -87,7 +95,7 @@ export function AdminUsersPanel() {
       if (appliedQuery) qs.set("query", appliedQuery);
       if (roleFilter) qs.set("role", roleFilter);
       if (statusFilter) qs.set("status", statusFilter);
-      const res = await api<PaginatedResponse<GatewayUser>>(`admin/users?${qs.toString()}`);
+      const res = await api<PaginatedResponse<GatewayUser>>(`/api/admin/users?${qs.toString()}`);
       setUsers(res.items ?? []);
       setTotal(res.total ?? (res.items ?? []).length);
     } catch (err) {
@@ -109,7 +117,7 @@ export function AdminUsersPanel() {
       const qs = new URLSearchParams({ page: "1", page_size: "20" });
       if (category) qs.set("category", category);
       const res = await api<GatewayUserActivitiesResponse>(
-        `admin/users/${encodeURIComponent(userId)}/activities?${qs.toString()}`
+        `/api/admin/users/${encodeURIComponent(userId)}/activities?${qs.toString()}`
       );
       setActivities(res);
     } catch (err) {
@@ -132,11 +140,7 @@ export function AdminUsersPanel() {
   const selectedUser = users.find((u) => u.id === selectedUserId) ?? null;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
-  const handleSelectUser = (u: GatewayUser) => {
-    if (selectedUserId === u.id) {
-      setSelectedUserId(null);
-      return;
-    }
+  const handleOpenUser = (u: GatewayUser) => {
     setSelectedUserId(u.id);
     setActivityCategory("");
     setReasonDraft("");
@@ -151,7 +155,7 @@ export function AdminUsersPanel() {
     const phone = staffPhone.trim();
 
     if (fullName.length < 2) {
-      setStaffError("Vui lòng nhập họ tên nhân viên đầy đủ (tối thiểu 2 ký tự).");
+      setStaffError("Vui lòng nhập họ tên nhân viên (tối thiểu 2 ký tự).");
       return;
     }
     if (!email.includes("@")) {
@@ -162,7 +166,7 @@ export function AdminUsersPanel() {
     setStaffSuccessMsg(null);
     setStaffBusy(true);
     try {
-      const res = await api<GatewayCreateStaffResponse>("admin/staff", {
+      const res = await api<GatewayCreateStaffResponse>("/api/admin/staff", {
         method: "POST",
         json: {
           full_name: fullName,
@@ -201,16 +205,20 @@ export function AdminUsersPanel() {
     }
     setActionBusy(true);
     try {
-      const res = await api<{ user: GatewayUser }>(`admin/users/${user.id}/status`, {
-        method: "PATCH",
-        json: { status: nextStatus, reason },
-      });
+      const res = await api<{ user: GatewayUser }>(
+        `/api/admin/users/${encodeURIComponent(user.id)}/status`,
+        {
+          method: "PATCH",
+          json: { status: nextStatus, reason },
+        }
+      );
       if (res.user) {
         setUsers((prev) => prev.map((item) => (item.id === user.id ? res.user : item)));
       } else {
         await loadUsers();
       }
       setReasonDraft("");
+      setConfirmLockTarget(null);
       showToast(
         nextStatus === "LOCKED"
           ? `Đã khóa tài khoản ${user.email}.`
@@ -224,12 +232,21 @@ export function AdminUsersPanel() {
     }
   };
 
+  const handleRequestLock = (user: GatewayUser) => {
+    if (reasonDraft.trim().length < 4) {
+      showToast("Vui lòng nhập lý do tối thiểu 4 ký tự trước khi khóa tài khoản.");
+      return;
+    }
+    setConfirmLockTarget(user);
+  };
+
   const handleUpdateRole = async (user: GatewayUser) => {
     if (
       !canWriteRole ||
       user.id === currentUserId ||
       user.role === "super_admin" ||
-      targetRoleDraft === "super_admin"
+      targetRoleDraft === "super_admin" ||
+      !canActOnTargetRole(currentRole, user.role)
     ) {
       return;
     }
@@ -240,10 +257,13 @@ export function AdminUsersPanel() {
     }
     setActionBusy(true);
     try {
-      const res = await api<{ user: GatewayUser }>(`admin/users/${user.id}/role`, {
-        method: "PATCH",
-        json: { role: targetRoleDraft, reason },
-      });
+      const res = await api<{ user: GatewayUser }>(
+        `/api/admin/users/${encodeURIComponent(user.id)}/role`,
+        {
+          method: "PATCH",
+          json: { role: targetRoleDraft, reason },
+        }
+      );
       if (res.user) {
         setUsers((prev) => prev.map((item) => (item.id === user.id ? res.user : item)));
       } else {
@@ -251,7 +271,7 @@ export function AdminUsersPanel() {
       }
       setReasonDraft("");
       showToast(
-        `Đã chuyển vai trò tài khoản ${user.email} sang ${ADMIN_USER_ROLE_LABELS[targetRoleDraft] ?? targetRoleDraft}.`
+        `Đã chuyển vai trò ${user.email} sang ${ADMIN_USER_ROLE_LABELS[targetRoleDraft] ?? targetRoleDraft}.`
       );
       void loadUserActivities(user.id, activityCategory);
     } catch (err) {
@@ -279,7 +299,7 @@ export function AdminUsersPanel() {
       <section className={shared.panel} aria-labelledby="admin-users-heading">
         <div className={shared.panelHeader}>
           <h2 id="admin-users-heading" className={shared.panelTitle}>
-            Quản trị tài khoản &amp; nhân sự ({formatInt(total)})
+            Người dùng &amp; nhân sự ({formatInt(total)})
           </h2>
           <div className={shared.detailButtons}>
             {canCreateStaff && (
@@ -302,7 +322,7 @@ export function AdminUsersPanel() {
           </div>
         </div>
 
-        {/* Create internal staff form — strictly super_admin, zero password field (F14) */}
+        {/* Create internal staff form — strictly super_admin, zero password input (F14) */}
         {canCreateStaff && showCreateStaff && (
           <form
             className={shared.detailWell}
@@ -312,10 +332,9 @@ export function AdminUsersPanel() {
           >
             <div className={shared.detailHeader}>
               <div>
-                <h3 className={shared.detailHeading}>Tạo tài khoản nhân viên nội bộ</h3>
+                <h3 className={shared.detailHeading}>Tạo tài khoản nhân viên</h3>
                 <p className={shared.cellSub}>
-                  Hệ thống tự gửi email chứa liên kết đặt mật khẩu một lần tới hộp thư nhân viên
-                  (không tạo mật khẩu tay).
+                  Hệ thống tự gửi email liên kết đặt mật khẩu tới nhân viên.
                 </p>
               </div>
             </div>
@@ -337,7 +356,7 @@ export function AdminUsersPanel() {
               </div>
               <div className={shared.detailField}>
                 <label htmlFor="staff-email" className={shared.fieldLabel}>
-                  Địa chỉ email công việc
+                  Email công việc
                 </label>
                 <input
                   id="staff-email"
@@ -368,14 +387,13 @@ export function AdminUsersPanel() {
                 </label>
                 <select
                   id="staff-role"
-                  className={shared.toolbarSelect}
-                  style={{ height: 38 }}
+                  className={shared.formSelect}
                   value={staffRole}
                   onChange={(e) => setStaffRole(e.target.value as CreatableStaffRole)}
                 >
                   {CREATABLE_STAFF_ROLES.map((r) => (
                     <option key={r} value={r}>
-                      {ADMIN_USER_ROLE_LABELS[r] ?? r} ({r})
+                      {ADMIN_USER_ROLE_LABELS[r] ?? r}
                     </option>
                   ))}
                 </select>
@@ -393,12 +411,9 @@ export function AdminUsersPanel() {
               </p>
             )}
 
-            <div className={shared.detailActionBar}>
-              <span className={shared.savedStamp}>
-                Chỉ Siêu quản trị được tạo nhân viên; liên kết đặt mật khẩu sẽ được gửi qua email.
-              </span>
-              <Button type="submit" variant="primary" size="sm" shape="app" disabled={staffBusy}>
-                {staffBusy ? "Đang tạo tài khoản..." : "Tạo & gửi email đặt mật khẩu"}
+            <div className={shared.detailButtons}>
+              <Button type="submit" variant="primary" size="sm" shape="app" loading={staffBusy}>
+                Tạo &amp; gửi email đặt mật khẩu
               </Button>
             </div>
           </form>
@@ -406,7 +421,6 @@ export function AdminUsersPanel() {
 
         <form
           className={shared.toolbar}
-          style={{ marginTop: 0 }}
           onSubmit={(e) => {
             e.preventDefault();
             setPage(1);
@@ -423,7 +437,7 @@ export function AdminUsersPanel() {
                 className={shared.toolbarSearch}
                 value={queryInput}
                 onChange={(e) => setQueryInput(e.target.value)}
-                placeholder="Tìm họ tên, email, số điện thoại..."
+                placeholder="Tìm họ tên, email, SĐT..."
                 aria-label="Tìm người dùng"
               />
             </div>
@@ -467,26 +481,30 @@ export function AdminUsersPanel() {
         </form>
 
         {loading ? (
-          <StateView
-            kind="loading"
-            surface="app"
-            title="Đang tải danh sách người dùng..."
-            rows={4}
-          />
+          <div className={shared.stateWrap}>
+            <StateView
+              kind="loading"
+              surface="app"
+              title="Đang tải danh sách người dùng..."
+              rows={4}
+            />
+          </div>
         ) : errorMsg ? (
-          <StateView
-            kind="error"
-            surface="app"
-            title="Không thể tải danh sách người dùng"
-            message={errorMsg}
-            actionLabel="Thử lại"
-            onAction={() => void loadUsers()}
-          />
+          <div className={shared.stateWrap}>
+            <StateView
+              kind="error"
+              surface="app"
+              title="Không thể tải danh sách người dùng"
+              message={errorMsg}
+              actionLabel="Thử lại"
+              onAction={() => void loadUsers()}
+            />
+          </div>
         ) : users.length === 0 ? (
           <p className={shared.emptyRow}>Không tìm thấy tài khoản nào khớp bộ lọc.</p>
         ) : (
           <>
-            <div className={shared.tableWrap}>
+            <div className={shared.tableWrap} style={{ marginTop: 14 }}>
               <table className={shared.dataTable}>
                 <thead>
                   <tr>
@@ -501,34 +519,47 @@ export function AdminUsersPanel() {
                   {users.map((u) => {
                     const stMeta = getAdminUserStatusMeta(u.status);
                     const isSelected = selectedUser?.id === u.id;
+                    const isSelf = u.id === currentUserId;
                     return (
                       <tr
                         key={u.id}
                         className={`${shared.rowInteractive} ${isSelected ? shared.rowSelected : ""}`}
-                        onClick={() => handleSelectUser(u)}
+                        onClick={() => handleOpenUser(u)}
                       >
                         <td>
-                          <div className={shared.cellPrimary}>{u.full_name || u.email}</div>
-                          <div className={shared.cellSub}>
-                            {u.email}
-                            {u.phone ? ` · ${u.phone}` : ""}
-                          </div>
+                          <button
+                            type="button"
+                            className={shared.rowTriggerBtn}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenUser(u);
+                            }}
+                          >
+                            <span className={shared.cellPrimary}>
+                              {u.full_name || u.email}
+                              {isSelf && <span className={styles.selfTag}>Bạn</span>}
+                            </span>
+                            <span className={shared.cellSub}>
+                              {u.email}
+                              {u.phone ? ` · ${u.phone}` : ""}
+                            </span>
+                          </button>
                         </td>
                         <td>{ADMIN_USER_ROLE_LABELS[u.role] ?? u.role}</td>
                         <td>
                           <StatusPill label={stMeta.label} tone={stMeta.tone} />
                         </td>
-                        <td>{u.created_at ? formatDateTimeVi(u.created_at) : "—"}</td>
+                        <td>{u.created_at ? formatDateTimeVi(u.created_at) : EMPTY_DASH}</td>
                         <td className={shared.colAction}>
                           <button
                             type="button"
                             className={shared.rowActionBtn}
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleSelectUser(u);
+                              handleOpenUser(u);
                             }}
                           >
-                            {isSelected ? "Đóng" : "Chi tiết"}
+                            Chi tiết
                           </button>
                         </td>
                       </tr>
@@ -541,282 +572,29 @@ export function AdminUsersPanel() {
             <div className={shared.mobileList}>
               {users.map((u) => {
                 const stMeta = getAdminUserStatusMeta(u.status);
-                const isSelected = selectedUser?.id === u.id;
                 return (
                   <article key={u.id} className={shared.mobileItem}>
-                    <div className={shared.mobileLine1}>
-                      <span className={shared.mobileIdentity}>{u.full_name || u.email}</span>
-                      <StatusPill label={stMeta.label} tone={stMeta.tone} />
-                    </div>
-                    <div className={shared.mobileLine2}>
-                      <span className={shared.mobileMetaText}>
-                        {u.email}
-                        {u.phone ? ` · ${u.phone}` : ""}
+                    <button
+                      type="button"
+                      className={shared.mobileItemBtn}
+                      onClick={() => handleOpenUser(u)}
+                    >
+                      <span className={shared.mobileLine1}>
+                        <span className={shared.mobileIdentity}>{u.full_name || u.email}</span>
+                        <StatusPill label={stMeta.label} tone={stMeta.tone} />
                       </span>
-                    </div>
-                    <div className={shared.mobileLine2}>
-                      <span className={shared.mobileMetaText}>
-                        {ADMIN_USER_ROLE_LABELS[u.role] ?? u.role} ·{" "}
-                        {u.created_at ? formatDateTimeVi(u.created_at) : "—"}
+                      <span className={shared.mobileLine2}>
+                        <span className={shared.mobileMetaText}>
+                          {u.email} · {ADMIN_USER_ROLE_LABELS[u.role] ?? u.role}
+                        </span>
                       </span>
-                      <button
-                        type="button"
-                        className={shared.rowActionBtn}
-                        onClick={() => handleSelectUser(u)}
-                      >
-                        {isSelected ? "Đóng" : "Chi tiết"}
-                      </button>
-                    </div>
+                    </button>
                   </article>
                 );
               })}
             </div>
 
-            {selectedUser && (
-              <div className={shared.detailWell} style={{ marginTop: 16 }}>
-                <div className={shared.detailHeader}>
-                  <div>
-                    <h3 className={shared.detailHeading}>
-                      Hồ sơ tài khoản: {selectedUser.full_name} ({selectedUser.email})
-                    </h3>
-                    <p className={shared.cellSub}>
-                      Vai trò: {ADMIN_USER_ROLE_LABELS[selectedUser.role] ?? selectedUser.role} ·
-                      Mã: {selectedUser.id}
-                    </p>
-                  </div>
-                  <StatusPill
-                    label={getAdminUserStatusMeta(selectedUser.status).label}
-                    tone={getAdminUserStatusMeta(selectedUser.status).tone}
-                  />
-                </div>
-
-                {selectedUser.status === "LOCKED" && selectedUser.lock_reason && (
-                  <p className={shared.validationError}>
-                    Lý do đang khóa tài khoản: {selectedUser.lock_reason}
-                  </p>
-                )}
-
-                {canModifySelectedRole || canModifySelectedStatus ? (
-                  <>
-                    <div className={shared.detailGrid}>
-                      {canModifySelectedRole && (
-                        <div className={shared.detailField}>
-                          <label htmlFor="usr-role-sel" className={shared.fieldLabel}>
-                            Đổi vai trò
-                          </label>
-                          <select
-                            id="usr-role-sel"
-                            className={shared.toolbarSelect}
-                            style={{ height: 38 }}
-                            value={targetRoleDraft}
-                            disabled={actionBusy || selectedUser.role === "super_admin"}
-                            onChange={(e) => setTargetRoleDraft(e.target.value as UserRole)}
-                          >
-                            {ASSIGNABLE_USER_ROLES.map((r) => (
-                              <option key={r} value={r}>
-                                {ADMIN_USER_ROLE_LABELS[r] ?? r} ({r})
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                      <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                        <label htmlFor="usr-reason" className={shared.fieldLabel}>
-                          Lý do thao tác (ghi vào Nhật ký kiểm toán)
-                        </label>
-                        <input
-                          id="usr-reason"
-                          type="text"
-                          className={shared.textInput}
-                          value={reasonDraft}
-                          onChange={(e) => setReasonDraft(e.target.value)}
-                          placeholder="Nhập lý do khóa/mở tài khoản hoặc thay đổi vai trò..."
-                        />
-                      </div>
-                    </div>
-
-                    <div className={shared.detailActionBar}>
-                      <span className={shared.savedStamp}>
-                        Mọi thay đổi trạng thái hoặc vai trò đều ghi nhận tự động vào nhật ký.
-                      </span>
-                      <div className={shared.detailButtons}>
-                        {canModifySelectedRole && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            shape="app"
-                            disabled={actionBusy}
-                            onClick={() => void handleUpdateRole(selectedUser)}
-                          >
-                            Lưu vai trò mới
-                          </Button>
-                        )}
-                        {canModifySelectedStatus &&
-                          (selectedUser.status === "LOCKED" ? (
-                            <Button
-                              variant="primary"
-                              size="sm"
-                              shape="app"
-                              disabled={actionBusy}
-                              onClick={() => void handleUpdateStatus(selectedUser, "ACTIVE")}
-                            >
-                              Mở khóa tài khoản
-                            </Button>
-                          ) : (
-                            <Button
-                              variant="danger"
-                              size="sm"
-                              shape="app"
-                              disabled={actionBusy}
-                              onClick={() => void handleUpdateStatus(selectedUser, "LOCKED")}
-                            >
-                              Khóa tài khoản
-                            </Button>
-                          ))}
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <p className={shared.savedStamp}>
-                    {selectedUser.id === currentUserId
-                      ? "Không thể tự thay đổi vai trò hoặc khoá chính tài khoản đang đăng nhập."
-                      : !canActOnTargetRole(currentRole, selectedUser.role)
-                        ? "Không thể khoá hoặc chỉnh sửa tài khoản có vai trò ngang cấp hoặc cao hơn bạn."
-                        : "Tài khoản hiện có quyền xem hồ sơ và lịch sử hoạt động (không có quyền chỉnh sửa)."}
-                  </p>
-                )}
-
-                {/* User Activity Log & Recent Orders (F13) */}
-                <div style={{ paddingTop: 12, borderTop: "1px solid #e3e8eb" }}>
-                  <div
-                    className={shared.detailHeader}
-                    style={{ borderBottom: 0, paddingBottom: 8 }}
-                  >
-                    <div>
-                      <h4 className={shared.detailHeading}>Lịch sử hoạt động tài khoản</h4>
-                      <p className={shared.cellSub}>
-                        Số lần từ chối nhận hàng COD:{" "}
-                        <strong className="num">
-                          {formatInt(
-                            activities?.cod_rejected_count ?? selectedUser.cod_rejected_count ?? 0
-                          )}
-                        </strong>
-                      </p>
-                    </div>
-                    <div className={shared.detailHeaderMeta}>
-                      <select
-                        className={shared.toolbarSelect}
-                        value={activityCategory}
-                        onChange={(e) => setActivityCategory(e.target.value)}
-                        aria-label="Lọc nhóm hoạt động người dùng"
-                      >
-                        <option value="">Tất cả sự kiện</option>
-                        <option value="auth">Đăng nhập &amp; mật khẩu</option>
-                        <option value="profile">Hồ sơ cá nhân</option>
-                        <option value="phone">Xác minh số điện thoại</option>
-                        <option value="status">Trạng thái tài khoản &amp; gian hàng</option>
-                        <option value="role">Vai trò &amp; nhân sự</option>
-                      </select>
-                      <button
-                        type="button"
-                        className={shared.rowActionBtn}
-                        onClick={() => void loadUserActivities(selectedUser.id, activityCategory)}
-                      >
-                        Tải lại
-                      </button>
-                    </div>
-                  </div>
-
-                  {activitiesLoading ? (
-                    <p className={shared.savedStamp}>Đang tải lịch sử hoạt động...</p>
-                  ) : activitiesError ? (
-                    <p className={shared.validationError} role="alert">
-                      {activitiesError}
-                    </p>
-                  ) : !activities || activities.items.length === 0 ? (
-                    <p className={shared.savedStamp}>
-                      Chưa ghi nhận sự kiện hoạt động nào trong phạm vi lọc.
-                    </p>
-                  ) : (
-                    <div className={shared.tableWrap}>
-                      <table className={shared.dataTable}>
-                        <thead>
-                          <tr>
-                            <th>Thời điểm</th>
-                            <th>Sự kiện</th>
-                            <th>IP (đã che)</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {activities.items.map((act) => (
-                            <tr key={act.id}>
-                              <td className="num">
-                                {act.created_at ? formatDateTimeVi(act.created_at) : "—"}
-                              </td>
-                              <td>{formatUserActivityEventType(act.event_type)}</td>
-                              <td className="num">{act.ip_address || "—"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-
-                  {activities &&
-                    Array.isArray(activities.recent_orders) &&
-                    activities.recent_orders.length > 0 && (
-                      <div style={{ marginTop: 14 }}>
-                        <h4 className={shared.detailHeading} style={{ marginBottom: 8 }}>
-                          Đơn hàng gần đây ({formatInt(activities.recent_orders.length)})
-                        </h4>
-                        <div className={shared.tableWrap}>
-                          <table className={shared.dataTable}>
-                            <thead>
-                              <tr>
-                                <th>Mã đơn</th>
-                                <th>Phương thức</th>
-                                <th className={shared.colNum}>Tổng tiền</th>
-                                <th>Trạng thái</th>
-                                <th>Ngày đặt</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {activities.recent_orders.map((ord) => {
-                                const ordMeta = getAdminOrderStatusMeta(ord.status);
-                                return (
-                                  <tr key={ord.id}>
-                                    <td className="num">{ord.order_code}</td>
-                                    <td>{getPaymentMethodLabel(ord.payment_method)}</td>
-                                    <td className={shared.colNum}>
-                                      {formatVnd(ord.total_payable_vnd)}
-                                    </td>
-                                    <td>
-                                      <StatusPill label={ordMeta.label} tone={ordMeta.tone} />
-                                    </td>
-                                    <td className="num">
-                                      {ord.created_at ? formatDateTimeVi(ord.created_at) : "—"}
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    )}
-                </div>
-              </div>
-            )}
-
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "flex-end",
-                gap: 8,
-                marginTop: 14,
-              }}
-            >
+            <div className={styles.paginationRow}>
               <Button
                 variant="outline"
                 size="sm"
@@ -839,6 +617,271 @@ export function AdminUsersPanel() {
           </>
         )}
       </section>
+
+      {/* User inspection, RoleRank actions & Activity Log Drawer */}
+      <AdminDrawer
+        open={Boolean(selectedUser)}
+        onClose={() => setSelectedUserId(null)}
+        title={selectedUser?.full_name || selectedUser?.email || ""}
+        subtitle={
+          selectedUser
+            ? `${selectedUser.email} · ${ADMIN_USER_ROLE_LABELS[selectedUser.role] ?? selectedUser.role}`
+            : undefined
+        }
+        headerBadge={
+          selectedUser ? (
+            <StatusPill
+              label={getAdminUserStatusMeta(selectedUser.status).label}
+              tone={getAdminUserStatusMeta(selectedUser.status).tone}
+            />
+          ) : undefined
+        }
+        width="lg"
+      >
+        {selectedUser && (
+          <>
+            <div className={shared.detailWell}>
+              <div className={shared.detailGrid}>
+                <div className={shared.detailField}>
+                  <span className={shared.detailKey}>Mã tài khoản</span>
+                  <span className={`${shared.detailValPlain} num`}>{selectedUser.id}</span>
+                </div>
+                <div className={shared.detailField}>
+                  <span className={shared.detailKey}>Số điện thoại</span>
+                  <span className={`${shared.detailValPlain} num`}>
+                    {selectedUser.phone || EMPTY_DASH}
+                  </span>
+                </div>
+                <div className={shared.detailField}>
+                  <span className={shared.detailKey}>Xác thực SĐT</span>
+                  <span className={shared.detailValPlain}>
+                    {selectedUser.phone_verified ? "Đã xác thực" : "Chưa xác thực"}
+                  </span>
+                </div>
+                <div className={shared.detailField}>
+                  <span className={shared.detailKey}>Từ chối nhận COD</span>
+                  <span className={`${shared.detailVal} num`}>
+                    {formatInt(
+                      activities?.cod_rejected_count ?? selectedUser.cod_rejected_count ?? 0
+                    )}
+                  </span>
+                </div>
+              </div>
+
+              {selectedUser.status === "LOCKED" && selectedUser.lock_reason && (
+                <p className={shared.validationError}>
+                  Lý do đang khóa: {selectedUser.lock_reason}
+                </p>
+              )}
+
+              {canModifySelectedRole || canModifySelectedStatus ? (
+                <div className={shared.detailActionBar}>
+                  <div className={shared.detailGrid}>
+                    {canModifySelectedRole && (
+                      <div className={shared.detailField}>
+                        <label htmlFor="usr-role-sel" className={shared.fieldLabel}>
+                          Đổi vai trò
+                        </label>
+                        <select
+                          id="usr-role-sel"
+                          className={shared.formSelect}
+                          value={targetRoleDraft}
+                          disabled={actionBusy || selectedUser.role === "super_admin"}
+                          onChange={(e) => setTargetRoleDraft(e.target.value as UserRole)}
+                        >
+                          {ASSIGNABLE_USER_ROLES.map((r) => (
+                            <option key={r} value={r}>
+                              {ADMIN_USER_ROLE_LABELS[r] ?? r}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+                      <label htmlFor="usr-reason" className={shared.fieldLabel}>
+                        Lý do thao tác (tối thiểu 4 ký tự)
+                      </label>
+                      <input
+                        id="usr-reason"
+                        type="text"
+                        className={shared.textInput}
+                        value={reasonDraft}
+                        onChange={(e) => setReasonDraft(e.target.value)}
+                        placeholder="Nhập lý do khóa/mở hoặc đổi vai trò..."
+                      />
+                    </div>
+                  </div>
+
+                  <div className={shared.detailButtons}>
+                    {canModifySelectedRole && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        shape="app"
+                        disabled={actionBusy}
+                        onClick={() => void handleUpdateRole(selectedUser)}
+                      >
+                        Lưu vai trò mới
+                      </Button>
+                    )}
+                    {canModifySelectedStatus &&
+                      (selectedUser.status === "LOCKED" ? (
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          shape="app"
+                          disabled={actionBusy}
+                          onClick={() => void handleUpdateStatus(selectedUser, "ACTIVE")}
+                        >
+                          Mở khóa tài khoản
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          shape="app"
+                          disabled={actionBusy}
+                          onClick={() => handleRequestLock(selectedUser)}
+                        >
+                          Khóa tài khoản
+                        </Button>
+                      ))}
+                  </div>
+                </div>
+              ) : (
+                <p className={shared.savedStamp}>
+                  {selectedUser.id === currentUserId
+                    ? "Không thể tự thay đổi vai trò hoặc khóa chính tài khoản đang đăng nhập."
+                    : !canActOnTargetRole(currentRole, selectedUser.role)
+                      ? "Không thể thao tác với tài khoản có vai trò ngang cấp hoặc cao hơn."
+                      : "Chỉ có quyền xem hồ sơ và nhật ký hoạt động."}
+                </p>
+              )}
+            </div>
+
+            {/* User Activity Log & Recent Orders (F13) */}
+            <div className={shared.detailWellCard}>
+              <div className={shared.detailHeader}>
+                <h3 className={shared.detailHeading}>Nhật ký hoạt động</h3>
+                <div className={shared.detailHeaderMeta}>
+                  <select
+                    className={shared.toolbarSelect}
+                    value={activityCategory}
+                    onChange={(e) => setActivityCategory(e.target.value)}
+                    aria-label="Lọc nhóm hoạt động người dùng"
+                  >
+                    <option value="">Tất cả sự kiện</option>
+                    <option value="auth">Đăng nhập &amp; mật khẩu</option>
+                    <option value="profile">Hồ sơ cá nhân</option>
+                    <option value="phone">Xác minh SĐT</option>
+                    <option value="status">Trạng thái tài khoản</option>
+                    <option value="role">Vai trò &amp; nhân sự</option>
+                  </select>
+                  <button
+                    type="button"
+                    className={shared.rowActionBtn}
+                    onClick={() => void loadUserActivities(selectedUser.id, activityCategory)}
+                  >
+                    Tải lại
+                  </button>
+                </div>
+              </div>
+
+              {activitiesLoading ? (
+                <p className={shared.savedStamp}>Đang tải nhật ký hoạt động...</p>
+              ) : activitiesError ? (
+                <p className={shared.validationError} role="alert">
+                  {activitiesError}
+                </p>
+              ) : !activities || activities.items.length === 0 ? (
+                <p className={shared.savedStamp}>Chưa ghi nhận sự kiện hoạt động nào.</p>
+              ) : (
+                <div className={shared.tableWrap}>
+                  <table className={shared.dataTable}>
+                    <thead>
+                      <tr>
+                        <th>Thời điểm</th>
+                        <th>Sự kiện</th>
+                        <th>IP</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activities.items.map((act) => (
+                        <tr key={act.id}>
+                          <td className="num">
+                            {act.created_at ? formatDateTimeVi(act.created_at) : EMPTY_DASH}
+                          </td>
+                          <td>{formatUserActivityEventType(act.event_type)}</td>
+                          <td className="num">{act.ip_address || EMPTY_DASH}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {activities &&
+                Array.isArray(activities.recent_orders) &&
+                activities.recent_orders.length > 0 && (
+                  <div className={shared.sectionStack}>
+                    <h4 className={shared.detailHeading}>
+                      Đơn hàng gần đây ({formatInt(activities.recent_orders.length)})
+                    </h4>
+                    <div className={shared.tableWrap}>
+                      <table className={shared.dataTable}>
+                        <thead>
+                          <tr>
+                            <th>Mã đơn</th>
+                            <th>Thanh toán</th>
+                            <th className={shared.colNum}>Tổng tiền</th>
+                            <th>Trạng thái</th>
+                            <th>Ngày đặt</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {activities.recent_orders.map((ord) => {
+                            const ordMeta = getAdminOrderStatusMeta(ord.status);
+                            return (
+                              <tr key={ord.id}>
+                                <td className="num">{ord.order_code}</td>
+                                <td>{getPaymentMethodLabel(ord.payment_method)}</td>
+                                <td className={shared.colNum}>
+                                  {formatVnd(ord.total_payable_vnd)}
+                                </td>
+                                <td>
+                                  <StatusPill label={ordMeta.label} tone={ordMeta.tone} />
+                                </td>
+                                <td className="num">
+                                  {ord.created_at ? formatDateTimeVi(ord.created_at) : EMPTY_DASH}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+            </div>
+          </>
+        )}
+      </AdminDrawer>
+
+      <AdminConfirmDialog
+        open={Boolean(confirmLockTarget)}
+        title="Xác nhận khóa tài khoản"
+        description={
+          confirmLockTarget
+            ? `Khóa tài khoản ${confirmLockTarget.email} và thu hồi toàn bộ phiên đăng nhập hiện tại?`
+            : ""
+        }
+        confirmLabel="Xác nhận khóa"
+        busy={actionBusy}
+        onCancel={() => setConfirmLockTarget(null)}
+        onConfirm={() => {
+          if (confirmLockTarget) void handleUpdateStatus(confirmLockTarget, "LOCKED");
+        }}
+      />
     </div>
   );
 }

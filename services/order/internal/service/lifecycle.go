@@ -172,6 +172,14 @@ func (s *OrderService) ListOrders(ctx context.Context, req *orderv1.ListOrdersRe
 		cutoff := req.GetDueBefore().AsTime().UTC().Add(-s.sellerConfirmTimeout())
 		dueCutoff = &cutoff
 	}
+	salesChannelFilter, err := normalizeSalesChannelFilter(req.GetSalesChannel())
+	if err != nil {
+		return nil, err
+	}
+	storefrontFilter := strings.TrimSpace(req.GetStorefrontShopId())
+	if _, perr := uuid.Parse(storefrontFilter); storefrontFilter != "" && perr != nil {
+		return nil, status.Error(codes.InvalidArgument, "storefront_shop_id must be a UUID")
+	}
 
 	page := req.GetPage()
 	if page < 1 {
@@ -195,6 +203,8 @@ func (s *OrderService) ListOrders(ctx context.Context, req *orderv1.ListOrdersRe
 		ShopID:              shopFilter,
 		Status:              statusFilter,
 		Statuses:            statusesFilter,
+		SalesChannel:        salesChannelFilter,
+		StorefrontShopID:    storefrontFilter,
 		CarrierCode:         strings.TrimSpace(req.GetCarrierCode()),
 		PaymentMethod:       paymentMethodFilter,
 		Keyword:             strings.TrimSpace(req.GetKeyword()),
@@ -415,12 +425,13 @@ func (s *OrderService) cancelOrderInternal(ctx context.Context, agg *store.Order
 					strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") &&
 					ord.TotalPayableVND > 0
 				payload, _ := json.Marshal(events.OrderCancelledPayload{
-					OrderID:   ord.ID,
-					OrderCode: ord.OrderCode,
-					BuyerID:   ord.BuyerID,
-					ShopID:    ord.ShopID,
-					Reason:    reason,
-					WasPaid:   ordPaid,
+					OrderID:          ord.ID,
+					OrderCode:        ord.OrderCode,
+					BuyerID:          ord.BuyerID,
+					ShopID:           ord.ShopID,
+					StorefrontShopID: ord.StorefrontShopID,
+					Reason:           reason,
+					WasPaid:          ordPaid,
 				})
 				return []db.InsertOutboxEventParams{
 					{
@@ -1408,6 +1419,8 @@ func (s *OrderService) retryPaymentByMethod(
 			ShopAllocations:   plan.ShopAllocations,
 			IdempotencyKey:    idemKey,
 			SupersedePrevious: true,
+			SalesChannel:      effectiveSalesChannel(lockedGroup.SalesChannel),
+			StorefrontShopId:  lockedGroup.StorefrontShopID,
 		}
 		if !plan.SwitchedToCOD && plan.ExpiresAt != nil {
 			createPayReq.ExpiresAt = timestamppb.New(*plan.ExpiresAt)

@@ -1,9 +1,13 @@
 name: NexusMart Core CI
 
-# Chạy tay để tiết kiệm quota Actions: `gh workflow run ci.yml` hoặc nút Run workflow.
-# Gate hằng ngày chạy local: make lint, make test, make e2e.
+# Manual trigger only to preserve Actions quota:
+#   gh workflow run ci.yml
+# Daily local gate: make lint, make test, make e2e
 on:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -11,7 +15,7 @@ concurrency:
 
 jobs:
   proto-lint:
-    name: Protobuf Lint & Generate Check
+    name: Protobuf Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,57 +42,91 @@ jobs:
           - services/shipping
           - services/notification
           - services/search
+          - services/chat
+          - services/assistant
     steps:
       - uses: actions/checkout@v4
+      - name: Check Go module exists
+        id: mod
+        run: |
+          if [ -f "${{ matrix.module }}/go.mod" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping ${{ matrix.module }} (go.mod not present yet)"
+          fi
       - uses: actions/setup-go@v5
+        if: steps.mod.outputs.exists == 'true'
         with:
           go-version: "1.22.2"
       - name: Check gofmt
+        if: steps.mod.outputs.exists == 'true'
         working-directory: ${{ matrix.module }}
         run: |
-          if [ -f go.mod ]; then
-            UNFMT=$(gofmt -l .)
-            if [ -n "$UNFMT" ]; then
-              echo "Unformatted files:"
-              echo "$UNFMT"
-              exit 1
-            fi
+          UNFMT=$(gofmt -l .)
+          if [ -n "$UNFMT" ]; then
+            echo "Unformatted files:"
+            echo "$UNFMT"
+            exit 1
           fi
       - name: Run golangci-lint
+        if: steps.mod.outputs.exists == 'true'
         uses: golangci/golangci-lint-action@v6
         with:
           version: v1.60.3
           working-directory: ${{ matrix.module }}
           args: -c ${{ github.workspace }}/.golangci.yml
       - name: Run Go unit tests
+        if: steps.mod.outputs.exists == 'true'
         working-directory: ${{ matrix.module }}
         run: go test -race -cover ./...
 
-  rust-payment:
-    name: Rust Payment (fmt, clippy, test)
+  rust-lint-and-test:
+    name: Rust Lint & Test (${{ matrix.service }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - payment
+          - aiops
     steps:
       - uses: actions/checkout@v4
+      - name: Check Rust crate exists
+        id: crate
+        run: |
+          if [ -f "services/${{ matrix.service }}/Cargo.toml" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping services/${{ matrix.service }} (Cargo.toml not present yet)"
+          fi
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libprotobuf-dev
+        if: steps.crate.outputs.exists == 'true'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.crate.outputs.exists == 'true'
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        if: steps.crate.outputs.exists == 'true'
         with:
-          workspaces: services/payment
+          workspaces: services/${{ matrix.service }}
       - name: cargo fmt
-        working-directory: services/payment
+        if: steps.crate.outputs.exists == 'true'
+        working-directory: services/${{ matrix.service }}
         run: cargo fmt --all -- --check
       - name: cargo clippy
-        working-directory: services/payment
+        if: steps.crate.outputs.exists == 'true'
+        working-directory: services/${{ matrix.service }}
         run: cargo clippy --all-targets -- -D warnings
       - name: cargo test
-        working-directory: services/payment
+        if: steps.crate.outputs.exists == 'true'
+        working-directory: services/${{ matrix.service }}
         run: cargo test
 
   web:
-    name: Web Frontend (lint, format, data, build)
+    name: Web Frontend (lint, format, typecheck, data, build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -101,17 +139,67 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-audit --no-fund
       - name: ESLint
         run: npm run lint
       - name: Prettier check
         run: npm run format:check
+      - name: TypeScript typecheck
+        run: npx tsc --noEmit
       - name: Data integrity check
         run: npm run check:data
       - name: Production build
         env:
           NEXT_TELEMETRY_DISABLED: "1"
         run: npm run build
+
+  helm-lint:
+    name: Helm & Kubernetes Manifest Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Install kubeconform
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C "$HOME/.local/bin" kubeconform
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Lint Helm charts and validate K8s manifests
+        run: |
+          set -euo pipefail
+          if [ -f deploy/k8s/scripts/lint.sh ]; then
+            bash deploy/k8s/scripts/lint.sh
+          elif [ -d deploy/helm ]; then
+            for chart in deploy/helm/*; do
+              [ -f "$chart/Chart.yaml" ] || continue
+              svc=$(basename "$chart")
+              for env in staging production; do
+                values_file="$chart/values-${env}.yaml"
+                if [ -f "$values_file" ]; then
+                  echo "==> helm lint $svc ($env)"
+                  helm lint "$chart" -f "$values_file"
+                  echo "==> helm template | kubeconform $svc ($env)"
+                  helm template "$svc" "$chart" -f "$values_file" \
+                    | kubeconform -strict -summary -kubernetes-version 1.31.0
+                fi
+              done
+            done
+            if [ -f deploy/k8s/namespaces.yaml ]; then
+              kubeconform -strict -summary -kubernetes-version 1.31.0 deploy/k8s/namespaces.yaml
+            fi
+          else
+            echo "::notice::deploy/helm not present yet; skipping Helm lint"
+          fi
+      - name: Assert no Kubernetes Secret manifests committed in deploy/
+        run: |
+          set -euo pipefail
+          if [ -d deploy ]; then
+            if grep -rnE '^[[:space:]]*kind:[[:space:]]*Secret([[:space:]]*#.*)?$' deploy/ --include='*.yaml' --include='*.yml'; then
+              echo "::error::Found committed kind: Secret manifest under deploy/!"
+              exit 1
+            fi
+          fi
 
   go-vuln-scan:
     name: Go Dependency Scan (govulncheck)
@@ -122,11 +210,15 @@ jobs:
         with:
           go-version: "1.22.2"
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.3
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
       - name: Run govulncheck across all Go modules
         run: |
           set -euo pipefail
-          for mod in pkg/common gen/go services/gateway services/user services/product services/cart services/promotion services/order services/shipping services/notification services/search; do
+          for mod in pkg/common gen/go services/gateway services/user services/product services/cart services/promotion services/order services/shipping services/notification services/search services/chat services/assistant; do
+            if [ ! -f "$mod/go.mod" ]; then
+              echo "::notice::Skipping $mod (go.mod not present yet)"
+              continue
+            fi
             echo "==> govulncheck $mod"
             (cd "$mod" && govulncheck ./...)
           done
@@ -136,10 +228,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: taiki-e/install-action@cargo-audit
-      - name: Run cargo audit
-        working-directory: services/payment
-        run: cargo audit
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Run cargo audit across Rust services
+        run: |
+          set -euo pipefail
+          for crate in services/payment services/aiops; do
+            if [ ! -f "$crate/Cargo.toml" ]; then
+              echo "::notice::Skipping $crate (Cargo.toml not present yet)"
+              continue
+            fi
+            echo "==> cargo audit $crate"
+            (cd "$crate" && cargo audit)
+          done
 
   web-audit:
     name: Web Dependency Scan (npm audit)
@@ -160,7 +262,7 @@ jobs:
   docker-build:
     name: Docker Build & Image Scan (${{ matrix.target.service }})
     runs-on: ubuntu-latest
-    needs: [proto-lint, go-lint-and-test, rust-payment, web]
+    needs: [proto-lint, go-lint-and-test, rust-lint-and-test, web]
     strategy:
       fail-fast: false
       matrix:
@@ -185,12 +287,29 @@ jobs:
             dockerfile: services/notification/Dockerfile
           - service: search
             dockerfile: services/search/Dockerfile
+          - service: chat
+            dockerfile: services/chat/Dockerfile
+          - service: assistant
+            dockerfile: services/assistant/Dockerfile
+          - service: aiops
+            dockerfile: services/aiops/Dockerfile
           - service: web
             dockerfile: web/Dockerfile
     steps:
       - uses: actions/checkout@v4
+      - name: Check Dockerfile exists
+        id: df
+        run: |
+          if [ -f "${{ matrix.target.dockerfile }}" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping ${{ matrix.target.service }} (${{ matrix.target.dockerfile }} not present yet)"
+          fi
       - uses: docker/setup-buildx-action@v3
+        if: steps.df.outputs.exists == 'true'
       - name: Build ${{ matrix.target.service }} image
+        if: steps.df.outputs.exists == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -199,6 +318,7 @@ jobs:
           load: true
           tags: nexusmart/${{ matrix.target.service }}:ci
       - name: Scan ${{ matrix.target.service }} image (Trivy)
+        if: steps.df.outputs.exists == 'true'
         uses: aquasecurity/trivy-action@0.28.0
         with:
           scan-type: image

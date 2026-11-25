@@ -60,24 +60,25 @@ func mapCategoryFeeSchedule(s *productv1.CategoryFeeSchedule) *categoryFeeSchedu
 }
 
 type skuDTO struct {
-	ID                string            `json:"id"`
-	ProductID         string            `json:"product_id"`
-	ShopID            string            `json:"shop_id"`
-	ProductName       string            `json:"product_name"`
-	SKUCode           string            `json:"sku_code"`
-	Name              string            `json:"name"`
-	Attributes        map[string]string `json:"attributes"`
-	PriceVND          int64             `json:"price_vnd"`
-	MinPrice30dVND    int64             `json:"min_price_30d_vnd"`
-	Stock             int32             `json:"stock"`
-	ReservedStock     int32             `json:"reserved_stock"`
-	AvailableStock    int32             `json:"available_stock"`
-	Version           int64             `json:"version"`
-	WeightGrams       int32             `json:"weight_grams"`
-	ImageURL          string            `json:"image_url"`
-	CategoryID        string            `json:"category_id"`
-	CommissionRateBps *int32            `json:"commission_rate_bps,omitempty"`
-	IsActive          bool              `json:"is_active"`
+	ID                     string            `json:"id"`
+	ProductID              string            `json:"product_id"`
+	ShopID                 string            `json:"shop_id"`
+	ProductName            string            `json:"product_name"`
+	SKUCode                string            `json:"sku_code"`
+	Name                   string            `json:"name"`
+	Attributes             map[string]string `json:"attributes"`
+	PriceVND               int64             `json:"price_vnd"`
+	MinPrice30dVND         int64             `json:"min_price_30d_vnd"`
+	Stock                  int32             `json:"stock"`
+	ReservedStock          int32             `json:"reserved_stock"`
+	FlashSaleReservedStock int32             `json:"flash_sale_reserved_stock"`
+	AvailableStock         int32             `json:"available_stock"`
+	Version                int64             `json:"version"`
+	WeightGrams            int32             `json:"weight_grams"`
+	ImageURL               string            `json:"image_url"`
+	CategoryID             string            `json:"category_id"`
+	CommissionRateBps      *int32            `json:"commission_rate_bps,omitempty"`
+	IsActive               bool              `json:"is_active"`
 }
 
 type productDTO struct {
@@ -149,24 +150,25 @@ func mapSKU(s *productv1.SKU) *skuDTO {
 		attrs = map[string]string{}
 	}
 	return &skuDTO{
-		ID:                s.GetId(),
-		ProductID:         s.GetProductId(),
-		ShopID:            s.GetShopId(),
-		ProductName:       s.GetProductName(),
-		SKUCode:           s.GetSkuCode(),
-		Name:              s.GetName(),
-		Attributes:        attrs,
-		PriceVND:          s.GetPriceVnd(),
-		MinPrice30dVND:    s.GetMinPrice_30DVnd(),
-		Stock:             s.GetStock(),
-		ReservedStock:     s.GetReservedStock(),
-		AvailableStock:    s.GetAvailableStock(),
-		Version:           s.GetVersion(),
-		WeightGrams:       s.GetWeightGrams(),
-		ImageURL:          s.GetImageUrl(),
-		CategoryID:        s.GetCategoryId(),
-		CommissionRateBps: int32Ptr(s.GetCommissionRateBps()),
-		IsActive:          s.GetIsActive(),
+		ID:                     s.GetId(),
+		ProductID:              s.GetProductId(),
+		ShopID:                 s.GetShopId(),
+		ProductName:            s.GetProductName(),
+		SKUCode:                s.GetSkuCode(),
+		Name:                   s.GetName(),
+		Attributes:             attrs,
+		PriceVND:               s.GetPriceVnd(),
+		MinPrice30dVND:         s.GetMinPrice_30DVnd(),
+		Stock:                  s.GetStock(),
+		ReservedStock:          s.GetReservedStock(),
+		FlashSaleReservedStock: s.GetFlashSaleReservedStock(),
+		AvailableStock:         s.GetAvailableStock(),
+		Version:                s.GetVersion(),
+		WeightGrams:            s.GetWeightGrams(),
+		ImageURL:               s.GetImageUrl(),
+		CategoryID:             s.GetCategoryId(),
+		CommissionRateBps:      int32Ptr(s.GetCommissionRateBps()),
+		IsActive:               s.GetIsActive(),
 	}
 }
 
@@ -722,6 +724,10 @@ func (h *handler) handleGetProductBySlug(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *handler) handleSellerListProducts(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	page, pageSize, err := httpx.ParsePagination(r)
 	if err != nil {
 		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
@@ -744,7 +750,7 @@ func (h *handler) handleSellerListProducts(w http.ResponseWriter, r *http.Reques
 	resp, err := h.clients.Product.ListProducts(ctx, &productv1.ListProductsRequest{
 		CategoryId:  q.Get("category_id"),
 		Keyword:     q.Get("keyword"),
-		ShopId:      auth.ShopIDFromContext(r.Context()),
+		ShopId:      shopID,
 		Status:      parseProductStatus(q.Get("status")),
 		LowStock:    lowStock,
 		MinPriceVnd: httpx.ParseInt64Query(r, "min_price_vnd", 0),
@@ -770,6 +776,10 @@ func (h *handler) handleSellerListProducts(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *handler) handleSellerGetProduct(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
@@ -785,7 +795,7 @@ func (h *handler) handleSellerGetProduct(w http.ResponseWriter, r *http.Request)
 		httpx.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "product not found")
 		return
 	}
-	if prod.GetShopId() != auth.ShopIDFromContext(r.Context()) {
+	if prod.GetShopId() != shopID {
 		httpx.WriteError(w, r, http.StatusForbidden, "PERMISSION_DENIED", "cannot access another shop's product")
 		return
 	}
@@ -793,6 +803,10 @@ func (h *handler) handleSellerGetProduct(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *handler) handleSellerCreateProduct(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	var body struct {
 		CategoryID  string         `json:"category_id"`
 		Name        string         `json:"name"`
@@ -809,7 +823,7 @@ func (h *handler) handleSellerCreateProduct(w http.ResponseWriter, r *http.Reque
 	defer cancel()
 
 	resp, err := h.clients.Product.CreateProduct(ctx, &productv1.CreateProductRequest{
-		ShopId:      auth.ShopIDFromContext(r.Context()),
+		ShopId:      shopID,
 		CategoryId:  body.CategoryID,
 		Name:        body.Name,
 		Slug:        body.Slug,
@@ -825,6 +839,10 @@ func (h *handler) handleSellerCreateProduct(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *handler) handleSellerUpdateProduct(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	var body struct {
 		CategoryID  string         `json:"category_id"`
 		Name        string         `json:"name"`
@@ -843,7 +861,7 @@ func (h *handler) handleSellerUpdateProduct(w http.ResponseWriter, r *http.Reque
 
 	resp, err := h.clients.Product.UpdateProduct(ctx, &productv1.UpdateProductRequest{
 		Id:          chi.URLParam(r, "id"),
-		ShopId:      auth.ShopIDFromContext(r.Context()),
+		ShopId:      shopID,
 		CategoryId:  body.CategoryID,
 		Name:        body.Name,
 		Slug:        body.Slug,
@@ -860,12 +878,16 @@ func (h *handler) handleSellerUpdateProduct(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *handler) handleSellerDeleteProduct(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.Product.DeleteProduct(ctx, &productv1.DeleteProductRequest{
 		Id:     chi.URLParam(r, "id"),
-		ShopId: auth.ShopIDFromContext(r.Context()),
+		ShopId: shopID,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
@@ -875,6 +897,10 @@ func (h *handler) handleSellerDeleteProduct(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *handler) handleSellerUpdateStock(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	var body struct {
 		NewStock        *int32 `json:"new_stock"`
 		ExpectedVersion *int64 `json:"expected_version"`
@@ -900,7 +926,7 @@ func (h *handler) handleSellerUpdateStock(w http.ResponseWriter, r *http.Request
 
 	resp, err := h.clients.Product.UpdateStock(ctx, &productv1.UpdateStockRequest{
 		SkuId:           chi.URLParam(r, "sku_id"),
-		ShopId:          auth.ShopIDFromContext(r.Context()),
+		ShopId:          shopID,
 		NewStock:        *body.NewStock,
 		ExpectedVersion: *body.ExpectedVersion,
 	})

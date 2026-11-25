@@ -888,6 +888,17 @@ func TestPG_Security_NoHiddenLeak_FilterInjection_AndNoRawQueryInLogs(t *testing
 				t.Fatalf("Suggest leaked non-public product %s (%s)", item.Id, item.Status)
 			}
 		}
+		if q != "" {
+			sim, err := h.svc.SimilarProducts(adminSpoofCtx, &searchv1.SimilarProductsRequest{Query: q})
+			if err != nil {
+				t.Fatalf("SimilarProducts(%q): %v", q, err)
+			}
+			for _, item := range sim.Items {
+				if item.Status != "APPROVED" && item.Status != "OUT_OF_STOCK" {
+					t.Fatalf("SimilarProducts leaked non-public product %s (%s)", item.Id, item.Status)
+				}
+			}
+		}
 	}
 
 	// Filter injection attack: shop_id = `x" OR status="HIDDEN` must be blocked (InvalidArgument).
@@ -895,6 +906,24 @@ func TestPG_Security_NoHiddenLeak_FilterInjection_AndNoRawQueryInLogs(t *testing
 		ShopId: `x" OR status="HIDDEN`,
 	}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("filter injection shop_id code = %v, want InvalidArgument", status.Code(err))
+	}
+	if _, err := h.svc.HybridSearch(serviceCtx("ai-assistant"), &searchv1.HybridSearchRequest{
+		Query:  "ao",
+		ShopId: `x" OR status="HIDDEN`,
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("HybridSearch filter injection shop_id code = %v, want InvalidArgument", status.Code(err))
+	}
+	if _, err := h.svc.Suggest(ctx, &searchv1.SuggestRequest{
+		Query:  "ao",
+		ShopId: `x" OR status="HIDDEN`,
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("Suggest filter injection shop_id code = %v, want InvalidArgument", status.Code(err))
+	}
+	if _, err := h.svc.SimilarProducts(ctx, &searchv1.SimilarProductsRequest{
+		Query:  "ao",
+		ShopId: `x" OR status="HIDDEN`,
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("SimilarProducts filter injection shop_id code = %v, want InvalidArgument", status.Code(err))
 	}
 
 	// G14: Raw search queries must NEVER appear in logs (normal + degraded/error paths).
@@ -906,6 +935,7 @@ func TestPG_Security_NoHiddenLeak_FilterInjection_AndNoRawQueryInLogs(t *testing
 	})
 	_, _ = h.svc.HybridSearch(serviceCtx("ai-assistant"), &searchv1.HybridSearchRequest{Query: canary})
 	_, _ = h.svc.Suggest(ctx, &searchv1.SuggestRequest{Query: canary})
+	_, _ = h.svc.SimilarProducts(ctx, &searchv1.SimilarProductsRequest{Query: canary})
 	h.emb.fail.Store(false)
 
 	if strings.Contains(h.logBuf.String(), canary) {
@@ -1106,6 +1136,18 @@ func TestPG_ShopSuspensionImmediateVisibility_VersionGatingAndDLQ_G10(t *testing
 		if pr.ShopId == shopSuspID {
 			t.Fatalf("Suggest.Products leaked suspended shop product")
 		}
+	}
+	simSusp, err := h.svc.SimilarProducts(ctx, &searchv1.SimilarProductsRequest{Query: "ao khoac gio chong nuoc " + suffix})
+	if err != nil {
+		t.Fatalf("SimilarProducts after suspend: %v", err)
+	}
+	for _, it := range simSusp.Items {
+		if it.ShopId == shopSuspID {
+			t.Fatalf("SimilarProducts leaked suspended shop product %s", it.Id)
+		}
+	}
+	if _, err := h.svc.SimilarProducts(ctx, &searchv1.SimilarProductsRequest{ProductId: "p-susp-" + suffix}); status.Code(err) != codes.NotFound {
+		t.Fatalf("SimilarProducts on suspended source product code = %v, want NotFound", status.Code(err))
 	}
 
 	// 2. Stale older version (version=1 ACTIVE) MUST be ignored (shop stays SUSPENDED).
@@ -1485,5 +1527,182 @@ func TestPG_Race_ReindexVsDelete_ConcurrentReindex_TextHashSkip_AndCrashRecovery
 		if h.meili.HasDoc(pid) {
 			t.Fatalf("second ReindexAll resurrected tombstoned product %s in Meilisearch", pid)
 		}
+	}
+}
+
+func TestPG_ShopIsolation_SuggestHybridSearchSimilarProductsAndTrending(t *testing.T) {
+	h := setupIntegrationHarness(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// Seed 2 independent shops with distinct categories and products.
+	_ = h.idx.HandleCategoryUpdated(ctx, "ev-iso-cat-a", indexer.CategoryUpdateInput{
+		CategoryID: "cat-iso-a", Name: "Áo khoác shop A", Slug: "ao-khoac-shop-a", Action: "UPSERT", UpdatedAt: now,
+	})
+	_ = h.idx.HandleCategoryUpdated(ctx, "ev-iso-cat-b", indexer.CategoryUpdateInput{
+		CategoryID: "cat-iso-b", Name: "Áo khoác shop B", Slug: "ao-khoac-shop-b", Action: "UPSERT", UpdatedAt: now,
+	})
+	h.userClient.shops["shop-iso-a"] = &userv1.Shop{
+		Id: "shop-iso-a", Name: "Shop Iso A", Slug: "shop-iso-a",
+		Status: userv1.ShopStatus_SHOP_STATUS_ACTIVE, StatusVersion: 1,
+	}
+	h.userClient.shops["shop-iso-b"] = &userv1.Shop{
+		Id: "shop-iso-b", Name: "Shop Iso B", Slug: "shop-iso-b",
+		Status: userv1.ShopStatus_SHOP_STATUS_ACTIVE, StatusVersion: 1,
+	}
+	_ = h.idx.HandleShopReviewed(ctx, "ev-iso-sa", indexer.ShopReviewedInput{ShopID: "shop-iso-a", Decision: "APPROVE"})
+	_ = h.idx.HandleShopReviewed(ctx, "ev-iso-sb", indexer.ShopReviewedInput{ShopID: "shop-iso-b", Decision: "APPROVE"})
+
+	for _, p := range []indexer.ProductUpsertInput{
+		{
+			ProductID: "p-iso-a1", ShopID: "shop-iso-a", CategoryID: "cat-iso-a",
+			Name: "Áo khoác gió chống nước A1", Slug: "ao-khoac-a1",
+			MinPriceVND: 300000, MaxPriceVND: 300000, Status: "APPROVED", TotalStock: 10, UpdatedAt: now,
+		},
+		{
+			ProductID: "p-iso-a2", ShopID: "shop-iso-a", CategoryID: "cat-iso-a",
+			Name: "Áo khoác gió thể thao A2", Slug: "ao-khoac-a2",
+			MinPriceVND: 320000, MaxPriceVND: 320000, Status: "APPROVED", TotalStock: 10, UpdatedAt: now,
+		},
+		{
+			ProductID: "p-iso-b1", ShopID: "shop-iso-b", CategoryID: "cat-iso-b",
+			Name: "Áo khoác gió chống nước B1", Slug: "ao-khoac-b1",
+			MinPriceVND: 310000, MaxPriceVND: 310000, Status: "APPROVED", TotalStock: 10, UpdatedAt: now,
+		},
+	} {
+		if err := h.idx.HandleProductUpserted(ctx, "ev-"+p.ProductID, p); err != nil {
+			t.Fatalf("seed %s: %v", p.ProductID, err)
+		}
+	}
+
+	// 1. Per-shop trending: 3 searches on shop-iso-a write ONLY to search:trending:shop-iso-a:<YYYYMMDD>.
+	for i := 0; i < 3; i++ {
+		if _, err := h.svc.SearchProducts(ctx, &searchv1.SearchProductsRequest{Q: "Áo khoác gió", ShopId: "shop-iso-a"}); err != nil {
+			t.Fatalf("SearchProducts shop-iso-a #%d: %v", i+1, err)
+		}
+	}
+	today := time.Now().UTC().Format("20060102")
+	shopAKey := fmt.Sprintf("search:trending:shop-iso-a:%s", today)
+	globalKey := fmt.Sprintf("search:trending:%s", today)
+	if cnt, err := h.rdb.Exists(ctx, shopAKey).Result(); err != nil || cnt != 1 {
+		t.Fatalf("expected per-shop trending key %s to exist, got cnt=%d err=%v", shopAKey, cnt, err)
+	}
+	if cnt, err := h.rdb.Exists(ctx, globalKey).Result(); err != nil || cnt != 0 {
+		t.Fatalf("scoped shop search must NOT pollute global key %s, got cnt=%d err=%v", globalKey, cnt, err)
+	}
+
+	// 2. Suggest(shop-iso-a) vs Suggest(shop-iso-b): strict isolation across products, categories, shops[], trending, and PG fallback.
+	sugA, err := h.svc.Suggest(ctx, &searchv1.SuggestRequest{Query: "ao khoac", ShopId: "shop-iso-a", Limit: 10})
+	if err != nil {
+		t.Fatalf("Suggest shop-iso-a: %v", err)
+	}
+	if len(sugA.Shops) != 0 {
+		t.Fatalf("Suggest(shop_id) must not return shops[], got %+v", sugA.Shops)
+	}
+	if len(sugA.Categories) != 1 || sugA.Categories[0].Id != "cat-iso-a" {
+		t.Fatalf("Suggest(shop-iso-a) categories = %+v, want [cat-iso-a]", sugA.Categories)
+	}
+	if len(sugA.Trending) != 1 || sugA.Trending[0] != "ao khoac gio" {
+		t.Fatalf("Suggest(shop-iso-a) trending = %+v, want ['ao khoac gio']", sugA.Trending)
+	}
+	for _, pr := range sugA.Products {
+		if pr.ShopId != "shop-iso-a" {
+			t.Fatalf("Suggest(shop-iso-a) leaked product from %s", pr.ShopId)
+		}
+	}
+
+	sugB, err := h.svc.Suggest(ctx, &searchv1.SuggestRequest{Query: "ao khoac", ShopId: "shop-iso-b", Limit: 10})
+	if err != nil {
+		t.Fatalf("Suggest shop-iso-b: %v", err)
+	}
+	if len(sugB.Trending) != 0 {
+		t.Fatalf("Suggest(shop-iso-b) leaked shop-iso-a trending: %+v", sugB.Trending)
+	}
+	if len(sugB.Categories) != 1 || sugB.Categories[0].Id != "cat-iso-b" {
+		t.Fatalf("Suggest(shop-iso-b) categories = %+v, want [cat-iso-b]", sugB.Categories)
+	}
+
+	// Suggest PG fallback when Meili fails MUST also respect shop_id.
+	h.meili.failSearch.Store(true)
+	sugAFB, err := h.svc.Suggest(ctx, &searchv1.SuggestRequest{Query: "ao khoac", ShopId: "shop-iso-a", Limit: 10})
+	h.meili.failSearch.Store(false)
+	if err != nil || len(sugAFB.Products) == 0 {
+		t.Fatalf("Suggest PG fallback shop-iso-a: err=%v products=%+v", err, sugAFB.GetProducts())
+	}
+	for _, pr := range sugAFB.Products {
+		if pr.ShopId != "shop-iso-a" {
+			t.Fatalf("Suggest PG fallback leaked product from %s", pr.ShopId)
+		}
+	}
+
+	// 3. HybridSearch(shop-iso-a): strict isolation in both hybrid and vector_only modes.
+	hybA, err := h.svc.HybridSearch(serviceCtx("assistant"), &searchv1.HybridSearchRequest{
+		Query:  "ao khoac gio chong nuoc",
+		ShopId: "shop-iso-a",
+		Limit:  10,
+	})
+	if err != nil || len(hybA.Hits) == 0 {
+		t.Fatalf("HybridSearch shop-iso-a: err=%v hits=%+v", err, hybA.GetHits())
+	}
+	for _, hit := range hybA.Hits {
+		if hit.ShopId != "shop-iso-a" {
+			t.Fatalf("HybridSearch(shop-iso-a) leaked product from %s", hit.ShopId)
+		}
+	}
+
+	// 4. SimilarProducts: by product_id excludes self & isolates shop; cross-shop probe returns NotFound.
+	simA, err := h.svc.SimilarProducts(ctx, &searchv1.SimilarProductsRequest{
+		ProductId: "p-iso-a1",
+		ShopId:    "shop-iso-a",
+		Limit:     5,
+	})
+	if err != nil {
+		t.Fatalf("SimilarProducts(p-iso-a1, shop-iso-a): %v", err)
+	}
+	if len(simA.Items) != 1 || simA.Items[0].Id != "p-iso-a2" {
+		t.Fatalf("SimilarProducts(p-iso-a1, shop-iso-a) = %+v, want [p-iso-a2]", simA.Items)
+	}
+	if _, err := h.svc.SimilarProducts(ctx, &searchv1.SimilarProductsRequest{
+		ProductId: "p-iso-b1",
+		ShopId:    "shop-iso-a",
+	}); status.Code(err) != codes.NotFound {
+		t.Fatalf("SimilarProducts cross-shop probe code = %v, want NotFound", status.Code(err))
+	}
+}
+
+func TestPG_MigrationUpgradeSchema_DeadLetterTextAndProductDocuments(t *testing.T) {
+	h := setupIntegrationHarness(t)
+	ctx := context.Background()
+
+	// Verify dead_letter_events.id accepts TEXT (converted from phase-0b UUID by 000002) and defaults work.
+	if err := h.st.InsertDeadLetterEvent(ctx, db.InsertDeadLetterEventParams{
+		ID:           "dlq-text-id-001",
+		Subject:      "product.upserted",
+		EventID:      "ev-dlq-001",
+		Payload:      []byte(`{"bad":true}`),
+		ErrorMessage: "malformed",
+		Attempts:     1,
+	}); err != nil {
+		t.Fatalf("InsertDeadLetterEvent with TEXT id failed: %v", err)
+	}
+
+	var idDataType string
+	if err := h.st.Pool().QueryRow(ctx, `
+		SELECT data_type FROM information_schema.columns
+		WHERE table_name = 'dead_letter_events' AND column_name = 'id'
+	`).Scan(&idDataType); err != nil {
+		t.Fatalf("query dead_letter_events.id type: %v", err)
+	}
+	if idDataType != "text" {
+		t.Fatalf("dead_letter_events.id data_type = %q, want text", idDataType)
+	}
+
+	// Verify phase-0b product_documents table is preserved (not dropped by 000002).
+	var hasProductDocs bool
+	if err := h.st.Pool().QueryRow(ctx, `SELECT to_regclass('public.product_documents') IS NOT NULL`).Scan(&hasProductDocs); err != nil {
+		t.Fatalf("check product_documents: %v", err)
+	}
+	if !hasProductDocs {
+		t.Fatalf("expected phase-0b product_documents table to remain present after 000002")
 	}
 }

@@ -28,6 +28,7 @@ type MemoryStore struct {
 	reservations         map[string]StockReservation
 	releaseTombstones    map[string]time.Time
 	history              []StockHistoryEntry
+	eventVersion         int64
 	outbox               []OutboxEvent
 	reviews              map[string]ProductReview
 	bannedKeywords       map[string]BannedKeyword
@@ -164,6 +165,25 @@ func (m *MemoryStore) PriceHistory() []SKUPriceHistoryEntry {
 	out := make([]SKUPriceHistoryEntry, len(m.priceHistory))
 	copy(out, m.priceHistory)
 	return out
+}
+
+// SetSKUFlashSaleReservedStockForTest sets legacy flash_sale_reserved_stock directly in tests
+// to verify skus_total_reserved_le_stock guard checks across stock updates and reactivations.
+func (m *MemoryStore) SetSKUFlashSaleReservedStockForTest(skuID string, qty int32) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s, ok := m.skus[skuID]; ok {
+		s.FlashSaleReservedStock = qty
+		m.skus[skuID] = s
+	}
+}
+
+// NextProductEventVersion increments and returns the monotonic product event version.
+func (m *MemoryStore) NextProductEventVersion(_ context.Context) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.eventVersion++
+	return m.eventVersion, nil
 }
 
 // OutboxEvents returns a copy of all recorded outbox events (for test assertions).
@@ -1863,7 +1883,7 @@ func (t *memTx) commit() error {
 			if cur.Version != op.expectedVersion {
 				return ErrVersionConflict
 			}
-			if op.amount < cur.ReservedStock {
+			if op.amount < cur.TotalReservedStock() {
 				return ErrInvalidStock
 			}
 			cur.Stock = op.amount
@@ -1881,7 +1901,7 @@ func (t *memTx) commit() error {
 			if cur.Version != op.expectedVersion {
 				return ErrVersionConflict
 			}
-			if op.amount < cur.ReservedStock {
+			if op.amount < cur.TotalReservedStock() {
 				return ErrInvalidStock
 			}
 			cur.Stock = op.amount
@@ -1940,7 +1960,8 @@ func (t *memTx) commit() error {
 		computedSKUs[op.skuID] = cur
 	}
 
-	// 4b. Validate staged reviews (product FK & UNIQUE(order_item_id)) and banned keywords (UNIQUE(normalized_term)).
+	// 4b. Validate staged reviews (product FK & UNIQUE(order_item_id)), banned keywords (UNIQUE(normalized_term)),
+	// and new outbox event ID uniqueness.
 	if len(t.stagedReviews) > 0 {
 		seenOrderItems := make(map[string]string, len(t.store.reviews)+len(t.stagedReviews))
 		for id, r := range t.store.reviews {
@@ -1974,6 +1995,18 @@ func (t *memTx) commit() error {
 					return ErrAlreadyExists
 				}
 			}
+		}
+	}
+	if len(t.stagedOutbox) > 0 {
+		seenIDs := make(map[string]struct{}, len(t.store.outbox)+len(t.stagedOutbox))
+		for _, existing := range t.store.outbox {
+			seenIDs[existing.ID] = struct{}{}
+		}
+		for _, ev := range t.stagedOutbox {
+			if _, dup := seenIDs[ev.ID]; dup {
+				return ErrAlreadyExists
+			}
+			seenIDs[ev.ID] = struct{}{}
 		}
 	}
 
@@ -2530,7 +2563,7 @@ func (t *memTx) ReactivateSKUOptimistic(ctx context.Context, s SKU, expectedVers
 	if cur.Version != expectedVersion {
 		return SKU{}, ErrVersionConflict
 	}
-	if s.Stock < cur.ReservedStock {
+	if s.Stock < cur.TotalReservedStock() {
 		return SKU{}, ErrInvalidStock
 	}
 	t.skuOps = append(t.skuOps, stagedSKUOp{
@@ -2745,7 +2778,7 @@ func (t *memTx) UpdateSKUStockOptimistic(ctx context.Context, skuID string, newS
 	if cur.Version != expectedVersion {
 		return SKU{}, ErrVersionConflict
 	}
-	if newStock < cur.ReservedStock {
+	if newStock < cur.TotalReservedStock() {
 		return SKU{}, ErrInvalidStock
 	}
 	t.skuOps = append(t.skuOps, stagedSKUOp{
@@ -2957,6 +2990,10 @@ func (t *memTx) TryInsertRestockHistory(ctx context.Context, h StockHistoryEntry
 	}
 	t.stagedHistory = append(t.stagedHistory, h)
 	return true, nil
+}
+
+func (t *memTx) NextProductEventVersion(ctx context.Context) (int64, error) {
+	return t.store.NextProductEventVersion(ctx)
 }
 
 func (t *memTx) InsertOutboxEvent(ctx context.Context, ev OutboxEvent) error {

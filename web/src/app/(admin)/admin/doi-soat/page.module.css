@@ -1,136 +1,139 @@
-/* Đối soát thanh toán (/admin/doi-soat) — Summary strip + borderless ledger & queues */
+/* Đối soát & hoàn tiền (/admin/doi-soat) — Framed Sheet Tabs + Ledger + COD + Queue + Refunds */
 
-.kpiSpacer {
-  margin-top: 20px;
-}
-
-.inlineFormRow {
-  display: flex;
-  align-items: flex-end;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.dateField {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 200px;
-}
-
-.filterGroup {
-  display: flex;
+.runFormInline {
+  display: inline-flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
 
-.alertError {
-  margin-top: 12px;
-  padding: 10px 12px;
-  border-radius: var(--radius-control);
-  background: var(--pill-negative-bg);
-  color: var(--pill-negative-ink);
-  font-size: 13px;
-  line-height: 18px;
-}
-
-.resolveStack {
+.sectionStack {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 20px;
 }
 
-.codFormStack {
+.subTabWrap {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
-.fileInput {
-  width: 100%;
-  min-height: 38px;
-  padding: 6px 10px;
-  border-radius: var(--radius-control);
-  border: 1px solid var(--line);
-  background: var(--card);
-  color: var(--ink);
-  font-size: 13px;
-}
-
-.codHint {
-  font-size: 13px;
-  color: var(--ink-secondary);
-  line-height: 1.5;
-}
-
-.fullSelect {
-  width: 100%;
-  height: 38px;
-  padding: 0 12px;
-  border-radius: var(--radius-control);
-  border: 1px solid #d4dde1;
-  background: var(--card);
-  color: var(--ink);
-  font-size: 14px;
-}
-
-.spanTwo {
-  grid-column: span 2;
-}
-
-.ledgerBreakdown {
+.formGrid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px 20px;
+  gap: 12px;
 }
 
-.ledgerLine {
+.formField {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 6px;
   min-width: 0;
 }
 
-.noteSavedBadge {
-  font-size: 13px;
-  color: var(--positive);
-  font-weight: 500;
+.formFieldWide {
+  grid-column: 1 / -1;
 }
 
-.batchSub {
+.fileInput {
+  font-size: var(--fs-small);
+  color: var(--ink-1);
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg-0);
+  width: 100%;
+  min-width: 0;
+}
+
+.selectFull {
+  width: 100%;
+  height: 38px;
+}
+
+.helperText {
+  font-size: var(--fs-small);
+  color: var(--ink-3);
+  line-height: 1.45;
+  margin: 0;
+}
+
+.noticeBanner {
+  padding: 12px 14px;
+  border-radius: var(--radius-control);
+  background: var(--accent-tint);
+  color: var(--ink-1);
+  font-size: var(--fs-small);
+  line-height: 1.45;
+}
+
+.warningBanner {
+  padding: 12px 14px;
+  border-radius: var(--radius-control);
+  background: var(--pill-warning-bg);
+  color: var(--pill-warning-ink);
+  font-size: var(--fs-small);
+  line-height: 1.45;
+}
+
+.drawerSection {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--bg-0);
+}
+
+.drawerSectionTitle {
+  font-size: var(--fs-section);
+  font-weight: 600;
+  color: var(--ink-1);
+  margin: 0;
+}
+
+.paginationRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
+  flex-wrap: wrap;
+}
+
+.paginationInfo {
+  font-size: var(--fs-small);
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 
-.tabletInlineChannel {
-  display: none;
+.paginationBtns {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 @media (max-width: 960px) {
-  .ledgerBreakdown {
+  .formGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .tabletHideCol {
-    display: none;
-  }
-
-  .tabletInlineChannel {
-    display: inline;
   }
 }
 
 @media (max-width: 720px) {
-  .ledgerBreakdown {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .spanTwo {
-    grid-column: auto;
-  }
-
-  .dateField {
+  .runFormInline {
     width: 100%;
-    min-width: 0;
+  }
+
+  .runFormInline input {
+    flex: 1 1 auto;
+  }
+
+  .formGrid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

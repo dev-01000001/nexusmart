@@ -270,7 +270,6 @@ func Calculate(in Input) (*Output, error) {
 					}
 				}
 			}
-
 			fDisc += lineFlashDisc
 			pDisc += lineProgDisc
 			la := lineGross - lineFlashDisc - lineProgDisc
@@ -614,8 +613,8 @@ func validateFlashCandidate(
 	if fi.Status != domain.FlashStatusApproved {
 		return fmt.Sprintf("flash sale item %s is not approved", fi.ID)
 	}
-	// Active flash sale window is strictly half-open [StartsAt, EndsAt)
-	if now.Before(fi.StartsAt) || !now.Before(fi.EndsAt) {
+	// Active flash sale window is strictly half-open [StartsAt, EndsAt) and not ENDED
+	if fi.WindowStatus == domain.FlashWindowStatusEnded || now.Before(fi.StartsAt) || !now.Before(fi.EndsAt) {
 		return fmt.Sprintf("flash sale item %s is not active", fi.ID)
 	}
 	if item.SKUID != "" && fi.SKUID != "" && item.SKUID != fi.SKUID {

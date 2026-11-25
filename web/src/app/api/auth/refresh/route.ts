@@ -1,73 +1,31 @@
-import { NextRequest, NextResponse } from "next/server";
-import { verifyCsrfOrigin } from "@/lib/server/csrf";
-import {
-  REFRESH_COOKIE,
-  clearSessionCookies,
-  extractClientIp,
-  refreshTokensWithGateway,
-  setSessionCookies,
-} from "@/lib/server/session";
+import { cookies } from "next/headers";
+import { REFRESH_COOKIE } from "@/lib/server/config";
+import { GatewayError } from "@/lib/server/errors";
+import { apiRoute, resolveForwardedClientIp } from "@/lib/server/http";
+import { clearAuthCookies, rotateRefreshToken, setAuthCookies } from "@/lib/server/tokens";
+import { resolveTraceContext } from "@/lib/server/trace";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(req: NextRequest) {
-  const csrfErr = verifyCsrfOrigin(req);
-  if (csrfErr) return csrfErr;
-
-  const refreshToken = req.cookies.get(REFRESH_COOKIE)?.value;
-  if (!refreshToken) {
-    const res = NextResponse.json(
-      {
-        error: {
-          code: "UNAUTHENTICATED",
-          message: "Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.",
-        },
-      },
-      { status: 401, headers: { "Cache-Control": "no-store" } }
-    );
-    clearSessionCookies(res);
-    return res;
+export const POST = apiRoute(async (req) => {
+  const store = await cookies();
+  const refresh = store.get(REFRESH_COOKIE)?.value;
+  if (!refresh) {
+    clearAuthCookies(store);
+    throw new GatewayError("unauthenticated");
   }
 
-  const result = await refreshTokensWithGateway(refreshToken, {
-    clientIp: extractClientIp(req.headers),
-  });
-  if (!result.ok || !result.tokens) {
-    const isAuthFailure = result.status === 401 || result.status === 403;
-    const isRateLimited = result.status === 429;
-    const headers: Record<string, string> = { "Cache-Control": "no-store" };
-    if (isRateLimited && result.retryAfter) {
-      headers["Retry-After"] = result.retryAfter;
-    }
-    const res = NextResponse.json(
-      {
-        error: {
-          code:
-            result.code ??
-            (isAuthFailure
-              ? "UNAUTHENTICATED"
-              : isRateLimited
-                ? "RESOURCE_EXHAUSTED"
-                : "UNAVAILABLE"),
-          message: isAuthFailure
-            ? "Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại."
-            : isRateLimited
-              ? "Bạn thao tác quá nhanh, vui lòng thử lại sau ít phút."
-              : "Hệ thống đang tạm bận, vui lòng thử lại sau ít phút.",
-        },
-      },
-      { status: result.status, headers }
-    );
-    if (isAuthFailure) {
-      clearSessionCookies(res);
-    }
-    return res;
+  const trace = resolveTraceContext(req.headers);
+  const clientIp = resolveForwardedClientIp(req.headers);
+
+  // On 429 or 5xx, rotateRefreshToken throws GatewayError("rate_limited"|"unavailable")
+  // so cookies are NOT cleared and Retry-After is preserved by apiRoute.
+  const pair = await rotateRefreshToken(refresh, trace, { clientIp });
+  if (!pair) {
+    clearAuthCookies(store);
+    throw new GatewayError("unauthenticated");
   }
 
-  const res = NextResponse.json(
-    { ok: true },
-    { status: 200, headers: { "Cache-Control": "no-store" } }
-  );
-  setSessionCookies(res, result.tokens);
-  return res;
-}
+  setAuthCookies(store, pair);
+  return Response.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
+});

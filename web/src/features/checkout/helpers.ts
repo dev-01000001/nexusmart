@@ -16,8 +16,8 @@ import {
   DEFAULT_COD_MAX_VND,
   isAmbiguousCheckoutSubmitError,
   translateVoucherReason,
-} from "./messages";
-import { formatVnd } from "@/lib/format";
+} from "./messages.ts";
+import { formatVnd } from "../../lib/format.ts";
 
 export { AMBIGUOUS_CHECKOUT_MESSAGE, isAmbiguousCheckoutSubmitError };
 
@@ -1492,7 +1492,7 @@ export function evaluatePaymentMethodForCheckout(
  * Resolves the post-checkout destination route:
  * - Zero-VND orders (total_payable_vnd <= 0) or already-SUCCEEDED payments are immediately CONFIRMED
  *   by the backend and MUST go straight to the order detail/list page (never to VietQR/ZaloPay waiting).
- * - Positive-amount pending online payments (VietQR / ZaloPay) go to `/thanh-toan/cho-thanh-toan/[paymentId]`.
+ * - Positive-amount pending online payments (VietQR / ZaloPay) go to `/thanh-toan/cho/[paymentId]`.
  */
 export function resolvePostCheckoutHref(
   res: Pick<
@@ -1510,7 +1510,7 @@ export function resolvePostCheckoutHref(
   const payable = typeof res.total_payable_vnd === "number" ? res.total_payable_vnd : 0;
 
   if (isOnline && res.payment_id && payable > 0 && paymentStatus !== "SUCCEEDED") {
-    return `/thanh-toan/cho-thanh-toan/${encodeURIComponent(res.payment_id)}`;
+    return `/thanh-toan/cho/${encodeURIComponent(res.payment_id)}`;
   }
   if (Array.isArray(res.orders) && res.orders.length === 1 && res.orders[0]?.id) {
     return `/don-hang/${encodeURIComponent(res.orders[0].id)}`;

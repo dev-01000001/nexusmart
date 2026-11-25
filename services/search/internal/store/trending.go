@@ -42,13 +42,24 @@ func (t *TrendingStore) SetClock(fn func() time.Time) {
 	}
 }
 
-func (t *TrendingStore) dayKey(ts time.Time) string {
-	return TrendingKeyPrefix + ts.UTC().Format("20060102")
+func (t *TrendingStore) dayKey(shopID string, ts time.Time) string {
+	day := ts.UTC().Format("20060102")
+	shopID = strings.TrimSpace(shopID)
+	if shopID != "" {
+		return TrendingKeyPrefix + shopID + ":" + day
+	}
+	return TrendingKeyPrefix + day
 }
 
-// Record increments the score of a marketplace-validated normalized query in today's daily Redis key
+// Record increments the score of a validated normalized query in today's global daily Redis key
 // search:trending:<YYYYMMDD> with an 8-day TTL (S5).
 func (t *TrendingStore) Record(ctx context.Context, normalizedQuery string) error {
+	return t.RecordForShop(ctx, "", normalizedQuery)
+}
+
+// RecordForShop increments the score of a validated normalized query in today's daily Redis key
+// search:trending:<shop_id>:<YYYYMMDD> (or search:trending:<YYYYMMDD> when shopID is empty) with an 8-day TTL (S5).
+func (t *TrendingStore) RecordForShop(ctx context.Context, shopID, normalizedQuery string) error {
 	if t == nil || t.rdb == nil {
 		return nil
 	}
@@ -57,7 +68,7 @@ func (t *TrendingStore) Record(ctx context.Context, normalizedQuery string) erro
 		return nil
 	}
 
-	key := t.dayKey(t.now())
+	key := t.dayKey(shopID, t.now())
 	pipe := t.rdb.Pipeline()
 	pipe.ZIncrBy(ctx, key, 1, clean)
 	pipe.ExpireNX(ctx, key, trendingBucketTTL)
@@ -66,9 +77,16 @@ func (t *TrendingStore) Record(ctx context.Context, normalizedQuery string) erro
 	return err
 }
 
-// Top computes the 7-day rolling ZUNION across search:trending:<YYYYMMDD> daily buckets
+// Top computes the 7-day rolling ZUNION across global search:trending:<YYYYMMDD> daily buckets
 // and returns up to limit terms with aggregate score >= 3 matching queryFolded (S5).
 func (t *TrendingStore) Top(ctx context.Context, queryFolded string, limit int) ([]string, error) {
+	return t.TopForShop(ctx, "", queryFolded, limit)
+}
+
+// TopForShop computes the 7-day rolling ZUNION across per-shop search:trending:<shop_id>:<YYYYMMDD>
+// (or global search:trending:<YYYYMMDD> when shopID is empty) daily buckets and returns up to limit
+// terms with aggregate score >= 3 matching queryFolded (S5).
+func (t *TrendingStore) TopForShop(ctx context.Context, shopID, queryFolded string, limit int) ([]string, error) {
 	if t == nil || t.rdb == nil {
 		return nil, nil
 	}
@@ -79,7 +97,7 @@ func (t *TrendingStore) Top(ctx context.Context, queryFolded string, limit int) 
 	base := t.now().UTC()
 	keys := make([]string, trendingWindowDay)
 	for i := 0; i < trendingWindowDay; i++ {
-		keys[i] = t.dayKey(base.AddDate(0, 0, -i))
+		keys[i] = t.dayKey(shopID, base.AddDate(0, 0, -i))
 	}
 
 	zs, err := t.rdb.ZUnionWithScores(ctx, redis.ZStore{

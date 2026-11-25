@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
+use crate::domain::{ChannelAttribution, SalesChannel};
 use crate::error::{PaymentError, Result};
 
 // Canonical system ledger account codes
@@ -112,13 +113,14 @@ pub struct LedgerTransactionDraft {
     pub reference_type: String,
     pub reference_id: String,
     pub description: String,
+    pub channel: ChannelAttribution,
     pub lines: Vec<LedgerLine>,
 }
 
 impl LedgerTransactionDraft {
     /// Strict Rust-side double-entry validation BEFORE hitting PostgreSQL.
     /// Guarantees:
-    /// 1. Non-empty idempotency key & reference fields
+    /// 1. Non-empty idempotency key & valid channel attribution
     /// 2. At least 2 entries
     /// 3. Every entry is strictly positive on exactly one side (debit OR credit, never both/zero/negative)
     /// 4. sum(debit_vnd) == sum(credit_vnd) > 0 with overflow protection
@@ -128,6 +130,9 @@ impl LedgerTransactionDraft {
                 "idempotency_key must not be empty".to_string(),
             ));
         }
+        self.channel.validate().map_err(|e| {
+            PaymentError::LedgerInvariant(format!("invalid channel attribution: {e}"))
+        })?;
         if self.lines.len() < 2 {
             return Err(PaymentError::LedgerInvariant(format!(
                 "ledger transaction must have at least 2 lines, got {}",
@@ -176,12 +181,46 @@ impl LedgerTransactionDraft {
 // =============================================================================
 
 /// VietQR confirmed: Debit gateway_clearing, Credit escrow_liability
-pub fn build_vietqr_confirm_tx(payment_id: Uuid, amount_vnd: i64) -> LedgerTransactionDraft {
+pub fn build_vietqr_confirm_tx(
+    payment_id: Uuid,
+    amount_vnd: i64,
+    channel: ChannelAttribution,
+) -> LedgerTransactionDraft {
     LedgerTransactionDraft {
         idempotency_key: format!("vietqr-confirm:{payment_id}"),
         reference_type: "payment_vietqr".to_string(),
         reference_id: payment_id.to_string(),
         description: format!("VietQR payment confirmed for payment {payment_id}"),
+        channel,
+        lines: vec![
+            LedgerLine::debit(
+                ACCOUNT_GATEWAY_CLEARING,
+                AccountType::Asset,
+                None,
+                amount_vnd,
+            ),
+            LedgerLine::credit(
+                ACCOUNT_ESCROW_LIABILITY,
+                AccountType::Liability,
+                None,
+                amount_vnd,
+            ),
+        ],
+    }
+}
+
+/// ZaloPay confirmed: Debit gateway_clearing, Credit escrow_liability
+pub fn build_zalopay_confirm_tx(
+    payment_id: Uuid,
+    amount_vnd: i64,
+    channel: ChannelAttribution,
+) -> LedgerTransactionDraft {
+    LedgerTransactionDraft {
+        idempotency_key: format!("zalopay-confirm:{payment_id}"),
+        reference_type: "payment_zalopay".to_string(),
+        reference_id: payment_id.to_string(),
+        description: format!("ZaloPay payment confirmed for payment {payment_id}"),
+        channel,
         lines: vec![
             LedgerLine::debit(
                 ACCOUNT_GATEWAY_CLEARING,
@@ -208,6 +247,7 @@ pub fn build_cod_collect_tx(
     order_id: &str,
     shop_id: Option<&str>,
     amount_vnd: i64,
+    channel: ChannelAttribution,
 ) -> LedgerTransactionDraft {
     let idempotency_key = match shop_id.map(str::trim).filter(|s| !s.is_empty()) {
         Some(shop) => format!("cod-collect:{payment_id}:{order_id}:{shop}"),
@@ -220,6 +260,7 @@ pub fn build_cod_collect_tx(
         description: format!(
             "COD collected on delivery for order {order_id} (payment {payment_id})"
         ),
+        channel,
         lines: vec![
             LedgerLine::debit(ACCOUNT_COD_RECEIVABLE, AccountType::Asset, None, amount_vnd),
             LedgerLine::credit(
@@ -241,6 +282,7 @@ pub fn build_cod_reconcile_tx(
     order_id: &str,
     shop_id: &str,
     amount_vnd: i64,
+    channel: ChannelAttribution,
 ) -> LedgerTransactionDraft {
     let oid = order_id.trim();
     let sid = shop_id.trim();
@@ -251,6 +293,7 @@ pub fn build_cod_reconcile_tx(
         description: format!(
             "COD reconciled from carrier for order {oid} shop {sid} (payment {payment_id})"
         ),
+        channel,
         lines: vec![
             LedgerLine::debit(
                 ACCOUNT_GATEWAY_CLEARING,
@@ -264,18 +307,20 @@ pub fn build_cod_reconcile_tx(
 }
 
 /// Refund on a succeeded payment (UC-PAY04):
-/// Reverses escrow liability into refund_payable.
+/// Reverses escrow liability into refund_payable under the original payment/allocation channel.
 pub fn build_refund_tx(
     refund_id: Uuid,
     payment_id: Uuid,
     amount_vnd: i64,
     reason: &str,
+    channel: ChannelAttribution,
 ) -> LedgerTransactionDraft {
     LedgerTransactionDraft {
         idempotency_key: format!("refund-accrual:{refund_id}"),
         reference_type: "refund".to_string(),
         reference_id: refund_id.to_string(),
         description: format!("Refund {refund_id} for payment {payment_id}: {reason}"),
+        channel,
         lines: vec![
             LedgerLine::debit(
                 ACCOUNT_ESCROW_LIABILITY,
@@ -295,12 +340,17 @@ pub fn build_refund_tx(
 
 /// Refund disbursement settled out via gateway/bank:
 /// Debit refund_payable, Credit gateway_clearing.
-pub fn build_refund_settle_tx(refund_id: Uuid, amount_vnd: i64) -> LedgerTransactionDraft {
+pub fn build_refund_settle_tx(
+    refund_id: Uuid,
+    amount_vnd: i64,
+    channel: ChannelAttribution,
+) -> LedgerTransactionDraft {
     LedgerTransactionDraft {
         idempotency_key: format!("refund-settle:{refund_id}"),
         reference_type: "refund_settle".to_string(),
         reference_id: refund_id.to_string(),
         description: format!("Refund {refund_id} disbursed to buyer"),
+        channel,
         lines: vec![
             LedgerLine::debit(
                 ACCOUNT_REFUND_PAYABLE,
@@ -323,6 +373,7 @@ pub fn build_refund_settle_tx(refund_id: Uuid, amount_vnd: i64) -> LedgerTransac
 pub fn build_late_payment_refund_tx(
     provider_tx_id: &str,
     amount_vnd: i64,
+    channel: ChannelAttribution,
 ) -> LedgerTransactionDraft {
     build_gateway_clearing_refund_tx(
         format!("late-webhook-refund:{provider_tx_id}"),
@@ -330,6 +381,7 @@ pub fn build_late_payment_refund_tx(
         provider_tx_id,
         format!("Late/superseded webhook {provider_tx_id} booked to refund_payable"),
         amount_vnd,
+        channel,
     )
 }
 
@@ -340,6 +392,7 @@ pub fn build_reconciliation_refund_tx(
     reference_id: &str,
     amount_vnd: i64,
     description: &str,
+    channel: ChannelAttribution,
 ) -> LedgerTransactionDraft {
     build_gateway_clearing_refund_tx(
         idempotency_key.to_string(),
@@ -347,6 +400,7 @@ pub fn build_reconciliation_refund_tx(
         reference_id,
         description.to_string(),
         amount_vnd,
+        channel,
     )
 }
 
@@ -356,12 +410,14 @@ fn build_gateway_clearing_refund_tx(
     reference_id: &str,
     description: String,
     amount_vnd: i64,
+    channel: ChannelAttribution,
 ) -> LedgerTransactionDraft {
     LedgerTransactionDraft {
         idempotency_key,
         reference_type: reference_type.to_string(),
         reference_id: reference_id.to_string(),
         description,
+        channel,
         lines: vec![
             LedgerLine::debit(
                 ACCOUNT_GATEWAY_CLEARING,
@@ -389,6 +445,7 @@ pub fn build_post_settlement_refund_tx(
     from_pending_vnd: i64,
     from_available_vnd: i64,
     reason: &str,
+    channel: ChannelAttribution,
 ) -> Result<LedgerTransactionDraft> {
     if from_pending_vnd < 0 || from_available_vnd < 0 {
         return Err(PaymentError::LedgerInvariant(
@@ -432,6 +489,7 @@ pub fn build_post_settlement_refund_tx(
         description: format!(
             "Post-settlement refund {refund_id} for payment {payment_id} shop {shop_id}: {reason}"
         ),
+        channel,
         lines,
     };
     draft.validate()?;
@@ -440,6 +498,7 @@ pub fn build_post_settlement_refund_tx(
 
 /// Order completed -> Debit escrow_liability (P - refunded) + Debit platform_promo_expense (D),
 /// Credit seller_pending:<shop_id>, platform_fee_revenue, shipping_fee_payable.
+#[allow(clippy::too_many_arguments)]
 pub fn build_escrow_settle_tx(
     order_id: &str,
     shop_id: &str,
@@ -448,6 +507,7 @@ pub fn build_escrow_settle_tx(
     seller_net_vnd: i64,
     commission_vnd: i64,
     shipping_fee_vnd: i64,
+    channel: ChannelAttribution,
 ) -> Result<LedgerTransactionDraft> {
     if escrow_debit_vnd < 0
         || platform_promo_debit_vnd < 0
@@ -508,6 +568,7 @@ pub fn build_escrow_settle_tx(
         reference_type: "escrow_settle".to_string(),
         reference_id: order_id.to_string(),
         description: format!("Settle completed order {order_id} escrow for shop {shop_id}"),
+        channel,
         lines,
     };
     draft.validate()?;
@@ -519,6 +580,7 @@ pub fn build_escrow_release_tx(
     order_id: &str,
     shop_id: &str,
     seller_net_vnd: i64,
+    channel: ChannelAttribution,
 ) -> Result<LedgerTransactionDraft> {
     let draft = LedgerTransactionDraft {
         idempotency_key: format!("escrow-release:{order_id}:{shop_id}"),
@@ -527,6 +589,7 @@ pub fn build_escrow_release_tx(
         description: format!(
             "Release escrow to available balance for order {order_id} shop {shop_id}"
         ),
+        channel,
         lines: vec![
             LedgerLine::debit(
                 account_seller_pending(shop_id),
@@ -551,12 +614,14 @@ pub fn build_seller_payout_tx(
     payout_id: Uuid,
     shop_id: &str,
     amount_vnd: i64,
+    channel: ChannelAttribution,
 ) -> Result<LedgerTransactionDraft> {
     let draft = LedgerTransactionDraft {
         idempotency_key: format!("seller-payout:{payout_id}"),
         reference_type: "payout".to_string(),
         reference_id: payout_id.to_string(),
         description: format!("Payout {payout_id} to shop {shop_id}"),
+        channel,
         lines: vec![
             LedgerLine::debit(
                 account_seller_available(shop_id),
@@ -591,6 +656,7 @@ pub struct AccountBalance {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LedgerSummary {
+    pub sales_channel: String,
     pub total_debits_vnd: i64,
     pub total_credits_vnd: i64,
     pub is_balanced: bool,
@@ -635,10 +701,17 @@ pub async fn post_transaction(
         .await?;
     }
 
+    let sales_channel = draft.channel.sales_channel.as_str();
+    let storefront_shop_id = &draft.channel.storefront_shop_id;
+    let metadata = draft.channel.metadata_json();
+
     let inserted_id: Option<Uuid> = sqlx::query_scalar(
         r#"
-        INSERT INTO ledger_transactions (idempotency_key, reference_type, reference_id, description)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO ledger_transactions (
+            idempotency_key, reference_type, reference_id, description,
+            sales_channel, storefront_shop_id, metadata
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (idempotency_key) DO NOTHING
         RETURNING id
         "#,
@@ -647,6 +720,9 @@ pub async fn post_transaction(
     .bind(&draft.reference_type)
     .bind(&draft.reference_id)
     .bind(&draft.description)
+    .bind(sales_channel)
+    .bind(storefront_shop_id)
+    .bind(&metadata)
     .fetch_optional(&mut **tx)
     .await?;
 
@@ -657,14 +733,20 @@ pub async fn post_transaction(
     for line in &draft.lines {
         sqlx::query(
             r#"
-            INSERT INTO ledger_entries (transaction_id, account_id, debit_vnd, credit_vnd)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO ledger_entries (
+                transaction_id, account_id, debit_vnd, credit_vnd,
+                sales_channel, storefront_shop_id, metadata
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             "#,
         )
         .bind(tx_id)
         .bind(&line.account_id)
         .bind(line.debit_vnd)
         .bind(line.credit_vnd)
+        .bind(sales_channel)
+        .bind(storefront_shop_id)
+        .bind(&metadata)
         .execute(&mut **tx)
         .await?;
     }
@@ -672,37 +754,52 @@ pub async fn post_transaction(
     Ok(Some(tx_id))
 }
 
-/// Queries global ledger integrity and per-account balances from PostgreSQL.
-pub async fn get_ledger_summary(pool: &PgPool) -> Result<LedgerSummary> {
+/// Queries global or channel-filtered ledger integrity and per-account balances from PostgreSQL.
+pub async fn get_ledger_summary(
+    pool: &PgPool,
+    channel_filter: Option<SalesChannel>,
+) -> Result<LedgerSummary> {
+    let filter_str = channel_filter.map(SalesChannel::as_str);
+
     let totals = sqlx::query(
         r#"
         SELECT
             COALESCE(SUM(debit_vnd), 0)::BIGINT AS total_debits_vnd,
             COALESCE(SUM(credit_vnd), 0)::BIGINT AS total_credits_vnd
         FROM ledger_entries
+        WHERE ($1::TEXT IS NULL OR sales_channel = $1)
         "#,
     )
+    .bind(filter_str)
     .fetch_one(pool)
     .await?;
 
     let total_debits_vnd: i64 = totals.try_get("total_debits_vnd")?;
     let total_credits_vnd: i64 = totals.try_get("total_credits_vnd")?;
 
-    let transaction_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM ledger_transactions")
-            .fetch_one(pool)
-            .await?;
+    let transaction_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)::BIGINT
+        FROM ledger_transactions
+        WHERE ($1::TEXT IS NULL OR sales_channel = $1)
+        "#,
+    )
+    .bind(filter_str)
+    .fetch_one(pool)
+    .await?;
 
     let unbalanced_transactions: i64 = sqlx::query_scalar(
         r#"
         SELECT COUNT(*)::BIGINT FROM (
             SELECT transaction_id
             FROM ledger_entries
+            WHERE ($1::TEXT IS NULL OR sales_channel = $1)
             GROUP BY transaction_id
             HAVING SUM(debit_vnd) <> SUM(credit_vnd) OR COUNT(*) < 2
         ) unbalanced
         "#,
     )
+    .bind(filter_str)
     .fetch_one(pool)
     .await?;
 
@@ -714,11 +811,14 @@ pub async fn get_ledger_summary(pool: &PgPool) -> Result<LedgerSummary> {
             COALESCE(SUM(e.debit_vnd), 0)::BIGINT AS total_debits_vnd,
             COALESCE(SUM(e.credit_vnd), 0)::BIGINT AS total_credits_vnd
         FROM ledger_accounts a
-        LEFT JOIN ledger_entries e ON e.account_id = a.id
+        LEFT JOIN ledger_entries e
+            ON e.account_id = a.id
+           AND ($1::TEXT IS NULL OR e.sales_channel = $1)
         GROUP BY a.id, a.account_type
         ORDER BY a.id ASC
         "#,
     )
+    .bind(filter_str)
     .fetch_all(pool)
     .await?;
 
@@ -741,6 +841,7 @@ pub async fn get_ledger_summary(pool: &PgPool) -> Result<LedgerSummary> {
     let is_balanced = total_debits_vnd == total_credits_vnd && unbalanced_transactions == 0;
 
     Ok(LedgerSummary {
+        sales_channel: filter_str.unwrap_or("").to_string(),
         total_debits_vnd,
         total_credits_vnd,
         is_balanced,
@@ -895,12 +996,21 @@ pub async fn lock_and_get_seller_balances_tx(
 // In-Memory Reference Ledger (for exhaustive unit testing of all accounting flows)
 // =============================================================================
 
+#[derive(Debug, Clone)]
+pub struct InMemoryLedgerTx {
+    pub idempotency_key: String,
+    pub reference_type: String,
+    pub reference_id: String,
+    pub channel: ChannelAttribution,
+    pub metadata: serde_json::Value,
+    pub lines: Vec<LedgerLine>,
+}
+
 #[derive(Debug, Default)]
 pub struct InMemoryLedger {
     seen_keys: HashSet<String>,
-    accounts: HashMap<String, (AccountType, i64, i64)>,
-    refund_debits_by_account: HashMap<String, i64>,
-    tx_count: i64,
+    account_types: HashMap<String, AccountType>,
+    transactions: Vec<InMemoryLedgerTx>,
 }
 
 impl InMemoryLedger {
@@ -910,21 +1020,23 @@ impl InMemoryLedger {
             return Ok(false);
         }
         for line in &draft.lines {
-            let entry =
-                self.accounts
-                    .entry(line.account_id.clone())
-                    .or_insert((line.account_type, 0, 0));
-            entry.1 += line.debit_vnd;
-            entry.2 += line.credit_vnd;
-            if draft.reference_type == "refund" && line.debit_vnd > 0 {
-                *self
-                    .refund_debits_by_account
-                    .entry(line.account_id.clone())
-                    .or_insert(0) += line.debit_vnd;
-            }
+            self.account_types
+                .entry(line.account_id.clone())
+                .or_insert(line.account_type);
         }
-        self.tx_count += 1;
+        self.transactions.push(InMemoryLedgerTx {
+            idempotency_key: draft.idempotency_key.clone(),
+            reference_type: draft.reference_type.clone(),
+            reference_id: draft.reference_id.clone(),
+            channel: draft.channel.clone(),
+            metadata: draft.channel.metadata_json(),
+            lines: draft.lines.clone(),
+        });
         Ok(true)
+    }
+
+    pub fn transactions(&self) -> &[InMemoryLedgerTx] {
+        &self.transactions
     }
 
     pub fn seller_balance(&self, shop_id: &str) -> SellerBalance {
@@ -932,21 +1044,20 @@ impl InMemoryLedger {
         let available_acct = account_seller_available(shop_id);
         let pending_vnd = self.balance_of(&pending_acct);
         let available_vnd = self.balance_of(&available_acct);
-        let settled_credits = self
-            .accounts
-            .get(&pending_acct)
-            .map(|(_, _, c)| *c)
-            .unwrap_or(0);
-        let refund_clawbacks = self
-            .refund_debits_by_account
-            .get(&pending_acct)
-            .copied()
-            .unwrap_or(0)
-            + self
-                .refund_debits_by_account
-                .get(&available_acct)
-                .copied()
-                .unwrap_or(0);
+        let mut settled_credits = 0_i64;
+        let mut refund_clawbacks = 0_i64;
+        for tx in &self.transactions {
+            for line in &tx.lines {
+                if line.account_id == pending_acct {
+                    settled_credits += line.credit_vnd;
+                }
+                if tx.reference_type == "refund"
+                    && (line.account_id == pending_acct || line.account_id == available_acct)
+                {
+                    refund_clawbacks += line.debit_vnd;
+                }
+            }
+        }
         SellerBalance {
             shop_id: shop_id.to_string(),
             pending_vnd,
@@ -956,38 +1067,79 @@ impl InMemoryLedger {
     }
 
     pub fn balance_of(&self, account_id: &str) -> i64 {
-        self.accounts
-            .get(account_id)
-            .map(|(ty, d, c)| ty.signed_balance(*d, *c))
-            .unwrap_or(0)
+        let Some(&ty) = self.account_types.get(account_id) else {
+            return 0;
+        };
+        let mut debits = 0_i64;
+        let mut credits = 0_i64;
+        for tx in &self.transactions {
+            for line in &tx.lines {
+                if line.account_id == account_id {
+                    debits += line.debit_vnd;
+                    credits += line.credit_vnd;
+                }
+            }
+        }
+        ty.signed_balance(debits, credits)
     }
 
     pub fn summary(&self) -> LedgerSummary {
+        self.summary_for_channel(None)
+    }
+
+    pub fn summary_for_channel(&self, channel_filter: Option<SalesChannel>) -> LedgerSummary {
+        let mut per_account: HashMap<String, (AccountType, i64, i64)> = self
+            .account_types
+            .iter()
+            .map(|(id, ty)| (id.clone(), (*ty, 0, 0)))
+            .collect();
+        let mut tx_count = 0_i64;
+
+        for tx in &self.transactions {
+            if let Some(ch) = channel_filter {
+                if tx.channel.sales_channel != ch {
+                    continue;
+                }
+            }
+            tx_count += 1;
+            for line in &tx.lines {
+                let entry =
+                    per_account
+                        .entry(line.account_id.clone())
+                        .or_insert((line.account_type, 0, 0));
+                entry.1 += line.debit_vnd;
+                entry.2 += line.credit_vnd;
+            }
+        }
+
         let mut total_debits = 0_i64;
         let mut total_credits = 0_i64;
-        let mut accounts: Vec<AccountBalance> = self
-            .accounts
-            .iter()
+        let mut accounts: Vec<AccountBalance> = per_account
+            .into_iter()
             .map(|(id, (ty, d, c))| {
-                total_debits += *d;
-                total_credits += *c;
+                total_debits += d;
+                total_credits += c;
                 AccountBalance {
-                    account_id: id.clone(),
+                    account_id: id,
                     account_type: ty.as_str().to_string(),
-                    total_debits_vnd: *d,
-                    total_credits_vnd: *c,
-                    balance_vnd: ty.signed_balance(*d, *c),
+                    total_debits_vnd: d,
+                    total_credits_vnd: c,
+                    balance_vnd: ty.signed_balance(d, c),
                 }
             })
             .collect();
         accounts.sort_by(|a, b| a.account_id.cmp(&b.account_id));
 
         LedgerSummary {
+            sales_channel: channel_filter
+                .map(SalesChannel::as_str)
+                .unwrap_or("")
+                .to_string(),
             total_debits_vnd: total_debits,
             total_credits_vnd: total_credits,
             is_balanced: total_debits == total_credits,
             unbalanced_transactions: 0,
-            transaction_count: self.tx_count,
+            transaction_count: tx_count,
             accounts,
         }
     }
@@ -1004,6 +1156,7 @@ mod tests {
             reference_type: "test".into(),
             reference_id: "1".into(),
             description: "unbalanced".into(),
+            channel: ChannelAttribution::marketplace(),
             lines: vec![
                 LedgerLine::debit(ACCOUNT_GATEWAY_CLEARING, AccountType::Asset, None, 100_000),
                 LedgerLine::credit(
@@ -1027,6 +1180,7 @@ mod tests {
             reference_type: "test".into(),
             reference_id: "1".into(),
             description: "zero".into(),
+            channel: ChannelAttribution::marketplace(),
             lines: vec![
                 LedgerLine::debit(ACCOUNT_GATEWAY_CLEARING, AccountType::Asset, None, 0),
                 LedgerLine::credit(ACCOUNT_ESCROW_LIABILITY, AccountType::Liability, None, 0),
@@ -1039,6 +1193,7 @@ mod tests {
             reference_type: "test".into(),
             reference_id: "1".into(),
             description: "neg".into(),
+            channel: ChannelAttribution::marketplace(),
             lines: vec![
                 LedgerLine::debit(ACCOUNT_GATEWAY_CLEARING, AccountType::Asset, None, -5000),
                 LedgerLine::credit(
@@ -1056,6 +1211,7 @@ mod tests {
             reference_type: "test".into(),
             reference_id: "1".into(),
             description: "single".into(),
+            channel: ChannelAttribution::marketplace(),
             lines: vec![LedgerLine::debit(
                 ACCOUNT_GATEWAY_CLEARING,
                 AccountType::Asset,
@@ -1069,15 +1225,16 @@ mod tests {
     #[test]
     fn test_full_lifecycle_ledger_stays_balanced_across_all_scenarios() {
         let mut ledger = InMemoryLedger::default();
+        let mp = ChannelAttribution::marketplace();
 
         // 1. VietQR payment confirmed: 330,000 VND (shop subtotal 300,000, commission 15,000, shipping 30,000)
         let pay_qr = Uuid::new_v4();
         assert!(ledger
-            .post(&build_vietqr_confirm_tx(pay_qr, 330_000))
+            .post(&build_vietqr_confirm_tx(pay_qr, 330_000, mp.clone()))
             .unwrap());
         // Duplicate posting with same idempotency_key is a no-op
         assert!(!ledger
-            .post(&build_vietqr_confirm_tx(pay_qr, 330_000))
+            .post(&build_vietqr_confirm_tx(pay_qr, 330_000, mp.clone()))
             .unwrap());
         assert!(ledger.summary().is_balanced);
         assert_eq!(ledger.balance_of(ACCOUNT_GATEWAY_CLEARING), 330_000);
@@ -1090,7 +1247,8 @@ mod tests {
                 pay_cod,
                 "ord-cod-life",
                 Some("shop-B"),
-                200_000
+                200_000,
+                mp.clone()
             ))
             .unwrap());
         assert!(ledger.summary().is_balanced);
@@ -1103,7 +1261,8 @@ mod tests {
                 pay_cod,
                 "ord-cod-life",
                 "shop-B",
-                200_000
+                200_000,
+                mp.clone()
             ))
             .unwrap());
         assert!(!ledger
@@ -1111,7 +1270,8 @@ mod tests {
                 pay_cod,
                 "ord-cod-life",
                 "shop-B",
-                200_000
+                200_000,
+                mp.clone()
             ))
             .unwrap());
         assert!(ledger.summary().is_balanced);
@@ -1119,9 +1279,17 @@ mod tests {
         assert_eq!(ledger.balance_of(ACCOUNT_GATEWAY_CLEARING), 530_000);
 
         // 4. Order completes -> escrow settled to seller_pending + platform_fee_revenue + shipping_fee_payable
-        let settle_tx =
-            build_escrow_settle_tx("ord-qr-1", "shop-A", 330_000, 0, 285_000, 15_000, 30_000)
-                .unwrap();
+        let settle_tx = build_escrow_settle_tx(
+            "ord-qr-1",
+            "shop-A",
+            330_000,
+            0,
+            285_000,
+            15_000,
+            30_000,
+            mp.clone(),
+        )
+        .unwrap();
         assert!(ledger.post(&settle_tx).unwrap());
         assert!(ledger.summary().is_balanced);
         assert_eq!(
@@ -1133,7 +1301,8 @@ mod tests {
         assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 200_000);
 
         // 5. Escrow released -> seller_pending moves to seller_available
-        let release_tx = build_escrow_release_tx("ord-qr-1", "shop-A", 285_000).unwrap();
+        let release_tx =
+            build_escrow_release_tx("ord-qr-1", "shop-A", 285_000, mp.clone()).unwrap();
         assert!(ledger.post(&release_tx).unwrap());
         assert!(ledger.summary().is_balanced);
         assert_eq!(ledger.balance_of(&account_seller_pending("shop-A")), 0);
@@ -1144,7 +1313,7 @@ mod tests {
 
         // 6. Seller payout of 200,000 VND
         let payout_id = Uuid::new_v4();
-        let payout_tx = build_seller_payout_tx(payout_id, "shop-A", 200_000).unwrap();
+        let payout_tx = build_seller_payout_tx(payout_id, "shop-A", 200_000, mp.clone()).unwrap();
         assert!(ledger.post(&payout_tx).unwrap());
         assert!(ledger.summary().is_balanced);
         assert_eq!(
@@ -1160,11 +1329,12 @@ mod tests {
                 refund_id,
                 pay_cod,
                 50_000,
-                "partial return"
+                "partial return",
+                mp.clone()
             ))
             .unwrap());
         assert!(ledger
-            .post(&build_refund_settle_tx(refund_id, 50_000))
+            .post(&build_refund_settle_tx(refund_id, 50_000, mp.clone()))
             .unwrap());
         assert!(ledger.summary().is_balanced);
         assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 0);
@@ -1172,7 +1342,7 @@ mod tests {
 
         // 8. Late webhook on expired payment -> booked to refund_payable
         assert!(ledger
-            .post(&build_late_payment_refund_tx("BANK-TX-LATE-1", 120_000))
+            .post(&build_late_payment_refund_tx("BANK-TX-LATE-1", 120_000, mp))
             .unwrap());
 
         let summary = ledger.summary();
@@ -1186,14 +1356,16 @@ mod tests {
         // Brief example: G=229,000, voucher san=30,000, commission=11,450, Ship=26,000 => P=225,000
         // Seller MUST receive 217,550 and platform_promo_expense = 30,000.
         let mut ledger = InMemoryLedger::default();
+        let mp = ChannelAttribution::marketplace();
         let pay_id = Uuid::new_v4();
 
         assert!(ledger
-            .post(&build_vietqr_confirm_tx(pay_id, 225_000))
+            .post(&build_vietqr_confirm_tx(pay_id, 225_000, mp.clone()))
             .unwrap());
-        let settle =
-            build_escrow_settle_tx("ord-r1", "shop-1", 225_000, 30_000, 217_550, 11_450, 26_000)
-                .unwrap();
+        let settle = build_escrow_settle_tx(
+            "ord-r1", "shop-1", 225_000, 30_000, 217_550, 11_450, 26_000, mp,
+        )
+        .unwrap();
         assert!(ledger.post(&settle).unwrap());
 
         let summary = ledger.summary();
@@ -1213,11 +1385,20 @@ mod tests {
         // 0 VND order: R=200,000, C=10,000, Ship=20,000, D=220,000, P=0.
         // No gateway_clearing entry; settlement debits platform_promo_expense 220,000 and pays seller 190,000.
         let mut ledger = InMemoryLedger::default();
-        let settle =
-            build_escrow_settle_tx("ord-zero", "shop-z", 0, 220_000, 190_000, 10_000, 20_000)
-                .unwrap();
+        let mp = ChannelAttribution::marketplace();
+        let settle = build_escrow_settle_tx(
+            "ord-zero",
+            "shop-z",
+            0,
+            220_000,
+            190_000,
+            10_000,
+            20_000,
+            mp.clone(),
+        )
+        .unwrap();
         assert!(ledger.post(&settle).unwrap());
-        let release = build_escrow_release_tx("ord-zero", "shop-z", 190_000).unwrap();
+        let release = build_escrow_release_tx("ord-zero", "shop-z", 190_000, mp).unwrap();
         assert!(ledger.post(&release).unwrap());
 
         assert!(ledger.summary().is_balanced);
@@ -1240,8 +1421,10 @@ mod tests {
 
         // Multi-shop COD: sub-order 1 delivers -> posts cod_receivable -> escrow_liability for P1 only.
         let mut ledger = InMemoryLedger::default();
+        let mp = ChannelAttribution::marketplace();
         let pay_id = Uuid::new_v4();
-        let collect1 = build_cod_collect_tx(pay_id, "ord-cod-1", Some("shop-1"), 256_500);
+        let collect1 =
+            build_cod_collect_tx(pay_id, "ord-cod-1", Some("shop-1"), 256_500, mp.clone());
         assert!(ledger.post(&collect1).unwrap());
         // Idempotent replay of order.delivered for ord-cod-1 is a no-op
         assert!(!ledger.post(&collect1).unwrap());
@@ -1257,7 +1440,8 @@ mod tests {
                 shared_pay,
                 "grp-shared",
                 Some("shop-A"),
-                100_000
+                100_000,
+                mp.clone()
             ))
             .unwrap());
         assert!(ledger
@@ -1265,7 +1449,8 @@ mod tests {
                 shared_pay,
                 "grp-shared",
                 Some("shop-B"),
-                200_000
+                200_000,
+                mp
             ))
             .unwrap());
         assert_eq!(ledger.balance_of(ACCOUNT_COD_RECEIVABLE), 556_500);
@@ -1276,24 +1461,40 @@ mod tests {
     #[test]
     fn test_r4_partial_refund_before_and_after_settlement_never_overdraws_escrow() {
         let mut ledger = InMemoryLedger::default();
+        let mp = ChannelAttribution::marketplace();
         let pay_id = Uuid::new_v4();
 
         // 2-shop VietQR payment: Shop1 P1=255,000 (R=229k, C=11.45k, Ship=26k), Shop2 P2=463,000 (R=429k, C=21.45k, Ship=34k)
         assert!(ledger
-            .post(&build_vietqr_confirm_tx(pay_id, 718_000))
+            .post(&build_vietqr_confirm_tx(pay_id, 718_000, mp.clone()))
             .unwrap());
 
         // Case A: Partial refund 10,000 on Shop 2 BEFORE settlement
         let rf_before = Uuid::new_v4();
         assert!(ledger
-            .post(&build_refund_tx(rf_before, pay_id, 10_000, "partial"))
+            .post(&build_refund_tx(
+                rf_before,
+                pay_id,
+                10_000,
+                "partial",
+                mp.clone()
+            ))
             .unwrap());
         // Settle Shop 2 with escrow_debit = 463,000 - 10,000 = 453,000; seller_net = 407,550 - 10,000 = 397,550
-        let settle2 =
-            build_escrow_settle_tx("ord-2", "shop-2", 453_000, 0, 397_550, 21_450, 34_000).unwrap();
+        let settle2 = build_escrow_settle_tx(
+            "ord-2",
+            "shop-2",
+            453_000,
+            0,
+            397_550,
+            21_450,
+            34_000,
+            mp.clone(),
+        )
+        .unwrap();
         assert!(ledger.post(&settle2).unwrap());
         assert!(ledger
-            .post(&build_escrow_release_tx("ord-2", "shop-2", 397_550).unwrap())
+            .post(&build_escrow_release_tx("ord-2", "shop-2", 397_550, mp.clone()).unwrap())
             .unwrap());
         // Escrow remaining MUST equal exactly Shop 1's P1 = 255,000 (not 245,000!)
         assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 255_000);
@@ -1303,11 +1504,20 @@ mod tests {
         );
 
         // Case B: Settle + release Shop 1 (217,550 -> available), then post-settlement refund 5,000
-        let settle1 =
-            build_escrow_settle_tx("ord-1", "shop-1", 255_000, 0, 217_550, 11_450, 26_000).unwrap();
+        let settle1 = build_escrow_settle_tx(
+            "ord-1",
+            "shop-1",
+            255_000,
+            0,
+            217_550,
+            11_450,
+            26_000,
+            mp.clone(),
+        )
+        .unwrap();
         assert!(ledger.post(&settle1).unwrap());
         assert!(ledger
-            .post(&build_escrow_release_tx("ord-1", "shop-1", 217_550).unwrap())
+            .post(&build_escrow_release_tx("ord-1", "shop-1", 217_550, mp.clone()).unwrap())
             .unwrap());
         assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 0);
 
@@ -1319,6 +1529,7 @@ mod tests {
             0,
             5_000,
             "post-settle refund",
+            mp,
         )
         .unwrap();
         assert!(ledger.post(&clawback).unwrap());
@@ -1336,24 +1547,31 @@ mod tests {
     #[test]
     fn test_w2_two_step_refund_settlement_and_reconciliation_ledger_balance() {
         let mut ledger = InMemoryLedger::default();
+        let mp = ChannelAttribution::marketplace();
         let pay_id = Uuid::new_v4();
 
         // 1. Confirm VietQR payment of 250,000 VND
         assert!(ledger
-            .post(&build_vietqr_confirm_tx(pay_id, 250_000))
+            .post(&build_vietqr_confirm_tx(pay_id, 250_000, mp.clone()))
             .unwrap());
 
         // 2. Two-step refund: CreateRefund -> Credit refund_payable, SettleRefund (2x) -> only 1 posting, refund_payable returns to 0
         let rf_id = Uuid::new_v4();
         assert!(ledger
-            .post(&build_refund_tx(rf_id, pay_id, 100_000, "partial"))
+            .post(&build_refund_tx(
+                rf_id,
+                pay_id,
+                100_000,
+                "partial",
+                mp.clone()
+            ))
             .unwrap());
         assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 100_000);
         assert!(ledger
-            .post(&build_refund_settle_tx(rf_id, 100_000))
+            .post(&build_refund_settle_tx(rf_id, 100_000, mp.clone()))
             .unwrap());
         assert!(!ledger
-            .post(&build_refund_settle_tx(rf_id, 100_000))
+            .post(&build_refund_settle_tx(rf_id, 100_000, mp.clone()))
             .unwrap());
         assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 0);
         assert_eq!(ledger.balance_of(ACCOUNT_GATEWAY_CLEARING), 150_000);
@@ -1362,7 +1580,7 @@ mod tests {
         // 3. Reconciliation ASSIGN overpay: expected 200k, actual 230k (excess 30k)
         let pay_over = Uuid::new_v4();
         assert!(ledger
-            .post(&build_vietqr_confirm_tx(pay_over, 200_000))
+            .post(&build_vietqr_confirm_tx(pay_over, 200_000, mp.clone()))
             .unwrap());
         assert!(ledger
             .post(&build_reconciliation_refund_tx(
@@ -1370,6 +1588,7 @@ mod tests {
                 "TX-OVER-1",
                 30_000,
                 "overpayment excess",
+                mp.clone(),
             ))
             .unwrap());
         assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 350_000);
@@ -1378,7 +1597,7 @@ mod tests {
 
         let overpay_rf_id = Uuid::new_v4();
         assert!(ledger
-            .post(&build_refund_settle_tx(overpay_rf_id, 30_000))
+            .post(&build_refund_settle_tx(overpay_rf_id, 30_000, mp.clone()))
             .unwrap());
         assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 0);
         assert_eq!(ledger.balance_of(ACCOUNT_GATEWAY_CLEARING), 350_000);
@@ -1390,6 +1609,7 @@ mod tests {
                 "TX-MISMATCH-2",
                 90_000,
                 "mismatched refund",
+                mp.clone(),
             ))
             .unwrap());
         assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 90_000);
@@ -1397,7 +1617,7 @@ mod tests {
 
         let mismatch_rf_id = Uuid::new_v4();
         assert!(ledger
-            .post(&build_refund_settle_tx(mismatch_rf_id, 90_000))
+            .post(&build_refund_settle_tx(mismatch_rf_id, 90_000, mp))
             .unwrap());
         assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 0);
         assert_eq!(ledger.balance_of(ACCOUNT_GATEWAY_CLEARING), 350_000);
@@ -1407,14 +1627,24 @@ mod tests {
     #[test]
     fn test_w2_seller_balance_total_earned_reflects_post_settlement_clawback() {
         let mut ledger = InMemoryLedger::default();
+        let mp = ChannelAttribution::marketplace();
         let pay_id = Uuid::new_v4();
         assert!(ledger
-            .post(&build_vietqr_confirm_tx(pay_id, 255_000))
+            .post(&build_vietqr_confirm_tx(pay_id, 255_000, mp.clone()))
             .unwrap());
         assert!(ledger
             .post(
-                &build_escrow_settle_tx("ord-1", "shop-x", 255_000, 0, 217_550, 11_450, 26_000)
-                    .unwrap()
+                &build_escrow_settle_tx(
+                    "ord-1",
+                    "shop-x",
+                    255_000,
+                    0,
+                    217_550,
+                    11_450,
+                    26_000,
+                    mp.clone(),
+                )
+                .unwrap()
             )
             .unwrap());
 
@@ -1425,7 +1655,7 @@ mod tests {
 
         // Release to available does not change total_earned_vnd
         assert!(ledger
-            .post(&build_escrow_release_tx("ord-1", "shop-x", 217_550).unwrap())
+            .post(&build_escrow_release_tx("ord-1", "shop-x", 217_550, mp.clone()).unwrap())
             .unwrap());
         let b2 = ledger.seller_balance("shop-x");
         assert_eq!(b2.pending_vnd, 0);
@@ -1434,7 +1664,7 @@ mod tests {
 
         // Payout does not reduce total_earned_vnd
         assert!(ledger
-            .post(&build_seller_payout_tx(Uuid::new_v4(), "shop-x", 100_000).unwrap())
+            .post(&build_seller_payout_tx(Uuid::new_v4(), "shop-x", 100_000, mp.clone()).unwrap())
             .unwrap());
         let b3 = ledger.seller_balance("shop-x");
         assert_eq!(b3.available_vnd, 117_550);
@@ -1450,6 +1680,7 @@ mod tests {
                     0,
                     17_550,
                     "post-settlement refund",
+                    mp,
                 )
                 .unwrap()
             )
@@ -1465,21 +1696,28 @@ mod tests {
         use crate::domain::{compute_post_settlement_clawback, compute_settlement_split};
 
         let mut ledger = InMemoryLedger::default();
+        let mp = ChannelAttribution::marketplace();
 
         // Scenario 1: VietQR order with P_shop=50k, V_shop=20k, S_shop=20k, Ship=35k, D=50k
         // R=410k, P=395k, C_cat=21,500 + C_pay=5,925 => C_total=27,425 => seller_net=382,575
         let pay_qr = Uuid::new_v4();
         assert!(ledger
-            .post(&build_vietqr_confirm_tx(pay_qr, 395_000))
+            .post(&build_vietqr_confirm_tx(pay_qr, 395_000, mp.clone()))
             .unwrap());
 
         // Pre-settlement partial refund of 45,000 VND
         let rf_pre = Uuid::new_v4();
         assert!(ledger
-            .post(&build_refund_tx(rf_pre, pay_qr, 45_000, "partial defect"))
+            .post(&build_refund_tx(
+                rf_pre,
+                pay_qr,
+                45_000,
+                "partial defect",
+                mp.clone()
+            ))
             .unwrap());
         assert!(ledger
-            .post(&build_refund_settle_tx(rf_pre, 45_000))
+            .post(&build_refund_settle_tx(rf_pre, 45_000, mp.clone()))
             .unwrap());
 
         // Settle completed order after partial refund
@@ -1507,6 +1745,7 @@ mod tests {
             split1.seller_net_vnd,
             split1.commission_vnd,
             split1.shipping_fee_vnd,
+            mp.clone(),
         )
         .unwrap();
         assert!(ledger.post(&settle_tx1).unwrap());
@@ -1518,7 +1757,7 @@ mod tests {
 
         // Release escrow to available
         assert!(ledger
-            .post(&build_escrow_release_tx("ord-w2b-qr", "shop-1", 337_575).unwrap())
+            .post(&build_escrow_release_tx("ord-w2b-qr", "shop-1", 337_575, mp.clone()).unwrap())
             .unwrap());
         assert_eq!(ledger.seller_balance("shop-1").pending_vnd, 0);
         assert_eq!(ledger.seller_balance("shop-1").available_vnd, 337_575);
@@ -1535,12 +1774,13 @@ mod tests {
                     from_p,
                     from_a,
                     "post-settle",
+                    mp.clone(),
                 )
                 .unwrap()
             )
             .unwrap());
         assert!(ledger
-            .post(&build_refund_settle_tx(rf_post, 37_575))
+            .post(&build_refund_settle_tx(rf_post, 37_575, mp.clone()))
             .unwrap());
         assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 0);
         assert_eq!(ledger.seller_balance("shop-1").available_vnd, 300_000);
@@ -1549,7 +1789,7 @@ mod tests {
         // Scenario 2: Fee capped at R (C_total == R => seller_net == 0) + Ship = 30k
         let pay_cap = Uuid::new_v4();
         assert!(ledger
-            .post(&build_vietqr_confirm_tx(pay_cap, 40_000))
+            .post(&build_vietqr_confirm_tx(pay_cap, 40_000, mp.clone()))
             .unwrap());
         let split_cap =
             compute_settlement_split("ord-w2b-cap", "shop-2", 10_000, 10_000, 30_000, 0, 0)
@@ -1563,6 +1803,7 @@ mod tests {
             split_cap.seller_net_vnd,
             split_cap.commission_vnd,
             split_cap.shipping_fee_vnd,
+            mp.clone(),
         )
         .unwrap();
         assert!(ledger.post(&settle_cap).unwrap());
@@ -1578,7 +1819,8 @@ mod tests {
                 pay_cod,
                 "ord-w2b-cod",
                 Some("shop-3"),
-                275_000
+                275_000,
+                mp.clone(),
             ))
             .unwrap());
         let split_cod =
@@ -1594,12 +1836,13 @@ mod tests {
                     split_cod.seller_net_vnd,
                     split_cod.commission_vnd,
                     split_cod.shipping_fee_vnd,
+                    mp.clone(),
                 )
                 .unwrap()
             )
             .unwrap());
         assert!(ledger
-            .post(&build_escrow_release_tx("ord-w2b-cod", "shop-3", 231_000).unwrap())
+            .post(&build_escrow_release_tx("ord-w2b-cod", "shop-3", 231_000, mp.clone()).unwrap())
             .unwrap());
         assert_eq!(ledger.seller_balance("shop-3").available_vnd, 231_000);
         assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 0);
@@ -1617,6 +1860,7 @@ mod tests {
                     split_zero.seller_net_vnd,
                     split_zero.commission_vnd,
                     split_zero.shipping_fee_vnd,
+                    mp,
                 )
                 .unwrap()
             )
@@ -1632,19 +1876,32 @@ mod tests {
     #[test]
     fn test_w3b_e20_build_cod_reconcile_tx_multishop_keys_and_balance() {
         let mut ledger = InMemoryLedger::default();
+        let mp = ChannelAttribution::marketplace();
         let pid = Uuid::new_v4();
 
         // Two sub-orders under ONE multi-shop COD payment collect into cod_receivable
         assert!(ledger
-            .post(&build_cod_collect_tx(pid, "ord-1", Some("shop-1"), 220_000))
+            .post(&build_cod_collect_tx(
+                pid,
+                "ord-1",
+                Some("shop-1"),
+                220_000,
+                mp.clone()
+            ))
             .unwrap());
         assert!(ledger
-            .post(&build_cod_collect_tx(pid, "ord-2", Some("shop-2"), 320_000))
+            .post(&build_cod_collect_tx(
+                pid,
+                "ord-2",
+                Some("shop-2"),
+                320_000,
+                mp.clone()
+            ))
             .unwrap());
         assert_eq!(ledger.balance_of(ACCOUNT_COD_RECEIVABLE), 540_000);
 
-        let tx1 = build_cod_reconcile_tx(pid, "ord-1", "shop-1", 220_000);
-        let tx2 = build_cod_reconcile_tx(pid, "ord-2", "shop-2", 320_000);
+        let tx1 = build_cod_reconcile_tx(pid, "ord-1", "shop-1", 220_000, mp.clone());
+        let tx2 = build_cod_reconcile_tx(pid, "ord-2", "shop-2", 320_000, mp);
         assert_eq!(
             tx1.idempotency_key,
             format!("cod-reconcile:{pid}:ord-1:shop-1")
@@ -1667,5 +1924,185 @@ mod tests {
         assert_eq!(summary.total_debits_vnd, summary.total_credits_vnd);
         assert_eq!(ledger.balance_of(ACCOUNT_COD_RECEIVABLE), 0);
         assert_eq!(ledger.balance_of(ACCOUNT_GATEWAY_CLEARING), 540_000);
+    }
+
+    #[test]
+    fn test_sales_channel_ledger_partitioning_matches_unfiltered_100_percent() {
+        let mut ledger = InMemoryLedger::default();
+        let mp = ChannelAttribution::marketplace();
+        let sf_a = ChannelAttribution::storefront("shop-A").unwrap();
+
+        // MARKETPLACE VietQR + escrow settle + release
+        let pay_mp = Uuid::new_v4();
+        ledger
+            .post(&build_vietqr_confirm_tx(pay_mp, 330_000, mp.clone()))
+            .unwrap();
+        ledger
+            .post(
+                &build_escrow_settle_tx(
+                    "ord-mp-1",
+                    "shop-A",
+                    330_000,
+                    0,
+                    285_000,
+                    15_000,
+                    30_000,
+                    mp.clone(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        ledger
+            .post(&build_escrow_release_tx("ord-mp-1", "shop-A", 285_000, mp).unwrap())
+            .unwrap();
+
+        // STOREFRONT VietQR + refund + COD
+        let pay_sf_qr = Uuid::new_v4();
+        let pay_sf_cod = Uuid::new_v4();
+        let refund_sf = Uuid::new_v4();
+        ledger
+            .post(&build_vietqr_confirm_tx(pay_sf_qr, 250_000, sf_a.clone()))
+            .unwrap();
+        ledger
+            .post(&build_refund_tx(
+                refund_sf,
+                pay_sf_qr,
+                100_000,
+                "storefront partial refund",
+                sf_a.clone(),
+            ))
+            .unwrap();
+        ledger
+            .post(&build_cod_collect_tx(
+                pay_sf_cod,
+                "ord-sf-cod-1",
+                Some("shop-A"),
+                180_000,
+                sf_a.clone(),
+            ))
+            .unwrap();
+
+        // Verify refund metadata retained original STOREFRONT attribution
+        let refund_tx = ledger
+            .transactions()
+            .iter()
+            .find(|t| t.reference_type == "refund")
+            .unwrap();
+        assert_eq!(refund_tx.channel, sf_a);
+        assert_eq!(
+            refund_tx.metadata,
+            serde_json::json!({"sales_channel": "STOREFRONT", "storefront_shop_id": "shop-A"})
+        );
+
+        let all = ledger.summary_for_channel(None);
+        let only_mp = ledger.summary_for_channel(Some(SalesChannel::Marketplace));
+        let only_sf = ledger.summary_for_channel(Some(SalesChannel::Storefront));
+
+        assert!(all.is_balanced);
+        assert!(only_mp.is_balanced);
+        assert!(only_sf.is_balanced);
+
+        assert_eq!(all.sales_channel, "");
+        assert_eq!(only_mp.sales_channel, "MARKETPLACE");
+        assert_eq!(only_sf.sales_channel, "STOREFRONT");
+
+        assert_eq!(
+            only_mp.total_debits_vnd + only_sf.total_debits_vnd,
+            all.total_debits_vnd
+        );
+        assert_eq!(
+            only_mp.total_credits_vnd + only_sf.total_credits_vnd,
+            all.total_credits_vnd
+        );
+        assert_eq!(
+            only_mp.transaction_count + only_sf.transaction_count,
+            all.transaction_count
+        );
+
+        // Every account's debits, credits, and signed balance add up to 100% of unfiltered
+        assert_eq!(only_mp.accounts.len(), all.accounts.len());
+        assert_eq!(only_sf.accounts.len(), all.accounts.len());
+        for i in 0..all.accounts.len() {
+            assert_eq!(all.accounts[i].account_id, only_mp.accounts[i].account_id);
+            assert_eq!(all.accounts[i].account_id, only_sf.accounts[i].account_id);
+            assert_eq!(
+                only_mp.accounts[i].total_debits_vnd + only_sf.accounts[i].total_debits_vnd,
+                all.accounts[i].total_debits_vnd
+            );
+            assert_eq!(
+                only_mp.accounts[i].total_credits_vnd + only_sf.accounts[i].total_credits_vnd,
+                all.accounts[i].total_credits_vnd
+            );
+            assert_eq!(
+                only_mp.accounts[i].balance_vnd + only_sf.accounts[i].balance_vnd,
+                all.accounts[i].balance_vnd
+            );
+        }
+    }
+
+    #[test]
+    fn test_zalopay_confirm_and_account_type_invariants() {
+        let mut ledger = InMemoryLedger::default();
+        let sf = ChannelAttribution::storefront("shop-Z").unwrap();
+
+        let pay_zp = Uuid::new_v4();
+        let confirm_draft = build_zalopay_confirm_tx(pay_zp, 330_000, sf.clone());
+        assert_eq!(confirm_draft.reference_type, "payment_zalopay");
+        assert!(ledger.post(&confirm_draft).unwrap());
+        assert!(!ledger.post(&confirm_draft).unwrap());
+        assert_eq!(ledger.balance_of(ACCOUNT_GATEWAY_CLEARING), 330_000);
+        assert_eq!(ledger.balance_of(ACCOUNT_ESCROW_LIABILITY), 330_000);
+
+        let settle = build_escrow_settle_tx(
+            "ord-zp-1",
+            "shop-Z",
+            330_000,
+            0,
+            285_000,
+            15_000,
+            30_000,
+            sf.clone(),
+        )
+        .unwrap();
+        assert!(ledger.post(&settle).unwrap());
+        assert_eq!(
+            ledger.balance_of(&account_seller_pending("shop-Z")),
+            285_000
+        );
+        assert_eq!(ledger.balance_of(ACCOUNT_PLATFORM_FEE_REVENUE), 15_000);
+        assert_eq!(ledger.balance_of(ACCOUNT_SHIPPING_FEE_PAYABLE), 30_000);
+
+        // Post-settlement refund under main's money model claws back from seller_pending (retains platform fee & shipping fee).
+        let rf_post = Uuid::new_v4();
+        let clawback = build_post_settlement_refund_tx(
+            rf_post,
+            pay_zp,
+            "shop-Z",
+            100_000,
+            0,
+            "zalopay post-settle return",
+            sf,
+        )
+        .unwrap();
+        assert!(ledger.post(&clawback).unwrap());
+        assert_eq!(
+            ledger.balance_of(&account_seller_pending("shop-Z")),
+            185_000
+        );
+        assert_eq!(ledger.balance_of(ACCOUNT_PLATFORM_FEE_REVENUE), 15_000);
+        assert_eq!(ledger.balance_of(ACCOUNT_SHIPPING_FEE_PAYABLE), 30_000);
+        assert_eq!(ledger.balance_of(ACCOUNT_REFUND_PAYABLE), 100_000);
+        assert!(ledger.summary().is_balanced);
+
+        // AccountType coverage
+        assert_eq!(AccountType::parse("ASSET"), AccountType::Asset);
+        assert_eq!(AccountType::parse("REVENUE"), AccountType::Revenue);
+        assert_eq!(AccountType::parse("EXPENSE"), AccountType::Expense);
+        assert_eq!(AccountType::parse("EQUITY"), AccountType::Equity);
+        assert_eq!(AccountType::parse("LIABILITY"), AccountType::Liability);
+        assert_eq!(AccountType::Expense.as_str(), "EXPENSE");
+        assert_eq!(AccountType::Equity.as_str(), "EQUITY");
+        assert_eq!(AccountType::Expense.signed_balance(500, 100), 400);
+        assert_eq!(AccountType::Equity.signed_balance(100, 500), 400);
     }
 }

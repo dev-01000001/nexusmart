@@ -1,19 +1,19 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
+import { Button, StateView } from "@/components";
+import { api, getErrorMessage } from "@/lib/api";
+import { formatCarrierLabel, formatDateTimeVi, formatVnd } from "@/lib/format";
 import type {
   GatewayAdminTestCarrierResponse,
   GatewayCarrierConfig,
   GatewayFallbackRate,
   GatewayShippingRegion,
 } from "@/lib/gateway-types";
-import { api, getErrorMessage } from "@/lib/api";
-import { useMockStore } from "@/mock/MockStoreContext";
-import { Button, StateView } from "@/components";
-import { formatCarrierLabel, formatDateTimeVi, formatVnd } from "@/lib/format";
-import { SHIPPING_REGION_LABELS } from "./types";
+import { useAdminContext } from "./AdminShell";
+import { useAdminCapability } from "./AdminUserContext";
 import { StatusPill } from "./StatusPill";
-import { ToggleSwitch } from "./ToggleSwitch";
+import { SHIPPING_REGION_LABELS } from "./types";
 import shared from "./adminShared.module.css";
 import styles from "@/app/(admin)/admin/cau-hinh/page.module.css";
 
@@ -58,7 +58,9 @@ function buildDraft(carrier: GatewayCarrierConfig): CarrierDraft {
 }
 
 export function AdminCarriersPanel() {
-  const { showToast } = useMockStore();
+  const { showToast } = useAdminContext();
+  const canWrite = useAdminCapability("carriers.write");
+
   const [carriers, setCarriers] = useState<GatewayCarrierConfig[]>([]);
   const [drafts, setDrafts] = useState<Record<string, CarrierDraft>>({});
   const [loading, setLoading] = useState(true);
@@ -75,7 +77,7 @@ export function AdminCarriersPanel() {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const res = await api<{ carriers: GatewayCarrierConfig[] }>("admin/carriers");
+      const res = await api<{ carriers: GatewayCarrierConfig[] }>("/api/admin/carriers");
       const list = res.carriers ?? [];
       setCarriers(list);
       const nextDrafts: Record<string, CarrierDraft> = {};
@@ -128,6 +130,7 @@ export function AdminCarriersPanel() {
 
   const handleSaveCarrier = async (e: React.FormEvent, carrier: GatewayCarrierConfig) => {
     e.preventDefault();
+    if (!canWrite) return;
     const code = carrier.carrier_code;
     if (savingCode) return;
     const draft = drafts[code];
@@ -160,7 +163,7 @@ export function AdminCarriersPanel() {
       }
 
       const res = await api<{ carrier: GatewayCarrierConfig }>(
-        `admin/carriers/${encodeURIComponent(code)}`,
+        `/api/admin/carriers/${encodeURIComponent(code)}`,
         {
           method: "PUT",
           json: payload,
@@ -170,7 +173,7 @@ export function AdminCarriersPanel() {
         setCarriers((prev) => prev.map((c) => (c.carrier_code === code ? res.carrier : c)));
         setDrafts((prev) => ({ ...prev, [code]: buildDraft(res.carrier) }));
       }
-      showToast(`Đã lưu cấu hình hãng vận chuyển ${formatCarrierLabel(code, carrier.name)}.`);
+      showToast(`Đã lưu cấu hình ${formatCarrierLabel(code, carrier.name)}.`);
     } catch (err) {
       setRowErrors((prev) => ({
         ...prev,
@@ -182,13 +185,14 @@ export function AdminCarriersPanel() {
   };
 
   const handleTestCarrier = async (carrier: GatewayCarrierConfig) => {
+    if (!canWrite) return;
     const code = carrier.carrier_code;
     if (testingCode) return;
     setTestingCode(code);
     setRowErrors((prev) => ({ ...prev, [code]: "" }));
     try {
       const res = await api<GatewayAdminTestCarrierResponse>(
-        `admin/carriers/${encodeURIComponent(code)}/test`,
+        `/api/admin/carriers/${encodeURIComponent(code)}/test`,
         { method: "POST" }
       );
       setTestResults((prev) => ({ ...prev, [code]: res }));
@@ -238,8 +242,8 @@ export function AdminCarriersPanel() {
         <StateView
           kind="empty"
           surface="app"
-          title="Chưa có hãng vận chuyển nào được cấu hình"
-          message="Hệ thống vận chuyển chưa trả về đối tác nào. Vui lòng thử làm mới sau."
+          title="Chưa có hãng vận chuyển nào"
+          message="Hệ thống vận chuyển chưa trả về đối tác nào."
           actionLabel="Làm mới"
           onAction={() => void loadCarriers()}
         />
@@ -248,7 +252,7 @@ export function AdminCarriersPanel() {
   }
 
   return (
-    <div className={styles.sectionList}>
+    <div className={shared.sectionStack}>
       {carriers.map((carrier) => {
         const code = carrier.carrier_code;
         const displayName = formatCarrierLabel(code, carrier.name);
@@ -261,12 +265,12 @@ export function AdminCarriersPanel() {
         return (
           <section
             key={code}
-            className={styles.sectionRow}
+            className={styles.configRow}
             aria-labelledby={`carrier-heading-${code}`}
           >
-            <div className={styles.labelCol}>
-              <div className={styles.switchTitleLine}>
-                <h2 id={`carrier-heading-${code}`} className={styles.sectionTitle}>
+            <div className={styles.configLabelCol}>
+              <div className={shared.detailHeaderMeta}>
+                <h2 id={`carrier-heading-${code}`} className={styles.configBlockTitle}>
                   {displayName}
                 </h2>
                 <StatusPill
@@ -274,87 +278,61 @@ export function AdminCarriersPanel() {
                   tone={draft.enabled ? "positive" : "neutral"}
                 />
               </div>
-              <p className={styles.sectionDesc}>
-                Cấu hình trạng thái bật/tắt, khóa API đối tác (lưu mã hóa, chỉ ghi mới) và bảng cước
-                dự phòng khi API hãng tạm gián đoạn.
+              <p className={styles.configBlockMeta}>
+                Mã: {code} · Khóa API: {carrier.token_configured ? "Đã cấu hình" : "Chưa cấu hình"}
               </p>
-
-              <dl className={styles.summaryList}>
-                <div className={styles.summaryPair}>
-                  <dt className={styles.summaryKey}>Mã đối tác</dt>
-                  <dd className={styles.summaryVal}>{code}</dd>
-                </div>
-                <div className={styles.summaryPair}>
-                  <dt className={styles.summaryKey}>Khóa kết nối API</dt>
-                  <dd className={styles.summaryVal}>
-                    {carrier.token_configured ? "Đã cấu hình" : "Chưa cấu hình"}
-                  </dd>
-                </div>
-                <div className={styles.summaryPair}>
-                  <dt className={styles.summaryKey}>Cước nội tỉnh dự phòng</dt>
-                  <dd className={styles.summaryVal}>
-                    {formatVnd(draft.fallback_rates[0]?.base_fee_vnd ?? 0)}
-                  </dd>
-                </div>
-                {carrier.updated_at && (
-                  <div className={styles.summaryPair}>
-                    <dt className={styles.summaryKey}>Cập nhật gần nhất</dt>
-                    <dd className={styles.summaryVal}>{formatDateTimeVi(carrier.updated_at)}</dd>
-                  </div>
-                )}
-              </dl>
+              <p className={styles.configBlockMeta}>
+                Nội tỉnh dự phòng: {formatVnd(draft.fallback_rates[0]?.base_fee_vnd ?? 0)}
+                {carrier.updated_at ? ` · ${formatDateTimeVi(carrier.updated_at)}` : ""}
+              </p>
             </div>
 
             <form
-              className={styles.settingsPanel}
+              className={styles.configPanel}
               onSubmit={(e) => void handleSaveCarrier(e, carrier)}
               noValidate
             >
               <div className={styles.switchRow}>
                 <div className={styles.switchCopy}>
-                  <label htmlFor={`carrier-enable-${code}`} className={styles.switchTitle}>
-                    Cho phép gian hàng và người mua sử dụng {displayName}
-                  </label>
-                  <p className={styles.switchDesc}>
-                    Khi tắt, hãng này sẽ không còn xuất hiện trong danh sách chọn vận chuyển khi đặt
-                    hàng.
-                  </p>
+                  <span className={styles.switchTitle}>Bật {displayName}</span>
                 </div>
-                <ToggleSwitch
-                  id={`carrier-enable-${code}`}
-                  checked={draft.enabled}
-                  label={`Bật hoặc tắt ${displayName}`}
-                  onChange={(next) => updateDraft(code, (prev) => ({ ...prev, enabled: next }))}
-                />
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={draft.enabled}
+                  aria-label={`Bật hoặc tắt ${displayName}`}
+                  disabled={!canWrite || isSaving}
+                  className={`${shared.toggleBtn} ${draft.enabled ? shared.toggleBtnOn : ""}`}
+                  onClick={() => updateDraft(code, (prev) => ({ ...prev, enabled: !prev.enabled }))}
+                >
+                  <span className={shared.toggleKnob} />
+                </button>
               </div>
 
               <div className={styles.fieldGroup}>
-                <label htmlFor={`carrier-token-${code}`} className={styles.fieldLabel}>
+                <label htmlFor={`carrier-token-${code}`} className={shared.fieldLabel}>
                   API token đối tác (chỉ ghi mới)
                 </label>
                 <input
                   id={`carrier-token-${code}`}
                   type="password"
                   autoComplete="new-password"
-                  className={styles.settingInput}
+                  className={shared.textInput}
                   value={draft.api_token}
                   onChange={(e) =>
                     updateDraft(code, (prev) => ({ ...prev, api_token: e.target.value }))
                   }
                   placeholder={
                     carrier.token_configured
-                      ? "Đã cấu hình — để trống để giữ nguyên token hiện tại"
-                      : "Nhập API token đối tác vận chuyển..."
+                      ? "Đã cấu hình — để trống để giữ nguyên"
+                      : "Nhập API token đối tác..."
                   }
-                  disabled={isSaving}
+                  disabled={!canWrite || isSaving}
                 />
-                <span className={styles.fieldHint}>
-                  Token được mã hóa khi lưu trữ và không bao giờ hiển thị lại trên giao diện.
-                </span>
               </div>
 
-              <div className={styles.commissionTableWrap}>
-                <table className={styles.commissionTable}>
+              <div className={shared.tableWrap}>
+                <table className={shared.dataTable}>
                   <thead>
                     <tr>
                       <th>Tuyến vận chuyển</th>
@@ -380,7 +358,7 @@ export function AdminCarriersPanel() {
                                 updateRateField(code, regionKey, "base_fee_vnd", e.target.value)
                               }
                               aria-label={`Cước cơ bản ${SHIPPING_REGION_LABELS[rate.region] ?? rate.region} của ${displayName}`}
-                              disabled={isSaving}
+                              disabled={!canWrite || isSaving}
                             />
                           </td>
                           <td className={shared.colNum}>
@@ -399,7 +377,7 @@ export function AdminCarriersPanel() {
                                 )
                               }
                               aria-label={`Mốc khối lượng ${SHIPPING_REGION_LABELS[rate.region] ?? rate.region} của ${displayName}`}
-                              disabled={isSaving}
+                              disabled={!canWrite || isSaving}
                             />
                           </td>
                           <td className={shared.colNum}>
@@ -418,7 +396,7 @@ export function AdminCarriersPanel() {
                                 )
                               }
                               aria-label={`Phụ phí mỗi 500g ${SHIPPING_REGION_LABELS[rate.region] ?? rate.region} của ${displayName}`}
-                              disabled={isSaving}
+                              disabled={!canWrite || isSaving}
                             />
                           </td>
                         </tr>
@@ -428,7 +406,7 @@ export function AdminCarriersPanel() {
                 </table>
               </div>
 
-              <div className={styles.commissionMobileList}>
+              <div className={shared.mobileList}>
                 {draft.fallback_rates.map((rate) => {
                   const regionKey = rate.region as GatewayShippingRegion;
                   const regionLabel = SHIPPING_REGION_LABELS[rate.region] ?? rate.region;
@@ -436,9 +414,9 @@ export function AdminCarriersPanel() {
                   const weightId = `carrier-rate-${code}-${rate.region}-weight`;
                   const extraId = `carrier-rate-${code}-${rate.region}-extra`;
                   return (
-                    <div key={rate.region} className={styles.commissionMobileCard}>
-                      <span className={styles.fieldLabel}>{regionLabel}</span>
-                      <div className={styles.commissionMobileInputs}>
+                    <div key={rate.region} className={shared.mobileItem}>
+                      <span className={shared.fieldLabel}>{regionLabel}</span>
+                      <div className={styles.mobileRateGrid}>
                         <div className={styles.fieldGroup}>
                           <label htmlFor={baseId} className={styles.fieldHint}>
                             Cước cơ bản (₫)
@@ -448,12 +426,12 @@ export function AdminCarriersPanel() {
                             type="number"
                             min={0}
                             step={1}
-                            className={`${styles.settingInput} ${styles.settingInputNum}`}
+                            className={shared.textInput}
                             value={rate.base_fee_vnd}
                             onChange={(e) =>
                               updateRateField(code, regionKey, "base_fee_vnd", e.target.value)
                             }
-                            disabled={isSaving}
+                            disabled={!canWrite || isSaving}
                           />
                         </div>
                         <div className={styles.fieldGroup}>
@@ -465,12 +443,12 @@ export function AdminCarriersPanel() {
                             type="number"
                             min={1}
                             step={1}
-                            className={`${styles.settingInput} ${styles.settingInputNum}`}
+                            className={shared.textInput}
                             value={rate.base_weight_grams}
                             onChange={(e) =>
                               updateRateField(code, regionKey, "base_weight_grams", e.target.value)
                             }
-                            disabled={isSaving}
+                            disabled={!canWrite || isSaving}
                           />
                         </div>
                         <div className={styles.fieldGroup}>
@@ -482,7 +460,7 @@ export function AdminCarriersPanel() {
                             type="number"
                             min={0}
                             step={1}
-                            className={`${styles.settingInput} ${styles.settingInputNum}`}
+                            className={shared.textInput}
                             value={rate.extra_fee_vnd_per_500g}
                             onChange={(e) =>
                               updateRateField(
@@ -492,7 +470,7 @@ export function AdminCarriersPanel() {
                                 e.target.value
                               )
                             }
-                            disabled={isSaving}
+                            disabled={!canWrite || isSaving}
                           />
                         </div>
                       </div>
@@ -508,39 +486,43 @@ export function AdminCarriersPanel() {
               )}
 
               {testRes && (
-                <div
-                  style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
-                  role="status"
-                >
+                <div className={styles.formFeedback} role="status">
                   <StatusPill
                     label={testRes.ok ? "Kết nối ổn định" : "Kiểm tra thất bại"}
                     tone={testRes.ok ? "positive" : "negative"}
                   />
-                  <span className={styles.fieldHint}>{testRes.message}</span>
+                  {testRes.message && <span className={styles.fieldHint}>{testRes.message}</span>}
                 </div>
               )}
 
-              <div className={styles.panelFooter}>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  shape="app"
-                  disabled={isTesting || isSaving}
-                  onClick={() => void handleTestCarrier(carrier)}
-                >
-                  {isTesting ? "Đang kiểm tra..." : "Kiểm tra kết nối"}
-                </Button>
-                <Button
-                  type="submit"
-                  variant="primary"
-                  size="sm"
-                  shape="app"
-                  disabled={isSaving || isTesting}
-                >
-                  {isSaving ? "Đang lưu..." : "Lưu cấu hình hãng"}
-                </Button>
-              </div>
+              {canWrite && (
+                <div className={styles.formFooter}>
+                  <span />
+                  <div className={styles.formActions}>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      shape="app"
+                      loading={isTesting}
+                      disabled={isSaving}
+                      onClick={() => void handleTestCarrier(carrier)}
+                    >
+                      Kiểm tra kết nối
+                    </Button>
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      size="sm"
+                      shape="app"
+                      loading={isSaving}
+                      disabled={isTesting}
+                    >
+                      Lưu cấu hình hãng
+                    </Button>
+                  </div>
+                </div>
+              )}
             </form>
           </section>
         );

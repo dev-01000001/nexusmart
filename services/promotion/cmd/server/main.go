@@ -104,6 +104,7 @@ func main() {
 		log.Error("failed to sync redis keys from store", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
+	promoSvc.StartFlashSaleSweeper(ctx, cfg.FlashSaleSweepInterval)
 
 	dlqStore := events.NewPostgresDeadLetterStore(pool)
 	nc, js, consumer, err := connectNATS(ctx, cfg.NATSURL, cfg.NATSStream, pgStore, dlqStore, log)

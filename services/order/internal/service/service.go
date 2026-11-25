@@ -26,6 +26,49 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+const (
+	SalesChannelMarketplace = "MARKETPLACE"
+	SalesChannelStorefront  = "STOREFRONT"
+)
+
+func normalizeSalesChannel(rawChannel, rawStorefrontShopID string) (string, string, error) {
+	ch := strings.ToUpper(strings.TrimSpace(rawChannel))
+	shopID := strings.TrimSpace(rawStorefrontShopID)
+	switch ch {
+	case "", SalesChannelMarketplace:
+		if shopID != "" {
+			return "", "", status.Error(codes.InvalidArgument, "INVALID_SALES_CHANNEL: storefront_shop_id must be empty for MARKETPLACE orders")
+		}
+		return SalesChannelMarketplace, "", nil
+	case SalesChannelStorefront:
+		if shopID == "" {
+			return "", "", status.Error(codes.InvalidArgument, "STOREFRONT_SHOP_REQUIRED: storefront_shop_id is required for STOREFRONT orders")
+		}
+		return SalesChannelStorefront, shopID, nil
+	default:
+		return "", "", status.Errorf(codes.InvalidArgument, "INVALID_SALES_CHANNEL: unsupported sales_channel %q (must be MARKETPLACE or STOREFRONT)", rawChannel)
+	}
+}
+
+func normalizeSalesChannelFilter(rawChannel string) (string, error) {
+	ch := strings.ToUpper(strings.TrimSpace(rawChannel))
+	switch ch {
+	case "":
+		return "", nil
+	case SalesChannelMarketplace, SalesChannelStorefront:
+		return ch, nil
+	default:
+		return "", status.Errorf(codes.InvalidArgument, "INVALID_SALES_CHANNEL: unsupported sales_channel filter %q (must be MARKETPLACE or STOREFRONT)", rawChannel)
+	}
+}
+
+func effectiveSalesChannel(ch string) string {
+	if strings.TrimSpace(ch) == "" {
+		return SalesChannelMarketplace
+	}
+	return ch
+}
+
 // OrderService implements all Order domain workflows, checkout saga, RBAC, and async handlers.
 type OrderService struct {
 	cfg                   config.Config
@@ -308,15 +351,16 @@ func (s *OrderService) returnInspectDuration() time.Duration {
 func (s *OrderService) buildOrderCompletedOutbox(ord db.Order, traceID, traceparent string) (db.InsertOutboxEventParams, error) {
 	coinsReward := ComputeOrderRewardCoins(ord, s.cfg.RewardCoinsBPS)
 	payloadBytes, err := json.Marshal(events.OrderCompletedPayload{
-		OrderID:         ord.ID,
-		OrderCode:       ord.OrderCode,
-		BuyerID:         ord.BuyerID,
-		ShopID:          ord.ShopID,
-		SubtotalVND:     ord.SubtotalVND,
-		CommissionVND:   ord.CommissionVND,
-		PaymentFeeVND:   ord.PaymentFeeVND,
-		TotalPayableVND: ord.TotalPayableVND,
-		CoinsReward:     coinsReward,
+		OrderID:          ord.ID,
+		OrderCode:        ord.OrderCode,
+		BuyerID:          ord.BuyerID,
+		ShopID:           ord.ShopID,
+		StorefrontShopID: ord.StorefrontShopID,
+		SubtotalVND:      ord.SubtotalVND,
+		CommissionVND:    ord.CommissionVND,
+		PaymentFeeVND:    ord.PaymentFeeVND,
+		TotalPayableVND:  ord.TotalPayableVND,
+		CoinsReward:      coinsReward,
 	})
 	if err != nil {
 		return db.InsertOutboxEventParams{}, fmt.Errorf("marshal order.completed event: %w", err)
@@ -454,6 +498,8 @@ func aggregateToProtoForCaller(agg store.OrderAggregate, caller callerIdentity) 
 		UpdatedAt:                  timestamppb.New(ord.UpdatedAt),
 		NeedsManualReview:          canReadAdminOrders && ord.OrphanShipmentNeedsManualReview,
 		ShipmentJobStatus:          ord.ShipmentJobStatus,
+		SalesChannel:               effectiveSalesChannel(ord.SalesChannel),
+		StorefrontShopId:           ord.StorefrontShopID,
 	}
 	if ord.PaymentExpiresAt != nil {
 		out.PaymentExpiresAt = timestamppb.New(*ord.PaymentExpiresAt)

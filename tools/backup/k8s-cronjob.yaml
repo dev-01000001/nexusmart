@@ -1,0 +1,163 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nexusmart-postgres-backup
+  namespace: nexusmart-production
+  labels:
+    app.kubernetes.io/name: nexusmart-postgres-backup
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/part-of: nexusmart
+spec:
+  # Daily at 02:00 UTC
+  schedule: "0 2 * * *"
+  timeZone: "Etc/UTC"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nexusmart-postgres-backup
+        app.kubernetes.io/component: backup
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3600
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: nexusmart-postgres-backup
+            app.kubernetes.io/component: backup
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70
+            runAsGroup: 70
+            fsGroup: 70
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: pg-backup
+              image: postgres:16-alpine
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              env:
+                - name: PGHOST
+                  valueFrom:
+                    secretKeyRef:
+                      name: nexusmart-postgres-credentials
+                      key: host
+                - name: PGPORT
+                  valueFrom:
+                    secretKeyRef:
+                      name: nexusmart-postgres-credentials
+                      key: port
+                      optional: true
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: nexusmart-postgres-credentials
+                      key: username
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: nexusmart-postgres-credentials
+                      key: password
+                - name: BACKUP_DIR
+                  value: /backups
+                - name: RETENTION_DAYS
+                  value: "7"
+                - name: TMPDIR
+                  value: /tmp
+              command:
+                - /bin/bash
+                - -euo
+                - pipefail
+                - -c
+                - |
+                  export PGPORT="${PGPORT:-5432}"
+                  TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+                  SNAPSHOT_DIR="${BACKUP_DIR}/${TIMESTAMP}"
+                  STAGING_DIR="${BACKUP_DIR}/.${TIMESTAMP}.$$.tmp"
+                  ACTIVE_SNAP_PID=""
+                  cleanup() {
+                    exec 3>&- 2>/dev/null || true
+                    exec 4<&- 2>/dev/null || true
+                    if [[ -n "$ACTIVE_SNAP_PID" ]]; then
+                      kill "$ACTIVE_SNAP_PID" >/dev/null 2>&1 || true
+                      wait "$ACTIVE_SNAP_PID" >/dev/null 2>&1 || true
+                    fi
+                    [[ -d "$STAGING_DIR" ]] && rm -rf "$STAGING_DIR"
+                  }
+                  trap cleanup EXIT INT TERM
+
+                  mkdir -p "$STAGING_DIR"
+                  printf 'database\tschema.table\trow_count\n' > "${STAGING_DIR}/manifest.tsv"
+
+                  pg_dumpall --globals-only > "${STAGING_DIR}/globals.sql"
+                  declare -a CHECKSUM_FILES=("globals.sql")
+
+                  mapfile -t DATABASES < <(
+                    psql -d postgres -X -Atc \
+                      "SELECT datname FROM pg_database WHERE datistemplate = false AND datname <> 'postgres' ORDER BY datname;"
+                  )
+                  [[ ${#DATABASES[@]} -gt 0 ]] || { echo "No databases discovered" >&2; exit 1; }
+
+                  ROW_COUNT_SQL="SELECT n.nspname || '.' || c.relname || E'\t' || (xpath('/row/cnt/text()', query_to_xml(format('SELECT count(*) AS cnt FROM %I.%I', n.nspname, c.relname), false, true, '')))[1]::text::bigint FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind = 'r' AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg_toast%' ORDER BY n.nspname, c.relname;"
+
+                  for db in "${DATABASES[@]}"; do
+                    coproc PSQL_SNAP { psql -d "$db" -X -q -v ON_ERROR_STOP=1 -At; }
+                    ACTIVE_SNAP_PID="$PSQL_SNAP_PID"
+                    exec 3>&"${PSQL_SNAP[1]}" 4<&"${PSQL_SNAP[0]}"
+                    printf 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\nSELECT pg_export_snapshot();\n' >&3
+                    IFS= read -r -t 30 snap_id <&4
+                    pg_dump -d "$db" --snapshot="$snap_id" --format=custom --compress=6 > "${STAGING_DIR}/${db}.dump"
+                    CHECKSUM_FILES+=("${db}.dump")
+                    printf '%s\nCOMMIT;\n\\q\n' "$ROW_COUNT_SQL" >&3
+                    exec 3>&-
+                    while IFS=$'\t' read -r tbl cnt; do
+                      [[ -n "$tbl" ]] && printf '%s\t%s\t%s\n' "$db" "$tbl" "$cnt" >> "${STAGING_DIR}/manifest.tsv"
+                    done <&4
+                    exec 4<&-
+                    wait "$ACTIVE_SNAP_PID"
+                    ACTIVE_SNAP_PID=""
+                    echo "[backup] dumped ${db}.dump ($(wc -c < "${STAGING_DIR}/${db}.dump") bytes)"
+                  done
+
+                  CHECKSUM_FILES+=("manifest.tsv")
+                  mapfile -t SORTED_FILES < <(printf '%s\n' "${CHECKSUM_FILES[@]}" | LC_ALL=C sort)
+                  (cd "$STAGING_DIR" && sha256sum "${SORTED_FILES[@]}" > SHA256SUMS)
+
+                  mv "$STAGING_DIR" "$SNAPSHOT_DIR"
+                  ln -sfn "$TIMESTAMP" "${BACKUP_DIR}/latest"
+                  echo "[backup] snapshot published: ${SNAPSHOT_DIR}"
+
+                  find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d \
+                    -name '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z' \
+                    -mtime "+${RETENTION_DAYS}" -exec rm -rf {} +
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+              volumeMounts:
+                - name: backup-storage
+                  mountPath: /backups
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: backup-storage
+              persistentVolumeClaim:
+                claimName: nexusmart-postgres-backups
+            - name: tmp
+              emptyDir: {}

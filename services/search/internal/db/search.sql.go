@@ -172,6 +172,42 @@ func (q *Queries) GetCategoryBySlug(ctx context.Context, slug string) (SearchCat
 	return i, err
 }
 
+const getProductEmbeddingForSimilar = `-- name: GetProductEmbeddingForSimilar :one
+SELECT
+    pe.product_id,
+    pe.shop_id,
+    pe.status,
+    pe.deleted,
+    pe.embedding,
+    COALESCE(s.status, 'ACTIVE')::text AS shop_status
+FROM product_embeddings pe
+LEFT JOIN search_shops s ON s.shop_id = pe.shop_id
+WHERE pe.product_id = $1
+`
+
+type GetProductEmbeddingForSimilarRow struct {
+	ProductID  string              `json:"product_id"`
+	ShopID     string              `json:"shop_id"`
+	Status     string              `json:"status"`
+	Deleted    bool                `json:"deleted"`
+	Embedding  *pgvector_go.Vector `json:"embedding"`
+	ShopStatus string              `json:"shop_status"`
+}
+
+func (q *Queries) GetProductEmbeddingForSimilar(ctx context.Context, productID string) (GetProductEmbeddingForSimilarRow, error) {
+	row := q.db.QueryRow(ctx, getProductEmbeddingForSimilar, productID)
+	var i GetProductEmbeddingForSimilarRow
+	err := row.Scan(
+		&i.ProductID,
+		&i.ShopID,
+		&i.Status,
+		&i.Deleted,
+		&i.Embedding,
+		&i.ShopStatus,
+	)
+	return i, err
+}
+
 const getProductEmbeddingState = `-- name: GetProductEmbeddingState :one
 SELECT product_id, text_hash, deleted, source_updated_at, (embedding IS NOT NULL)::bool AS has_embedding
 FROM product_embeddings
@@ -416,6 +452,49 @@ WHERE category_id = ANY($1::text[])
 
 func (q *Queries) ListCategoriesByIDs(ctx context.Context, dollar_1 []string) ([]SearchCategory, error) {
 	rows, err := q.db.Query(ctx, listCategoriesByIDs, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SearchCategory{}
+	for rows.Next() {
+		var i SearchCategory
+		if err := rows.Scan(
+			&i.CategoryID,
+			&i.Name,
+			&i.NameFolded,
+			&i.Slug,
+			&i.ParentID,
+			&i.SortOrder,
+			&i.SourceUpdatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCategoriesByShop = `-- name: ListCategoriesByShop :many
+SELECT c.category_id, c.name, c.name_folded, c.slug, c.parent_id, c.sort_order, c.source_updated_at, c.updated_at
+FROM search_categories c
+WHERE EXISTS (
+    SELECT 1
+    FROM product_embeddings pe
+    WHERE pe.shop_id = $1
+      AND pe.deleted = FALSE
+      AND pe.status IN ('APPROVED', 'OUT_OF_STOCK')
+      AND (pe.category_id = c.category_id OR pe.category_ancestor_ids @> ARRAY[c.category_id])
+)
+ORDER BY c.sort_order ASC, c.name ASC
+`
+
+func (q *Queries) ListCategoriesByShop(ctx context.Context, shopID string) ([]SearchCategory, error) {
+	rows, err := q.db.Query(ctx, listCategoriesByShop, shopID)
 	if err != nil {
 		return nil, err
 	}
@@ -826,6 +905,57 @@ func (q *Queries) SuggestCategories(ctx context.Context, arg SuggestCategoriesPa
 	items := []SuggestCategoriesRow{}
 	for rows.Next() {
 		var i SuggestCategoriesRow
+		if err := rows.Scan(&i.CategoryID, &i.Name, &i.Slug); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const suggestCategoriesByShop = `-- name: SuggestCategoriesByShop :many
+SELECT c.category_id, c.name, c.slug
+FROM search_categories c
+WHERE EXISTS (
+    SELECT 1
+    FROM product_embeddings pe
+    WHERE pe.shop_id = $1
+      AND pe.deleted = FALSE
+      AND pe.status IN ('APPROVED', 'OUT_OF_STOCK')
+      AND (pe.category_id = c.category_id OR pe.category_ancestor_ids @> ARRAY[c.category_id])
+)
+  AND ($2::text = '' OR c.name_folded LIKE '%' || $2::text || '%' ESCAPE '\' OR c.slug LIKE '%' || $2::text || '%' ESCAPE '\')
+ORDER BY
+    CASE WHEN $2::text <> '' AND c.name_folded LIKE $2::text || '%' ESCAPE '\' THEN 0 ELSE 1 END,
+    c.sort_order ASC,
+    c.name ASC
+LIMIT $3
+`
+
+type SuggestCategoriesByShopParams struct {
+	ShopID  string `json:"shop_id"`
+	Column2 string `json:"column_2"`
+	Limit   int32  `json:"limit"`
+}
+
+type SuggestCategoriesByShopRow struct {
+	CategoryID string `json:"category_id"`
+	Name       string `json:"name"`
+	Slug       string `json:"slug"`
+}
+
+func (q *Queries) SuggestCategoriesByShop(ctx context.Context, arg SuggestCategoriesByShopParams) ([]SuggestCategoriesByShopRow, error) {
+	rows, err := q.db.Query(ctx, suggestCategoriesByShop, arg.ShopID, arg.Column2, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SuggestCategoriesByShopRow{}
+	for rows.Next() {
+		var i SuggestCategoriesByShopRow
 		if err := rows.Scan(&i.CategoryID, &i.Name, &i.Slug); err != nil {
 			return nil, err
 		}

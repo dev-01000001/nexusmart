@@ -4,15 +4,21 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	notificationv1 "github.com/nexusmart/core/gen/go/nexusmart/notification/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/notification/internal/service"
 	"github.com/nexusmart/core/services/notification/internal/store"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
 )
 
 type stubRepo struct {
@@ -254,5 +260,76 @@ func TestHeaderUnreadCountOverGRPC(t *testing.T) {
 	}
 	if markAll.GetUpdatedCount() != 1 || markAll.GetUnreadCount() != 0 {
 		t.Fatalf("expected updated=1 unread=0, got updated=%d unread=%d", markAll.GetUpdatedCount(), markAll.GetUnreadCount())
+	}
+}
+
+func TestNotificationGRPCTrust_BufconnRejectsAnonymousAndServiceTokens(t *testing.T) {
+	svc := service.NewNotificationService(&stubRepo{}, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	users, _ := auth.NewManager("notif-test-user-key", 15*time.Minute)
+	svcMgr, _ := auth.NewManager("notif-test-service-key", auth.ServiceTokenTTL)
+
+	lis := bufconn.Listen(1 << 20)
+	gs := grpc.NewServer(grpc.ChainUnaryInterceptor(auth.GRPCUnaryServerInterceptor(users, svcMgr)))
+	notificationv1.RegisterNotificationServiceServer(gs, New(svc))
+	go func() { _ = gs.Serve(lis) }()
+	t.Cleanup(gs.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial bufconn: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	client := notificationv1.NewNotificationServiceClient(conn)
+
+	md := func(kv ...string) context.Context {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		t.Cleanup(cancel)
+		return metadata.NewOutgoingContext(ctx, metadata.Pairs(kv...))
+	}
+	bearer := func(tok string) context.Context {
+		return md("authorization", "Bearer "+tok)
+	}
+
+	buyer1Tok, _, _, _ := users.SignAccessToken("user-1", "buyer", "")
+	buyer2Tok, _, _, _ := users.SignAccessToken("user-2", "buyer", "")
+	svcTok, _ := svcMgr.SignServiceToken("order-service")
+	spoof := []string{"x-user-id", "user-1", "x-user-role", "admin"}
+
+	// Anonymous/spoofed -> Unauthenticated on all 4 RPCs.
+	if _, err := client.ListNotifications(md(spoof...), &notificationv1.ListNotificationsRequest{UserId: "user-1"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("anon ListNotifications: want Unauthenticated, got %v", err)
+	}
+	if _, err := client.MarkRead(md(spoof...), &notificationv1.MarkReadRequest{UserId: "user-1", MarkAll: true}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("anon MarkRead: want Unauthenticated, got %v", err)
+	}
+	if _, err := client.GetPreferences(md(spoof...), &notificationv1.GetPreferencesRequest{UserId: "user-1"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("anon GetPreferences: want Unauthenticated, got %v", err)
+	}
+	if _, err := client.UpdatePreferences(md(spoof...), &notificationv1.UpdatePreferencesRequest{UserId: "user-1"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("anon UpdatePreferences: want Unauthenticated, got %v", err)
+	}
+
+	// Disallowed service token -> PermissionDenied on all 4 RPCs.
+	if _, err := client.ListNotifications(bearer(svcTok), &notificationv1.ListNotificationsRequest{UserId: "user-1"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("service token ListNotifications: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.MarkRead(bearer(svcTok), &notificationv1.MarkReadRequest{UserId: "user-1", MarkAll: true}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("service token MarkRead: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.GetPreferences(bearer(svcTok), &notificationv1.GetPreferencesRequest{UserId: "user-1"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("service token GetPreferences: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.UpdatePreferences(bearer(svcTok), &notificationv1.UpdatePreferencesRequest{UserId: "user-1"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("service token UpdatePreferences: want PermissionDenied, got %v", err)
+	}
+
+	// Cross-user -> PermissionDenied; owner -> OK.
+	if _, err := client.ListNotifications(bearer(buyer2Tok), &notificationv1.ListNotificationsRequest{UserId: "user-1"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("cross-user ListNotifications: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.ListNotifications(bearer(buyer1Tok), &notificationv1.ListNotificationsRequest{UserId: "user-1"}); err != nil {
+		t.Fatalf("owner ListNotifications: %v", err)
 	}
 }

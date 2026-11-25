@@ -9,6 +9,7 @@ Mẫu ADR: [0000-template.md](0000-template.md).
 | Số | Tên | Trạng thái | Ngày |
 | --- | --- | --- | --- |
 | [0001](0001-gateway-keep-or-replace.md) | API Gateway tự viết bằng `chi` — giữ nguyên, thêm edge gateway hay thay hẳn | Đề xuất | 2026-11-22 |
+| [0001-t](0001-site-template-format.md) | Định dạng Template cho Site Gian hàng (`Declarative Theme JSON v2`) | Chấp nhận | 2026-11-21 |
 | [0002](0002-auth-keep-or-identity-provider.md) | Auth trong `services/user` — giữ tự viết hay chuyển sang Identity Provider | Đề xuất | 2026-11-22 |
 | [0003](0003-saga-outbox-keep-or-temporal.md) | Saga và Outbox trong `services/order` — giữ tự viết hay chuyển sang Temporal | Đề xuất | 2026-11-22 |
 
@@ -21,6 +22,12 @@ Mẫu ADR: [0000-template.md](0000-template.md).
 | [0006](0006-ai-assistant-llm-rag-guardrails.md) | Trợ lý AI — nhà cung cấp LLM, embedding tiếng Việt, RAG và guardrail | Chấp nhận | 2026-11-24 |
 | [0007](0007-observability-and-aiops-engine.md) | Hệ thống giám sát (Observability) và AIOps engine bằng Rust | Chấp nhận | 2026-11-24 |
 | [0008](0008-kubernetes-cicd-and-backup.md) | Nơi triển khai Kubernetes, CI/CD và sao lưu cơ sở dữ liệu | Chấp nhận | 2026-11-24 |
+
+## Kiến trúc hợp nhất nhánh
+
+| Số | Tên | Trạng thái | Ngày |
+| --- | --- | --- | --- |
+| [0010](0010-unify-main-and-phase-0b.md) | Hợp nhất nhánh `main` (kèm `3b-3`) và nhánh `phase-0b` | Đề xuất, chờ chủ dự án duyệt | 2026-11-25 |
 
 > ADR 0004–0008 chuyển sang **Chấp nhận** ngày `2026-11-24` theo uỷ quyền của chủ dự án trong `.agents/briefs/fix/w3-plan.md` §1.1 (chủ dự án không duyệt riêng từng ADR) sau khi tra lại phiên bản và bảo mật. Các cổng còn giữ (push, khoá/tiền/lần gọi thật LLM, sandbox thật, token Telegram, đo RAM B4, tra lại GHSA SeaweedFS trước B2) ghi chi tiết trong từng ADR.
 

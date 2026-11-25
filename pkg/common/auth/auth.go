@@ -36,7 +36,7 @@ const (
 // false = needs the forwarded end-user JWT (service tokens are rejected with PermissionDenied).
 // Every other RPC (publicRPCs or unlisted) rejects service tokens with PermissionDenied.
 var internalRPCs = map[string]bool{
-	// UserService (public: Register, VerifyOTP, ResendOTP, ForgotPassword, ResetPassword, Login, RefreshToken, GetShop, ListPublicShops)
+	// UserService (public: Register, VerifyOTP, ResendOTP, ForgotPassword, ResetPassword, Login, RefreshToken, GetShop, ListPublicShops, GetSiteByHost, GetSiteByShop, ListPublishedSites, ListSiteTemplates, GetSiteTemplate)
 	"/nexusmart.user.v1.UserService/GetAddress":                  true,
 	"/nexusmart.user.v1.UserService/GetProfile":                  true,
 	"/nexusmart.user.v1.UserService/RecordCODRejection":          true,
@@ -69,6 +69,18 @@ var internalRPCs = map[string]bool{
 	"/nexusmart.user.v1.UserService/AdminListShopApprovals":      false,
 	"/nexusmart.user.v1.UserService/AdminDecideShopSuspension":   false,
 	"/nexusmart.user.v1.UserService/AdminUnsuspendShop":          false,
+	"/nexusmart.user.v1.UserService/GetSiteDraft":                false,
+	"/nexusmart.user.v1.UserService/SaveSiteDraft":               false,
+	"/nexusmart.user.v1.UserService/PublishSite":                 false,
+	"/nexusmart.user.v1.UserService/RollbackSite":                false,
+	"/nexusmart.user.v1.UserService/ListSiteVersions":            false,
+	"/nexusmart.user.v1.UserService/ListSites":                   false,
+	"/nexusmart.user.v1.UserService/SuspendSite":                 false,
+	"/nexusmart.user.v1.UserService/ApplySiteTemplate":           false,
+	"/nexusmart.user.v1.UserService/AddCustomDomain":             false,
+	"/nexusmart.user.v1.UserService/CheckCustomDomain":           false,
+	"/nexusmart.user.v1.UserService/RemoveCustomDomain":          false,
+	"/nexusmart.user.v1.UserService/ListSiteDomains":             false,
 	// ProductService (public: ListCategories, GetProduct, ListProducts, GetSKUsBatch, ListProductReviews)
 	"/nexusmart.product.v1.ProductService/ReleaseStock":                   true,
 	"/nexusmart.product.v1.ProductService/ConfirmStock":                   true,
@@ -118,6 +130,7 @@ var internalRPCs = map[string]bool{
 	"/nexusmart.promotion.v1.PromotionService/CreateFlashSale":           false,
 	"/nexusmart.promotion.v1.PromotionService/RegisterFlashSaleItem":     false,
 	"/nexusmart.promotion.v1.PromotionService/ApproveFlashSaleItem":      false,
+	"/nexusmart.promotion.v1.PromotionService/EndFlashSaleWindow":        false,
 	"/nexusmart.promotion.v1.PromotionService/ListFlashSaleItems":        false,
 	"/nexusmart.promotion.v1.PromotionService/ListAllFlashSales":         false,
 	"/nexusmart.promotion.v1.PromotionService/CreateShopDiscountProgram": false,
@@ -169,12 +182,29 @@ var internalRPCs = map[string]bool{
 	"/nexusmart.notification.v1.NotificationService/MarkRead":          false,
 	"/nexusmart.notification.v1.NotificationService/GetPreferences":    false,
 	"/nexusmart.notification.v1.NotificationService/UpdatePreferences": false,
-	// SearchService (public: SearchProducts, Suggest)
+	// SearchService (public: SearchProducts, Suggest, SimilarProducts)
 	"/nexusmart.search.v1.SearchService/HybridSearch":        true,
 	"/nexusmart.search.v1.SearchService/ReindexAll":          true,
 	"/nexusmart.search.v1.SearchService/GetReindexStatus":    true,
 	"/nexusmart.search.v1.SearchService/ListSearchHistory":   false,
 	"/nexusmart.search.v1.SearchService/DeleteSearchHistory": false,
+	// ChatService (public: ExchangeWSTicket)
+	"/nexusmart.chat.v1.ChatService/CreateOrGetConversation": false,
+	"/nexusmart.chat.v1.ChatService/GetConversation":         false,
+	"/nexusmart.chat.v1.ChatService/ListConversations":       false,
+	"/nexusmart.chat.v1.ChatService/ListMessages":            false,
+	"/nexusmart.chat.v1.ChatService/SendMessage":             false,
+	"/nexusmart.chat.v1.ChatService/MarkRead":                false,
+	"/nexusmart.chat.v1.ChatService/CreateWSTicket":          false,
+	"/nexusmart.chat.v1.ChatService/GetAutoReplyConfig":      false,
+	"/nexusmart.chat.v1.ChatService/UpsertAutoReplyConfig":   false,
+	// AssistantService (public: GetReviewSummary)
+	"/nexusmart.assistant.v1.AssistantService/Handoff":              false,
+	"/nexusmart.assistant.v1.AssistantService/SellerReport":         false,
+	"/nexusmart.assistant.v1.AssistantService/DescribeProduct":      false,
+	"/nexusmart.assistant.v1.AssistantService/SuggestReply":         false,
+	"/nexusmart.assistant.v1.AssistantService/RefreshReviewSummary": false,
+	"/nexusmart.assistant.v1.AssistantService/SubmitFeedback":       false,
 }
 
 // publicRPCs are Go service RPCs explicitly permitted for anonymous callers
@@ -191,6 +221,11 @@ var publicRPCs = map[string]bool{
 	"/nexusmart.user.v1.UserService/RefreshToken":                      true,
 	"/nexusmart.user.v1.UserService/GetShop":                           true,
 	"/nexusmart.user.v1.UserService/ListPublicShops":                   true,
+	"/nexusmart.user.v1.UserService/GetSiteByHost":                     true,
+	"/nexusmart.user.v1.UserService/GetSiteByShop":                     true,
+	"/nexusmart.user.v1.UserService/ListPublishedSites":                true,
+	"/nexusmart.user.v1.UserService/ListSiteTemplates":                 true,
+	"/nexusmart.user.v1.UserService/GetSiteTemplate":                   true,
 	"/nexusmart.product.v1.ProductService/ListCategories":              true,
 	"/nexusmart.product.v1.ProductService/GetProduct":                  true,
 	"/nexusmart.product.v1.ProductService/ListProducts":                true,
@@ -206,6 +241,9 @@ var publicRPCs = map[string]bool{
 	"/nexusmart.shipping.v1.ShippingService/CalculateFee":              true,
 	"/nexusmart.search.v1.SearchService/SearchProducts":                true,
 	"/nexusmart.search.v1.SearchService/Suggest":                       true,
+	"/nexusmart.search.v1.SearchService/SimilarProducts":               true,
+	"/nexusmart.chat.v1.ChatService/ExchangeWSTicket":                  true,
+	"/nexusmart.assistant.v1.AssistantService/GetReviewSummary":        true,
 }
 
 var (

@@ -85,8 +85,9 @@ func TestE2E_PromotionPartialRelease_SubOrderCancel(t *testing.T) {
 	checkoutResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "prm-r5-" + uuid.NewString(),
 	}, CheckoutRequest{
-		AddressID: addr.ID,
-		FromCart:  false,
+		SalesChannel: "MARKETPLACE",
+		AddressID:    addr.ID,
+		FromCart:     false,
 		Items: []CheckoutItemInputDTO{
 			{SKUID: sku1.ID, Quantity: 1},
 			{SKUID: sku2.ID, Quantity: 1},

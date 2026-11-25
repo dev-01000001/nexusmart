@@ -401,11 +401,17 @@ func emitProductDeletedOutbox(
 	if eventUpdatedAt.IsZero() {
 		eventUpdatedAt = createdAt
 	}
+	ver, err := q.NextProductEventVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("next product event version: %w", err)
+	}
 	payloadBytes, err := json.Marshal(events.ProductDeletedPayload{
-		ProductID: productID,
-		ShopID:    shopID,
-		Reason:    reason,
-		UpdatedAt: eventUpdatedAt.UTC().Format(time.RFC3339Nano),
+		ProductID:  productID,
+		ShopID:     shopID,
+		Reason:     reason,
+		UpdatedAt:  eventUpdatedAt.UTC().Format(time.RFC3339Nano),
+		Version:    ver,
+		OccurredAt: createdAt.UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {
 		return fmt.Errorf("marshal product.deleted payload: %w", err)

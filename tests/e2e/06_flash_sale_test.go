@@ -251,8 +251,9 @@ func TestE2E_FlashSale_1000Concurrent_100Slots(t *testing.T) {
 		codResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "fs-checkout-cod-" + uuid.NewString(),
 		}, CheckoutRequest{
-			AddressID: addr.ID,
-			FromCart:  false,
+			SalesChannel: "MARKETPLACE",
+			AddressID:    addr.ID,
+			FromCart:     false,
 			Items: []CheckoutItemInputDTO{
 				{
 					SKUID:           sku.ID,
@@ -274,8 +275,9 @@ func TestE2E_FlashSale_1000Concurrent_100Slots(t *testing.T) {
 		checkoutResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "fs-checkout-" + uuid.NewString(),
 		}, CheckoutRequest{
-			AddressID: addr.ID,
-			FromCart:  false,
+			SalesChannel: "MARKETPLACE",
+			AddressID:    addr.ID,
+			FromCart:     false,
 			Items: []CheckoutItemInputDTO{
 				{
 					SKUID:           sku.ID,

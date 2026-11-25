@@ -113,12 +113,41 @@ func TestStatusAndPaymentMethodRoundTrip(t *testing.T) {
 			t.Errorf("prefixed status %q -> %v, want %v", str, back, s)
 		}
 	}
-
-	if got := PaymentMethodToString(orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD); got != "COD" {
-		t.Fatalf("got %q, want COD", got)
+	if StatusToString(orderv1.OrderStatus_ORDER_STATUS_UNSPECIFIED) != "UNSPECIFIED" {
+		t.Fatalf("expected UNSPECIFIED")
 	}
-	if got := StringToPaymentMethod("vietqr"); got != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR {
-		t.Fatalf("got %v, want VIETQR", got)
+	if StringToStatus("UNKNOWN") != orderv1.OrderStatus_ORDER_STATUS_UNSPECIFIED {
+		t.Fatalf("expected ORDER_STATUS_UNSPECIFIED")
+	}
+
+	methods := []struct {
+		m      orderv1.OrderPaymentMethod
+		str    string
+		online bool
+	}{
+		{orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD, "COD", false},
+		{orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_VIETQR, "VIETQR", true},
+		{orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_ZALOPAY, "ZALOPAY", true},
+	}
+	for _, tc := range methods {
+		if got := PaymentMethodToString(tc.m); got != tc.str {
+			t.Fatalf("PaymentMethodToString(%v) = %q, want %q", tc.m, got, tc.str)
+		}
+		if got := StringToPaymentMethod(tc.str); got != tc.m {
+			t.Fatalf("StringToPaymentMethod(%q) = %v, want %v", tc.str, got, tc.m)
+		}
+		if got := StringToPaymentMethod("order_payment_method_" + tc.str); got != tc.m {
+			t.Fatalf("prefixed StringToPaymentMethod(%q) = %v, want %v", tc.str, got, tc.m)
+		}
+		if got := IsOnlineMethod(tc.str); got != tc.online {
+			t.Fatalf("IsOnlineMethod(%q) = %v, want %v", tc.str, got, tc.online)
+		}
+	}
+	if PaymentMethodToString(orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_UNSPECIFIED) != "UNSPECIFIED" {
+		t.Fatalf("expected UNSPECIFIED for unknown payment method")
+	}
+	if StringToPaymentMethod("UNKNOWN") != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_UNSPECIFIED {
+		t.Fatalf("expected UNSPECIFIED for unknown payment string")
 	}
 	if got := PaymentMethodToString(orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_ZALOPAY); got != "ZALOPAY" {
 		t.Fatalf("got %q, want ZALOPAY", got)

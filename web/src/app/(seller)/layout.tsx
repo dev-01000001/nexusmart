@@ -1,41 +1,99 @@
 import React from "react";
-import type { GatewayUser } from "@/lib/gateway-types";
-import { requireRole } from "@/lib/server/auth";
-import { GatewayError } from "@/lib/server/gateway";
 import { StateView } from "@/components";
-import shared from "@/features/commerce/commerce.module.css";
-import { SellerShell } from "./SellerShell";
+import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
+import { gw } from "@/lib/server/gateway";
+import type { Session } from "@/lib/server/session";
+import { SellerShell } from "@/features/seller/SellerShell";
+import {
+  loadMyShop,
+  loadSellerOrders,
+  loadSellerPendingReturnsCount,
+  loadSellerShop,
+  requireSellerPortalSession,
+} from "@/features/seller/sellerServer";
+import { loadSellerSiteSummaryServer } from "@/features/seller/site/siteServer";
+import { summarizeSellerSite } from "@/features/seller/site/siteSummary";
+import styles from "./layout.module.css";
+
+export const dynamic = "force-dynamic";
+
+async function loadUnreadChatCount(): Promise<number> {
+  try {
+    const res = await gw<{ items?: Array<{ unread_count?: number }> }>(
+      "/api/v1/chat/conversations",
+      { query: { role: "seller", page: 1, page_size: 50 } }
+    );
+    return (res.items ?? []).reduce((sum, item) => sum + Math.max(0, item.unread_count ?? 0), 0);
+  } catch {
+    return 0;
+  }
+}
 
 export default async function SellerLayout({ children }: { children: React.ReactNode }) {
-  let user: GatewayUser;
+  let session: Session;
   try {
-    user = await requireRole(["seller"], "/seller");
+    session = await requireSellerPortalSession("/seller");
   } catch (err) {
     if (err instanceof GatewayError) {
       return (
-        <div className={shared.page}>
-          <section className={shared.pageHeader}>
-            <div className={shared.headerLeadGroup}>
-              <h1 className={shared.pageTitle}>Kênh Người Bán</h1>
-              <p className={shared.pageLead}>
-                Không thể xác minh phiên làm việc lúc này. Vui lòng thử lại sau ít phút.
-              </p>
-            </div>
-          </section>
-          <section className={shared.section}>
-            <h2 className={shared.sectionTitle}>Trạng thái kết nối</h2>
+        <div className={styles.shell}>
+          <main className={styles.canvas}>
             <StateView
               kind="error"
-              title="Chưa thể mở Kênh Người Bán"
-              message={err.message}
+              surface="app"
+              title="Chưa thể xác minh phiên người bán"
+              message={SAFE_MESSAGES[err.kind]}
               actionLabel="Tải lại"
               actionHref="/seller"
             />
-          </section>
+          </main>
         </div>
       );
     }
     throw err;
   }
-  return <SellerShell user={user}>{children}</SellerShell>;
+  const hasActiveSellerShop = session.user.role === "seller" && Boolean(session.user.shopId);
+
+  if (!hasActiveSellerShop) {
+    const myShopRes = await loadMyShop();
+    const fallbackSite = summarizeSellerSite(null, null, null);
+    return (
+      <SellerShell
+        user={session.user}
+        shop={myShopRes.data}
+        pendingOrdersCount={0}
+        pendingReturnsCount={0}
+        unreadChatCount={0}
+        site={fallbackSite}
+      >
+        {children}
+      </SellerShell>
+    );
+  }
+
+  const [shopRes, ordersRes, pendingReturnsCount, unreadChatCount, site] = await Promise.all([
+    loadSellerShop(),
+    loadSellerOrders(100),
+    loadSellerPendingReturnsCount(),
+    loadUnreadChatCount(),
+    loadSellerSiteSummaryServer(),
+  ]);
+
+  const orderItems = ordersRes.data?.items ?? [];
+  const pendingOrdersCount = orderItems.filter(
+    (o) => o.status === "CONFIRMED" || o.status === "PREPARING"
+  ).length;
+
+  return (
+    <SellerShell
+      user={session.user}
+      shop={shopRes.data}
+      pendingOrdersCount={pendingOrdersCount}
+      pendingReturnsCount={pendingReturnsCount}
+      unreadChatCount={unreadChatCount}
+      site={site}
+    >
+      {children}
+    </SellerShell>
+  );
 }

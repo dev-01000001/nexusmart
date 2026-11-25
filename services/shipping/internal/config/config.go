@@ -30,6 +30,9 @@ type Config struct {
 	GHNBaseURL            string
 	GHNToken              string
 	GHNShopID             int
+	GHTKMode              string
+	GHTKBaseURL           string
+	GHTKToken             string
 	QuoteCacheTTL         time.Duration
 	CarrierTimeout        time.Duration
 	CarrierRetries        int
@@ -79,6 +82,9 @@ func Load() Config {
 		GHNBaseURL:            env.EnvString("GHN_BASE_URL", "https://dev-online-gateway.ghn.vn/shiip/public-api"),
 		GHNToken:              env.EnvString("GHN_TOKEN", "sandbox-ghn-token"),
 		GHNShopID:             env.EnvInt("GHN_SHOP_ID", 0),
+		GHTKMode:              strings.ToLower(env.EnvString("GHTK_MODE", "mock")),
+		GHTKBaseURL:           env.EnvString("GHTK_BASE_URL", "https://services-staging.ghtklab.com"),
+		GHTKToken:             env.EnvString("GHTK_TOKEN", "sandbox-ghtk-token"),
 		QuoteCacheTTL:         quoteCacheTTL,
 		CarrierTimeout:        env.EnvDuration("CARRIER_TIMEOUT", 3*time.Second),
 		CarrierRetries:        env.EnvInt("CARRIER_MAX_RETRIES", 3),

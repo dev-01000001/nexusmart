@@ -6,7 +6,7 @@ FROM node:24-alpine AS deps
 WORKDIR /app/web
 
 COPY web/package.json web/package-lock.json ./
-RUN npm ci
+RUN npm ci --no-audit --no-fund
 
 FROM node:24-alpine AS builder
 WORKDIR /app/web
@@ -16,7 +16,8 @@ ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/web/node_modules ./node_modules
 COPY web/ ./
 
-RUN npm run build
+# Always build into the default dir inside the image, regardless of the caller's env.
+RUN NEXT_DIST_DIR=.next npm run build
 
 FROM node:24-alpine AS runner
 WORKDIR /app
@@ -40,6 +41,6 @@ USER nextjs
 EXPOSE 3000
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 \
-    CMD wget -qO /dev/null http://127.0.0.1:3000/ || exit 1
+    CMD wget -qO /dev/null "http://127.0.0.1:${PORT}/" || exit 1
 
 CMD ["node", "server.js"]

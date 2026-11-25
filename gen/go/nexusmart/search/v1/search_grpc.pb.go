@@ -22,6 +22,7 @@ const (
 	SearchService_SearchProducts_FullMethodName      = "/nexusmart.search.v1.SearchService/SearchProducts"
 	SearchService_HybridSearch_FullMethodName        = "/nexusmart.search.v1.SearchService/HybridSearch"
 	SearchService_Suggest_FullMethodName             = "/nexusmart.search.v1.SearchService/Suggest"
+	SearchService_SimilarProducts_FullMethodName     = "/nexusmart.search.v1.SearchService/SimilarProducts"
 	SearchService_ListSearchHistory_FullMethodName   = "/nexusmart.search.v1.SearchService/ListSearchHistory"
 	SearchService_DeleteSearchHistory_FullMethodName = "/nexusmart.search.v1.SearchService/DeleteSearchHistory"
 	SearchService_ReindexAll_FullMethodName          = "/nexusmart.search.v1.SearchService/ReindexAll"
@@ -35,6 +36,7 @@ type SearchServiceClient interface {
 	SearchProducts(ctx context.Context, in *SearchProductsRequest, opts ...grpc.CallOption) (*SearchProductsResponse, error)
 	HybridSearch(ctx context.Context, in *HybridSearchRequest, opts ...grpc.CallOption) (*HybridSearchResponse, error)
 	Suggest(ctx context.Context, in *SuggestRequest, opts ...grpc.CallOption) (*SuggestResponse, error)
+	SimilarProducts(ctx context.Context, in *SimilarProductsRequest, opts ...grpc.CallOption) (*SimilarProductsResponse, error)
 	ListSearchHistory(ctx context.Context, in *ListSearchHistoryRequest, opts ...grpc.CallOption) (*ListSearchHistoryResponse, error)
 	DeleteSearchHistory(ctx context.Context, in *DeleteSearchHistoryRequest, opts ...grpc.CallOption) (*DeleteSearchHistoryResponse, error)
 	ReindexAll(ctx context.Context, in *ReindexAllRequest, opts ...grpc.CallOption) (*ReindexAllResponse, error)
@@ -73,6 +75,16 @@ func (c *searchServiceClient) Suggest(ctx context.Context, in *SuggestRequest, o
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SuggestResponse)
 	err := c.cc.Invoke(ctx, SearchService_Suggest_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *searchServiceClient) SimilarProducts(ctx context.Context, in *SimilarProductsRequest, opts ...grpc.CallOption) (*SimilarProductsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SimilarProductsResponse)
+	err := c.cc.Invoke(ctx, SearchService_SimilarProducts_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -126,6 +138,7 @@ type SearchServiceServer interface {
 	SearchProducts(context.Context, *SearchProductsRequest) (*SearchProductsResponse, error)
 	HybridSearch(context.Context, *HybridSearchRequest) (*HybridSearchResponse, error)
 	Suggest(context.Context, *SuggestRequest) (*SuggestResponse, error)
+	SimilarProducts(context.Context, *SimilarProductsRequest) (*SimilarProductsResponse, error)
 	ListSearchHistory(context.Context, *ListSearchHistoryRequest) (*ListSearchHistoryResponse, error)
 	DeleteSearchHistory(context.Context, *DeleteSearchHistoryRequest) (*DeleteSearchHistoryResponse, error)
 	ReindexAll(context.Context, *ReindexAllRequest) (*ReindexAllResponse, error)
@@ -148,6 +161,9 @@ func (UnimplementedSearchServiceServer) HybridSearch(context.Context, *HybridSea
 }
 func (UnimplementedSearchServiceServer) Suggest(context.Context, *SuggestRequest) (*SuggestResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Suggest not implemented")
+}
+func (UnimplementedSearchServiceServer) SimilarProducts(context.Context, *SimilarProductsRequest) (*SimilarProductsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SimilarProducts not implemented")
 }
 func (UnimplementedSearchServiceServer) ListSearchHistory(context.Context, *ListSearchHistoryRequest) (*ListSearchHistoryResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListSearchHistory not implemented")
@@ -232,6 +248,24 @@ func _SearchService_Suggest_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(SearchServiceServer).Suggest(ctx, req.(*SuggestRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SearchService_SimilarProducts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SimilarProductsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SearchServiceServer).SimilarProducts(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SearchService_SimilarProducts_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SearchServiceServer).SimilarProducts(ctx, req.(*SimilarProductsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -326,6 +360,10 @@ var SearchService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Suggest",
 			Handler:    _SearchService_Suggest_Handler,
+		},
+		{
+			MethodName: "SimilarProducts",
+			Handler:    _SearchService_SimilarProducts_Handler,
 		},
 		{
 			MethodName: "ListSearchHistory",

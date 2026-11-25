@@ -430,6 +430,7 @@ func TestE2E_GatewayW2B(t *testing.T) {
 		coResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "gw-w2b-privacy-" + env.runID,
 		}, map[string]any{
+			"sales_channel":  "MARKETPLACE",
 			"address_id":     buyer.AddressID,
 			"payment_method": "COD",
 			"items":          []map[string]any{{"sku_id": sku1.ID, "quantity": 1}},
@@ -663,6 +664,7 @@ func TestE2E_GatewayW2B(t *testing.T) {
 		coVietQRResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", shipBuyer.AccessToken, map[string]string{
 			"Idempotency-Key": "gw-w2b-ship-vqr-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku0g.ID, Quantity: 2}},
 			PaymentMethod: "VIETQR",
@@ -698,6 +700,7 @@ func TestE2E_GatewayW2B(t *testing.T) {
 		coCODResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", shipBuyer.AccessToken, map[string]string{
 			"Idempotency-Key": "gw-w2b-ship-cod-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku0g.ID, Quantity: 2}},
 			PaymentMethod: "COD",

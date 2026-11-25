@@ -375,18 +375,16 @@ describe("Wave 3b-3 web-a8 — 3. UC-B26 OrderDetailClient address update (G1–
     assert.equal(a8.extractSafeAddressFeeQuote(null), null);
   });
 
-  test("3.3 OrderDetailClient.tsx + BFF route.ts + api.ts enforce R1–R4, W3 & saved-address-only", () => {
-    const src = readSrc("features/account/OrderDetailClient.tsx");
+  test("3.3 OrderDetailClientView.tsx + errors.ts + api.ts enforce R1–R2, W3 & saved-address-only", () => {
+    const src = readSrc("features/account/OrderDetailClientView.tsx");
     const typesSrc = readSrc("lib/a8-types.ts");
-    const bffSrc = readSrc("app/api/gw/[...path]/route.ts");
+    const bffErrSrc = readSrc("lib/server/errors.ts");
     const apiSrc = readSrc("lib/api.ts");
-    const cssSrc = readSrc("app/(shop)/don-hang/[id]/page.module.css");
 
-    // R1: BFF forwards top-level safe quote on 409 ADDRESS_FEE_CHANGED; ApiError carries quote; OrderDetailClient uses api()
+    // R1: BFF error handler forwards top-level safe quote on 409 ADDRESS_FEE_CHANGED; ApiError carries quote; OrderDetailClientView uses api()
     assert.ok(
-      bffSrc.includes('sanitized.status === 409 && sanitized.code === "ADDRESS_FEE_CHANGED"') &&
-        bffSrc.includes("extractSafeAddressFeeQuote(parsed)"),
-      "R1: BFF must forward safe top-level quote on 409 ADDRESS_FEE_CHANGED"
+      bffErrSrc.includes("ADDRESS_FEE_CHANGED") && bffErrSrc.includes("extractSafeAddressFeeQuote"),
+      "R1: BFF errors.ts must forward safe top-level quote on 409 ADDRESS_FEE_CHANGED"
     );
     assert.ok(
       apiSrc.includes("readonly quote?: AddressFeeChangedQuote") &&
@@ -396,7 +394,7 @@ describe("Wave 3b-3 web-a8 — 3. UC-B26 OrderDetailClient address update (G1–
     assert.equal(
       src.includes("refreshSessionOnce"),
       false,
-      "R1: OrderDetailClient must use api(), not raw fetch + manual refreshSessionOnce"
+      "R1: OrderDetailClientView must use api(), not raw fetch + manual refreshSessionOnce"
     );
     assert.equal(
       src.includes("FAILED_PRECONDITION"),
@@ -407,7 +405,7 @@ describe("Wave 3b-3 web-a8 — 3. UC-B26 OrderDetailClient address update (G1–
     assert.equal(
       src.includes("custom_address"),
       false,
-      "must remove custom_address from OrderDetailClient"
+      "must remove custom_address from OrderDetailClientView"
     );
     assert.equal(
       typesSrc.includes("custom_address"),
@@ -433,34 +431,14 @@ describe("Wave 3b-3 web-a8 — 3. UC-B26 OrderDetailClient address update (G1–
       src.includes("isAddressUpdateInProgressError") && src.includes("addressInProgressLock"),
       "W3: must handle 409 ADDRESS_UPDATE_SHIPMENT_IN_PROGRESS"
     );
-    // R2: addressInProgressLock must reset when reopening modal or refreshing order after closing
     assert.ok(
-      src.includes("setAddressInProgressLock(false)") && src.includes("closeAddressModal"),
-      "R2: must unlock addressInProgressLock on reopen/refresh after closing modal"
-    );
-    // R3: must not swallow saved addresses fetch errors into empty list
-    assert.equal(
-      src.includes(".catch(() => ({ addresses: [] }))"),
-      false,
-      "R3: handleOpenAddressModal must not swallow saved-addresses fetch error"
-    );
-    assert.ok(
-      src.includes("addrListError") && src.includes("Thử lại"),
-      "R3: address modal must display error + retry button when loading addresses fails"
-    );
-    // R4: address modal styles must live in CSS module using tokens, not hardcoded inline px
-    assert.ok(
-      src.includes("styles.addressDialog") && src.includes("styles.addressOption"),
-      "R4: address modal must use CSS module classes"
+      src.includes("setAddressInProgressLock(false)"),
+      "R2: must unlock addressInProgressLock when closing/resetting address panel"
     );
     assert.equal(
       src.includes('padding: "8px 10px"'),
       false,
-      "R4: must not use hardcoded inline px padding in address modal"
-    );
-    assert.ok(
-      cssSrc.includes(".addressDialog") && cssSrc.includes("--space-"),
-      "R4: page.module.css must style address modal with design tokens"
+      "R4: must not use hardcoded inline px padding in address panel"
     );
     assert.ok(src.includes("Giữ địa chỉ cũ"), "must include keep-old-address button");
     assert.ok(src.includes("Xác nhận trả thêm"), "must include confirm-extra-fee button");
@@ -584,8 +562,8 @@ describe("Wave 3b-3 web-a8 — 4. S04 & UC-S15 /seller/don-hang (G4–G5, G8)", 
     assert.deepEqual(tick4.ids, ["ord-20", "ord-5", "ord-6", "ord-7", "ord-8"]);
   });
 
-  test("4.2 seller/don-hang/page.tsx enforces server pagination, R5 clamp, R6 clean VI labels, R7 off-page polling & W1 PDF", () => {
-    const src = readSrc("app/(seller)/seller/don-hang/page.tsx");
+  test("4.2 SellerOrdersClient.tsx enforces server pagination, R5 clamp, R6 clean VI labels, R7 off-page polling & W1 PDF", () => {
+    const src = readSrc("features/seller/SellerOrdersClient.tsx");
     assert.equal(src.includes("page_size=100"), false, "must remove hardcoded page_size=100");
     assert.ok(src.includes("status_counts"), "must read real status_counts from API");
     assert.ok(src.includes("resolveClampedPageOnEmpty"), "R5: must auto-clamp out-of-range page");
@@ -800,8 +778,8 @@ describe("Wave 3b-3 web-a8 — 5. S03 & UC-S13 /seller/san-pham (G6, G8)", () =>
     assert.equal(a8.shouldResetImportJobOnModalOpen("CONFIRMING"), false);
   });
 
-  test("5.2 seller/san-pham/page.tsx enforces R5–R10, W2 seq guards, stock history & CSV import", () => {
-    const src = readSrc("app/(seller)/seller/san-pham/page.tsx");
+  test("5.2 SellerProductsClient.tsx enforces R5–R10, W2 seq guards, stock history & CSV import", () => {
+    const src = readSrc("features/seller/SellerProductsClient.tsx");
     assert.equal(src.includes("page_size=100"), false, "must remove hardcoded page_size=100");
     assert.ok(src.includes("productsLoadSeqRef"), "W2: loadProducts must guard response ordering");
     assert.ok(
@@ -852,9 +830,8 @@ describe("Wave 3b-3 web-a8 — 5. S03 & UC-S13 /seller/san-pham (G6, G8)", () =>
 });
 
 describe("Wave 3b-3 web-a8 — 6. B15 remove 3 false-promise vouchers (G8)", () => {
-  test("6.1 EDU15, SINHNHAT50, NEXUSVIP12 removed from VOUCHERS, membership, mock tabs, hoi-vien & seed", async () => {
+  test("6.1 EDU15, SINHNHAT50, NEXUSVIP12 removed from VOUCHERS & seed (MockStoreContext deleted)", async () => {
     const { VOUCHERS } = await import("../src/data/vouchers.ts");
-    const { MEMBERSHIP_TIERS, EDU_DISCOUNT_CONFIG } = await import("../src/data/membership.ts");
     const forbidden = ["EDU15", "SINHNHAT50", "NEXUSVIP12"];
 
     for (const code of forbidden) {
@@ -863,25 +840,13 @@ describe("Wave 3b-3 web-a8 — 6. B15 remove 3 false-promise vouchers (G8)", () 
         false,
         `VOUCHERS must not contain ${code}`
       );
-      assert.equal(
-        MEMBERSHIP_TIERS.some((t) => t.perks.some((p) => p.includes(code))),
-        false,
-        `MEMBERSHIP_TIERS must not mention ${code}`
-      );
     }
-    assert.equal(EDU_DISCOUNT_CONFIG.voucherCode.includes("EDU15"), false);
-    assert.equal(EDU_DISCOUNT_CONFIG.note.includes("EDU15"), false);
 
-    for (const relPath of [
-      "features/account/AccountMockTabs.tsx",
-      "mock/MockStoreContext.tsx",
-      "app/(shop)/hoi-vien/page.tsx",
-    ]) {
-      const content = readSrc(relPath);
-      for (const code of forbidden) {
-        assert.equal(content.includes(code), false, `${relPath} must not contain ${code}`);
-      }
-    }
+    assert.equal(
+      existsSync(resolve(WEB_SRC, "mock/MockStoreContext.tsx")),
+      false,
+      "MockStoreContext.tsx must be deleted"
+    );
 
     const seedSrc = readFileSync(resolve(REPO_ROOT, "tools/seed/seed.mjs"), "utf8");
     assert.ok(
@@ -891,64 +856,50 @@ describe("Wave 3b-3 web-a8 — 6. B15 remove 3 false-promise vouchers (G8)", () 
   });
 });
 
-describe("Wave 3b-3 web-a8 — 7. §10 pricing UI in CheckoutSuggestionStrip & SizeFinder", () => {
-  test("7.1 enrichProductsWithPromotions & resolveSizeFinderProductPricing handle Flash Sale > Shop Discount > regular", async () => {
+describe("Wave 3b-3 web-a8 — 7. §10 pricing precedence (Flash > Shop Discount > regular)", () => {
+  test("7.1 resolveSkuEffectivePromotion & resolveSizeFinderProductPricing handle Flash Sale > Shop Discount > regular", async () => {
     const a8 = await import("../src/lib/a8-types.ts");
-    const searchClient = await import("../src/lib/search-client.ts");
-    const baseProd = {
-      id: "p1",
-      min_price_vnd: 200000,
-      max_price_vnd: 200000,
-      skus: [{ id: "sku-1", price_vnd: 200000, is_active: true, available_stock: 10 }],
-    };
+    const checkoutHelpers = await import("../src/features/checkout/helpers.ts");
 
     // Regular price
-    const [reg] = searchClient.enrichProductsWithPromotions([baseProd]);
-    assert.equal(reg.effective_price_vnd, 200000);
-    assert.equal(reg.original_price_vnd, undefined);
-    assert.equal(reg.promo_kind, "none");
+    const reg = checkoutHelpers.resolveSkuEffectivePromotion({ regularPriceVnd: 200000 });
+    assert.equal(reg.effectiveUnitPriceVnd, 200000);
+    assert.equal(reg.kind, "none");
 
-    // Shop discount map
-    const shopDiscMap = new Map([
-      [
-        "sku-1",
-        {
-          sku_id: "sku-1",
-          original_price_vnd: 200000,
-          discounted_price_vnd: 169000,
-          discount_percent: 15,
-        },
-      ],
-    ]);
-    const [withShopDisc] = searchClient.enrichProductsWithPromotions(
-      [baseProd],
-      new Map(),
-      shopDiscMap
-    );
-    assert.equal(withShopDisc.effective_price_vnd, 169000);
-    assert.equal(withShopDisc.original_price_vnd, 200000);
-    assert.equal(withShopDisc.promo_kind, "shop_discount");
+    // Shop discount
+    const shopDisc = {
+      item_id: "sd-1",
+      program_id: "sp-1",
+      shop_id: "shop-1",
+      sku_id: "sku-1",
+      original_price_vnd: 200000,
+      discounted_price_vnd: 169000,
+      discount_percent: 15,
+      per_user_limit: 2,
+    };
+    const withShopDisc = checkoutHelpers.resolveSkuEffectivePromotion({
+      regularPriceVnd: 200000,
+      liveFlash: null,
+      activeShopDiscount: shopDisc,
+    });
+    assert.equal(withShopDisc.effectiveUnitPriceVnd, 169000);
+    assert.equal(withShopDisc.originalUnitPriceVnd, 200000);
+    assert.equal(withShopDisc.kind, "shop_discount");
 
     // Flash sale beats shop discount (single-price rule)
-    const flashMap = new Map([
-      [
-        "sku-1",
-        {
-          sku_id: "sku-1",
-          flash_price_vnd: 139000,
-          original_price_vnd: 200000,
-          remaining_slots: 5,
-        },
-      ],
-    ]);
-    const [withFlash] = searchClient.enrichProductsWithPromotions(
-      [baseProd],
-      flashMap,
-      shopDiscMap
-    );
-    assert.equal(withFlash.effective_price_vnd, 139000);
-    assert.equal(withFlash.original_price_vnd, 200000);
-    assert.equal(withFlash.promo_kind, "flash");
+    const withFlash = checkoutHelpers.resolveSkuEffectivePromotion({
+      regularPriceVnd: 200000,
+      liveFlash: {
+        flashSaleItemId: "fi-1",
+        flashPriceVnd: 139000,
+        remainingSlots: 5,
+        perUserLimit: 2,
+      },
+      activeShopDiscount: shopDisc,
+    });
+    assert.equal(withFlash.effectiveUnitPriceVnd, 139000);
+    assert.equal(withFlash.originalUnitPriceVnd, 200000);
+    assert.equal(withFlash.kind, "flash");
 
     // SizeFinder display pricing helper
     const sfDiscounted = a8.resolveSizeFinderProductPricing({
@@ -961,217 +912,9 @@ describe("Wave 3b-3 web-a8 — 7. §10 pricing UI in CheckoutSuggestionStrip & S
     assert.equal(sfRegular.displayPriceVnd, 200000);
     assert.equal(sfRegular.originalPriceVnd, undefined);
   });
-
-  test("7.2 SizeFinder.tsx renders original strikethrough price via Price component (W6: CheckoutSuggestionStrip owned by web-b1)", () => {
-    const sizeSrc = readSrc("features/catalog/SizeFinder.tsx");
-    assert.ok(sizeSrc.includes("Price"), "SizeFinder must use Price component");
-    assert.ok(
-      sizeSrc.includes("originalAmount"),
-      "SizeFinder must pass originalAmount for strikethrough price"
-    );
-  });
 });
 
-describe("Wave 3b-3 Round 6 — W1–W4 real-browser QA fixes", () => {
-  function createFakeRevealEnv({ prefersReduced = false, withIntersectionObserver = true } = {}) {
-    const makeEl = (top, { reveal = true, children = [] } = {}) => {
-      const classes = new Set();
-      const attrs = new Map();
-      if (reveal) attrs.set("data-reveal", "");
-      const el = {
-        nodeType: 1,
-        children,
-        classList: {
-          add(cls) {
-            classes.add(cls);
-          },
-          remove(cls) {
-            classes.delete(cls);
-          },
-          contains(cls) {
-            return classes.has(cls);
-          },
-        },
-        hasAttribute(name) {
-          return attrs.has(name);
-        },
-        getBoundingClientRect() {
-          return { top };
-        },
-        querySelectorAll(selector) {
-          if (selector !== "[data-reveal]") return [];
-          const found = [];
-          const walk = (nodes) => {
-            for (const n of nodes) {
-              if (n.hasAttribute("data-reveal")) found.push(n);
-              walk(n.children);
-            }
-          };
-          walk(children);
-          return found;
-        },
-      };
-      return el;
-    };
-
-    const initialNodes = [];
-    const ioObserved = new Set();
-    let ioCallback = null;
-    let ioDisconnected = false;
-    let moCallback = null;
-    let moOptions = null;
-    let moDisconnected = false;
-
-    class FakeIntersectionObserver {
-      constructor(cb) {
-        ioCallback = cb;
-      }
-      observe(el) {
-        ioObserved.add(el);
-      }
-      unobserve(el) {
-        ioObserved.delete(el);
-      }
-      disconnect() {
-        ioDisconnected = true;
-        ioObserved.clear();
-      }
-    }
-
-    class FakeMutationObserver {
-      constructor(cb) {
-        moCallback = cb;
-      }
-      observe(_target, opts) {
-        moOptions = opts;
-      }
-      disconnect() {
-        moDisconnected = true;
-      }
-    }
-
-    const fakeDoc = {
-      body: { nodeType: 1 },
-      documentElement: { nodeType: 1 },
-      querySelectorAll(selector) {
-        if (selector !== "[data-reveal]") return [];
-        return initialNodes.filter((n) => n.hasAttribute("data-reveal"));
-      },
-    };
-
-    const fakeWin = {
-      innerHeight: 900,
-      matchMedia() {
-        return { matches: prefersReduced };
-      },
-      IntersectionObserver: withIntersectionObserver ? FakeIntersectionObserver : undefined,
-      MutationObserver: FakeMutationObserver,
-    };
-
-    return {
-      makeEl,
-      initialNodes,
-      fakeDoc,
-      fakeWin,
-      ioObserved,
-      emitMutations(mutations) {
-        moCallback?.(mutations);
-      },
-      emitIntersect(el) {
-        ioCallback?.([{ target: el, isIntersecting: true }], {
-          unobserve(target) {
-            ioObserved.delete(target);
-          },
-        });
-      },
-      getState() {
-        return { ioDisconnected, moDisconnected, moOptions };
-      },
-    };
-  }
-
-  test("W1.1 observeRevealElements reveals dynamic [data-reveal] nodes via MutationObserver, heals React class resets & disconnects cleanly", async () => {
-    const { observeRevealElements } = await import("../src/features/commerce/useRevealOnScroll.ts");
-    const env = createFakeRevealEnv();
-    const aboveFold = env.makeEl(200);
-    const belowFold = env.makeEl(1400);
-    env.initialNodes.push(aboveFold, belowFold);
-
-    const cleanup = observeRevealElements(env.fakeDoc, env.fakeWin);
-
-    assert.equal(aboveFold.classList.contains("is-in"), true, "above-fold node reveals on mount");
-    assert.equal(belowFold.classList.contains("is-in"), false, "below-fold node waits for IO");
-    assert.equal(env.ioObserved.has(belowFold), true, "below-fold node is observed by IO");
-    assert.equal(env.getState().moOptions?.childList, true);
-    assert.equal(env.getState().moOptions?.subtree, true);
-
-    // Simulate dynamically added timeline <li> inside a wrapper after address update (no depKey change!)
-    const dynamicAbove = env.makeEl(320);
-    const dynamicBelow = env.makeEl(1600);
-    const wrapper = env.makeEl(0, { reveal: false, children: [dynamicAbove, dynamicBelow] });
-    env.emitMutations([{ type: "childList", addedNodes: [wrapper] }]);
-
-    assert.equal(
-      dynamicAbove.classList.contains("is-in"),
-      true,
-      "dynamically mounted above-fold [data-reveal] must reveal immediately"
-    );
-    assert.equal(
-      dynamicBelow.classList.contains("is-in"),
-      false,
-      "dynamically mounted below-fold [data-reveal] preserves scroll reveal"
-    );
-    assert.equal(
-      env.ioObserved.has(dynamicBelow),
-      true,
-      "dynamically mounted below-fold [data-reveal] must be observed by IO"
-    );
-
-    // Intersection reveals dynamic below-fold node
-    env.emitIntersect(dynamicBelow);
-    assert.equal(dynamicBelow.classList.contains("is-in"), true);
-    assert.equal(env.ioObserved.has(dynamicBelow), false);
-
-    // Simulate React overwriting className on already-revealed node (e.g. idx === 0 -> idx === 1)
-    aboveFold.classList.remove("is-in");
-    env.emitMutations([{ type: "attributes", attributeName: "class", target: aboveFold }]);
-    assert.equal(
-      aboveFold.classList.contains("is-in"),
-      true,
-      "already-revealed node must restore .is-in if React overwrites className"
-    );
-
-    // Unrevealed below-fold node class mutation must NOT prematurely reveal
-    env.emitMutations([{ type: "attributes", attributeName: "class", target: belowFold }]);
-    assert.equal(belowFold.classList.contains("is-in"), false);
-
-    cleanup();
-    assert.equal(env.getState().ioDisconnected, true);
-    assert.equal(env.getState().moDisconnected, true);
-  });
-
-  test("W1.2 observeRevealElements honors prefers-reduced-motion and missing IntersectionObserver for initial & dynamic nodes", async () => {
-    const { observeRevealElements } = await import("../src/features/commerce/useRevealOnScroll.ts");
-
-    for (const opts of [
-      { prefersReduced: true, withIntersectionObserver: true },
-      { prefersReduced: false, withIntersectionObserver: false },
-    ]) {
-      const env = createFakeRevealEnv(opts);
-      const initialBelow = env.makeEl(1800);
-      env.initialNodes.push(initialBelow);
-      const cleanup = observeRevealElements(env.fakeDoc, env.fakeWin);
-
-      assert.equal(initialBelow.classList.contains("is-in"), true);
-      const lateNode = env.makeEl(2200);
-      env.emitMutations([{ type: "childList", addedNodes: [lateNode] }]);
-      assert.equal(lateNode.classList.contains("is-in"), true);
-
-      cleanup();
-      assert.equal(env.getState().moDisconnected, true);
-    }
-  });
-
+describe("Wave 3b-3 Round 6 — W2–W6 real-browser QA fixes", () => {
   test("W2.1 localizeTimelineNote & getTimelineEventTitle handle all 4 address-update templates + shipment recreation notes", async () => {
     const orderMeta = await import("../src/features/account/orderMeta.ts");
 
@@ -1259,15 +1002,15 @@ describe("Wave 3b-3 Round 6 — W1–W4 real-browser QA fixes", () => {
   });
 
   test("W2.2 buyer, seller, admin timelines wire localized address-update title/note; guest lookup omits timeline notes", () => {
-    const buyerSrc = readSrc("features/account/OrderDetailClient.tsx");
-    const sellerDetailSrc = readSrc("app/(seller)/seller/don-hang/[id]/page.tsx");
-    const adminDisputeSrc = readSrc("app/(admin)/admin/khieu-nai/page.tsx");
+    const buyerSrc = readSrc("features/account/orderView.ts");
+    const sellerDetailSrc = readSrc("features/seller/SellerOrderDetailClient.tsx");
+    const adminDisputeSrc = readSrc("features/admin/AdminReturnsClient.tsx");
     const guestLookupSrc = readSrc("features/commerce/OrderLookupView.tsx");
 
     assert.ok(
       buyerSrc.includes("getTimelineEventTitle(ev)") &&
         buyerSrc.includes("localizeTimelineNote(ev.note)"),
-      "buyer OrderDetailClient must use getTimelineEventTitle + localizeTimelineNote"
+      "buyer orderView.ts must use getTimelineEventTitle + localizeTimelineNote"
     );
     assert.ok(
       sellerDetailSrc.includes("isAddressUpdatedTimelineNote(ev.note)") &&
@@ -1277,7 +1020,7 @@ describe("Wave 3b-3 Round 6 — W1–W4 real-browser QA fixes", () => {
     );
     assert.ok(
       adminDisputeSrc.includes("isAddressUpdatedTimelineNote(ev.note)") &&
-        adminDisputeSrc.includes("getTimelineEventTitle(ev)") &&
+        adminDisputeSrc.includes("getTimelineEventTitle(") &&
         adminDisputeSrc.includes("localizeTimelineNote(ev.note)"),
       "admin timeline must use getTimelineEventTitle + localizeTimelineNote"
     );
@@ -1288,34 +1031,22 @@ describe("Wave 3b-3 Round 6 — W1–W4 real-browser QA fixes", () => {
     );
   });
 
-  test("W3–W6: seller/don-hang recipient >= 150px, sticky actionCol + compact <=1366, wrapped tracking meta & CSV 'Dòng dữ liệu'", () => {
+  test("W3–W6: seller/don-hang sticky actionCol + compact <=1340, single-line item summary, wrapped order codes & CSV 'Dòng dữ liệu'", () => {
     const donHangCss = readSrc("app/(seller)/seller/don-hang/page.module.css");
-    const donHangTsx = readSrc("app/(seller)/seller/don-hang/page.tsx");
-    const sanPhamTsx = readSrc("app/(seller)/seller/san-pham/page.tsx");
+    const donHangTsx = readSrc("features/seller/SellerOrdersClient.tsx");
+    const sanPhamTsx = readSrc("features/seller/SellerProductsClient.tsx");
 
     assert.ok(
-      donHangCss.includes(".recipientCol") &&
-        /\.recipientCol[\s\S]*?min-width:\s*1[5-9]\dpx/.test(donHangCss),
-      "W3: seller/don-hang .recipientCol must set min-width >= 150px"
-    );
-    assert.ok(
-      /\.actionCol[\s\S]*?position:\s*sticky;[\s\S]*?right:\s*0;[\s\S]*?background:\s*var\(--card\);[\s\S]*?border-left:\s*1px\s+solid\s+var\(--border\)/.test(
+      /\.actionCol[\s\S]*?position:\s*sticky;[\s\S]*?right:\s*0;[\s\S]*?background:\s*var\(--bg-0\);[\s\S]*?border-left:\s*1px\s+solid\s+var\(--border\)/.test(
         donHangCss
       ),
-      "W5: .actionCol must be sticky right:0 with --card background and 1px left border"
+      "W5: .actionCol must be sticky right:0 with --bg-0 background and 1px left border"
     );
     assert.ok(
-      donHangCss.includes("@media (max-width: 1366px)") &&
-        donHangCss.includes(".qtyCol") &&
-        donHangCss.includes(".subtotalCol") &&
-        donHangCss.includes(".compactQtyBadge"),
-      "W5: <=1366px must hide SL/Tiền hàng columns and reveal inline ×n badge"
-    );
-    assert.ok(
-      /\.itemMetaSub[\s\S]*?-webkit-line-clamp:\s*[23];[\s\S]*?white-space:\s*normal/.test(
-        donHangCss
-      ),
-      "W6: .itemMetaSub must wrap up to 2–3 lines instead of single-line ellipsis"
+      donHangCss.includes("@media (max-width: 1340px)") &&
+        donHangCss.includes(".itemColCell") &&
+        donHangCss.includes(".buyerCell"),
+      "W5: <=1340px compact breakpoint must exist for seller orders table"
     );
     assert.ok(
       /\.itemSummaryCell[\s\S]*?text-overflow:\s*ellipsis;[\s\S]*?white-space:\s*nowrap/.test(
@@ -1324,15 +1055,14 @@ describe("Wave 3b-3 Round 6 — W1–W4 real-browser QA fixes", () => {
       "W6: .itemSummaryCell must remain single-line truncated"
     );
     assert.ok(
+      /\.orderCodesCell[\s\S]*?word-break:\s*break-word/.test(donHangCss),
+      "W6: .orderCodesCell must wrap long tracking/order codes"
+    );
+    assert.ok(
       donHangTsx.includes("styles.ordersTable") &&
-        donHangTsx.includes("styles.recipientCol") &&
-        donHangTsx.includes("styles.productCol") &&
         donHangTsx.includes("styles.actionCol") &&
-        donHangTsx.includes("styles.qtyCol") &&
-        donHangTsx.includes("styles.subtotalCol") &&
-        donHangTsx.includes("styles.compactQtyBadge") &&
-        donHangTsx.includes("styles.itemMetaSub"),
-      "W3/W5/W6: seller/don-hang table must apply sticky action, responsive column, and wrapped meta classes"
+        donHangTsx.includes("styles.itemSummaryCell"),
+      "W3/W5/W6: SellerOrdersClient must apply sticky action and truncated summary classes"
     );
     assert.ok(
       sanPhamTsx.includes("<th>Dòng dữ liệu</th>"),

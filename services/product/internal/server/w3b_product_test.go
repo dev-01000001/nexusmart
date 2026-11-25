@@ -317,10 +317,21 @@ func TestW3B_Reviews_Auth_Ownership_Status_Images_Banned_Masking_PublicRedaction
 		t.Fatalf("fallback buyer_name = %q, want %q", rev2.GetReview().GetBuyerName(), DefaultAnonymousBuyerName)
 	}
 
-	// Verify outbox review.created events (2 total, latest carries review_count=2, rating_avg_x100=450).
+	// Verify outbox review.created events (2 total, latest carries review_count=2, rating_avg_x100=450,
+	// includes comment, and omits PII/private fields buyer_id and order_id).
 	var reviewOutbox []events.ReviewCreatedPayload
 	for _, ev := range mem.OutboxEvents() {
 		if ev.EventType == events.SubjectReviewCreated {
+			var raw map[string]any
+			if uErr := json.Unmarshal(ev.PayloadJSON, &raw); uErr != nil {
+				t.Fatalf("unmarshal review.created raw map: %v", uErr)
+			}
+			if _, leaked := raw["buyer_id"]; leaked {
+				t.Fatalf("review.created payload leaked buyer_id: %s", string(ev.PayloadJSON))
+			}
+			if _, leaked := raw["order_id"]; leaked {
+				t.Fatalf("review.created payload leaked order_id: %s", string(ev.PayloadJSON))
+			}
 			var p events.ReviewCreatedPayload
 			if uErr := json.Unmarshal(ev.PayloadJSON, &p); uErr != nil {
 				t.Fatalf("unmarshal review.created: %v", uErr)
@@ -330,6 +341,9 @@ func TestW3B_Reviews_Auth_Ownership_Status_Images_Banned_Masking_PublicRedaction
 	}
 	if len(reviewOutbox) != 2 || reviewOutbox[1].ReviewCount != 2 || reviewOutbox[1].RatingAvgX100 != 450 {
 		t.Fatalf("review.created outbox = %+v, want 2 events with final count=2 avg=450", reviewOutbox)
+	}
+	if reviewOutbox[1].Comment != "Tạm ổn" || reviewOutbox[0].Comment == "" {
+		t.Fatalf("review.created outbox comments = [%q, %q], want non-empty and %q", reviewOutbox[0].Comment, reviewOutbox[1].Comment, "Tạm ổn")
 	}
 
 	// E6-bis: Public ListProductReviews omits buyer_id, order_id, order_item_id, sku_id; returns rating_avg_x100=450, review_count=2.

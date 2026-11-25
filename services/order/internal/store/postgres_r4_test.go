@@ -855,12 +855,12 @@ func TestPostgresR4_DE_ReportWaterfallGMVAndBackfill(t *testing.T) {
 			t.Fatalf("insert legacy cancelled order: %v", err)
 		}
 
-		m0011, err := migrations.Files.ReadFile("0011_w2b_order_round4.sql")
+		m0014, err := migrations.Files.ReadFile("0014_w2b_order_round4.sql")
 		if err != nil {
-			t.Fatalf("read 0011 migration: %v", err)
+			t.Fatalf("read 0014_w2b_order_round4.sql migration: %v", err)
 		}
-		if _, err := pool.Exec(ctx, string(m0011)); err != nil {
-			t.Fatalf("apply 0011 over legacy data: %v", err)
+		if _, err := pool.Exec(ctx, string(m0014)); err != nil {
+			t.Fatalf("apply 0014_w2b_order_round4.sql over legacy data: %v", err)
 		}
 
 		var settledComp, settledDel, settledCan int64

@@ -179,6 +179,7 @@ func payW2bCompleteVietQROrder(
 	resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": idemPrefix + "-" + uuid.NewString(),
 	}, CheckoutRequest{
+		SalesChannel:  "MARKETPLACE",
 		AddressID:     buyer.AddressID,
 		FromCart:      false,
 		Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
@@ -752,7 +753,8 @@ func TestPaymentW2bGetPaymentRolePrivacyGRPCAndREST(t *testing.T) {
 	coResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "payw2b-priv-" + uuid.NewString(),
 	}, CheckoutRequest{
-		AddressID: buyer.AddressID,
+		SalesChannel: "MARKETPLACE",
+		AddressID:    buyer.AddressID,
 		Items: []CheckoutItemInputDTO{
 			{SKUID: sku1.ID, Quantity: 1},
 			{SKUID: sku2.ID, Quantity: 1},

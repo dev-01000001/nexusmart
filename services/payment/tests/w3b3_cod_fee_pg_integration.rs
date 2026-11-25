@@ -231,12 +231,16 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_auth_attacks() {
                 shop_id: "shop-auth-1".into(),
                 subtotal_vnd: 200_000,
                 commission_vnd: 10_000,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 30_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{order_id}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "trace-auth".into(),
         })
         .await
@@ -324,12 +328,16 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_increase_decrease_multishop_and_le
                 shop_id: "shop-single-1".into(),
                 subtotal_vnd: 200_000,
                 commission_vnd: 10_000,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 30_000,
                 platform_discount_vnd: 20_000,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord1}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "trace-single".into(),
         })
         .await
@@ -395,7 +403,10 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_increase_decrease_multishop_and_le
         .await
         .expect("order.completed");
 
-    let summary1 = svc.get_ledger_summary().await.expect("ledger summary 1");
+    let summary1 = svc
+        .get_ledger_summary(None)
+        .await
+        .expect("ledger summary 1");
     assert!(summary1.is_balanced);
     assert_eq!(summary1.total_debits_vnd, summary1.total_credits_vnd);
     let find_bal = |acc: &str| {
@@ -438,6 +449,8 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_increase_decrease_multishop_and_le
                     shop_id: "shop-m-a".into(),
                     subtotal_vnd: 100_000,
                     commission_vnd: 5_000,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     shipping_fee_vnd: 20_000,
                     platform_discount_vnd: 0,
                 },
@@ -446,6 +459,8 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_increase_decrease_multishop_and_le
                     shop_id: "shop-m-b".into(),
                     subtotal_vnd: 80_000,
                     commission_vnd: 4_000,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     shipping_fee_vnd: 20_000,
                     platform_discount_vnd: 0,
                 },
@@ -454,6 +469,8 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_increase_decrease_multishop_and_le
                     shop_id: "shop-m-c".into(),
                     subtotal_vnd: 200_000,
                     commission_vnd: 10_000,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                     shipping_fee_vnd: 30_000,
                     platform_discount_vnd: 0,
                 },
@@ -461,6 +478,8 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_increase_decrease_multishop_and_le
             expires_at: None,
             idempotency_key: Some(format!("checkout:{grp_m}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "trace-multi".into(),
         })
         .await
@@ -541,7 +560,10 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_increase_decrease_multishop_and_le
         .await
         .expect("complete C");
 
-    let summary_all = svc.get_ledger_summary().await.expect("ledger summary all");
+    let summary_all = svc
+        .get_ledger_summary(None)
+        .await
+        .expect("ledger summary all");
     assert!(summary_all.is_balanced);
     assert_eq!(summary_all.total_debits_vnd, summary_all.total_credits_vnd);
     let pm_done = svc
@@ -581,12 +603,16 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_state_and_money_attacks() {
                 shop_id: "shop-vq".into(),
                 subtotal_vnd: 200_000,
                 commission_vnd: 10_000,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 30_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord_vq}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "trace-vq".into(),
         })
         .await
@@ -657,12 +683,16 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_state_and_money_attacks() {
                 shop_id: "shop-zp".into(),
                 subtotal_vnd: 200_000,
                 commission_vnd: 10_000,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 30_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord_zp}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "trace-zp".into(),
         })
         .await
@@ -695,12 +725,16 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_state_and_money_attacks() {
                 shop_id: "shop-del".into(),
                 subtotal_vnd: 100_000,
                 commission_vnd: 5_000,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 30_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord_del}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "trace-del".into(),
         })
         .await
@@ -782,12 +816,16 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_state_and_money_attacks() {
                 shop_id: "shop-can".into(),
                 subtotal_vnd: 100_000,
                 commission_vnd: 5_000,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 30_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord_can}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "trace-can".into(),
         })
         .await
@@ -823,12 +861,16 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_state_and_money_attacks() {
                 shop_id: "shop-disc".into(),
                 subtotal_vnd: 100_000,
                 commission_vnd: 5_000,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 30_000,
                 platform_discount_vnd: 120_000,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord_disc}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "trace-disc".into(),
         })
         .await
@@ -904,12 +946,16 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_idempotency_5x_and_conflict() {
                 shop_id: "shop-idem-1".into(),
                 subtotal_vnd: 200_000,
                 commission_vnd: 10_000,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 30_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord1}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "trace-idem-1".into(),
         })
         .await
@@ -979,12 +1025,16 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_idempotency_5x_and_conflict() {
                 shop_id: "shop-idem-2".into(),
                 subtotal_vnd: 150_000,
                 commission_vnd: 7_500,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 30_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord2}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "trace-idem-2".into(),
         })
         .await
@@ -1047,12 +1097,16 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_idempotency_5x_and_conflict() {
                 shop_id: "shop-3a".into(),
                 subtotal_vnd: 100_000,
                 commission_vnd: 5_000,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 30_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord3a}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "trace-3a".into(),
         })
         .await
@@ -1069,12 +1123,16 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_idempotency_5x_and_conflict() {
                 shop_id: "shop-3b".into(),
                 subtotal_vnd: 100_000,
                 commission_vnd: 5_000,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 shipping_fee_vnd: 30_000,
                 platform_discount_vnd: 0,
             }],
             expires_at: None,
             idempotency_key: Some(format!("checkout:{ord3b}")),
             supersede_previous: false,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
             trace_id: "trace-3b".into(),
         })
         .await
@@ -1232,10 +1290,14 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_race_with_order_delivered() {
                     commission_vnd: commission,
                     shipping_fee_vnd: old_fee,
                     platform_discount_vnd: discount,
+                    sales_channel: String::new(),
+                    storefront_shop_id: String::new(),
                 }],
                 expires_at: None,
                 idempotency_key: Some(format!("checkout:{ord}")),
                 supersede_previous: false,
+                sales_channel: String::new(),
+                storefront_shop_id: String::new(),
                 trace_id: format!("trace-race-{round}"),
             })
             .await
@@ -1329,7 +1391,10 @@ async fn test_w3b3_g2_adjust_cod_shipping_fee_race_with_order_delivered() {
     }
 
     assert_eq!(adjust_won_count + deliver_won_count, 8);
-    let summary = svc.get_ledger_summary().await.expect("ledger summary race");
+    let summary = svc
+        .get_ledger_summary(None)
+        .await
+        .expect("ledger summary race");
     assert!(summary.is_balanced);
     assert_eq!(summary.total_debits_vnd, summary.total_credits_vnd);
     let cod_rec = summary

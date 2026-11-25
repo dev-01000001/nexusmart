@@ -28,6 +28,7 @@ func (s *OrderService) LookupOrder(ctx context.Context, req *orderv1.LookupOrder
 
 	orderCode := strings.TrimSpace(req.GetOrderCode())
 	rawPhone := strings.TrimSpace(req.GetPhone())
+	storefrontShopID := strings.TrimSpace(req.GetStorefrontShopId())
 	if orderCode == "" || rawPhone == "" {
 		return nil, status.Error(codes.InvalidArgument, "order_code and phone are required")
 	}
@@ -43,16 +44,21 @@ func (s *OrderService) LookupOrder(ctx context.Context, req *orderv1.LookupOrder
 	var storedNorm string
 	var storedValid bool
 	var snap orderv1.OrderAddressSnapshot
+	inScope := storefrontShopID == ""
 	if found && agg != nil {
 		if len(agg.Order.ShippingAddressJSON) > 0 {
 			_ = json.Unmarshal(agg.Order.ShippingAddressJSON, &snap)
 		}
 		storedNorm, storedValid = normalizeVNPhone(snap.GetRecipientPhone())
+		if storefrontShopID != "" {
+			inScope = strings.EqualFold(effectiveSalesChannel(agg.Order.SalesChannel), SalesChannelStorefront) &&
+				agg.Order.StorefrontShopID == storefrontShopID
+		}
 	}
 
-	// Always perform a fixed-width constant-time comparison even on lookup miss or invalid format.
+	// Always perform a fixed-width constant-time comparison even on lookup miss, invalid format, or storefront mismatch.
 	matched := constantTimePhoneEqual(inputNorm, storedNorm)
-	if !found || agg == nil || !inputValid || !storedValid || !matched {
+	if !found || agg == nil || !inputValid || !storedValid || !matched || !inScope {
 		return nil, status.Error(codes.NotFound, orderLookupNotFoundMsg)
 	}
 

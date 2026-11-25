@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -20,22 +22,31 @@ type Config struct {
 	ShippingHTTPURL     string
 	NotificationHTTPURL string
 	SearchHTTPURL       string
+	ChatHTTPURL         string
+	AssistantHTTPURL    string
 
-	UserGRPCAddr      string
-	PromotionGRPCAddr string
-	ProductGRPCAddr   string
-	OrderGRPCAddr     string
-	PaymentGRPCAddr   string
-	ShippingGRPCAddr  string
-	SearchGRPCAddr    string
+	UserGRPCAddr         string
+	ProductGRPCAddr      string
+	CartGRPCAddr         string
+	PromotionGRPCAddr    string
+	OrderGRPCAddr        string
+	PaymentGRPCAddr      string
+	ShippingGRPCAddr     string
+	NotificationGRPCAddr string
+	SearchGRPCAddr       string
+	ChatGRPCAddr         string
+	AssistantGRPCAddr    string
 
 	MeilisearchURL string
 	MeiliMasterKey string
+	OTelPromURL    string
+	OTelHealthURL  string
 
-	NATSURL   string
-	RedisAddr string
-
-	MailpitURL string
+	NATSURL         string
+	RedisAddr       string
+	UserDatabaseURL string
+	MailpitURL      string
+	SiteRootDomain  string
 
 	AdminEmail            string
 	AdminPassword         string
@@ -72,8 +83,9 @@ type ServiceEndpoint struct {
 
 // LoadConfig constructs Config from environment variables with local Docker Compose defaults.
 func LoadConfig() Config {
+	gatewayURL := envOr("GATEWAY_URL", "http://localhost:8080")
 	return Config{
-		GatewayURL:          envOr("GATEWAY_URL", "http://localhost:8080"),
+		GatewayURL:          gatewayURL,
 		UserHTTPURL:         envOr("USER_HTTP_URL", "http://localhost:8081"),
 		ProductHTTPURL:      envOr("PRODUCT_HTTP_URL", "http://localhost:8082"),
 		CartHTTPURL:         envOr("CART_HTTP_URL", "http://localhost:8083"),
@@ -83,22 +95,31 @@ func LoadConfig() Config {
 		ShippingHTTPURL:     envOr("SHIPPING_HTTP_URL", "http://localhost:8087"),
 		NotificationHTTPURL: envOr("NOTIFICATION_HTTP_URL", "http://localhost:8088"),
 		SearchHTTPURL:       envOr("SEARCH_HTTP_URL", "http://localhost:8089"),
+		ChatHTTPURL:         envOr("CHAT_HTTP_URL", "http://localhost:8090"),
+		AssistantHTTPURL:    envOr("ASSISTANT_HTTP_URL", "http://localhost:8091"),
 
-		UserGRPCAddr:      envOr("USER_GRPC_ADDR", "localhost:50051"),
-		PromotionGRPCAddr: envOr("PROMOTION_GRPC_ADDR", "localhost:50054"),
-		ProductGRPCAddr:   envOr("PRODUCT_GRPC_ADDR", "localhost:50052"),
-		OrderGRPCAddr:     envOr("ORDER_GRPC_ADDR", "localhost:50055"),
-		PaymentGRPCAddr:   envOr("PAYMENT_GRPC_ADDR", "localhost:50056"),
-		ShippingGRPCAddr:  envOr("SHIPPING_GRPC_ADDR", "localhost:50057"),
-		SearchGRPCAddr:    envOr("SEARCH_GRPC_ADDR", "localhost:50059"),
+		UserGRPCAddr:         envOr("USER_GRPC_ADDR", "localhost:50051"),
+		ProductGRPCAddr:      envOr("PRODUCT_GRPC_ADDR", "localhost:50052"),
+		CartGRPCAddr:         envOr("CART_GRPC_ADDR", "localhost:50053"),
+		PromotionGRPCAddr:    envOr("PROMOTION_GRPC_ADDR", "localhost:50054"),
+		OrderGRPCAddr:        envOr("ORDER_GRPC_ADDR", "localhost:50055"),
+		PaymentGRPCAddr:      envOr("PAYMENT_GRPC_ADDR", "localhost:50056"),
+		ShippingGRPCAddr:     envOr("SHIPPING_GRPC_ADDR", "localhost:50057"),
+		NotificationGRPCAddr: envOr("NOTIFICATION_GRPC_ADDR", "localhost:50058"),
+		SearchGRPCAddr:       envOr("SEARCH_GRPC_ADDR", "localhost:50059"),
+		ChatGRPCAddr:         envOr("CHAT_GRPC_ADDR", "localhost:50060"),
+		AssistantGRPCAddr:    envOr("ASSISTANT_GRPC_ADDR", "localhost:50061"),
 
 		MeilisearchURL: envOr("MEILISEARCH_URL", "http://localhost:7700"),
 		MeiliMasterKey: envOr("MEILI_MASTER_KEY", "dev-only-meilisearch-master-key-change-me"),
+		OTelPromURL:    envOr("OTEL_PROM_URL", "http://localhost:8889/metrics"),
+		OTelHealthURL:  envOr("OTEL_HEALTH_URL", "http://localhost:13133/"),
 
-		NATSURL:   envOr("NATS_URL", "nats://localhost:4222"),
-		RedisAddr: envOr("REDIS_ADDR", "localhost:6379"),
-
-		MailpitURL: envOr("MAILPIT_URL", "http://localhost:8025"),
+		NATSURL:         envOr("NATS_URL", "nats://localhost:4222"),
+		RedisAddr:       defaultRedisAddr(gatewayURL),
+		UserDatabaseURL: defaultUserDatabaseURL(gatewayURL),
+		MailpitURL:      envOr("MAILPIT_URL", "http://localhost:8025"),
+		SiteRootDomain:  strings.ToLower(envOr("SITE_ROOT_DOMAIN", "nexusmart.localhost")),
 
 		AdminEmail:             envOrMulti([]string{"ADMIN_EMAIL", "ADMIN_BOOTSTRAP_EMAIL"}, "admin@nexusmart.local"),
 		AdminPassword:          envOrMulti([]string{"ADMIN_PASSWORD", "ADMIN_BOOTSTRAP_PASSWORD"}, "AdminDevPassword123!"),
@@ -190,4 +211,27 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+func defaultRedisAddr(gatewayURL string) string {
+	if v, ok := os.LookupEnv("REDIS_ADDR"); ok {
+		return strings.TrimSpace(v)
+	}
+	if strings.Contains(gatewayURL, "://gateway:") {
+		return "redis:6379"
+	}
+	return "localhost:6379"
+}
+
+func defaultUserDatabaseURL(gatewayURL string) string {
+	if v := strings.TrimSpace(os.Getenv("USER_DATABASE_URL")); v != "" {
+		return v
+	}
+	host := "localhost:5432"
+	if strings.Contains(gatewayURL, "://gateway:") {
+		host = "postgres:5432"
+	}
+	user := envOr("POSTGRES_USER", "nexusmart")
+	pass := envOr("POSTGRES_PASSWORD", "nexusmart_dev_password")
+	return fmt.Sprintf("postgres://%s:%s@%s/user_db?sslmode=disable", url.QueryEscape(user), url.QueryEscape(pass), host)
 }

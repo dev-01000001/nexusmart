@@ -70,13 +70,15 @@ type UserContact struct {
 	FullName string
 }
 
-// OrderParticipant holds cached buyer/shop/order_code/checkout_group mapping for an order_id.
+// OrderParticipant holds cached buyer/shop/order_code/checkout_group/storefront mapping for an order_id.
 type OrderParticipant struct {
 	OrderID         string
 	BuyerID         string
 	ShopID          string
 	OrderCode       string
 	CheckoutGroupID string
+	// StorefrontShopID is the shop whose site the order was placed on; empty for MARKETPLACE orders.
+	StorefrontShopID string
 }
 
 // ShopOwner holds cached shop_id -> owner_user_id mapping resolved via UserService.GetShop.
@@ -376,11 +378,12 @@ func (t *pgTxStore) UpsertOrderParticipant(ctx context.Context, p OrderParticipa
 		return nil
 	}
 	return t.q.UpsertOrderParticipant(ctx, db.UpsertOrderParticipantParams{
-		OrderID:         p.OrderID,
-		BuyerID:         p.BuyerID,
-		ShopID:          p.ShopID,
-		OrderCode:       p.OrderCode,
-		CheckoutGroupID: p.CheckoutGroupID,
+		OrderID:          p.OrderID,
+		BuyerID:          p.BuyerID,
+		ShopID:           p.ShopID,
+		OrderCode:        p.OrderCode,
+		CheckoutGroupID:  p.CheckoutGroupID,
+		StorefrontShopID: p.StorefrontShopID,
 	})
 }
 
@@ -393,11 +396,12 @@ func (t *pgTxStore) GetOrderParticipant(ctx context.Context, orderID string) (Or
 		return OrderParticipant{}, false, err
 	}
 	return OrderParticipant{
-		OrderID:         row.OrderID,
-		BuyerID:         row.BuyerID,
-		ShopID:          row.ShopID,
-		OrderCode:       row.OrderCode,
-		CheckoutGroupID: row.CheckoutGroupID,
+		OrderID:          row.OrderID,
+		BuyerID:          row.BuyerID,
+		ShopID:           row.ShopID,
+		OrderCode:        row.OrderCode,
+		CheckoutGroupID:  row.CheckoutGroupID,
+		StorefrontShopID: row.StorefrontShopID,
 	}, true, nil
 }
 
@@ -412,11 +416,12 @@ func (t *pgTxStore) ListOrderParticipantsByGroup(ctx context.Context, checkoutGr
 	out := make([]OrderParticipant, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, OrderParticipant{
-			OrderID:         row.OrderID,
-			BuyerID:         row.BuyerID,
-			ShopID:          row.ShopID,
-			OrderCode:       row.OrderCode,
-			CheckoutGroupID: row.CheckoutGroupID,
+			OrderID:          row.OrderID,
+			BuyerID:          row.BuyerID,
+			ShopID:           row.ShopID,
+			OrderCode:        row.OrderCode,
+			CheckoutGroupID:  row.CheckoutGroupID,
+			StorefrontShopID: row.StorefrontShopID,
 		})
 	}
 	return out, nil

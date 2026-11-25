@@ -162,6 +162,7 @@ func w3b41PlaceShipAndDeliverCOD(
 	coResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "w3b41-cod-" + uuid.NewString(),
 	}, CheckoutRequest{
+		SalesChannel:  "MARKETPLACE",
 		AddressID:     addr.ID,
 		FromCart:      false,
 		Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
@@ -297,6 +298,7 @@ func TestE2E_W3B_CartUnavailableAndCheckoutBlock(t *testing.T) {
 	blockResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "w3b41-cart-block-" + uuid.NewString(),
 	}, CheckoutRequest{
+		SalesChannel:   "MARKETPLACE",
 		AddressID:      addr.ID,
 		FromCart:       true,
 		ShopVoucherIDs: map[string]string{seller1.ShopID: shopVoucher.ID},
@@ -324,6 +326,7 @@ func TestE2E_W3B_CartUnavailableAndCheckoutBlock(t *testing.T) {
 	hiddenOnlyResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "w3b41-cart-hiddenonly-" + uuid.NewString(),
 	}, CheckoutRequest{
+		SalesChannel:  "MARKETPLACE",
 		AddressID:     addr.ID,
 		FromCart:      true,
 		PaymentMethod: "COD",
@@ -342,6 +345,7 @@ func TestE2E_W3B_CartUnavailableAndCheckoutBlock(t *testing.T) {
 	okCoResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "w3b41-cart-ok-" + uuid.NewString(),
 	}, CheckoutRequest{
+		SalesChannel:  "MARKETPLACE",
 		AddressID:     addr.ID,
 		FromCart:      true,
 		PaymentMethod: "COD",

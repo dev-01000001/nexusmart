@@ -234,6 +234,7 @@ func TestW2B_Round2_ReleaseBeforeReserve_TombstonePreventsLeakedStock(t *testing
 	skuID := prod.GetSkus()[0].GetId()
 
 	svcCtx := ctxWithService("order-service")
+	buyerCtx := ctxWithRole("buyer-r2", "buyer", "")
 
 	// 1. Sequential: ReleaseStock arrives BEFORE ReserveStock for the same order_id.
 	orderID := "ord-release-before-reserve"
@@ -246,7 +247,7 @@ func TestW2B_Round2_ReleaseBeforeReserve_TombstonePreventsLeakedStock(t *testing
 	}
 
 	// Delayed ReserveStock arriving after ReleaseStock MUST be rejected and leave reserved_stock == 0!
-	if _, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	if _, err := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 		OrderId: orderID,
 		Items:   []*productv1.StockReservationItem{{SkuId: skuID, Quantity: 3}},
 	}); status.Code(err) != codes.FailedPrecondition {
@@ -278,7 +279,7 @@ func TestW2B_Round2_ReleaseBeforeReserve_TombstonePreventsLeakedStock(t *testing
 		go func() {
 			defer wg.Done()
 			<-start
-			_, _ = srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+			_, _ = srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 				OrderId: raceOrderID,
 				Items:   []*productv1.StockReservationItem{{SkuId: skuID, Quantity: 2}},
 			})

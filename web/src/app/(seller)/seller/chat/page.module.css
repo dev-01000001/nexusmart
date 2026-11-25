@@ -1,26 +1,91 @@
-/* Seller Chat Inbox (/seller/chat) — Two-column desktop split + distinct single-pane phone switcher */
+/* Seller Chat Inbox (/seller/chat)
+   3-Column Layout: Conversations (272px) | Message Stream (1fr) | Customer/Order Context (268px)
+   All text >= 13px (--fs-small), Frost & Slate framed-sheet tokens, zero gradients/shadows. */
+
+.connBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+  color: var(--ink-1);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.connDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.connDotOnline {
+  background: var(--positive);
+}
+
+.connDotSync {
+  background: var(--amber);
+}
+
+.connDotIdle {
+  background: var(--ink-3);
+}
 
 .inboxShell {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
-  background: var(--card);
-  border: 1px solid var(--border); /* taste-skill-ignore: inbox split container border */
+  grid-template-columns: 272px minmax(0, 1fr) 268px;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  height: clamp(540px, calc(100svh - 178px), 680px);
+  height: clamp(560px, calc(100svh - 156px), 740px);
   overflow: hidden;
 }
 
+/* Column 1: Conversations */
 .threadPane {
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border-right: 1px solid var(--border); /* taste-skill-ignore: inbox list-to-conversation divider */
+  border-right: 1px solid var(--border);
 }
 
 .threadPaneHead {
-  padding: 14px 14px 12px;
-  border-bottom: 1px solid var(--rule); /* taste-skill-ignore: inbox search bottom divider */
+  padding: 12px;
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.filterRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.filterTab {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 0;
+  background: var(--bg-2);
+  color: var(--ink-3);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition:
+    background-color var(--t-hover) var(--ease-out),
+    color var(--t-hover) var(--ease-out);
+}
+
+.filterTabActive {
+  background: var(--ink-1);
+  color: var(--bg-0);
 }
 
 .threadList {
@@ -30,25 +95,33 @@
   flex-direction: column;
 }
 
+.emptyPaneHint {
+  padding: 20px;
+}
+
 .threadItem {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 12px 14px;
+  padding: 12px;
   text-align: left;
   background: transparent;
   cursor: pointer;
   width: 100%;
-  transition: background-color var(--t-hover) ease;
+  transition: background-color var(--t-hover) var(--ease-out);
 }
 
 .threadItem + .threadItem {
-  border-top: 1px solid var(--rule); /* taste-skill-ignore: inbox thread separator */
+  border-top: 1px solid var(--rule);
 }
 
-/* Selected row takes nav pill's --active fill (app-screens.md §7.8) */
-.threadItemSelected {
-  background: var(--active);
+.threadItem:hover {
+  background: var(--bg-1);
+}
+
+.threadItemSelected,
+.threadItemSelected:hover {
+  background: var(--accent-tint);
 }
 
 .avatar {
@@ -60,7 +133,7 @@
   justify-content: center;
   font-size: 13px;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--ink-1);
   flex: none;
 }
 
@@ -69,7 +142,7 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
 
 .threadTop {
@@ -81,16 +154,16 @@
 
 .threadName {
   font-size: 14px;
-  font-weight: 500;
-  color: var(--ink);
+  font-weight: 600;
+  color: var(--ink-1);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .threadTime {
-  font-size: 12px;
-  color: var(--muted);
+  font-size: 13px;
+  color: var(--ink-3);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -98,7 +171,7 @@
 .threadSnippet {
   font-size: 13px;
   line-height: 18px;
-  color: var(--muted);
+  color: var(--ink-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -112,21 +185,21 @@
 }
 
 .threadProdTag {
-  font-size: 12px;
-  color: var(--muted);
+  font-size: 13px;
+  color: var(--ink-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .unreadCount {
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: var(--primary-ink-bg);
-  color: var(--primary-ink-fg);
-  font-size: 11px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 13px;
   font-weight: 600;
   display: inline-flex;
   align-items: center;
@@ -135,7 +208,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Conversation pane */
+/* Column 2: Active Message Stream */
 .chatPane {
   display: flex;
   flex-direction: column;
@@ -144,13 +217,12 @@
 }
 
 .chatHeader {
-  padding: 12px 18px;
-  border-bottom: 1px solid var(--border); /* taste-skill-ignore: chat header rule */
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .chatHeaderLeft {
@@ -160,81 +232,55 @@
   min-width: 0;
 }
 
+.chatBuyerText {
+  min-width: 0;
+}
+
+.chatHeaderRight {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
 .mobileBackBtn {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--control);
+  background: var(--bg-0);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-1);
+  flex: none;
+  cursor: pointer;
+}
+
+.contextToggleBtn {
   display: none;
 }
 
 .chatBuyerName {
   font-size: 15px;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--ink-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chatBuyerSub {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-/* Order & product context bar inside conversation */
-.contextStrip {
-  padding: 10px 18px;
-  background: var(--bg);
-  border-bottom: 1px solid var(--rule); /* taste-skill-ignore: customer order context rule */
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  flex-wrap: wrap;
-}
-
-.contextProduct {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.contextThumb {
-  width: 30px;
-  height: 40px;
-  border-radius: 4px;
-  object-fit: cover;
-  background: var(--surface);
-  flex: none;
-}
-
-.contextProdName {
   font-size: 13px;
-  font-weight: 500;
-  color: var(--ink);
+  color: var(--ink-3);
 }
 
-.contextProdPrice {
-  font-size: 12px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.contextOrder {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--ink);
-}
-
-.contextOrderLink {
-  font-weight: 500;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  white-space: nowrap;
-}
-
-/* Message stream */
 .messages {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 18px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -243,7 +289,7 @@
 .msgGroup {
   display: flex;
   flex-direction: column;
-  max-width: 78%;
+  max-width: 80%;
   gap: 4px;
 }
 
@@ -261,56 +307,269 @@
   border-radius: var(--radius-card);
   font-size: 14px;
   line-height: 20px;
+  word-break: break-word;
 }
 
 .bubbleBuyer {
-  background: var(--surface);
-  color: var(--ink);
+  background: var(--bg-2);
+  color: var(--ink-1);
 }
 
 .bubbleSeller {
-  background: var(--primary-ink-bg);
-  color: var(--primary-ink-fg);
+  background: var(--ink-1);
+  color: var(--bg-0);
 }
 
-.msgMeta {
-  font-size: 12px;
-  color: var(--muted);
+.msgText {
+  white-space: pre-wrap;
+}
+
+.msgFallback {
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.msgImageLink {
+  display: block;
+}
+
+.msgImage {
+  display: block;
+  max-width: 240px;
+  max-height: 240px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+.refCard {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: inherit;
+  text-decoration: none;
+  min-width: 196px;
+}
+
+.refThumb {
+  width: 38px;
+  height: 46px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--bg-1);
+  flex: none;
+}
+
+.refIconBox {
+  width: 32px;
+  height: 32px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.14);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.refCardText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.refCardKind {
+  font-size: 13px;
+  opacity: 0.8;
+}
+
+.refCardTitle {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.refCardSub {
+  font-size: 13px;
+  opacity: 0.88;
   font-variant-numeric: tabular-nums;
 }
 
-/* Quick reply templates & composer */
-.composerArea {
-  padding: 10px 18px 14px;
-  border-top: 1px solid var(--border); /* taste-skill-ignore: chat composer top border */
+.msgMeta {
+  font-size: 13px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* AI Suggestions */
+.aiSuggestBox {
+  padding: 10px 16px;
+  background: var(--accent-tint);
+  border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  gap: 8px;
+}
+
+.aiSuggestHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
 }
 
-.quickReplies {
+.aiSuggestLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-tint-ink);
+}
+
+.aiDismissBtn {
+  border: 0;
+  background: transparent;
+  color: var(--ink-3);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.aiDismissBtn:hover {
+  color: var(--ink-1);
+}
+
+.aiChipList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.aiChipBtn {
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border);
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-size: 13px;
+  line-height: 18px;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease-out);
+}
+
+.aiChipBtn:hover {
+  background: var(--bg-1);
+}
+
+.inlineNotice {
+  padding: 8px 16px;
+  background: var(--bg-1);
+  border-top: 1px solid var(--rule);
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+.safetyNotice {
   display: flex;
   align-items: center;
   gap: 8px;
-  overflow-x: auto;
-  padding-bottom: 2px;
+  padding: 8px 16px;
+  background: var(--pill-warning-bg);
+  color: var(--pill-warning-ink);
+  border-top: 1px solid var(--rule);
+  font-size: 13px;
+  line-height: 18px;
 }
 
-.quickReplyBtn {
-  height: 28px;
+.sendErrorBar {
+  padding: 8px 16px;
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+  border-top: 1px solid var(--rule);
+  font-size: 13px;
+}
+
+/* Attachment mini-bar */
+.attachBar {
+  padding: 10px 16px;
+  background: var(--bg-1);
+  border-top: 1px solid var(--rule);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+input.attachInput {
+  flex: 1;
+  min-width: 150px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--control);
+  border-radius: var(--radius-control);
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-size: 13px;
+}
+
+/* Composer */
+.composerArea {
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.composerTools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.aiTriggerBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
   padding: 0 10px;
   border-radius: var(--radius-control);
-  border: 1px solid var(--border); /* taste-skill-ignore: quick reply template button */
-  background: var(--bg);
-  color: var(--ink);
-  font-size: 12px;
-  white-space: nowrap;
-  flex: none;
+  border: 1px solid var(--accent);
+  background: var(--accent-tint);
+  color: var(--accent-tint-ink);
+  font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
 }
 
-.quickReplyBtn:hover {
-  background: var(--surface);
+.aiTriggerBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.toolChipBtn {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border);
+  background: var(--bg-0);
+  color: var(--ink-2);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease-out);
+}
+
+.toolChipBtn:hover {
+  background: var(--bg-2);
+  color: var(--ink-1);
+}
+
+.toolChipActive {
+  background: var(--ink-1);
+  color: var(--bg-0);
+  border-color: var(--ink-1);
 }
 
 .composerRow {
@@ -326,44 +585,311 @@ input.composerInput {
   padding: 0 12px;
   border: 1px solid var(--control);
   border-radius: var(--radius-control);
-  background: var(--card);
+  background: var(--bg-0);
   font-size: 14px;
-  color: var(--ink);
+  color: var(--ink-1);
 }
 
+/* Column 3: Customer & Order Context Rail */
+.contextPane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg-1);
+}
+
+.contextHead {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.contextHeadTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+
+.contextScroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.contextSection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.contextSection + .contextSection {
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+}
+
+.contextSecTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.contextCustomer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.contextCustomerText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.contextName {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.contextSub {
+  font-size: 13px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.contextKv {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+}
+
+.contextKvRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+.contextKvRow strong {
+  color: var(--ink-1);
+  font-weight: 600;
+}
+
+.contextLinkStack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.contextNavLink {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-1);
+  transition: border-color var(--t-hover) var(--ease-out);
+}
+
+.contextNavLink:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.contextEmpty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+.contextQuickAttach {
+  display: flex;
+  gap: 6px;
+}
+
+.contextRefList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.contextRefCard {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  color: var(--ink-1);
+  transition: border-color var(--t-hover) var(--ease-out);
+}
+
+.contextRefCard:hover {
+  border-color: var(--accent);
+}
+
+.contextRefThumb {
+  width: 34px;
+  height: 42px;
+  border-radius: 4px;
+  object-fit: cover;
+  flex: none;
+  background: var(--bg-2);
+}
+
+.contextRefText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.contextRefText strong {
+  font-weight: 600;
+  color: var(--ink-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.contextRefText span {
+  color: var(--ink-3);
+}
+
+.quickTemplateStack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.quickTemplateBtn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border);
+  background: var(--bg-0);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--t-hover) var(--ease-out),
+    background-color var(--t-hover) var(--ease-out);
+}
+
+.quickTemplateBtn:hover {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+}
+
+.quickTemplateTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+
+.quickTemplatePreview {
+  font-size: 13px;
+  line-height: 17px;
+  color: var(--ink-3);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Tablet (<= 1160px): 2 columns with toggleable context rail */
+@media (max-width: 1160px) {
+  .inboxShell {
+    position: relative;
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+
+  .contextToggleBtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 10px;
+    border-radius: var(--radius-control);
+    border: 1px solid var(--border);
+    background: var(--bg-1);
+    color: var(--ink-1);
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .contextPane {
+    display: none;
+  }
+
+  .contextPaneOpenTablet {
+    display: flex;
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(300px, 86%);
+    z-index: 10;
+  }
+
+  .contextPaneOpenTablet .mobileBackBtn {
+    display: inline-flex;
+  }
+}
+
+/* Mobile (<= 768px): single pane switcher (list | thread | context) */
 @media (max-width: 768px) {
   .inboxShell {
     grid-template-columns: minmax(0, 1fr);
-    height: clamp(500px, calc(100svh - 170px), 660px);
+    height: clamp(520px, calc(100svh - 170px), 680px);
   }
 
   .threadPane {
     border-right: 0;
   }
 
+  .contextPane {
+    display: flex;
+    position: static;
+    width: 100%;
+    border-left: 0;
+  }
+
   .paneHiddenMobile {
-    display: none;
+    display: none !important;
   }
 
   .mobileBackBtn {
     display: inline-flex;
-    align-items: center;
-    height: 32px;
-    padding: 0 10px;
-    border-radius: var(--radius-control);
-    border: 1px solid var(--control); /* taste-skill-ignore: mobile inbox back button */
-    background: var(--card);
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--ink);
-  }
-
-  .chatHeader,
-  .contextStrip,
-  .messages,
-  .composerArea {
-    padding-left: 14px;
-    padding-right: 14px;
   }
 
   .msgGroup {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -19,71 +20,114 @@ func TestEmbeddedMigrationsPresentAndIdempotentGuards(t *testing.T) {
 		t.Fatalf("read migrations FS: %v", err)
 	}
 	found := map[string]bool{}
+	var sqlFiles []string
 	for _, e := range entries {
 		found[e.Name()] = true
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
+			sqlFiles = append(sqlFiles, e.Name())
+		}
 	}
-	if !found["000001_init.sql"] || !found["000002_shipping_ops.sql"] || !found["000003_return_recreate_index.sql"] || !found["000004_shop_freeship_settings.sql"] || !found["000005_outbox_lease.sql"] || !found["000006_w3b_wards_and_shipment_jobs.sql"] || !found["000007_w3b3_shipment_label_fields.sql"] {
-		t.Fatalf("expected 000001..000007 migrations, got %v", found)
+	sort.Strings(sqlFiles)
+	wantOrder := []string{
+		"000001_init.sql",
+		"000002_return_shipments.sql",
+		"000003_shipping_ops.sql",
+		"000004_return_recreate_index.sql",
+		"000005_shop_freeship_settings.sql",
+		"000006_outbox_lease.sql",
+		"000007_w3b_wards_and_shipment_jobs.sql",
+		"000008_w3b3_shipment_label_fields.sql",
+	}
+	if len(sqlFiles) != len(wantOrder) {
+		t.Fatalf("expected %d migrations (%v), got %v", len(wantOrder), wantOrder, sqlFiles)
+	}
+	for i, w := range wantOrder {
+		if sqlFiles[i] != w {
+			t.Fatalf("migration[%d] = %q, want %q (all=%v)", i, sqlFiles[i], w, sqlFiles)
+		}
 	}
 
-	raw, err := fs.ReadFile(migrations.FS, "000002_shipping_ops.sql")
+	raw2, err := fs.ReadFile(migrations.FS, "000002_return_shipments.sql")
 	if err != nil {
-		t.Fatalf("read 000002_shipping_ops.sql: %v", err)
+		t.Fatalf("read 000002_return_shipments.sql: %v", err)
 	}
-	sql := string(raw)
+	sql2 := string(raw2)
+	for _, needle := range []string{
+		"ADD COLUMN IF NOT EXISTS direction",
+		"ADD COLUMN IF NOT EXISTS return_request_id",
+		"DROP CONSTRAINT IF EXISTS shipments_order_id_key",
+		"uq_shipments_order_direction",
+	} {
+		if !strings.Contains(sql2, needle) {
+			t.Fatalf("000002_return_shipments.sql missing %q", needle)
+		}
+	}
+
+	raw3, err := fs.ReadFile(migrations.FS, "000003_shipping_ops.sql")
+	if err != nil {
+		t.Fatalf("read 000003_shipping_ops.sql: %v", err)
+	}
+	sql3 := string(raw3)
 	for _, mustContain := range []string{
 		"ADD COLUMN IF NOT EXISTS direction",
 		"ADD COLUMN IF NOT EXISTS return_request_id",
 		"ADD COLUMN IF NOT EXISTS redelivery_count",
 		"ADD COLUMN IF NOT EXISTS buyer_id",
 		"DROP CONSTRAINT IF EXISTS shipments_order_id_key",
+		"DROP INDEX IF EXISTS uq_shipments_order_direction",
+		"ALTER TABLE shipments ALTER COLUMN direction SET DEFAULT 'FORWARD'",
+		"SET direction = UPPER(direction)",
+		"chk_shipments_direction",
+		"CHECK (direction IN ('FORWARD', 'RETURN'))",
 		"CREATE UNIQUE INDEX IF NOT EXISTS uq_shipments_order_direction_active",
 		"WHERE status <> 'cancelled'",
 		"CREATE TABLE IF NOT EXISTS shop_shipping_settings",
 		"CREATE TABLE IF NOT EXISTS carrier_configs",
+		"('ghtk', 'Giao Hang Tiet Kiem (GHTK)', TRUE)",
 		"CREATE TABLE IF NOT EXISTS fallback_rates",
+		"('ghtk', 'SAME_PROVINCE'",
 	} {
-		if !strings.Contains(sql, mustContain) {
-			t.Fatalf("000002_shipping_ops.sql missing %q", mustContain)
+		if !strings.Contains(sql3, mustContain) {
+			t.Fatalf("000003_shipping_ops.sql missing %q", mustContain)
 		}
 	}
 
-	raw3, err := fs.ReadFile(migrations.FS, "000003_return_recreate_index.sql")
+	raw4, err := fs.ReadFile(migrations.FS, "000004_return_recreate_index.sql")
 	if err != nil {
-		t.Fatalf("read 000003_return_recreate_index.sql: %v", err)
+		t.Fatalf("read 000004_return_recreate_index.sql: %v", err)
 	}
-	sql3 := string(raw3)
+	sql4 := string(raw4)
 	for _, mustContain := range []string{
 		"pg_indexes",
 		"CREATE UNIQUE INDEX IF NOT EXISTS uq_shipments_order_direction_active",
 		"NOT (direction = 'RETURN' AND status = 'returned')",
 	} {
-		if !strings.Contains(sql3, mustContain) {
-			t.Fatalf("000003_return_recreate_index.sql missing %q", mustContain)
+		if !strings.Contains(sql4, mustContain) {
+			t.Fatalf("000004_return_recreate_index.sql missing %q", mustContain)
 		}
 	}
 
-	raw4, err := fs.ReadFile(migrations.FS, "000004_shop_freeship_settings.sql")
+	raw5, err := fs.ReadFile(migrations.FS, "000005_shop_freeship_settings.sql")
 	if err != nil {
-		t.Fatalf("read 000004_shop_freeship_settings.sql: %v", err)
+		t.Fatalf("read 000005_shop_freeship_settings.sql: %v", err)
 	}
-	sql4 := string(raw4)
+	sql5 := string(raw5)
 	for _, mustContain := range []string{
 		"ADD COLUMN IF NOT EXISTS free_ship_enabled",
 		"ADD COLUMN IF NOT EXISTS free_ship_min_order_vnd",
 		"ADD COLUMN IF NOT EXISTS free_ship_max_vnd",
 		"chk_shop_shipping_free_ship_max_positive",
 	} {
-		if !strings.Contains(sql4, mustContain) {
-			t.Fatalf("000004_shop_freeship_settings.sql missing %q", mustContain)
+		if !strings.Contains(sql5, mustContain) {
+			t.Fatalf("000005_shop_freeship_settings.sql missing %q", mustContain)
 		}
 	}
 
-	raw5, err := fs.ReadFile(migrations.FS, "000005_outbox_lease.sql")
+	raw6, err := fs.ReadFile(migrations.FS, "000006_outbox_lease.sql")
 	if err != nil {
-		t.Fatalf("read 000005_outbox_lease.sql: %v", err)
+		t.Fatalf("read 000006_outbox_lease.sql: %v", err)
 	}
-	sql5 := string(raw5)
+	sql6 := string(raw6)
 	for _, mustContain := range []string{
 		"DEPLOY NOTE",
 		"idx_outbox_unpublished",
@@ -102,16 +146,16 @@ func TestEmbeddedMigrationsPresentAndIdempotentGuards(t *testing.T) {
 		"idx_shipping_outbox_aggregate_unpublished",
 		"ON outbox_events (aggregate_id, seq ASC)",
 	} {
-		if !strings.Contains(sql5, mustContain) {
-			t.Fatalf("000005_outbox_lease.sql missing %q", mustContain)
+		if !strings.Contains(sql6, mustContain) {
+			t.Fatalf("000006_outbox_lease.sql missing %q", mustContain)
 		}
 	}
 
-	raw6, err := fs.ReadFile(migrations.FS, "000006_w3b_wards_and_shipment_jobs.sql")
+	raw7, err := fs.ReadFile(migrations.FS, "000007_w3b_wards_and_shipment_jobs.sql")
 	if err != nil {
-		t.Fatalf("read 000006_w3b_wards_and_shipment_jobs.sql: %v", err)
+		t.Fatalf("read 000007_w3b_wards_and_shipment_jobs.sql: %v", err)
 	}
-	sql6 := string(raw6)
+	sql7 := string(raw7)
 	for _, mustContain := range []string{
 		"ADD COLUMN IF NOT EXISTS cod_supported",
 		"ADD COLUMN IF NOT EXISTS is_active",
@@ -120,16 +164,16 @@ func TestEmbeddedMigrationsPresentAndIdempotentGuards(t *testing.T) {
 		"uq_shipment_create_jobs_order_direction_active",
 		"idx_shipment_create_jobs_claimable",
 	} {
-		if !strings.Contains(sql6, mustContain) {
-			t.Fatalf("000006_w3b_wards_and_shipment_jobs.sql missing %q", mustContain)
+		if !strings.Contains(sql7, mustContain) {
+			t.Fatalf("000007_w3b_wards_and_shipment_jobs.sql missing %q", mustContain)
 		}
 	}
 
-	raw7, err := fs.ReadFile(migrations.FS, "000007_w3b3_shipment_label_fields.sql")
+	raw8, err := fs.ReadFile(migrations.FS, "000008_w3b3_shipment_label_fields.sql")
 	if err != nil {
-		t.Fatalf("read 000007_w3b3_shipment_label_fields.sql: %v", err)
+		t.Fatalf("read 000008_w3b3_shipment_label_fields.sql: %v", err)
 	}
-	sql7 := string(raw7)
+	sql8 := string(raw8)
 	for _, mustContain := range []string{
 		"ADD COLUMN IF NOT EXISTS from_name",
 		"ADD COLUMN IF NOT EXISTS from_phone",
@@ -138,9 +182,29 @@ func TestEmbeddedMigrationsPresentAndIdempotentGuards(t *testing.T) {
 		"ADD COLUMN IF NOT EXISTS to_phone",
 		"ADD COLUMN IF NOT EXISTS to_street_address",
 	} {
-		if !strings.Contains(sql7, mustContain) {
-			t.Fatalf("000007_w3b3_shipment_label_fields.sql missing %q", mustContain)
+		if !strings.Contains(sql8, mustContain) {
+			t.Fatalf("000008_w3b3_shipment_label_fields.sql missing %q", mustContain)
 		}
+	}
+}
+
+func TestBootstrapMigrationVersions(t *testing.T) {
+	// Fresh empty DB: nothing bootstrapped, all migrations run from 000001..000008.
+	if got := bootstrapMigrationVersions(0, false, false); len(got) != 0 {
+		t.Fatalf("fresh DB bootstrap = %v, want empty", got)
+	}
+	// Pre-000002 DB (only 000001_init.sql applied): bootstrap 000001 only.
+	if got := bootstrapMigrationVersions(0, true, false); len(got) != 1 || got[0] != migration0001Init {
+		t.Fatalf("init-only DB bootstrap = %v, want [%s]", got, migration0001Init)
+	}
+	// Phase-0b (or legacy unversioned main) DB with shipments.direction: bootstrap 000001 and 000002 so 000002 never re-runs.
+	got := bootstrapMigrationVersions(0, true, true)
+	if len(got) != 2 || got[0] != migration0001Init || got[1] != migration0002ReturnShipments {
+		t.Fatalf("phase-0b DB bootstrap = %v, want [%s %s]", got, migration0001Init, migration0002ReturnShipments)
+	}
+	// Already versioned DB (schema_migrations non-empty): bootstrap does nothing.
+	if got := bootstrapMigrationVersions(8, true, true); len(got) != 0 {
+		t.Fatalf("already-versioned DB bootstrap = %v, want empty", got)
 	}
 }
 
@@ -449,5 +513,101 @@ func TestPGStoreMigrateAndSeedIdempotent(t *testing.T) {
 	// Re-running MigrateAndSeed with populated freeship rows must remain idempotent.
 	if err := st.MigrateAndSeed(ctx); err != nil {
 		t.Fatalf("MigrateAndSeed after freeship rows failed: %v", err)
+	}
+}
+
+func TestStoreHelpersAndMigrationsFS(t *testing.T) {
+	if NormalizeDirection("") != DirectionForward ||
+		NormalizeDirection("forward") != DirectionForward ||
+		NormalizeDirection("FORWARD") != DirectionForward ||
+		NormalizeDirection("return") != DirectionReturn ||
+		NormalizeDirection(" RETURN ") != DirectionReturn {
+		t.Fatalf("unexpected NormalizeDirection behavior")
+	}
+
+	if !isTerminalStatus("delivered") || !isTerminalStatus("returned") || !isTerminalStatus("cancelled") {
+		t.Fatalf("expected delivered/returned/cancelled to be terminal")
+	}
+	if isTerminalStatus("created") || isTerminalStatus("delivering") || isTerminalStatus("returning") {
+		t.Fatalf("expected active statuses not terminal")
+	}
+
+	// Empty ward code returns ErrNotFound without touching pool.
+	pg := NewPGStore(nil)
+	if _, err := pg.GetWard(context.Background(), "   "); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for blank wardCode, got %v", err)
+	}
+}
+
+// TestPGStorePhase0bUpgradeAndDoubleRun verifies upgrading a phase-0b DB (only 000001 + 000002,
+// lowercase direction rows, non-partial uq_shipments_order_direction, no schema_migrations)
+// followed by a second MigrateAndSeed run.
+func TestPGStorePhase0bUpgradeAndDoubleRun(t *testing.T) {
+	pool := openIsolatedShippingTestPool(t)
+	ctx := context.Background()
+
+	// Seed a pure phase-0b schema (000001 + 000002 only, no schema_migrations).
+	for _, fname := range []string{"000001_init.sql", "000002_return_shipments.sql"} {
+		raw, err := fs.ReadFile(migrations.FS, fname)
+		if err != nil {
+			t.Fatalf("read %s: %v", fname, err)
+		}
+		if _, err := pool.Exec(ctx, string(raw)); err != nil {
+			t.Fatalf("exec %s: %v", fname, err)
+		}
+	}
+
+	// Insert legacy lowercase phase-0b rows (both forward and return, one cancelled).
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO shipments (id, order_id, shop_id, carrier_code, service_code, tracking_code, status, direction, return_request_id)
+		VALUES
+			($1, 'ord-p0b-1', 'shop-1', 'ghtk', 'ROAD', 'GHTK-P0B-FWD', 'cancelled', 'forward', ''),
+			($2, 'ord-p0b-1', 'shop-1', 'ghtk', 'ROAD', 'GHTK-P0B-RET', 'created', 'return', 'rr-p0b-1')
+	`, uuid.NewString(), uuid.NewString()); err != nil {
+		t.Fatalf("insert phase-0b rows: %v", err)
+	}
+
+	st := NewPGStore(pool)
+	if err := st.MigrateAndSeed(ctx); err != nil {
+		t.Fatalf("first MigrateAndSeed on phase-0b DB failed: %v", err)
+	}
+	// Second run must succeed and must NOT re-execute 000002_return_shipments.sql.
+	if err := st.MigrateAndSeed(ctx); err != nil {
+		t.Fatalf("second MigrateAndSeed on upgraded phase-0b DB failed: %v", err)
+	}
+
+	// Verify lowercase rows were backfilled to uppercase FORWARD / RETURN.
+	var fwdDir, retDir string
+	if err := pool.QueryRow(ctx, `SELECT direction FROM shipments WHERE tracking_code = 'GHTK-P0B-FWD'`).Scan(&fwdDir); err != nil || fwdDir != DirectionForward {
+		t.Fatalf("backfilled forward direction = (%q, %v), want %q", fwdDir, err, DirectionForward)
+	}
+	if err := pool.QueryRow(ctx, `SELECT direction FROM shipments WHERE tracking_code = 'GHTK-P0B-RET'`).Scan(&retDir); err != nil || retDir != DirectionReturn {
+		t.Fatalf("backfilled return direction = (%q, %v), want %q", retDir, err, DirectionReturn)
+	}
+
+	// Verify uq_shipments_order_direction was dropped and recreated forward shipment after cancelled succeeds!
+	var legacyIdxExists bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = current_schema() AND tablename = 'shipments' AND indexname = 'uq_shipments_order_direction'
+		)
+	`).Scan(&legacyIdxExists); err != nil || legacyIdxExists {
+		t.Fatalf("uq_shipments_order_direction must be dropped after upgrade (exists=%v, err=%v)", legacyIdxExists, err)
+	}
+	now := time.Now().UTC()
+	recreated, existed, err := st.CreateShipment(ctx, &Shipment{
+		ID: uuid.NewString(), OrderID: "ord-p0b-1", ShopID: "shop-1", Direction: DirectionForward,
+		CarrierCode: "ghtk", ServiceCode: "ROAD", TrackingCode: "GHTK-P0B-FWD-2",
+		Status: "created", FeeVND: 25000, WeightGrams: 500, CreatedAt: now, UpdatedAt: now,
+	}, nil)
+	if err != nil || existed || recreated.TrackingCode != "GHTK-P0B-FWD-2" {
+		t.Fatalf("recreating FORWARD shipment after phase-0b cancelled row must succeed: sh=%+v existed=%v err=%v", recreated, existed, err)
+	}
+
+	// Verify schema_migrations recorded all 8 migrations.
+	var migCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&migCount); err != nil || migCount != 8 {
+		t.Fatalf("schema_migrations count = (%d, %v), want 8", migCount, err)
 	}
 }

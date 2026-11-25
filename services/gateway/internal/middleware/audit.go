@@ -36,6 +36,8 @@ var userSelfAuditedRoutes = map[string]struct{}{
 	"POST /api/v1/admin/shops/{id}/unsuspend":           {},
 	"POST /api/v1/admin/approvals/shop/{id}/decide":     {},
 	"POST /api/v1/admin/shops/{id}/bank-account/review": {},
+	"POST /api/v1/admin/sites/{site_id}/suspend":        {},
+	"DELETE /api/v1/admin/sites/{shop_id}/domains/{id}": {},
 }
 
 // AdminAuditConfig configures centralized audit logging for mutating /api/v1/admin/* routes.
@@ -393,6 +395,8 @@ func auditTargetType(routePattern string) string {
 		return "user"
 	case "shops":
 		return "shop"
+	case "sites":
+		return "site"
 	default:
 		if seg != "" && !strings.HasPrefix(seg, "{") {
 			return strings.ReplaceAll(seg, "-", "_")

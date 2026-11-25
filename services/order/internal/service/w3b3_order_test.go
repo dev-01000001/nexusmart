@@ -23,6 +23,7 @@ import (
 	"github.com/nexusmart/core/pkg/common/logger"
 	"github.com/nexusmart/core/services/order/internal/clients"
 	"github.com/nexusmart/core/services/order/internal/config"
+	"github.com/nexusmart/core/services/order/internal/db"
 	"github.com/nexusmart/core/services/order/internal/events"
 	"github.com/nexusmart/core/services/order/internal/store"
 	"google.golang.org/grpc"
@@ -215,6 +216,128 @@ func TestW3B3_LookupOrder_AntiEnumerationAndAuth(t *testing.T) {
 		status.Convert(errUnknown).Message() != status.Convert(errMalformed).Message() {
 		t.Fatalf("anti-enumeration broken: unknown=%q wrong=%q malformed=%q",
 			errUnknown.Error(), errWrongPhone.Error(), errMalformed.Error())
+	}
+}
+
+func TestW3B3_LookupOrder_StorefrontTenantIsolation(t *testing.T) {
+	h := newTestHarness()
+	shopA := uuid.NewString()
+	shopB := uuid.NewString()
+	now := time.Now().UTC()
+
+	addrJSON, err := json.Marshal(&orderv1.OrderAddressSnapshot{
+		RecipientName:  "Nguyen Van Hung",
+		RecipientPhone: "0901234567",
+		ProvinceCode:   "79",
+		ProvinceName:   "TP. Ho Chi Minh",
+		WardCode:       "26734",
+		WardName:       "Phuong Ben Nghe",
+		StreetAddress:  "99 Secret Street",
+	})
+	if err != nil {
+		t.Fatalf("marshal address snapshot: %v", err)
+	}
+
+	seedOrder := func(id, code, shopID, ch, sfShop string) {
+		h.store.SeedLegacyOrder(
+			db.CheckoutGroup{
+				ID:               "grp-" + id,
+				BuyerID:          "buyer-1",
+				Status:           "COMPLETED",
+				PaymentMethod:    "COD",
+				SalesChannel:     ch,
+				StorefrontShopID: sfShop,
+				CreatedAt:        now,
+				UpdatedAt:        now,
+			},
+			db.Order{
+				ID:                  id,
+				OrderCode:           code,
+				CheckoutGroupID:     "grp-" + id,
+				BuyerID:             "buyer-1",
+				ShopID:              shopID,
+				Status:              "CONFIRMED",
+				PaymentMethod:       "COD",
+				PaymentStatus:       "PENDING",
+				SubtotalVND:         200000,
+				TotalPayableVND:     200000,
+				ShippingAddressJSON: addrJSON,
+				SalesChannel:        ch,
+				StorefrontShopID:    sfShop,
+				CreatedAt:           now,
+				UpdatedAt:           now,
+			},
+			nil,
+		)
+	}
+
+	seedOrder("ord-sf-a", "NM-SF-A", shopA, SalesChannelStorefront, shopA)
+	seedOrder("ord-sf-b", "NM-SF-B", shopB, SalesChannelStorefront, shopB)
+	seedOrder("ord-mp-a", "NM-MP-A", shopA, SalesChannelMarketplace, "")
+	seedOrder("ord-leg-a", "NM-LEG-A", shopA, "", "")
+
+	// 1. Matching storefront_shop_id succeeds (including trimmed whitespace).
+	for _, sf := range []string{shopA, " " + shopA + " "} {
+		resp, err := h.svc.LookupOrder(context.Background(), &orderv1.LookupOrderRequest{
+			OrderCode:        "NM-SF-A",
+			Phone:            "0901234567",
+			StorefrontShopId: sf,
+		})
+		if err != nil {
+			t.Fatalf("matching storefront lookup (%q): %v", sf, err)
+		}
+		if resp.GetOrder().GetOrderCode() != "NM-SF-A" {
+			t.Fatalf("order_code = %q, want NM-SF-A", resp.GetOrder().GetOrderCode())
+		}
+	}
+
+	// Reference NOT_FOUND error from wrong phone on matching storefront order.
+	_, errWrongPhone := h.svc.LookupOrder(context.Background(), &orderv1.LookupOrderRequest{
+		OrderCode:        "NM-SF-A",
+		Phone:            "0999999999",
+		StorefrontShopId: shopA,
+	})
+	if status.Code(errWrongPhone) != codes.NotFound {
+		t.Fatalf("wrong phone err = %v, want NotFound", errWrongPhone)
+	}
+	wantMsg := status.Convert(errWrongPhone).Message()
+
+	// 2. Wrong shop storefront order, MARKETPLACE order (even with same shop_id), and legacy empty-channel order
+	//    must all return the EXACT same NotFound code and message as wrong phone.
+	mismatchCases := []struct {
+		name string
+		code string
+	}{
+		{"other_storefront_shop", "NM-SF-B"},
+		{"marketplace_order", "NM-MP-A"},
+		{"legacy_empty_channel_order", "NM-LEG-A"},
+	}
+	for _, tc := range mismatchCases {
+		_, err := h.svc.LookupOrder(context.Background(), &orderv1.LookupOrderRequest{
+			OrderCode:        tc.code,
+			Phone:            "0901234567",
+			StorefrontShopId: shopA,
+		})
+		if status.Code(err) != codes.NotFound {
+			t.Fatalf("%s: code = %v, want NotFound", tc.name, status.Code(err))
+		}
+		if gotMsg := status.Convert(err).Message(); gotMsg != wantMsg {
+			t.Fatalf("%s: anti-enumeration broken: got msg %q, want exact %q", tc.name, gotMsg, wantMsg)
+		}
+	}
+
+	// 3. Empty storefront_shop_id preserves legacy behavior: returns STOREFRONT, MARKETPLACE, and legacy orders.
+	for _, code := range []string{"NM-SF-A", "NM-SF-B", "NM-MP-A", "NM-LEG-A"} {
+		resp, err := h.svc.LookupOrder(context.Background(), &orderv1.LookupOrderRequest{
+			OrderCode: code,
+			Phone:     "0901234567",
+		})
+		if err != nil {
+			t.Fatalf("empty storefront_shop_id lookup(%s): %v", code, err)
+		}
+		if resp.GetOrder().GetOrderCode() != code {
+			t.Fatalf("empty storefront_shop_id lookup(%s): got %q", code, resp.GetOrder().GetOrderCode())
+		}
 	}
 }
 

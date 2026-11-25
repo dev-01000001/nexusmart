@@ -46,3 +46,16 @@ func TestConfigValidate_MockDefaultAndOpenAIKeyRequired(t *testing.T) {
 		t.Fatalf("expected error for out-of-range SEARCH_VECTOR_MIN_SIMILARITY")
 	}
 }
+
+func TestConfigLoad_MeilisearchURLFallbackToLegacyMeiliURL(t *testing.T) {
+	t.Setenv("MEILISEARCH_URL", "")
+	t.Setenv("MEILI_URL", "http://legacy-meili:7700")
+	if got := Load().MeilisearchURL; got != "http://legacy-meili:7700" {
+		t.Fatalf("fallback MEILI_URL = %q, want http://legacy-meili:7700", got)
+	}
+
+	t.Setenv("MEILISEARCH_URL", "http://primary-meili:7700")
+	if got := Load().MeilisearchURL; got != "http://primary-meili:7700" {
+		t.Fatalf("primary MEILISEARCH_URL = %q, want http://primary-meili:7700", got)
+	}
+}

@@ -114,8 +114,8 @@ func TestService_1000Concurrent_FlashSale_100Slots_AndRelease(t *testing.T) {
 			defer wg.Done()
 			<-startCh
 
-			orderID := fmt.Sprintf("flash-ord-%04d", idx)
 			buyerID := fmt.Sprintf("buyer-%04d", idx)
+			orderID := fmt.Sprintf("flash-ord-%04d", idx)
 			resp, rErr := svc.ReservePromotion(ctxWithService("order-service"), &promotionv1.ReservePromotionRequest{
 				OrderId: orderID,
 				UserId:  buyerID,

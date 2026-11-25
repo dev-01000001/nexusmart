@@ -1,0 +1,1902 @@
+{
+ "url": "http://sai-gon.nexusmart.localhost:3300/",
+ "at": "2026-11-21T03:44:49.509Z",
+ "allow": [],
+ "viewports": [
+  {
+   "width": 1440,
+   "height": 900,
+   "load": "load",
+   "screens": 5,
+   "filled": [
+    1,
+    1,
+    1,
+    1,
+    1
+   ],
+   "motion": {
+    "elements": 25,
+    "css": 4,
+    "transitions": 21,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "page": {
+     "height": 4352,
+     "screens": 4.8,
+     "words": 577,
+     "img": 9,
+     "video": 0,
+     "canvas": 0,
+     "svg": 1,
+     "sections": 6,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 8,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "campaign-running.jpg",
+      "model-ao-thun-dryfit.jpg",
+      "model-short-run-xam.jpg",
+      "model-ao-khoac-gio.jpg",
+      "model-ao-thun-oversize.jpg",
+      "campaign-green-fiber.jpg",
+      "model-short-run-xam.jpg",
+      "model-short-daily-be.jpg"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Trang phục vận động nhẹ mát Sài Gòn",
+     "words": 8,
+     "chars": 35,
+     "lines": 2,
+     "size": 43.9,
+     "vw": 3,
+     "font": "Be Vietnam Pro",
+     "weight": 500,
+     "tracking": -0.03,
+     "leading": 1.08,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "left",
+     "widthRatio": 0.4,
+     "top": 259,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Trang phục vận động nhẹ mát Sài Gòn",
+     "words": 8,
+     "lines": 2,
+     "size": 43.9,
+     "font": "Be Vietnam Pro"
+    },
+    "headings": [
+     {
+      "text": "Trang phục vận động nhẹ mát Sài Gòn",
+      "words": 8,
+      "chars": 35,
+      "lines": 2,
+      "size": 43.9,
+      "vw": 3,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.03,
+      "leading": 1.08,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.4,
+      "top": 259,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "Thiết kế bán chạy cho tập luyện",
+      "words": 7,
+      "chars": 31,
+      "lines": 1,
+      "size": 34,
+      "vw": 2.4,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.44,
+      "top": 819,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Quần short chạy bộ và mặc hằng ngày",
+      "words": 8,
+      "chars": 35,
+      "lines": 2,
+      "size": 34,
+      "vw": 2.4,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "right",
+      "widthRatio": 0.42,
+      "top": 1761,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Mã ưu đãi Kho Basic Sài Gòn",
+      "words": 7,
+      "chars": 27,
+      "lines": 1,
+      "size": 34,
+      "vw": 2.4,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.44,
+      "top": 2840,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Chuẩn đường may 4 kim 6 chỉ tại Tân Thuận",
+      "words": 10,
+      "chars": 41,
+      "lines": 2,
+      "size": 34,
+      "vw": 2.4,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.3,
+      "top": 3300,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Chính sách giao vận và đổi cỡ",
+      "words": 7,
+      "chars": 29,
+      "lines": 1,
+      "size": 34,
+      "vw": 2.4,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.33,
+      "top": 3576,
+      "tag": "h2",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 6,
+     "maxLines": 2,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": 7,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Be Vietnam Pro",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      14,
+      15,
+      16,
+      18,
+      22,
+      34,
+      44
+     ],
+     "sizeCount": 7,
+     "notLoaded": [],
+     "body": {
+      "font": "Be Vietnam Pro",
+      "size": 16,
+      "leading": 1.55,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 10.8
+     },
+     "measureChars": 84,
+     "max": {
+      "size": 43.9,
+      "vw": 3,
+      "font": "Be Vietnam Pro",
+      "text": "Trang phục vận động nhẹ mát Sài Gòn"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0,
+     "centerShare": 0.01,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#14181c",
+       "top": 0,
+       "hsl": {
+        "h": 210,
+        "s": 0.17,
+        "l": 0.09
+       }
+      },
+      {
+       "color": "#1e242b",
+       "top": 108,
+       "hsl": {
+        "h": 212,
+        "s": 0.18,
+        "l": 0.14
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#f4f6f8",
+       "share": 0.69
+      },
+      {
+       "color": "#c7cacc",
+       "share": 0.25
+      },
+      {
+       "color": "#111418",
+       "share": 0.03
+      },
+      {
+       "color": "#d97706",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#d97706",
+      "hsl": {
+       "h": 32,
+       "s": 0.95,
+       "l": 0.44
+      },
+      "fg": "#111418"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 3,
+     "inHero": 2,
+     "radius": 0,
+     "height": 49,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Giỏ hàng",
+      "Khám phá đồ thể thao"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 8,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 4,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 951
+      },
+      {
+       "count": 4,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 3651
+      }
+     ]
+    },
+    "heroMedia": [
+     {
+      "type": "img",
+      "ratio": 0.33
+     }
+    ],
+    "nav": {
+     "links": 7,
+     "fixed": true,
+     "height": 70,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans",
+     "be vietnam pro"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "pageH": 4352,
+    "margins": {
+     "left": 32,
+     "right": 32
+    },
+    "sections": [
+     {
+      "sel": "section.site_heroSection___NAV9",
+      "tag": "section",
+      "top": 70,
+      "height": 677,
+      "words": 37,
+      "media": 1,
+      "middle": 78,
+      "heading": {
+       "text": "Trang phục vận động nhẹ mát Sài Gòn",
+       "size": 44,
+       "tag": "h1"
+      },
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 866,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 747,
+      "height": 859,
+      "words": 112,
+      "media": 4,
+      "middle": 24,
+      "heading": {
+       "text": "Thiết kế bán chạy cho tập luyện",
+       "size": 34,
+       "tag": "h2"
+      },
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 32,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6.site_siteSectionSurface__3cC",
+      "tag": "section",
+      "top": 1606,
+      "height": 1161,
+      "words": 75,
+      "media": 3,
+      "middle": 66,
+      "heading": {
+       "text": "Quần short chạy bộ và mặc hằng ngày",
+       "size": 34,
+       "tag": "h2"
+      },
+      "left": 32,
+      "right": 75,
+      "textLeft": 48,
+      "textRight": 75,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6.site_siteSectionSurface__3cC",
+      "tag": "section",
+      "top": 2768,
+      "height": 460,
+      "words": 50,
+      "media": 0,
+      "middle": 582,
+      "heading": {
+       "text": "Mã ưu đãi Kho Basic Sài Gòn",
+       "size": 34,
+       "tag": "h2"
+      },
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 32,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 3228,
+      "height": 276,
+      "words": 81,
+      "media": 0,
+      "middle": 108,
+      "heading": {
+       "text": "Chuẩn đường may 4 kim 6 chỉ tại Tân Thuận",
+       "size": 34,
+       "tag": "h2"
+      },
+      "left": 32,
+      "right": 269,
+      "textLeft": 32,
+      "textRight": 269,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 3504,
+      "height": 498,
+      "words": 113,
+      "media": 0,
+      "middle": 76,
+      "heading": {
+       "text": "Chính sách giao vận và đổi cỡ",
+       "size": 34,
+       "tag": "h2"
+      },
+      "left": 32,
+      "right": 67,
+      "textLeft": 32,
+      "textRight": 67,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "footer.site_siteFooter__9HNzV",
+      "tag": "footer",
+      "top": 4002,
+      "height": 350,
+      "words": 56,
+      "media": 0,
+      "middle": 185,
+      "heading": {
+       "text": "Kho Basic Sài Gòn",
+       "size": 22,
+       "tag": "p"
+      },
+      "left": 32,
+      "right": 32,
+      "textLeft": 32,
+      "textRight": 32,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Trang phục vận động nhẹ mát Sài Gòn",
+      "size": 44,
+      "top": 259,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 32,
+      "n": 8
+     },
+     {
+      "x": 56,
+      "n": 5
+     },
+     {
+      "x": 754,
+      "n": 4
+     },
+     {
+      "x": 774,
+      "n": 2
+     },
+     {
+      "x": 504,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 20,
+    "bodySize": 16,
+    "stage": false,
+    "explains": true,
+    "slivers": [],
+    "voidShare": 0.11,
+    "voidBox": {
+     "x": 0,
+     "y": 540,
+     "w": 600,
+     "h": 240
+    }
+   },
+   "app": null,
+   "consoleErrors": []
+  },
+  {
+   "width": 768,
+   "height": 1024,
+   "load": "load",
+   "screens": 6,
+   "filled": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+   ],
+   "motion": {
+    "elements": 25,
+    "css": 4,
+    "transitions": 21,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "page": {
+     "height": 5448,
+     "screens": 5.3,
+     "words": 563,
+     "img": 9,
+     "video": 0,
+     "canvas": 0,
+     "svg": 1,
+     "sections": 6,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 8,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "campaign-running.jpg",
+      "model-ao-thun-dryfit.jpg",
+      "model-short-run-xam.jpg",
+      "model-ao-khoac-gio.jpg",
+      "model-ao-thun-oversize.jpg",
+      "campaign-green-fiber.jpg",
+      "model-short-run-xam.jpg",
+      "model-short-daily-be.jpg"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Trang phục vận động nhẹ mát Sài Gòn",
+     "words": 8,
+     "chars": 35,
+     "lines": 1,
+     "size": 36,
+     "vw": 4.7,
+     "font": "Be Vietnam Pro",
+     "weight": 500,
+     "tracking": -0.03,
+     "leading": 1.08,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "center",
+     "widthRatio": 0.96,
+     "top": 82,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Trang phục vận động nhẹ mát Sài Gòn",
+     "words": 8,
+     "lines": 1,
+     "size": 36,
+     "font": "Be Vietnam Pro"
+    },
+    "headings": [
+     {
+      "text": "Trang phục vận động nhẹ mát Sài Gòn",
+      "words": 8,
+      "chars": 35,
+      "lines": 1,
+      "size": 36,
+      "vw": 4.7,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.03,
+      "leading": 1.08,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.96,
+      "top": 82,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "Thiết kế bán chạy cho tập luyện",
+      "words": 7,
+      "chars": 31,
+      "lines": 1,
+      "size": 26,
+      "vw": 3.4,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.82,
+      "top": 826,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Quần short chạy bộ và mặc hằng ngày",
+      "words": 8,
+      "chars": 35,
+      "lines": 1,
+      "size": 26,
+      "vw": 3.4,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.9,
+      "top": 2791,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Mã ưu đãi Kho Basic Sài Gòn",
+      "words": 7,
+      "chars": 27,
+      "lines": 1,
+      "size": 26,
+      "vw": 3.4,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.82,
+      "top": 3706,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Chuẩn đường may 4 kim 6 chỉ tại Tân Thuận",
+      "words": 10,
+      "chars": 41,
+      "lines": 1,
+      "size": 26,
+      "vw": 3.4,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.96,
+      "top": 4126,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Chính sách giao vận và đổi cỡ",
+      "words": 7,
+      "chars": 29,
+      "lines": 1,
+      "size": 26,
+      "vw": 3.4,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.47,
+      "top": 4391,
+      "tag": "h2",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 6,
+     "maxLines": 1,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": 7,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Be Vietnam Pro",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      14,
+      15,
+      16,
+      18,
+      22,
+      26,
+      36
+     ],
+     "sizeCount": 7,
+     "notLoaded": [],
+     "body": {
+      "font": "Be Vietnam Pro",
+      "size": 16,
+      "leading": 1.55,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 10.8
+     },
+     "measureChars": 84,
+     "max": {
+      "size": 36,
+      "vw": 4.7,
+      "font": "Be Vietnam Pro",
+      "text": "Trang phục vận động nhẹ mát Sài Gòn"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0,
+     "centerShare": 0.02,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#14181c",
+       "top": 0,
+       "hsl": {
+        "h": 210,
+        "s": 0.17,
+        "l": 0.09
+       }
+      },
+      {
+       "color": "#1e242b",
+       "top": 287,
+       "hsl": {
+        "h": 212,
+        "s": 0.18,
+        "l": 0.14
+       }
+      },
+      {
+       "color": "#333940",
+       "top": 2331,
+       "hsl": {
+        "h": 212,
+        "s": 0.11,
+        "l": 0.23
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#f4f6f8",
+       "share": 0.69
+      },
+      {
+       "color": "#c7cacc",
+       "share": 0.26
+      },
+      {
+       "color": "#111418",
+       "share": 0.03
+      },
+      {
+       "color": "#d97706",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#d97706",
+      "hsl": {
+       "h": 32,
+       "s": 0.95,
+       "l": 0.44
+      },
+      "fg": "#111418"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 4,
+     "inHero": 3,
+     "radius": 0,
+     "height": 36,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Giỏ hàng",
+      "Menu",
+      "Khám phá đồ thể thao"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 8,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 4,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 982
+      },
+      {
+       "count": 4,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 4445
+      }
+     ]
+    },
+    "heroMedia": [
+     {
+      "type": "img",
+      "ratio": 0.43
+     }
+    ],
+    "nav": {
+     "links": 2,
+     "fixed": true,
+     "height": 60,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "work sans",
+     "be vietnam pro"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "pageH": 5448,
+    "margins": {
+     "left": 17,
+     "right": 17
+    },
+    "sections": [
+     {
+      "sel": "section.site_heroSection___NAV9",
+      "tag": "section",
+      "top": 60,
+      "height": 726,
+      "words": 37,
+      "media": 1,
+      "middle": 0,
+      "heading": {
+       "text": "Trang phục vận động nhẹ mát Sài Gòn",
+       "size": 36,
+       "tag": "h1"
+      },
+      "left": 17,
+      "right": 17,
+      "textLeft": 17,
+      "textRight": 110,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 786,
+      "height": 1506,
+      "words": 112,
+      "media": 4,
+      "middle": 0,
+      "heading": {
+       "text": "Thiết kế bán chạy cho tập luyện",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 17,
+      "right": 17,
+      "textLeft": 17,
+      "textRight": 33,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6.site_siteSectionSurface__3cC",
+      "tag": "section",
+      "top": 2291,
+      "height": 1375,
+      "words": 75,
+      "media": 3,
+      "middle": 0,
+      "heading": {
+       "text": "Quần short chạy bộ và mặc hằng ngày",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 17,
+      "right": 17,
+      "textLeft": 33,
+      "textRight": 33,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6.site_siteSectionSurface__3cC",
+      "tag": "section",
+      "top": 3666,
+      "height": 420,
+      "words": 50,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Mã ưu đãi Kho Basic Sài Gòn",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 17,
+      "right": 146,
+      "textLeft": 17,
+      "textRight": 146,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 4086,
+      "height": 265,
+      "words": 81,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Chuẩn đường may 4 kim 6 chỉ tại Tân Thuận",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 17,
+      "right": 84,
+      "textLeft": 17,
+      "textRight": 84,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 4351,
+      "height": 462,
+      "words": 113,
+      "media": 0,
+      "middle": 38,
+      "heading": {
+       "text": "Chính sách giao vận và đổi cỡ",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 17,
+      "right": 46,
+      "textLeft": 17,
+      "textRight": 46,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "footer.site_siteFooter__9HNzV",
+      "tag": "footer",
+      "top": 4814,
+      "height": 635,
+      "words": 56,
+      "media": 0,
+      "middle": 95,
+      "heading": {
+       "text": "Kho Basic Sài Gòn",
+       "size": 22,
+       "tag": "p"
+      },
+      "left": 17,
+      "right": 17,
+      "textLeft": 17,
+      "textRight": 17,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Trang phục vận động nhẹ mát Sài Gòn",
+      "size": 36,
+      "top": 82,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 17,
+      "n": 9
+     },
+     {
+      "x": 40,
+      "n": 7
+     },
+     {
+      "x": 418,
+      "n": 4
+     }
+    ],
+    "leftBlocks": 20,
+    "bodySize": 16,
+    "stage": false,
+    "explains": true,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": null,
+   "consoleErrors": []
+  },
+  {
+   "width": 390,
+   "height": 844,
+   "load": "load",
+   "screens": 7,
+   "filled": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+   ],
+   "motion": {
+    "elements": 25,
+    "css": 4,
+    "transitions": 21,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "page": {
+     "height": 5342,
+     "screens": 6.3,
+     "words": 563,
+     "img": 9,
+     "video": 0,
+     "canvas": 0,
+     "svg": 1,
+     "sections": 6,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 8,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [
+      "campaign-running.jpg",
+      "model-ao-thun-dryfit.jpg",
+      "model-short-run-xam.jpg",
+      "model-ao-khoac-gio.jpg",
+      "model-ao-thun-oversize.jpg",
+      "campaign-green-fiber.jpg",
+      "model-short-run-xam.jpg",
+      "model-short-daily-be.jpg"
+     ],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Trang phục vận động nhẹ mát Sài Gòn",
+     "words": 8,
+     "chars": 35,
+     "lines": 2,
+     "size": 26,
+     "vw": 6.7,
+     "font": "Be Vietnam Pro",
+     "weight": 500,
+     "tracking": -0.03,
+     "leading": 1.08,
+     "upper": false,
+     "italic": false,
+     "mono": false,
+     "align": "left",
+     "position": "center",
+     "widthRatio": 0.92,
+     "top": 80,
+     "tag": "h1",
+     "kind": "heading"
+    },
+    "h1": {
+     "text": "Trang phục vận động nhẹ mát Sài Gòn",
+     "words": 8,
+     "lines": 2,
+     "size": 26,
+     "font": "Be Vietnam Pro"
+    },
+    "headings": [
+     {
+      "text": "Trang phục vận động nhẹ mát Sài Gòn",
+      "words": 8,
+      "chars": 35,
+      "lines": 2,
+      "size": 26,
+      "vw": 6.7,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.03,
+      "leading": 1.08,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 80,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "Thiết kế bán chạy cho tập luyện",
+      "words": 7,
+      "chars": 31,
+      "lines": 2,
+      "size": 26,
+      "vw": 6.7,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 662,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Quần short chạy bộ và mặc hằng ngày",
+      "words": 8,
+      "chars": 35,
+      "lines": 2,
+      "size": 26,
+      "vw": 6.7,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.81,
+      "top": 2203,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Mã ưu đãi Kho Basic Sài Gòn",
+      "words": 7,
+      "chars": 27,
+      "lines": 1,
+      "size": 26,
+      "vw": 6.7,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 3041,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Chuẩn đường may 4 kim 6 chỉ tại Tân Thuận",
+      "words": 10,
+      "chars": 41,
+      "lines": 2,
+      "size": 26,
+      "vw": 6.7,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 3486,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Chính sách giao vận và đổi cỡ",
+      "words": 7,
+      "chars": 29,
+      "lines": 2,
+      "size": 26,
+      "vw": 6.7,
+      "font": "Be Vietnam Pro",
+      "weight": 500,
+      "tracking": -0.025,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 3909,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "Kho Basic Sài Gòn",
+      "words": 4,
+      "chars": 17,
+      "lines": 1,
+      "size": 22,
+      "vw": 5.6,
+      "font": "Be Vietnam Pro",
+      "weight": 600,
+      "tracking": 0,
+      "leading": 1.55,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 4746,
+      "tag": "p",
+      "kind": "statement"
+     }
+    ],
+    "headingSummary": {
+     "count": 7,
+     "maxLines": 2,
+     "over2Lines": 0,
+     "statements": 1,
+     "centered": 0,
+     "medianWords": 7,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Be Vietnam Pro",
+       "share": 1,
+       "mono": false
+      }
+     ],
+     "familyCount": 1,
+     "sizes": [
+      14,
+      15,
+      16,
+      18,
+      22,
+      26
+     ],
+     "sizeCount": 6,
+     "notLoaded": [],
+     "body": {
+      "font": "Be Vietnam Pro",
+      "size": 16,
+      "leading": 1.55,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 10.8
+     },
+     "measureChars": 45,
+     "max": {
+      "size": 26,
+      "vw": 6.7,
+      "font": "Be Vietnam Pro",
+      "text": "Trang phục vận động nhẹ mát Sài Gòn"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0,
+     "centerShare": 0.02,
+     "smallText": 0
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f7f9fa",
+     "bodyBgHsl": {
+      "h": 200,
+      "s": 0.23,
+      "l": 0.97
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#14181c",
+       "top": 0,
+       "hsl": {
+        "h": 210,
+        "s": 0.17,
+        "l": 0.09
+       }
+      },
+      {
+       "color": "#1e242b",
+       "top": 1919,
+       "hsl": {
+        "h": 212,
+        "s": 0.18,
+        "l": 0.14
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#f4f6f8",
+       "share": 0.69
+      },
+      {
+       "color": "#c7cacc",
+       "share": 0.26
+      },
+      {
+       "color": "#111418",
+       "share": 0.03
+      },
+      {
+       "color": "#d97706",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#d97706",
+      "hsl": {
+       "h": 32,
+       "s": 0.95,
+       "l": 0.44
+      },
+      "fg": "#111418"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 4,
+     "inHero": 3,
+     "radius": 0,
+     "height": 36,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Giỏ hàng",
+      "Menu",
+      "Khám phá đồ thể thao"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 0,
+     "boxRadius": 0,
+     "squareMedia": 2,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 4,
+       "iconTopped": false,
+       "rounded": false,
+       "top": 873
+      }
+     ]
+    },
+    "heroMedia": [
+     {
+      "type": "img",
+      "ratio": 0.24
+     }
+    ],
+    "nav": {
+     "links": 2,
+     "fixed": true,
+     "height": 60,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "be vietnam pro"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "pageH": 5342,
+    "margins": {
+     "left": 16,
+     "right": 16
+    },
+    "sections": [
+     {
+      "sel": "section.site_heroSection___NAV9",
+      "tag": "section",
+      "top": 60,
+      "height": 562,
+      "words": 37,
+      "media": 1,
+      "middle": 0,
+      "heading": {
+       "text": "Trang phục vận động nhẹ mát Sài Gòn",
+       "size": 26,
+       "tag": "h1"
+      },
+      "left": 16,
+      "right": 16,
+      "textLeft": 16,
+      "textRight": 21,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 622,
+      "height": 1297,
+      "words": 112,
+      "media": 4,
+      "middle": 0,
+      "heading": {
+       "text": "Thiết kế bán chạy cho tập luyện",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 16,
+      "right": 16,
+      "textLeft": 16,
+      "textRight": 33,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6.site_siteSectionSurface__3cC",
+      "tag": "section",
+      "top": 1919,
+      "height": 1081,
+      "words": 75,
+      "media": 3,
+      "middle": 0,
+      "heading": {
+       "text": "Quần short chạy bộ và mặc hằng ngày",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 16,
+      "right": 16,
+      "textLeft": 32,
+      "textRight": 36,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6.site_siteSectionSurface__3cC",
+      "tag": "section",
+      "top": 3001,
+      "height": 445,
+      "words": 50,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Mã ưu đãi Kho Basic Sài Gòn",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 16,
+      "right": 30,
+      "textLeft": 16,
+      "textRight": 30,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 3446,
+      "height": 424,
+      "words": 81,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Chuẩn đường may 4 kim 6 chỉ tại Tân Thuận",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 16,
+      "right": 16,
+      "textLeft": 16,
+      "textRight": 16,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.site_siteSection__tH4Z6",
+      "tag": "section",
+      "top": 3869,
+      "height": 841,
+      "words": 113,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Chính sách giao vận và đổi cỡ",
+       "size": 26,
+       "tag": "h2"
+      },
+      "left": 16,
+      "right": 42,
+      "textLeft": 16,
+      "textRight": 42,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "footer.site_siteFooter__9HNzV",
+      "tag": "footer",
+      "top": 4710,
+      "height": 632,
+      "words": 56,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Kho Basic Sài Gòn",
+       "size": 22,
+       "tag": "p"
+      },
+      "left": 16,
+      "right": 16,
+      "textLeft": 16,
+      "textRight": 16,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Trang phục vận động nhẹ mát Sài Gòn",
+      "size": 26,
+      "top": 80,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 38,
+      "n": 11
+     },
+     {
+      "x": 16,
+      "n": 9
+     }
+    ],
+    "leftBlocks": 20,
+    "bodySize": 16,
+    "stage": false,
+    "explains": true,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": null,
+   "consoleErrors": []
+  }
+ ],
+ "findings": [
+  {
+   "level": "WARN",
+   "id": "card-rows",
+   "width": 1440,
+   "message": "2 rows of identical boxed cards.",
+   "fix": "Vary the composition; not every section is a card grid.",
+   "alsoAt": [
+    768
+   ]
+  },
+  {
+   "level": "WARN",
+   "id": "no-footage",
+   "width": 1440,
+   "message": "No video anywhere on the page.",
+   "fix": "Look for one honest clip with scripts/assets.mjs --video (the place, the material, the process) and use it as a muted loop with a poster frame. Defend its absence only if no clip fits the subject."
+  },
+  {
+   "level": "WARN",
+   "id": "font-not-dealt",
+   "width": 1440,
+   "message": "The sheet dealt Work Sans and Work Sans, but the page renders Be Vietnam Pro.",
+   "fix": "Load the dealt face (the link on the sheet) and put it first in font-family. A build that falls back to a default face lands on the default look."
+  }
+ ],
+ "images": [
+  {
+   "viewport": "desktop",
+   "width": 1440,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run2/09-sg-home/desktop-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run2/09-sg-home/desktop-page-01.jpg",
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run2/09-sg-home/desktop-page-02.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "tablet",
+   "width": 768,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run2/09-sg-home/tablet-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run2/09-sg-home/tablet-page-01.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "mobile",
+   "width": 390,
+   "fold": "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run2/09-sg-home/mobile-fold.jpg",
+   "pages": [
+    "/home/dev/Documents/Nexus_Ecom/.taste-skill/inspect-p4/run2/09-sg-home/mobile-page-01.jpg"
+   ],
+   "film": []
+  }
+ ]
+}

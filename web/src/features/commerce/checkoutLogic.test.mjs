@@ -1,0 +1,298 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+  mapCartError,
+  mapCheckoutError,
+  mapVoucherError,
+  translatePromotionWarning,
+} from "./checkoutErrors.ts";
+import {
+  buildCheckoutPreviewKey,
+  enrichCartGroups,
+  formatAddressLine,
+  formatCarrierLabel,
+  formatServiceLabel,
+  formatVoucherHeadline,
+  formatVoucherIneligibleReason,
+  shortVoucherHint,
+  splitVariantParts,
+} from "./cartEnrich.ts";
+
+test("translatePromotionWarning maps English promotion warnings to clean Vietnamese without raw internals", () => {
+  assert.match(translatePromotionWarning("voucher ABC not found"), /không tồn tại/i);
+  assert.match(translatePromotionWarning("voucher XYZ quota exhausted"), /hết lượt/i);
+  assert.match(translatePromotionWarning("voucher OLD has expired"), /hết hạn/i);
+  assert.match(translatePromotionWarning("per-user limit reached"), /hết lượt áp dụng/i);
+  const minMsg = translatePromotionWarning("voucher requires minimum order 350000 VND");
+  assert.match(minMsg, /350\.000₫/);
+  assert.doesNotMatch(minMsg, /VND/);
+  assert.match(translatePromotionWarning("does not belong to shop 1234"), /gian hàng/);
+});
+
+test("mapCheckoutError maps out-of-stock, COD limit, voucher exhausted, and empty cart safely", () => {
+  const oos = mapCheckoutError(
+    "FAILED_PRECONDITION",
+    "INSUFFICIENT_STOCK: SKU abc has 0 available, requested 2"
+  );
+  assert.equal(oos.code, "OUT_OF_STOCK");
+  assert.equal(oos.status, 409);
+  assert.doesNotMatch(oos.message, /SKU|INSUFFICIENT_STOCK|abc/);
+
+  const cod = mapCheckoutError(
+    "FAILED_PRECONDITION",
+    "COD_LIMIT_EXCEEDED: order total 6000000 exceeds 5000000"
+  );
+  assert.equal(cod.code, "COD_LIMIT_EXCEEDED");
+  assert.equal(cod.status, 409);
+  assert.match(cod.message, /COD/);
+
+  const vOut = mapCheckoutError("RESOURCE_EXHAUSTED", "voucher budget exhausted");
+  assert.equal(vOut.code, "VOUCHER_EXHAUSTED");
+  assert.equal(vOut.status, 409);
+
+  const empty = mapCheckoutError("FAILED_PRECONDITION", "shopping cart is empty");
+  assert.equal(empty.code, "EMPTY_CART");
+  assert.equal(empty.status, 409);
+});
+
+test("mapCartError and mapVoucherError return clean buyer messages and status codes", () => {
+  const oos = mapCartError("FAILED_PRECONDITION", "OUT_OF_STOCK: sku 123 has 0 available stock");
+  assert.equal(oos.code, "OUT_OF_STOCK");
+  assert.equal(oos.status, 409);
+
+  const exhausted = mapVoucherError("RESOURCE_EXHAUSTED", "voucher is out of quota");
+  assert.equal(exhausted.code, "VOUCHER_EXHAUSTED");
+  assert.equal(exhausted.status, 409);
+
+  const notFound = mapVoucherError("NOT_FOUND", "voucher not found");
+  assert.equal(notFound.code, "VOUCHER_NOT_FOUND");
+  assert.equal(notFound.status, 404);
+});
+
+test("enrichCartGroups pairs backend cart groups with catalog presentation while preserving real prices and stock", () => {
+  const groups = enrichCartGroups(
+    [
+      {
+        shop_id: "shop-uuid-1",
+        shop_name: "Xưởng Dệt Bạch Đằng",
+        subtotal_vnd: 358000,
+        total_weight_grams: 440,
+        items: [
+          {
+            sku_id: "sku-uuid-1",
+            product_id: "prod-uuid-1",
+            shop_id: "shop-uuid-1",
+            product_name: "Áo thun Cotton Compact",
+            sku_name: "Trắng / L",
+            image_url: "",
+            price_vnd: 179000,
+            added_price_vnd: 179000,
+            price_changed: false,
+            quantity: 2,
+            available_stock: 1,
+            weight_grams: 220,
+            selected: true,
+          },
+        ],
+      },
+    ],
+    [
+      {
+        id: "prod-at-trang",
+        backendId: "prod-uuid-1",
+        slug: "ao-thun-cotton-compact-trang",
+        name: "Áo thun Cotton Compact",
+        shortName: "Áo thun",
+        categorySlug: "ao-thun",
+        categoryName: "Áo thun",
+        shopId: "shop-bach-dang",
+        gender: "unisex",
+        price: 179000,
+        image: "/products/ao-thun-cotton-trang.png",
+        gallery: ["/products/ao-thun-cotton-trang.png"],
+        colors: [
+          {
+            code: "trang",
+            name: "Trắng tinh",
+            hex: "#fff",
+            image: "/products/ao-thun-cotton-trang.png",
+          },
+        ],
+        sizes: ["L"],
+        skus: [
+          {
+            skuId: "sku-uuid-1",
+            skuCode: "BD-AT01-TRANG-L",
+            colorCode: "trang",
+            size: "L",
+            stock: 1,
+            price: 179000,
+          },
+        ],
+        fabric: "",
+        gsm: 220,
+        fit: "",
+        origin: "",
+        careGuide: [],
+        highlights: [],
+        description: "",
+        sizeChart: [],
+      },
+    ],
+    [
+      {
+        id: "shop-bach-dang",
+        backendId: "shop-uuid-1",
+        slug: "xuong-det-bach-dang",
+        name: "Xưởng Dệt Bạch Đằng",
+        shortName: "Bạch Đằng",
+        city: "Hải Phòng",
+        provinceCode: "HP",
+        specialty: "",
+        foundedYear: 2018,
+        responseTime: "",
+        fulfillmentRate: "",
+        returnPolicy: "",
+        warehouseAddress: "",
+        story: "",
+        accentDot: "#0d7480",
+        commissionRate: 0.05,
+        freeShipThreshold: 199000,
+      },
+    ]
+  );
+
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].shopSlug, "xuong-det-bach-dang");
+  assert.equal(groups[0].items[0].productSlug, "ao-thun-cotton-compact-trang");
+  assert.equal(groups[0].items[0].variantLabel, "Màu: Trắng tinh · Size L");
+  assert.equal(groups[0].items[0].image, "/products/ao-thun-cotton-trang.png");
+  assert.equal(groups[0].items[0].exceedsStock, true);
+  assert.equal(groups[0].items[0].isOutOfStock, false);
+});
+
+test("voucher formatting and eligibility reasons handle fixed, percent, exhausted, and min-order shop vouchers", () => {
+  const pct = {
+    id: "v1",
+    code: "BACHDANG10",
+    name: "Giảm 10%",
+    scope: "SHOP",
+    shop_id: "shop-uuid-1",
+    discount_type: "PERCENT",
+    value_vnd: 0,
+    discount_percent: 10,
+    max_discount_vnd: 50000,
+    min_order_vnd: 300000,
+    quota: 100,
+    used_count: 10,
+    remaining_quota: 90,
+    per_user_limit: 1,
+    budget_vnd: 0,
+    used_budget_vnd: 0,
+    is_active: true,
+    saved: false,
+    eligible: true,
+    ineligible_reason: "",
+  };
+  assert.equal(formatVoucherHeadline(pct), "Giảm 10% (tối đa 50.000₫)");
+  assert.match(formatVoucherIneligibleReason(pct, 200000) ?? "", /100\.000₫/);
+  assert.equal(formatVoucherIneligibleReason(pct, 350000), null);
+  assert.match(
+    formatVoucherIneligibleReason({ ...pct, remaining_quota: 0 }, 350000) ?? "",
+    /hết lượt/i
+  );
+});
+
+test("formatCarrierLabel and formatServiceLabel replace internal Mock Express copy with natural Vietnamese", () => {
+  assert.equal(formatCarrierLabel("MOCK", "Mock Express"), "Giao hàng NexusFast");
+  assert.equal(formatCarrierLabel("GHN", "Giao Hàng Nhanh"), "Giao Hàng Nhanh");
+  assert.equal(formatServiceLabel("STD", "Mock Express Tiêu Chuẩn"), "Giao tiêu chuẩn");
+  assert.equal(formatServiceLabel("EXP", "Mock Express Nhanh"), "Giao nhanh");
+  assert.equal(formatServiceLabel("FAST", ""), "Giao nhanh");
+});
+
+test("formatAddressLine avoids duplicating ward or province already embedded in street_address", () => {
+  assert.equal(
+    formatAddressLine("Số 248 Võ Văn Tần", "Phường Xuân Hòa", "Thành phố Hồ Chí Minh"),
+    "Số 248 Võ Văn Tần, Phường Xuân Hòa, Thành phố Hồ Chí Minh"
+  );
+  assert.equal(
+    formatAddressLine(
+      "Số 12 Hàng Trống, Phường Hoàn Kiếm, Thành phố Hà Nội",
+      "Phường Hoàn Kiếm",
+      "Thành phố Hà Nội"
+    ),
+    "Số 12 Hàng Trống, Phường Hoàn Kiếm, Thành phố Hà Nội"
+  );
+  assert.equal(
+    formatAddressLine("Số 12 Hàng Trống, Phường Hoàn Kiếm", "Phường Hoàn Kiếm", "Thành phố Hà Nội"),
+    "Số 12 Hàng Trống, Phường Hoàn Kiếm, Thành phố Hà Nội"
+  );
+});
+
+test("shortVoucherHint covers inactive, expired, quota, per-user limit, and formatted min-order shortfall", () => {
+  const base = {
+    id: "v1",
+    code: "SAVE50",
+    name: "Giảm 50k",
+    scope: "SHOP",
+    shop_id: "shop-1",
+    discount_type: "FIXED",
+    value_vnd: 50000,
+    discount_percent: 0,
+    max_discount_vnd: 0,
+    min_order_vnd: 300000,
+    quota: 50,
+    used_count: 5,
+    remaining_quota: 45,
+    per_user_limit: 1,
+    budget_vnd: 0,
+    used_budget_vnd: 0,
+    is_active: true,
+    saved: false,
+    eligible: false,
+    ineligible_reason: "",
+  };
+  const now = Date.parse("2026-11-25T12:00:00Z");
+
+  assert.equal(shortVoucherHint({ ...base, is_active: false }, 400000, now), "Hết hiệu lực");
+  assert.equal(shortVoucherHint({ ...base, remaining_quota: 0 }, 400000, now), "Hết lượt");
+  assert.equal(
+    shortVoucherHint({ ...base, ends_at: "2026-11-24T23:59:59Z" }, 400000, now),
+    "Hết hạn"
+  );
+  assert.equal(shortVoucherHint(base, 175000, now), "Thêm 125.000₫");
+  assert.equal(
+    shortVoucherHint({ ...base, ineligible_reason: "per-user limit reached" }, 400000, now),
+    "Đã dùng"
+  );
+  assert.equal(
+    shortVoucherHint({ ...base, ineligible_reason: "voucher expired" }, 400000, now),
+    "Hết hạn"
+  );
+  assert.equal(
+    shortVoucherHint({ ...base, ineligible_reason: "voucher inactive" }, 400000, now),
+    "Hết hiệu lực"
+  );
+  assert.equal(shortVoucherHint(base, 400000, now), "Chưa đủ");
+});
+
+test("splitVariantParts and buildCheckoutPreviewKey normalize variant labels and voucher preview keys", () => {
+  assert.deepEqual(splitVariantParts("Màu: Trắng tinh · Size L"), ["Màu: Trắng tinh", "Size L"]);
+  assert.deepEqual(splitVariantParts("  Phân loại tiêu chuẩn ·  "), ["Phân loại tiêu chuẩn"]);
+
+  const baseInput = {
+    shopId: "shop-1",
+    rawSubtotal: 358000,
+    cartItemsSignature: "sku-1:2",
+    quotedShippingFee: 22000,
+    voucherId: null,
+    flashKey: "{}",
+  };
+  const keyNoVoucher = buildCheckoutPreviewKey(baseInput);
+  const keyWithVoucher = buildCheckoutPreviewKey({ ...baseInput, voucherId: "v-1" });
+  const keyPendingQuote = buildCheckoutPreviewKey({ ...baseInput, quotedShippingFee: null });
+  assert.notEqual(keyNoVoucher, keyWithVoucher);
+  assert.notEqual(keyNoVoucher, keyPendingQuote);
+  assert.equal(keyWithVoucher, buildCheckoutPreviewKey({ ...baseInput, voucherId: "v-1" }));
+});

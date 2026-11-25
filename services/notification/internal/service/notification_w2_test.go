@@ -34,7 +34,11 @@ func TestReturnUpdatedNotificationsBuyerAndSellerAllStatuses(t *testing.T) {
 		},
 		txChecker: &repo.inTx,
 	}
-	svc := NewNotificationService(repo, mail, resolver, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	siteResolver := &stubSiteResolver{
+		hosts: map[string]string{"shop-ret": "bach-dang.nexusmart.vn"},
+	}
+	svc := NewNotificationService(repo, mail, resolver, slog.New(slog.NewTextHandler(io.Discard, nil)),
+		WithSiteLinks(siteResolver, SiteLinkConfig{}))
 
 	// 1. Out-of-order: order.return_updated missing buyer_id/shop_id before order.created MUST fail and NOT record processed_events.
 	oooPayload, _ := json.Marshal(map[string]any{
@@ -108,6 +112,7 @@ func TestReturnUpdatedNotificationsBuyerAndSellerAllStatuses(t *testing.T) {
 			"checkout_group_id":    "grp-ret-1",
 			"buyer_id":             "buyer-ret",
 			"shop_id":              "shop-ret",
+			"storefront_shop_id":   "shop-ret",
 			"status":               tc.status,
 			"previous_status":      "PENDING",
 			"reason":               tc.reason,
@@ -141,7 +146,7 @@ func TestReturnUpdatedNotificationsBuyerAndSellerAllStatuses(t *testing.T) {
 				sellerNotif = &newNotifs[i]
 			}
 		}
-		if buyerNotif == nil || buyerNotif.Link != "/don-hang/ord-ret-1" {
+		if buyerNotif == nil || buyerNotif.Link != "https://bach-dang.nexusmart.vn/don-hang/ord-ret-1" {
 			t.Fatalf("status %s: missing/wrong buyer notification: %+v", tc.status, buyerNotif)
 		}
 		if sellerNotif == nil || sellerNotif.Link != "/seller/don-hang/ord-ret-1" {
@@ -179,12 +184,16 @@ func TestPaymentRefundSettledNotification(t *testing.T) {
 	resolver := &stubUserResolver{
 		emails: map[string]string{"buyer-ref": "buyer-ref@nexusmart.local"},
 	}
-	svc := NewNotificationService(repo, mail, resolver, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	siteResolver := &stubSiteResolver{
+		hosts: map[string]string{"shop-1": "bach-dang.nexusmart.vn"},
+	}
+	svc := NewNotificationService(repo, mail, resolver, slog.New(slog.NewTextHandler(io.Discard, nil)),
+		WithSiteLinks(siteResolver, SiteLinkConfig{}))
 
 	// Seed order_participants for single-shop order and multi-shop group.
-	repo.participants["ord-ref-1"] = store.OrderParticipant{OrderID: "ord-ref-1", BuyerID: "buyer-ref", ShopID: "shop-1", CheckoutGroupID: "grp-single"}
-	repo.participants["ord-m1"] = store.OrderParticipant{OrderID: "ord-m1", BuyerID: "buyer-ref", ShopID: "shop-1", CheckoutGroupID: "grp-multi"}
-	repo.participants["ord-m2"] = store.OrderParticipant{OrderID: "ord-m2", BuyerID: "buyer-ref", ShopID: "shop-2", CheckoutGroupID: "grp-multi"}
+	repo.participants["ord-ref-1"] = store.OrderParticipant{OrderID: "ord-ref-1", BuyerID: "buyer-ref", ShopID: "shop-1", CheckoutGroupID: "grp-single", StorefrontShopID: "shop-1"}
+	repo.participants["ord-m1"] = store.OrderParticipant{OrderID: "ord-m1", BuyerID: "buyer-ref", ShopID: "shop-1", CheckoutGroupID: "grp-multi", StorefrontShopID: "shop-1"}
+	repo.participants["ord-m2"] = store.OrderParticipant{OrderID: "ord-m2", BuyerID: "buyer-ref", ShopID: "shop-2", CheckoutGroupID: "grp-multi", StorefrontShopID: "shop-1"}
 
 	payload, _ := json.Marshal(map[string]any{
 		"refund_id":  "ref-settled-1",
@@ -205,8 +214,8 @@ func TestPaymentRefundSettledNotification(t *testing.T) {
 	if total != 1 || len(notifs) != 1 {
 		t.Fatalf("expected 1 in-app notification, got total=%d len=%d", total, len(notifs))
 	}
-	if notifs[0].Link != "/don-hang/ord-ref-1" {
-		t.Errorf("link = %q, want /don-hang/ord-ref-1", notifs[0].Link)
+	if notifs[0].Link != "https://bach-dang.nexusmart.vn/don-hang/ord-ref-1" {
+		t.Errorf("link = %q, want https://bach-dang.nexusmart.vn/don-hang/ord-ref-1", notifs[0].Link)
 	}
 	if !strings.Contains(notifs[0].Body, "450.000₫") || !strings.Contains(notifs[0].Body, "ref-settled-1") {
 		t.Errorf("unexpected body: %q", notifs[0].Body)
@@ -215,7 +224,7 @@ func TestPaymentRefundSettledNotification(t *testing.T) {
 		t.Errorf("expected Vietnamese settled refund email with 450.000₫, got %+v", mail.sent)
 	}
 
-	// Group-level refund_settled for multi-shop checkout resolves to /don-hang (never /don-hang/<group_id>).
+	// Group-level refund_settled for multi-shop checkout resolves to <site>/don-hang (never /don-hang/<group_id>).
 	multiPayload, _ := json.Marshal(map[string]any{
 		"refund_id":  "ref-settled-2",
 		"payment_id": "pay-multi",
@@ -230,8 +239,8 @@ func TestPaymentRefundSettledNotification(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("multi payment.refund_settled failed: %v", err)
 	}
-	if repo.notifs[len(repo.notifs)-1].Link != "/don-hang" {
-		t.Errorf("multi-shop refund_settled link = %q, want /don-hang", repo.notifs[len(repo.notifs)-1].Link)
+	if repo.notifs[len(repo.notifs)-1].Link != "https://bach-dang.nexusmart.vn/don-hang" {
+		t.Errorf("multi-shop refund_settled link = %q, want https://bach-dang.nexusmart.vn/don-hang", repo.notifs[len(repo.notifs)-1].Link)
 	}
 }
 

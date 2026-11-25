@@ -28,6 +28,7 @@ const (
 	PromotionService_CreateFlashSale_FullMethodName           = "/nexusmart.promotion.v1.PromotionService/CreateFlashSale"
 	PromotionService_RegisterFlashSaleItem_FullMethodName     = "/nexusmart.promotion.v1.PromotionService/RegisterFlashSaleItem"
 	PromotionService_ApproveFlashSaleItem_FullMethodName      = "/nexusmart.promotion.v1.PromotionService/ApproveFlashSaleItem"
+	PromotionService_EndFlashSaleWindow_FullMethodName        = "/nexusmart.promotion.v1.PromotionService/EndFlashSaleWindow"
 	PromotionService_ListActiveFlashSales_FullMethodName      = "/nexusmart.promotion.v1.PromotionService/ListActiveFlashSales"
 	PromotionService_ListFlashSaleItems_FullMethodName        = "/nexusmart.promotion.v1.PromotionService/ListFlashSaleItems"
 	PromotionService_ListAllFlashSales_FullMethodName         = "/nexusmart.promotion.v1.PromotionService/ListAllFlashSales"
@@ -57,6 +58,7 @@ type PromotionServiceClient interface {
 	CreateFlashSale(ctx context.Context, in *CreateFlashSaleRequest, opts ...grpc.CallOption) (*CreateFlashSaleResponse, error)
 	RegisterFlashSaleItem(ctx context.Context, in *RegisterFlashSaleItemRequest, opts ...grpc.CallOption) (*RegisterFlashSaleItemResponse, error)
 	ApproveFlashSaleItem(ctx context.Context, in *ApproveFlashSaleItemRequest, opts ...grpc.CallOption) (*ApproveFlashSaleItemResponse, error)
+	EndFlashSaleWindow(ctx context.Context, in *EndFlashSaleWindowRequest, opts ...grpc.CallOption) (*EndFlashSaleWindowResponse, error)
 	ListActiveFlashSales(ctx context.Context, in *ListActiveFlashSalesRequest, opts ...grpc.CallOption) (*ListActiveFlashSalesResponse, error)
 	ListFlashSaleItems(ctx context.Context, in *ListFlashSaleItemsRequest, opts ...grpc.CallOption) (*ListFlashSaleItemsResponse, error)
 	ListAllFlashSales(ctx context.Context, in *ListAllFlashSalesRequest, opts ...grpc.CallOption) (*ListAllFlashSalesResponse, error)
@@ -165,6 +167,16 @@ func (c *promotionServiceClient) ApproveFlashSaleItem(ctx context.Context, in *A
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ApproveFlashSaleItemResponse)
 	err := c.cc.Invoke(ctx, PromotionService_ApproveFlashSaleItem_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *promotionServiceClient) EndFlashSaleWindow(ctx context.Context, in *EndFlashSaleWindowRequest, opts ...grpc.CallOption) (*EndFlashSaleWindowResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EndFlashSaleWindowResponse)
+	err := c.cc.Invoke(ctx, PromotionService_EndFlashSaleWindow_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -324,6 +336,7 @@ type PromotionServiceServer interface {
 	CreateFlashSale(context.Context, *CreateFlashSaleRequest) (*CreateFlashSaleResponse, error)
 	RegisterFlashSaleItem(context.Context, *RegisterFlashSaleItemRequest) (*RegisterFlashSaleItemResponse, error)
 	ApproveFlashSaleItem(context.Context, *ApproveFlashSaleItemRequest) (*ApproveFlashSaleItemResponse, error)
+	EndFlashSaleWindow(context.Context, *EndFlashSaleWindowRequest) (*EndFlashSaleWindowResponse, error)
 	ListActiveFlashSales(context.Context, *ListActiveFlashSalesRequest) (*ListActiveFlashSalesResponse, error)
 	ListFlashSaleItems(context.Context, *ListFlashSaleItemsRequest) (*ListFlashSaleItemsResponse, error)
 	ListAllFlashSales(context.Context, *ListAllFlashSalesRequest) (*ListAllFlashSalesResponse, error)
@@ -374,6 +387,9 @@ func (UnimplementedPromotionServiceServer) RegisterFlashSaleItem(context.Context
 }
 func (UnimplementedPromotionServiceServer) ApproveFlashSaleItem(context.Context, *ApproveFlashSaleItemRequest) (*ApproveFlashSaleItemResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ApproveFlashSaleItem not implemented")
+}
+func (UnimplementedPromotionServiceServer) EndFlashSaleWindow(context.Context, *EndFlashSaleWindowRequest) (*EndFlashSaleWindowResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method EndFlashSaleWindow not implemented")
 }
 func (UnimplementedPromotionServiceServer) ListActiveFlashSales(context.Context, *ListActiveFlashSalesRequest) (*ListActiveFlashSalesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListActiveFlashSales not implemented")
@@ -596,6 +612,24 @@ func _PromotionService_ApproveFlashSaleItem_Handler(srv interface{}, ctx context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(PromotionServiceServer).ApproveFlashSaleItem(ctx, req.(*ApproveFlashSaleItemRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PromotionService_EndFlashSaleWindow_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EndFlashSaleWindowRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromotionServiceServer).EndFlashSaleWindow(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromotionService_EndFlashSaleWindow_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromotionServiceServer).EndFlashSaleWindow(ctx, req.(*EndFlashSaleWindowRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -894,6 +928,10 @@ var PromotionService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ApproveFlashSaleItem",
 			Handler:    _PromotionService_ApproveFlashSaleItem_Handler,
+		},
+		{
+			MethodName: "EndFlashSaleWindow",
+			Handler:    _PromotionService_EndFlashSaleWindow_Handler,
 		},
 		{
 			MethodName: "ListActiveFlashSales",

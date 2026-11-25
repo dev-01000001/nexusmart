@@ -758,7 +758,7 @@ export interface GatewayShopAllocation {
   order_id: string;
   shop_id: string;
   subtotal_vnd: number;
-  commission_vnd: number;
+  commission_vnd?: number;
   shipping_fee_vnd: number;
   platform_discount_vnd?: number;
 }

@@ -1,8 +1,14 @@
 /* Seller Promotions (/seller/khuyen-mai) */
 
+.sectionStack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 .inlineFormCard {
-  background: var(--card);
-  border: 1px solid var(--border); /* taste-skill-ignore: inline promotion form card */
+  background: var(--bg-1);
+  border: 1px solid var(--border);
   border-radius: var(--radius-card);
   padding: var(--card-pad);
 }
@@ -26,52 +32,156 @@
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.actionPair {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.switchWrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .quotaCell {
-  min-width: 150px;
+  min-width: 136px;
+}
+
+.condCell {
+  max-width: 240px;
+}
+
+.condTitle {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .codeStrong {
   font-weight: 600;
-  color: var(--ink);
-  letter-spacing: 0.01em;
+  color: var(--ink-1);
 }
 
 .flashProdCell {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
+  max-width: 240px;
+}
+
+.flashProdText {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.flashProdName {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .flashThumb {
-  width: 34px;
-  height: 45px;
+  width: 32px;
+  height: 40px;
   border-radius: 4px;
   object-fit: cover;
-  background: var(--surface);
+  background: var(--bg-2);
   flex: none;
 }
 
 .discountTag {
-  font-size: 12px;
+  display: block;
+  font-size: 13px;
   color: var(--positive);
   font-weight: 500;
-  margin-left: 4px;
 }
 
-.switchWrap {
+.inlineBtn {
   display: inline-flex;
   align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--control);
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease-out);
+}
+
+.inlineBtn:hover:not(:disabled) {
+  background: var(--bg-2);
+}
+
+.inlineBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.inlineDangerBtn {
+  border-color: var(--negative);
+  color: var(--negative);
+}
+
+.inlineDangerBtn:hover:not(:disabled) {
+  background: var(--pill-negative-bg);
+}
+
+.warningList {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink-1);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.warningList li + li {
+  margin-top: 4px;
+}
+
+.quickPctInput {
+  width: 78px;
+  height: 32px;
+}
+
+.programItemsList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.programItemRow {
+  display: flex;
+  align-items: center;
   gap: 8px;
-  justify-content: flex-end;
+}
+
+.programItemThumb {
+  width: 26px;
+  height: 34px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--bg-2);
+  flex: none;
 }
 
 @media (max-width: 960px) {
-  .formGrid4 {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
+  .formGrid4,
   .formGrid3 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

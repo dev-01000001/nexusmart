@@ -59,7 +59,7 @@ func Load() Config {
 		NATSURL:             env.EnvString("NATS_URL", "nats://localhost:4222"),
 		NATSStream:          env.EnvString("NATS_STREAM", "NEXUSMART"),
 		NATSDLQStream:       env.EnvString("NATS_DLQ_STREAM", "NEXUSMART_DLQ"),
-		MeilisearchURL:      env.EnvString("MEILISEARCH_URL", "http://meilisearch:7700"),
+		MeilisearchURL:      envFirstString("http://meilisearch:7700", "MEILISEARCH_URL", "MEILI_URL"),
 		MeiliMasterKey:      env.EnvString("MEILI_MASTER_KEY", "dev-only-meilisearch-master-key-change-me"),
 		ProductGRPCAddr:     env.EnvString("PRODUCT_GRPC_ADDR", "product:50052"),
 		UserGRPCAddr:        env.EnvString("USER_GRPC_ADDR", "user:50051"),
@@ -111,6 +111,15 @@ func (c Config) Validate() error {
 		return fmt.Errorf("SEARCH_VECTOR_MIN_SIMILARITY must be in [0, 1], got %v", c.VectorMinSimilarity)
 	}
 	return nil
+}
+
+func envFirstString(defaultVal string, keys ...string) string {
+	for _, k := range keys {
+		if v := strings.TrimSpace(env.EnvString(k, "")); v != "" {
+			return v
+		}
+	}
+	return defaultVal
 }
 
 func parseEnvFloat(key string, defaultVal float64) float64 {

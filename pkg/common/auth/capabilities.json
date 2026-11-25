@@ -54,6 +54,9 @@
     "payment_methods.read": ["super_admin", "admin", "accountant", "ops"],
     "payment_methods.write": ["super_admin", "admin", "ops"],
     "approvals.read": ["super_admin", "admin", "moderator", "cskh", "accountant", "ops"],
-    "search.reindex": ["super_admin", "admin", "ops"]
+    "search.reindex": ["super_admin", "admin", "ops"],
+    "sites.read": ["super_admin", "admin", "moderator", "cskh", "ops"],
+    "sites.suspend": ["super_admin", "admin", "moderator", "ops"],
+    "sites.domains.write": ["super_admin", "admin", "ops"]
   }
 }

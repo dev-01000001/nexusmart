@@ -139,7 +139,7 @@ pub fn role_has_capability(role: &str, capability: &str) -> bool {
         .is_some_and(|roles| roles.contains(&norm_role))
 }
 
-/// Authenticated caller as seen by handlers.
+/// Authenticated caller as seen by gRPC and HTTP handlers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Caller {
     pub role: String,
@@ -301,20 +301,16 @@ impl GrpcAuth {
         authorization: Option<&str>,
         method: &str,
     ) -> crate::error::Result<Caller> {
-        let token = authorization
-            .map(str::trim)
-            .and_then(|v| {
-                v.strip_prefix("Bearer ")
-                    .or_else(|| v.strip_prefix("bearer "))
-            })
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
+        let token = extract_bearer(authorization)
             .ok_or_else(|| PaymentError::Unauthorized("authentication required".to_string()))?;
 
-        if let Some(c) = verify_hs256(token, &self.user_key).filter(|c| c.service.is_empty()) {
+        if let Some(c) = verify_hs256(token, &self.user_key).filter(|c| c.service.trim().is_empty())
+        {
             return to_caller(c, false);
         }
-        if let Some(c) = verify_hs256(token, &self.service_key).filter(|c| !c.service.is_empty()) {
+        if let Some(c) =
+            verify_hs256(token, &self.service_key).filter(|c| !c.service.trim().is_empty())
+        {
             let Some((_, allowed_services)) = SERVICE_METHOD_ALLOWLIST
                 .iter()
                 .find(|(rpc, _)| *rpc == method)
@@ -365,6 +361,16 @@ impl GrpcAuth {
             .map(Some)
             .map_err(|e| e.to_tonic_status())
     }
+}
+
+fn extract_bearer(raw: Option<&str>) -> Option<&str> {
+    raw.map(str::trim)
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
 }
 
 fn to_caller(c: Claims, is_service: bool) -> crate::error::Result<Caller> {
@@ -534,7 +540,9 @@ mod tests {
 
         for method in [
             "GetLedgerSummary",
+            "GetSellerBalance",
             "ReleaseEscrow",
+            "RunReconciliation",
             "ListRefunds",
             "SubmitRefundBankAccount",
             "SettleRefund",
@@ -544,6 +552,7 @@ mod tests {
             "ListSellerLedger",
             "ImportCodReconciliation",
             "ListReconciliationRuns",
+            "ListReconciliationReports",
             "UpdatePaymentMethodConfig",
             "DecideRefundApproval",
         ] {
@@ -793,6 +802,8 @@ mod tests {
                 expires_at: None,
                 paid_at: None,
                 trace_id: "trace-1".into(),
+                sales_channel: "MARKETPLACE".into(),
+                storefront_shop_id: String::new(),
                 created_at: now,
                 updated_at: now,
             },
@@ -813,6 +824,8 @@ mod tests {
                 order_code: None,
                 cod_reconciled_at: None,
                 cod_reconciliation_run_id: None,
+                sales_channel: "MARKETPLACE".into(),
+                storefront_shop_id: String::new(),
                 created_at: now,
             }],
         };

@@ -92,11 +92,16 @@ func (r *OutboxRelay) flushOnce(ctx context.Context) (int, error) {
 }
 
 func (r *OutboxRelay) publishOutboxEvent(ctx context.Context, ev store.OutboxEvent) error {
+	occurredAt := ev.CreatedAt.UTC()
+	if occurredAt.IsZero() {
+		occurredAt = time.Now().UTC()
+	}
+
 	env := Envelope{
 		EventID:    ev.ID,
 		EventType:  ev.EventType,
 		TraceID:    ev.TraceID,
-		OccurredAt: ev.CreatedAt.UTC(),
+		OccurredAt: occurredAt,
 		Payload:    json.RawMessage(ev.PayloadJSON),
 	}
 	body, err := json.Marshal(env)

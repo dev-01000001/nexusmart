@@ -17,7 +17,7 @@ import (
 )
 
 // TestService_W3B3_G3_G4_RealPG_AddressFieldsEnqueueOnlyAndCancelRace verifies G3/G4 on real Postgres:
-//   - Migration 000007 is idempotent across repeated MigrateAndSeed runs.
+//   - Migration 000008 is idempotent across repeated MigrateAndSeed runs.
 //   - Sync CreateShipment and async enqueue_only worker both persist full from/to address fields on shipments.
 //   - GetShipmentsByTrackingCodes fetches multiple shipments in one query with all address fields intact.
 //   - Racing CreateShipment(enqueue_only=true) + worker vs CancelShipment/HandleOrderCancelled leaves 0 orphan shipments.
@@ -25,9 +25,9 @@ func TestService_W3B3_G3_G4_RealPG_AddressFieldsEnqueueOnlyAndCancelRace(t *test
 	pool, pgStore := openIsolatedServiceTestPG(t)
 	ctx := context.Background()
 
-	// Re-run MigrateAndSeed to verify 000007_w3b3_shipment_label_fields.sql idempotency on an already-migrated DB.
+	// Re-run MigrateAndSeed to verify 000008_w3b3_shipment_label_fields.sql idempotency on an already-migrated DB.
 	if err := pgStore.MigrateAndSeed(ctx); err != nil {
-		t.Fatalf("second MigrateAndSeed (000007 idempotency): %v", err)
+		t.Fatalf("second MigrateAndSeed (000008 idempotency): %v", err)
 	}
 
 	t.Run("SyncAndEnqueueOnlyPersistFullAddressesAndBatchLookup", func(t *testing.T) {

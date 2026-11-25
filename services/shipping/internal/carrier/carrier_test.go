@@ -405,14 +405,16 @@ func TestGHNSandboxHTTPAdapter(t *testing.T) {
 }
 
 func TestMapCarrierStatus_PickedIsDeliveringAndNotCancellable(t *testing.T) {
-	got, ok := MapCarrierStatus("picked")
-	if !ok || got != StatusDelivering {
-		t.Fatalf("MapCarrierStatus(picked) = (%q, %v), want (%q, true)", got, ok, StatusDelivering)
+	for _, raw := range []string{"picked", "3", "da_lay_hang"} {
+		got, ok := MapCarrierStatus(raw)
+		if !ok || got != StatusDelivering {
+			t.Fatalf("MapCarrierStatus(%q) = (%q, %v), want (%q, true)", raw, got, ok, StatusDelivering)
+		}
+		if IsCancellableStatus(got) {
+			t.Fatalf("%q -> %q must NOT be cancellable", raw, got)
+		}
 	}
-	if IsCancellableStatus(got) {
-		t.Fatalf("picked -> %q must NOT be cancellable", got)
-	}
-	for _, raw := range []string{"ready_to_pick", "picking", "money_collect_picking"} {
+	for _, raw := range []string{"ready_to_pick", "picking", "money_collect_picking", "12", "127", "128", "da_dieu_phoi_lay_hang"} {
 		st, ok := MapCarrierStatus(raw)
 		if !ok || st != StatusPicking || !IsCancellableStatus(st) {
 			t.Fatalf("MapCarrierStatus(%q) = (%q, %v), want cancellable picking", raw, st, ok)
@@ -447,6 +449,20 @@ func TestMockLabelURLs_NoDotLocalDomain(t *testing.T) {
 	}
 	if res2.LabelURL == "" || containsDotLocal(res2.LabelURL) {
 		t.Fatalf("MockExpress LabelURL must not use .local domain, got %q", res2.LabelURL)
+	}
+
+	ghtk := NewGHTKAdapter(GHTKConfig{Mode: "mock"})
+	res3, err := ghtk.CreateShipment(context.Background(), ShipmentRequest{
+		OrderID:     "ord-lbl-3",
+		WeightGrams: 500,
+		FromAddress: Address{ProvinceCode: "79"},
+		ToAddress:   Address{ProvinceCode: "01"},
+	})
+	if err != nil {
+		t.Fatalf("ghtk mock CreateShipment: %v", err)
+	}
+	if res3.LabelURL == "" || containsDotLocal(res3.LabelURL) {
+		t.Fatalf("GHTK mock LabelURL must not use .local domain, got %q", res3.LabelURL)
 	}
 }
 
@@ -1051,4 +1067,512 @@ func TestGHNSandbox_MissingWardMapping_ZeroHTTPRequests(t *testing.T) {
 	}); mErr != nil || ms == nil {
 		t.Fatalf("GHN mock CreateShipment must still work with GHNDistrictID=0, got ms=%+v err=%v", ms, mErr)
 	}
+}
+
+func TestGHTKAdapterMockMode(t *testing.T) {
+	// Default / placeholder token forces mock mode even when Mode == "sandbox".
+	for _, cfg := range []GHTKConfig{
+		{Mode: "mock", Token: "real-token"},
+		{Mode: "sandbox", Token: ""},
+		{Mode: "sandbox", Token: "sandbox-ghtk-token"},
+	} {
+		adapter := NewGHTKAdapter(cfg)
+		if !adapter.IsMock() {
+			t.Fatalf("expected IsMock=true for cfg=%+v", cfg)
+		}
+		if adapter.Code() != CodeGHTK || adapter.Name() != NameGHTK {
+			t.Fatalf("unexpected identity code=%q name=%q", adapter.Code(), adapter.Name())
+		}
+		if adapter.CanPoll() {
+			t.Fatalf("expected CanPoll=false before SetMockStatus")
+		}
+	}
+
+	adapter := NewGHTKAdapter(GHTKConfig{Mode: "mock", Token: "valid-mock-token"})
+
+	// TestConnection & SetToken in mock mode.
+	if err := adapter.TestConnection(context.Background(), "bad-tok"); !errors.Is(err, ErrInvalidCarrierToken) {
+		t.Fatalf("expected ErrInvalidCarrierToken for rejected mock token, got %v", err)
+	}
+	if err := adapter.TestConnection(context.Background(), "valid-mock-token"); err != nil {
+		t.Fatalf("expected valid mock token to pass TestConnection, got %v", err)
+	}
+	adapter.SetToken("rotated-mock-token")
+	if err := adapter.TestConnection(context.Background(), ""); err != nil {
+		t.Fatalf("expected rotated mock token to pass TestConnection, got %v", err)
+	}
+
+	// Intra-province vs inter-region + weight + COD deterministic integer VND quotes.
+	intraQuotes, err := adapter.CalculateFee(context.Background(), FeeRequest{
+		FromProvinceCode: "79",
+		ToProvinceCode:   "79",
+		WeightGrams:      800,
+		CODAmountVND:     0,
+	})
+	if err != nil || len(intraQuotes) != 2 {
+		t.Fatalf("expected 2 GHTK mock quotes, got %+v err=%v", intraQuotes, err)
+	}
+	if intraQuotes[0].ServiceCode != "ROAD" || intraQuotes[0].ServiceName != "GHTK Đường Bộ" || intraQuotes[0].FeeVND != 20000 {
+		t.Fatalf("unexpected ROAD intra quote: %+v", intraQuotes[0])
+	}
+	if intraQuotes[1].ServiceCode != "XFAST" || intraQuotes[1].ServiceName != "GHTK Nhanh" || intraQuotes[1].FeeVND != 31000 {
+		t.Fatalf("unexpected XFAST intra quote: %+v", intraQuotes[1])
+	}
+
+	interQuotes, err := adapter.CalculateFee(context.Background(), FeeRequest{
+		FromProvinceCode: "79",
+		ToProvinceCode:   "01",
+		WeightGrams:      1800, // 800g over 1000g -> 2 steps * 4500 = 9000
+		CODAmountVND:     350000,
+	})
+	if err != nil || len(interQuotes) != 2 {
+		t.Fatalf("unexpected inter quotes: %+v err=%v", interQuotes, err)
+	}
+	wantInterRoad := int64(35000 + 9000 + 1500)
+	if interQuotes[0].FeeVND != wantInterRoad {
+		t.Fatalf("expected inter ROAD fee %d, got %d", wantInterRoad, interQuotes[0].FeeVND)
+	}
+
+	// Deterministic tracking code & distinct forward vs return tracking codes on same order.
+	fwd1, err := adapter.CreateShipment(context.Background(), ShipmentRequest{
+		OrderID:      "ord-ghtk-1",
+		Direction:    "FORWARD",
+		ServiceCode:  "ROAD",
+		WeightGrams:  1000,
+		CODAmountVND: 100000,
+		FromAddress:  Address{ProvinceCode: "79", WardCode: "26740"},
+		ToAddress:    Address{ProvinceCode: "01", WardCode: "00070"},
+	})
+	if err != nil {
+		t.Fatalf("mock CreateShipment failed: %v", err)
+	}
+	fwd2, err := adapter.CreateShipment(context.Background(), ShipmentRequest{
+		OrderID:      "ord-ghtk-1",
+		Direction:    "FORWARD",
+		ServiceCode:  "ROAD",
+		WeightGrams:  1000,
+		CODAmountVND: 100000,
+		FromAddress:  Address{ProvinceCode: "79", WardCode: "26740"},
+		ToAddress:    Address{ProvinceCode: "01", WardCode: "00070"},
+	})
+	if err != nil {
+		t.Fatalf("second mock CreateShipment failed: %v", err)
+	}
+	if fwd1.TrackingCode != fwd2.TrackingCode {
+		t.Fatalf("expected deterministic GHTK tracking code, got %s vs %s", fwd1.TrackingCode, fwd2.TrackingCode)
+	}
+	if !strings.HasPrefix(fwd1.TrackingCode, "GHTK-") {
+		t.Fatalf("expected GHTK-* tracking code, got %q", fwd1.TrackingCode)
+	}
+	wantLabel := DefaultLabelBaseURL + "/" + fwd1.TrackingCode
+	if fwd1.LabelURL != wantLabel {
+		t.Fatalf("expected label %q, got %q", wantLabel, fwd1.LabelURL)
+	}
+
+	// Distinct ClientOrderCode produces distinct tracking code (recreate after cancel).
+	recreated, err := adapter.CreateShipment(context.Background(), ShipmentRequest{
+		OrderID:         "ord-ghtk-1",
+		ClientOrderCode: "ord-ghtk-1-R1",
+		Direction:       "FORWARD",
+		ServiceCode:     "ROAD",
+		WeightGrams:     1000,
+	})
+	if err != nil || recreated.TrackingCode == fwd1.TrackingCode {
+		t.Fatalf("recreated shipment with new ClientOrderCode must get distinct tracking code: %+v err=%v", recreated, err)
+	}
+
+	ret, err := adapter.CreateShipment(context.Background(), ShipmentRequest{
+		OrderID:         "ord-ghtk-1",
+		Direction:       "RETURN",
+		ReturnRequestID: "ret-1",
+		ServiceCode:     "XFAST",
+		WeightGrams:     1000,
+		FromAddress:     Address{ProvinceCode: "01", WardCode: "00070"},
+		ToAddress:       Address{ProvinceCode: "79", WardCode: "26740"},
+	})
+	if err != nil {
+		t.Fatalf("mock return CreateShipment failed: %v", err)
+	}
+	if ret.TrackingCode == fwd1.TrackingCode {
+		t.Fatalf("return shipment must get distinct tracking code from forward shipment")
+	}
+
+	// Mock status polling map.
+	stUnset, err := adapter.GetStatus(context.Background(), fwd1.TrackingCode)
+	if err != nil || stUnset.Changed {
+		t.Fatalf("expected Changed=false before SetMockStatus, got %+v err=%v", stUnset, err)
+	}
+	adapter.SetMockStatus(fwd1.TrackingCode, "6")
+	if !adapter.CanPoll() {
+		t.Fatalf("expected CanPoll=true after SetMockStatus")
+	}
+	stSet, err := adapter.GetStatus(context.Background(), fwd1.TrackingCode)
+	if err != nil || !stSet.Changed || stSet.Status != StatusDelivered || stSet.RawStatus != "6" {
+		t.Fatalf("expected delivered from GHTK mock status '6', got %+v err=%v", stSet, err)
+	}
+	adapter.SetMockStatus(fwd1.TrackingCode, "")
+	if adapter.CanPoll() {
+		t.Fatalf("expected CanPoll=false after clearing mock status")
+	}
+
+	if err := adapter.RequestRedelivery(context.Background(), fwd1.TrackingCode, "2026-11-28", "call before"); err != nil {
+		t.Fatalf("mock RequestRedelivery failed: %v", err)
+	}
+	if err := adapter.CancelShipment(context.Background(), fwd1.TrackingCode); err != nil {
+		t.Fatalf("mock CancelShipment failed: %v", err)
+	}
+}
+
+func TestGHTKSandboxHTTPAdapter(t *testing.T) {
+	var capturedFeeQuery string
+	var capturedCreateOrder map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Token") != "live-ghtk-sandbox-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"success":false,"message":"unauthorized"}`))
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/services/shipment/fee":
+			capturedFeeQuery = r.URL.RawQuery
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"message": "ok",
+				"fee": map[string]any{
+					"name":          "area1",
+					"fee":           27000,
+					"insurance_fee": 1500,
+					"delivery":      true,
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/services/shipment/order":
+			_ = json.NewDecoder(r.Body).Decode(&capturedCreateOrder)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"message": "created",
+				"order": map[string]any{
+					"partner_id": "ord-sb-1",
+					"label":      "S123456.BO.999888",
+					"fee":        28500,
+					"status_id":  2,
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/services/shipment/cancel/S123456.BO.999888":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "cancelled"})
+		case r.Method == http.MethodGet && r.URL.Path == "/services/shipment/v2/S123456.BO.999888":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"message": "ok",
+				"order": map[string]any{
+					"label_id":    "S123456.BO.999888",
+					"partner_id":  "ord-sb-1",
+					"status":      6,
+					"status_text": "Đã đối soát",
+					"modified":    "2026-11-20 12:30:00",
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/services/shipment/v2/GHTK-RETURNED":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"order": map[string]any{
+					"label_id": "GHTK-RETURNED",
+					"status":   "21",
+					"modified": "2026-11-20T14:00:00Z",
+				},
+			})
+		case r.URL.Path == "/services/shipment/v2/ERR-400":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"success":false,"message":"invalid label"}`))
+		case r.URL.Path == "/services/shipment/v2/ERR-503":
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`service unavailable`))
+		case r.URL.Path == "/services/shipment/v2/ERR-429":
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`rate limited`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	adapter := NewGHTKAdapter(GHTKConfig{
+		Mode:         "sandbox",
+		BaseURL:      srv.URL,
+		Token:        "live-ghtk-sandbox-token",
+		LabelBaseURL: "https://shop.example.com/api/v1/shipping/labels",
+		HTTPClient:   srv.Client(),
+	})
+	if adapter.IsMock() {
+		t.Fatalf("expected sandbox adapter IsMock=false")
+	}
+	if !adapter.CanPoll() {
+		t.Fatalf("expected sandbox adapter CanPoll=true")
+	}
+
+	// TestConnection validates 401 -> ErrInvalidCarrierToken and valid token -> nil.
+	if err := adapter.TestConnection(context.Background(), "wrong-token"); !errors.Is(err, ErrInvalidCarrierToken) {
+		t.Fatalf("expected ErrInvalidCarrierToken on 401 TestConnection, got %v", err)
+	}
+	if err := adapter.TestConnection(context.Background(), "live-ghtk-sandbox-token"); err != nil {
+		t.Fatalf("expected nil on valid sandbox GHTK TestConnection, got %v", err)
+	}
+
+	// CalculateFee resolves legacy 3-level names for merged province Binh Duong (25747) -> Hanoi (00070).
+	quotes, err := adapter.CalculateFee(context.Background(), FeeRequest{
+		FromProvinceCode: "79",
+		FromWardCode:     "25747",
+		ToProvinceCode:   "01",
+		ToWardCode:       "00070",
+		WeightGrams:      900,
+		CODAmountVND:     200000,
+	})
+	if err != nil || len(quotes) != 1 || quotes[0].FeeVND != 28500 || quotes[0].ServiceCode != "ROAD" {
+		t.Fatalf("unexpected sandbox GHTK fee result: quotes=%+v err=%v", quotes, err)
+	}
+	if capturedFeeQuery == "" {
+		t.Fatalf("expected fee query params to be sent")
+	}
+
+	created, err := adapter.CreateShipment(context.Background(), ShipmentRequest{
+		OrderID:      "ord-sb-1",
+		ServiceCode:  "XFAST",
+		WeightGrams:  1200,
+		CODAmountVND: 250000,
+		FromAddress: Address{
+			Name:          "Shop Binh Duong",
+			Phone:         "0901112222",
+			ProvinceCode:  "79",
+			WardCode:      "25747",
+			StreetAddress: "12 Dai Lo Binh Duong",
+		},
+		ToAddress: Address{
+			Name:          "Buyer Hanoi",
+			Phone:         "0903334444",
+			ProvinceCode:  "01",
+			WardCode:      "00070",
+			StreetAddress: "99 Hang Trong",
+		},
+		ItemsSummary: "Ao thun x2",
+	})
+	if err != nil || created.TrackingCode != "S123456.BO.999888" || created.FeeVND != 28500 {
+		t.Fatalf("unexpected sandbox GHTK create result: %+v err=%v", created, err)
+	}
+	if created.LabelURL != "https://shop.example.com/api/v1/shipping/labels/S123456.BO.999888" {
+		t.Fatalf("sandbox GHTK LabelURL = %q, want proxy labelBaseURL", created.LabelURL)
+	}
+	orderObj, _ := capturedCreateOrder["order"].(map[string]any)
+	if orderObj["pick_province"] != "Tỉnh Bình Dương" || orderObj["pick_district"] != "Thành phố Thủ Dầu Một" {
+		t.Fatalf("expected legacy 3-level Binh Duong translation, got %+v", orderObj)
+	}
+	if orderObj["province"] != "Thành phố Hà Nội" || orderObj["district"] != "Quận Hoàn Kiếm" {
+		t.Fatalf("expected legacy 3-level Hanoi translation, got %+v", orderObj)
+	}
+	if orderObj["transport"] != "fly" {
+		t.Fatalf("expected transport=fly for XFAST, got %v", orderObj["transport"])
+	}
+
+	st, err := adapter.GetStatus(context.Background(), "S123456.BO.999888")
+	if err != nil || !st.Changed || st.Status != StatusDelivered || st.RawStatus != "6" || st.Description != "Đã đối soát" {
+		t.Fatalf("unexpected GHTK sandbox status: %+v err=%v", st, err)
+	}
+
+	stRet, err := adapter.GetStatus(context.Background(), "GHTK-RETURNED")
+	if err != nil || !stRet.Changed || stRet.Status != StatusReturned || stRet.RawStatus != "21" {
+		t.Fatalf("unexpected GHTK returned status: %+v err=%v", stRet, err)
+	}
+
+	if err := adapter.CancelShipment(context.Background(), "S123456.BO.999888"); err != nil {
+		t.Fatalf("unexpected GHTK cancel error: %v", err)
+	}
+
+	// 4xx -> NonRetryableError; 5xx & 429 -> retryable error.
+	if _, err := adapter.GetStatus(context.Background(), "ERR-400"); !IsNonRetryable(err) {
+		t.Fatalf("expected NonRetryableError for HTTP 400, got %v", err)
+	}
+	if _, err := adapter.GetStatus(context.Background(), "ERR-503"); err == nil || IsNonRetryable(err) {
+		t.Fatalf("expected retryable error for HTTP 503, got %v", err)
+	}
+	if _, err := adapter.GetStatus(context.Background(), "ERR-429"); err == nil || IsNonRetryable(err) {
+		t.Fatalf("expected retryable error for HTTP 429, got %v", err)
+	}
+}
+
+func TestMapCarrierStatusGHTKCodes(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+		ok   bool
+	}{
+		{"-1", StatusCancelled, true},
+		{"1", StatusCreated, true},
+		{"2", StatusCreated, true},
+		{"3", StatusDelivering, true},
+		{"da_lay_hang", StatusDelivering, true},
+		{"12", StatusPicking, true},
+		{"127", StatusPicking, true},
+		{"128", StatusPicking, true},
+		{"da_dieu_phoi_lay_hang", StatusPicking, true},
+		{"4", StatusDelivering, true},
+		{"5", StatusDelivering, true},
+		{"123", StatusDelivering, true},
+		{"6", StatusDelivered, true},
+		{"45", StatusDelivered, true},
+		{"9", StatusFailed, true},
+		{"10", StatusFailed, true},
+		{"49", StatusFailed, true},
+		{"13", StatusReturning, true},
+		{"20", StatusReturning, true},
+		{"11", StatusReturned, true},
+		{"21", StatusReturned, true},
+		{"ready_to_pick", StatusPicking, true},
+		{"waiting_to_return", StatusReturning, true},
+		{"unknown_xyz", "", false},
+	}
+	for _, tc := range cases {
+		got, ok := MapCarrierStatus(tc.raw)
+		if ok != tc.ok || got != tc.want {
+			t.Errorf("MapCarrierStatus(%q) = (%q, %v), want (%q, %v)", tc.raw, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+func TestAggregatorGHNAndGHTKParallelAndCircuitBreakerFallback(t *testing.T) {
+	req := FeeRequest{
+		FromProvinceCode: "79",
+		FromWardCode:     "26740",
+		FromDistrictID:   1442,
+		FromGHNWardCode:  "20101",
+		ToProvinceCode:   "01",
+		ToWardCode:       "00070",
+		ToDistrictID:     1489,
+		ToGHNWardCode:    "1A0606",
+		WeightGrams:      1500,
+		CODAmountVND:     200000,
+	}
+
+	t.Run("GHN and GHTK return 4 sorted quotes in parallel", func(t *testing.T) {
+		ghn := NewResilientCarrier(NewGHNAdapter(GHNConfig{Mode: "mock"}), DefaultResilienceConfig(discardLogger()))
+		ghtk := NewResilientCarrier(NewGHTKAdapter(GHTKConfig{Mode: "mock"}), DefaultResilienceConfig(discardLogger()))
+		agg := NewAggregator(discardLogger(), ghn, ghtk)
+
+		quotes, usedFallback, err := agg.CalculateFeeAll(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if usedFallback {
+			t.Fatalf("expected carrier quotes, not fallback")
+		}
+		if len(quotes) != 4 {
+			t.Fatalf("expected 4 quotes (2 GHN + 2 GHTK), got %d", len(quotes))
+		}
+		seenGHN, seenGHTK := false, false
+		for i, q := range quotes {
+			if q.CarrierCode == CodeGHN {
+				seenGHN = true
+			}
+			if q.CarrierCode == CodeGHTK {
+				seenGHTK = true
+			}
+			if i > 0 && q.FeeVND < quotes[i-1].FeeVND {
+				t.Fatalf("quotes not sorted ascending: %+v", quotes)
+			}
+		}
+		if !seenGHN || !seenGHTK {
+			t.Fatalf("expected quotes from both GHN and GHTK, got %+v", quotes)
+		}
+	})
+
+	t.Run("GHTK circuit breaker open falls back to healthy GHN; both open falls back to table", func(t *testing.T) {
+		downSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		defer downSrv.Close()
+
+		fastRes := ResilienceConfig{
+			AttemptTimeout:  100 * time.Millisecond,
+			MaxAttempts:     2,
+			BaseBackoff:     5 * time.Millisecond,
+			MaxBackoff:      10 * time.Millisecond,
+			CBMaxFailures:   2,
+			CBOpenTimeout:   time.Second,
+			CBHalfOpenLimit: 1,
+			Logger:          discardLogger(),
+		}
+		ghtkDown := NewResilientCarrier(NewGHTKAdapter(GHTKConfig{
+			Mode:       "sandbox",
+			BaseURL:    downSrv.URL,
+			Token:      "real-token",
+			HTTPClient: downSrv.Client(),
+		}), fastRes)
+		ghnHealthy := NewResilientCarrier(NewGHNAdapter(GHNConfig{Mode: "mock"}), fastRes)
+
+		agg := NewAggregator(discardLogger(), ghnHealthy, ghtkDown)
+		quotes, usedFallback, err := agg.CalculateFeeAll(context.Background(), req)
+		if err != nil || usedFallback || len(quotes) != 2 || quotes[0].CarrierCode != CodeGHN {
+			t.Fatalf("expected only healthy GHN quotes while GHTK failed, got %+v fallback=%v err=%v", quotes, usedFallback, err)
+		}
+		if ghtkDown.State() != gobreaker.StateOpen {
+			t.Fatalf("expected GHTK circuit breaker to be Open, got %s", ghtkDown.State())
+		}
+
+		// When GHN is also down, fallback fee table is served.
+		ghnDown := NewResilientCarrier(NewGHNAdapter(GHNConfig{
+			Mode:       "sandbox",
+			BaseURL:    downSrv.URL,
+			Token:      "real-token",
+			HTTPClient: downSrv.Client(),
+		}), fastRes)
+		aggAllDown := NewAggregator(discardLogger(), ghnDown, ghtkDown)
+		fbQuotes, usedFallback, err := aggAllDown.CalculateFeeAll(context.Background(), req)
+		if err != nil || !usedFallback || len(fbQuotes) != 1 || !fbQuotes[0].IsFallback {
+			t.Fatalf("expected fallback fee table when both GHN and GHTK fail, got %+v fallback=%v err=%v", fbQuotes, usedFallback, err)
+		}
+	})
+
+	t.Run("ResilientCarrier skips retry on NonRetryableError and forwards CanPoll", func(t *testing.T) {
+		var calls atomic.Int32
+		stub := &stubCarrier{
+			code: "strict",
+			name: "Strict",
+			createFn: func(_ context.Context, _ ShipmentRequest) (*ShipmentResult, error) {
+				calls.Add(1)
+				return nil, &NonRetryableError{Err: errors.New("400 invalid phone")}
+			},
+		}
+		rc := NewResilientCarrier(stub, ResilienceConfig{
+			AttemptTimeout: 100 * time.Millisecond,
+			MaxAttempts:    3,
+			BaseBackoff:    5 * time.Millisecond,
+			CBMaxFailures:  1,
+			Logger:         discardLogger(),
+		})
+		_, err := rc.CreateShipment(context.Background(), ShipmentRequest{})
+		if !IsNonRetryable(err) {
+			t.Fatalf("expected NonRetryableError, got %v", err)
+		}
+		if calls.Load() != 1 {
+			t.Fatalf("expected exactly 1 call without retry on 4xx, got %d", calls.Load())
+		}
+		if rc.State() != gobreaker.StateClosed {
+			t.Fatalf("non-retryable 4xx must not trip circuit breaker, got %s", rc.State())
+		}
+
+		ghtkMock := NewGHTKAdapter(GHTKConfig{Mode: "mock"})
+		resGHTK := NewResilientCarrier(ghtkMock, DefaultResilienceConfig(discardLogger()))
+		if resGHTK.CanPoll() {
+			t.Fatalf("expected wrapped mock GHTK CanPoll=false initially")
+		}
+		ghtkMock.SetMockStatus("GHTK-1234567890", "delivered")
+		if !resGHTK.CanPoll() {
+			t.Fatalf("expected wrapped mock GHTK CanPoll=true after SetMockStatus")
+		}
+		st, err := resGHTK.GetStatus(context.Background(), "GHTK-1234567890")
+		if err != nil || !st.Changed || st.Status != StatusDelivered {
+			t.Fatalf("unexpected wrapped GetStatus: %+v err=%v", st, err)
+		}
+		if err := resGHTK.CancelShipment(context.Background(), "GHTK-1234567890"); err != nil {
+			t.Fatalf("unexpected wrapped CancelShipment err: %v", err)
+		}
+	})
 }

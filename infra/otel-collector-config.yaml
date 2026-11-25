@@ -27,6 +27,9 @@ receivers:
                 - shipping:8087
                 - notification:8088
                 - search:8089
+                - chat:8090
+                - assistant:8091
+                - aiops:8092
 
 processors:
   batch:
@@ -36,6 +39,10 @@ processors:
 exporters:
   debug:
     verbosity: basic
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
   prometheus:
     endpoint: 0.0.0.0:8889
 
@@ -45,7 +52,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug]
+      exporters: [otlp/tempo, debug]
     metrics:
       receivers: [otlp, prometheus]
       processors: [batch]

@@ -975,6 +975,8 @@ func (h *handler) handleListPublicShops(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// handleGetShop serves the public storefront view. Owners and staff with shops.read get the full
+// record; everyone else only sees ACTIVE shops and only public fields.
 func (h *handler) handleGetShop(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
@@ -987,6 +989,14 @@ func (h *handler) handleGetShop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	shop := resp.GetShop()
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	privileged := claims != nil && shop != nil && (auth.HasCapability(claims, auth.CapShopsRead) ||
+		(claims.UserID() != "" && claims.UserID() == shop.GetOwnerUserId()) ||
+		(claims.ShopID != "" && claims.ShopID == shop.GetId()))
+	if privileged {
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"shop": mapShop(shop)})
+		return
+	}
 	if shop == nil || shop.GetStatus() != userv1.ShopStatus_SHOP_STATUS_ACTIVE {
 		httpx.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "shop not found")
 		return
@@ -1027,12 +1037,17 @@ func (h *handler) handleGetMyShop(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"shop": mapShop(resp.GetShop())})
 }
 
+// handleSellerGetShop returns the caller's own shop; the shop id comes from the JWT.
 func (h *handler) handleSellerGetShop(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.User.GetShop(ctx, &userv1.GetShopRequest{
-		ShopId: auth.ShopIDFromContext(r.Context()),
+		ShopId: shopID,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)

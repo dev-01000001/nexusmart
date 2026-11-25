@@ -1045,7 +1045,7 @@ func TestW2B_R4_FGH_WarningsBatchingInputsAndP3(t *testing.T) {
 		resolved, _, err := h.svc.resolveCheckoutInputs(buyerCtx, "buyer-1", &orderv1.CreateCheckoutRequest{
 			FromCart: true,
 			Items:    []*orderv1.CheckoutItemInput{{SkuId: " sku-1 ", FlashSaleItemId: " fsi-trim "}},
-		})
+		}, SalesChannelMarketplace, "")
 		if err != nil {
 			t.Fatalf("resolveCheckoutInputs: %v", err)
 		}

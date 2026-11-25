@@ -13,13 +13,14 @@ type SearchService interface {
 	SearchProducts(ctx context.Context, req *searchv1.SearchProductsRequest) (*searchv1.SearchProductsResponse, error)
 	HybridSearch(ctx context.Context, req *searchv1.HybridSearchRequest) (*searchv1.HybridSearchResponse, error)
 	Suggest(ctx context.Context, req *searchv1.SuggestRequest) (*searchv1.SuggestResponse, error)
+	SimilarProducts(ctx context.Context, req *searchv1.SimilarProductsRequest) (*searchv1.SimilarProductsResponse, error)
 	ListSearchHistory(ctx context.Context, req *searchv1.ListSearchHistoryRequest) (*searchv1.ListSearchHistoryResponse, error)
 	DeleteSearchHistory(ctx context.Context, req *searchv1.DeleteSearchHistoryRequest) (*searchv1.DeleteSearchHistoryResponse, error)
 	ReindexAll(ctx context.Context, req *searchv1.ReindexAllRequest) (*searchv1.ReindexAllResponse, error)
 	GetReindexStatus(ctx context.Context, req *searchv1.GetReindexStatusRequest) (*searchv1.GetReindexStatusResponse, error)
 }
 
-// Server exposes all 7 SearchService RPCs over gRPC.
+// Server exposes all 8 SearchService RPCs over gRPC.
 type Server struct {
 	searchv1.UnimplementedSearchServiceServer
 	svc SearchService
@@ -49,6 +50,13 @@ func (s *Server) Suggest(ctx context.Context, req *searchv1.SuggestRequest) (*se
 		return nil, status.Error(codes.Unavailable, "search service unavailable")
 	}
 	return s.svc.Suggest(ctx, req)
+}
+
+func (s *Server) SimilarProducts(ctx context.Context, req *searchv1.SimilarProductsRequest) (*searchv1.SimilarProductsResponse, error) {
+	if s.svc == nil {
+		return nil, status.Error(codes.Unavailable, "search service unavailable")
+	}
+	return s.svc.SimilarProducts(ctx, req)
 }
 
 func (s *Server) ListSearchHistory(ctx context.Context, req *searchv1.ListSearchHistoryRequest) (*searchv1.ListSearchHistoryResponse, error) {

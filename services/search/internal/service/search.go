@@ -33,6 +33,8 @@ const (
 	maxPageSize         = 100
 	defaultSuggestLimit = 8
 	maxSuggestLimit     = 20
+	defaultSimilarLimit = 10
+	maxSimilarLimit     = 50
 	defaultHistoryLimit = 20
 	maxHistoryLimit     = 50
 	defaultHybridLimit  = 10
@@ -45,6 +47,91 @@ const (
 
 var skuCodePattern = regexp.MustCompile(`^[a-z0-9]+-[a-z0-9-]+$`)
 
+type searchBackend interface {
+	ListSuspendedShopIDs(ctx context.Context) ([]string, error)
+	GetCategoryBySlug(ctx context.Context, slug string) (db.SearchCategory, error)
+	GetShopBySlug(ctx context.Context, slug string) (db.SearchShop, error)
+	ListCategoriesByIDs(ctx context.Context, ids []string) ([]db.SearchCategory, error)
+	ListShopsByIDs(ctx context.Context, ids []string) ([]db.SearchShop, error)
+	ListAllCategories(ctx context.Context) ([]db.SearchCategory, error)
+	ListCategoriesByShop(ctx context.Context, shopID string) ([]db.SearchCategory, error)
+	SuggestCategories(ctx context.Context, arg db.SuggestCategoriesParams) ([]db.SuggestCategoriesRow, error)
+	SuggestCategoriesByShop(ctx context.Context, arg db.SuggestCategoriesByShopParams) ([]db.SuggestCategoriesByShopRow, error)
+	SuggestActiveShops(ctx context.Context, arg db.SuggestActiveShopsParams) ([]db.SuggestActiveShopsRow, error)
+	GetProductEmbeddingForSimilar(ctx context.Context, productID string) (db.GetProductEmbeddingForSimilarRow, error)
+	ListSearchHistory(ctx context.Context, arg db.ListSearchHistoryParams) ([]db.SearchHistory, error)
+	ClearSearchHistory(ctx context.Context, userID string) error
+	DeleteSearchHistoryItem(ctx context.Context, arg db.DeleteSearchHistoryItemParams) (int64, error)
+	GetReindexJob(ctx context.Context, jobID string) (db.ReindexJob, error)
+	SaveSearchHistory(ctx context.Context, userID, query, queryFolded string, maxItems int32) error
+	SearchVector(ctx context.Context, p store.VectorSearchParams) ([]store.VectorHit, error)
+	SuggestFallbackProducts(ctx context.Context, shopID, queryFolded string, limit int32) ([]store.VectorHit, error)
+}
+
+type trendingBackend interface {
+	RecordForShop(ctx context.Context, shopID, normalizedQuery string) error
+	TopForShop(ctx context.Context, shopID, queryFolded string, limit int) ([]string, error)
+}
+
+type storeAdapter struct {
+	st *store.Store
+}
+
+func (a *storeAdapter) ListSuspendedShopIDs(ctx context.Context) ([]string, error) {
+	return a.st.Queries().ListSuspendedShopIDs(ctx)
+}
+func (a *storeAdapter) GetCategoryBySlug(ctx context.Context, slug string) (db.SearchCategory, error) {
+	return a.st.Queries().GetCategoryBySlug(ctx, slug)
+}
+func (a *storeAdapter) GetShopBySlug(ctx context.Context, slug string) (db.SearchShop, error) {
+	return a.st.Queries().GetShopBySlug(ctx, slug)
+}
+func (a *storeAdapter) ListCategoriesByIDs(ctx context.Context, ids []string) ([]db.SearchCategory, error) {
+	return a.st.Queries().ListCategoriesByIDs(ctx, ids)
+}
+func (a *storeAdapter) ListShopsByIDs(ctx context.Context, ids []string) ([]db.SearchShop, error) {
+	return a.st.Queries().ListShopsByIDs(ctx, ids)
+}
+func (a *storeAdapter) ListAllCategories(ctx context.Context) ([]db.SearchCategory, error) {
+	return a.st.Queries().ListAllCategories(ctx)
+}
+func (a *storeAdapter) ListCategoriesByShop(ctx context.Context, shopID string) ([]db.SearchCategory, error) {
+	return a.st.Queries().ListCategoriesByShop(ctx, shopID)
+}
+func (a *storeAdapter) SuggestCategories(ctx context.Context, arg db.SuggestCategoriesParams) ([]db.SuggestCategoriesRow, error) {
+	return a.st.Queries().SuggestCategories(ctx, arg)
+}
+func (a *storeAdapter) SuggestCategoriesByShop(ctx context.Context, arg db.SuggestCategoriesByShopParams) ([]db.SuggestCategoriesByShopRow, error) {
+	return a.st.Queries().SuggestCategoriesByShop(ctx, arg)
+}
+func (a *storeAdapter) SuggestActiveShops(ctx context.Context, arg db.SuggestActiveShopsParams) ([]db.SuggestActiveShopsRow, error) {
+	return a.st.Queries().SuggestActiveShops(ctx, arg)
+}
+func (a *storeAdapter) GetProductEmbeddingForSimilar(ctx context.Context, productID string) (db.GetProductEmbeddingForSimilarRow, error) {
+	return a.st.Queries().GetProductEmbeddingForSimilar(ctx, productID)
+}
+func (a *storeAdapter) ListSearchHistory(ctx context.Context, arg db.ListSearchHistoryParams) ([]db.SearchHistory, error) {
+	return a.st.Queries().ListSearchHistory(ctx, arg)
+}
+func (a *storeAdapter) ClearSearchHistory(ctx context.Context, userID string) error {
+	return a.st.Queries().ClearSearchHistory(ctx, userID)
+}
+func (a *storeAdapter) DeleteSearchHistoryItem(ctx context.Context, arg db.DeleteSearchHistoryItemParams) (int64, error) {
+	return a.st.Queries().DeleteSearchHistoryItem(ctx, arg)
+}
+func (a *storeAdapter) GetReindexJob(ctx context.Context, jobID string) (db.ReindexJob, error) {
+	return a.st.Queries().GetReindexJob(ctx, jobID)
+}
+func (a *storeAdapter) SaveSearchHistory(ctx context.Context, userID, query, queryFolded string, maxItems int32) error {
+	return a.st.SaveSearchHistory(ctx, userID, query, queryFolded, maxItems)
+}
+func (a *storeAdapter) SearchVector(ctx context.Context, p store.VectorSearchParams) ([]store.VectorHit, error) {
+	return a.st.SearchVector(ctx, p)
+}
+func (a *storeAdapter) SuggestFallbackProducts(ctx context.Context, shopID, queryFolded string, limit int32) ([]store.VectorHit, error) {
+	return a.st.SuggestFallbackProducts(ctx, shopID, queryFolded, limit)
+}
+
 // Options configures SearchService runtime tuning.
 type Options struct {
 	RRFK                int
@@ -55,10 +142,10 @@ type Options struct {
 	Logger              *slog.Logger
 }
 
-// Service implements the core business logic for all 7 SearchService RPCs.
+// Service implements the core business logic for all 8 SearchService RPCs.
 type Service struct {
-	store               *store.Store
-	trending            *store.TrendingStore
+	store               searchBackend
+	trending            trendingBackend
 	meili               meili.Engine
 	embedder            embedder.Embedder
 	indexer             *indexer.Indexer
@@ -74,6 +161,25 @@ type Service struct {
 func New(
 	st *store.Store,
 	trending *store.TrendingStore,
+	meiliEngine meili.Engine,
+	emb embedder.Embedder,
+	idx *indexer.Indexer,
+	opts Options,
+) *Service {
+	var sb searchBackend
+	if st != nil {
+		sb = &storeAdapter{st: st}
+	}
+	var tb trendingBackend
+	if trending != nil {
+		tb = trending
+	}
+	return newWithBackends(sb, tb, meiliEngine, emb, idx, opts)
+}
+
+func newWithBackends(
+	st searchBackend,
+	trending trendingBackend,
 	meiliEngine meili.Engine,
 	emb embedder.Embedder,
 	idx *indexer.Indexer,
@@ -203,7 +309,10 @@ func (s *Service) SearchProducts(ctx context.Context, req *searchv1.SearchProduc
 
 	// Resolve category_slug if needed.
 	if categoryID == "" && categorySlug != "" {
-		cat, catErr := s.store.Queries().GetCategoryBySlug(ctx, categorySlug)
+		if s.store == nil {
+			return nil, status.Error(codes.Unavailable, "search store unavailable")
+		}
+		cat, catErr := s.store.GetCategoryBySlug(ctx, categorySlug)
 		if errors.Is(catErr, pgx.ErrNoRows) {
 			return emptySearchResponse(page, pageSize), nil
 		}
@@ -215,7 +324,10 @@ func (s *Service) SearchProducts(ctx context.Context, req *searchv1.SearchProduc
 
 	// Resolve shop_slug if needed.
 	if shopID == "" && shopSlug != "" {
-		sh, shErr := s.store.Queries().GetShopBySlug(ctx, shopSlug)
+		if s.store == nil {
+			return nil, status.Error(codes.Unavailable, "search store unavailable")
+		}
+		sh, shErr := s.store.GetShopBySlug(ctx, shopSlug)
 		if errors.Is(shErr, pgx.ErrNoRows) {
 			return emptySearchResponse(page, pageSize), nil
 		}
@@ -272,7 +384,7 @@ func (s *Service) SearchProducts(ctx context.Context, req *searchv1.SearchProduc
 			return nil, status.Error(codes.Unavailable, "search engine unavailable")
 		}
 		facetDist = mRes.FacetDistribution
-		hits = filterPublicMeiliHits(mRes.Hits, suspendedSet, false)
+		hits = filterPublicMeiliHits(mRes.Hits, suspendedSet, shopID, false)
 		total = adjustTotal(mRes.Total, len(mRes.Hits), len(hits))
 	} else {
 		candidateLimit := int64(page) * int64(pageSize)
@@ -340,11 +452,11 @@ func (s *Service) SearchProducts(ctx context.Context, req *searchv1.SearchProduc
 				return nil, status.Error(codes.Unavailable, "search engine unavailable")
 			}
 			facetDist = fbRes.FacetDistribution
-			hits = filterPublicMeiliHits(fbRes.Hits, suspendedSet, false)
+			hits = filterPublicMeiliHits(fbRes.Hits, suspendedSet, shopID, false)
 			total = adjustTotal(fbRes.Total, len(fbRes.Hits), len(hits))
 		} else {
 			usedVector = true
-			fused := s.fuseRRF(mRes.Hits, vRes, suspendedSet, false)
+			fused := s.fuseRRF(mRes.Hits, vRes, suspendedSet, shopID, false)
 			// S7: Total equals actual fused candidate count so every page within total is populated.
 			hits, total = paginateHits(fused, int64(len(fused)), page, pageSize)
 		}
@@ -354,24 +466,26 @@ func (s *Service) SearchProducts(ctx context.Context, req *searchv1.SearchProduc
 
 	didYouMean := ""
 	if total == 0 && qFolded != "" {
-		didYouMean = s.computeDidYouMean(ctx, qFolded)
+		didYouMean = s.computeDidYouMean(ctx, qFolded, shopID)
 	}
 
 	// Record search history (end-user JWT only, <= 50 items/user, never log raw query — G14)
-	// and trending (S5: only when normalized query is a substring of a page-1 product/category/shop name).
+	// and per-shop trending (S5: only when normalized query is a substring of a page-1 product/category/shop name).
 	if qFolded != "" && page <= 1 {
 		if len(hits) > 0 && s.trending != nil && matchesCatalogVocabulary(qFolded, hits, catFacets, shopFacets) {
 			tCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
-			_ = s.trending.Record(tCtx, qFolded)
+			_ = s.trending.RecordForShop(tCtx, shopID, qFolded)
 			cancel()
 		}
-		if claims, ok := auth.ClaimsFromContext(ctx); ok && claims.Service == "" && claims.UserID() != "" {
-			if err := s.store.SaveSearchHistory(ctx, claims.UserID(), rawQ, qFolded, maxHistoryLimit); err != nil {
-				// G14: Never log raw query text.
-				s.logger.WarnContext(ctx, "failed to save search history",
-					slog.String("user_id", claims.UserID()),
-					slog.String("error", err.Error()),
-				)
+		if s.store != nil {
+			if claims, ok := auth.ClaimsFromContext(ctx); ok && claims.Service == "" && claims.UserID() != "" {
+				if err := s.store.SaveSearchHistory(ctx, claims.UserID(), rawQ, qFolded, maxHistoryLimit); err != nil {
+					// G14: Never log raw query text.
+					s.logger.WarnContext(ctx, "failed to save search history",
+						slog.String("user_id", claims.UserID()),
+						slog.String("error", err.Error()),
+					)
+				}
 			}
 		}
 	}
@@ -389,7 +503,8 @@ func (s *Service) SearchProducts(ctx context.Context, req *searchv1.SearchProduc
 	}, nil
 }
 
-// HybridSearch serves B3 RAG retrieval (service token or authenticated JWT; public active non-suspended products only).
+// HybridSearch serves B3 RAG retrieval (service token or authenticated JWT; public active non-suspended products only,
+// isolated to shop_id when supplied).
 func (s *Service) HybridSearch(ctx context.Context, req *searchv1.HybridSearchRequest) (*searchv1.HybridSearchResponse, error) {
 	if _, ok := auth.ClaimsFromContext(ctx); !ok {
 		return nil, status.Error(codes.Unauthenticated, "authentication required")
@@ -415,6 +530,10 @@ func (s *Service) HybridSearch(ctx context.Context, req *searchv1.HybridSearchRe
 	if err := meili.ValidateIdentifier("category_id", categoryID); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	shopID := strings.TrimSpace(req.GetShopId())
+	if err := meili.ValidateIdentifier("shop_id", shopID); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	rawQ := trimQuery(req.GetQuery())
 	qFolded := textnorm.NormalizeSearchText(rawQ)
@@ -423,6 +542,9 @@ func (s *Service) HybridSearch(ctx context.Context, req *searchv1.HybridSearchRe
 	suspendedIDs, suspendedSet, err := s.loadSuspendedShops(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "load shop visibility: %v", err)
+	}
+	if shopID != "" && suspendedSet[shopID] {
+		return &searchv1.HybridSearchResponse{Hits: []*searchv1.SearchProductHit{}}, nil
 	}
 
 	var (
@@ -440,6 +562,7 @@ func (s *Service) HybridSearch(ctx context.Context, req *searchv1.HybridSearchRe
 			mRes, mErr = s.runMeiliSearch(ctx, meili.SearchQuery{
 				Query:               qFolded,
 				CategoryID:          categoryID,
+				ShopID:              shopID,
 				ExcludedShopIDs:     suspendedIDs,
 				MinPriceVND:         req.GetMinPriceVnd(),
 				MaxPriceVND:         req.GetMaxPriceVnd(),
@@ -458,6 +581,7 @@ func (s *Service) HybridSearch(ctx context.Context, req *searchv1.HybridSearchRe
 			defer wg.Done()
 			vRes, vErr = s.runVectorSearch(ctx, rawQ, store.VectorSearchParams{
 				CategoryID:          categoryID,
+				ShopID:              shopID,
 				MinPriceVND:         req.GetMinPriceVnd(),
 				MaxPriceVND:         req.GetMaxPriceVnd(),
 				OnlyApprovedInStock: onlyApprovedInStock,
@@ -481,22 +605,22 @@ func (s *Service) HybridSearch(ctx context.Context, req *searchv1.HybridSearchRe
 	switch {
 	case mErr == nil && qFolded != "" && vErr == nil:
 		usedVector = true
-		hits = s.fuseRRF(mRes.Hits, vRes, suspendedSet, onlyApprovedInStock)
+		hits = s.fuseRRF(mRes.Hits, vRes, suspendedSet, shopID, onlyApprovedInStock)
 	case mErr == nil && qFolded != "" && vErr != nil:
 		s.logger.WarnContext(ctx, "vector leg failed during HybridSearch; returning keyword_only",
 			slog.String("error", vErr.Error()),
 		)
 		degradedMode = "keyword_only"
-		hits = filterPublicMeiliHits(mRes.Hits, suspendedSet, onlyApprovedInStock)
+		hits = filterPublicMeiliHits(mRes.Hits, suspendedSet, shopID, onlyApprovedInStock)
 	case mErr == nil:
-		hits = filterPublicMeiliHits(mRes.Hits, suspendedSet, onlyApprovedInStock)
+		hits = filterPublicMeiliHits(mRes.Hits, suspendedSet, shopID, onlyApprovedInStock)
 	default:
 		s.logger.WarnContext(ctx, "meilisearch failed during HybridSearch; returning vector_only",
 			slog.String("error", mErr.Error()),
 		)
 		usedVector = true
 		degradedMode = "vector_only"
-		hits = filterPublicVectorHits(vRes, suspendedSet, onlyApprovedInStock)
+		hits = filterPublicVectorHits(vRes, suspendedSet, shopID, onlyApprovedInStock)
 	}
 
 	if len(hits) > int(limit) {
@@ -510,11 +634,17 @@ func (s *Service) HybridSearch(ctx context.Context, req *searchv1.HybridSearchRe
 	}, nil
 }
 
-// Suggest returns fast (< 80 ms target) keywords, categories, active shops, Redis trending, and matching products.
+// Suggest returns fast (< 80 ms target) keywords, categories, active shops (omitted when shop_id is set),
+// per-shop Redis trending, and matching products strictly isolated to shop_id when provided.
 func (s *Service) Suggest(ctx context.Context, req *searchv1.SuggestRequest) (*searchv1.SuggestResponse, error) {
 	if req == nil {
 		req = &searchv1.SuggestRequest{}
 	}
+	shopID := strings.TrimSpace(req.GetShopId())
+	if err := meili.ValidateIdentifier("shop_id", shopID); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	limit := int(req.GetLimit())
 	if limit <= 0 {
 		limit = defaultSuggestLimit
@@ -535,6 +665,9 @@ func (s *Service) Suggest(ctx context.Context, req *searchv1.SuggestRequest) (*s
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "load shop visibility: %v", err)
 	}
+	if shopID != "" && suspendedSet[shopID] {
+		return &searchv1.SuggestResponse{}, nil
+	}
 
 	var (
 		categories []*searchv1.SuggestEntity
@@ -547,7 +680,29 @@ func (s *Service) Suggest(ctx context.Context, req *searchv1.SuggestRequest) (*s
 	wg.Add(4)
 	go func() {
 		defer wg.Done()
-		rows, qErr := s.store.Queries().SuggestCategories(ctx, db.SuggestCategoriesParams{
+		if s.store == nil {
+			return
+		}
+		if shopID != "" {
+			rows, qErr := s.store.SuggestCategoriesByShop(ctx, db.SuggestCategoriesByShopParams{
+				ShopID:  shopID,
+				Column2: qLike,
+				Limit:   int32(entityLimit),
+			})
+			if qErr != nil {
+				return
+			}
+			categories = make([]*searchv1.SuggestEntity, 0, len(rows))
+			for _, r := range rows {
+				categories = append(categories, &searchv1.SuggestEntity{
+					Id:   r.CategoryID,
+					Name: r.Name,
+					Slug: r.Slug,
+				})
+			}
+			return
+		}
+		rows, qErr := s.store.SuggestCategories(ctx, db.SuggestCategoriesParams{
 			Column1: qLike,
 			Limit:   int32(entityLimit),
 		})
@@ -566,8 +721,12 @@ func (s *Service) Suggest(ctx context.Context, req *searchv1.SuggestRequest) (*s
 
 	go func() {
 		defer wg.Done()
+		// Storefront isolation: never suggest other shops when scoped to a single shop_id.
+		if shopID != "" || s.store == nil {
+			return
+		}
 		// G10: SuggestActiveShops strictly filters status = 'ACTIVE' (excludes SUSPENDED).
-		rows, qErr := s.store.Queries().SuggestActiveShops(ctx, db.SuggestActiveShopsParams{
+		rows, qErr := s.store.SuggestActiveShops(ctx, db.SuggestActiveShopsParams{
 			Column1: qLike,
 			Limit:   int32(entityLimit),
 		})
@@ -594,7 +753,7 @@ func (s *Service) Suggest(ctx context.Context, req *searchv1.SuggestRequest) (*s
 		}
 		tCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
 		defer cancel()
-		if vals, tErr := s.trending.Top(tCtx, qFolded, limit); tErr == nil {
+		if vals, tErr := s.trending.TopForShop(tCtx, shopID, qFolded, limit); tErr == nil {
 			trending = vals
 		}
 	}()
@@ -604,17 +763,20 @@ func (s *Service) Suggest(ctx context.Context, req *searchv1.SuggestRequest) (*s
 		if s.meili != nil {
 			mRes, mErr := s.runMeiliSearch(ctx, meili.SearchQuery{
 				Query:           qFolded,
+				ShopID:          shopID,
 				ExcludedShopIDs: suspendedIDs,
 				Limit:           int64(entityLimit),
 				Offset:          0,
 			})
 			if mErr == nil {
-				products = filterPublicMeiliHits(mRes.Hits, suspendedSet, false)
+				products = filterPublicMeiliHits(mRes.Hits, suspendedSet, shopID, false)
 				return
 			}
 		}
-		if fb, fbErr := s.store.SuggestFallbackProducts(ctx, qFolded, int32(entityLimit)); fbErr == nil {
-			products = filterPublicVectorHits(fb, suspendedSet, false)
+		if s.store != nil {
+			if fb, fbErr := s.store.SuggestFallbackProducts(ctx, shopID, qFolded, int32(entityLimit)); fbErr == nil {
+				products = filterPublicVectorHits(fb, suspendedSet, shopID, false)
+			}
 		}
 	}()
 
@@ -631,11 +793,158 @@ func (s *Service) Suggest(ctx context.Context, req *searchv1.SuggestRequest) (*s
 	}, nil
 }
 
+// SimilarProducts finds semantically similar public non-suspended products using pgvector cosine similarity,
+// scoped to shop_id when provided and excluding the source product_id.
+func (s *Service) SimilarProducts(ctx context.Context, req *searchv1.SimilarProductsRequest) (*searchv1.SimilarProductsResponse, error) {
+	if req == nil {
+		req = &searchv1.SimilarProductsRequest{}
+	}
+	if req.GetMinPriceVnd() < 0 || req.GetMaxPriceVnd() < 0 {
+		return nil, status.Error(codes.InvalidArgument, "price bounds must be non-negative")
+	}
+	if req.GetMinPriceVnd() > 0 && req.GetMaxPriceVnd() > 0 && req.GetMinPriceVnd() > req.GetMaxPriceVnd() {
+		return nil, status.Error(codes.InvalidArgument, "min_price_vnd must not exceed max_price_vnd")
+	}
+
+	productID := strings.TrimSpace(req.GetProductId())
+	shopID := strings.TrimSpace(req.GetShopId())
+	category := strings.TrimSpace(req.GetCategory())
+	rawQ := trimQuery(req.GetQuery())
+
+	if err := meili.ValidateIdentifier("product_id", productID); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := meili.ValidateIdentifier("shop_id", shopID); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := meili.ValidateIdentifier("category", category); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if productID == "" && rawQ == "" {
+		return nil, status.Error(codes.InvalidArgument, "either product_id or query is required")
+	}
+	if s.store == nil {
+		return nil, status.Error(codes.Unavailable, "vector store is not configured")
+	}
+
+	limit := req.GetLimit()
+	if limit <= 0 {
+		limit = defaultSimilarLimit
+	}
+	if limit > maxSimilarLimit {
+		limit = maxSimilarLimit
+	}
+
+	_, suspendedSet, err := s.loadSuspendedShops(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "load shop visibility: %v", err)
+	}
+	if shopID != "" && suspendedSet[shopID] {
+		return &searchv1.SimilarProductsResponse{Items: []*searchv1.SearchProductHit{}}, nil
+	}
+
+	categoryID := ""
+	if category != "" {
+		cat, catErr := s.store.GetCategoryBySlug(ctx, category)
+		if catErr == nil {
+			categoryID = cat.CategoryID
+		} else if errors.Is(catErr, pgx.ErrNoRows) {
+			categoryID = category
+		} else {
+			return nil, status.Errorf(codes.Internal, "resolve category: %v", catErr)
+		}
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, s.vectorTimeout)
+	defer cancel()
+
+	var (
+		queryVec  []float32
+		excludeID string
+	)
+
+	if productID != "" {
+		src, srcErr := s.store.GetProductEmbeddingForSimilar(callCtx, productID)
+		if errors.Is(srcErr, pgx.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "product %s not found in search index", productID)
+		}
+		if srcErr != nil {
+			return nil, status.Errorf(codes.Internal, "load product embedding: %v", srcErr)
+		}
+		if src.Deleted ||
+			!indexer.IsPublicProductStatus(src.Status) ||
+			strings.EqualFold(src.ShopStatus, "SUSPENDED") ||
+			suspendedSet[src.ShopID] ||
+			(shopID != "" && src.ShopID != shopID) {
+			return nil, status.Errorf(codes.NotFound, "product %s not found in search index", productID)
+		}
+		excludeID = productID
+		if src.Embedding != nil && len(src.Embedding.Slice()) > 0 {
+			queryVec = src.Embedding.Slice()
+		} else if rawQ != "" && s.embedder != nil {
+			vec, embErr := s.embedder.Embed(callCtx, rawQ)
+			if embErr != nil {
+				s.logger.WarnContext(ctx, "embedder failed during SimilarProducts fallback",
+					slog.String("error", embErr.Error()),
+				)
+				return nil, status.Error(codes.Unavailable, "similar products embedder unavailable")
+			}
+			queryVec = vec
+		} else {
+			return &searchv1.SimilarProductsResponse{Items: []*searchv1.SearchProductHit{}}, nil
+		}
+	} else {
+		if s.embedder == nil {
+			return nil, status.Error(codes.Unavailable, "embedder is not configured")
+		}
+		vec, embErr := s.embedder.Embed(callCtx, rawQ)
+		if embErr != nil {
+			// G14: Never log raw query text.
+			s.logger.WarnContext(ctx, "embedder failed during SimilarProducts",
+				slog.String("error", embErr.Error()),
+			)
+			return nil, status.Error(codes.Unavailable, "similar products embedder unavailable")
+		}
+		queryVec = vec
+	}
+
+	hits, vecErr := s.store.SearchVector(callCtx, store.VectorSearchParams{
+		Embedding:        queryVec,
+		CategoryID:       categoryID,
+		ShopID:           shopID,
+		ExcludeProductID: excludeID,
+		MinPriceVND:      req.GetMinPriceVnd(),
+		MaxPriceVND:      req.GetMaxPriceVnd(),
+		InStockOnly:      req.GetInStockOnly(),
+		MinSimilarity:    0,
+		Limit:            limit,
+	})
+	if vecErr != nil {
+		s.logger.WarnContext(ctx, "vector search failed during SimilarProducts",
+			slog.String("error", vecErr.Error()),
+		)
+		return nil, status.Error(codes.Unavailable, "similar products search unavailable")
+	}
+
+	filtered := filterPublicVectorHits(hits, suspendedSet, shopID, false)
+	items := make([]*searchv1.SearchProductHit, 0, len(filtered))
+	for _, it := range filtered {
+		if excludeID != "" && it.GetId() == excludeID {
+			continue
+		}
+		items = append(items, it)
+	}
+	return &searchv1.SimilarProductsResponse{Items: items}, nil
+}
+
 // ListSearchHistory lists the authenticated end-user's search history (<= 50 items, G14).
 func (s *Service) ListSearchHistory(ctx context.Context, req *searchv1.ListSearchHistoryRequest) (*searchv1.ListSearchHistoryResponse, error) {
 	claims, err := requireEndUserClaims(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if s.store == nil {
+		return nil, status.Error(codes.Unavailable, "search store unavailable")
 	}
 	limit := req.GetLimit()
 	if limit <= 0 {
@@ -645,7 +954,7 @@ func (s *Service) ListSearchHistory(ctx context.Context, req *searchv1.ListSearc
 		limit = maxHistoryLimit
 	}
 
-	rows, dbErr := s.store.Queries().ListSearchHistory(ctx, db.ListSearchHistoryParams{
+	rows, dbErr := s.store.ListSearchHistory(ctx, db.ListSearchHistoryParams{
 		UserID: claims.UserID(),
 		Limit:  limit,
 	})
@@ -673,9 +982,12 @@ func (s *Service) DeleteSearchHistory(ctx context.Context, req *searchv1.DeleteS
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
+	if s.store == nil {
+		return nil, status.Error(codes.Unavailable, "search store unavailable")
+	}
 
 	if req.GetClearAll() {
-		if dbErr := s.store.Queries().ClearSearchHistory(ctx, claims.UserID()); dbErr != nil {
+		if dbErr := s.store.ClearSearchHistory(ctx, claims.UserID()); dbErr != nil {
 			return nil, status.Errorf(codes.Internal, "clear search history: %v", dbErr)
 		}
 		return &searchv1.DeleteSearchHistoryResponse{Ok: true}, nil
@@ -685,7 +997,7 @@ func (s *Service) DeleteSearchHistory(ctx context.Context, req *searchv1.DeleteS
 	if id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required when clear_all is false")
 	}
-	if _, dbErr := s.store.Queries().DeleteSearchHistoryItem(ctx, db.DeleteSearchHistoryItemParams{
+	if _, dbErr := s.store.DeleteSearchHistoryItem(ctx, db.DeleteSearchHistoryItemParams{
 		ID:     id,
 		UserID: claims.UserID(),
 	}); dbErr != nil {
@@ -738,8 +1050,11 @@ func (s *Service) GetReindexStatus(ctx context.Context, req *searchv1.GetReindex
 	if jobID == "" {
 		return nil, status.Error(codes.InvalidArgument, "job_id is required")
 	}
+	if s.store == nil {
+		return nil, status.Error(codes.Unavailable, "search store unavailable")
+	}
 
-	job, err := s.store.Queries().GetReindexJob(ctx, jobID)
+	job, err := s.store.GetReindexJob(ctx, jobID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, status.Error(codes.NotFound, "reindex job not found")
 	}
@@ -799,6 +1114,9 @@ func (s *Service) runVectorSearch(ctx context.Context, rawQuery string, params s
 	if s.embedder == nil {
 		return nil, errors.New("embedder is not configured")
 	}
+	if s.store == nil {
+		return nil, errors.New("vector store is not configured")
+	}
 	callCtx, cancel := context.WithTimeout(ctx, s.vectorTimeout)
 	defer cancel()
 
@@ -811,7 +1129,10 @@ func (s *Service) runVectorSearch(ctx context.Context, rawQuery string, params s
 }
 
 func (s *Service) loadSuspendedShops(ctx context.Context) ([]string, map[string]bool, error) {
-	ids, err := s.store.Queries().ListSuspendedShopIDs(ctx)
+	if s.store == nil {
+		return nil, map[string]bool{}, nil
+	}
+	ids, err := s.store.ListSuspendedShopIDs(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -826,13 +1147,14 @@ func (s *Service) fuseRRF(
 	kwDocs []meili.ProductDoc,
 	vecHits []store.VectorHit,
 	suspendedSet map[string]bool,
+	requiredShopID string,
 	onlyApprovedInStock bool,
 ) []*searchv1.SearchProductHit {
 	byID := make(map[string]*searchv1.SearchProductHit, len(kwDocs)+len(vecHits))
 
 	kwRank := 0
 	for _, doc := range kwDocs {
-		if !isDocPublic(doc.Status, doc.InStock, doc.ShopID, suspendedSet, onlyApprovedInStock) {
+		if !isDocPublic(doc.Status, doc.InStock, doc.ShopID, suspendedSet, requiredShopID, onlyApprovedInStock) {
 			continue
 		}
 		kwRank++
@@ -842,7 +1164,7 @@ func (s *Service) fuseRRF(
 
 	vecRank := 0
 	for _, vh := range vecHits {
-		if !isDocPublic(vh.Status, vh.InStock, vh.ShopID, suspendedSet, onlyApprovedInStock) {
+		if !isDocPublic(vh.Status, vh.InStock, vh.ShopID, suspendedSet, requiredShopID, onlyApprovedInStock) {
 			continue
 		}
 		vecRank++
@@ -891,9 +1213,11 @@ func (s *Service) buildFacets(
 		}
 		if len(catIDs) > 0 {
 			catMap := make(map[string]db.SearchCategory, len(catIDs))
-			if rows, err := s.store.Queries().ListCategoriesByIDs(ctx, catIDs); err == nil {
-				for _, c := range rows {
-					catMap[c.CategoryID] = c
+			if s.store != nil {
+				if rows, err := s.store.ListCategoriesByIDs(ctx, catIDs); err == nil {
+					for _, c := range rows {
+						catMap[c.CategoryID] = c
+					}
 				}
 			}
 			catFacets = make([]*searchv1.FacetCount, 0, len(catIDs))
@@ -925,9 +1249,11 @@ func (s *Service) buildFacets(
 		}
 		if len(shopIDs) > 0 {
 			shopMap := make(map[string]db.SearchShop, len(shopIDs))
-			if rows, err := s.store.Queries().ListShopsByIDs(ctx, shopIDs); err == nil {
-				for _, sh := range rows {
-					shopMap[sh.ShopID] = sh
+			if s.store != nil {
+				if rows, err := s.store.ListShopsByIDs(ctx, shopIDs); err == nil {
+					for _, sh := range rows {
+						shopMap[sh.ShopID] = sh
+					}
 				}
 			}
 			shopFacets = make([]*searchv1.FacetCount, 0, len(shopIDs))
@@ -991,7 +1317,7 @@ func matchesCatalogVocabulary(
 	return false
 }
 
-func (s *Service) computeDidYouMean(ctx context.Context, qFolded string) string {
+func (s *Service) computeDidYouMean(ctx context.Context, qFolded, shopID string) string {
 	bestTerm := ""
 	bestDist := 3
 
@@ -1009,14 +1335,25 @@ func (s *Service) computeDidYouMean(ctx context.Context, qFolded string) string 
 	for term := range s.synonyms {
 		checkCandidate(term, term)
 	}
-	if cats, err := s.store.Queries().ListAllCategories(ctx); err == nil {
-		for _, c := range cats {
-			checkCandidate(c.Name, c.NameFolded)
+	if s.store != nil {
+		var (
+			cats []db.SearchCategory
+			err  error
+		)
+		if shopID != "" {
+			cats, err = s.store.ListCategoriesByShop(ctx, shopID)
+		} else {
+			cats, err = s.store.ListAllCategories(ctx)
+		}
+		if err == nil {
+			for _, c := range cats {
+				checkCandidate(c.Name, c.NameFolded)
+			}
 		}
 	}
 	if s.trending != nil {
 		tCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-		if vals, err := s.trending.Top(tCtx, "", 20); err == nil {
+		if vals, err := s.trending.TopForShop(tCtx, shopID, "", 20); err == nil {
 			for _, v := range vals {
 				checkCandidate(v, textnorm.NormalizeSearchText(v))
 			}
@@ -1036,10 +1373,10 @@ func adjustTotal(rawTotal int64, rawCount, filteredCount int) int64 {
 	return rawTotal
 }
 
-func filterPublicMeiliHits(docs []meili.ProductDoc, suspendedSet map[string]bool, onlyApprovedInStock bool) []*searchv1.SearchProductHit {
+func filterPublicMeiliHits(docs []meili.ProductDoc, suspendedSet map[string]bool, requiredShopID string, onlyApprovedInStock bool) []*searchv1.SearchProductHit {
 	out := make([]*searchv1.SearchProductHit, 0, len(docs))
 	for i, d := range docs {
-		if !isDocPublic(d.Status, d.InStock, d.ShopID, suspendedSet, onlyApprovedInStock) {
+		if !isDocPublic(d.Status, d.InStock, d.ShopID, suspendedSet, requiredShopID, onlyApprovedInStock) {
 			continue
 		}
 		score := 1.0 / float64(i+1)
@@ -1048,10 +1385,10 @@ func filterPublicMeiliHits(docs []meili.ProductDoc, suspendedSet map[string]bool
 	return out
 }
 
-func filterPublicVectorHits(hits []store.VectorHit, suspendedSet map[string]bool, onlyApprovedInStock bool) []*searchv1.SearchProductHit {
+func filterPublicVectorHits(hits []store.VectorHit, suspendedSet map[string]bool, requiredShopID string, onlyApprovedInStock bool) []*searchv1.SearchProductHit {
 	out := make([]*searchv1.SearchProductHit, 0, len(hits))
 	for _, h := range hits {
-		if !isDocPublic(h.Status, h.InStock, h.ShopID, suspendedSet, onlyApprovedInStock) {
+		if !isDocPublic(h.Status, h.InStock, h.ShopID, suspendedSet, requiredShopID, onlyApprovedInStock) {
 			continue
 		}
 		out = append(out, vectorHitToProto(h, h.Similarity))
@@ -1059,7 +1396,10 @@ func filterPublicVectorHits(hits []store.VectorHit, suspendedSet map[string]bool
 	return out
 }
 
-func isDocPublic(statusStr string, inStock bool, shopID string, suspendedSet map[string]bool, onlyApprovedInStock bool) bool {
+func isDocPublic(statusStr string, inStock bool, shopID string, suspendedSet map[string]bool, requiredShopID string, onlyApprovedInStock bool) bool {
+	if requiredShopID != "" && shopID != requiredShopID {
+		return false
+	}
 	if suspendedSet[shopID] {
 		return false
 	}

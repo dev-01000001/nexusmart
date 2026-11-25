@@ -1,4 +1,4 @@
-import { isAdminStaffRole } from "./admin-rbac";
+import { isAdminStaffRole } from "./admin-rbac.ts";
 
 const BASE_ORIGIN = "http://nexusmart.local";
 const CONTROL_CHAR_RE = /[\u0000-\u001f\u007f]/;
@@ -30,8 +30,31 @@ export function sanitizeNextPath(raw: string | null | undefined, fallback = "/")
       !parsed.pathname.startsWith("/") ||
       parsed.pathname.startsWith("//") ||
       parsed.pathname.includes("\\") ||
-      CONTROL_CHAR_RE.test(parsed.pathname)
+      CONTROL_CHAR_RE.test(parsed.pathname) ||
+      /^\/%(?:2f|5c)/i.test(parsed.pathname)
     ) {
+      return fallback;
+    }
+    try {
+      const decodedPathname = decodeURIComponent(parsed.pathname);
+      if (
+        decodedPathname.startsWith("//") ||
+        decodedPathname.includes("\\") ||
+        CONTROL_CHAR_RE.test(decodedPathname)
+      ) {
+        return fallback;
+      }
+      const decodedParsed = new URL(decodedPathname, BASE_ORIGIN);
+      if (
+        decodedParsed.origin !== BASE_ORIGIN ||
+        !decodedParsed.pathname.startsWith("/") ||
+        decodedParsed.pathname.startsWith("//") ||
+        decodedParsed.pathname.includes("\\") ||
+        CONTROL_CHAR_RE.test(decodedParsed.pathname)
+      ) {
+        return fallback;
+      }
+    } catch {
       return fallback;
     }
     const normalized = `${parsed.pathname}${parsed.search}${parsed.hash}`;

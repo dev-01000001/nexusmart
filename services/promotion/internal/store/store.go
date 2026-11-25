@@ -48,9 +48,11 @@ const voucherSelectColumns = `id, code, name, scope, shop_id, discount_type, val
 	rules_version, redis_sync_version, redis_synced_version,
 	created_by, created_at, updated_at`
 
+const flashSaleSelectColumns = `id, name, starts_at, ends_at, status, min_discount_percent, category_ids, created_by, created_at, updated_at`
+
 const flashItemSelectColumns = `fsi.id, fsi.flash_sale_id, fsi.shop_id, fsi.sku_id, fsi.original_price_vnd, fsi.flash_price_vnd,
 	fsi.total_slots, fsi.remaining_slots, fsi.per_user_limit, fsi.status, fsi.rejection_reason,
-	fsi.approved_by, fs.starts_at, fs.ends_at, fsi.created_at, fsi.updated_at`
+	fsi.approved_by, fs.status, fsi.stock_released_at, fs.starts_at, fs.ends_at, fsi.created_at, fsi.updated_at`
 
 // Store defines the persistence contract for the promotion service.
 type Store interface {
@@ -88,6 +90,9 @@ type Store interface {
 	ListApprovedFlashSaleItems(ctx context.Context) ([]domain.FlashSaleItem, error)
 	ListActiveApprovedFlashSaleItems(ctx context.Context, now time.Time) ([]domain.FlashSaleItem, error)
 	HasOverlappingApprovedFlashSale(ctx context.Context, skuID string, startsAt, endsAt, now time.Time) (bool, error)
+	EndFlashSaleWindow(ctx context.Context, windowID string, now time.Time) (fs *domain.FlashSale, unreleasedApproved []domain.FlashSaleItem, err error)
+	MarkFlashSaleItemStockReleased(ctx context.Context, itemID string, releasedAt time.Time) error
+	ListExpiredUnreleasedFlashSaleItems(ctx context.Context, now time.Time) ([]domain.FlashSaleItem, error)
 
 	// Shop discount programs (UC-S18)
 	CreateShopDiscountProgram(ctx context.Context, prog domain.ShopDiscountProgram, now time.Time) (*domain.ShopDiscountProgram, error)
@@ -101,6 +106,7 @@ type Store interface {
 	// Coins & events
 	GetCoinBalance(ctx context.Context, userID string, recentLimit int) (int64, []domain.CoinTransaction, error)
 	CreditCoins(ctx context.Context, userID string, amount int64, reason, referenceID string) (balance int64, alreadyCredited bool, err error)
+	IsEventProcessed(ctx context.Context, eventID string) (bool, error)
 	ProcessOrderCompletedEvent(ctx context.Context, eventID, subject, orderID, buyerID string, coinsReward int64) (alreadyProcessed bool, err error)
 
 	// Shop suspension state (F12)
@@ -206,7 +212,7 @@ func (s *PostgresStore) CreateVoucher(ctx context.Context, v domain.Voucher) (*d
 	}
 	v.IsActive = v.Status == domain.VoucherStatusActive
 
-	catJSON, err := marshalStringSliceJSON(v.CategoryIDs)
+	catJSON, err := marshalJSONArray(v.CategoryIDs)
 	if err != nil {
 		return nil, fmt.Errorf("marshal voucher category_ids: %w", err)
 	}
@@ -297,7 +303,7 @@ func (s *PostgresStore) UpdateVoucher(
 			FROM promotion_reservations
 			WHERE status = 'RESERVED'
 			  AND vouchers_json @> jsonb_build_array(jsonb_build_object('voucher_id', $1::text))
-			  AND ($2 = '' OR NOT (released_shops_json ? $2))
+			  AND ($2 = '' OR NOT (jsonb_typeof(released_shops_json) = 'array' AND released_shops_json ? $2))
 		)
 	`, cur.ID, shopFilter).Scan(&hasActiveReservation); err != nil {
 		return nil, fmt.Errorf("check active reservations for voucher: %w", err)
@@ -307,7 +313,7 @@ func (s *PostgresStore) UpdateVoucher(
 		return nil, err
 	}
 
-	catJSON, err := marshalStringSliceJSON(cur.CategoryIDs)
+	catJSON, err := marshalJSONArray(cur.CategoryIDs)
 	if err != nil {
 		return nil, fmt.Errorf("marshal voucher category_ids: %w", err)
 	}
@@ -849,22 +855,25 @@ func (s *PostgresStore) CreateFlashSale(ctx context.Context, fs domain.FlashSale
 	if fs.ID == "" {
 		fs.ID = uuid.NewString()
 	}
+	if fs.Status == "" {
+		fs.Status = domain.FlashWindowStatusActive
+	}
 	now := time.Now().UTC()
 	fs.CreatedAt = now
 	fs.UpdatedAt = now
 
-	catJSON, err := marshalStringSliceJSON(fs.CategoryIDs)
+	catJSON, err := marshalJSONArray(fs.CategoryIDs)
 	if err != nil {
 		return nil, fmt.Errorf("marshal flash sale category_ids: %w", err)
 	}
 
 	const q = `
-		INSERT INTO flash_sales (id, name, starts_at, ends_at, min_discount_percent, category_ids, created_by, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
-		RETURNING id, name, starts_at, ends_at, min_discount_percent, category_ids, created_by, created_at, updated_at
+		INSERT INTO flash_sales (id, name, starts_at, ends_at, status, min_discount_percent, category_ids, created_by, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
+		RETURNING ` + flashSaleSelectColumns + `
 	`
 	out, err := scanFlashSale(s.pool.QueryRow(ctx, q,
-		fs.ID, fs.Name, fs.StartsAt.UTC(), fs.EndsAt.UTC(), fs.MinDiscountPercent, string(catJSON),
+		fs.ID, fs.Name, fs.StartsAt.UTC(), fs.EndsAt.UTC(), fs.Status, fs.MinDiscountPercent, string(catJSON),
 		fs.CreatedBy, fs.CreatedAt, fs.UpdatedAt,
 	))
 	if err != nil {
@@ -875,7 +884,7 @@ func (s *PostgresStore) CreateFlashSale(ctx context.Context, fs domain.FlashSale
 
 func (s *PostgresStore) GetFlashSale(ctx context.Context, id string) (*domain.FlashSale, error) {
 	const q = `
-		SELECT id, name, starts_at, ends_at, min_discount_percent, category_ids, created_by, created_at, updated_at
+		SELECT ` + flashSaleSelectColumns + `
 		FROM flash_sales
 		WHERE id = $1
 	`
@@ -909,14 +918,15 @@ func (s *PostgresStore) RegisterFlashSaleItem(ctx context.Context, item domain.F
 	}
 
 	var startsAt, endsAt time.Time
-	err = tx.QueryRow(ctx, `SELECT starts_at, ends_at FROM flash_sales WHERE id = $1`, item.FlashSaleID).Scan(&startsAt, &endsAt)
+	var windowStatus string
+	err = tx.QueryRow(ctx, `SELECT starts_at, ends_at, status FROM flash_sales WHERE id = $1`, item.FlashSaleID).Scan(&startsAt, &endsAt, &windowStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("query flash sale window: %w", err)
 	}
-	if !endsAt.After(now) {
+	if windowStatus == domain.FlashWindowStatusEnded || !endsAt.After(now) {
 		return nil, ErrFlashSaleEnded
 	}
 
@@ -927,6 +937,7 @@ func (s *PostgresStore) RegisterFlashSaleItem(ctx context.Context, item domain.F
 		JOIN flash_sales fs ON fs.id = fsi.flash_sale_id
 		WHERE fsi.sku_id = $1
 		  AND fsi.status IN ('PENDING', 'APPROVED')
+		  AND fs.status <> 'ENDED'
 		  AND fs.starts_at < $2
 		  AND fs.ends_at > $3
 	`
@@ -963,6 +974,7 @@ func (s *PostgresStore) RegisterFlashSaleItem(ctx context.Context, item domain.F
 	if err != nil {
 		return nil, fmt.Errorf("insert flash sale item: %w", err)
 	}
+	out.WindowStatus = windowStatus
 	out.StartsAt = startsAt
 	out.EndsAt = endsAt
 
@@ -1009,13 +1021,16 @@ func (s *PostgresStore) ApproveFlashSaleItem(
 		FROM flash_sale_items fsi
 		JOIN flash_sales fs ON fs.id = fsi.flash_sale_id
 		WHERE fsi.id = $1
-		FOR UPDATE OF fsi
+		FOR UPDATE OF fsi, fs
 	`, itemID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, "", ErrNotFound
 	}
 	if err != nil {
 		return nil, "", fmt.Errorf("lock flash sale item: %w", err)
+	}
+	if approve && cur.WindowStatus == domain.FlashWindowStatusEnded {
+		return nil, "", ErrFlashSaleEnded
 	}
 
 	prevStatus := cur.Status
@@ -1047,6 +1062,7 @@ func (s *PostgresStore) ApproveFlashSaleItem(
 			WHERE fsi.id <> $1
 			  AND fsi.sku_id = $2
 			  AND fsi.status IN ('PENDING', 'APPROVED')
+			  AND fs.status <> 'ENDED'
 			  AND fs.starts_at < $3
 			  AND fs.ends_at > $4
 		`
@@ -1064,6 +1080,7 @@ func (s *PostgresStore) ApproveFlashSaleItem(
 			rejection_reason = $3,
 			approved_by = $4,
 			original_price_vnd = CASE WHEN $5 > 0 THEN $5 ELSE fsi.original_price_vnd END,
+			stock_released_at = CASE WHEN $2 = 'APPROVED' THEN NULL ELSE fsi.stock_released_at END,
 			updated_at = NOW()
 		FROM flash_sales fs
 		WHERE fsi.id = $1 AND fs.id = fsi.flash_sale_id
@@ -1147,16 +1164,16 @@ func (s *PostgresStore) ListFlashSales(ctx context.Context, now time.Time, inclu
 	var salesQ string
 	if includeUpcoming {
 		salesQ = `
-			SELECT id, name, starts_at, ends_at, min_discount_percent, category_ids, created_by, created_at, updated_at
+			SELECT ` + flashSaleSelectColumns + `
 			FROM flash_sales
-			WHERE ends_at > $1
+			WHERE status <> 'ENDED' AND ends_at > $1
 			ORDER BY starts_at ASC, id ASC
 		`
 	} else {
 		salesQ = `
-			SELECT id, name, starts_at, ends_at, min_discount_percent, category_ids, created_by, created_at, updated_at
+			SELECT ` + flashSaleSelectColumns + `
 			FROM flash_sales
-			WHERE starts_at <= $1 AND ends_at > $1
+			WHERE status <> 'ENDED' AND starts_at <= $1 AND ends_at > $1
 			ORDER BY starts_at ASC, id ASC
 		`
 	}
@@ -1203,13 +1220,13 @@ func (s *PostgresStore) ListAllFlashSales(ctx context.Context, now time.Time, st
 	args := []any{}
 	switch statusFilter {
 	case "UPCOMING":
-		whereClause = "starts_at > $1"
+		whereClause = "status <> 'ENDED' AND starts_at > $1"
 		args = append(args, now.UTC())
 	case "ACTIVE":
-		whereClause = "starts_at <= $1 AND ends_at > $1"
+		whereClause = "status <> 'ENDED' AND starts_at <= $1 AND ends_at > $1"
 		args = append(args, now.UTC())
 	case "ENDED":
-		whereClause = "ends_at <= $1"
+		whereClause = "status = 'ENDED' OR ends_at <= $1"
 		args = append(args, now.UTC())
 	}
 
@@ -1224,12 +1241,12 @@ func (s *PostgresStore) ListAllFlashSales(ctx context.Context, now time.Time, st
 	limitIdx := len(args) + 1
 	offsetIdx := len(args) + 2
 	listQ := fmt.Sprintf(`
-		SELECT id, name, starts_at, ends_at, min_discount_percent, category_ids, created_by, created_at, updated_at
+		SELECT %s
 		FROM flash_sales
 		WHERE %s
 		ORDER BY starts_at DESC, id ASC
 		LIMIT $%d OFFSET $%d
-	`, whereClause, limitIdx, offsetIdx)
+	`, flashSaleSelectColumns, whereClause, limitIdx, offsetIdx)
 	queryArgs := append(append([]any(nil), args...), pageSize, offset)
 
 	rows, err := s.pool.Query(ctx, listQ, queryArgs...)
@@ -1376,6 +1393,8 @@ func (s *PostgresStore) ListApprovedFlashSaleItems(ctx context.Context) ([]domai
 		FROM flash_sale_items fsi
 		JOIN flash_sales fs ON fs.id = fsi.flash_sale_id
 		WHERE fsi.status = 'APPROVED'
+		  AND fs.status <> 'ENDED'
+		  AND fs.ends_at > NOW()
 	`
 	return s.queryFlashSaleItems(ctx, q)
 }
@@ -1385,7 +1404,9 @@ func (s *PostgresStore) ListActiveApprovedFlashSaleItems(ctx context.Context, no
 		SELECT ` + flashItemSelectColumns + `
 		FROM flash_sale_items fsi
 		JOIN flash_sales fs ON fs.id = fsi.flash_sale_id
-		WHERE fsi.status = 'APPROVED' AND fs.ends_at > $1
+		WHERE fsi.status = 'APPROVED'
+		  AND fs.status <> 'ENDED'
+		  AND fs.ends_at > $1
 	`
 	return s.queryFlashSaleItems(ctx, q, now.UTC())
 }
@@ -1398,6 +1419,7 @@ func (s *PostgresStore) HasOverlappingApprovedFlashSale(ctx context.Context, sku
 			JOIN flash_sales fs ON fs.id = fsi.flash_sale_id
 			WHERE fsi.sku_id = $1
 			  AND fsi.status = 'APPROVED'
+			  AND fs.status <> 'ENDED'
 			  AND fs.ends_at > $2
 			  AND fs.starts_at < $3
 			  AND fs.ends_at > $4
@@ -1408,6 +1430,108 @@ func (s *PostgresStore) HasOverlappingApprovedFlashSale(ctx context.Context, sku
 		return false, fmt.Errorf("check overlapping approved flash sale: %w", err)
 	}
 	return exists, nil
+}
+
+func (s *PostgresStore) EndFlashSaleWindow(ctx context.Context, windowID string, now time.Time) (*domain.FlashSale, []domain.FlashSaleItem, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin end flash sale window tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	fs, err := scanFlashSale(tx.QueryRow(ctx, `
+		UPDATE flash_sales
+		SET status = 'ENDED',
+			ends_at = CASE WHEN $2 > starts_at THEN LEAST(ends_at, $2) ELSE ends_at END,
+			updated_at = NOW()
+		WHERE id = $1
+		RETURNING `+flashSaleSelectColumns,
+		windowID, now.UTC(),
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("end flash sale window: %w", err)
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT `+flashItemSelectColumns+`
+		FROM flash_sale_items fsi
+		JOIN flash_sales fs ON fs.id = fsi.flash_sale_id
+		WHERE fsi.flash_sale_id = $1
+		  AND fsi.status = 'APPROVED'
+		ORDER BY fsi.created_at ASC, fsi.id ASC
+	`, windowID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list window items for end: %w", err)
+	}
+	defer rows.Close()
+
+	var unreleased []domain.FlashSaleItem
+	for rows.Next() {
+		item, scanErr := scanFlashSaleItem(rows)
+		if scanErr != nil {
+			return nil, nil, fmt.Errorf("scan window item: %w", scanErr)
+		}
+		fs.Items = append(fs.Items, *item)
+		if item.StockReleasedAt == nil {
+			unreleased = append(unreleased, *item)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("iterate window items: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, fmt.Errorf("commit end flash sale window: %w", err)
+	}
+	return fs, unreleased, nil
+}
+
+func (s *PostgresStore) MarkFlashSaleItemStockReleased(ctx context.Context, itemID string, releasedAt time.Time) error {
+	if releasedAt.IsZero() {
+		releasedAt = time.Now().UTC()
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE flash_sale_items
+		SET stock_released_at = COALESCE(stock_released_at, $2),
+			updated_at = NOW()
+		WHERE id = $1
+	`, itemID, releasedAt.UTC())
+	if err != nil {
+		return fmt.Errorf("mark flash sale item stock released: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) ListExpiredUnreleasedFlashSaleItems(ctx context.Context, now time.Time) ([]domain.FlashSaleItem, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE flash_sales
+		SET status = 'ENDED', updated_at = NOW()
+		WHERE status = 'ACTIVE' AND ends_at <= $1
+	`, now.UTC()); err != nil {
+		return nil, fmt.Errorf("mark expired flash sales ended: %w", err)
+	}
+
+	const q = `
+		SELECT ` + flashItemSelectColumns + `
+		FROM flash_sale_items fsi
+		JOIN flash_sales fs ON fs.id = fsi.flash_sale_id
+		WHERE fsi.status = 'APPROVED'
+		  AND fsi.stock_released_at IS NULL
+		  AND (fs.status = 'ENDED' OR fs.ends_at <= $1)
+		ORDER BY fs.ends_at ASC, fsi.id ASC
+		LIMIT 100
+	`
+	return s.queryFlashSaleItems(ctx, q, now.UTC())
 }
 
 func (s *PostgresStore) GetCoinBalance(ctx context.Context, userID string, recentLimit int) (int64, []domain.CoinTransaction, error) {
@@ -1471,6 +1595,14 @@ func (s *PostgresStore) CreditCoins(ctx context.Context, userID string, amount i
 		return 0, false, fmt.Errorf("commit credit coins: %w", err)
 	}
 	return bal, already, nil
+}
+
+func (s *PostgresStore) IsEventProcessed(ctx context.Context, eventID string) (bool, error) {
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM processed_events WHERE event_id = $1)`, eventID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check processed event: %w", err)
+	}
+	return exists, nil
 }
 
 func (s *PostgresStore) ProcessOrderCompletedEvent(ctx context.Context, eventID, subject, orderID, buyerID string, coinsReward int64) (bool, error) {
@@ -1698,15 +1830,15 @@ func (s *PostgresStore) CommitReservation(ctx context.Context, res domain.Promot
 		return nil, false, fmt.Errorf("query existing reservation: %w", err)
 	}
 
-	vouchersJSON, err := json.Marshal(nonNilSlice(res.Vouchers))
+	vouchersJSON, err := marshalJSONArray(res.Vouchers)
 	if err != nil {
 		return nil, false, fmt.Errorf("marshal reserved vouchers: %w", err)
 	}
-	flashJSON, err := json.Marshal(nonNilSlice(res.FlashSaleItems))
+	flashJSON, err := marshalJSONArray(res.FlashSaleItems)
 	if err != nil {
 		return nil, false, fmt.Errorf("marshal reserved flash items: %w", err)
 	}
-	shopProgJSON, err := json.Marshal(nonNilSlice(res.ShopProgramItems))
+	shopProgJSON, err := marshalJSONArray(res.ShopProgramItems)
 	if err != nil {
 		return nil, false, fmt.Errorf("marshal reserved shop program items: %w", err)
 	}
@@ -1822,6 +1954,7 @@ func (s *PostgresStore) CommitReservation(ctx context.Context, res domain.Promot
 			WHERE fsi.id = $1
 			  AND fs.id = fsi.flash_sale_id
 			  AND fsi.status = 'APPROVED'
+			  AND fs.status <> 'ENDED'
 			  AND fsi.remaining_slots >= $2
 			  AND fs.starts_at <= $3
 			  AND fs.ends_at > $3
@@ -2004,7 +2137,7 @@ func (s *PostgresStore) ReleaseReservation(ctx context.Context, orderID string) 
 		return nil, err
 	}
 
-	releasedShopsJSON, err := json.Marshal(plan.newReleasedShops)
+	releasedShopsJSON, err := marshalJSONArray(plan.newReleasedShops)
 	if err != nil {
 		return nil, fmt.Errorf("marshal released shops: %w", err)
 	}
@@ -2041,6 +2174,19 @@ func (s *PostgresStore) ReleaseReservationShop(ctx context.Context, orderID, sho
 		FOR UPDATE
 	`, orderID))
 	if errors.Is(err, pgx.ErrNoRows) {
+		clawedBack, cbErr := clawbackOrderRewardInTx(ctx, tx, orderID)
+		if cbErr != nil {
+			return nil, cbErr
+		}
+		if clawedBack > 0 {
+			if err := tx.Commit(ctx); err != nil {
+				return nil, fmt.Errorf("commit reward clawback tx: %w", err)
+			}
+			return &ShopReleaseResult{
+				AlreadyReleased:       false,
+				RewardCoinsClawedBack: clawedBack,
+			}, nil
+		}
 		return &ShopReleaseResult{AlreadyReleased: true}, nil
 	}
 	if err != nil {
@@ -2069,6 +2215,17 @@ func (s *PostgresStore) ReleaseReservationShop(ctx context.Context, orderID, sho
 		AllShopPrograms:             existing.ShopProgramItems,
 	}
 	if plan.alreadyReleased {
+		clawedBack, cbErr := clawbackOrderRewardInTx(ctx, tx, orderID)
+		if cbErr != nil {
+			return nil, cbErr
+		}
+		if clawedBack > 0 {
+			if err := tx.Commit(ctx); err != nil {
+				return nil, fmt.Errorf("commit reward clawback tx: %w", err)
+			}
+			result.AlreadyReleased = false
+			result.RewardCoinsClawedBack = clawedBack
+		}
 		return result, nil
 	}
 
@@ -2083,6 +2240,12 @@ func (s *PostgresStore) ReleaseReservationShop(ctx context.Context, orderID, sho
 		}
 	}
 
+	clawedBack, cbErr := clawbackOrderRewardInTx(ctx, tx, orderID)
+	if cbErr != nil {
+		return nil, cbErr
+	}
+	result.RewardCoinsClawedBack = clawedBack
+
 	if err := restoreVouchersAndFlashInTx(ctx, tx, plan.vouchersToRelease, plan.flashToRelease); err != nil {
 		return nil, err
 	}
@@ -2090,7 +2253,7 @@ func (s *PostgresStore) ReleaseReservationShop(ctx context.Context, orderID, sho
 		return nil, err
 	}
 
-	releasedShopsJSON, err := json.Marshal(plan.newReleasedShops)
+	releasedShopsJSON, err := marshalJSONArray(plan.newReleasedShops)
 	if err != nil {
 		return nil, fmt.Errorf("marshal released shops: %w", err)
 	}
@@ -2316,11 +2479,75 @@ func scanVoucher(row rowScanner) (*domain.Voucher, error) {
 	return &v, nil
 }
 
+func clawbackOrderRewardInTx(ctx context.Context, tx pgx.Tx, orderID string) (int64, error) {
+	orderID = strings.TrimSpace(orderID)
+	if orderID == "" {
+		return 0, nil
+	}
+	var rewardUserID string
+	var rewardDelta int64
+	err := tx.QueryRow(ctx, `
+		SELECT user_id, delta
+		FROM coin_transactions
+		WHERE reference_id = $1
+		  AND reason = 'order_completed_reward'
+		  AND delta > 0
+		ORDER BY created_at ASC, id ASC
+		LIMIT 1
+	`, orderID).Scan(&rewardUserID, &rewardDelta)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("lookup order reward coins: %w", err)
+	}
+	if rewardDelta <= 0 || rewardUserID == "" {
+		return 0, nil
+	}
+
+	var curBalance int64
+	err = tx.QueryRow(ctx, `SELECT balance FROM coin_accounts WHERE user_id = $1 FOR UPDATE`, rewardUserID).Scan(&curBalance)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("lock coin account for clawback: %w", err)
+	}
+	clawback := rewardDelta
+	if clawback > curBalance {
+		clawback = curBalance
+	}
+	if clawback <= 0 {
+		return 0, nil
+	}
+
+	clawbackRef := "order_refund_reward_clawback:" + orderID
+	cbTag, err := tx.Exec(ctx, `
+		INSERT INTO coin_transactions (id, user_id, delta, reason, reference_id)
+		VALUES ($1, $2, $3, 'order_refund_reward_clawback', $4)
+		ON CONFLICT (reference_id) DO NOTHING
+	`, uuid.NewString(), rewardUserID, -clawback, clawbackRef)
+	if err != nil {
+		return 0, fmt.Errorf("insert reward clawback tx: %w", err)
+	}
+	if cbTag.RowsAffected() == 0 {
+		return 0, nil
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE coin_accounts
+		SET balance = balance - $2, updated_at = NOW()
+		WHERE user_id = $1
+	`, rewardUserID, clawback); err != nil {
+		return 0, fmt.Errorf("debit coin account for clawback: %w", err)
+	}
+	return clawback, nil
+}
+
 func scanFlashSale(row rowScanner) (*domain.FlashSale, error) {
 	var fs domain.FlashSale
 	var catRaw []byte
 	err := row.Scan(
-		&fs.ID, &fs.Name, &fs.StartsAt, &fs.EndsAt, &fs.MinDiscountPercent, &catRaw,
+		&fs.ID, &fs.Name, &fs.StartsAt, &fs.EndsAt, &fs.Status, &fs.MinDiscountPercent, &catRaw,
 		&fs.CreatedBy, &fs.CreatedAt, &fs.UpdatedAt,
 	)
 	if err != nil {
@@ -2337,7 +2564,7 @@ func scanFlashSaleItem(row rowScanner) (*domain.FlashSaleItem, error) {
 	err := row.Scan(
 		&item.ID, &item.FlashSaleID, &item.ShopID, &item.SKUID, &item.OriginalPriceVND, &item.FlashPriceVND,
 		&item.TotalSlots, &item.RemainingSlots, &item.PerUserLimit, &item.Status, &item.RejectionReason,
-		&item.ApprovedBy, &item.StartsAt, &item.EndsAt, &item.CreatedAt, &item.UpdatedAt,
+		&item.ApprovedBy, &item.WindowStatus, &item.StockReleasedAt, &item.StartsAt, &item.EndsAt, &item.CreatedAt, &item.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -2372,18 +2599,11 @@ func scanReservation(row rowScanner) (*domain.PromotionReservation, error) {
 	return &res, nil
 }
 
-func marshalStringSliceJSON(s []string) ([]byte, error) {
+func marshalJSONArray[T any](s []T) ([]byte, error) {
 	if s == nil {
-		s = []string{}
+		return []byte("[]"), nil
 	}
 	return json.Marshal(s)
-}
-
-func nonNilSlice[T any](s []T) []T {
-	if s == nil {
-		return []T{}
-	}
-	return s
 }
 
 func normalizePage(page, pageSize int32) (int32, int32) {

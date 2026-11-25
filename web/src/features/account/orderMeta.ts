@@ -13,8 +13,8 @@ import {
   formatCarrierLabel,
   formatVnd,
   formatVoucherBenefit,
-} from "@/lib/format";
-import { isPaymentDeadlinePassed } from "@/features/checkout/helpers";
+} from "../../lib/format.ts";
+import { isPaymentDeadlinePassed } from "../checkout/helpers.ts";
 
 export { formatVoucherBenefit };
 
@@ -747,11 +747,17 @@ export function parseSafeEvidenceUrl(
 /**
  * Builds the same-origin BFF shipping label path so the browser sends HttpOnly session cookies
  * instead of navigating directly to the gateway origin without a Bearer token.
+ * Passing `orderId` binds the label request to a specific order (required on tenant site hosts).
  */
-export function buildShippingLabelHref(trackingCode: string | null | undefined): string | null {
+export function buildShippingLabelHref(
+  trackingCode: string | null | undefined,
+  orderId?: string | null
+): string | null {
   const clean = (trackingCode ?? "").trim();
   if (!clean) return null;
-  return `/api/gw/shipping/labels/${encodeURIComponent(clean)}`;
+  const base = `/api/shipping/labels/${encodeURIComponent(clean)}`;
+  const cleanOrderId = (orderId ?? "").trim();
+  return cleanOrderId ? `${base}?order_id=${encodeURIComponent(cleanOrderId)}` : base;
 }
 
 export function validateEvidenceUrls(rawUrls: readonly string[]): {

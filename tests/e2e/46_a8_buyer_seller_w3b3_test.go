@@ -960,7 +960,11 @@ func TestE2E_W3B3_A8_UC_B26_UpdateOrderAddress(t *testing.T) {
 		}
 
 		// Buyer receives in-app confirmation (no PII leak) and no duplicate email for address update.
-		buyerNotif := w3b46WaitNotificationByLinkAndSubstr(t, env, buyer.AccessToken, "/don-hang/"+ord.ID, ord.OrderCode)
+		// Per sitelink.go (merged notification contract), MARKETPLACE orders carry an empty buyer link "".
+		buyerNotif := w3b46WaitNotificationByLinkAndSubstr(t, env, buyer.AccessToken, "", ord.OrderCode)
+		if buyerNotif.Link != "" {
+			t.Fatalf("G3 MARKETPLACE buyer notification link = %q, want empty \"\" (no platform buyer order page)", buyerNotif.Link)
+		}
 		buyerNotifText := buyerNotif.Title + "\n" + buyerNotif.Body
 		if strings.Contains(buyerNotifText, secretFarStreet) || strings.Contains(buyerNotifText, secretPhone) {
 			t.Fatalf("G3 buyer notification leaked PII: %q", buyerNotifText)
@@ -1019,6 +1023,7 @@ func TestE2E_W3B3_A8_UC_B26_UpdateOrderAddress(t *testing.T) {
 		coResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3b46-b26-multi-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:      "MARKETPLACE",
 			AddressID:         addrFar.ID,
 			FromCart:          false,
 			Items:             []CheckoutItemInputDTO{{SKUID: sku1.ID, Quantity: 1}, {SKUID: sku2.ID, Quantity: 1}},
@@ -1160,6 +1165,7 @@ func TestE2E_W3B3_A8_UC_B26_UpdateOrderAddress(t *testing.T) {
 		vqrResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3b46-vqr-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addrSame.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku1.ID, Quantity: 1}},
 			PaymentMethod: "VIETQR",
@@ -1262,6 +1268,7 @@ func TestE2E_W3B3_A8_UC_B26_UpdateOrderAddress(t *testing.T) {
 		zpResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3b46-zp-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addrFar.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku1.ID, Quantity: 1}},
 			PaymentMethod: "ZALOPAY",
@@ -1492,6 +1499,7 @@ func TestE2E_W3B3_A8_UC_S15_BatchShipPickingListAndBatchPDFLabels(t *testing.T) 
 		resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3b46-s15-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     vietAddr.ID,
 			Items:         items,
 			PaymentMethod: "COD",
@@ -2051,6 +2059,7 @@ func TestE2E_W3B3_A8_S03_S04_B15_StockHistoryPaginationAndVouchers(t *testing.T)
 		coResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3b46-s03-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     buyer.AddressID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 2}},
 			PaymentMethod: "VIETQR",
@@ -2221,7 +2230,7 @@ func TestE2E_W3B3_A8_Z_UC_B08_GuestOrderLookupAndRateLimits(t *testing.T) {
 
 	lookupRaw := func(rawBody []byte) (int, http.Header, []byte) {
 		t.Helper()
-		return w3b42RawHTTP(env.ctx(t), t, http.MethodPost, env.cfg.GatewayURL+"/api/v1/orders/lookup", "", "application/json", rawBody)
+		return w3b42RawHTTPNoRetry(env.ctx(t), t, http.MethodPost, env.cfg.GatewayURL+"/api/v1/orders/lookup", "", "application/json", rawBody)
 	}
 	lookupJSON := func(code, phone string) (int, http.Header, []byte) {
 		t.Helper()

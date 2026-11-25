@@ -741,7 +741,7 @@ func TestGatewayForwardsClientIPMetadataToDownstreamGRPC(t *testing.T) {
 		t.Fatalf("trusted review shop expected x-client-ip=[203.0.113.88], got %v", vals)
 	}
 
-	reqCheckout := httptest.NewRequest(http.MethodPost, "/api/v1/checkout", strings.NewReader(`{"address_id":"a1","from_cart":true,"payment_method":"VIETQR"}`))
+	reqCheckout := httptest.NewRequest(http.MethodPost, "/api/v1/checkout", strings.NewReader(`{"address_id":"a1","from_cart":true,"payment_method":"VIETQR","sales_channel":"MARKETPLACE"}`))
 	reqCheckout.RemoteAddr = "10.0.0.9:43211"
 	reqCheckout.Header.Set("Authorization", "Bearer "+buyerTok)
 	reqCheckout.Header.Set("Idempotency-Key", "idem-ip-1")

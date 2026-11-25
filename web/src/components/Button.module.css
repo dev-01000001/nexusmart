@@ -1,57 +1,179 @@
 .btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   font-family: var(--font-sans);
-  font-weight: 500;
-  line-height: 1;
+  font-weight: 560;
+  line-height: 1.15;
   white-space: nowrap;
   text-decoration: none;
   cursor: pointer;
   border: 0;
+  overflow: hidden;
   transition:
-    background-color var(--t-hover) ease,
-    color var(--t-hover) ease,
-    border-color var(--t-hover) ease,
+    background-color var(--t-hover) var(--ease-out),
+    color var(--t-hover) var(--ease-out),
+    border-color var(--t-hover) var(--ease-out),
     transform var(--t-press) var(--ease-out);
 }
 
-.btn:active:not(:disabled) {
-  transform: translateY(1px);
+.btn:active:not(:disabled):not([aria-disabled="true"]) {
+  transform: scale(0.985) translateY(1px);
+  transition-duration: var(--t-press);
 }
 
-.btn:disabled {
+.btn:disabled,
+.btn[aria-disabled="true"] {
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 0.56;
 }
 
-/* Shapes: storefront uses square corners (0px), app screens use tight 6px */
+.loading,
+.loading:disabled,
+.loading[aria-disabled="true"] {
+  opacity: 0.92;
+  cursor: progress;
+}
+
+/* Shapes: storefront square (0) or pill (9999px), app screens tight 6px */
 .shapeSquare {
   border-radius: var(--radius-shop);
+}
+
+.shapePill {
+  border-radius: var(--radius-pill);
 }
 
 .shapeApp {
   border-radius: var(--radius-control);
 }
 
-/* Sizes */
+/* Sizes (all text >= 13px; public buttons meet >= 44px touch target on narrow screens) */
 .sm {
-  min-height: 32px;
-  padding: 0 12px;
+  min-height: 36px;
+  padding: 0 14px;
   font-size: 13px;
 }
 
 .md {
-  min-height: 40px;
-  padding: 0 18px;
+  min-height: 44px;
+  padding: 0 20px;
   font-size: 14px;
 }
 
 .lg {
-  min-height: 48px;
-  padding: 0 24px;
-  font-size: 15px;
+  min-height: 50px;
+  padding: 0 26px;
+  font-size: 16px;
+}
+
+.shapePill.sm {
+  padding-inline: 16px;
+}
+
+.shapePill.md {
+  padding-inline: 24px;
+}
+
+.shapePill.lg {
+  padding-inline: 32px;
+}
+
+/* Sliding hover label · 0.16em vertical pad prevents Vietnamese diacritic clipping */
+.labelViewport {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  padding-block: 0.16em;
+  margin-block: -0.16em;
+}
+
+.labelTrack {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: break-word;
+  transition: transform var(--t-hover) var(--ease-expo);
+}
+
+.content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: transform var(--t-hover) var(--ease-out);
+}
+
+/* Guard duplicate hover label with CSS alt-text support so accessible name never repeats
+   and unsupported browsers keep the static label visible on hover instead of sliding blank. */
+@supports (content: attr(data-label) / "") {
+  .labelTrack::after {
+    content: attr(data-label) / "";
+    position: absolute;
+    inset-inline: 0;
+    top: 100%;
+    padding-top: 0.32em;
+    text-align: center;
+    pointer-events: none;
+  }
+
+  @media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+    .hasSlideLabel:hover:not(:disabled):not([aria-disabled="true"]) .labelTrack,
+    .hasSlideLabel:focus-visible:not(:disabled):not([aria-disabled="true"]) .labelTrack {
+      transform: translateY(calc(-100% - 0.32em));
+    }
+  }
+}
+
+/* Loading state keeps intrinsic label width (visibility: hidden) and glides a flat bar */
+.loading .labelViewport,
+.loading .content {
+  visibility: hidden;
+}
+
+.loadingTrack {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  top: 50%;
+  height: 3px;
+  transform: translateY(-50%);
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, currentColor 24%, transparent);
+}
+
+.loadingBar {
+  display: block;
+  width: 42%;
+  height: 100%;
+  border-radius: inherit;
+  background: currentColor;
+  transform: translateX(-100%);
+  animation: nm-btn-glide 1050ms var(--ease-in-out) infinite;
+}
+
+@keyframes nm-btn-glide {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(260%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loadingBar {
+    width: 55%;
+    transform: translateX(40%);
+    animation: none;
+  }
 }
 
 /* Variants */
@@ -60,7 +182,7 @@
   color: var(--accent-ink);
 }
 
-.primary:hover:not(:disabled) {
+.primary:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--accent-hover);
 }
 
@@ -69,27 +191,28 @@
   color: var(--primary-ink-fg);
 }
 
-.ink:hover:not(:disabled) {
-  background: #142026;
+.ink:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--ink-strong);
 }
 
 .secondary {
-  background: var(--surface);
+  background: var(--btn-secondary-bg, var(--bg-2));
   color: var(--ink);
 }
 
-.secondary:hover:not(:disabled) {
-  background: var(--active);
+.secondary:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--btn-secondary-hover, var(--bg-3));
 }
 
 .outline {
   background: var(--card);
   color: var(--ink);
-  border: 1px solid var(--control); /* taste-skill-ignore: form/app outlined button */
+  border: 1px solid var(--control);
 }
 
-.outline:hover:not(:disabled) {
-  background: var(--bg);
+.outline:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--bg-1);
+  border-color: var(--ink-3);
 }
 
 .ghost {
@@ -97,8 +220,8 @@
   color: var(--ink);
 }
 
-.ghost:hover:not(:disabled) {
-  background: var(--surface);
+.ghost:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--bg-2);
 }
 
 .danger {
@@ -106,10 +229,17 @@
   color: var(--pill-negative-ink);
 }
 
-.danger:hover:not(:disabled) {
-  background: #f0d6d6;
+.danger:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: color-mix(in srgb, var(--negative) 18%, var(--card));
 }
 
 .fullWidth {
   width: 100%;
+}
+
+@media (hover: none), (max-width: 768px) {
+  .shapeSquare.sm,
+  .shapePill.sm {
+    min-height: 44px;
+  }
 }

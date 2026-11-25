@@ -64,11 +64,19 @@ func IsNonRetryable(err error) bool {
 type FeeRequest struct {
 	ShopID                string
 	FromProvinceCode      string
+	FromProvinceName      string
 	FromWardCode          string
+	FromWardName          string
+	FromLegacyProvince    string
+	FromLegacyDistrict    string
 	FromDistrictID        int
 	FromGHNWardCode       string
 	ToProvinceCode        string
+	ToProvinceName        string
 	ToWardCode            string
+	ToWardName            string
+	ToLegacyProvince      string
+	ToLegacyDistrict      string
 	ToDistrictID          int
 	ToGHNWardCode         string
 	WeightGrams           int32
@@ -91,13 +99,17 @@ type Quote struct {
 
 // Address holds sender/recipient details for creating a carrier shipment.
 type Address struct {
-	Name          string
-	Phone         string
-	ProvinceCode  string
-	WardCode      string
-	StreetAddress string
-	GHNDistrictID int
-	GHNWardCode   string
+	Name           string
+	Phone          string
+	ProvinceCode   string
+	ProvinceName   string
+	WardCode       string
+	WardName       string
+	LegacyProvince string
+	LegacyDistrict string
+	StreetAddress  string
+	GHNDistrictID  int
+	GHNWardCode    string
 }
 
 // ShipmentRequest contains parameters to create a shipment with a carrier.
@@ -105,6 +117,8 @@ type ShipmentRequest struct {
 	OrderID         string
 	ClientOrderCode string
 	ShopID          string
+	Direction       string
+	ReturnRequestID string
 	ServiceCode     string
 	CODAmountVND    int64
 	WeightGrams     int32
@@ -147,26 +161,27 @@ type Carrier interface {
 	SetToken(token string)
 }
 
-// MapCarrierStatus maps raw provider statuses (GHN, Mock Express, or canonical) to internal statuses.
-// Per w2-plan §1.1: "picked" maps to delivering (carrier already holds parcel, no longer cancellable);
-// "ready_to_pick" and "picking" remain picking (cancellable).
+// MapCarrierStatus maps raw provider statuses (GHN, GHTK, Mock Express, or canonical) to internal statuses.
+// Per w2-plan §1.1 & DECISIONS: "picked", GHTK "3", and "da_lay_hang" map to delivering
+// (carrier already holds parcel, no longer cancellable); "ready_to_pick", "picking", and GHTK "12"/"127"/"128"
+// remain picking (cancellable).
 func MapCarrierStatus(raw string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "created", "new":
+	case "created", "new", "1", "2", "chua_tiep_nhan", "da_tiep_nhan":
 		return StatusCreated, true
-	case "ready_to_pick", "picking", "money_collect_picking":
+	case "ready_to_pick", "picking", "money_collect_picking", "12", "127", "128", "da_dieu_phoi_lay_hang":
 		return StatusPicking, true
-	case "picked", "storing", "transporting", "sorting", "delivering", "money_collect_delivering", "in_transit", "out_for_delivery", "shipping":
+	case "picked", "3", "da_lay_hang", "storing", "transporting", "sorting", "delivering", "money_collect_delivering", "in_transit", "out_for_delivery", "shipping", "4", "5", "123", "da_dieu_phoi_giao_hang", "dang_giao_hang":
 		return StatusDelivering, true
-	case "delivered", "completed":
+	case "delivered", "completed", "6", "45", "da_giao_hang", "da_doi_soat":
 		return StatusDelivered, true
-	case "delivery_fail", "failed", "delivery_failed", "exception", "damage", "lost":
+	case "delivery_fail", "failed", "delivery_failed", "exception", "damage", "lost", "9", "10", "49", "khong_giao_duoc_hang", "delay_giao_hang":
 		return StatusFailed, true
-	case "waiting_to_return", "return", "return_transporting", "return_sorting", "returning":
+	case "waiting_to_return", "return", "return_transporting", "return_sorting", "returning", "13", "20", "dang_tra_hang":
 		return StatusReturning, true
-	case "returned", "return_fail":
+	case "returned", "return_fail", "11", "21", "da_tra_hang":
 		return StatusReturned, true
-	case "cancel", "cancelled", "canceled":
+	case "cancel", "cancelled", "canceled", "-1", "huy", "hủy":
 		return StatusCancelled, true
 	default:
 		return "", false
@@ -206,7 +221,7 @@ func ResolveDescriptionVI(internalStatus, provided string) string {
 	if _, isRawStatus := MapCarrierStatus(desc); isRawStatus {
 		return StatusDescriptionVI(internalStatus)
 	}
-	if strings.EqualFold(desc, "Synced from GHN status polling") {
+	if strings.EqualFold(desc, "Synced from GHN status polling") || strings.EqualFold(desc, "Synced from GHTK status polling") {
 		return StatusDescriptionVI(internalStatus)
 	}
 	return desc

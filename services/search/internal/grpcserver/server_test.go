@@ -39,6 +39,10 @@ func (s *stubSearchService) Suggest(_ context.Context, _ *searchv1.SuggestReques
 	return &searchv1.SuggestResponse{}, nil
 }
 
+func (s *stubSearchService) SimilarProducts(_ context.Context, _ *searchv1.SimilarProductsRequest) (*searchv1.SimilarProductsResponse, error) {
+	return &searchv1.SimilarProductsResponse{}, nil
+}
+
 func (s *stubSearchService) ListSearchHistory(ctx context.Context, _ *searchv1.ListSearchHistoryRequest) (*searchv1.ListSearchHistoryResponse, error) {
 	c, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
@@ -142,6 +146,12 @@ func TestGRPCServer_AuthAndRBACMatrix(t *testing.T) {
 	}
 	if _, err := client.Suggest(ctxService, &searchv1.SuggestRequest{}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("Suggest with service token code = %v, want PermissionDenied", status.Code(err))
+	}
+	if _, err := client.SimilarProducts(spoofCtx, &searchv1.SimilarProductsRequest{ProductId: "p-1"}); err != nil {
+		t.Fatalf("SimilarProducts anonymous failed: %v", err)
+	}
+	if _, err := client.SimilarProducts(ctxService, &searchv1.SimilarProductsRequest{ProductId: "p-1"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("SimilarProducts with service token code = %v, want PermissionDenied", status.Code(err))
 	}
 
 	// 2. History RPCs require end-user JWT and reject anonymous & service tokens.

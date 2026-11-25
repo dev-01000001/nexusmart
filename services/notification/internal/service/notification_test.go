@@ -214,6 +214,9 @@ func (m *memRepo) ProcessEventTx(_ context.Context, eventID, _ string, fn func(t
 		if v.CheckoutGroupID == "" {
 			v.CheckoutGroupID = existing.CheckoutGroupID
 		}
+		if v.StorefrontShopID == "" {
+			v.StorefrontShopID = existing.StorefrontShopID
+		}
 		m.participants[k] = v
 	}
 	for k, v := range tx.stagedShops {
@@ -988,7 +991,11 @@ func TestVietnameseEmailsAndNoRawEnumsAcrossEvents(t *testing.T) {
 func TestInAppLinksPointToRealWebRoutesAndUseOrderID(t *testing.T) {
 	repo := newMemRepo()
 	mail := &recordingMailer{}
-	svc := NewNotificationService(repo, mail, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	siteResolver := &stubSiteResolver{
+		hosts: map[string]string{"shop-1": "shop-1.nexusmart.vn"},
+	}
+	svc := NewNotificationService(repo, mail, nil, slog.New(slog.NewTextHandler(io.Discard, nil)),
+		WithSiteLinks(siteResolver, SiteLinkConfig{}))
 
 	mustSend := func(eventID, eventType string, payload map[string]any) store.Notification {
 		t.Helper()
@@ -1039,18 +1046,21 @@ func TestInAppLinksPointToRealWebRoutesAndUseOrderID(t *testing.T) {
 		t.Errorf("USR-B9: shop REJECT link = %q, want /tai-khoan?tab=gian-hang", nReject.Link)
 	}
 
-	// 3. Single-shop checkout: order.created -> /don-hang/<order_id>, then payment.succeeded carrying checkout_group_id -> MUST resolve to /don-hang/<order_id>!
+	const siteBase = "https://shop-1.nexusmart.vn"
+
+	// 3. Single-shop checkout: order.created -> <site>/don-hang/<order_id>, then payment.succeeded carrying checkout_group_id -> MUST resolve to <site>/don-hang/<order_id>!
 	nSingleOrder := mustSend("evt-link-single-ord", "order.created", map[string]any{
-		"checkout_group_id": "grp-single-1",
-		"order_id":          "ord-real-1",
-		"order_code":        "NM-SINGLE-1",
-		"buyer_id":          "u-link-1",
-		"shop_id":           "shop-1",
-		"payment_method":    "VIETQR",
-		"total_payable_vnd": 200000,
+		"checkout_group_id":  "grp-single-1",
+		"order_id":           "ord-real-1",
+		"order_code":         "NM-SINGLE-1",
+		"buyer_id":           "u-link-1",
+		"shop_id":            "shop-1",
+		"storefront_shop_id": "shop-1",
+		"payment_method":     "VIETQR",
+		"total_payable_vnd":  200000,
 	})
-	if nSingleOrder.Link != "/don-hang/ord-real-1" {
-		t.Errorf("PRM-B6: order.created link = %q, want /don-hang/ord-real-1", nSingleOrder.Link)
+	if nSingleOrder.Link != siteBase+"/don-hang/ord-real-1" {
+		t.Errorf("PRM-B6: order.created link = %q, want %s/don-hang/ord-real-1", nSingleOrder.Link, siteBase)
 	}
 	nSinglePay := mustSend("evt-link-single-pay", "payment.succeeded", map[string]any{
 		"payment_id":     "pay-single-1",
@@ -1061,28 +1071,30 @@ func TestInAppLinksPointToRealWebRoutesAndUseOrderID(t *testing.T) {
 		"method":         "VIETQR",
 		"provider_tx_id": "TX-1",
 	})
-	if nSinglePay.Link != "/don-hang/ord-real-1" {
-		t.Errorf("ORD-B10/PRM-B6: single-shop payment.succeeded link = %q, want /don-hang/ord-real-1 (must resolve order_id, not checkout_group_id)", nSinglePay.Link)
+	if nSinglePay.Link != siteBase+"/don-hang/ord-real-1" {
+		t.Errorf("ORD-B10/PRM-B6: single-shop payment.succeeded link = %q, want %s/don-hang/ord-real-1 (must resolve order_id, not checkout_group_id)", nSinglePay.Link, siteBase)
 	}
 
-	// 4. Multi-shop checkout: payment.succeeded carrying checkout_group_id -> /don-hang (never /don-hang/<checkout_group_id>).
+	// 4. Multi-shop checkout: payment.succeeded carrying checkout_group_id -> <site>/don-hang (never /don-hang/<checkout_group_id>).
 	_ = mustSend("evt-link-multi-1", "order.created", map[string]any{
-		"checkout_group_id": "grp-multi-1",
-		"order_id":          "ord-multi-1",
-		"order_code":        "NM-MULTI-1",
-		"buyer_id":          "u-link-1",
-		"shop_id":           "shop-1",
-		"payment_method":    "VIETQR",
-		"total_payable_vnd": 100000,
+		"checkout_group_id":  "grp-multi-1",
+		"order_id":           "ord-multi-1",
+		"order_code":         "NM-MULTI-1",
+		"buyer_id":           "u-link-1",
+		"shop_id":            "shop-1",
+		"storefront_shop_id": "shop-1",
+		"payment_method":     "VIETQR",
+		"total_payable_vnd":  100000,
 	})
 	_ = mustSend("evt-link-multi-2", "order.created", map[string]any{
-		"checkout_group_id": "grp-multi-1",
-		"order_id":          "ord-multi-2",
-		"order_code":        "NM-MULTI-2",
-		"buyer_id":          "u-link-1",
-		"shop_id":           "shop-2",
-		"payment_method":    "VIETQR",
-		"total_payable_vnd": 150000,
+		"checkout_group_id":  "grp-multi-1",
+		"order_id":           "ord-multi-2",
+		"order_code":         "NM-MULTI-2",
+		"buyer_id":           "u-link-1",
+		"shop_id":            "shop-2",
+		"storefront_shop_id": "shop-1",
+		"payment_method":     "VIETQR",
+		"total_payable_vnd":  150000,
 	})
 	nMultiPay := mustSend("evt-link-multi-pay", "payment.succeeded", map[string]any{
 		"payment_id":     "pay-multi-1",
@@ -1093,23 +1105,24 @@ func TestInAppLinksPointToRealWebRoutesAndUseOrderID(t *testing.T) {
 		"method":         "VIETQR",
 		"provider_tx_id": "TX-MULTI",
 	})
-	if nMultiPay.Link != "/don-hang" {
-		t.Errorf("ORD-B10/PRM-B6: multi-shop payment.succeeded link = %q, want /don-hang", nMultiPay.Link)
+	if nMultiPay.Link != siteBase+"/don-hang" {
+		t.Errorf("ORD-B10/PRM-B6: multi-shop payment.succeeded link = %q, want %s/don-hang", nMultiPay.Link, siteBase)
 	}
 
-	// 5. Unseen group race: payment.failed with order_id == order_group_id -> /don-hang (never /don-hang/<group_id>).
+	// 5. Unseen group race: payment.failed with order_id == order_group_id -> <site>/don-hang (never /don-hang/<group_id>).
 	nRace := mustSend("evt-link-race", "payment.failed", map[string]any{
-		"payment_id":     "pay-race-1",
-		"order_group_id": "grp-unseen-99",
-		"order_id":       "grp-unseen-99",
-		"user_id":        "u-link-1",
-		"reason":         "payment_timeout_expired",
+		"payment_id":         "pay-race-1",
+		"order_group_id":     "grp-unseen-99",
+		"order_id":           "grp-unseen-99",
+		"user_id":            "u-link-1",
+		"storefront_shop_id": "shop-1",
+		"reason":             "payment_timeout_expired",
 	})
-	if nRace.Link != "/don-hang" {
-		t.Errorf("ORD-B10: payment.failed for unseen checkout_group_id link = %q, want /don-hang", nRace.Link)
+	if nRace.Link != siteBase+"/don-hang" {
+		t.Errorf("ORD-B10: payment.failed for unseen checkout_group_id link = %q, want %s/don-hang", nRace.Link, siteBase)
 	}
 
-	// 6. Per-sub-order COD payment.succeeded (distinct order_id != order_group_id) -> /don-hang/<order_id>.
+	// 6. Per-sub-order COD payment.succeeded (distinct order_id != order_group_id) -> <site>/don-hang/<order_id>.
 	nSubCOD := mustSend("evt-link-sub-cod", "payment.succeeded", map[string]any{
 		"payment_id":     "pay-cod-multi",
 		"order_group_id": "grp-multi-1",
@@ -1119,11 +1132,11 @@ func TestInAppLinksPointToRealWebRoutesAndUseOrderID(t *testing.T) {
 		"method":         "COD",
 		"provider_tx_id": "COD-M2",
 	})
-	if nSubCOD.Link != "/don-hang/ord-multi-2" {
-		t.Errorf("ORD-B10: per-sub-order COD payment.succeeded link = %q, want /don-hang/ord-multi-2", nSubCOD.Link)
+	if nSubCOD.Link != siteBase+"/don-hang/ord-multi-2" {
+		t.Errorf("ORD-B10: per-sub-order COD payment.succeeded link = %q, want %s/don-hang/ord-multi-2", nSubCOD.Link, siteBase)
 	}
 
-	// 7. Per-sub-order payment.refunded -> /don-hang/<order_id>.
+	// 7. Per-sub-order payment.refunded -> <site>/don-hang/<order_id>.
 	nRefund := mustSend("evt-link-refund", "payment.refunded", map[string]any{
 		"refund_id":  "ref-1",
 		"payment_id": "pay-single-1",
@@ -1132,11 +1145,11 @@ func TestInAppLinksPointToRealWebRoutesAndUseOrderID(t *testing.T) {
 		"amount_vnd": 50000,
 		"reason":     "Hoàn một phần",
 	})
-	if nRefund.Link != "/don-hang/ord-real-1" {
-		t.Errorf("PRM-B6: payment.refunded link = %q, want /don-hang/ord-real-1", nRefund.Link)
+	if nRefund.Link != siteBase+"/don-hang/ord-real-1" {
+		t.Errorf("PRM-B6: payment.refunded link = %q, want %s/don-hang/ord-real-1", nRefund.Link, siteBase)
 	}
 
-	// 8. Group-level payment.refunded (single-shop group ID in order_id) -> resolves to /don-hang/<order_id>.
+	// 8. Group-level payment.refunded (single-shop group ID in order_id) -> resolves to <site>/don-hang/<order_id>.
 	nGroupRefundSingle := mustSend("evt-link-grp-refund-1", "payment.refunded", map[string]any{
 		"refund_id":  "ref-grp-1",
 		"payment_id": "pay-single-1",
@@ -1144,11 +1157,11 @@ func TestInAppLinksPointToRealWebRoutesAndUseOrderID(t *testing.T) {
 		"user_id":    "u-link-1",
 		"amount_vnd": 200000,
 	})
-	if nGroupRefundSingle.Link != "/don-hang/ord-real-1" {
-		t.Errorf("ORD-B10: group-level single-shop payment.refunded link = %q, want /don-hang/ord-real-1", nGroupRefundSingle.Link)
+	if nGroupRefundSingle.Link != siteBase+"/don-hang/ord-real-1" {
+		t.Errorf("ORD-B10: group-level single-shop payment.refunded link = %q, want %s/don-hang/ord-real-1", nGroupRefundSingle.Link, siteBase)
 	}
 
-	// 9. Group-level payment.refunded (multi-shop group ID in order_id) -> /don-hang.
+	// 9. Group-level payment.refunded (multi-shop group ID in order_id) -> <site>/don-hang.
 	nGroupRefundMulti := mustSend("evt-link-grp-refund-2", "payment.refunded", map[string]any{
 		"refund_id":  "ref-grp-2",
 		"payment_id": "pay-multi-1",
@@ -1156,8 +1169,8 @@ func TestInAppLinksPointToRealWebRoutesAndUseOrderID(t *testing.T) {
 		"user_id":    "u-link-1",
 		"amount_vnd": 250000,
 	})
-	if nGroupRefundMulti.Link != "/don-hang" {
-		t.Errorf("ORD-B10: group-level multi-shop payment.refunded link = %q, want /don-hang", nGroupRefundMulti.Link)
+	if nGroupRefundMulti.Link != siteBase+"/don-hang" {
+		t.Errorf("ORD-B10: group-level multi-shop payment.refunded link = %q, want %s/don-hang", nGroupRefundMulti.Link, siteBase)
 	}
 
 	// 10. user.shop_reviewed REQUEST_INFO -> /tai-khoan?tab=gian-hang.
@@ -1172,7 +1185,7 @@ func TestInAppLinksPointToRealWebRoutesAndUseOrderID(t *testing.T) {
 		t.Errorf("USR-B9: shop REQUEST_INFO link = %q, want /tai-khoan?tab=gian-hang", nReqInfo.Link)
 	}
 
-	// 11. order.returned -> /don-hang/<order_id> and preserves checkout_group_id.
+	// 11. order.returned -> <site>/don-hang/<order_id> and preserves checkout_group_id/storefront_shop_id.
 	nReturned := mustSend("evt-link-returned", "order.returned", map[string]any{
 		"order_id":          "ord-real-1",
 		"order_code":        "NM-SINGLE-1",
@@ -1181,8 +1194,8 @@ func TestInAppLinksPointToRealWebRoutesAndUseOrderID(t *testing.T) {
 		"shop_id":           "shop-1",
 		"reason":            "Khách từ chối nhận hàng",
 	})
-	if nReturned.Link != "/don-hang/ord-real-1" {
-		t.Errorf("order.returned link = %q, want /don-hang/ord-real-1", nReturned.Link)
+	if nReturned.Link != siteBase+"/don-hang/ord-real-1" {
+		t.Errorf("order.returned link = %q, want %s/don-hang/ord-real-1", nReturned.Link, siteBase)
 	}
 }
 

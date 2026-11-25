@@ -401,6 +401,7 @@ func w3b45PlaceAndConfirmVietQR(
 	coResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "w3b45-vqr-" + uuid.NewString(),
 	}, CheckoutRequest{
+		SalesChannel:  "MARKETPLACE",
 		AddressID:     buyer.AddressID,
 		FromCart:      false,
 		Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: qty}},
@@ -749,6 +750,7 @@ func TestE2E_W3B2_A7_AdminRBACApprovalsAndAudit(t *testing.T) {
 		cancelTargetResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", activityBuyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3b45-cancel-rbac-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     activityBuyer.AddressID,
 			FromCart:      false,
 			Items:         []CheckoutItemInputDTO{{SKUID: returnProductSKU.ID, Quantity: 1}},
@@ -868,6 +870,7 @@ func TestE2E_W3B2_A7_AdminRBACApprovalsAndAudit(t *testing.T) {
 		inFlightResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", verifiedBuyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3b45-inflight-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     verifiedBuyer.AddressID,
 			Items:         []CheckoutItemInputDTO{{SKUID: suspendProdAppr.SKUs[0].ID, Quantity: 1}},
 			PaymentMethod: "COD",
@@ -992,6 +995,7 @@ func TestE2E_W3B2_A7_AdminRBACApprovalsAndAudit(t *testing.T) {
 		susCoResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", verifiedBuyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3b45-blocked-sus-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     verifiedBuyer.AddressID,
 			Items:         []CheckoutItemInputDTO{{SKUID: suspendProdAppr.SKUs[0].ID, Quantity: 1}},
 			PaymentMethod: "COD",
@@ -1005,6 +1009,7 @@ func TestE2E_W3B2_A7_AdminRBACApprovalsAndAudit(t *testing.T) {
 		susCartCoResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", verifiedBuyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3b45-blocked-sus-cart-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     verifiedBuyer.AddressID,
 			FromCart:      true,
 			PaymentMethod: "COD",

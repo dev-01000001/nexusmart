@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"time"
 
 	"github.com/nexusmart/core/pkg/common/env"
@@ -58,6 +59,10 @@ func Load() Config {
 	if importMaxBytes <= 0 {
 		importMaxBytes = 1048576
 	}
+	trustedProxies := strings.TrimSpace(env.EnvString("TRUSTED_PROXIES", ""))
+	if trustedProxies == "" {
+		trustedProxies = strings.TrimSpace(env.EnvString("TRUSTED_PROXY_CIDRS", ""))
+	}
 	return Config{
 		ServiceName:                      env.EnvString("SERVICE_NAME", "gateway"),
 		HTTPPort:                         env.EnvString("HTTP_PORT", "8080"),
@@ -76,7 +81,7 @@ func Load() Config {
 		RateLimitWebhookPerMin:           env.EnvInt("RATE_LIMIT_WEBHOOK_PER_MIN", 600),
 		ProductImportMaxRows:             importMaxRows,
 		ProductImportMaxBytes:            int64(importMaxBytes),
-		TrustedProxies:                   env.EnvString("TRUSTED_PROXIES", ""),
+		TrustedProxies:                   trustedProxies,
 		UserGRPCAddr:                     env.EnvString("USER_GRPC_ADDR", "localhost:50051"),
 		ProductGRPCAddr:                  env.EnvString("PRODUCT_GRPC_ADDR", "localhost:50052"),
 		CartGRPCAddr:                     env.EnvString("CART_GRPC_ADDR", "localhost:50053"),

@@ -1,6 +1,7 @@
 /* NexusMart Global Base Styles
-   Clean reset, shared typography, storefront surface utilities, focus visibility,
-   tabular numerals, and reduced-motion safety. */
+   Reset, Archivo voice utilities, Vietnamese diacritic-safe line masks,
+   focus/selection rules, tabular numerals, html.js-guarded reveal recipes (data-shown),
+   print safety, and reduced-motion safety. */
 
 *,
 *::before,
@@ -11,9 +12,32 @@
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  scrollbar-gutter: stable;
   font-family: var(--font-sans);
   background: var(--bg);
   color: var(--ink);
+}
+
+/* Match dark storefronts on the root canvas & scrollbar gutter via pure CSS :has (zero JS). */
+html:has([data-site-root][data-site-theme-mode="dark"]) {
+  color-scheme: dark;
+  background: #12161b;
+  color: #f3f6f9;
+}
+
+html:has([data-site-root][data-site-theme-mode="dark"]) body {
+  background: #12161b;
+  color: #f3f6f9;
+}
+
+html:has([data-site-root][data-site-theme-mode="dark"][data-site-header="maison-centered"]) {
+  background: #151314;
+  color: #f5f2ec;
+}
+
+html:has([data-site-root][data-site-theme-mode="dark"][data-site-header="maison-centered"]) body {
+  background: #151314;
+  color: #f5f2ec;
 }
 
 body {
@@ -76,7 +100,8 @@ img {
 button,
 input,
 select,
-textarea {
+textarea,
+kbd {
   font-family: var(--font-sans);
   font-size: inherit;
   color: inherit;
@@ -104,7 +129,40 @@ a {
   outline-offset: 2px;
 }
 
-/* Tabular figures for prices, counts, tables, and KPIs */
+/* Archivo variable voice classes (font-stretch + font-weight so downstream can adjust weight) */
+.type-wide {
+  font-family: var(--font-sans);
+  font-stretch: var(--type-wide-wdth);
+  font-weight: var(--type-wide-weight);
+  letter-spacing: var(--type-wide-tracking);
+  line-height: var(--type-wide-leading);
+}
+
+.type-normal {
+  font-family: var(--font-sans);
+  font-stretch: var(--type-normal-wdth);
+  font-weight: var(--type-normal-weight);
+  letter-spacing: var(--type-normal-tracking);
+  line-height: var(--type-normal-leading);
+}
+
+.type-tight {
+  font-family: var(--font-sans);
+  font-stretch: var(--type-tight-wdth);
+  font-weight: var(--type-tight-weight);
+  letter-spacing: var(--type-tight-tracking);
+  line-height: var(--type-tight-leading);
+}
+
+.type-poster {
+  font-family: var(--font-sans);
+  font-stretch: var(--type-poster-wdth);
+  font-weight: var(--type-poster-weight);
+  letter-spacing: var(--type-poster-tracking);
+  line-height: var(--type-poster-leading);
+}
+
+/* Tabular figures for VND prices, counts, tables, and KPIs */
 .num,
 table {
   font-variant-numeric: tabular-nums;
@@ -120,7 +178,7 @@ table {
   white-space: nowrap;
 }
 
-/* Storefront readability & surface hierarchy utilities (opt-in for (shop) routes) */
+/* Storefront readability & surface utilities (preserved for cross-track compat) */
 .shop-container {
   width: 100%;
   padding-inline: var(--margin);
@@ -160,7 +218,7 @@ table {
   color: var(--band-dark-ink);
 }
 
-/* Standard table and form defaults */
+/* Standard table defaults */
 table {
   width: 100%;
   border-collapse: collapse;
@@ -168,7 +226,7 @@ table {
 
 th {
   text-align: left;
-  font-weight: 400;
+  font-weight: 500;
   color: var(--muted);
   border-bottom: 1px solid var(--border);
 }
@@ -182,53 +240,249 @@ tbody tr:last-child td {
   border-bottom: 0;
 }
 
-/* Shared masked headline & scroll entrance helpers (storefront-sheet.md §8) */
-.lines .line {
+/* Masked line wrappers · 0.14em vertical clearance protects Vietnamese two-tier diacritics */
+.lines .line,
+[data-reveal="lines"] .line {
   display: block;
   overflow: hidden;
-  padding-bottom: 0.08em;
-  margin-bottom: -0.08em;
+  padding-block: 0.14em;
+  margin-block: -0.14em;
 }
 
-.lines [data-line] {
+.lines [data-line],
+[data-reveal="lines"] [data-line] {
   display: block;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .lines [data-line] {
-    transform: translateY(105%);
-    animation: nm-line-rise 900ms var(--ease-out) forwards;
-    animation-delay: calc(var(--i, 0) * 110ms + 100ms);
+/* ---------------------------------------------------------------------------
+   Motion recipes · strictly guarded by `html.js` + `screen` + `prefers-reduced-motion: no-preference`.
+   - One-shot scroll reveal (`[data-reveal]`): driven exclusively by the
+     root `RevealObserver` setting `data-shown` (never touched by React className re-renders).
+   - Without JS (SSR HTML), when printing, or with reduced motion, all content renders immediately in final state.
+   --------------------------------------------------------------------------- */
+@media screen and (prefers-reduced-motion: no-preference) {
+  /* Route transition wrapper (template.tsx): opacity only so position:fixed children never jump */
+  html.js .nm-page-enter {
+    animation: nm-page-in var(--t-page) var(--ease-out) backwards;
   }
 
-  [data-rise] {
-    opacity: 0;
-    transform: translateY(18px);
-    animation: nm-fade-rise var(--t-reveal) var(--ease-out) forwards;
-    animation-delay: calc(var(--i, 0) * 80ms + 120ms);
+  html.js .nm-page-enter-fast {
+    animation-duration: 140ms;
   }
 
-  [data-reveal] {
+  /* Above-the-fold immediate load recipes */
+  html.js .lines [data-line] {
+    animation: nm-line-rise var(--t-reveal) var(--ease-expo) backwards;
+    animation-delay: calc(var(--i, 0) * var(--stagger) + 80ms);
+  }
+
+  html.js [data-rise] {
+    animation: nm-fade-rise var(--t-reveal) var(--ease-out) backwards;
+    animation-delay: calc(var(--i, 0) * var(--stagger) + 90ms);
+  }
+
+  /* 1) data-reveal="lines": masked headline line rise */
+  html.js [data-reveal="lines"]:not([data-shown]) [data-line] {
+    transform: translateY(112%);
+  }
+
+  html.js [data-reveal="lines"] [data-line] {
+    transition: transform var(--t-reveal) var(--ease-expo);
+    transition-delay: calc(var(--i, 0) * var(--stagger));
+  }
+
+  html.js [data-reveal="lines"][data-shown] [data-line] {
+    transform: none;
+  }
+
+  html.js [data-reveal="lines"]:not(:has([data-line])):not([data-shown]) {
     opacity: 0;
-    transform: translateY(20px);
+    transform: translateY(16px);
+  }
+
+  html.js [data-reveal="lines"]:not(:has([data-line])) {
     transition:
-      opacity 650ms var(--ease-out),
-      transform 820ms var(--ease-out);
+      opacity 540ms var(--ease-out),
+      transform var(--t-reveal) var(--ease-expo);
   }
 
-  [data-reveal].is-in {
+  html.js [data-reveal="lines"]:not(:has([data-line]))[data-shown] {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* 2) data-reveal="clip": curtain clip-path reveal for photography, video, or colour bands */
+  html.js [data-reveal="clip"]:not([data-shown]) {
+    clip-path: inset(12% 0 0 0);
+  }
+
+  html.js [data-reveal="clip"] {
+    transition: clip-path var(--t-reveal) var(--ease-expo);
+  }
+
+  html.js [data-reveal="clip"]:not([data-shown]) > img,
+  html.js [data-reveal="clip"]:not([data-shown]) > video {
+    transform: scale(1.04);
+  }
+
+  html.js [data-reveal="clip"] > img,
+  html.js [data-reveal="clip"] > video {
+    transition: transform var(--t-open) var(--ease-expo);
+  }
+
+  html.js [data-reveal="clip"][data-shown] {
+    clip-path: inset(0 0 0 0);
+  }
+
+  html.js [data-reveal="clip"][data-shown] > img,
+  html.js [data-reveal="clip"][data-shown] > video {
+    transform: none;
+  }
+
+  /* 3) data-reveal="rows": sequential row entrance for lists, grids, and tables */
+  html.js [data-reveal="rows"]:not([data-shown]) > * {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+
+  html.js [data-reveal="rows"] > * {
+    transition:
+      opacity 520ms var(--ease-out),
+      transform var(--t-reveal) var(--ease-out);
+    transition-delay: calc(var(--i, 0) * var(--stagger));
+  }
+
+  html.js [data-reveal="rows"] > :nth-child(2) {
+    --i: 1;
+  }
+  html.js [data-reveal="rows"] > :nth-child(3) {
+    --i: 2;
+  }
+  html.js [data-reveal="rows"] > :nth-child(4) {
+    --i: 3;
+  }
+  html.js [data-reveal="rows"] > :nth-child(5) {
+    --i: 4;
+  }
+  html.js [data-reveal="rows"] > :nth-child(6) {
+    --i: 5;
+  }
+  html.js [data-reveal="rows"] > :nth-child(7) {
+    --i: 6;
+  }
+  html.js [data-reveal="rows"] > :nth-child(8) {
+    --i: 7;
+  }
+  html.js [data-reveal="rows"] > :nth-child(9) {
+    --i: 8;
+  }
+  html.js [data-reveal="rows"] > :nth-child(10) {
+    --i: 9;
+  }
+  html.js [data-reveal="rows"] > :nth-child(11) {
+    --i: 10;
+  }
+  html.js [data-reveal="rows"] > :nth-child(12) {
+    --i: 11;
+  }
+
+  html.js [data-reveal="rows"][data-shown] > * {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* 4) data-reveal="scale": subtle focal frame settle */
+  html.js [data-reveal="scale"]:not([data-shown]) {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+
+  html.js [data-reveal="scale"] {
+    transition:
+      opacity 560ms var(--ease-out),
+      transform var(--t-reveal) var(--ease-expo);
+  }
+
+  html.js [data-reveal="scale"][data-shown] {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* 5) data-reveal="count": metric/KPI container paired with one-shot JS counter */
+  html.js [data-reveal="count"]:not([data-shown]) {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  html.js [data-reveal="count"] {
+    transition:
+      opacity 480ms var(--ease-out),
+      transform 620ms var(--ease-out);
+  }
+
+  html.js [data-reveal="count"][data-shown] {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* 6) Legacy bare [data-reveal=""] compatibility */
+  html.js [data-reveal=""]:not([data-shown]) {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+
+  html.js [data-reveal=""] {
+    transition:
+      opacity 560ms var(--ease-out),
+      transform var(--t-reveal) var(--ease-out);
+  }
+
+  html.js [data-reveal=""][data-shown] {
     opacity: 1;
     transform: none;
   }
 }
 
+@media print {
+  [data-reveal],
+  [data-reveal="rows"] > *,
+  [data-reveal="lines"] [data-line],
+  [data-reveal="clip"] > img,
+  [data-reveal="clip"] > video,
+  [data-rise],
+  .lines [data-line],
+  .nm-page-enter {
+    opacity: 1 !important;
+    transform: none !important;
+    clip-path: none !important;
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+@keyframes nm-page-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 @keyframes nm-line-rise {
+  from {
+    transform: translateY(112%);
+  }
   to {
     transform: none;
   }
 }
 
 @keyframes nm-fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
   to {
     opacity: 1;
     transform: none;
@@ -242,5 +496,6 @@ tbody tr:last-child td {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
   }
 }

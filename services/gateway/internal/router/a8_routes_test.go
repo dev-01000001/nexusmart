@@ -602,6 +602,65 @@ func TestA8_OrderLookupPublicAndDualRateLimitG7(t *testing.T) {
 	}
 }
 
+func TestA8_OrderLookupStorefrontShopIDForwardingAndValidation(t *testing.T) {
+	hw := newA8Harness(t, true)
+	const shopUUID = "11111111-1111-4111-8111-111111111111"
+
+	// 1. Valid storefront_shop_id UUID (trimmed) is forwarded to Order.LookupOrder.
+	reqValid := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/orders/lookup",
+		strings.NewReader(`{"order_code":"NM-SF-1","phone":"0901234567","storefront_shop_id":" `+shopUUID+` "}`),
+	)
+	reqValid.RemoteAddr = "198.51.100.70:4000"
+	recValid := httptest.NewRecorder()
+	hw.handler.ServeHTTP(recValid, reqValid)
+	if recValid.Code != http.StatusOK {
+		t.Fatalf("valid storefront_shop_id lookup: want 200, got %d (%s)", recValid.Code, recValid.Body.String())
+	}
+	if hw.order.lastLookupReq.GetStorefrontShopId() != shopUUID {
+		t.Fatalf("forwarded storefront_shop_id = %q, want %q", hw.order.lastLookupReq.GetStorefrontShopId(), shopUUID)
+	}
+
+	// 2. Omitted storefront_shop_id forwards empty string (legacy behavior).
+	reqEmpty := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/orders/lookup",
+		strings.NewReader(`{"order_code":"NM-SF-2","phone":"0901234567"}`),
+	)
+	reqEmpty.RemoteAddr = "198.51.100.71:4000"
+	recEmpty := httptest.NewRecorder()
+	hw.handler.ServeHTTP(recEmpty, reqEmpty)
+	if recEmpty.Code != http.StatusOK {
+		t.Fatalf("empty storefront_shop_id lookup: want 200, got %d (%s)", recEmpty.Code, recEmpty.Body.String())
+	}
+	if hw.order.lastLookupReq.GetStorefrontShopId() != "" {
+		t.Fatalf("forwarded storefront_shop_id = %q, want empty", hw.order.lastLookupReq.GetStorefrontShopId())
+	}
+
+	// 3. Invalid storefront_shop_id UUID -> 400 INVALID_ARGUMENT without calling Order.LookupOrder.
+	hw.order.mu.Lock()
+	callsBeforeInvalid := hw.order.lookupCalls
+	hw.order.mu.Unlock()
+	reqInvalid := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/orders/lookup",
+		strings.NewReader(`{"order_code":"NM-SF-3","phone":"0901234567","storefront_shop_id":"not-a-uuid"}`),
+	)
+	reqInvalid.RemoteAddr = "198.51.100.72:4000"
+	recInvalid := httptest.NewRecorder()
+	hw.handler.ServeHTTP(recInvalid, reqInvalid)
+	if recInvalid.Code != http.StatusBadRequest || !strings.Contains(recInvalid.Body.String(), "storefront_shop_id must be a UUID") {
+		t.Fatalf("invalid storefront_shop_id: want 400 UUID error, got %d (%s)", recInvalid.Code, recInvalid.Body.String())
+	}
+	hw.order.mu.Lock()
+	callsAfterInvalid := hw.order.lookupCalls
+	hw.order.mu.Unlock()
+	if callsAfterInvalid != callsBeforeInvalid {
+		t.Fatalf("invalid storefront_shop_id must not invoke Order.LookupOrder (before=%d after=%d)", callsBeforeInvalid, callsAfterInvalid)
+	}
+}
+
 func TestA8_UpdateOrderAddressAndFeeChangedQuoteG1G2G3(t *testing.T) {
 	hw := newA8Harness(t, false)
 	buyerTok := hw.tok("buyer-1", auth.RoleBuyer, "")

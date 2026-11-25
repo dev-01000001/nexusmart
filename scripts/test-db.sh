@@ -224,7 +224,7 @@ if [[ "$ready" -ne 1 ]]; then
 	exit 1
 fi
 
-for db in order_db product_db promotion_db shipping_db user_db payment_db; do
+for db in order_db product_db promotion_db shipping_db user_db payment_db chat_db assistant_db; do
 	docker exec "$CONTAINER_NAME" psql -h 127.0.0.1 -U "$PG_USER" -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${db};" >/dev/null
 done
 
@@ -234,6 +234,8 @@ export TEST_PROMOTION_DB_URL="postgres://${PG_USER}:${PG_PASS}@127.0.0.1:${PG_PO
 export TEST_SHIPPING_DB_URL="postgres://${PG_USER}:${PG_PASS}@127.0.0.1:${PG_PORT}/shipping_db?sslmode=disable"
 export TEST_USER_DB_URL="postgres://${PG_USER}:${PG_PASS}@127.0.0.1:${PG_PORT}/user_db?sslmode=disable"
 export TEST_PAYMENT_DB_URL="postgres://${PG_USER}:${PG_PASS}@127.0.0.1:${PG_PORT}/payment_db?sslmode=disable"
+export TEST_CHAT_DB_URL="postgres://${PG_USER}:${PG_PASS}@127.0.0.1:${PG_PORT}/chat_db?sslmode=disable"
+export TEST_ASSISTANT_DB_URL="postgres://${PG_USER}:${PG_PASS}@127.0.0.1:${PG_PORT}/assistant_db?sslmode=disable"
 
 REDIS_CONTAINER_NAME="nexusmart-testredis-$$"
 
@@ -336,7 +338,7 @@ run_go_pg_tests() {
 	echo "    PASS services/$svc (${pass_count} test cases/subtests, 0 skipped)"
 }
 
-for svc in order product promotion shipping user notification; do
+for svc in order product promotion shipping user notification chat assistant; do
 	start_nats "$svc"
 	run_go_pg_tests "$svc"
 	stop_nats

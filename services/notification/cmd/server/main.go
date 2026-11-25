@@ -91,8 +91,13 @@ func run() error {
 	}
 
 	var userResolver userclient.Resolver
+	var svcOpts []service.Option
 	if uc, ucErr := userclient.New(cfg.UserGRPCAddr, cfg.ServiceName, svcMgr); ucErr == nil {
 		userResolver = uc
+		svcOpts = append(svcOpts, service.WithSiteLinks(uc, service.SiteLinkConfig{
+			Scheme: cfg.SiteURLScheme,
+			Port:   cfg.SiteURLPort,
+		}))
 		defer func() { _ = uc.Close() }()
 	} else {
 		log.Warn("user gRPC client unavailable; relying on event payload emails", slog.String("error", ucErr.Error()))
@@ -100,7 +105,7 @@ func run() error {
 
 	pgStore := store.NewPGStore(pool)
 	smtpMailer := mailer.NewSMTPMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPFrom)
-	svc := service.NewNotificationService(pgStore, smtpMailer, userResolver, log)
+	svc := service.NewNotificationService(pgStore, smtpMailer, userResolver, log, svcOpts...)
 	svc.SetWebBaseURL(cfg.WebBaseURL)
 
 	natsConsumer := consumer.NewConsumer(js, svc, pgStore, cfg.NATSStream, cfg.ConsumerMaxTries, log)

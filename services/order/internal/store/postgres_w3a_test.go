@@ -1345,7 +1345,7 @@ func TestPostgresW3A_Migration0014_PendingSeqBackfillByCreatedAt(t *testing.T) {
 		dropTempDatabase(adminDSN, tempDBName)
 	})
 
-	// 1. Apply ONLY pre-0014 migrations (0001..0013) to simulate a live DB right before upgrading.
+	// 1. Apply ONLY pre-outbox-lease migrations (0001..0016) to simulate a live DB right before upgrading.
 	if _, err := pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			filename TEXT PRIMARY KEY,
@@ -1358,18 +1358,18 @@ func TestPostgresW3A_Migration0014_PendingSeqBackfillByCreatedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read migrations dir: %v", err)
 	}
-	var pre0014 []string
+	var pre0017 []string
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
 			continue
 		}
-		if entry.Name() >= "0014_" {
+		if entry.Name() >= "0017_" {
 			continue
 		}
-		pre0014 = append(pre0014, entry.Name())
+		pre0017 = append(pre0017, entry.Name())
 	}
-	sort.Strings(pre0014)
-	for _, name := range pre0014 {
+	sort.Strings(pre0017)
+	for _, name := range pre0017 {
 		sqlBytes, rErr := migrations.Files.ReadFile(name)
 		if rErr != nil {
 			t.Fatalf("read %s: %v", name, rErr)

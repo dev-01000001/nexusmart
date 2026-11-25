@@ -20,6 +20,7 @@ const (
 	reindexAdvisoryLockName = "nexusmart_search_reindex"
 	shopStatusLockPrefix    = "search_shop_status:"
 	defaultUnlockTimeout    = 5 * time.Second
+	probeIterativeScanSQL   = `SELECT ('[0]'::vector IS NOT NULL) AND EXISTS(SELECT 1 FROM pg_settings WHERE name = 'hnsw.iterative_scan')`
 )
 
 // VectorSearchParams filters pgvector HNSW cosine similarity queries (S6/S8/S14).
@@ -27,6 +28,7 @@ type VectorSearchParams struct {
 	Embedding           []float32
 	CategoryID          string
 	ShopID              string
+	ExcludeProductID    string
 	MinPriceVND         int64
 	MaxPriceVND         int64
 	MinRatingX100       int32
@@ -70,6 +72,11 @@ type VectorHit struct {
 type Store struct {
 	pool    *pgxpool.Pool
 	queries *db.Queries
+
+	iterMu           sync.Mutex
+	iterChecked      bool
+	hasIterativeScan bool
+	probeIterScanFn  func(context.Context) (bool, error)
 }
 
 // OpenPool runs embedded migrations (creating the pgvector extension under pg_advisory_xact_lock)
@@ -224,8 +231,46 @@ func (s *Store) SaveSearchHistory(ctx context.Context, userID, query, queryFolde
 	})
 }
 
+// detectIterativeScan probes pg_settings once (after ensuring vector.so is loaded) to check
+// whether pgvector >= 0.8 exposes hnsw.iterative_scan. Transient errors are NOT cached so a
+// later call retries the probe once the database recovers.
+func (s *Store) detectIterativeScan(ctx context.Context) bool {
+	s.iterMu.Lock()
+	if s.iterChecked {
+		has := s.hasIterativeScan
+		s.iterMu.Unlock()
+		return has
+	}
+	probeFn := s.probeIterScanFn
+	s.iterMu.Unlock()
+
+	var (
+		exists bool
+		err    error
+	)
+	if probeFn != nil {
+		exists, err = probeFn(ctx)
+	} else if s.pool != nil {
+		err = s.pool.QueryRow(ctx, probeIterativeScanSQL).Scan(&exists)
+	} else {
+		return false
+	}
+	if err != nil {
+		return false
+	}
+
+	s.iterMu.Lock()
+	if !s.iterChecked {
+		s.hasIterativeScan = exists
+		s.iterChecked = true
+	}
+	has := s.hasIterativeScan
+	s.iterMu.Unlock()
+	return has
+}
+
 // SearchVector runs cosine-distance HNSW search inside a read-only transaction with
-// SET LOCAL hnsw.ef_search = 200 and hnsw.iterative_scan = 'relaxed_order' (S6/S8/S14),
+// SET LOCAL hnsw.ef_search = 200 and (when supported by pgvector >= 0.8) hnsw.iterative_scan = 'relaxed_order' (S6/S8/S14),
 // enforcing public status, non-deleted, non-suspended shop visibility, and min similarity.
 func (s *Store) SearchVector(ctx context.Context, p VectorSearchParams) ([]VectorHit, error) {
 	if len(p.Embedding) == 0 {
@@ -236,19 +281,24 @@ func (s *Store) SearchVector(ctx context.Context, p VectorSearchParams) ([]Vecto
 		limit = 100
 	}
 
+	useIterative := s.detectIterativeScan(ctx)
+
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, fmt.Errorf("begin vector search tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// S8: Expand HNSW search beam and enable pgvector >= 0.8 iterative scan so filtered queries
-	// (narrow category/shop/price) do not starve behind top-40 unfiltered neighbors.
+	// S8: Expand HNSW search beam and enable pgvector >= 0.8 iterative scan when available so
+	// filtered queries (narrow category/shop/price) do not starve behind top-40 unfiltered neighbors,
+	// while remaining compatible with pgvector < 0.8 before ALTER EXTENSION vector UPDATE.
 	if _, err := tx.Exec(ctx, `SET LOCAL hnsw.ef_search = 200`); err != nil {
 		return nil, fmt.Errorf("set hnsw.ef_search: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `SET LOCAL hnsw.iterative_scan = 'relaxed_order'`); err != nil {
-		return nil, fmt.Errorf("set hnsw.iterative_scan: %w", err)
+	if useIterative {
+		if _, err := tx.Exec(ctx, `SET LOCAL hnsw.iterative_scan = 'relaxed_order'`); err != nil {
+			return nil, fmt.Errorf("set hnsw.iterative_scan: %w", err)
+		}
 	}
 
 	const q = `
@@ -281,8 +331,9 @@ WHERE pe.deleted = FALSE
   AND ($9::text = '' OR pe.sizes_folded @> ARRAY[$9::text])
   AND ($10::text = '' OR pe.colors_folded @> ARRAY[$10::text] OR pe.color_codes @> ARRAY[$10::text])
   AND ($11::double precision <= 0 OR (pe.embedding <=> $1::vector) <= (1.0 - $11::double precision))
+  AND ($12::text = '' OR pe.product_id <> $12::text)
 ORDER BY pe.embedding <=> $1::vector ASC, pe.product_id ASC
-LIMIT $12`
+LIMIT $13`
 
 	vec := pgvector.NewVector(p.Embedding)
 	rows, err := tx.Query(ctx, q,
@@ -297,6 +348,7 @@ LIMIT $12`
 		p.SizeFolded,
 		p.ColorFolded,
 		p.MinSimilarity,
+		strings.TrimSpace(p.ExcludeProductID),
 		limit,
 	)
 	if err != nil {
@@ -327,12 +379,13 @@ LIMIT $12`
 }
 
 // SuggestFallbackProducts queries public non-suspended products from Postgres when Meilisearch is unavailable,
-// matching folded unaccented Vietnamese text via pe.name_folded (S12).
-func (s *Store) SuggestFallbackProducts(ctx context.Context, queryFolded string, limit int32) ([]VectorHit, error) {
+// matching folded unaccented Vietnamese text via pe.name_folded (S12) and scoping to shopID when non-empty.
+func (s *Store) SuggestFallbackProducts(ctx context.Context, shopID, queryFolded string, limit int32) ([]VectorHit, error) {
 	if limit <= 0 {
 		limit = 5
 	}
 	escaped := textnorm.EscapeLikePattern(queryFolded)
+	shopID = strings.TrimSpace(shopID)
 
 	const q = `
 SELECT
@@ -349,6 +402,7 @@ LEFT JOIN search_categories c ON c.category_id = pe.category_id
 WHERE pe.deleted = FALSE
   AND pe.status IN ('APPROVED', 'OUT_OF_STOCK')
   AND COALESCE(s.status, 'ACTIVE') <> 'SUSPENDED'
+  AND ($3::text = '' OR pe.shop_id = $3::text)
   AND ($1::text = '' OR pe.name_folded LIKE '%' || $1::text || '%' ESCAPE '\' OR pe.slug LIKE '%' || $1::text || '%' ESCAPE '\')
 ORDER BY
     CASE WHEN $1::text <> '' AND pe.name_folded LIKE $1::text || '%' ESCAPE '\' THEN 0 ELSE 1 END,
@@ -356,7 +410,7 @@ ORDER BY
     pe.updated_at DESC
 LIMIT $2`
 
-	rows, err := s.pool.Query(ctx, q, escaped, limit)
+	rows, err := s.pool.Query(ctx, q, escaped, limit, shopID)
 	if err != nil {
 		return nil, fmt.Errorf("suggest fallback products: %w", err)
 	}

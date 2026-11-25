@@ -19,8 +19,8 @@
  *        GATEWAY_URL=http://localhost:8080
  *        MIN_PRODUCTS=20000
  *        AUTO_REINDEX=1               (set 0 to skip automatic reindex when total < MIN_PRODUCTS)
- *        ADMIN_EMAIL=admin@nexusmart.vn
- *        ADMIN_PASSWORD=Password123!
+ *        ADMIN_EMAIL=admin@nexusmart.local
+ *        ADMIN_PASSWORD=AdminDevPassword123!
  *        VUS=20
  *        DURATION=60s
  *   6. Cleanup generated loadgen products afterwards:
@@ -35,8 +35,8 @@ import { Trend } from "k6/metrics";
 const GATEWAY_URL = (__ENV.GATEWAY_URL || "http://localhost:8080").replace(/\/+$/, "");
 const MIN_PRODUCTS = Number(__ENV.MIN_PRODUCTS || "20000");
 const AUTO_REINDEX = (__ENV.AUTO_REINDEX || "1") !== "0";
-const ADMIN_EMAIL = __ENV.ADMIN_EMAIL || "admin@nexusmart.vn";
-const ADMIN_PASSWORD = __ENV.ADMIN_PASSWORD || "Password123!";
+const ADMIN_EMAIL = __ENV.ADMIN_EMAIL || __ENV.ADMIN_BOOTSTRAP_EMAIL || "admin@nexusmart.local";
+const ADMIN_PASSWORD = __ENV.ADMIN_PASSWORD || __ENV.ADMIN_BOOTSTRAP_PASSWORD || "AdminDevPassword123!";
 const VUS = Number(__ENV.VUS || "20");
 const DURATION = __ENV.DURATION || "60s";
 

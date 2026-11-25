@@ -12,8 +12,8 @@ import (
 
 type DeadLetterEvent struct {
 	ID           string    `json:"id"`
-	Subject      string    `json:"subject"`
 	EventID      string    `json:"event_id"`
+	Subject      string    `json:"subject"`
 	Payload      []byte    `json:"payload"`
 	ErrorMessage string    `json:"error_message"`
 	Attempts     int32     `json:"attempts"`
@@ -24,6 +24,27 @@ type ProcessedEvent struct {
 	EventID     string    `json:"event_id"`
 	Subject     string    `json:"subject"`
 	ProcessedAt time.Time `json:"processed_at"`
+}
+
+type ProductDocument struct {
+	ProductID        string             `json:"product_id"`
+	ShopID           string             `json:"shop_id"`
+	CategoryID       string             `json:"category_id"`
+	CategorySlug     string             `json:"category_slug"`
+	CategoryName     string             `json:"category_name"`
+	Name             string             `json:"name"`
+	Description      string             `json:"description"`
+	Images           []byte             `json:"images"`
+	Status           string             `json:"status"`
+	MinPriceVND      int64              `json:"min_price_vnd"`
+	MaxPriceVND      int64              `json:"max_price_vnd"`
+	TotalStock       int32              `json:"total_stock"`
+	InStock          bool               `json:"in_stock"`
+	Version          int64              `json:"version"`
+	Embedding        pgvector_go.Vector `json:"embedding"`
+	ProductCreatedAt time.Time          `json:"product_created_at"`
+	ProductUpdatedAt time.Time          `json:"product_updated_at"`
+	IndexedAt        time.Time          `json:"indexed_at"`
 }
 
 type ProductEmbedding struct {
