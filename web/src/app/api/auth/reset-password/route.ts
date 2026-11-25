@@ -1,45 +1,50 @@
-import { NextRequest, NextResponse } from "next/server";
-import type { ResetPasswordRequestBody, ResetPasswordResponse } from "@/lib/gateway-types";
-import { verifyCsrfOrigin } from "@/lib/server/csrf";
-import { gatewayErrorResponse, gatewayFetch } from "@/lib/server/gateway";
-import { PAYLOAD_TOO_LARGE_BODY, readBoundedJson } from "@/lib/server/proxy-security";
-import { clearSessionCookies, extractClientIp } from "@/lib/server/session";
+import { cookies } from "next/headers";
+import { gw } from "@/lib/server/gateway";
+import { GatewayError } from "@/lib/server/errors";
+import { apiRoute, readJson } from "@/lib/server/http";
+import { clearAuthCookies } from "@/lib/server/tokens";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(req: NextRequest) {
-  const csrfErr = verifyCsrfOrigin(req);
-  if (csrfErr) return csrfErr;
-
-  const parsed = await readBoundedJson<Partial<ResetPasswordRequestBody>>(req);
-  if (!parsed.ok) {
-    if (parsed.status === 413) {
-      return NextResponse.json(PAYLOAD_TOO_LARGE_BODY, {
-        status: 413,
-        headers: { "Cache-Control": "no-store" },
-      });
-    }
-    return NextResponse.json(
-      { error: { code: "INVALID_JSON", message: "Thông tin đặt lại mật khẩu không hợp lệ." } },
-      { status: 400, headers: { "Cache-Control": "no-store" } }
-    );
-  }
-  const body = parsed.data;
-
-  try {
-    const data = await gatewayFetch<ResetPasswordResponse>("/auth/reset-password", {
-      method: "POST",
-      token: false,
-      clientIp: extractClientIp(req.headers),
-      body: {
-        token: typeof body.token === "string" ? body.token.trim() : "",
-        new_password: typeof body.new_password === "string" ? body.new_password : "",
-      },
-    });
-    const res = NextResponse.json(data, { status: 200, headers: { "Cache-Control": "no-store" } });
-    clearSessionCookies(res);
-    return res;
-  } catch (err) {
-    return gatewayErrorResponse(err);
-  }
+interface ResetPasswordInput {
+  token?: string;
+  new_password?: string;
+  newPassword?: string;
 }
+
+interface GatewayResetPasswordResponse {
+  reset?: boolean;
+}
+
+export const POST = apiRoute(
+  async (req) => {
+    const body = await readJson<ResetPasswordInput>(req);
+    const token = (body.token ?? "").trim();
+    const newPassword = body.new_password ?? body.newPassword ?? "";
+    if (!token || !newPassword) {
+      throw new GatewayError("invalid", "INVALID_ARGUMENT");
+    }
+
+    const res = await gw<GatewayResetPasswordResponse>("/api/v1/auth/reset-password", {
+      method: "POST",
+      auth: "none",
+      body: { token, new_password: newPassword },
+    });
+
+    const store = await cookies();
+    clearAuthCookies(store);
+
+    return Response.json(
+      { reset: Boolean(res.reset ?? true) },
+      { headers: { "Cache-Control": "no-store" } }
+    );
+  },
+  {
+    messages: {
+      INVALID_ARGUMENT: "Liên kết đặt lại mật khẩu không hợp lệ hoặc mật khẩu mới chưa đủ 8 ký tự.",
+      FAILED_PRECONDITION:
+        "Liên kết đặt lại mật khẩu không hợp lệ, đã được sử dụng hoặc đã hết hạn.",
+      RESOURCE_EXHAUSTED: "Bạn thao tác quá nhanh. Vui lòng thử lại sau ít phút.",
+    },
+  }
+);

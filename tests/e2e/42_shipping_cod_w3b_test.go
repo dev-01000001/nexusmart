@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -24,7 +25,20 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func w3b42RawHTTP(
+const w3b42RawHTTPMax429Retries = 5
+
+var w3b42RawHTTPSleep = func(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func w3b42RawHTTPNoRetry(
 	ctx context.Context,
 	t *testing.T,
 	method string,
@@ -61,13 +75,44 @@ func w3b42RawHTTP(
 	return resp.StatusCode, resp.Header.Clone(), raw
 }
 
-func w3b42RawPostJSON(t *testing.T, env *testEnv, path, token string, payload any) (int, http.Header, []byte) {
+// w3b42RawHTTP sends a raw HTTP request and, on HTTP 429 with a Retry-After header,
+// waits per Retry-After (+250ms pad) and retries up to w3b42RawHTTPMax429Retries (5) times.
+// Rate-limit tests expecting 429 must call w3b42RawHTTPNoRetry / w3b42RawPostJSONNoRetry instead.
+func w3b42RawHTTP(
+	ctx context.Context,
+	t *testing.T,
+	method string,
+	fullURL string,
+	token string,
+	contentType string,
+	body []byte,
+) (int, http.Header, []byte) {
+	t.Helper()
+	for attempt := 0; ; attempt++ {
+		code, hdr, raw := w3b42RawHTTPNoRetry(ctx, t, method, fullURL, token, contentType, body)
+		if code != http.StatusTooManyRequests || attempt >= w3b42RawHTTPMax429Retries {
+			return code, hdr, raw
+		}
+		retryAfter := strings.TrimSpace(hdr.Get("Retry-After"))
+		if retryAfter == "" {
+			return code, hdr, raw
+		}
+		wait := parseRetryAfter(retryAfter) + 250*time.Millisecond
+		log.Printf("[429] raw %s %s rate limited; waiting %s before retry (%d/%d)",
+			method, fullURL, wait.Round(time.Millisecond), attempt+1, w3b42RawHTTPMax429Retries)
+		if err := w3b42RawHTTPSleep(ctx, wait); err != nil {
+			t.Fatalf("wait retry-after %s %s: %v", method, fullURL, err)
+		}
+	}
+}
+
+func w3b42RawPostJSONNoRetry(t *testing.T, env *testEnv, path, token string, payload any) (int, http.Header, []byte) {
 	t.Helper()
 	b, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal json: %v", err)
 	}
-	return w3b42RawHTTP(env.ctx(t), t, http.MethodPost, env.cfg.GatewayURL+path, token, "application/json", b)
+	return w3b42RawHTTPNoRetry(env.ctx(t), t, http.MethodPost, env.cfg.GatewayURL+path, token, "application/json", b)
 }
 
 func w3b42AssertRawErrorCode(t *testing.T, label string, body []byte, wantCode string) {
@@ -238,6 +283,7 @@ func w3b42PlaceCODOrder(t *testing.T, env *testEnv, buyer *userFixture, addrID s
 	coResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "w3b42-cod-" + uuid.NewString(),
 	}, CheckoutRequest{
+		SalesChannel:  "MARKETPLACE",
 		AddressID:     addrID,
 		FromCart:      false,
 		Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
@@ -360,10 +406,14 @@ func TestE2E_W3B_PublicCalculateFeeAndPerUserRateLimit(t *testing.T) {
 	}); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("anonymous gRPC CreateShipment want Unauthenticated, got %v", err)
 	}
-	if _, err := shipClient.CreateShipment(svcCtx, &shippingv1.CreateShipmentRequest{
+	// Under G3 (w3b-3), CreateShipment accepts order-service for UC-B26 recreation while
+	// still rejecting other service identities (e.g. product-service) with PermissionDenied.
+	otherSvcTok := promoMintServiceToken("product-service")
+	otherSvcCtx := metadata.NewOutgoingContext(env.ctx(t), metadata.Pairs("authorization", "Bearer "+otherSvcTok))
+	if _, err := shipClient.CreateShipment(otherSvcCtx, &shippingv1.CreateShipmentRequest{
 		OrderId: uuid.NewString(), ShopId: seller1.ShopID,
 	}); status.Code(err) != codes.PermissionDenied {
-		t.Fatalf("service-token gRPC CreateShipment want PermissionDenied, got %v", err)
+		t.Fatalf("non-order service-token gRPC CreateShipment want PermissionDenied, got %v", err)
 	}
 
 	// 2. Anonymous REST POST /api/v1/shipping/calculate-fee with empty to_ward_code + 0g SKU items[].
@@ -422,7 +472,7 @@ func TestE2E_W3B_PublicCalculateFeeAndPerUserRateLimit(t *testing.T) {
 	}
 	hit429 := false
 	for i := 1; i <= 45; i++ {
-		code, hdr, raw := w3b42RawPostJSON(t, env, "/api/v1/shipping/calculate-fee", buyerRL1.AccessToken, rlBody)
+		code, hdr, raw := w3b42RawPostJSONNoRetry(t, env, "/api/v1/shipping/calculate-fee", buyerRL1.AccessToken, rlBody)
 		if code == http.StatusTooManyRequests {
 			// Distinguish route-specific 30/min limit from general IP limit.
 			if lim, _ := strconv.Atoi(hdr.Get("X-RateLimit-Limit")); lim > 60 {
@@ -448,7 +498,7 @@ func TestE2E_W3B_PublicCalculateFeeAndPerUserRateLimit(t *testing.T) {
 		t.Fatalf("E17-bis: buyerRL1 did not hit 429 within 45 calculate-fee calls")
 	}
 	// buyerRL2 on the exact same IP MUST still get 200.
-	code2, _, raw2 := w3b42RawPostJSON(t, env, "/api/v1/shipping/calculate-fee", buyerRL2.AccessToken, rlBody)
+	code2, _, raw2 := w3b42RawPostJSONNoRetry(t, env, "/api/v1/shipping/calculate-fee", buyerRL2.AccessToken, rlBody)
 	if code2 != http.StatusOK {
 		t.Fatalf("E17-bis: buyerRL2 on same IP should NOT be blocked by buyerRL1 bucket, got HTTP %d: %s", code2, string(raw2))
 	}
@@ -682,6 +732,7 @@ func TestE2E_W3B_PhoneOTPVerificationAndSecurity(t *testing.T) {
 	codAfterChange := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer1.AccessToken, map[string]string{
 		"Idempotency-Key": "w3b42-cod-reset-" + uuid.NewString(),
 	}, CheckoutRequest{
+		SalesChannel:  "MARKETPLACE",
 		AddressID:     addr1.ID,
 		Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 		PaymentMethod: "COD",
@@ -715,13 +766,13 @@ func TestE2E_W3B_PhoneOTPVerificationAndSecurity(t *testing.T) {
 
 	// 6. Gateway RATE_LIMIT_PHONE_OTP_PER_MIN (5/min) returns 429 RATE_LIMITED.
 	buyer4 := env.registerVerifyAndLogin(t, "w3b42-otp-rl4")
-	codeInit, _, rawInit := w3b42RawPostJSON(t, env, "/api/v1/users/me/phone/otp", buyer4.AccessToken, map[string]any{})
+	codeInit, _, rawInit := w3b42RawPostJSONNoRetry(t, env, "/api/v1/users/me/phone/otp", buyer4.AccessToken, map[string]any{})
 	if codeInit != http.StatusOK {
 		t.Fatalf("buyer4 initial phone/otp want 200, got %d: %s", codeInit, string(rawInit))
 	}
 	hitOTP429 := false
 	for i := 0; i < 6; i++ {
-		code, hdr, raw := w3b42RawPostJSON(t, env, "/api/v1/users/me/phone/verify", buyer4.AccessToken, map[string]any{"otp": "000000"})
+		code, hdr, raw := w3b42RawPostJSONNoRetry(t, env, "/api/v1/users/me/phone/verify", buyer4.AccessToken, map[string]any{"otp": "000000"})
 		if code == http.StatusTooManyRequests {
 			w3b42AssertRawErrorCode(t, "phone OTP gateway 429", raw, "RATE_LIMITED")
 			if hdr.Get("Retry-After") == "" {
@@ -797,6 +848,7 @@ func TestE2E_W3B_CODEligibilityGatesAndRejectionRate(t *testing.T) {
 
 		idemKey := "w3b42-unver-cod-" + uuid.NewString()
 		codReq := CheckoutRequest{
+			SalesChannel:   "MARKETPLACE",
 			AddressID:      addr.ID,
 			Items:          []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 			ShopVoucherIDs: map[string]string{seller1.ShopID: voucher.ID},
@@ -863,7 +915,8 @@ func TestE2E_W3B_CODEligibilityGatesAndRejectionRate(t *testing.T) {
 		codBlock := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3b42-island-cod-" + uuid.NewString(),
 		}, CheckoutRequest{
-			AddressID: addrOut.Address.ID,
+			SalesChannel: "MARKETPLACE",
+			AddressID:    addrOut.Address.ID,
 			Items: []CheckoutItemInputDTO{
 				{SKUID: sku1.ID, Quantity: 1},
 				{SKUID: sku2.ID, Quantity: 1},
@@ -884,6 +937,7 @@ func TestE2E_W3B_CODEligibilityGatesAndRejectionRate(t *testing.T) {
 		env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3b42-island-vqr-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addrOut.Address.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku1.ID, Quantity: 1}},
 			PaymentMethod: "VIETQR",
@@ -961,6 +1015,7 @@ func TestE2E_W3B_CODEligibilityGatesAndRejectionRate(t *testing.T) {
 		blockedResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3b42-rate-block-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 			PaymentMethod: "COD",
@@ -1594,7 +1649,7 @@ func TestE2E_W3B_Z_AnonymousCalculateFeeRateLimit429(t *testing.T) {
 	}
 	hit429 := false
 	for i := 1; i <= 45; i++ {
-		code, hdr, raw := w3b42RawPostJSON(t, env, "/api/v1/shipping/calculate-fee", "", body)
+		code, hdr, raw := w3b42RawPostJSONNoRetry(t, env, "/api/v1/shipping/calculate-fee", "", body)
 		if code == http.StatusTooManyRequests {
 			if lim, _ := strconv.Atoi(hdr.Get("X-RateLimit-Limit")); lim > 60 {
 				retrySec, _ := strconv.Atoi(hdr.Get("Retry-After"))

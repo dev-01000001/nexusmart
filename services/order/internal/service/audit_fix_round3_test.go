@@ -380,6 +380,12 @@ func (c *supersedingPaymentClient) GetPaymentMethodConfigs(_ context.Context, _ 
 	}, nil
 }
 
+func (c *supersedingPaymentClient) AdjustCODShippingFee(_ context.Context, req *paymentv1.AdjustCODShippingFeeRequest, _ ...grpc.CallOption) (*paymentv1.AdjustCODShippingFeeResponse, error) {
+	return &paymentv1.AdjustCODShippingFeeResponse{
+		NewShippingFeeVnd: req.GetNewShippingFeeVnd(),
+	}, nil
+}
+
 // TestReview2O_P1_3_MultiReplicaRetryPayment_DifferentKeysSerialized reproduces review2-O P1-3.
 func TestReview2O_P1_3_MultiReplicaRetryPayment_DifferentKeysSerialized(t *testing.T) {
 	buyerCtx := ctxWithUser("buyer-1", "buyer", "")

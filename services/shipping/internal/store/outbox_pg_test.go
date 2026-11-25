@@ -1148,13 +1148,14 @@ func TestPGStoreW3A_D9_OutboxLeaseAndOrdering(t *testing.T) {
 	})
 
 	t.Run("W3A_D9bisR2_P1_4_MigrationReassignsSeqByCreatedAt_AfterMVCCUpdate", func(t *testing.T) {
-		// Create a fresh isolated DB and apply ONLY 000001..000004 (pre-000005 schema without seq).
+		// Create a fresh isolated DB and apply ONLY 000001..000005 (pre-000006 schema without seq).
 		migPool := openIsolatedShippingTestPool(t)
 		for _, fname := range []string{
 			"000001_init.sql",
-			"000002_shipping_ops.sql",
-			"000003_return_recreate_index.sql",
-			"000004_shop_freeship_settings.sql",
+			"000002_return_shipments.sql",
+			"000003_shipping_ops.sql",
+			"000004_return_recreate_index.sql",
+			"000005_shop_freeship_settings.sql",
 		} {
 			raw, rErr := fs.ReadFile(migrations.FS, fname)
 			if rErr != nil {

@@ -55,6 +55,13 @@ enum ShopApprovalStatus {
   SHOP_APPROVAL_STATUS_REJECTED = 3;
 }
 
+enum SiteStatus {
+  SITE_STATUS_UNSPECIFIED = 0;
+  SITE_STATUS_DRAFT = 1;
+  SITE_STATUS_PUBLISHED = 2;
+  SITE_STATUS_SUSPENDED = 3;
+}
+
 message User {
   string id = 1;
   string full_name = 2;
@@ -652,6 +659,248 @@ message AdminUnsuspendShopResponse {
   Shop shop = 1;
 }
 
+message PublicShop {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  ShopStatus status = 4;
+}
+
+message Site {
+  string id = 1;
+  string shop_id = 2;
+  string shop_name = 3;
+  string subdomain = 4;
+  string primary_host = 5;
+  SiteStatus status = 6;
+  string config_json = 7;
+  string published_version_id = 8;
+  int32 published_version_number = 9;
+  google.protobuf.Timestamp published_at = 10;
+  string suspended_reason = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+}
+
+message SiteVersion {
+  string id = 1;
+  string site_id = 2;
+  int32 version_number = 3;
+  string config_json = 4;
+  string published_by = 5;
+  string note = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message GetSiteByHostRequest {
+  string host = 1;
+}
+
+message GetSiteByHostResponse {
+  Site site = 1;
+  PublicShop shop = 2;
+}
+
+message GetSiteByShopRequest {
+  string shop_id = 1;
+}
+
+message GetSiteByShopResponse {
+  Site site = 1;
+  PublicShop shop = 2;
+}
+
+message GetSiteDraftRequest {
+  string shop_id = 1;
+}
+
+message GetSiteDraftResponse {
+  Site site = 1;
+}
+
+message SaveSiteDraftRequest {
+  string shop_id = 1;
+  string subdomain = 2;
+  string config_json = 3;
+}
+
+message SaveSiteDraftResponse {
+  Site site = 1;
+}
+
+message PublishSiteRequest {
+  string shop_id = 1;
+  string note = 2;
+}
+
+message PublishSiteResponse {
+  Site site = 1;
+  SiteVersion version = 2;
+}
+
+message RollbackSiteRequest {
+  string shop_id = 1;
+  string version_id = 2;
+  string note = 3;
+}
+
+message RollbackSiteResponse {
+  Site site = 1;
+  SiteVersion version = 2;
+}
+
+message ListSiteVersionsRequest {
+  string shop_id = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message ListSiteVersionsResponse {
+  repeated SiteVersion versions = 1;
+  int64 total = 2;
+}
+
+message ListSitesRequest {
+  SiteStatus status = 1;
+  string query = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+message ListSitesResponse {
+  repeated Site sites = 1;
+  int64 total = 2;
+}
+
+message SuspendSiteRequest {
+  string site_id = 1;
+  bool suspend = 2;
+  string reason = 3;
+}
+
+message SuspendSiteResponse {
+  Site site = 1;
+}
+
+// PublishedSiteSummary is the public directory card of a PUBLISHED site whose shop is ACTIVE.
+// Fields come only from the published config and public shop profile (never the draft).
+message PublishedSiteSummary {
+  string site_id = 1;
+  string shop_id = 2;
+  string shop_name = 3;
+  string subdomain = 4;
+  string primary_host = 5;
+  string logo_url = 6;
+  string cover_url = 7;
+  string tagline = 8;
+  google.protobuf.Timestamp published_at = 9;
+}
+
+// ListPublishedSitesRequest is public (no JWT). page_size defaults to 24, capped at 48.
+message ListPublishedSitesRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+}
+
+message ListPublishedSitesResponse {
+  repeated PublishedSiteSummary sites = 1;
+  int64 total = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+message DomainVerificationRecord {
+  string type = 1;
+  string name = 2;
+  string value = 3;
+}
+
+message Domain {
+  string id = 1;
+  string host = 2;
+  string kind = 3;
+  string status = 4;
+  bool is_primary = 5;
+  repeated DomainVerificationRecord verification = 6;
+  string last_error = 7;
+  google.protobuf.Timestamp verified_at = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
+message AddCustomDomainRequest {
+  string shop_id = 1;
+  string hostname = 2;
+}
+
+message AddCustomDomainResponse {
+  Domain domain = 1;
+}
+
+message CheckCustomDomainRequest {
+  string shop_id = 1;
+  string domain_id = 2;
+}
+
+message CheckCustomDomainResponse {
+  Domain domain = 1;
+}
+
+message RemoveCustomDomainRequest {
+  string shop_id = 1;
+  string domain_id = 2;
+}
+
+message RemoveCustomDomainResponse {}
+
+message ListSiteDomainsRequest {
+  string shop_id = 1;
+}
+
+message ListSiteDomainsResponse {
+  repeated Domain domains = 1;
+}
+
+message SiteTemplate {
+  string id = 1;
+  string slug = 2;
+  string name = 3;
+  string category = 4;
+  string archetype = 5;
+  string description = 6;
+  string preview_image_url = 7;
+  repeated string tags = 8;
+  string config_json = 9;
+  bool is_active = 10;
+  int32 sort_order = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+}
+
+message ListSiteTemplatesRequest {}
+
+message ListSiteTemplatesResponse {
+  repeated SiteTemplate templates = 1;
+}
+
+message GetSiteTemplateRequest {
+  string id = 1;
+}
+
+message GetSiteTemplateResponse {
+  SiteTemplate template = 1;
+}
+
+message ApplySiteTemplateRequest {
+  string shop_id = 1;
+  string template_id = 2;
+  string subdomain = 3;
+}
+
+message ApplySiteTemplateResponse {
+  Site site = 1;
+  SiteTemplate template = 2;
+}
+
 service UserService {
   rpc Register(RegisterRequest) returns (RegisterResponse);
   rpc VerifyOTP(VerifyOTPRequest) returns (VerifyOTPResponse);
@@ -694,4 +943,21 @@ service UserService {
   rpc AdminListShopApprovals(AdminListShopApprovalsRequest) returns (AdminListShopApprovalsResponse);
   rpc AdminDecideShopSuspension(AdminDecideShopSuspensionRequest) returns (AdminDecideShopSuspensionResponse);
   rpc AdminUnsuspendShop(AdminUnsuspendShopRequest) returns (AdminUnsuspendShopResponse);
+  rpc GetSiteByHost(GetSiteByHostRequest) returns (GetSiteByHostResponse);
+  rpc GetSiteByShop(GetSiteByShopRequest) returns (GetSiteByShopResponse);
+  rpc GetSiteDraft(GetSiteDraftRequest) returns (GetSiteDraftResponse);
+  rpc SaveSiteDraft(SaveSiteDraftRequest) returns (SaveSiteDraftResponse);
+  rpc PublishSite(PublishSiteRequest) returns (PublishSiteResponse);
+  rpc RollbackSite(RollbackSiteRequest) returns (RollbackSiteResponse);
+  rpc ListSiteVersions(ListSiteVersionsRequest) returns (ListSiteVersionsResponse);
+  rpc ListSites(ListSitesRequest) returns (ListSitesResponse);
+  rpc SuspendSite(SuspendSiteRequest) returns (SuspendSiteResponse);
+  rpc ListPublishedSites(ListPublishedSitesRequest) returns (ListPublishedSitesResponse);
+  rpc AddCustomDomain(AddCustomDomainRequest) returns (AddCustomDomainResponse);
+  rpc CheckCustomDomain(CheckCustomDomainRequest) returns (CheckCustomDomainResponse);
+  rpc RemoveCustomDomain(RemoveCustomDomainRequest) returns (RemoveCustomDomainResponse);
+  rpc ListSiteDomains(ListSiteDomainsRequest) returns (ListSiteDomainsResponse);
+  rpc ListSiteTemplates(ListSiteTemplatesRequest) returns (ListSiteTemplatesResponse);
+  rpc GetSiteTemplate(GetSiteTemplateRequest) returns (GetSiteTemplateResponse);
+  rpc ApplySiteTemplate(ApplySiteTemplateRequest) returns (ApplySiteTemplateResponse);
 }

@@ -1,4 +1,5 @@
-import { PRODUCTS, SHOPS, type Product } from "../data";
+import { PRODUCTS, type Product } from "../data/products";
+import { SHOPS } from "../data/shops";
 
 /**
  * Strips Vietnamese diacritics, maps đ/Đ -> d, lowercases and collapses whitespace.
@@ -15,7 +16,9 @@ export function normalizeVietnamese(input: string): string {
 }
 
 /**
- * Vietnamese apparel synonym groups (all keys normalized without accents).
+ * @deprecated Legacy client-side synonym map superseded by server SearchService (B1).
+ * Retained solely for unowned legacy callers (`ShopDetailClient.tsx`, `scripts/check-data.mjs`).
+ * Storefront header & catalog/search pages use `@/lib/search-client`.
  */
 export const SEARCH_SYNONYMS: Record<string, string[]> = {
   "ao phong": ["ao thun", "tshirt", "t-shirt", "tee", "cotton"],

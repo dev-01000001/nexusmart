@@ -68,18 +68,19 @@ func (q *Queries) GetEmailDedupEventID(ctx context.Context, dedupKey string) (st
 }
 
 const getOrderParticipant = `-- name: GetOrderParticipant :one
-SELECT order_id, buyer_id, shop_id, order_code, checkout_group_id, updated_at
+SELECT order_id, buyer_id, shop_id, order_code, checkout_group_id, storefront_shop_id, updated_at
 FROM order_participants
 WHERE order_id = $1
 `
 
 type GetOrderParticipantRow struct {
-	OrderID         string
-	BuyerID         string
-	ShopID          string
-	OrderCode       string
-	CheckoutGroupID string
-	UpdatedAt       pgtype.Timestamptz
+	OrderID          string
+	BuyerID          string
+	ShopID           string
+	OrderCode        string
+	CheckoutGroupID  string
+	StorefrontShopID string
+	UpdatedAt        pgtype.Timestamptz
 }
 
 func (q *Queries) GetOrderParticipant(ctx context.Context, orderID string) (GetOrderParticipantRow, error) {
@@ -91,6 +92,7 @@ func (q *Queries) GetOrderParticipant(ctx context.Context, orderID string) (GetO
 		&i.ShopID,
 		&i.OrderCode,
 		&i.CheckoutGroupID,
+		&i.StorefrontShopID,
 		&i.UpdatedAt,
 	)
 	return i, err
@@ -353,19 +355,20 @@ func (q *Queries) ListNotifications(ctx context.Context, arg ListNotificationsPa
 }
 
 const listOrderParticipantsByCheckoutGroup = `-- name: ListOrderParticipantsByCheckoutGroup :many
-SELECT order_id, buyer_id, shop_id, order_code, checkout_group_id, updated_at
+SELECT order_id, buyer_id, shop_id, order_code, checkout_group_id, storefront_shop_id, updated_at
 FROM order_participants
 WHERE checkout_group_id = $1
 ORDER BY order_id ASC
 `
 
 type ListOrderParticipantsByCheckoutGroupRow struct {
-	OrderID         string
-	BuyerID         string
-	ShopID          string
-	OrderCode       string
-	CheckoutGroupID string
-	UpdatedAt       pgtype.Timestamptz
+	OrderID          string
+	BuyerID          string
+	ShopID           string
+	OrderCode        string
+	CheckoutGroupID  string
+	StorefrontShopID string
+	UpdatedAt        pgtype.Timestamptz
 }
 
 func (q *Queries) ListOrderParticipantsByCheckoutGroup(ctx context.Context, checkoutGroupID string) ([]ListOrderParticipantsByCheckoutGroupRow, error) {
@@ -383,6 +386,7 @@ func (q *Queries) ListOrderParticipantsByCheckoutGroup(ctx context.Context, chec
 			&i.ShopID,
 			&i.OrderCode,
 			&i.CheckoutGroupID,
+			&i.StorefrontShopID,
 			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -431,22 +435,24 @@ func (q *Queries) MarkSelectedNotificationsRead(ctx context.Context, arg MarkSel
 }
 
 const upsertOrderParticipant = `-- name: UpsertOrderParticipant :exec
-INSERT INTO order_participants (order_id, buyer_id, shop_id, order_code, checkout_group_id, updated_at)
-VALUES ($1, $2, $3, $4, $5, NOW())
+INSERT INTO order_participants (order_id, buyer_id, shop_id, order_code, checkout_group_id, storefront_shop_id, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, NOW())
 ON CONFLICT (order_id) DO UPDATE SET
     buyer_id = CASE WHEN EXCLUDED.buyer_id <> '' THEN EXCLUDED.buyer_id ELSE order_participants.buyer_id END,
     shop_id = CASE WHEN EXCLUDED.shop_id <> '' THEN EXCLUDED.shop_id ELSE order_participants.shop_id END,
     order_code = CASE WHEN EXCLUDED.order_code <> '' THEN EXCLUDED.order_code ELSE order_participants.order_code END,
     checkout_group_id = CASE WHEN EXCLUDED.checkout_group_id <> '' THEN EXCLUDED.checkout_group_id ELSE order_participants.checkout_group_id END,
+    storefront_shop_id = CASE WHEN EXCLUDED.storefront_shop_id <> '' THEN EXCLUDED.storefront_shop_id ELSE order_participants.storefront_shop_id END,
     updated_at = NOW()
 `
 
 type UpsertOrderParticipantParams struct {
-	OrderID         string
-	BuyerID         string
-	ShopID          string
-	OrderCode       string
-	CheckoutGroupID string
+	OrderID          string
+	BuyerID          string
+	ShopID           string
+	OrderCode        string
+	CheckoutGroupID  string
+	StorefrontShopID string
 }
 
 func (q *Queries) UpsertOrderParticipant(ctx context.Context, arg UpsertOrderParticipantParams) error {
@@ -456,6 +462,7 @@ func (q *Queries) UpsertOrderParticipant(ctx context.Context, arg UpsertOrderPar
 		arg.ShopID,
 		arg.OrderCode,
 		arg.CheckoutGroupID,
+		arg.StorefrontShopID,
 	)
 	return err
 }

@@ -25,7 +25,7 @@ func formatOptionalRFC3339(t *time.Time) string {
 
 func buildReturnUpdatedOutbox(
 	rr db.ReturnRequest,
-	checkoutGroupID, prevStatus, reason, actorRole, traceID, traceparent string,
+	checkoutGroupID, storefrontShopID, prevStatus, reason, actorRole, traceID, traceparent string,
 ) (db.InsertOutboxEventParams, error) {
 	payloadBytes, err := json.Marshal(events.OrderReturnUpdatedPayload{
 		ReturnRequestID:      rr.ID,
@@ -34,6 +34,7 @@ func buildReturnUpdatedOutbox(
 		CheckoutGroupID:      checkoutGroupID,
 		BuyerID:              rr.BuyerID,
 		ShopID:               rr.ShopID,
+		StorefrontShopID:     storefrontShopID,
 		Status:               rr.Status,
 		PreviousStatus:       prevStatus,
 		Reason:               reason,
@@ -306,16 +307,17 @@ func (s *PostgresStore) TransitionReturnRequest(ctx context.Context, params Retu
 			(strings.EqualFold(updatedOrd.PaymentStatus, "SUCCEEDED") ||
 				statemachine.StringToPaymentMethod(updatedOrd.PaymentMethod) == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD)
 		retPayload, err := json.Marshal(events.OrderReturnedPayload{
-			OrderID:         updatedOrd.ID,
-			OrderCode:       updatedOrd.OrderCode,
-			CheckoutGroupID: updatedOrd.CheckoutGroupID,
-			BuyerID:         updatedOrd.BuyerID,
-			ShopID:          updatedOrd.ShopID,
-			PaymentMethod:   updatedOrd.PaymentMethod,
-			FromStatus:      ord.Status,
-			TotalPayableVND: updatedOrd.TotalPayableVND,
-			Reason:          params.Note,
-			WasPaid:         wasPaid,
+			OrderID:          updatedOrd.ID,
+			OrderCode:        updatedOrd.OrderCode,
+			CheckoutGroupID:  updatedOrd.CheckoutGroupID,
+			BuyerID:          updatedOrd.BuyerID,
+			ShopID:           updatedOrd.ShopID,
+			StorefrontShopID: updatedOrd.StorefrontShopID,
+			PaymentMethod:    updatedOrd.PaymentMethod,
+			FromStatus:       ord.Status,
+			TotalPayableVND:  updatedOrd.TotalPayableVND,
+			Reason:           params.Note,
+			WasPaid:          wasPaid,
 		})
 		if err != nil {
 			return nil, err
@@ -452,7 +454,7 @@ func (s *PostgresStore) TransitionReturnRequest(ctx context.Context, params Retu
 			outboxReason = eventNote
 		}
 	}
-	ob, err := buildReturnUpdatedOutbox(updatedRR, ord.CheckoutGroupID, prevStatusStr, outboxReason, params.ActorRole, params.TraceID, params.Traceparent)
+	ob, err := buildReturnUpdatedOutbox(updatedRR, ord.CheckoutGroupID, ord.StorefrontShopID, prevStatusStr, outboxReason, params.ActorRole, params.TraceID, params.Traceparent)
 	if err != nil {
 		return nil, err
 	}
@@ -571,7 +573,7 @@ func (s *PostgresStore) SaveReturnShipmentInfo(ctx context.Context, params SaveR
 		}
 		updated = true
 		// P2-3: emit order.return_updated once return tracking code is persisted so notification delivers it to buyer.
-		ob, obErr := buildReturnUpdatedOutbox(rr, ord.CheckoutGroupID, rr.Status, "Return shipping label created", "system", params.TraceID, params.Traceparent)
+		ob, obErr := buildReturnUpdatedOutbox(rr, ord.CheckoutGroupID, ord.StorefrontShopID, rr.Status, "Return shipping label created", "system", params.TraceID, params.Traceparent)
 		if obErr != nil {
 			return nil, false, obErr
 		}
@@ -908,7 +910,7 @@ func (s *PostgresStore) ApplyReturnShipmentUpdate(ctx context.Context, params Re
 		return nil, err
 	}
 
-	ob, err := buildReturnUpdatedOutbox(updatedRR, ord.CheckoutGroupID, prevStatusStr, note, "system", params.TraceID, params.Traceparent)
+	ob, err := buildReturnUpdatedOutbox(updatedRR, ord.CheckoutGroupID, ord.StorefrontShopID, prevStatusStr, note, "system", params.TraceID, params.Traceparent)
 	if err != nil {
 		return nil, err
 	}

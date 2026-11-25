@@ -28,14 +28,19 @@ type MemoryStore struct {
 	reservations         map[string]StockReservation
 	releaseTombstones    map[string]time.Time
 	history              []StockHistoryEntry
+	eventVersion         int64
 	outbox               []OutboxEvent
 	reviews              map[string]ProductReview
 	bannedKeywords       map[string]BannedKeyword
 	shopSuspension       map[string]ShopSuspensionState
 	processedEvents      map[string]string
 	deadLetterEvents     []DeadLetterEvent
+	importJobs           map[string]ProductImportJob
+	importRows           map[string]ProductImportRow
 	shopLocksMu          sync.Mutex
 	shopLocks            map[string]*sync.Mutex
+	jobLocksMu           sync.Mutex
+	jobLocks             map[string]*sync.Mutex
 	nextOutboxSeq        int64
 	outboxLease          time.Duration
 	outboxPublishTimeout time.Duration
@@ -61,7 +66,10 @@ func NewMemoryStore() *MemoryStore {
 		bannedKeywords:       make(map[string]BannedKeyword),
 		shopSuspension:       make(map[string]ShopSuspensionState),
 		processedEvents:      make(map[string]string),
+		importJobs:           make(map[string]ProductImportJob),
+		importRows:           make(map[string]ProductImportRow),
 		shopLocks:            make(map[string]*sync.Mutex),
+		jobLocks:             make(map[string]*sync.Mutex),
 		outboxLease:          jetstream.DefaultOutboxLease,
 		outboxPublishTimeout: jetstream.DefaultOutboxPublishTimeout,
 	}
@@ -157,6 +165,25 @@ func (m *MemoryStore) PriceHistory() []SKUPriceHistoryEntry {
 	out := make([]SKUPriceHistoryEntry, len(m.priceHistory))
 	copy(out, m.priceHistory)
 	return out
+}
+
+// SetSKUFlashSaleReservedStockForTest sets legacy flash_sale_reserved_stock directly in tests
+// to verify skus_total_reserved_le_stock guard checks across stock updates and reactivations.
+func (m *MemoryStore) SetSKUFlashSaleReservedStockForTest(skuID string, qty int32) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s, ok := m.skus[skuID]; ok {
+		s.FlashSaleReservedStock = qty
+		m.skus[skuID] = s
+	}
+}
+
+// NextProductEventVersion increments and returns the monotonic product event version.
+func (m *MemoryStore) NextProductEventVersion(_ context.Context) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.eventVersion++
+	return m.eventVersion, nil
 }
 
 // OutboxEvents returns a copy of all recorded outbox events (for test assertions).
@@ -451,24 +478,29 @@ func (m *MemoryStore) getShopLock(shopID string) *sync.Mutex {
 // WithTx executes fn with optimistic snapshot reads and atomic validation+commit on exit.
 func (m *MemoryStore) WithTx(ctx context.Context, fn func(q Queries) error) error {
 	tx := &memTx{
-		store:                m,
-		stagedCats:           make(map[string]Category),
-		deletedCats:          make(map[string]bool),
-		stagedProds:          make(map[string]Product),
-		stagedSKUs:           make(map[string]SKU),
-		updatedSKUMeta:       make(map[string]bool),
-		deactivatedSKUs:      make(map[string]bool),
-		stagedRes:            make(map[string]StockReservation),
-		stagedTombstones:     make(map[string]time.Time),
-		ratingDeltas:         make(map[string]ratingDelta),
-		stagedReviews:        make(map[string]ProductReview),
-		stagedKeywords:       make(map[string]BannedKeyword),
-		deletedKeywords:      make(map[string]bool),
-		stagedShopSuspension: make(map[string]ShopSuspensionState),
-		stagedShopProdFlag:   make(map[string]bool),
-		stagedProcessed:      make(map[string]string),
-		lockedShopSet:        make(map[string]bool),
+		store:                  m,
+		stagedCats:             make(map[string]Category),
+		deletedCats:            make(map[string]bool),
+		stagedProds:            make(map[string]Product),
+		stagedSKUs:             make(map[string]SKU),
+		updatedSKUMeta:         make(map[string]bool),
+		deactivatedSKUs:        make(map[string]bool),
+		stagedRes:              make(map[string]StockReservation),
+		stagedTombstones:       make(map[string]time.Time),
+		ratingDeltas:           make(map[string]ratingDelta),
+		stagedReviews:          make(map[string]ProductReview),
+		stagedKeywords:         make(map[string]BannedKeyword),
+		deletedKeywords:        make(map[string]bool),
+		stagedShopSuspension:   make(map[string]ShopSuspensionState),
+		stagedShopProdFlag:     make(map[string]bool),
+		stagedProcessed:        make(map[string]string),
+		stagedImportJobs:       make(map[string]ProductImportJob),
+		stagedImportRows:       make(map[string]ProductImportRow),
+		deletedImportRowsByJob: make(map[string]bool),
+		lockedShopSet:          make(map[string]bool),
+		lockedJobSet:           make(map[string]bool),
 	}
+	defer tx.unlockJobs()
 	defer tx.unlockShops()
 	if err := fn(tx); err != nil {
 		return err
@@ -794,14 +826,17 @@ func (m *MemoryStore) UpdateProductStatus(ctx context.Context, id, status string
 	})
 }
 
-func (m *MemoryStore) SoftDeleteProduct(ctx context.Context, id string) (bool, error) {
-	var ok bool
+func (m *MemoryStore) SoftDeleteProduct(ctx context.Context, id string) (time.Time, bool, error) {
+	var (
+		ts time.Time
+		ok bool
+	)
 	err := m.WithTx(ctx, func(q Queries) error {
 		var e error
-		ok, e = q.SoftDeleteProduct(ctx, id)
+		ts, ok, e = q.SoftDeleteProduct(ctx, id)
 		return e
 	})
-	return ok, err
+	return ts, ok, err
 }
 
 func (m *MemoryStore) ListProducts(_ context.Context, filter ListProductsFilter) ([]Product, int64, error) {
@@ -820,9 +855,13 @@ func (m *MemoryStore) filterProductsLocked(filter ListProductsFilter) []Product 
 		}
 	}
 	kw := ""
-	if strings.TrimSpace(filter.Keyword) != "" {
-		kw = NormalizeSearchText(filter.Keyword)
-		if kw == "" {
+	skuKW := ""
+	if rawKW := strings.TrimSpace(filter.Keyword); rawKW != "" {
+		kw = NormalizeSearchText(rawKW)
+		if filter.MatchSKUCode {
+			skuKW = strings.ToLower(rawKW)
+		}
+		if kw == "" && skuKW == "" {
 			return []Product{}
 		}
 	}
@@ -858,12 +897,26 @@ func (m *MemoryStore) filterProductsLocked(filter ListProductsFilter) []Product 
 		if filter.CategoryID != "" && !allowedCats[p.CategoryID] {
 			continue
 		}
-		if kw != "" {
-			st := p.SearchText
-			if st == "" {
-				st = BuildProductSearchText(p.Name, p.Description)
+		if kw != "" || skuKW != "" {
+			textMatch := false
+			if kw != "" {
+				st := p.SearchText
+				if st == "" {
+					st = BuildProductSearchText(p.Name, p.Description)
+				}
+				textMatch = strings.Contains(st, kw)
 			}
-			if !strings.Contains(st, kw) {
+			skuMatch := false
+			if !textMatch && skuKW != "" {
+				for _, s := range m.skus {
+					if s.ProductID == p.ID && s.Status != SKUStatusInactive &&
+						strings.Contains(strings.ToLower(s.SKUCode), skuKW) {
+						skuMatch = true
+						break
+					}
+				}
+			}
+			if !textMatch && !skuMatch {
 				continue
 			}
 		}
@@ -875,6 +928,21 @@ func (m *MemoryStore) filterProductsLocked(filter ListProductsFilter) []Product 
 		}
 		if filter.Status != "" && p.Status != filter.Status {
 			continue
+		}
+		if filter.LowStock {
+			if p.Status != ProductStatusApproved && p.Status != ProductStatusOutOfStock {
+				continue
+			}
+			hasLowSKU := false
+			for _, s := range m.skus {
+				if s.ProductID == p.ID && s.Status != SKUStatusInactive && s.AvailableStock() <= LowStockThreshold {
+					hasLowSKU = true
+					break
+				}
+			}
+			if !hasLowSKU {
+				continue
+			}
 		}
 		if filter.MinPriceVND > 0 || filter.MaxPriceVND > 0 {
 			hasMatch := false
@@ -1598,32 +1666,37 @@ type ratingDelta struct {
 
 // memTx buffers writes and validates optimistic locks atomically on commit.
 type memTx struct {
-	store                *MemoryStore
-	stagedCats           map[string]Category
-	deletedCats          map[string]bool
-	stagedFeeSchedules   []CategoryFeeSchedule
-	stagedProds          map[string]Product
-	ratingDeltas         map[string]ratingDelta
-	stagedSKUs           map[string]SKU
-	stagedPriceHistory   []SKUPriceHistoryEntry
-	updatedSKUMeta       map[string]bool
-	deactivatedSKUs      map[string]bool
-	stagedRes            map[string]StockReservation
-	stagedTombstones     map[string]time.Time
-	skuOps               []stagedSKUOp
-	resTransitions       []stagedResTransition
-	newRes               []StockReservation
-	stagedHistory        []StockHistoryEntry
-	stagedOutbox         []OutboxEvent
-	stagedReviews        map[string]ProductReview
-	stagedKeywords       map[string]BannedKeyword
-	deletedKeywords      map[string]bool
-	stagedShopSuspension map[string]ShopSuspensionState
-	stagedShopProdFlag   map[string]bool
-	stagedProcessed      map[string]string
-	stagedDLQ            []DeadLetterEvent
-	lockedShopSet        map[string]bool
-	lockedShops          []string
+	store                  *MemoryStore
+	stagedCats             map[string]Category
+	deletedCats            map[string]bool
+	stagedFeeSchedules     []CategoryFeeSchedule
+	stagedProds            map[string]Product
+	ratingDeltas           map[string]ratingDelta
+	stagedSKUs             map[string]SKU
+	stagedPriceHistory     []SKUPriceHistoryEntry
+	updatedSKUMeta         map[string]bool
+	deactivatedSKUs        map[string]bool
+	stagedRes              map[string]StockReservation
+	stagedTombstones       map[string]time.Time
+	skuOps                 []stagedSKUOp
+	resTransitions         []stagedResTransition
+	newRes                 []StockReservation
+	stagedHistory          []StockHistoryEntry
+	stagedOutbox           []OutboxEvent
+	stagedReviews          map[string]ProductReview
+	stagedKeywords         map[string]BannedKeyword
+	deletedKeywords        map[string]bool
+	stagedShopSuspension   map[string]ShopSuspensionState
+	stagedShopProdFlag     map[string]bool
+	stagedProcessed        map[string]string
+	stagedDLQ              []DeadLetterEvent
+	stagedImportJobs       map[string]ProductImportJob
+	stagedImportRows       map[string]ProductImportRow
+	deletedImportRowsByJob map[string]bool
+	lockedShopSet          map[string]bool
+	lockedShops            []string
+	lockedJobSet           map[string]bool
+	lockedJobs             []string
 }
 
 func (t *memTx) unlockShops() {
@@ -1810,7 +1883,7 @@ func (t *memTx) commit() error {
 			if cur.Version != op.expectedVersion {
 				return ErrVersionConflict
 			}
-			if op.amount < cur.ReservedStock {
+			if op.amount < cur.TotalReservedStock() {
 				return ErrInvalidStock
 			}
 			cur.Stock = op.amount
@@ -1828,7 +1901,7 @@ func (t *memTx) commit() error {
 			if cur.Version != op.expectedVersion {
 				return ErrVersionConflict
 			}
-			if op.amount < cur.ReservedStock {
+			if op.amount < cur.TotalReservedStock() {
 				return ErrInvalidStock
 			}
 			cur.Stock = op.amount
@@ -1887,7 +1960,8 @@ func (t *memTx) commit() error {
 		computedSKUs[op.skuID] = cur
 	}
 
-	// 4b. Validate staged reviews (product FK & UNIQUE(order_item_id)) and banned keywords (UNIQUE(normalized_term)).
+	// 4b. Validate staged reviews (product FK & UNIQUE(order_item_id)), banned keywords (UNIQUE(normalized_term)),
+	// and new outbox event ID uniqueness.
 	if len(t.stagedReviews) > 0 {
 		seenOrderItems := make(map[string]string, len(t.store.reviews)+len(t.stagedReviews))
 		for id, r := range t.store.reviews {
@@ -1921,6 +1995,18 @@ func (t *memTx) commit() error {
 					return ErrAlreadyExists
 				}
 			}
+		}
+	}
+	if len(t.stagedOutbox) > 0 {
+		seenIDs := make(map[string]struct{}, len(t.store.outbox)+len(t.stagedOutbox))
+		for _, existing := range t.store.outbox {
+			seenIDs[existing.ID] = struct{}{}
+		}
+		for _, ev := range t.stagedOutbox {
+			if _, dup := seenIDs[ev.ID]; dup {
+				return ErrAlreadyExists
+			}
+			seenIDs[ev.ID] = struct{}{}
 		}
 	}
 
@@ -2043,6 +2129,19 @@ func (t *memTx) commit() error {
 		t.store.reservations[tr.id] = r
 	}
 	t.store.history = append(t.store.history, filteredHistory...)
+	for jobID := range t.deletedImportRowsByJob {
+		for rowID, r := range t.store.importRows {
+			if r.JobID == jobID {
+				delete(t.store.importRows, rowID)
+			}
+		}
+	}
+	for id, r := range t.stagedImportRows {
+		t.store.importRows[id] = cloneImportRow(r)
+	}
+	for id, j := range t.stagedImportJobs {
+		t.store.importJobs[id] = cloneImportJob(j)
+	}
 	for _, ev := range t.stagedOutbox {
 		ev.PayloadJSON = append([]byte(nil), ev.PayloadJSON...)
 		ev.AggregateID = OutboxAggregateKey(ev)
@@ -2325,7 +2424,7 @@ func (t *memTx) UpdateProduct(ctx context.Context, p Product) (Product, error) {
 	if err != nil {
 		return Product{}, err
 	}
-	now := AsOfFromContext(ctx)
+	now := monotonicTimestamp(AsOfFromContext(ctx), cur.UpdatedAt)
 	p.ShopID = cur.ShopID
 	p.SearchText = BuildProductSearchText(p.Name, p.Description)
 	p.RatingSum = cur.RatingSum
@@ -2347,7 +2446,7 @@ func (t *memTx) UpdateProductReview(ctx context.Context, id, status, rejectionRe
 	if err != nil {
 		return Product{}, err
 	}
-	now := AsOfFromContext(ctx)
+	now := monotonicTimestamp(AsOfFromContext(ctx), cur.UpdatedAt)
 	cur.Status = status
 	cur.RejectionReason = rejectionReason
 	if flaggedKeywords != nil {
@@ -2388,22 +2487,22 @@ func (t *memTx) UpdateProductStatus(ctx context.Context, id, status string) erro
 		return err
 	}
 	cur.Status = status
-	cur.UpdatedAt = AsOfFromContext(ctx)
+	cur.UpdatedAt = monotonicTimestamp(AsOfFromContext(ctx), cur.UpdatedAt)
 	t.stagedProds[id] = cloneProduct(cur)
 	return nil
 }
 
-func (t *memTx) SoftDeleteProduct(ctx context.Context, id string) (bool, error) {
+func (t *memTx) SoftDeleteProduct(ctx context.Context, id string) (time.Time, bool, error) {
 	cur, err := t.GetProductByID(ctx, id)
 	if err != nil {
-		return false, nil
+		return time.Time{}, false, nil
 	}
-	now := AsOfFromContext(ctx)
+	now := monotonicTimestamp(AsOfFromContext(ctx), cur.UpdatedAt)
 	cur.DeletedAt = &now
 	cur.Status = ProductStatusHidden
 	cur.UpdatedAt = now
 	t.stagedProds[id] = cloneProduct(cur)
-	return true, nil
+	return now, true, nil
 }
 
 func (t *memTx) ListProducts(ctx context.Context, filter ListProductsFilter) ([]Product, int64, error) {
@@ -2464,7 +2563,7 @@ func (t *memTx) ReactivateSKUOptimistic(ctx context.Context, s SKU, expectedVers
 	if cur.Version != expectedVersion {
 		return SKU{}, ErrVersionConflict
 	}
-	if s.Stock < cur.ReservedStock {
+	if s.Stock < cur.TotalReservedStock() {
 		return SKU{}, ErrInvalidStock
 	}
 	t.skuOps = append(t.skuOps, stagedSKUOp{
@@ -2679,7 +2778,7 @@ func (t *memTx) UpdateSKUStockOptimistic(ctx context.Context, skuID string, newS
 	if cur.Version != expectedVersion {
 		return SKU{}, ErrVersionConflict
 	}
-	if newStock < cur.ReservedStock {
+	if newStock < cur.TotalReservedStock() {
 		return SKU{}, ErrInvalidStock
 	}
 	t.skuOps = append(t.skuOps, stagedSKUOp{
@@ -2863,13 +2962,15 @@ func (t *memTx) TransitionStockReservation(_ context.Context, id, toStatus, from
 	return true, nil
 }
 
-func (t *memTx) InsertStockHistory(_ context.Context, h StockHistoryEntry) error {
-	h.CreatedAt = time.Now().UTC()
+func (t *memTx) InsertStockHistory(ctx context.Context, h StockHistoryEntry) error {
+	if h.CreatedAt.IsZero() {
+		h.CreatedAt = AsOfFromContext(ctx)
+	}
 	t.stagedHistory = append(t.stagedHistory, h)
 	return nil
 }
 
-func (t *memTx) TryInsertRestockHistory(_ context.Context, h StockHistoryEntry) (bool, error) {
+func (t *memTx) TryInsertRestockHistory(ctx context.Context, h StockHistoryEntry) (bool, error) {
 	h.ChangeType = "RESTOCK"
 	t.store.mu.Lock()
 	for _, existing := range t.store.history {
@@ -2884,9 +2985,15 @@ func (t *memTx) TryInsertRestockHistory(_ context.Context, h StockHistoryEntry) 
 			return false, nil
 		}
 	}
-	h.CreatedAt = time.Now().UTC()
+	if h.CreatedAt.IsZero() {
+		h.CreatedAt = AsOfFromContext(ctx)
+	}
 	t.stagedHistory = append(t.stagedHistory, h)
 	return true, nil
+}
+
+func (t *memTx) NextProductEventVersion(ctx context.Context) (int64, error) {
+	return t.store.NextProductEventVersion(ctx)
 }
 
 func (t *memTx) InsertOutboxEvent(ctx context.Context, ev OutboxEvent) error {

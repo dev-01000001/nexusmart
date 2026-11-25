@@ -1,0 +1,261 @@
+groups:
+  - name: nexusmart_slo_recording_rules
+    interval: 10s
+    rules:
+      # HTTP RED recording rules (always derive 5xx from http_requests_total{status=~"5.."}
+      # for cross-language consistency between Go and Rust services).
+      - record: nexusmart:http_requests:rate5m
+        expr: sum by (service) (rate(http_requests_total[5m]))
+
+      - record: nexusmart:http_errors_5xx:rate5m
+        expr: >-
+          sum by (service) (rate(http_requests_total{status=~"5.."}[5m]))
+          or (0 * sum by (service) (rate(http_requests_total[5m])))
+
+      - record: nexusmart:http_error_ratio:5m
+        expr: >-
+          (
+            sum by (service) (rate(http_requests_total{status=~"5.."}[5m]))
+            or (0 * sum by (service) (rate(http_requests_total[5m])))
+          )
+          / clamp_min(sum by (service) (rate(http_requests_total[5m])), 1e-9)
+
+      - record: nexusmart:http_error_ratio:30m
+        expr: >-
+          (
+            sum by (service) (rate(http_requests_total{status=~"5.."}[30m]))
+            or (0 * sum by (service) (rate(http_requests_total[30m])))
+          )
+          / clamp_min(sum by (service) (rate(http_requests_total[30m])), 1e-9)
+
+      - record: nexusmart:http_error_ratio:1h
+        expr: >-
+          (
+            sum by (service) (rate(http_requests_total{status=~"5.."}[1h]))
+            or (0 * sum by (service) (rate(http_requests_total[1h])))
+          )
+          / clamp_min(sum by (service) (rate(http_requests_total[1h])), 1e-9)
+
+      - record: nexusmart:http_error_ratio:6h
+        expr: >-
+          (
+            sum by (service) (rate(http_requests_total{status=~"5.."}[6h]))
+            or (0 * sum by (service) (rate(http_requests_total[6h])))
+          )
+          / clamp_min(sum by (service) (rate(http_requests_total[6h])), 1e-9)
+
+      - record: nexusmart:http_latency_p95:5m
+        expr: >-
+          histogram_quantile(
+            0.95,
+            sum by (service, le) (rate(http_request_duration_seconds_bucket[5m]))
+          )
+
+      # gRPC RED recording rules
+      - record: nexusmart:grpc_requests:rate5m
+        expr: sum by (service) (rate(grpc_requests_total[5m]))
+
+      - record: nexusmart:grpc_errors:rate5m
+        expr: >-
+          sum by (service) (rate(grpc_errors_total[5m]))
+          or (0 * sum by (service) (rate(grpc_requests_total[5m])))
+
+      - record: nexusmart:grpc_error_ratio:5m
+        expr: >-
+          (
+            sum by (service) (rate(grpc_errors_total[5m]))
+            or (0 * sum by (service) (rate(grpc_requests_total[5m])))
+          )
+          / clamp_min(sum by (service) (rate(grpc_requests_total[5m])), 1e-9)
+
+      - record: nexusmart:grpc_error_ratio:30m
+        expr: >-
+          (
+            sum by (service) (rate(grpc_errors_total[30m]))
+            or (0 * sum by (service) (rate(grpc_requests_total[30m])))
+          )
+          / clamp_min(sum by (service) (rate(grpc_requests_total[30m])), 1e-9)
+
+      - record: nexusmart:grpc_error_ratio:1h
+        expr: >-
+          (
+            sum by (service) (rate(grpc_errors_total[1h]))
+            or (0 * sum by (service) (rate(grpc_requests_total[1h])))
+          )
+          / clamp_min(sum by (service) (rate(grpc_requests_total[1h])), 1e-9)
+
+      - record: nexusmart:grpc_error_ratio:6h
+        expr: >-
+          (
+            sum by (service) (rate(grpc_errors_total[6h]))
+            or (0 * sum by (service) (rate(grpc_requests_total[6h])))
+          )
+          / clamp_min(sum by (service) (rate(grpc_requests_total[6h])), 1e-9)
+
+      - record: nexusmart:grpc_latency_p95:5m
+        expr: >-
+          histogram_quantile(
+            0.95,
+            sum by (service, le) (rate(grpc_request_duration_seconds_bucket[5m]))
+          )
+
+      # 30-day availability SLO = 99.5% (error budget = 0.005)
+      - record: nexusmart:slo_requests:increase30d
+        expr: >-
+          (
+            sum by (service) (increase(http_requests_total[30d]))
+            + sum by (service) (increase(grpc_requests_total[30d]))
+          )
+          or sum by (service) (increase(http_requests_total[30d]))
+          or sum by (service) (increase(grpc_requests_total[30d]))
+
+      - record: nexusmart:slo_errors:increase30d
+        expr: >-
+          (
+            sum by (service) (increase(http_requests_total{status=~"5.."}[30d]))
+            + sum by (service) (increase(grpc_errors_total[30d]))
+          )
+          or sum by (service) (increase(http_requests_total{status=~"5.."}[30d]))
+          or sum by (service) (increase(grpc_errors_total[30d]))
+          or (0 * nexusmart:slo_requests:increase30d)
+
+      - record: nexusmart:slo_error_budget_remaining_ratio
+        expr: >-
+          clamp_min(
+            1 - (
+              (
+                nexusmart:slo_errors:increase30d
+                / clamp_min(nexusmart:slo_requests:increase30d, 1)
+              ) / 0.005
+            ),
+            0
+          )
+
+  - name: nexusmart_slo_and_health_alerts
+    interval: 10s
+    rules:
+      # Multi-window error budget fast burn: 14.4x burn rate on 99.5% SLO (7.2% errors)
+      - alert: NexusMartSLOFastBurn
+        expr: >-
+          (
+            nexusmart:http_error_ratio:5m > (14.4 * 0.005)
+            and nexusmart:http_error_ratio:1h > (14.4 * 0.005)
+          )
+          or
+          (
+            nexusmart:grpc_error_ratio:5m > (14.4 * 0.005)
+            and nexusmart:grpc_error_ratio:1h > (14.4 * 0.005)
+          )
+        for: 2m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "Fast SLO error budget burn on {{ $labels.service }}"
+          description: >-
+            Service {{ $labels.service }} is burning its 30-day 99.5% availability
+            error budget at >14.4x across 5m and 1h windows (current error ratio:
+            {{ printf "%.4f" $value }}).
+
+      # Multi-window error budget slow burn: 6x burn rate on 99.5% SLO (3.0% errors)
+      - alert: NexusMartSLOSlowBurn
+        expr: >-
+          (
+            nexusmart:http_error_ratio:30m > (6 * 0.005)
+            and nexusmart:http_error_ratio:6h > (6 * 0.005)
+          )
+          or
+          (
+            nexusmart:grpc_error_ratio:30m > (6 * 0.005)
+            and nexusmart:grpc_error_ratio:6h > (6 * 0.005)
+          )
+        for: 15m
+        labels:
+          severity: warning
+          slo: availability
+        annotations:
+          summary: "Slow SLO error budget burn on {{ $labels.service }}"
+          description: >-
+            Service {{ $labels.service }} is burning its 30-day 99.5% availability
+            error budget at >6x across 30m and 6h windows (current error ratio:
+            {{ printf "%.4f" $value }}).
+
+      - alert: NexusMartServiceDown
+        expr: up{job="nexusmart-services"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.service }} is down"
+          description: >-
+            Prometheus failed to scrape {{ $labels.service }} ({{ $labels.instance }})
+            for more than 30 seconds.
+
+      - alert: NexusMartDependencyDown
+        expr: nexusmart_dependency_up == 0
+        for: 20s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Dependency {{ $labels.dependency }} is unreachable"
+          description: >-
+            Dependency probe nexusmart_dependency_up reported {{ $labels.dependency }}
+            down for more than 20 seconds.
+
+      # Latency SLOs: gateway & read services >300ms, order >1s, payment >500ms
+      - alert: NexusMartHighLatencyP95
+        expr: >-
+          (
+            nexusmart:http_latency_p95:5m{service=~"gateway|user|product|cart|promotion|shipping|notification|search|chat|assistant"} > 0.3
+          )
+          or
+          (
+            nexusmart:grpc_latency_p95:5m{service=~"user|product|cart|promotion|shipping|notification|search|chat|assistant"} > 0.3
+          )
+          or
+          (
+            nexusmart:http_latency_p95:5m{service="order"} > 1.0
+          )
+          or
+          (
+            nexusmart:grpc_latency_p95:5m{service="order"} > 1.0
+          )
+          or
+          (
+            nexusmart:http_latency_p95:5m{service="payment"} > 0.5
+          )
+          or
+          (
+            nexusmart:grpc_latency_p95:5m{service="payment"} > 0.5
+          )
+        for: 1m
+        labels:
+          severity: warning
+          slo: latency
+        annotations:
+          summary: "High p95 latency on {{ $labels.service }}"
+          description: >-
+            Service {{ $labels.service }} exceeded its p95 latency threshold
+            (current p95: {{ printf "%.3f" $value }}s).
+
+      - alert: NexusMartHighCPU
+        expr: sum by (service) (rate(container_cpu_usage_seconds_total{service!=""}[1m])) > 0.8
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on {{ $labels.service }}"
+          description: >-
+            Service {{ $labels.service }} container CPU usage exceeded 0.8 cores
+            for 1m (current: {{ printf "%.2f" $value }} cores).
+
+      - alert: NexusMartHighMemory
+        expr: sum by (service) (container_memory_working_set_bytes{service!=""}) > 536870912
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on {{ $labels.service }}"
+          description: >-
+            Service {{ $labels.service }} container memory working set exceeded 512 MiB
+            for 2m (current: {{ printf "%.0f" $value }} bytes).

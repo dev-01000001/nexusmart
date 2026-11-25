@@ -8,7 +8,10 @@
 *.key
 
 # Node / Next.js artifacts
+web/node_modules
 **/node_modules
+web/.next
+web/.next*
 **/.next
 **/.next-*
 web/out
@@ -22,8 +25,9 @@ web/coverage
 *.test
 *.out
 
-# Non-runtime tooling, docs, and agent metadata
+# Non-runtime tooling, ledgers, docs, and agent metadata
 .runs
+_ledgers
 .taste-skill
 .agents
 .claude
@@ -34,4 +38,5 @@ web/coverage
 /scripts
 *.xlsx
 *.md
+!services/assistant/policies/*.md
 .DS_Store

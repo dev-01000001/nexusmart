@@ -125,18 +125,27 @@ func run() error {
 		ShopID:       cfg.GHNShopID,
 		LabelBaseURL: cfg.LabelBaseURL,
 	})
+	ghtk := carrier.NewGHTKAdapter(carrier.GHTKConfig{
+		Mode:         cfg.GHTKMode,
+		BaseURL:      cfg.GHTKBaseURL,
+		Token:        cfg.GHTKToken,
+		LabelBaseURL: cfg.LabelBaseURL,
+	})
 	mockExp := carrier.NewMockExpressAdapterWithLabelBase(cfg.LabelBaseURL)
 	if cfg.TestFaultInjection {
 		mockExp.SetTestFaultInjectionEnabled(true)
 		ghn.SetTestFaultInjectionEnabled(true)
+		ghtk.SetTestFaultInjectionEnabled(true)
 		if cfg.TestFailCreateCount > 0 {
 			_ = mockExp.InjectCreateFault("", http.StatusServiceUnavailable, cfg.TestFailCreateCount)
 			_ = ghn.InjectCreateFault("", http.StatusServiceUnavailable, cfg.TestFailCreateCount)
+			_ = ghtk.InjectCreateFault("", http.StatusServiceUnavailable, cfg.TestFailCreateCount)
 		}
 		log.Warn("test carrier fault injection enabled via SHIPPING_TEST_FAULT_INJECTION")
 	}
 	enabledCarriers := []carrier.Carrier{
 		carrier.NewResilientCarrier(ghn, resCfg),
+		carrier.NewResilientCarrier(ghtk, resCfg),
 		carrier.NewResilientCarrier(mockExp, resCfg),
 	}
 
@@ -169,7 +178,8 @@ func run() error {
 	svc.SetCreateRetryPolicy(cfg.CreateRetryMax, cfg.CreateRetryBase, cfg.CreateRetryMaxBackoff)
 
 	if err := svc.InitCarrierConfigs(ctx, map[string]string{
-		carrier.CodeGHN: cfg.GHNToken,
+		carrier.CodeGHN:  cfg.GHNToken,
+		carrier.CodeGHTK: cfg.GHTKToken,
 	}); err != nil {
 		log.Error("failed to initialize carrier configs from DB", slog.String("error", err.Error()))
 		return err
@@ -254,6 +264,7 @@ func run() error {
 	opsHandler := metrics.NewOpsHandler(cfg.ServiceName, readyFn, prometheus.DefaultGatherer)
 	whHandler := webhook.NewHandler(cfg.WebhookSecret, svc, log)
 	labelHandler := webhook.NewLabelHandler(svc)
+	batchLabelHandler := webhook.NewBatchLabelHandler(svc)
 
 	router := chi.NewRouter()
 	router.Use(telemetry.HTTPMiddleware(cfg.ServiceName))
@@ -283,6 +294,8 @@ func run() error {
 				injectErr = mockExp.InjectCreateFault(body.OrderID, body.StatusCode, body.Count)
 			case carrier.CodeGHN:
 				injectErr = ghn.InjectCreateFault(body.OrderID, body.StatusCode, body.Count)
+			case carrier.CodeGHTK:
+				injectErr = ghtk.InjectCreateFault(body.OrderID, body.StatusCode, body.Count)
 			default:
 				http.Error(w, `{"error":"unknown carrier"}`, http.StatusBadRequest)
 				return
@@ -302,6 +315,8 @@ func run() error {
 		authed.Use(auth.HTTPMiddleware(jwtMgr, true))
 		authed.Get("/labels/{tracking_code}", labelHandler.ServeHTTP)
 		authed.Get("/api/v1/shipping/labels/{tracking_code}", labelHandler.ServeHTTP)
+		authed.Post("/labels/batch", batchLabelHandler.ServeHTTP)
+		authed.Post("/api/v1/shipping/labels/batch", batchLabelHandler.ServeHTTP)
 	})
 
 	httpSrv := &http.Server{

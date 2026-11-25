@@ -46,15 +46,31 @@ func TestW2B_AdminReviewProduct_TransactionalOutbox(t *testing.T) {
 	}
 	prodID := prod.GetProduct().GetId()
 
-	// Reviewing a non-existent product must NOT write any outbox event.
+	reviewedEvents := func() []store.OutboxEvent {
+		var out []store.OutboxEvent
+		for _, ev := range st.OutboxEvents() {
+			if ev.EventType == events.SubjectProductReviewed {
+				out = append(out, ev)
+			}
+		}
+		return out
+	}
+
+	// Reviewing a non-existent product must NOT write any product.reviewed outbox event.
 	if _, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
 		ProductId: "missing-prod-id",
 		Decision:  productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_APPROVE,
 	}); status.Code(err) != codes.NotFound {
 		t.Fatalf("AdminReviewProduct missing product: want NotFound, got %v", err)
 	}
-	if len(st.OutboxEvents()) != 0 {
-		t.Fatalf("expected 0 outbox events after failed review, got %d", len(st.OutboxEvents()))
+	if len(reviewedEvents()) != 0 {
+		t.Fatalf("expected 0 product.reviewed outbox events after failed review, got %d", len(reviewedEvents()))
+	}
+
+	// Drain any category creation trigger before checking REJECT trigger.
+	select {
+	case <-srv.OutboxTrigger():
+	default:
 	}
 
 	// 1. REJECT writes product.reviewed outbox event atomically and triggers relay channel.
@@ -80,9 +96,9 @@ func TestW2B_AdminReviewProduct_TransactionalOutbox(t *testing.T) {
 		t.Fatalf("AdminReviewProduct APPROVE: %v", err)
 	}
 
-	evs := st.OutboxEvents()
+	evs := reviewedEvents()
 	if len(evs) != 2 {
-		t.Fatalf("expected 2 outbox events, got %d", len(evs))
+		t.Fatalf("expected 2 product.reviewed outbox events, got %d", len(evs))
 	}
 
 	var p0, p1 events.ProductReviewedPayload

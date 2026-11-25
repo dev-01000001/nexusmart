@@ -154,6 +154,29 @@ func TestE2E_GatewayW2B(t *testing.T) {
 			t.Fatalf("expected min_price_30d_vnd=250000, got body=%s", string(prodResp.Body))
 		}
 
+		// Restore shared seller1 shipping-settings on exit so later tests relying on mock_express or no freeship are unaffected.
+		t.Cleanup(func() {
+			cleanCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			resp, err := env.client.DoJSON(cleanCtx, http.MethodPut, "/api/v1/seller/shipping-settings", seller1.AccessToken, nil, map[string]any{
+				"enabled_carrier_codes":   []string{"ghn", "mock_express"},
+				"default_weight_grams":    500,
+				"default_length_cm":       20,
+				"default_width_cm":        15,
+				"default_height_cm":       10,
+				"free_ship_enabled":       false,
+				"free_ship_min_order_vnd": 0,
+				"free_ship_max_vnd":       0,
+			})
+			if err != nil {
+				t.Errorf("cleanup restore seller1 shipping-settings failed: %v", err)
+				return
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("cleanup restore seller1 shipping-settings returned HTTP %d: %s", resp.StatusCode, string(resp.Body))
+			}
+		})
+
 		// Configure shop freeship on seller1.
 		putResp := env.mustDoJSON(t, http.MethodPut, "/api/v1/seller/shipping-settings", seller1.AccessToken, nil, map[string]any{
 			"enabled_carrier_codes":   []string{"ghn"},
@@ -407,6 +430,7 @@ func TestE2E_GatewayW2B(t *testing.T) {
 		coResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "gw-w2b-privacy-" + env.runID,
 		}, map[string]any{
+			"sales_channel":  "MARKETPLACE",
 			"address_id":     buyer.AddressID,
 			"payment_method": "COD",
 			"items":          []map[string]any{{"sku_id": sku1.ID, "quantity": 1}},
@@ -640,6 +664,7 @@ func TestE2E_GatewayW2B(t *testing.T) {
 		coVietQRResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", shipBuyer.AccessToken, map[string]string{
 			"Idempotency-Key": "gw-w2b-ship-vqr-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku0g.ID, Quantity: 2}},
 			PaymentMethod: "VIETQR",
@@ -675,6 +700,7 @@ func TestE2E_GatewayW2B(t *testing.T) {
 		coCODResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", shipBuyer.AccessToken, map[string]string{
 			"Idempotency-Key": "gw-w2b-ship-cod-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku0g.ID, Quantity: 2}},
 			PaymentMethod: "COD",

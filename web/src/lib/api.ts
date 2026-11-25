@@ -1,22 +1,35 @@
-import type { GatewayErrorEnvelope, GatewayProduct } from "@/lib/gateway-types";
+// Browser-side helper for calling this app's explicit /api/* route handlers (the BFF).
+// Same-origin fetch: cookies ride along automatically and the browser sets `Origin` on writes.
+import type { GatewayErrorEnvelope, GatewaySKU } from "@/lib/gateway-types";
+import { type AddressFeeChangedQuote, extractSafeAddressFeeQuote } from "./a8-types.ts";
 
 export const SESSION_EXPIRED_EVENT = "nexusmart:session-expired";
 
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
+  readonly quote?: AddressFeeChangedQuote;
 
-  constructor(status: number, code: string, message: string) {
-    super(message);
+  constructor(status: number, code: string, message: string, quote?: AddressFeeChangedQuote) {
+    super(message); // already a safe Vietnamese message from the BFF
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    if (quote) {
+      this.quote = quote;
+    }
   }
 }
 
-export interface ApiRequestInit extends Omit<RequestInit, "body"> {
-  body?: BodyInit | null;
+export interface ApiOptions {
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  /** JSON-serializable payload or raw BodyInit (FormData/Blob/string/Uint8Array). */
+  body?: unknown;
+  /** Alias for JSON payload (for compatibility with shared helpers). */
   json?: unknown;
+  headers?: HeadersInit;
+  signal?: AbortSignal;
+  /** Retry once via single-flight `/api/auth/refresh` on 401 (default true except `/api/auth/*`). */
   retryOn401?: boolean;
 }
 
@@ -38,6 +51,7 @@ export function refreshSessionOnce(): Promise<boolean> {
         method: "POST",
         credentials: "same-origin",
         headers: { Accept: "application/json" },
+        cache: "no-store",
       });
       if (res.ok) {
         refreshGeneration += 1;
@@ -60,12 +74,51 @@ function notifySessionExpired() {
   }
 }
 
+function isBodyInit(val: unknown): val is BodyInit {
+  if (typeof val === "string") return true;
+  if (typeof FormData !== "undefined" && val instanceof FormData) return true;
+  if (typeof Blob !== "undefined" && val instanceof Blob) return true;
+  if (typeof URLSearchParams !== "undefined" && val instanceof URLSearchParams) return true;
+  if (val instanceof ArrayBuffer || ArrayBuffer.isView(val)) return true;
+  return false;
+}
+
+function buildFetchInit(opts: ApiOptions, defaultAccept = "application/json"): RequestInit {
+  const headers = new Headers(opts.headers);
+  if (!headers.has("Accept")) {
+    headers.set("Accept", defaultAccept);
+  }
+
+  let encodedBody: BodyInit | undefined;
+  const payload = opts.json !== undefined ? opts.json : opts.body;
+  if (payload !== undefined && payload !== null) {
+    if (isBodyInit(payload)) {
+      encodedBody = payload;
+    } else {
+      encodedBody = JSON.stringify(payload);
+      if (!headers.has("Content-Type")) {
+        headers.set("Content-Type", "application/json");
+      }
+    }
+  }
+
+  return {
+    method: opts.method ?? "GET",
+    headers,
+    body: encodedBody,
+    credentials: "same-origin",
+    cache: "no-store",
+    signal: opts.signal,
+  };
+}
+
 async function parseErrorResponse(res: Response): Promise<ApiError> {
   let code = res.status >= 500 ? "UNAVAILABLE" : "BAD_REQUEST";
   let message =
     res.status >= 500
-      ? "Hệ thống đang tạm bận, vui lòng thử lại sau ít phút."
+      ? "Hệ thống đang bận. Bạn vui lòng thử lại sau."
       : "Yêu cầu chưa thể xử lý, vui lòng thử lại.";
+  let quote: AddressFeeChangedQuote | undefined;
 
   try {
     const data = (await res.json()) as Partial<GatewayErrorEnvelope> | null;
@@ -75,63 +128,44 @@ async function parseErrorResponse(res: Response): Promise<ApiError> {
     if (data?.error?.message) {
       message = data.error.message;
     }
+    if (res.status === 409 && code === "ADDRESS_FEE_CHANGED") {
+      quote = extractSafeAddressFeeQuote(data) ?? undefined;
+    }
   } catch {
     // Keep generic fallback message
   }
 
-  return new ApiError(res.status, code, message);
+  return new ApiError(res.status, code, message, quote);
 }
 
-function buildRequestInit(init?: ApiRequestInit): RequestInit {
-  const headers = new Headers(init?.headers);
-  if (!headers.has("Accept")) {
-    headers.set("Accept", "application/json");
-  }
-
-  let body = init?.body;
-  if (init?.json !== undefined) {
-    body = JSON.stringify(init.json);
-    if (!headers.has("Content-Type")) {
-      headers.set("Content-Type", "application/json");
-    }
-  }
-
-  return {
-    ...init,
-    headers,
-    body,
-    credentials: "same-origin",
-  };
+function shouldRetry401(path: string, opts: ApiOptions): boolean {
+  if (opts.retryOn401 !== undefined) return opts.retryOn401;
+  return !path.startsWith("/api/auth/");
 }
 
 /**
- * Calls the same-origin BFF proxy `/api/gw/<path>`.
- * On 401, triggers a single-flight `/api/auth/refresh` and retries the request once.
+ * Call an explicit same-origin BFF endpoint (e.g. `/api/cart`, `/api/orders/...`).
+ * Throws ApiError (status 0 = network failure). Returns undefined for 204.
+ * On 401 (non-auth routes), triggers single-flight `/api/auth/refresh` and retries once.
  */
-export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
-  const cleanPath = path.replace(/^\/+/, "");
-  const url = `/api/gw/${cleanPath}`;
-  const reqInit = buildRequestInit(init);
+export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
+  const reqInit = buildFetchInit(opts, "application/json");
   const genBefore = refreshGeneration;
 
   let res: Response;
   try {
-    res = await fetch(url, reqInit);
+    res = await fetch(path, reqInit);
   } catch {
-    throw new ApiError(503, "UNAVAILABLE", "Hệ thống đang tạm bận, vui lòng thử lại sau ít phút.");
+    throw new ApiError(0, "NETWORK", "Không kết nối được. Bạn kiểm tra mạng và thử lại nhé.");
   }
 
-  if (res.status === 401 && init?.retryOn401 !== false) {
+  if (res.status === 401 && shouldRetry401(path, opts)) {
     const refreshed = refreshGeneration > genBefore ? true : await refreshSessionOnce();
     if (refreshed) {
       try {
-        res = await fetch(url, reqInit);
+        res = await fetch(path, reqInit);
       } catch {
-        throw new ApiError(
-          503,
-          "UNAVAILABLE",
-          "Hệ thống đang tạm bận, vui lòng thử lại sau ít phút."
-        );
+        throw new ApiError(0, "NETWORK", "Không kết nối được. Bạn kiểm tra mạng và thử lại nhé.");
       }
     }
     if (res.status === 401) {
@@ -151,41 +185,26 @@ export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
 }
 
 /**
- * Downloads a binary/CSV response from `/api/gw/<path>` with single-flight 401 refresh retry.
+ * Downloads a binary/CSV/PDF response from an explicit BFF endpoint with single-flight 401 retry.
  */
-export async function apiBlob(path: string, init?: ApiRequestInit): Promise<Blob> {
-  const cleanPath = path.replace(/^\/+/, "");
-  const url = `/api/gw/${cleanPath}`;
-  const headers = new Headers(init?.headers);
-  if (!headers.has("Accept")) {
-    headers.set("Accept", "*/*");
-  }
-  const reqInit: RequestInit = {
-    ...init,
-    method: init?.method ?? "GET",
-    headers,
-    credentials: "same-origin",
-  };
+export async function apiBlob(path: string, opts: ApiOptions = {}): Promise<Blob> {
+  const reqInit = buildFetchInit(opts, "*/*");
   const genBefore = refreshGeneration;
 
   let res: Response;
   try {
-    res = await fetch(url, reqInit);
+    res = await fetch(path, reqInit);
   } catch {
-    throw new ApiError(503, "UNAVAILABLE", "Hệ thống đang tạm bận, vui lòng thử lại sau ít phút.");
+    throw new ApiError(0, "NETWORK", "Không kết nối được. Bạn kiểm tra mạng và thử lại nhé.");
   }
 
-  if (res.status === 401 && init?.retryOn401 !== false) {
+  if (res.status === 401 && shouldRetry401(path, opts)) {
     const refreshed = refreshGeneration > genBefore ? true : await refreshSessionOnce();
     if (refreshed) {
       try {
-        res = await fetch(url, reqInit);
+        res = await fetch(path, reqInit);
       } catch {
-        throw new ApiError(
-          503,
-          "UNAVAILABLE",
-          "Hệ thống đang tạm bận, vui lòng thử lại sau ít phút."
-        );
+        throw new ApiError(0, "NETWORK", "Không kết nối được. Bạn kiểm tra mạng và thử lại nhé.");
       }
     }
     if (res.status === 401) {
@@ -205,26 +224,14 @@ export async function apiBlob(path: string, init?: ApiRequestInit): Promise<Blob
  */
 export async function authApi<T>(
   endpoint: string,
-  options?: { method?: "GET" | "POST"; json?: unknown }
+  options?: { method?: "GET" | "POST"; json?: unknown; body?: unknown }
 ): Promise<T> {
   const cleanEndpoint = endpoint.replace(/^\/+/, "");
-  const reqInit = buildRequestInit({
+  return api<T>(`/api/auth/${cleanEndpoint}`, {
     method: options?.method ?? "POST",
-    json: options?.json,
+    body: options?.json !== undefined ? options.json : options?.body,
+    retryOn401: false,
   });
-
-  let res: Response;
-  try {
-    res = await fetch(`/api/auth/${cleanEndpoint}`, reqInit);
-  } catch {
-    throw new ApiError(503, "UNAVAILABLE", "Hệ thống đang tạm bận, vui lòng thử lại sau ít phút.");
-  }
-
-  if (!res.ok) {
-    throw await parseErrorResponse(res);
-  }
-
-  return (await res.json()) as T;
 }
 
 export {
@@ -232,7 +239,7 @@ export {
   resolvePostLoginRedirect,
   sanitizeNextPath,
   sanitizeNextPath as sanitizeClientNextPath,
-} from "@/lib/redirect";
+} from "./redirect.ts";
 
 export function getErrorMessage(
   err: unknown,
@@ -247,28 +254,109 @@ export function getErrorMessage(
   return fallback;
 }
 
+function normalizeSkuAttrText(input?: string | null): string {
+  return (input ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[đĐ]/g, "d")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeSkuAttrSlug(input?: string | null): string {
+  return normalizeSkuAttrText(input).replace(/[^a-z0-9]+/g, "");
+}
+
+export type GatewaySkuMatchCandidate = Pick<
+  GatewaySKU,
+  "id" | "sku_code" | "available_stock" | "is_active" | "attributes"
+>;
+
+export interface GatewaySkuMatchQuery {
+  skuCode?: string;
+  colorCode?: string;
+  colorName?: string;
+  size?: string;
+}
+
 /**
- * Resolves a real backend SKU UUID for static/mock editorial product cards by looking up
- * the product slug via the same-origin BFF proxy.
+ * Pure SKU resolver: matches by exact `sku_code`, or by (`attributes.color_code` OR accent-folded
+ * `attributes.color`) + `attributes.size`. Never substitutes a different color or size when
+ * the caller explicitly specified them.
  */
-export async function resolveGatewaySkuId(
-  slug: string,
-  match: { skuCode?: string; colorCode?: string; size?: string }
-): Promise<string | null> {
-  const fetched = await api<{ product?: GatewayProduct }>(
-    `products/slug/${encodeURIComponent(slug)}`
-  );
-  const backendSkus = fetched?.product?.skus ?? [];
-  const resolved =
-    (match.skuCode ? backendSkus.find((s) => s.sku_code === match.skuCode) : undefined) ??
-    (match.colorCode && match.size
-      ? backendSkus.find(
-          (s) => s.attributes?.color_code === match.colorCode && s.attributes?.size === match.size
-        )
-      : undefined) ??
-    (match.size
-      ? backendSkus.find((s) => s.attributes?.size === match.size && s.available_stock > 0)
-      : undefined) ??
-    backendSkus.find((s) => s.available_stock > 0);
-  return resolved && resolved.available_stock > 0 ? resolved.id : null;
+export function matchGatewaySku(
+  backendSkus: readonly GatewaySkuMatchCandidate[],
+  match: GatewaySkuMatchQuery
+): string | null {
+  const isSellable = (s: GatewaySkuMatchCandidate) =>
+    s.is_active !== false && s.available_stock > 0;
+
+  const cleanSkuCode = (match.skuCode ?? "").trim();
+  if (cleanSkuCode) {
+    const bySkuCode = backendSkus.find((s) => s.sku_code === cleanSkuCode);
+    if (bySkuCode) {
+      return isSellable(bySkuCode) ? bySkuCode.id : null;
+    }
+  }
+
+  const rawColorCode = (match.colorCode ?? "").trim();
+  const rawColorName = (match.colorName ?? "").trim();
+  const reqColorCode =
+    rawColorCode && normalizeSkuAttrSlug(rawColorCode) !== "macdinh"
+      ? normalizeSkuAttrText(rawColorCode)
+      : "";
+  const reqColorCodeSlug = reqColorCode ? normalizeSkuAttrSlug(reqColorCode) : "";
+  const reqColorName =
+    rawColorName && normalizeSkuAttrText(rawColorName) !== "mac dinh"
+      ? normalizeSkuAttrText(rawColorName)
+      : "";
+  const reqColorNameSlug = reqColorName ? normalizeSkuAttrSlug(reqColorName) : "";
+  const hasColor = Boolean(reqColorCode || reqColorName);
+
+  const reqSizeLower = (match.size ?? "").trim().toLowerCase();
+  const hasSize = Boolean(reqSizeLower);
+
+  const matchesColor = (s: GatewaySkuMatchCandidate): boolean => {
+    const skuColorCode = normalizeSkuAttrText(s.attributes?.color_code);
+    const skuColorCodeSlug = normalizeSkuAttrSlug(s.attributes?.color_code);
+    const skuColorName = normalizeSkuAttrText(s.attributes?.color);
+    const skuColorNameSlug = normalizeSkuAttrSlug(s.attributes?.color);
+
+    if (
+      reqColorCode &&
+      skuColorCode &&
+      (skuColorCode === reqColorCode || skuColorCodeSlug === reqColorCodeSlug)
+    ) {
+      return true;
+    }
+    if (reqColorName && skuColorName && skuColorName === reqColorName) {
+      return true;
+    }
+    if (reqColorCodeSlug && skuColorNameSlug && skuColorNameSlug === reqColorCodeSlug) {
+      return true;
+    }
+    if (reqColorNameSlug && skuColorCodeSlug && skuColorCodeSlug === reqColorNameSlug) {
+      return true;
+    }
+    return false;
+  };
+
+  const matchesSize = (s: GatewaySkuMatchCandidate): boolean =>
+    (s.attributes?.size ?? "").trim().toLowerCase() === reqSizeLower;
+
+  if (hasColor && hasSize) {
+    const exact = backendSkus.find((s) => matchesColor(s) && matchesSize(s) && isSellable(s));
+    return exact ? exact.id : null;
+  }
+  if (hasColor) {
+    const byColor = backendSkus.find((s) => matchesColor(s) && isSellable(s));
+    return byColor ? byColor.id : null;
+  }
+  if (hasSize) {
+    const bySize = backendSkus.find((s) => matchesSize(s) && isSellable(s));
+    return bySize ? bySize.id : null;
+  }
+  const fallback = backendSkus.find(isSellable);
+  return fallback ? fallback.id : null;
 }

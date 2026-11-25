@@ -19,6 +19,8 @@ type Config struct {
 	NATSURL                   string
 	NATSStream                string
 	ProductGRPCAddr           string
+	GRPCCallTimeout           time.Duration
+	FlashSaleSweepInterval    time.Duration
 	VoucherExpiryNoticeHours  int
 	VoucherExpiryScanInterval time.Duration
 	RedisReconcileInterval    time.Duration
@@ -52,6 +54,8 @@ func Load() Config {
 		NATSURL:                   env.EnvString("NATS_URL", "nats://localhost:4222"),
 		NATSStream:                env.EnvString("NATS_STREAM", "NEXUSMART"),
 		ProductGRPCAddr:           env.EnvString("PRODUCT_GRPC_ADDR", "localhost:50052"),
+		GRPCCallTimeout:           env.EnvDuration("PROMOTION_GRPC_TIMEOUT", 5*time.Second),
+		FlashSaleSweepInterval:    env.EnvDuration("FLASH_SALE_SWEEP_INTERVAL", 2*time.Second),
 		VoucherExpiryNoticeHours:  noticeHours,
 		VoucherExpiryScanInterval: scanInterval,
 		RedisReconcileInterval:    reconcileInterval,

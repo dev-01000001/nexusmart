@@ -36,6 +36,8 @@ var userSelfAuditedRoutes = map[string]struct{}{
 	"POST /api/v1/admin/shops/{id}/unsuspend":           {},
 	"POST /api/v1/admin/approvals/shop/{id}/decide":     {},
 	"POST /api/v1/admin/shops/{id}/bank-account/review": {},
+	"POST /api/v1/admin/sites/{site_id}/suspend":        {},
+	"DELETE /api/v1/admin/sites/{shop_id}/domains/{id}": {},
 }
 
 // AdminAuditConfig configures centralized audit logging for mutating /api/v1/admin/* routes.
@@ -358,6 +360,8 @@ func auditTargetType(routePattern string) string {
 		return "shop_suspension_approval"
 	case strings.HasPrefix(trimmed, "payment-methods"):
 		return "payment_method_config"
+	case strings.HasPrefix(trimmed, "search/reindex"):
+		return "search_reindex"
 	}
 	seg, _, _ := strings.Cut(trimmed, "/")
 	switch seg {
@@ -391,6 +395,8 @@ func auditTargetType(routePattern string) string {
 		return "user"
 	case "shops":
 		return "shop"
+	case "sites":
+		return "site"
 	default:
 		if seg != "" && !strings.HasPrefix(seg, "{") {
 			return strings.ReplaceAll(seg, "-", "_")
@@ -430,7 +436,7 @@ func extractTargetIDFromJSON(raw []byte) string {
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return ""
 	}
-	for _, key := range []string{"id", "run_id", "user_id", "refund_id", "carrier_code"} {
+	for _, key := range []string{"id", "job_id", "run_id", "user_id", "refund_id", "carrier_code"} {
 		if s, ok := obj[key].(string); ok && strings.TrimSpace(s) != "" {
 			return strings.TrimSpace(s)
 		}

@@ -789,3 +789,57 @@ func TestOutboxRelay_D9bis_MemoryStore_SeqOrderLostLeasePoisonBackoffAndErrorLog
 		}
 	}
 }
+
+func TestOutboxRelay_RunWakesImmediatelyOnTrigger(t *testing.T) {
+	st := store.NewMemoryStore()
+	pub := &recordingPublisher{}
+	triggerCh := make(chan struct{}, 1)
+	log := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+
+	// Use a very long poll interval so publishing must happen via trigger channel.
+	relay := NewOutboxRelay(st, pub, log, 10*time.Second, triggerCh)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		relay.Run(ctx)
+	}()
+
+	payload, _ := json.Marshal(ProductEventPayload{
+		ProductID:  "prod-wake",
+		ShopID:     "shop-wake",
+		Version:    1,
+		OccurredAt: time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err := st.InsertOutboxEvent(context.Background(), store.OutboxEvent{
+		ID:          "evt-wake-1",
+		EventType:   SubjectProductUpdated,
+		AggregateID: "prod-wake",
+		PayloadJSON: payload,
+	}); err != nil {
+		t.Fatalf("insert outbox event: %v", err)
+	}
+
+	triggerCh <- struct{}{}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		pub.mu.Lock()
+		n := len(pub.msgs)
+		pub.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	pub.mu.Lock()
+	got := len(pub.msgs)
+	pub.mu.Unlock()
+	if got != 1 {
+		t.Fatalf("expected trigger wake to publish 1 message quickly, got %d", got)
+	}
+}

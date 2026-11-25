@@ -3,9 +3,9 @@ export PATH := $(HOME)/.local/bin:$(HOME)/go/bin:$(HOME)/.cargo/bin:$(PATH)
 export PROTOC := $(HOME)/.local/bin/protoc
 
 GO_MODULES := pkg/common gen/go \
-	$(wildcard services/gateway services/user services/product services/cart services/promotion services/order services/shipping services/notification)
+	$(wildcard services/gateway services/user services/product services/cart services/promotion services/order services/shipping services/notification services/search services/chat services/assistant tools/catalog-gen evals/assistant)
 
-.PHONY: proto lint test test-db coverage up down e2e seed e2e-web
+.PHONY: proto lint test test-db coverage up down e2e seed e2e-web eval-assistant obs-up obs-down chaos helm-lint rollback backup restore-drill
 
 proto:
 	buf lint
@@ -28,6 +28,11 @@ lint:
 		echo "==> rustfmt & clippy services/payment"; \
 		(cd services/payment && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings); \
 	fi
+	@set -euo pipefail; \
+	if [ -f services/aiops/Cargo.toml ]; then \
+		echo "==> rustfmt & clippy services/aiops"; \
+		(cd services/aiops && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings); \
+	fi
 
 test:
 	@set -euo pipefail; \
@@ -41,6 +46,11 @@ test:
 	if [ -f services/payment/Cargo.toml ]; then \
 		echo "==> cargo test services/payment"; \
 		(cd services/payment && cargo test); \
+	fi
+	@set -euo pipefail; \
+	if [ -f services/aiops/Cargo.toml ]; then \
+		echo "==> cargo test services/aiops"; \
+		(cd services/aiops && cargo test); \
 	fi
 
 test-db:
@@ -59,7 +69,8 @@ down:
 e2e:
 	GOMODCACHE="$$(go env GOMODCACHE)" docker compose --profile e2e run --rm --user "$$(id -u):$$(id -g)" e2e
 
-# Seed backend via gateway REST using web/src/data/* as single source of truth (idempotent).
+# Idempotently seed storefront catalog (4 showcase shops, 5th catalog shop, categories, 18 products/159 SKUs,
+# vouchers, flash sales, sites/domains, chat threads, demo buyer with verified phone & demo orders) via gateway REST.
 seed:
 	@set -euo pipefail; \
 	_seed_gw="$${SEED_GATEWAY_URL:-}"; \
@@ -71,16 +82,36 @@ seed:
 	export MAILPIT_URL="$${_mp:-http://localhost:$${MAILPIT_UI_PORT:-8025}}"; \
 	export ADMIN_BOOTSTRAP_EMAIL="$${_admin_email:-$${ADMIN_BOOTSTRAP_EMAIL:-admin@nexusmart.local}}"; \
 	export ADMIN_BOOTSTRAP_PASSWORD="$${_admin_pass:-$${ADMIN_BOOTSTRAP_PASSWORD:-AdminDevPassword123!}}"; \
-	node tools/seed/seed.mjs
+	node --no-warnings=MODULE_TYPELESS_PACKAGE_JSON tools/seed/seed.mjs
 
-# End-to-end web BFF test suite (written by QA in tests/e2e-web/).
+# Web E2E suite through the BFF inside the compose network (never touches host web/.next or ports 3111/4777).
 e2e-web:
-	@set -euo pipefail; \
-	_web_url="$${WEB_URL:-}"; \
-	_mp_url="$${MAILPIT_URL:-}"; \
-	_gw_url="$${GATEWAY_URL:-}"; \
-	if [ -f .env ]; then set -a; source .env; set +a; fi; \
-	export WEB_URL="$${_web_url:-http://localhost:$${WEB_PORT:-3000}}"; \
-	export MAILPIT_URL="$${_mp_url:-http://localhost:$${MAILPIT_UI_PORT:-8025}}"; \
-	export GATEWAY_URL="$${_gw_url:-http://localhost:$${GATEWAY_PORT:-8080}}"; \
-	node --test --test-concurrency=1 'tests/e2e-web/*.test.mjs'
+	docker compose up -d --build --no-deps --wait web
+	docker compose --profile e2e-web run --rm e2e-web
+
+# Quantitative AI assistant evaluation (100 Vietnamese cases + 36 prompt-injection tests + SSE TTFT).
+eval-assistant:
+	cd evals/assistant && go run ./cmd/evalrunner --mode=$${LLM_MODE:-mock}
+
+obs-up:
+	docker compose --profile obs up -d --build --no-deps prometheus alertmanager telegram-relay loki promtail tempo cadvisor grafana aiops
+
+obs-down:
+	docker compose --profile obs stop aiops grafana cadvisor tempo promtail loki alertmanager telegram-relay prometheus
+	docker compose --profile obs rm -f aiops grafana cadvisor tempo promtail loki alertmanager telegram-relay prometheus
+
+chaos:
+	./tools/chaos/run.sh
+
+# Swarm F: Helm/K8s lint, one-command rollback, and database backup/restore drill
+helm-lint:
+	./deploy/k8s/scripts/lint.sh
+
+rollback:
+	SERVICE="$(SERVICE)" REV="$(REV)" NAMESPACE="$${NAMESPACE:-nexusmart-staging}" ./deploy/k8s/scripts/rollback.sh
+
+backup:
+	./tools/backup/backup.sh
+
+restore-drill:
+	./tools/backup/restore-drill.sh --fresh

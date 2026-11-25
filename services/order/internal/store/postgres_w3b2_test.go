@@ -64,7 +64,7 @@ func TestPostgresW3B2_Migration0016_UpgradeWithExistingData(t *testing.T) {
 		dropTempDatabase(adminDSN, tempDBName)
 	})
 
-	// 1. Apply migrations 0001..0015 ONLY (simulating pre-3b-2 database).
+	// 1. Apply migrations 0001..0018 ONLY (simulating pre-3b-2 database before 0019_online_methods.sql).
 	if _, err := pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			filename TEXT PRIMARY KEY,
@@ -77,14 +77,14 @@ func TestPostgresW3B2_Migration0016_UpgradeWithExistingData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read migrations dir: %v", err)
 	}
-	var pre16 []string
+	var pre19 []string
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") && e.Name() < "0016_" {
-			pre16 = append(pre16, e.Name())
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") && e.Name() < "0019_" {
+			pre19 = append(pre19, e.Name())
 		}
 	}
-	sort.Strings(pre16)
-	for _, name := range pre16 {
+	sort.Strings(pre19)
+	for _, name := range pre19 {
 		raw, err := migrations.Files.ReadFile(name)
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
@@ -712,14 +712,14 @@ func TestPostgresW3B2P4_D_Migration0017_CheckConstraintsAndLegacy3b1Data(t *test
 	if err != nil {
 		t.Fatalf("read migrations dir: %v", err)
 	}
-	var pre17 []string
+	var pre20 []string
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") && e.Name() < "0017_" {
-			pre17 = append(pre17, e.Name())
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") && e.Name() < "0020_" {
+			pre20 = append(pre20, e.Name())
 		}
 	}
-	sort.Strings(pre17)
-	for _, name := range pre17 {
+	sort.Strings(pre20)
+	for _, name := range pre20 {
 		sqlBytes, err := migrations.Files.ReadFile(name)
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)

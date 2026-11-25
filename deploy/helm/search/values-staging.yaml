@@ -1,0 +1,28 @@
+# Staging overrides for search (namespace: nexusmart-staging)
+replicaCount: 1
+
+image:
+  tag: "staging"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 300m
+    memory: 256Mi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+pdb:
+  enabled: false
+
+config:
+  EMBEDDING_MODE: "mock"
+  LOG_LEVEL: "info"

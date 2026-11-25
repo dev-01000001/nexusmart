@@ -583,7 +583,7 @@ func TestPGStore_W2BIntegration(t *testing.T) {
 		if err != nil || relResp.GetReleased() || relResp.GetAlreadyReleased() {
 			t.Fatalf("early ReleaseStock (1st tombstone): want Released=false AlreadyReleased=false, got resp=%+v err=%v", relResp, err)
 		}
-		if _, err := srv.ReserveStock(ctx, &productv1.ReserveStockRequest{
+		if _, err := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 			OrderId: earlyOrder,
 			Items:   []*productv1.StockReservationItem{{SkuId: skuID, Quantity: 4}},
 		}); status.Code(err) != codes.FailedPrecondition {
@@ -610,7 +610,7 @@ func TestPGStore_W2BIntegration(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				_, _ = srv.ReserveStock(ctx, &productv1.ReserveStockRequest{
+				_, _ = srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 					OrderId: raceOrd,
 					Items:   []*productv1.StockReservationItem{{SkuId: skuID, Quantity: 3}},
 				})
@@ -1598,7 +1598,7 @@ func TestPGStore_W2BIntegration(t *testing.T) {
 				}
 			})
 
-			// Apply 000001..000006 manually and record them in schema_migrations so migrations.Apply runs ONLY 000007.
+			// Apply 000001..000008 manually and record them in schema_migrations so migrations.Apply runs 000009+.
 			if _, err := migPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`); err != nil {
 				t.Fatalf("create schema_migrations: %v", err)
 			}
@@ -1609,7 +1609,7 @@ func TestPGStore_W2BIntegration(t *testing.T) {
 			}
 			var preFiles []string
 			for _, e := range entries {
-				if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") && e.Name() < "000007_" {
+				if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") && e.Name() < "000009_" {
 					preFiles = append(preFiles, e.Name())
 				}
 			}
@@ -2080,7 +2080,7 @@ func TestPGStore_W2BIntegration(t *testing.T) {
 				}
 			})
 
-			// Apply 000001..000007 manually so migrations.Apply runs ONLY 000008.
+			// Apply 000001..000009 manually so migrations.Apply runs 000010+.
 			if _, err := migPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`); err != nil {
 				t.Fatalf("create schema_migrations: %v", err)
 			}
@@ -2091,7 +2091,7 @@ func TestPGStore_W2BIntegration(t *testing.T) {
 			}
 			var preFiles []string
 			for _, e := range entries {
-				if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") && e.Name() < "000008_" {
+				if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") && e.Name() < "000010_" {
 					preFiles = append(preFiles, e.Name())
 				}
 			}

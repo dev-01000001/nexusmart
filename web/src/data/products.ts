@@ -63,6 +63,7 @@ export interface ProductSku {
   size: SizeCode;
   stock: number; // integer >= 0
   price: number; // integer VND
+  skuId?: string; // backend SKU id (cart, flash sale, stock)
 }
 
 export interface SizeMeasurement {
@@ -71,28 +72,6 @@ export interface SizeMeasurement {
   weightKg: string;
   chestOrWaistCm: string;
   lengthCm: string;
-}
-
-export interface ComboSlot {
-  slotId: string;
-  label: string;
-  colorCode: string;
-  colorName: string;
-  availableSizes: SizeCode[];
-  defaultSize: SizeCode;
-}
-
-export interface TierDiscount {
-  minQty: number;
-  discountPercent: number; // integer percent
-  label: string;
-}
-
-export interface ProductGiftThreshold {
-  minAmount: number; // integer VND
-  giftName: string;
-  giftImage: string;
-  giftValue: number; // integer VND
 }
 
 export interface ModelInfo {
@@ -117,6 +96,7 @@ export interface ProductFaqItem {
 
 export interface Product {
   id: string;
+  backendId?: string; // backend product id when loaded from the gateway
   slug: string;
   name: string;
   shortName: string;
@@ -153,10 +133,7 @@ export interface Product {
   badges?: ProductBadge[];
   isCombo?: boolean;
   isPack?: boolean;
-  comboSlots?: ComboSlot[];
-  tierDiscounts?: TierDiscount[];
   bundleIds?: string[];
-  giftThreshold?: ProductGiftThreshold;
   returnEligible?: boolean;
   returnExclusionReason?: string;
   slaText?: string;
@@ -428,23 +405,6 @@ const SOCK_SIZE_CHART: SizeMeasurement[] = [
   },
 ];
 
-const STANDARD_GIFT_THRESHOLD: ProductGiftThreshold = {
-  minAmount: 499000,
-  giftName: "Tặng 1 đôi Tất Cotton gân cổ trung (mẫu)",
-  giftImage: "/products/tat-cotton-co-trung-5.png",
-  giftValue: 39000,
-};
-
-const BASIC_TIER_DISCOUNTS: TierDiscount[] = [
-  { minQty: 2, discountPercent: 10, label: "Mua 2 giảm thêm 10%" },
-  { minQty: 3, discountPercent: 15, label: "Mua 3 giảm thêm 15%" },
-];
-
-const PACK_TIER_DISCOUNTS: TierDiscount[] = [
-  { minQty: 2, discountPercent: 8, label: "Mua 2 pack giảm thêm 8%" },
-  { minQty: 3, discountPercent: 12, label: "Mua 3 pack giảm thêm 12%" },
-];
-
 const COTTON_CARE: CareInstruction[] = [
   {
     code: "wash",
@@ -623,9 +583,7 @@ export const PRODUCTS: Product[] = [
     pattern: "tron",
     badges: ["ban-chay"],
     isCombo: false,
-    tierDiscounts: BASIC_TIER_DISCOUNTS,
     bundleIds: ["prod-at-xamda", "prod-dolot-boxer", "prod-short-daily"],
-    giftThreshold: STANDARD_GIFT_THRESHOLD,
     returnEligible: true,
     slaText: "Giao 1-2 ngày · Kho Hải Phòng",
     maxPerOrder: 5,
@@ -765,9 +723,7 @@ export const PRODUCTS: Product[] = [
     pattern: "tron",
     badges: ["ban-chay"],
     isCombo: false,
-    tierDiscounts: BASIC_TIER_DISCOUNTS,
     bundleIds: ["prod-at-trang", "prod-short-linen", "prod-aokhoac-gio"],
-    giftThreshold: STANDARD_GIFT_THRESHOLD,
     returnEligible: true,
     slaText: "Giao 1-2 ngày · Kho Hải Phòng",
     maxPerOrder: 5,
@@ -888,7 +844,6 @@ export const PRODUCTS: Product[] = [
     pattern: "tron",
     badges: ["outlet"],
     isCombo: false,
-    tierDiscounts: BASIC_TIER_DISCOUNTS,
     bundleIds: ["prod-short-daily", "prod-jogger-terry", "prod-dolot-boxer"],
     returnEligible: true,
     slaText: "Giao 1-2 ngày · Kho Hải Phòng",
@@ -1002,9 +957,7 @@ export const PRODUCTS: Product[] = [
     pattern: "det-lo",
     badges: ["moi", "ban-chay"],
     isCombo: false,
-    tierDiscounts: BASIC_TIER_DISCOUNTS,
     bundleIds: ["prod-short-run", "prod-tat-cothap", "prod-aokhoac-gio"],
-    giftThreshold: STANDARD_GIFT_THRESHOLD,
     returnEligible: true,
     slaText: "Giao nhanh 2-4h nội thành · Kho TP.HCM",
     maxPerOrder: 5,
@@ -1118,9 +1071,7 @@ export const PRODUCTS: Product[] = [
     pattern: "tron",
     badges: ["moi"],
     isCombo: false,
-    tierDiscounts: BASIC_TIER_DISCOUNTS,
     bundleIds: ["prod-short-daily", "prod-jogger-terry"],
-    giftThreshold: STANDARD_GIFT_THRESHOLD,
     returnEligible: true,
     slaText: "Giao nhanh 2-4h nội thành · Kho TP.HCM",
     maxPerOrder: 5,
@@ -1240,9 +1191,7 @@ export const PRODUCTS: Product[] = [
     pattern: "det-lo",
     badges: ["ban-chay"],
     isCombo: false,
-    tierDiscounts: BASIC_TIER_DISCOUNTS,
     bundleIds: ["prod-short-linen", "prod-polo-xanhda", "prod-dolot-brief"],
-    giftThreshold: STANDARD_GIFT_THRESHOLD,
     returnEligible: true,
     slaText: "Giao nhanh 3h nội thành · Kho Đà Nẵng",
     maxPerOrder: 5,
@@ -1345,9 +1294,7 @@ export const PRODUCTS: Product[] = [
     pattern: "det-lo",
     badges: [],
     isCombo: false,
-    tierDiscounts: BASIC_TIER_DISCOUNTS,
     bundleIds: ["prod-short-linen", "prod-polo-kem"],
-    giftThreshold: STANDARD_GIFT_THRESHOLD,
     returnEligible: true,
     slaText: "Giao nhanh 3h nội thành · Kho Đà Nẵng",
     maxPerOrder: 5,
@@ -1453,9 +1400,7 @@ export const PRODUCTS: Product[] = [
     pattern: "gan",
     badges: ["moi", "pre-order"],
     isCombo: false,
-    tierDiscounts: [{ minQty: 2, discountPercent: 10, label: "Mua 2 giảm thêm 10%" }],
     bundleIds: ["prod-jogger-tech", "prod-tat-cotrung"],
-    giftThreshold: STANDARD_GIFT_THRESHOLD,
     returnEligible: true,
     slaText: "Pre-order giao 3-5 ngày · Kho Hà Nội",
     maxPerOrder: 2,
@@ -1566,9 +1511,7 @@ export const PRODUCTS: Product[] = [
     pattern: "tron",
     badges: ["ban-chay"],
     isCombo: false,
-    tierDiscounts: BASIC_TIER_DISCOUNTS,
     bundleIds: ["prod-at-oversize", "prod-at-dryfit", "prod-aokhoac-gio"],
-    giftThreshold: STANDARD_GIFT_THRESHOLD,
     returnEligible: true,
     slaText: "Giao nhanh 2-4h nội thành · Kho TP.HCM",
     maxPerOrder: 5,
@@ -1667,7 +1610,6 @@ export const PRODUCTS: Product[] = [
     pattern: "tron",
     badges: ["outlet"],
     isCombo: false,
-    tierDiscounts: [{ minQty: 2, discountPercent: 10, label: "Mua 2 giảm thêm 10%" }],
     bundleIds: ["prod-at-dryfit", "prod-tat-cothap"],
     returnEligible: false,
     returnExclusionReason: "Sản phẩm thuộc đợt giá Outlet xả kho mùa trước, không áp dụng đổi trả.",
@@ -1769,9 +1711,7 @@ export const PRODUCTS: Product[] = [
     pattern: "tron",
     badges: ["moi"],
     isCombo: false,
-    tierDiscounts: BASIC_TIER_DISCOUNTS,
     bundleIds: ["prod-polo-kem", "prod-polo-xanhda"],
-    giftThreshold: STANDARD_GIFT_THRESHOLD,
     returnEligible: true,
     slaText: "Giao nhanh 3h nội thành · Kho Đà Nẵng",
     maxPerOrder: 5,
@@ -1890,9 +1830,7 @@ export const PRODUCTS: Product[] = [
     pattern: "tron",
     badges: ["ban-chay"],
     isCombo: false,
-    tierDiscounts: [{ minQty: 2, discountPercent: 10, label: "Mua 2 giảm thêm 10%" }],
     bundleIds: ["prod-tat-cotrung", "prod-polo-detkim"],
-    giftThreshold: STANDARD_GIFT_THRESHOLD,
     returnEligible: true,
     slaText: "Giao nhanh 2-4h nội thành · Kho Hà Nội",
     maxPerOrder: 5,
@@ -2010,9 +1948,7 @@ export const PRODUCTS: Product[] = [
     pattern: "tron",
     badges: [],
     isCombo: false,
-    tierDiscounts: [{ minQty: 2, discountPercent: 10, label: "Mua 2 giảm thêm 10%" }],
     bundleIds: ["prod-polo-detkim", "prod-tat-cotrung"],
-    giftThreshold: STANDARD_GIFT_THRESHOLD,
     returnEligible: true,
     slaText: "Giao nhanh 2-4h nội thành · Kho Hà Nội",
     maxPerOrder: 5,
@@ -2111,35 +2047,7 @@ export const PRODUCTS: Product[] = [
     pattern: "phoi-mau",
     badges: ["ban-chay"],
     isCombo: true,
-    comboSlots: [
-      {
-        slotId: "boxer-1",
-        label: "Chiếc 1 · Xám nhạt",
-        colorCode: "xam-nhat",
-        colorName: "Xám nhạt",
-        availableSizes: ALL_SIZES,
-        defaultSize: "L",
-      },
-      {
-        slotId: "boxer-2",
-        label: "Chiếc 2 · Xám chì",
-        colorCode: "xam-chi",
-        colorName: "Xám chì",
-        availableSizes: ALL_SIZES,
-        defaultSize: "L",
-      },
-      {
-        slotId: "boxer-3",
-        label: "Chiếc 3 · Đen than",
-        colorCode: "den-than",
-        colorName: "Đen than",
-        availableSizes: ALL_SIZES,
-        defaultSize: "L",
-      },
-    ],
-    tierDiscounts: PACK_TIER_DISCOUNTS,
     bundleIds: ["prod-at-trang", "prod-tat-cotrung"],
-    giftThreshold: STANDARD_GIFT_THRESHOLD,
     returnEligible: true,
     slaText: "Giao 1-2 ngày · Kho Hải Phòng",
     maxPerOrder: 5,
@@ -2236,33 +2144,6 @@ export const PRODUCTS: Product[] = [
     pattern: "phoi-mau",
     badges: [],
     isCombo: true,
-    comboSlots: [
-      {
-        slotId: "brief-1",
-        label: "Chiếc 1 · Xanh đá",
-        colorCode: "xanh-da",
-        colorName: "Xanh đá",
-        availableSizes: ALL_SIZES,
-        defaultSize: "L",
-      },
-      {
-        slotId: "brief-2",
-        label: "Chiếc 2 · Xám nhạt",
-        colorCode: "xam-nhat",
-        colorName: "Xám nhạt",
-        availableSizes: ALL_SIZES,
-        defaultSize: "L",
-      },
-      {
-        slotId: "brief-3",
-        label: "Chiếc 3 · Xám đậm",
-        colorCode: "xam-dam",
-        colorName: "Xám đậm",
-        availableSizes: ALL_SIZES,
-        defaultSize: "L",
-      },
-    ],
-    tierDiscounts: PACK_TIER_DISCOUNTS,
     bundleIds: ["prod-polo-kem", "prod-short-linen"],
     returnEligible: false,
     returnExclusionReason:
@@ -2362,7 +2243,6 @@ export const PRODUCTS: Product[] = [
     badges: ["ban-chay"],
     isCombo: false,
     isPack: true,
-    tierDiscounts: PACK_TIER_DISCOUNTS,
     bundleIds: ["prod-tat-cothap", "prod-jogger-terry"],
     returnEligible: true,
     slaText: "Giao nhanh 2-4h nội thành · Kho Hà Nội",
@@ -2465,7 +2345,6 @@ export const PRODUCTS: Product[] = [
     badges: [],
     isCombo: false,
     isPack: true,
-    tierDiscounts: PACK_TIER_DISCOUNTS,
     bundleIds: ["prod-tat-cotrung", "prod-short-run"],
     returnEligible: true,
     slaText: "Giao nhanh 2-4h nội thành · Kho Hà Nội",
@@ -2572,9 +2451,7 @@ export const PRODUCTS: Product[] = [
     pattern: "tron",
     badges: ["moi", "pre-order"],
     isCombo: false,
-    tierDiscounts: [{ minQty: 2, discountPercent: 10, label: "Mua 2 giảm thêm 10%" }],
     bundleIds: ["prod-at-dryfit", "prod-short-daily"],
-    giftThreshold: STANDARD_GIFT_THRESHOLD,
     returnEligible: true,
     slaText: "Pre-order giao 3-5 ngày · Kho TP.HCM",
     maxPerOrder: 2,

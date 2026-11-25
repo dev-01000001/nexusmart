@@ -181,6 +181,7 @@ func payW2CreateVietQRCheckout(
 	resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": idemPrefix + "-" + uuid.NewString(),
 	}, CheckoutRequest{
+		SalesChannel:  "MARKETPLACE",
 		AddressID:     buyer.AddressID,
 		FromCart:      false,
 		Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},

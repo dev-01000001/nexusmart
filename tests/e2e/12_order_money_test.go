@@ -88,6 +88,7 @@ func TestE2E_OrderMoneyAndLifecycleFixes(t *testing.T) {
 		resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordfix-a-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:      "MARKETPLACE",
 			AddressID:         addr.ID,
 			Items:             []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 			ShopVoucherIDs:    map[string]string{seller1.ShopID: shopV.ID},
@@ -167,6 +168,7 @@ func TestE2E_OrderMoneyAndLifecycleFixes(t *testing.T) {
 		resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordfix-b-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:      "MARKETPLACE",
 			AddressID:         addr.ID,
 			Items:             []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 			PlatformVoucherID: platV.ID,
@@ -215,7 +217,8 @@ func TestE2E_OrderMoneyAndLifecycleFixes(t *testing.T) {
 		resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordfix-c-" + uuid.NewString(),
 		}, CheckoutRequest{
-			AddressID: addr.ID,
+			SalesChannel: "MARKETPLACE",
+			AddressID:    addr.ID,
 			Items: []CheckoutItemInputDTO{
 				{SKUID: sku1.ID, Quantity: 1},
 				{SKUID: sku2.ID, Quantity: 1},
@@ -277,7 +280,8 @@ func TestE2E_OrderMoneyAndLifecycleFixes(t *testing.T) {
 
 		checkoutIdemKey := "ordfix-d-" + uuid.NewString()
 		checkoutReq := CheckoutRequest{
-			AddressID: addr.ID,
+			SalesChannel: "MARKETPLACE",
+			AddressID:    addr.ID,
 			Items: []CheckoutItemInputDTO{
 				{SKUID: sku1.ID, Quantity: 1},
 				{SKUID: sku2.ID, Quantity: 1},
@@ -384,6 +388,7 @@ func TestE2E_OrderMoneyAndLifecycleFixes(t *testing.T) {
 		idemKey := "ordfix-e-" + uuid.NewString()
 
 		req1 := CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 			PaymentMethod: "VIETQR",
@@ -397,6 +402,7 @@ func TestE2E_OrderMoneyAndLifecycleFixes(t *testing.T) {
 
 		// Same key, different payment_method & quantity -> MUST return 409 Conflict!
 		reqDiff := CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 2}},
 			PaymentMethod: "COD",
@@ -421,6 +427,7 @@ func TestE2E_OrderMoneyAndLifecycleFixes(t *testing.T) {
 		resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordfix-f-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 			PaymentMethod: "COD",
@@ -489,6 +496,7 @@ func TestE2E_OrderMoneyAndLifecycleFixes(t *testing.T) {
 		resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordfix-g-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 			PaymentMethod: "VIETQR",

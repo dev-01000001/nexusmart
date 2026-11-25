@@ -112,6 +112,14 @@ func (r *ResilientCarrier) Name() string { return r.inner.Name() }
 // IsMock reports whether the wrapped carrier runs in mock mode.
 func (r *ResilientCarrier) IsMock() bool { return r.inner.IsMock() }
 
+// CanPoll reports whether the wrapped carrier supports active status polling.
+func (r *ResilientCarrier) CanPoll() bool {
+	if p, ok := r.inner.(interface{ CanPoll() bool }); ok {
+		return p.CanPoll()
+	}
+	return !r.inner.IsMock()
+}
+
 // State returns the current circuit breaker state (for diagnostics/tests).
 func (r *ResilientCarrier) State() gobreaker.State { return r.cb.State() }
 

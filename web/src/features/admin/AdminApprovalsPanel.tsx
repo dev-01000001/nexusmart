@@ -2,6 +2,11 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { Button, StateView } from "@/components";
+import { filterUnresolvedActorIds } from "@/lib/a8-types";
+import { canDecideTwoPersonApproval, roleHasCapability } from "@/lib/admin-rbac";
+import { api, getErrorMessage } from "@/lib/api";
+import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import type {
   GatewayAdminApprovalsResponse,
   GatewayRefund,
@@ -10,20 +15,16 @@ import type {
   GatewayUser,
   PaginatedResponse,
 } from "@/lib/gateway-types";
-import { api, getErrorMessage } from "@/lib/api";
-import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
-import { canDecideTwoPersonApproval, roleHasCapability } from "@/lib/admin-rbac";
 import { localizeRefundReason } from "@/features/account/orderMeta";
-import { useMockStore } from "@/mock/MockStoreContext";
-import { Button, StateView } from "@/components";
+import { EMPTY_DASH, type PillTone } from "./adminMeta";
+import { useAdminContext } from "./AdminShell";
+import { useAdminUser } from "./AdminUserContext";
+import { StatusPill } from "./StatusPill";
 import {
   type ApprovalActorLookupEntry,
   fetchShopOwnerById,
   formatApprovalActorDisplay,
 } from "./types";
-import { StatusPill } from "./StatusPill";
-import { useAdminUser } from "./AdminUserContext";
-import type { PillTone } from "./adminMeta";
 import shared from "./adminShared.module.css";
 
 type ApprovalTypeFilter = "" | "shop" | "refund";
@@ -62,7 +63,7 @@ function getRefundApprovalStatusMeta(status: string): { label: string; tone: Pil
 }
 
 export function AdminApprovalsPanel() {
-  const { showToast } = useMockStore();
+  const { showToast } = useAdminContext();
   const adminUser = useAdminUser();
   const actorId = adminUser?.id ?? "";
   const actorRole = adminUser?.role ?? "";
@@ -92,7 +93,7 @@ export function AdminApprovalsPanel() {
     try {
       const qs = new URLSearchParams({ page: "1", page_size: "50", status: statusFilter });
       if (typeFilter) qs.set("type", typeFilter);
-      const res = await api<GatewayAdminApprovalsResponse>(`admin/approvals?${qs.toString()}`);
+      const res = await api<GatewayAdminApprovalsResponse>(`/api/admin/approvals?${qs.toString()}`);
       if (loadSeqRef.current !== seq) return;
       setShopApprovals(Array.isArray(res?.shop_approvals) ? res.shop_approvals : []);
       setRefundApprovals(Array.isArray(res?.refund_approvals) ? res.refund_approvals : []);
@@ -110,8 +111,7 @@ export function AdminApprovalsPanel() {
     void loadApprovals();
   }, [loadApprovals]);
 
-  // Resolve maker/checker UUIDs to display names via existing GET /admin/users?query=<id>
-  // (permitted for all 6 internal staff roles via users.read). Falls back to 8-char short ID.
+  // Resolve maker/checker UUIDs via GET /api/admin/users?query=<id>; mark settled only after fetch resolves.
   useEffect(() => {
     if (adminUser?.id) {
       fetchedUserIdsRef.current.add(adminUser.id);
@@ -130,7 +130,6 @@ export function AdminApprovalsPanel() {
     }
 
     if (!canReadUsers) return;
-    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const candidateIds = new Set<string>();
     for (const item of shopApprovals) {
       if (item.requested_by) candidateIds.add(item.requested_by.trim());
@@ -141,23 +140,19 @@ export function AdminApprovalsPanel() {
       if (rf.approved_by) candidateIds.add(rf.approved_by.trim());
     }
 
-    const toFetch = Array.from(candidateIds).filter(
-      (id) => uuidPattern.test(id) && !fetchedUserIdsRef.current.has(id)
-    );
+    const toFetch = filterUnresolvedActorIds(candidateIds, fetchedUserIdsRef.current);
     if (toFetch.length === 0) return;
 
     let cancelled = false;
-    for (const id of toFetch) {
-      fetchedUserIdsRef.current.add(id);
-    }
 
     void Promise.all(
       toFetch.map(async (id) => {
         try {
           const found = await fetchShopOwnerById(id, (path) =>
-            api<PaginatedResponse<GatewayUser>>(path)
+            api<PaginatedResponse<GatewayUser>>(`/api/${path.replace(/^\/+/, "")}`)
           );
           if (cancelled) return;
+          fetchedUserIdsRef.current.add(id);
           setUserById((prev) => ({
             ...prev,
             [id]: found
@@ -166,7 +161,7 @@ export function AdminApprovalsPanel() {
           }));
         } catch {
           if (cancelled) return;
-          setUserById((prev) => ({ ...prev, [id]: null }));
+          setUserById((prev) => (id in prev ? prev : { ...prev, [id]: null }));
         }
       })
     );
@@ -197,7 +192,7 @@ export function AdminApprovalsPanel() {
     });
     try {
       await api<{ approval: GatewayShopSuspensionApproval; shop: GatewayShop }>(
-        `admin/approvals/shop/${encodeURIComponent(item.id)}/decide`,
+        `/api/admin/approvals/shop/${encodeURIComponent(item.id)}/decide`,
         {
           method: "POST",
           json: { decision, note },
@@ -205,14 +200,14 @@ export function AdminApprovalsPanel() {
       );
       showToast(
         decision === "APPROVE"
-          ? "Đã phê duyệt tạm khoá gian hàng (quy tắc 2 người)."
-          : "Đã từ chối yêu cầu khoá gian hàng."
+          ? "Đã phê duyệt tạm khóa gian hàng."
+          : "Đã từ chối yêu cầu khóa gian hàng."
       );
       await loadApprovals();
     } catch (err) {
       setActionErrorById((prev) => ({
         ...prev,
-        [item.id]: getErrorMessage(err, "Không thể xử lý phê duyệt yêu cầu khoá gian hàng."),
+        [item.id]: getErrorMessage(err, "Không thể xử lý phê duyệt yêu cầu khóa gian hàng."),
       }));
     } finally {
       setBusyId(null);
@@ -237,17 +232,13 @@ export function AdminApprovalsPanel() {
     });
     try {
       await api<{ refund: GatewayRefund }>(
-        `admin/approvals/refund/${encodeURIComponent(rf.refund_id)}/decide`,
+        `/api/admin/approvals/refund/${encodeURIComponent(rf.refund_id)}/decide`,
         {
           method: "POST",
           json: { approve, note },
         }
       );
-      showToast(
-        approve
-          ? "Đã phê duyệt lệnh hoàn tiền lớn (quy tắc 2 người)."
-          : "Đã từ chối lệnh hoàn tiền lớn."
-      );
+      showToast(approve ? "Đã phê duyệt lệnh hoàn tiền." : "Đã từ chối lệnh hoàn tiền.");
       await loadApprovals();
     } catch (err) {
       setActionErrorById((prev) => ({
@@ -264,7 +255,7 @@ export function AdminApprovalsPanel() {
 
   return (
     <div className={shared.sectionStack}>
-      <div className={shared.toolbar} style={{ marginTop: 0 }}>
+      <div className={shared.toolbar}>
         <div className={shared.toolbarLeft}>
           <select
             className={shared.toolbarSelect}
@@ -283,7 +274,7 @@ export function AdminApprovalsPanel() {
             aria-label="Lọc theo loại yêu cầu"
           >
             <option value="">Tất cả loại yêu cầu</option>
-            {canReadShopApprovals && <option value="shop">Khoá gian hàng</option>}
+            {canReadShopApprovals && <option value="shop">Khóa gian hàng</option>}
             {canReadRefunds && <option value="refund">Hoàn tiền giá trị lớn</option>}
           </select>
         </div>
@@ -305,7 +296,7 @@ export function AdminApprovalsPanel() {
           <StateView
             kind="loading"
             surface="app"
-            title="Đang tải hàng đợi chờ phê duyệt 2 người..."
+            title="Đang tải hàng đợi phê duyệt 2 người..."
             rows={4}
           />
         </div>
@@ -325,20 +316,15 @@ export function AdminApprovalsPanel() {
           {showShopSection && (
             <section className={shared.panel} aria-labelledby="approvals-shop-heading">
               <div className={shared.panelHeader}>
-                <div>
-                  <h2 id="approvals-shop-heading" className={shared.panelTitle}>
-                    Yêu cầu tạm khoá gian hàng ({formatInt(shopApprovals.length)})
-                  </h2>
-                  <span className={shared.panelMeta}>
-                    Quy tắc 2 người: người lập yêu cầu không thể tự phê duyệt
-                  </span>
-                </div>
+                <h2 id="approvals-shop-heading" className={shared.panelTitle}>
+                  Yêu cầu tạm khóa gian hàng ({formatInt(shopApprovals.length)})
+                </h2>
               </div>
 
               {shopApprovals.length === 0 ? (
-                <p className={shared.emptyRow}>Không có yêu cầu khoá gian hàng nào khớp bộ lọc.</p>
+                <p className={shared.emptyRow}>Không có yêu cầu khóa gian hàng nào khớp bộ lọc.</p>
               ) : (
-                <div className={shared.sectionStack} style={{ marginTop: 8 }}>
+                <div className={shared.sectionStack}>
                   {shopApprovals.map((item) => {
                     const st = getShopApprovalStatusMeta(item.status);
                     const isPending = item.status.toUpperCase() === "PENDING";
@@ -359,11 +345,10 @@ export function AdminApprovalsPanel() {
                         <div className={shared.detailHeader}>
                           <div>
                             <h3 className={shared.detailHeading}>
-                              Gian hàng: {item.shop_name || item.shop_id}
+                              {item.shop_name || item.shop_id}
                             </h3>
                             <p className={shared.cellSub}>
-                              Mã yêu cầu: <span title={item.id}>#{item.id.slice(0, 8)}</span> ·
-                              Người lập:{" "}
+                              Mã <span title={item.id}>#{item.id.slice(0, 8)}</span> · Người lập:{" "}
                               <span title={item.requested_by}>
                                 {formatApprovalActorDisplay(
                                   item.requested_by,
@@ -379,8 +364,10 @@ export function AdminApprovalsPanel() {
 
                         <div className={shared.detailGrid}>
                           <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                            <span className={shared.detailKey}>Lý do đề xuất tạm khoá</span>
-                            <span className={shared.detailValPlain}>{item.reason || "—"}</span>
+                            <span className={shared.detailKey}>Lý do đề xuất tạm khóa</span>
+                            <span className={shared.detailValPlain}>
+                              {item.reason || EMPTY_DASH}
+                            </span>
                           </div>
                           {item.decided_by && (
                             <div className={shared.detailField}>
@@ -401,8 +388,7 @@ export function AdminApprovalsPanel() {
 
                         {isPending && isSelfMaker && (
                           <p className={shared.savedStamp}>
-                            Người lập yêu cầu không thể tự phê duyệt (quy tắc duyệt 2 người). Vui
-                            lòng chờ nhân sự khác có thẩm quyền xác nhận.
+                            Người lập yêu cầu không thể tự phê duyệt.
                           </p>
                         )}
 
@@ -419,7 +405,7 @@ export function AdminApprovalsPanel() {
                                 htmlFor={`shop-app-note-${item.id}`}
                                 className={shared.fieldLabel}
                               >
-                                Ghi chú phê duyệt / từ chối
+                                Ghi chú kết luận
                               </label>
                               <input
                                 id={`shop-app-note-${item.id}`}
@@ -429,7 +415,7 @@ export function AdminApprovalsPanel() {
                                 onChange={(e) =>
                                   setNoteById((prev) => ({ ...prev, [item.id]: e.target.value }))
                                 }
-                                placeholder="Nhập ghi chú kết luận (bắt buộc khi từ chối)..."
+                                placeholder="Bắt buộc nhập lý do khi từ chối..."
                               />
                             </div>
                             <div className={shared.detailButtons}>
@@ -440,7 +426,7 @@ export function AdminApprovalsPanel() {
                                 disabled={isBusy}
                                 onClick={() => void handleDecideShop(item, "APPROVE")}
                               >
-                                {isBusy ? "Đang xử lý..." : "Duyệt khoá gian hàng"}
+                                {isBusy ? "Đang xử lý..." : "Duyệt khóa gian hàng"}
                               </Button>
                               <Button
                                 variant="outline"
@@ -465,29 +451,23 @@ export function AdminApprovalsPanel() {
           {showRefundSection && (
             <section className={shared.panel} aria-labelledby="approvals-refund-heading">
               <div className={shared.panelHeader}>
-                <div>
-                  <h2 id="approvals-refund-heading" className={shared.panelTitle}>
-                    Yêu cầu hoàn tiền giá trị lớn ({formatInt(refundApprovals.length)})
-                  </h2>
-                  <span className={shared.panelMeta}>
-                    Áp dụng duyệt 2 người cho lệnh hoàn đạt ngưỡng hoặc tổng cộng dồn 24 giờ
-                  </span>
-                </div>
+                <h2 id="approvals-refund-heading" className={shared.panelTitle}>
+                  Yêu cầu hoàn tiền giá trị lớn ({formatInt(refundApprovals.length)})
+                </h2>
               </div>
 
               {statusFilter === "APPROVED" ? (
                 <p className={shared.emptyRow}>
-                  Lệnh hoàn tiền lớn sau khi được phê duyệt sẽ tự động chuyển sang vòng đời tất toán
-                  (chờ chuyển khoản / đã tất toán). Vui lòng theo dõi chi tiết tại mục{" "}
+                  Lệnh hoàn tiền đã phê duyệt chuyển sang mục{" "}
                   <Link href="/admin/doi-soat" className={shared.panelLink}>
-                    Hoàn tiền &amp; Tất toán
-                  </Link>
-                  .
+                    Đối soát &amp; sổ cái
+                  </Link>{" "}
+                  để tất toán.
                 </p>
               ) : refundApprovals.length === 0 ? (
                 <p className={shared.emptyRow}>Không có yêu cầu hoàn tiền lớn nào khớp bộ lọc.</p>
               ) : (
-                <div className={shared.sectionStack} style={{ marginTop: 8 }}>
+                <div className={shared.sectionStack}>
                   {refundApprovals.map((rf) => {
                     const st = getRefundApprovalStatusMeta(rf.status);
                     const isPending = rf.status.toUpperCase() === "PENDING_APPROVAL";
@@ -511,8 +491,8 @@ export function AdminApprovalsPanel() {
                               Hoàn tiền {formatVnd(rf.amount_vnd)} · Đơn {rf.order_id}
                             </h3>
                             <p className={shared.cellSub}>
-                              Mã hoàn: <span title={rf.refund_id}>#{rf.refund_id.slice(0, 8)}</span>{" "}
-                              · Giao dịch:{" "}
+                              Mã hoàn <span title={rf.refund_id}>#{rf.refund_id.slice(0, 8)}</span>{" "}
+                              · Giao dịch{" "}
                               <span title={rf.payment_id}>#{rf.payment_id.slice(0, 8)}</span>
                               {rf.requested_by ? (
                                 <>
@@ -537,7 +517,7 @@ export function AdminApprovalsPanel() {
                           <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
                             <span className={shared.detailKey}>Lý do hoàn tiền</span>
                             <span className={shared.detailValPlain}>
-                              {localizeRefundReason(rf.reason) || "—"}
+                              {localizeRefundReason(rf.reason) || EMPTY_DASH}
                             </span>
                           </div>
                           {rf.approved_by && (
@@ -559,8 +539,7 @@ export function AdminApprovalsPanel() {
 
                         {isPending && isSelfMaker && (
                           <p className={shared.savedStamp}>
-                            Người lập lệnh hoàn tiền không thể tự phê duyệt (quy tắc duyệt 2 người).
-                            Vui lòng nhờ kế toán hoặc quản trị viên khác duyệt.
+                            Người lập lệnh hoàn tiền không thể tự phê duyệt.
                           </p>
                         )}
 
@@ -577,7 +556,7 @@ export function AdminApprovalsPanel() {
                                 htmlFor={`refund-app-note-${rf.refund_id}`}
                                 className={shared.fieldLabel}
                               >
-                                Ghi chú phê duyệt / từ chối
+                                Ghi chú kết luận
                               </label>
                               <input
                                 id={`refund-app-note-${rf.refund_id}`}
@@ -590,7 +569,7 @@ export function AdminApprovalsPanel() {
                                     [rf.refund_id]: e.target.value,
                                   }))
                                 }
-                                placeholder="Nhập ghi chú kết luận (bắt buộc khi từ chối)..."
+                                placeholder="Bắt buộc nhập lý do khi từ chối..."
                               />
                             </div>
                             <div className={shared.detailButtons}>
@@ -625,9 +604,7 @@ export function AdminApprovalsPanel() {
 
           {!showShopSection && !showRefundSection && (
             <section className={shared.panel}>
-              <p className={shared.emptyRow}>
-                Vai trò hiện tại không có danh mục phê duyệt nào cần theo dõi.
-              </p>
+              <p className={shared.emptyRow}>Không có danh mục phê duyệt nào khả dụng.</p>
             </section>
           )}
         </>

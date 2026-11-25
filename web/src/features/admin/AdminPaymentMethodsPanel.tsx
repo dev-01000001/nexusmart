@@ -1,17 +1,17 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
+import { Button, StateView } from "@/components";
+import { ApiError, api, getErrorMessage } from "@/lib/api";
+import { GATEWAY_PAYMENT_METHOD_LABELS, formatDateTimeVi, formatVnd } from "@/lib/format";
 import type {
   GatewayPaymentMethod,
   GatewayPaymentMethodConfig,
   GatewayPaymentMethodsResponse,
 } from "@/lib/gateway-types";
-import { ApiError, api, getErrorMessage } from "@/lib/api";
-import { GATEWAY_PAYMENT_METHOD_LABELS, formatDateTimeVi, formatVnd } from "@/lib/format";
-import { useMockStore } from "@/mock/MockStoreContext";
-import { Button, StateView } from "@/components";
-import { StatusPill } from "./StatusPill";
+import { useAdminContext } from "./AdminShell";
 import { useAdminCapability } from "./AdminUserContext";
+import { StatusPill } from "./StatusPill";
 import shared from "./adminShared.module.css";
 
 interface MethodDraft {
@@ -42,7 +42,7 @@ function buildDraftMap(list: GatewayPaymentMethodConfig[]): Record<string, Metho
 }
 
 export function AdminPaymentMethodsPanel() {
-  const { showToast } = useMockStore();
+  const { showToast } = useAdminContext();
   const canWrite = useAdminCapability("payment_methods.write");
 
   const [methods, setMethods] = useState<GatewayPaymentMethodConfig[]>([]);
@@ -58,7 +58,7 @@ export function AdminPaymentMethodsPanel() {
     setErrorMsg(null);
     setConflictMethod(null);
     try {
-      const res = await api<GatewayPaymentMethodsResponse>("admin/payment-methods");
+      const res = await api<GatewayPaymentMethodsResponse>("/api/admin/payment-methods");
       const list = Array.isArray(res?.methods) ? res.methods : [];
       setMethods(list);
       setDrafts(buildDraftMap(list));
@@ -123,7 +123,7 @@ export function AdminPaymentMethodsPanel() {
     if (!Number.isFinite(expiryMinutes) || expiryMinutes < 0 || expiryMinutes > 1440) {
       setMethodErrors((prev) => ({
         ...prev,
-        [cfg.method]: "Thời hạn giữ đơn (phút) phải từ 0 đến 1440.",
+        [cfg.method]: "Thời hạn giữ đơn phải từ 0 đến 1440 phút.",
       }));
       return;
     }
@@ -147,7 +147,7 @@ export function AdminPaymentMethodsPanel() {
 
     try {
       const res = await api<{ method: GatewayPaymentMethodConfig }>(
-        `admin/payment-methods/${encodeURIComponent(cfg.method)}`,
+        `/api/admin/payment-methods/${encodeURIComponent(cfg.method)}`,
         {
           method: "PUT",
           json: {
@@ -188,7 +188,7 @@ export function AdminPaymentMethodsPanel() {
           ...prev,
           [cfg.method]:
             err.message ||
-            "Cấu hình đã được người khác cập nhật trước đó (VERSION_CONFLICT). Vui lòng tải lại trước khi lưu.",
+            "Cấu hình đã được người khác cập nhật trước đó. Vui lòng tải lại dữ liệu mới nhất trước khi lưu.",
         }));
       } else {
         setMethodErrors((prev) => ({
@@ -237,12 +237,8 @@ export function AdminPaymentMethodsPanel() {
         <div className={shared.panelHeader}>
           <div>
             <h2 id="pm-config-heading" className={shared.panelTitle}>
-              Cấu hình phương thức thanh toán (COD / VietQR / ZaloPay)
+              Cổng thanh toán ({enabledCount}/{methods.length} đang bật)
             </h2>
-            <span className={shared.panelMeta}>
-              Đang bật {enabledCount}/{methods.length} phương thức · Áp dụng trực tiếp cho trang
-              thanh toán &amp; đổi phương thức
-            </span>
           </div>
           <Button variant="outline" size="sm" shape="app" onClick={() => void loadMethods()}>
             Làm mới
@@ -251,20 +247,15 @@ export function AdminPaymentMethodsPanel() {
 
         {!canWrite && (
           <p className={shared.savedStamp} style={{ marginBottom: 12 }}>
-            Tài khoản hiện có quyền xem cấu hình phương thức thanh toán (chỉ Quản trị viên / Vận
-            hành được phép chỉnh sửa).
+            Chỉ có quyền xem cấu hình phương thức thanh toán.
           </p>
         )}
 
         {conflictMethod && (
-          <div
-            className={shared.detailWell}
-            role="alert"
-            style={{ marginBottom: 16, borderLeft: "3px solid var(--negative)" }}
-          >
+          <div className={shared.detailWell} role="alert" style={{ marginBottom: 16 }}>
             <p className={shared.validationError}>
-              Phát hiện xung đột phiên bản (VERSION_CONFLICT) khi lưu phương thức{" "}
-              <strong>{conflictMethod}</strong>. Dữ liệu trên máy chủ đã thay đổi từ một phiên khác.
+              Cấu hình phương thức <strong>{getMethodTitle(conflictMethod)}</strong> đã thay đổi từ
+              phiên khác. Vui lòng tải lại dữ liệu mới nhất trước khi lưu.
             </p>
             <div>
               <Button variant="primary" size="sm" shape="app" onClick={() => void loadMethods()}>
@@ -274,7 +265,7 @@ export function AdminPaymentMethodsPanel() {
           </div>
         )}
 
-        <div className={shared.sectionStack} style={{ marginTop: 8 }}>
+        <div className={shared.sectionStack}>
           {methods.map((cfg) => {
             const draft = drafts[cfg.method] ?? {
               enabled: cfg.enabled,
@@ -299,9 +290,7 @@ export function AdminPaymentMethodsPanel() {
               >
                 <div className={shared.detailHeader}>
                   <div>
-                    <h3 className={shared.detailHeading}>
-                      {getMethodTitle(cfg.method)} ({cfg.method})
-                    </h3>
+                    <h3 className={shared.detailHeading}>{getMethodTitle(cfg.method)}</h3>
                     <p className={shared.cellSub}>
                       Phiên bản v{cfg.version}
                       {cfg.updated_at ? ` · Cập nhật ${formatDateTimeVi(cfg.updated_at)}` : ""}
@@ -311,7 +300,7 @@ export function AdminPaymentMethodsPanel() {
                   <div className={shared.detailHeaderMeta}>
                     {typeof cfg.credentials_configured === "boolean" && !isCod && (
                       <StatusPill
-                        label={cfg.credentials_configured ? "Đã cấu hình khoá" : "Chế độ mô phỏng"}
+                        label={cfg.credentials_configured ? "Đã cấu hình khóa" : "Chế độ mô phỏng"}
                         tone={cfg.credentials_configured ? "positive" : "neutral"}
                       />
                     )}
@@ -324,13 +313,13 @@ export function AdminPaymentMethodsPanel() {
 
                 <div className={shared.detailGrid}>
                   <div className={shared.detailField}>
-                    <span className={shared.fieldLabel}>Trạng thái hiển thị cho người mua</span>
+                    <span className={shared.fieldLabel}>Trạng thái</span>
                     <div style={{ display: "flex", alignItems: "center", gap: 10, minHeight: 38 }}>
                       <button
                         type="button"
                         role="switch"
                         aria-checked={draft.enabled}
-                        aria-label={`Bật hoặc tắt ${cfg.method}`}
+                        aria-label={`Bật hoặc tắt ${getMethodTitle(cfg.method)}`}
                         disabled={!canWrite || isSaving}
                         className={`${shared.toggleBtn} ${draft.enabled ? shared.toggleBtnOn : ""}`}
                         onClick={() => updateDraft(cfg.method, { enabled: !draft.enabled })}
@@ -338,7 +327,7 @@ export function AdminPaymentMethodsPanel() {
                         <span className={shared.toggleKnob} />
                       </button>
                       <span className={shared.detailValPlain}>
-                        {draft.enabled ? "Đang cho phép đặt đơn" : "Tạm tắt (chặn đơn mới)"}
+                        {draft.enabled ? "Cho phép đặt đơn" : "Tạm tắt"}
                       </span>
                     </div>
                   </div>
@@ -358,10 +347,9 @@ export function AdminPaymentMethodsPanel() {
                       onChange={(e) => updateDraft(cfg.method, { minOrderStr: e.target.value })}
                     />
                     <span className={shared.cellSub}>
-                      Hiện tại:{" "}
                       {Number(draft.minOrderStr) > 0
                         ? formatVnd(Math.trunc(Number(draft.minOrderStr)))
-                        : "0₫ (không giới hạn dưới)"}
+                        : "Không giới hạn dưới"}
                     </span>
                   </div>
 
@@ -380,7 +368,6 @@ export function AdminPaymentMethodsPanel() {
                       onChange={(e) => updateDraft(cfg.method, { maxOrderStr: e.target.value })}
                     />
                     <span className={shared.cellSub}>
-                      Hiện tại:{" "}
                       {Number(draft.maxOrderStr) > 0
                         ? formatVnd(Math.trunc(Number(draft.maxOrderStr)))
                         : "Không giới hạn trên"}
@@ -404,16 +391,11 @@ export function AdminPaymentMethodsPanel() {
                         updateDraft(cfg.method, { expiryMinutesStr: e.target.value })
                       }
                     />
-                    <span className={shared.cellSub}>
-                      {isCod
-                        ? "COD xác nhận ngay, không cần chờ thanh toán"
-                        : "Áp dụng cho giao dịch mới"}
-                    </span>
                   </div>
 
                   <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
                     <label htmlFor={`pm-note-${cfg.method}`} className={shared.fieldLabel}>
-                      Ghi chú thay đổi (ghi nhận vào nhật ký kiểm toán)
+                      Ghi chú thay đổi
                     </label>
                     <input
                       id={`pm-note-${cfg.method}`}
@@ -422,7 +404,7 @@ export function AdminPaymentMethodsPanel() {
                       className={shared.textInput}
                       value={draft.note}
                       onChange={(e) => updateDraft(cfg.method, { note: e.target.value })}
-                      placeholder="VD: Hạ hạn mức COD xuống 2.000.000₫ trong đợt khuyến mãi..."
+                      placeholder="Nhập lý do điều chỉnh cấu hình..."
                     />
                   </div>
                 </div>
@@ -434,19 +416,15 @@ export function AdminPaymentMethodsPanel() {
                 )}
 
                 {canWrite && (
-                  <div className={shared.detailActionBar}>
-                    <span className={shared.savedStamp}>
-                      Tắt phương thức chỉ chặn đơn mới; giao dịch đang chờ vẫn nhận callback bình
-                      thường.
-                    </span>
+                  <div className={shared.detailButtons}>
                     <Button
                       type="submit"
                       variant="primary"
                       size="sm"
                       shape="app"
-                      disabled={isSaving}
+                      loading={isSaving}
                     >
-                      {isSaving ? "Đang lưu..." : `Lưu cấu hình ${cfg.method}`}
+                      Lưu cấu hình {cfg.method}
                     </Button>
                   </div>
                 )}

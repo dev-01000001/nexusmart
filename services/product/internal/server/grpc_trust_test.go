@@ -178,4 +178,55 @@ func TestGRPCTrust_SpoofedMetadataAndServiceTokens(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RestockOrderItems with admin JWT failed: %v", err)
 	}
+
+	// 6. UpdateStock, ReserveStock, ReleaseStock, ConfirmStock strict rejection checks.
+	sellerBTok, _, _, _ := users.SignAccessToken("seller-b", "seller", "shop-b")
+
+	// UpdateStock: anonymous -> Unauthenticated; buyer / other seller / service token -> PermissionDenied
+	// (order restock uses RestockOrderItems, not UpdateStock).
+	if _, err = client.UpdateStock(md("x-user-role", "admin", "x-shop-id", "shop-a"), &productv1.UpdateStockRequest{
+		SkuId: skuID, ShopId: "shop-a", NewStock: 5, ExpectedVersion: 1,
+	}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("UpdateStock anonymous: want Unauthenticated, got %v", err)
+	}
+	if _, err = client.UpdateStock(bearer(buyerTok), &productv1.UpdateStockRequest{
+		SkuId: skuID, ShopId: "shop-a", NewStock: 5, ExpectedVersion: 1,
+	}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("UpdateStock buyer: want PermissionDenied, got %v", err)
+	}
+	if _, err = client.UpdateStock(bearer(sellerBTok), &productv1.UpdateStockRequest{
+		SkuId: skuID, ShopId: "shop-a", NewStock: 5, ExpectedVersion: 1,
+	}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("UpdateStock other seller: want PermissionDenied, got %v", err)
+	}
+	if _, err = client.UpdateStock(bearer(good), &productv1.UpdateStockRequest{
+		SkuId: skuID, ShopId: "shop-a", NewStock: 6, ExpectedVersion: 1,
+	}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("UpdateStock service token: want PermissionDenied (use RestockOrderItems), got %v", err)
+	}
+
+	// ReserveStock: anonymous -> Unauthenticated; service token -> PermissionDenied.
+	if _, err = client.ReserveStock(md(), &productv1.ReserveStockRequest{
+		OrderId: "ord-anon", Items: []*productv1.StockReservationItem{{SkuId: skuID, Quantity: 1}},
+	}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("ReserveStock anonymous: want Unauthenticated, got %v", err)
+	}
+	if _, err = client.ReserveStock(bearer(good), &productv1.ReserveStockRequest{
+		OrderId: "ord-svc", Items: []*productv1.StockReservationItem{{SkuId: skuID, Quantity: 1}},
+	}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("ReserveStock service token: want PermissionDenied, got %v", err)
+	}
+
+	// ReleaseStock & ConfirmStock: buyer & seller JWTs must be rejected with PermissionDenied.
+	for name, tok := range map[string]string{"buyer": buyerTok, "seller": sellerATok} {
+		if _, err = client.ReleaseStock(bearer(tok), &productv1.ReleaseStockRequest{OrderId: "grp-trust-1"}); status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("ReleaseStock with %s JWT: want PermissionDenied, got %v", name, err)
+		}
+		if _, err = client.ConfirmStock(bearer(tok), &productv1.ConfirmStockRequest{OrderId: "grp-trust-1"}); status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("ConfirmStock with %s JWT: want PermissionDenied, got %v", name, err)
+		}
+	}
+	if _, err = client.ConfirmStock(md(), &productv1.ConfirmStockRequest{OrderId: "grp-trust-1"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("ConfirmStock anonymous: want Unauthenticated, got %v", err)
+	}
 }

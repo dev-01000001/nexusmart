@@ -13,6 +13,9 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nexusmart/core/pkg/common/telemetry"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -214,6 +217,11 @@ func (c *Consumer) ProcessRawMessage(
 	if len(headers) > 0 {
 		ctx = telemetry.ExtractTraceHeaders(ctx, headers)
 	}
+	ctx, span := otel.Tracer("shipping").Start(ctx, "nats.consume "+subject,
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(attribute.String("messaging.destination", subject)),
+	)
+	defer span.End()
 
 	var env Envelope
 	if err := json.Unmarshal(data, &env); err != nil {
@@ -333,6 +341,11 @@ func (c *Consumer) sendToDLQ(ctx context.Context, eventID, subject string, raw [
 		dlqMsg.Header.Set("X-DLQ-Attempts", strconv.Itoa(attempts))
 		if eventID != "" {
 			dlqMsg.Header.Set("X-DLQ-Event-Id", eventID)
+		}
+		traceHdrs := map[string]string{}
+		telemetry.InjectTraceHeaders(dlqCtx, traceHdrs)
+		for k, v := range traceHdrs {
+			dlqMsg.Header.Set(k, v)
 		}
 		if _, err := c.dlqPub.PublishMsg(dlqMsg, nats.Context(dlqCtx)); err != nil {
 			c.logger.ErrorContext(dlqCtx, "publish to NEXUSMART_DLQ failed",

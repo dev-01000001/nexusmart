@@ -1,0 +1,50 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries: "queries/"
+    schema: "migrations/"
+    gen:
+      go:
+        package: "db"
+        out: "internal/db"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_empty_slices: true
+        rename:
+          shop_id: "ShopID"
+          category_id: "CategoryID"
+          product_id: "ProductID"
+          event_id: "EventID"
+          job_id: "JobID"
+          user_id: "UserID"
+          parent_id: "ParentID"
+          default_sku_id: "DefaultSKUID"
+          sku_ids: "SKUIDs"
+          sku_codes: "SKUCodes"
+          sku_count: "SKUCount"
+          sku_attributes_text: "SKUAttributesText"
+          min_price_vnd: "MinPriceVND"
+          max_price_vnd: "MaxPriceVND"
+          thumbnail_url: "ThumbnailURL"
+          category_ancestor_ids: "CategoryAncestorIDs"
+        overrides:
+          - db_type: "timestamptz"
+            go_type:
+              import: "time"
+              type: "Time"
+          - db_type: "timestamptz"
+            nullable: true
+            go_type:
+              import: "time"
+              type: "Time"
+              pointer: true
+          - db_type: "vector"
+            go_type:
+              import: "github.com/pgvector/pgvector-go"
+              type: "Vector"
+          - db_type: "vector"
+            nullable: true
+            go_type:
+              import: "github.com/pgvector/pgvector-go"
+              type: "Vector"
+              pointer: true

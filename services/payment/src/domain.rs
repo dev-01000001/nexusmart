@@ -109,7 +109,7 @@ impl PaymentMethod {
         match raw.trim().to_ascii_uppercase().as_str() {
             "COD" => Ok(Self::Cod),
             "VIETQR" | "VIET_QR" | "QR" => Ok(Self::VietQr),
-            "ZALOPAY" | "ZALO_PAY" => Ok(Self::ZaloPay),
+            "ZALOPAY" | "ZALO_PAY" | "ZLP" => Ok(Self::ZaloPay),
             other => Err(PaymentError::Validation(format!(
                 "unsupported payment method: {other}"
             ))),
@@ -155,6 +155,168 @@ impl PaymentStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum SalesChannel {
+    Marketplace,
+    Storefront,
+}
+
+impl SalesChannel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Marketplace => "MARKETPLACE",
+            Self::Storefront => "STOREFRONT",
+        }
+    }
+
+    /// Parses a write/attribution channel. Empty defaults to `MARKETPLACE`;
+    /// any unknown non-empty value returns `PaymentError::Validation` (gRPC `INVALID_ARGUMENT`).
+    pub fn parse_or_default(raw: &str) -> Result<Self> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Ok(Self::Marketplace);
+        }
+        match trimmed.to_ascii_uppercase().as_str() {
+            "MARKETPLACE" => Ok(Self::Marketplace),
+            "STOREFRONT" => Ok(Self::Storefront),
+            other => Err(PaymentError::Validation(format!(
+                "invalid sales_channel '{other}'; must be MARKETPLACE or STOREFRONT"
+            ))),
+        }
+    }
+
+    /// Parses a read/summary/reconciliation filter channel.
+    /// Empty returns `Ok(None)` (unfiltered/all channels).
+    pub fn parse_filter(raw: &str) -> Result<Option<Self>> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        Self::parse_or_default(trimmed).map(Some)
+    }
+}
+
+/// Immutable sales channel attribution persisted on payments, shop allocations,
+/// and double-entry ledger transactions/entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelAttribution {
+    pub sales_channel: SalesChannel,
+    pub storefront_shop_id: String,
+}
+
+impl ChannelAttribution {
+    pub fn marketplace() -> Self {
+        Self {
+            sales_channel: SalesChannel::Marketplace,
+            storefront_shop_id: String::new(),
+        }
+    }
+
+    pub fn storefront(shop_id: impl Into<String>) -> Result<Self> {
+        let shop = shop_id.into();
+        Self::from_parts("STOREFRONT", &shop)
+    }
+
+    /// Validates and constructs an immutable channel attribution from wire/input strings.
+    pub fn from_parts(raw_channel: &str, raw_storefront_shop_id: &str) -> Result<Self> {
+        let sales_channel = SalesChannel::parse_or_default(raw_channel)?;
+        let storefront_shop_id = raw_storefront_shop_id.trim().to_string();
+
+        match sales_channel {
+            SalesChannel::Marketplace => {
+                if !storefront_shop_id.is_empty() {
+                    return Err(PaymentError::Validation(
+                        "storefront_shop_id must be empty when sales_channel is MARKETPLACE"
+                            .to_string(),
+                    ));
+                }
+            }
+            SalesChannel::Storefront => {
+                if storefront_shop_id.is_empty() {
+                    return Err(PaymentError::Validation(
+                        "storefront_shop_id is required when sales_channel is STOREFRONT"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+
+        Ok(Self {
+            sales_channel,
+            storefront_shop_id,
+        })
+    }
+
+    /// Reconstructs attribution from persisted DB columns, defaulting legacy/empty values to MARKETPLACE.
+    pub fn from_db(sales_channel: &str, storefront_shop_id: &str) -> Self {
+        match SalesChannel::parse_or_default(sales_channel) {
+            Ok(SalesChannel::Storefront) if !storefront_shop_id.trim().is_empty() => Self {
+                sales_channel: SalesChannel::Storefront,
+                storefront_shop_id: storefront_shop_id.trim().to_string(),
+            },
+            _ => Self::marketplace(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        Self::from_parts(self.sales_channel.as_str(), &self.storefront_shop_id).map(|_| ())
+    }
+
+    /// Ensures every shop allocation matches the payment's sales channel and storefront shop.
+    pub fn validate_allocations(&self, allocations: &[ShopAllocationInput]) -> Result<()> {
+        for alloc in allocations {
+            if !alloc.sales_channel.trim().is_empty() {
+                let alloc_channel = SalesChannel::parse_or_default(&alloc.sales_channel)?;
+                if alloc_channel != self.sales_channel {
+                    return Err(PaymentError::Validation(format!(
+                        "allocation sales_channel '{}' conflicts with payment sales_channel '{}'",
+                        alloc_channel.as_str(),
+                        self.sales_channel.as_str()
+                    )));
+                }
+            }
+            let alloc_sf_shop = alloc.storefront_shop_id.trim();
+            if !alloc_sf_shop.is_empty() && alloc_sf_shop != self.storefront_shop_id {
+                return Err(PaymentError::Validation(format!(
+                    "allocation storefront_shop_id '{alloc_sf_shop}' conflicts with payment storefront_shop_id '{}'",
+                    self.storefront_shop_id
+                )));
+            }
+            if self.sales_channel == SalesChannel::Storefront
+                && alloc.shop_id.trim() != self.storefront_shop_id
+            {
+                return Err(PaymentError::Validation(format!(
+                    "STOREFRONT payment for shop '{}' cannot include allocation for shop '{}'",
+                    self.storefront_shop_id, alloc.shop_id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Structured JSON metadata stored on `ledger_transactions.metadata` and `ledger_entries.metadata`.
+    pub fn metadata_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "sales_channel": self.sales_channel.as_str(),
+            "storefront_shop_id": self.storefront_shop_id,
+        })
+    }
+}
+
+/// Returns whether a local payment's `sales_channel` matches an optional reconciliation filter.
+pub fn reconciliation_channel_matches(
+    local_channel: &str,
+    channel_filter: Option<SalesChannel>,
+) -> bool {
+    match channel_filter {
+        None => true,
+        Some(expected) => SalesChannel::parse_or_default(local_channel)
+            .map(|c| c == expected)
+            .unwrap_or(false),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShopAllocationInput {
     pub order_id: Option<String>,
@@ -164,6 +326,10 @@ pub struct ShopAllocationInput {
     pub shipping_fee_vnd: i64,
     #[serde(default)]
     pub platform_discount_vnd: i64,
+    #[serde(default)]
+    pub sales_channel: String,
+    #[serde(default)]
+    pub storefront_shop_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +343,10 @@ pub struct CreatePaymentInput {
     pub expires_at: Option<DateTime<Utc>>,
     pub idempotency_key: Option<String>,
     pub supersede_previous: bool,
+    #[serde(default)]
+    pub sales_channel: String,
+    #[serde(default)]
+    pub storefront_shop_id: String,
     pub trace_id: String,
 }
 
@@ -200,6 +370,8 @@ pub struct PaymentRecord {
     pub expires_at: Option<DateTime<Utc>>,
     pub paid_at: Option<DateTime<Utc>>,
     pub trace_id: String,
+    pub sales_channel: String,
+    pub storefront_shop_id: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -228,6 +400,10 @@ pub struct ShopAllocationRecord {
     pub cod_reconciled_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub cod_reconciliation_run_id: Option<Uuid>,
+    #[serde(default)]
+    pub sales_channel: String,
+    #[serde(default)]
+    pub storefront_shop_id: String,
     pub created_at: DateTime<Utc>,
 }
 
@@ -389,6 +565,48 @@ pub struct UpdatePaymentMethodConfigInput {
     pub updated_by: String,
 }
 
+/// Error prefix returned on `FailedPrecondition` when COD shipping fee adjustment is attempted
+/// on a non-COD, non-pending, cancelled, or already-collected payment/allocation (G2).
+pub const ERR_COD_ALREADY_COLLECTED: &str = "COD_ALREADY_COLLECTED";
+
+#[derive(Debug, Clone)]
+pub struct AdjustCodShippingFeeInput {
+    pub order_id: String,
+    pub new_shipping_fee_vnd: i64,
+    pub idempotency_key: String,
+    pub trace_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdjustCodShippingFeeOutput {
+    pub payment: PaymentWithAllocations,
+    pub old_shipping_fee_vnd: i64,
+    pub new_shipping_fee_vnd: i64,
+    pub new_order_payable_vnd: i64,
+    pub already_applied: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct CodFeeAdjustmentRecord {
+    pub id: Uuid,
+    pub idempotency_key: String,
+    pub payment_id: Uuid,
+    pub order_id: String,
+    pub old_shipping_fee_vnd: i64,
+    pub new_shipping_fee_vnd: i64,
+    pub new_order_payable_vnd: i64,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodShippingFeeAdjustmentPlan {
+    pub allocation_id: Uuid,
+    pub old_shipping_fee_vnd: i64,
+    pub new_shipping_fee_vnd: i64,
+    pub new_order_payable_vnd: i64,
+    pub new_payment_amount_vnd: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRefundOutput {
     pub refund: RefundRecord,
@@ -523,6 +741,7 @@ pub struct ReconciliationRunRecord {
     pub id: Uuid,
     pub provider: String,
     pub run_date: NaiveDate,
+    pub sales_channel: String,
     pub matched_count: i32,
     pub missing_local_count: i32,
     pub missing_provider_count: i32,
@@ -565,6 +784,10 @@ pub struct ReconciliationItemRecord {
     pub order_id: String,
     #[serde(default)]
     pub line_number: i32,
+    #[serde(default)]
+    pub sales_channel: String,
+    #[serde(default)]
+    pub storefront_shop_id: String,
     pub created_at: DateTime<Utc>,
 }
 
@@ -599,6 +822,7 @@ pub struct ImportCodReconciliationInput {
 #[derive(Debug, Clone)]
 pub struct ListReconciliationRunsFilter {
     pub run_type: Option<String>,
+    pub sales_channel: Option<SalesChannel>,
     pub page: i32,
     pub page_size: i32,
 }
@@ -2175,6 +2399,136 @@ pub fn decide_reconciliation_match_action(
     }
 }
 
+pub fn validate_adjust_cod_shipping_fee_input<'a>(
+    order_id: &'a str,
+    idempotency_key: &'a str,
+    new_shipping_fee_vnd: i64,
+) -> Result<(&'a str, &'a str)> {
+    let order_id = order_id.trim();
+    if order_id.is_empty() {
+        return Err(PaymentError::Validation("order_id is required".to_string()));
+    }
+    let idempotency_key = idempotency_key.trim();
+    if idempotency_key.is_empty() {
+        return Err(PaymentError::Validation(
+            "idempotency_key is required".to_string(),
+        ));
+    }
+    if new_shipping_fee_vnd < 0 {
+        return Err(PaymentError::Validation(
+            "new_shipping_fee_vnd must be non-negative".to_string(),
+        ));
+    }
+    Ok((order_id, idempotency_key))
+}
+
+pub fn validate_cod_fee_adjustment_replay(
+    existing: &CodFeeAdjustmentRecord,
+    order_id: &str,
+    new_shipping_fee_vnd: i64,
+) -> Result<()> {
+    if existing.order_id != order_id || existing.new_shipping_fee_vnd != new_shipping_fee_vnd {
+        return Err(PaymentError::FailedPrecondition(format!(
+            "idempotency_key '{}' was already used with different parameters",
+            existing.idempotency_key
+        )));
+    }
+    Ok(())
+}
+
+pub fn plan_cod_shipping_fee_adjustment(
+    payment: &PaymentRecord,
+    allocations: &[ShopAllocationRecord],
+    order_id: &str,
+    new_shipping_fee_vnd: i64,
+) -> Result<CodShippingFeeAdjustmentPlan> {
+    if new_shipping_fee_vnd < 0 {
+        return Err(PaymentError::Validation(
+            "new_shipping_fee_vnd must be non-negative".to_string(),
+        ));
+    }
+    if payment.method != "COD" {
+        return Err(PaymentError::FailedPrecondition(format!(
+            "{ERR_COD_ALREADY_COLLECTED}: payment method {} does not support COD shipping fee adjustment",
+            payment.method
+        )));
+    }
+    if payment.status != "pending" {
+        return Err(PaymentError::FailedPrecondition(format!(
+            "{ERR_COD_ALREADY_COLLECTED}: payment status is {} (must be pending)",
+            payment.status
+        )));
+    }
+
+    let mut matched_alloc: Option<&ShopAllocationRecord> = None;
+    for alloc in allocations {
+        if alloc.order_id == order_id {
+            if matched_alloc.is_some() {
+                return Err(PaymentError::FailedPrecondition(format!(
+                    "multiple COD allocations found for order {order_id}"
+                )));
+            }
+            matched_alloc = Some(alloc);
+        }
+    }
+    let target = matched_alloc.ok_or_else(|| {
+        PaymentError::NotFound(format!("COD allocation not found for order {order_id}"))
+    })?;
+
+    if target.escrow_status != "awaiting_collection" {
+        return Err(PaymentError::FailedPrecondition(format!(
+            "{ERR_COD_ALREADY_COLLECTED}: allocation escrow_status is {} (must be awaiting_collection)",
+            target.escrow_status
+        )));
+    }
+
+    let gross = target
+        .subtotal_vnd
+        .checked_add(new_shipping_fee_vnd)
+        .ok_or_else(|| {
+            PaymentError::FailedPrecondition("overflow computing new_order_payable_vnd".to_string())
+        })?;
+    if target.platform_discount_vnd > gross {
+        return Err(PaymentError::FailedPrecondition(format!(
+            "new_order_payable_vnd must be non-negative: subtotal ({}) + new_shipping_fee ({}) - platform_discount ({}) < 0",
+            target.subtotal_vnd, new_shipping_fee_vnd, target.platform_discount_vnd
+        )));
+    }
+    let new_order_payable_vnd = gross - target.platform_discount_vnd;
+
+    let mut new_payment_amount_vnd = 0_i64;
+    for alloc in allocations {
+        if alloc.escrow_status == "cancelled" {
+            continue;
+        }
+        let alloc_payable = if alloc.id == target.id {
+            new_order_payable_vnd
+        } else {
+            allocation_buyer_payable_vnd(alloc)?
+        };
+        new_payment_amount_vnd = new_payment_amount_vnd
+            .checked_add(alloc_payable)
+            .ok_or_else(|| {
+                PaymentError::FailedPrecondition(
+                    "overflow computing parent payment amount_vnd".to_string(),
+                )
+            })?;
+    }
+    if new_payment_amount_vnd < 0 {
+        return Err(PaymentError::FailedPrecondition(
+            "new payment amount_vnd must be non-negative".to_string(),
+        ));
+    }
+
+    Ok(CodShippingFeeAdjustmentPlan {
+        allocation_id: target.id,
+        old_shipping_fee_vnd: target.shipping_fee_vnd,
+        new_shipping_fee_vnd,
+        new_order_payable_vnd,
+        new_payment_amount_vnd,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2420,6 +2774,8 @@ mod tests {
             commission_vnd: 11_450,
             shipping_fee_vnd: 26_000,
             platform_discount_vnd: 30_000,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
         };
         assert!(validate_allocations_sum(225_000, std::slice::from_ref(&alloc)).is_ok());
         // Sum mismatch (ignoring D) MUST fail
@@ -2433,6 +2789,8 @@ mod tests {
             commission_vnd: 10_000,
             shipping_fee_vnd: 20_000,
             platform_discount_vnd: 220_000, // 0 VND sub-order
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
         };
         assert!(validate_allocations_sum(225_000, &[alloc, alloc2.clone()]).is_ok());
 
@@ -2447,6 +2805,8 @@ mod tests {
             commission_vnd: 5_000,
             shipping_fee_vnd: 10_000,
             platform_discount_vnd: 110_001,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
         };
         assert!(validate_allocations_sum(0, &[bad_d]).is_err());
         assert!(validate_allocations_sum(-1, &[]).is_err());
@@ -2686,6 +3046,8 @@ mod tests {
             expires_at: None,
             paid_at: None,
             trace_id: String::new(),
+            sales_channel: "MARKETPLACE".into(),
+            storefront_shop_id: String::new(),
             created_at: now,
             updated_at: now,
         };
@@ -2989,6 +3351,8 @@ mod tests {
             expires_at: None,
             paid_at: None,
             trace_id: String::new(),
+            sales_channel: "MARKETPLACE".into(),
+            storefront_shop_id: String::new(),
             created_at: now + chrono::Duration::seconds(offset_secs),
             updated_at: now + chrono::Duration::seconds(offset_secs),
         };
@@ -3609,6 +3973,8 @@ mod tests {
             commission_vnd: 27_425,
             shipping_fee_vnd: 35_000,
             platform_discount_vnd: 50_000,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
         };
         assert!(validate_allocations_sum(395_000, &[alloc]).is_ok());
 
@@ -3655,6 +4021,8 @@ mod tests {
             commission_vnd: 10_000,
             shipping_fee_vnd: 30_000,
             platform_discount_vnd: 0,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
         };
         assert!(validate_allocations_sum(40_000, &[capped]).is_ok());
         let split_cap =
@@ -3672,6 +4040,8 @@ mod tests {
             commission_vnd: 10_001,
             shipping_fee_vnd: 30_000,
             platform_discount_vnd: 0,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
         };
         assert!(validate_allocations_sum(40_000, &[over_cap]).is_err());
 
@@ -3683,6 +4053,8 @@ mod tests {
             commission_vnd: 0,
             shipping_fee_vnd: 30_000,
             platform_discount_vnd: 0,
+            sales_channel: String::new(),
+            storefront_shop_id: String::new(),
         };
         assert!(validate_allocations_sum(30_000, &[zero_r]).is_ok());
         let split_r0 =
@@ -3973,6 +4345,416 @@ mod tests {
         assert_eq!(
             decide_zalopay_window_exhausted(Some(99), Some(false)),
             ZaloPayWindowExhaustedDecision::EscalateManualReview
+        );
+    }
+
+    #[test]
+    fn test_w3b3_g2_cod_shipping_fee_adjustment_domain_rules() {
+        let now = Utc::now();
+        let pid = Uuid::new_v4();
+        let alloc_a_id = Uuid::new_v4();
+        let alloc_b_id = Uuid::new_v4();
+        let alloc_c_id = Uuid::new_v4();
+
+        let make_payment = |method: &str, status: &str, amount_vnd: i64| PaymentRecord {
+            id: pid,
+            order_group_id: "grp-cod-1".into(),
+            order_id: "grp-cod-1".into(),
+            user_id: "buyer-1".into(),
+            method: method.into(),
+            provider: if method == "COD" { "cod" } else { "mock" }.into(),
+            amount_vnd,
+            status: status.into(),
+            provider_tx_id: None,
+            provider_order_code: "NM-COD-1".into(),
+            qr_code: None,
+            qr_url: None,
+            pay_url: None,
+            idempotency_key: Some("checkout:grp-cod-1".into()),
+            expires_at: None,
+            paid_at: None,
+            trace_id: "trace-1".into(),
+            sales_channel: "MARKETPLACE".into(),
+            storefront_shop_id: String::new(),
+            created_at: now,
+            updated_at: now,
+        };
+        let make_alloc = |id: Uuid,
+                          order_id: &str,
+                          shop_id: &str,
+                          subtotal: i64,
+                          commission: i64,
+                          ship: i64,
+                          discount: i64,
+                          escrow: &str| ShopAllocationRecord {
+            id,
+            payment_id: pid,
+            order_id: order_id.into(),
+            shop_id: shop_id.into(),
+            subtotal_vnd: subtotal,
+            commission_vnd: commission,
+            shipping_fee_vnd: ship,
+            platform_discount_vnd: discount,
+            escrow_status: escrow.into(),
+            settled_at: None,
+            released_at: None,
+            tracking_code: None,
+            carrier_code: None,
+            order_code: None,
+            cod_reconciled_at: None,
+            cod_reconciliation_run_id: None,
+            sales_channel: "MARKETPLACE".into(),
+            storefront_shop_id: String::new(),
+            created_at: now,
+        };
+
+        // Input validation
+        assert_eq!(
+            validate_adjust_cod_shipping_fee_input("  ord-1  ", "  key-1  ", 25_000).unwrap(),
+            ("ord-1", "key-1")
+        );
+        assert!(matches!(
+            validate_adjust_cod_shipping_fee_input("   ", "key-1", 25_000),
+            Err(PaymentError::Validation(_))
+        ));
+        assert!(matches!(
+            validate_adjust_cod_shipping_fee_input("ord-1", "   ", 25_000),
+            Err(PaymentError::Validation(_))
+        ));
+        assert!(matches!(
+            validate_adjust_cod_shipping_fee_input("ord-1", "key-1", -1),
+            Err(PaymentError::Validation(_))
+        ));
+
+        // Increase & decrease on multi-shop COD with one held sibling and one cancelled sibling.
+        let payment = make_payment("COD", "pending", 420_000);
+        let allocs = vec![
+            make_alloc(
+                alloc_a_id, "ord-a", "shop-a", 100_000, 5_000, 20_000, 0, "held",
+            ),
+            make_alloc(
+                alloc_b_id,
+                "ord-b",
+                "shop-b",
+                80_000,
+                4_000,
+                20_000,
+                0,
+                "cancelled",
+            ),
+            make_alloc(
+                alloc_c_id,
+                "ord-c",
+                "shop-c",
+                200_000,
+                10_000,
+                30_000,
+                30_000,
+                "awaiting_collection",
+            ),
+        ];
+
+        // Increase shipping fee on ord-c (30k -> 50k): new_payable = 200k + 50k - 30k = 220k.
+        // Parent amount excludes cancelled ord-b: held ord-a (120k) + ord-c (220k) = 340k.
+        let inc = plan_cod_shipping_fee_adjustment(&payment, &allocs, "ord-c", 50_000).unwrap();
+        assert_eq!(
+            inc,
+            CodShippingFeeAdjustmentPlan {
+                allocation_id: alloc_c_id,
+                old_shipping_fee_vnd: 30_000,
+                new_shipping_fee_vnd: 50_000,
+                new_order_payable_vnd: 220_000,
+                new_payment_amount_vnd: 340_000,
+            }
+        );
+
+        // Decrease shipping fee on ord-c (30k -> 10k): new_payable = 200k + 10k - 30k = 180k.
+        let dec = plan_cod_shipping_fee_adjustment(&payment, &allocs, "ord-c", 10_000).unwrap();
+        assert_eq!(dec.new_order_payable_vnd, 180_000);
+        assert_eq!(dec.new_payment_amount_vnd, 300_000);
+
+        // Payable < 0 (discount exceeds subtotal + new_shipping_fee) -> FailedPrecondition.
+        let heavy_discount = vec![make_alloc(
+            alloc_c_id,
+            "ord-c",
+            "shop-c",
+            100_000,
+            5_000,
+            30_000,
+            120_000,
+            "awaiting_collection",
+        )];
+        assert!(matches!(
+            plan_cod_shipping_fee_adjustment(&payment, &heavy_discount, "ord-c", 10_000),
+            Err(PaymentError::FailedPrecondition(_))
+        ));
+        // Exactly 0 payable is valid (100k + 20k - 120k = 0).
+        let zero_pay =
+            plan_cod_shipping_fee_adjustment(&payment, &heavy_discount, "ord-c", 20_000).unwrap();
+        assert_eq!(zero_pay.new_order_payable_vnd, 0);
+        assert_eq!(zero_pay.new_payment_amount_vnd, 0);
+
+        // Non-COD (VIETQR / ZALOPAY) -> FailedPrecondition with COD_ALREADY_COLLECTED prefix.
+        for bad_method in ["VIETQR", "ZALOPAY"] {
+            let p = make_payment(bad_method, "pending", 200_000);
+            let err = plan_cod_shipping_fee_adjustment(&p, &allocs, "ord-c", 40_000).unwrap_err();
+            assert!(
+                matches!(err, PaymentError::FailedPrecondition(ref msg) if msg.starts_with(ERR_COD_ALREADY_COLLECTED)),
+                "method={bad_method} got {err:?}"
+            );
+        }
+
+        // Non-pending payment status -> FailedPrecondition with COD_ALREADY_COLLECTED prefix.
+        for bad_status in ["succeeded", "cancelled", "refunded", "expired", "failed"] {
+            let p = make_payment("COD", bad_status, 200_000);
+            let err = plan_cod_shipping_fee_adjustment(&p, &allocs, "ord-c", 40_000).unwrap_err();
+            assert!(
+                matches!(err, PaymentError::FailedPrecondition(ref msg) if msg.starts_with(ERR_COD_ALREADY_COLLECTED)),
+                "status={bad_status} got {err:?}"
+            );
+        }
+
+        // Non-awaiting_collection allocation -> FailedPrecondition with COD_ALREADY_COLLECTED prefix.
+        for bad_escrow in [
+            "held",
+            "pending_release",
+            "released",
+            "refunded",
+            "cancelled",
+        ] {
+            let one = vec![make_alloc(
+                alloc_c_id, "ord-c", "shop-c", 100_000, 5_000, 20_000, 0, bad_escrow,
+            )];
+            let err =
+                plan_cod_shipping_fee_adjustment(&payment, &one, "ord-c", 35_000).unwrap_err();
+            assert!(
+                matches!(err, PaymentError::FailedPrecondition(ref msg) if msg.starts_with(ERR_COD_ALREADY_COLLECTED)),
+                "escrow={bad_escrow} got {err:?}"
+            );
+        }
+
+        // Idempotency replay match vs conflict.
+        let rec = CodFeeAdjustmentRecord {
+            id: Uuid::new_v4(),
+            idempotency_key: "adj-1".into(),
+            payment_id: pid,
+            order_id: "ord-c".into(),
+            old_shipping_fee_vnd: 30_000,
+            new_shipping_fee_vnd: 50_000,
+            new_order_payable_vnd: 220_000,
+            created_at: now,
+        };
+        assert!(validate_cod_fee_adjustment_replay(&rec, "ord-c", 50_000).is_ok());
+        assert!(matches!(
+            validate_cod_fee_adjustment_replay(&rec, "ord-c", 40_000),
+            Err(PaymentError::FailedPrecondition(_))
+        ));
+        assert!(matches!(
+            validate_cod_fee_adjustment_replay(&rec, "ord-other", 50_000),
+            Err(PaymentError::FailedPrecondition(_))
+        ));
+    }
+
+    #[test]
+    fn test_sales_channel_validation_and_defaults() {
+        // Legacy / empty defaults to MARKETPLACE
+        assert_eq!(
+            SalesChannel::parse_or_default("").unwrap(),
+            SalesChannel::Marketplace
+        );
+        assert_eq!(
+            SalesChannel::parse_or_default("   ").unwrap(),
+            SalesChannel::Marketplace
+        );
+        assert_eq!(
+            SalesChannel::parse_or_default("MARKETPLACE").unwrap(),
+            SalesChannel::Marketplace
+        );
+        assert_eq!(
+            SalesChannel::parse_or_default("STOREFRONT").unwrap(),
+            SalesChannel::Storefront
+        );
+        assert!(matches!(
+            SalesChannel::parse_or_default("DIRECT"),
+            Err(PaymentError::Validation(_))
+        ));
+
+        // Filter parsing: empty -> None (all), valid -> Some, invalid -> Validation error
+        assert_eq!(SalesChannel::parse_filter("").unwrap(), None);
+        assert_eq!(
+            SalesChannel::parse_filter("MARKETPLACE").unwrap(),
+            Some(SalesChannel::Marketplace)
+        );
+        assert_eq!(
+            SalesChannel::parse_filter("STOREFRONT").unwrap(),
+            Some(SalesChannel::Storefront)
+        );
+        assert!(matches!(
+            SalesChannel::parse_filter("SOCIAL"),
+            Err(PaymentError::Validation(_))
+        ));
+
+        // ChannelAttribution consistency rules
+        let mp = ChannelAttribution::from_parts("", "").unwrap();
+        assert_eq!(mp.sales_channel, SalesChannel::Marketplace);
+        assert_eq!(mp.storefront_shop_id, "");
+        assert_eq!(
+            mp.metadata_json(),
+            serde_json::json!({"sales_channel": "MARKETPLACE", "storefront_shop_id": ""})
+        );
+
+        assert!(ChannelAttribution::from_parts("MARKETPLACE", "shop-1").is_err());
+        assert!(ChannelAttribution::from_parts("STOREFRONT", "").is_err());
+        assert!(ChannelAttribution::from_parts("STOREFRONT", "   ").is_err());
+
+        let sf = ChannelAttribution::from_parts("STOREFRONT", "shop-42").unwrap();
+        assert_eq!(sf.sales_channel, SalesChannel::Storefront);
+        assert_eq!(sf.storefront_shop_id, "shop-42");
+        assert_eq!(
+            sf.metadata_json(),
+            serde_json::json!({"sales_channel": "STOREFRONT", "storefront_shop_id": "shop-42"})
+        );
+
+        // Legacy DB fallback reads empty as MARKETPLACE
+        assert_eq!(
+            ChannelAttribution::from_db("", ""),
+            ChannelAttribution::marketplace()
+        );
+    }
+
+    #[test]
+    fn test_storefront_allocation_validation_rejects_cross_shop() {
+        let sf = ChannelAttribution::storefront("shop-A").unwrap();
+        let valid_alloc = ShopAllocationInput {
+            order_id: Some("ord-1".into()),
+            shop_id: "shop-A".into(),
+            subtotal_vnd: 200_000,
+            commission_vnd: 10_000,
+            shipping_fee_vnd: 30_000,
+            platform_discount_vnd: 0,
+            sales_channel: "STOREFRONT".into(),
+            storefront_shop_id: "shop-A".into(),
+        };
+        assert!(sf
+            .validate_allocations(std::slice::from_ref(&valid_alloc))
+            .is_ok());
+
+        // Cross-shop allocation must be rejected
+        let cross_shop = ShopAllocationInput {
+            shop_id: "shop-B".into(),
+            ..valid_alloc.clone()
+        };
+        assert!(matches!(
+            sf.validate_allocations(&[cross_shop]),
+            Err(PaymentError::Validation(_))
+        ));
+
+        // Conflicting allocation channel must be rejected
+        let wrong_channel = ShopAllocationInput {
+            sales_channel: "MARKETPLACE".into(),
+            storefront_shop_id: String::new(),
+            ..valid_alloc.clone()
+        };
+        assert!(matches!(
+            sf.validate_allocations(&[wrong_channel]),
+            Err(PaymentError::Validation(_))
+        ));
+
+        // Conflicting storefront_shop_id on allocation must be rejected
+        let wrong_sf_shop = ShopAllocationInput {
+            storefront_shop_id: "shop-B".into(),
+            ..valid_alloc
+        };
+        assert!(matches!(
+            sf.validate_allocations(&[wrong_sf_shop]),
+            Err(PaymentError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn test_reconciliation_channel_matches_partitions_100_percent() {
+        assert!(reconciliation_channel_matches("MARKETPLACE", None));
+        assert!(reconciliation_channel_matches("STOREFRONT", None));
+        assert!(reconciliation_channel_matches("", None));
+
+        assert!(reconciliation_channel_matches(
+            "MARKETPLACE",
+            Some(SalesChannel::Marketplace)
+        ));
+        assert!(reconciliation_channel_matches(
+            "",
+            Some(SalesChannel::Marketplace)
+        ));
+        assert!(!reconciliation_channel_matches(
+            "STOREFRONT",
+            Some(SalesChannel::Marketplace)
+        ));
+        assert!(reconciliation_channel_matches(
+            "STOREFRONT",
+            Some(SalesChannel::Storefront)
+        ));
+        assert!(!reconciliation_channel_matches(
+            "MARKETPLACE",
+            Some(SalesChannel::Storefront)
+        ));
+    }
+
+    #[test]
+    fn test_payment_method_and_status_parsing_including_zalopay() {
+        assert_eq!(PaymentMethod::parse("COD").unwrap(), PaymentMethod::Cod);
+        assert_eq!(
+            PaymentMethod::parse("vietqr").unwrap(),
+            PaymentMethod::VietQr
+        );
+        assert_eq!(
+            PaymentMethod::parse("VIET_QR").unwrap(),
+            PaymentMethod::VietQr
+        );
+        assert_eq!(PaymentMethod::parse("qr").unwrap(), PaymentMethod::VietQr);
+        assert_eq!(
+            PaymentMethod::parse("ZALOPAY").unwrap(),
+            PaymentMethod::ZaloPay
+        );
+        assert_eq!(
+            PaymentMethod::parse("zalo_pay").unwrap(),
+            PaymentMethod::ZaloPay
+        );
+        assert_eq!(PaymentMethod::parse("zlp").unwrap(), PaymentMethod::ZaloPay);
+        assert!(PaymentMethod::parse("BITCOIN").is_err());
+
+        assert_eq!(PaymentMethod::Cod.as_str(), "COD");
+        assert_eq!(PaymentMethod::VietQr.as_str(), "VIETQR");
+        assert_eq!(PaymentMethod::ZaloPay.as_str(), "ZALOPAY");
+        assert!(!PaymentMethod::Cod.is_online());
+        assert!(PaymentMethod::VietQr.is_online());
+        assert!(PaymentMethod::ZaloPay.is_online());
+
+        for (raw, expected, s) in [
+            ("pending", PaymentStatus::Pending, "pending"),
+            ("succeeded", PaymentStatus::Succeeded, "succeeded"),
+            ("paid", PaymentStatus::Succeeded, "succeeded"),
+            ("failed", PaymentStatus::Failed, "failed"),
+            ("expired", PaymentStatus::Expired, "expired"),
+            ("cancelled", PaymentStatus::Cancelled, "cancelled"),
+            ("canceled", PaymentStatus::Cancelled, "cancelled"),
+            ("superseded", PaymentStatus::Superseded, "superseded"),
+            ("refunded", PaymentStatus::Refunded, "refunded"),
+            ("other", PaymentStatus::Pending, "pending"),
+        ] {
+            let parsed = PaymentStatus::parse(raw);
+            assert_eq!(parsed, expected);
+            assert_eq!(parsed.as_str(), s);
+        }
+
+        // Additional edge-case validations
+        assert!(compute_settlement_split("ord-1", " ", 100, 0, 0, 0, 0).is_err());
+        assert!(compute_settlement_split("ord-1", "s1", -1, 0, 0, 0, 0).is_err());
+        assert!(compute_settlement_split("ord-1", "s1", 100, 101, 0, 0, 0).is_err());
+        assert!(validate_refund_cap(0, 0, 100).is_err());
+        assert!(validate_refund_cap(100, -1, 50).is_err());
+        assert_eq!(
+            classify_reconciliation_pair(None, None),
+            ReconciliationDecision::Matched
         );
     }
 }

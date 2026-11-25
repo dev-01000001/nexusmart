@@ -191,8 +191,9 @@ func TestShippingGRPC_W3B_E16_E17_PublicCalculateFeeAndCODSupported(t *testing.T
 func TestShippingGRPC_W3B_E18_CreateShipmentQueueAndRBAC(t *testing.T) {
 	sellerCtx := ctxWithRole("seller-1", "seller", "shop-1")
 	svcCtx := ctxWithService("order-service")
+	otherSvcCtx := ctxWithService("product-service")
 
-	// 1. Service token remains strictly rejected on CreateShipment (only seller/admin JWT).
+	// 1. Non-order-service token remains strictly rejected on CreateShipment (G3: only seller/orders.review.resolve/order-service).
 	repo := newStubRepo()
 	c503 := &failingCreateCarrier{
 		Carrier:   carrier.NewMockExpressAdapter(),
@@ -208,8 +209,8 @@ func TestShippingGRPC_W3B_E18_CreateShipmentQueueAndRBAC(t *testing.T) {
 		CarrierCode: carrier.CodeMockExpress,
 		WeightGrams: 500,
 	}
-	if _, err := srv.CreateShipment(svcCtx, req); status.Code(err) != codes.PermissionDenied {
-		t.Fatalf("E18: service token must remain PermissionDenied on CreateShipment, got %v", err)
+	if _, err := srv.CreateShipment(otherSvcCtx, req); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("E18/G3: non-order-service token must remain PermissionDenied on CreateShipment, got %v", err)
 	}
 
 	// 2. Transient 503 persists job and returns queued=true, job_id != "".

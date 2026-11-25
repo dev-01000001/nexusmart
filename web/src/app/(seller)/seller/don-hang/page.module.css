@@ -1,111 +1,260 @@
-/* Seller Orders List (/seller/don-hang) */
+/* Seller Orders List (/seller/don-hang) — Phase-0b redesign + Wave 3b-3 batch & filters */
+
+.orderIdentity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.orderThumb {
+  width: 32px;
+  height: 40px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--bg-2);
+  flex: none;
+}
+
+.orderMetaStack {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-template-areas:
+    "code channel"
+    "date date";
+  align-items: center;
+  justify-content: start;
+  column-gap: 6px;
+  row-gap: 1px;
+}
+
+.orderCodeBtn {
+  grid-area: code;
+  white-space: nowrap;
+}
+
+.orderChannelInline {
+  grid-area: channel;
+}
+
+.orderDateSub {
+  grid-area: date;
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+.buyerCell {
+  min-width: 0;
+  max-width: 156px;
+}
+
+.buyerName {
+  display: block;
+  color: var(--ink-1);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.buyerProvince {
+  display: block;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ink-3);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .actionGroup {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 .rowAdvanceBtn {
-  height: 30px;
-  padding: 0 10px;
+  height: 28px;
+  padding: 0 9px;
   border-radius: var(--radius-control);
-  border: 1px solid var(--ink); /* taste-skill-ignore: outlined ink row transition button */
-  background: var(--card);
-  color: var(--ink);
+  background: var(--ink-1);
+  color: var(--bg-0);
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
-  transition: background-color var(--t-hover) ease;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease-out);
 }
 
-.rowAdvanceBtn:hover {
-  background: var(--surface);
+.rowAdvanceBtn:hover:not(:disabled) {
+  background: var(--accent);
+}
+
+.rowAdvanceBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .rowDetailLink {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 30px;
-  padding: 0 10px;
+  height: 28px;
+  padding: 0 9px;
   border-radius: var(--radius-control);
-  border: 1px solid var(--control); /* taste-skill-ignore: secondary order detail button */
-  background: var(--card);
-  color: var(--ink);
+  border: 1px solid var(--control);
+  background: var(--bg-0);
+  color: var(--ink-1);
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease-out);
 }
 
 .rowDetailLink:hover {
-  background: var(--surface);
+  background: var(--bg-2);
 }
 
-.orderCodeCell {
-  white-space: nowrap;
+table.ordersTable.ordersTable {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+table.ordersTable thead th,
+table.ordersTable tbody td {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+table.ordersTable thead th:first-child,
+table.ordersTable tbody td:first-child {
+  padding-left: 0;
+}
+
+table.ordersTable thead th:last-child,
+table.ordersTable tbody td:last-child {
+  padding-right: 0;
+}
+
+table.ordersTable thead th.checkCol,
+table.ordersTable tbody td.checkCol {
+  width: 28px;
+  padding-right: 4px;
+}
+
+table.ordersTable thead th.actionCol,
+table.ordersTable tbody td.actionCol {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: var(--bg-0);
+  border-left: 1px solid var(--border);
+  padding-left: 10px;
+}
+
+table.ordersTable tbody tr:hover td.actionCol {
+  background: var(--bg-1);
+}
+
+table.ordersTable thead th.actionCol {
+  z-index: 3;
+}
+
+.rowCheckbox {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex: none;
+}
+
+.itemColCell {
+  min-width: 160px;
+  max-width: 220px;
 }
 
 .itemSummaryCell {
-  max-width: 260px;
+  display: block;
+  color: var(--ink-1);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.mobileOrderCode {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.mobileOrderTotal {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.mobileOrderSummary {
+.itemSubCell {
+  display: block;
   font-size: 13px;
-  color: var(--muted);
   line-height: 18px;
-}
-
-.signalList {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 4px;
-}
-
-.signalTag {
-  display: inline-flex;
-  align-items: center;
-  height: 20px;
-  padding: 0 7px;
-  border-radius: var(--radius-chip);
-  background: var(--surface);
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 500;
+  color: var(--ink-3);
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.signalTagWarn {
-  background: var(--pill-warning-bg);
-  color: var(--pill-warning-ink);
+.orderCodesCell {
+  font-size: 13px;
+  color: var(--ink-3);
+  word-break: break-word;
 }
 
 .queueMeta {
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.dateFilterWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dateFilterInput {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--control);
+  border-radius: var(--radius-control);
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-size: 13px;
+}
+
+.batchBar {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 12px var(--card-pad);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.batchBarInfo {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 14px;
+  color: var(--ink-1);
+}
+
+.batchBarControls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .shipDrawer {
-  background: var(--bg);
+  background: var(--bg-1);
   padding: 12px 14px !important;
 }
 
@@ -130,5 +279,139 @@
   gap: 8px;
   padding: 10px;
   border-radius: var(--radius-control);
-  background: var(--bg);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+}
+
+.mobileSelectAllRow {
+  padding: 6px 0 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mobileCheckLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-1);
+  cursor: pointer;
+}
+
+.mobileRowLead {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mobileOrderCode {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+
+.mobileOrderTotal {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-1);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.mobileOrderSummary {
+  font-size: 13px;
+  color: var(--ink-3);
+  line-height: 18px;
+  margin: 0;
+}
+
+.paginationBar {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.paginationControls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pageBtn {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--control);
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.pageBtn:hover:not(:disabled) {
+  background: var(--bg-2);
+}
+
+.pageBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pageBtnActive {
+  background: var(--ink-1);
+  color: var(--bg-0);
+  border-color: var(--ink-1);
+}
+
+.pageBtnActive:hover:not(:disabled) {
+  background: var(--ink-1);
+}
+
+.pageEllipsis {
+  color: var(--ink-3);
+  font-size: 13px;
+  padding: 0 4px;
+}
+
+@media (max-width: 1340px) {
+  .orderIdentity .orderThumb {
+    display: none;
+  }
+
+  .buyerCell {
+    max-width: 120px;
+  }
+
+  .itemColCell {
+    max-width: 168px;
+  }
+}
+
+@media (max-width: 640px) {
+  .batchBar {
+    padding: 12px 14px;
+  }
+
+  .batchBarControls {
+    width: 100%;
+  }
+
+  .dateFilterWrap {
+    width: 100%;
+  }
+
+  .dateFilterInput {
+    flex: 1;
+    min-width: 0;
+  }
 }

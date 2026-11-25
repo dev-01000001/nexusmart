@@ -454,6 +454,13 @@ test("W2b seedDemoOrders: creates multi-state orders via API + signed webhooks a
       const idem = headers["Idempotency-Key"];
       assert.ok(idem, "checkout must send Idempotency-Key");
       assert.equal(body.from_cart, false);
+      assert.equal(body.sales_channel, "STOREFRONT", "demo checkout must default to STOREFRONT channel");
+      assert.ok(body.storefront_shop_id, "STOREFRONT checkout must include storefront_shop_id");
+      assert.equal(
+        body.storefront_shop_id,
+        body.shipping_choices?.[0]?.shop_id,
+        "storefront_shop_id must match shipping shop_id"
+      );
       if (checkoutByIdem.has(idem)) {
         return { status: 200, ok: true, data: { ...checkoutByIdem.get(idem), idempotent_replay: true } };
       }
@@ -930,4 +937,148 @@ test("W3B E19: ensureBuyerPhoneVerified verifies once in order, skips when verif
   });
   assert.equal(second, "existing");
   assert.deepEqual(authCalls, ["GET /api/v1/users/me"]);
+});
+
+test("Merge: seedShowcaseSites and seedChatSampleData publish idempotently and skip cleanly when unavailable", async () => {
+  const { seedShowcaseSites, seedChatSampleData } = await import(`./seed.mjs?sites=${Date.now()}`);
+  assert.equal(typeof seedShowcaseSites, "function");
+  assert.equal(typeof seedChatSampleData, "function");
+
+  const sellerByStaticShopId = new Map([
+    ["shop-bach-dang", { token: "tok-bd", backendShop: { id: "s-bd" } }],
+    ["shop-sai-gon", { token: "tok-sg", backendShop: { id: "s-sg" } }],
+    ["shop-da-nang", { token: "tok-dn", backendShop: { id: "s-dn" } }],
+    ["shop-ha-noi", { token: "tok-hn", backendShop: { id: "s-hn" } }],
+  ]);
+  const productByStaticId = new Map([
+    ["prod-at-trang", { id: "p-at-trang", name: "Áo thun Trắng", min_price_vnd: 179000, images: ["/p.jpg"] }],
+    ["prod-at-dryfit", { id: "p-at-dryfit", name: "Áo Dry-Fit", min_price_vnd: 159000, images: ["/d.jpg"] }],
+  ]);
+
+  const sitesByToken = new Map();
+  const domainsByToken = new Map();
+  let publishCount = 0;
+
+  const siteApi = async (method, path, { token, body } = {}) => {
+    if (method === "GET" && path === "/api/v1/site-templates") {
+      return {
+        status: 200,
+        ok: true,
+        data: {
+          templates: [
+            {
+              id: "tpl-craft",
+              slug: "craft-atelier",
+              config: { schema_version: 2, layout: { archetype: "editorial" }, pages: { home: {} }, theme: { radius: "sm" } },
+            },
+          ],
+        },
+      };
+    }
+    if (method === "GET" && path === "/api/v1/seller/site") {
+      const existing = sitesByToken.get(token);
+      if (!existing) return { status: 404, ok: false, data: null };
+      return { status: 200, ok: true, data: { site: existing } };
+    }
+    if (method === "GET" && path.startsWith("/api/v1/sites/by-host?host=")) {
+      const host = decodeURIComponent(path.split("host=")[1]);
+      for (const s of sitesByToken.values()) {
+        if (s.status === "PUBLISHED" && (`${s.subdomain}.nexusmart.localhost` === host || s.primary_host === host)) {
+          return { status: 200, ok: true, data: { site: s } };
+        }
+      }
+      return { status: 404, ok: false, data: null };
+    }
+    if (method === "PUT" && path === "/api/v1/seller/site/draft") {
+      const prev = sitesByToken.get(token) || {};
+      sitesByToken.set(token, { ...prev, subdomain: body.subdomain, config: body.config, status: prev.status || "DRAFT" });
+      return { status: 200, ok: true, data: { site: sitesByToken.get(token) } };
+    }
+    if (method === "POST" && path === "/api/v1/seller/site/publish") {
+      publishCount += 1;
+      const cur = sitesByToken.get(token);
+      cur.status = "PUBLISHED";
+      cur.primary_host = `${cur.subdomain}.nexusmart.localhost`;
+      return { status: 200, ok: true, data: { site: cur } };
+    }
+    if (method === "GET" && path === "/api/v1/seller/site/domains") {
+      return { status: 200, ok: true, data: { domains: domainsByToken.get(token) || [] } };
+    }
+    if (method === "POST" && path === "/api/v1/seller/site/domains") {
+      const list = domainsByToken.get(token) || [];
+      const dom = { id: `dom-${list.length + 1}`, host: body.hostname, kind: "CUSTOM", status: "PENDING" };
+      list.push(dom);
+      domainsByToken.set(token, list);
+      return { status: 201, ok: true, data: { domain: dom } };
+    }
+    if (method === "POST" && path.endsWith("/check")) {
+      const dom = (domainsByToken.get(token) || [])[0];
+      dom.status = "ACTIVE";
+      sitesByToken.get(token).primary_host = dom.host;
+      return { status: 200, ok: true, data: { domain: dom } };
+    }
+    throw new Error(`unexpected siteApi call: ${method} ${path}`);
+  };
+
+  const s1 = await seedShowcaseSites({ sellerByStaticShopId, productByStaticId, apiFn: siteApi });
+  assert.equal(s1.created, 4);
+  assert.equal(s1.existing, 0);
+  assert.equal(s1.templates.applied, 1);
+  assert.equal(s1.sites["ha-noi"].custom_domain_status, "ACTIVE");
+  assert.equal(s1.sites["da-nang"].custom_domain_status, "PENDING");
+  assert.equal(publishCount, 4);
+
+  // Second run reuses all 4 sites without republishing.
+  const s2 = await seedShowcaseSites({ sellerByStaticShopId, productByStaticId, apiFn: siteApi });
+  assert.equal(s2.created, 0);
+  assert.equal(s2.existing, 4);
+  assert.equal(publishCount, 4);
+
+  // Chat skips gracefully when service returns 503.
+  const chatSkipped = await seedChatSampleData({
+    buyerToken: "buyer-tok",
+    sellerByStaticShopId,
+    productByStaticId,
+    apiFn: async () => ({ status: 503, ok: false, data: null }),
+  });
+  assert.equal(chatSkipped.skipped, true);
+
+  // Chat seeds auto-reply + 3 messages per shop and is idempotent on replay.
+  const autoReplies = new Map();
+  const messagesByConv = new Map();
+  const chatApi = async (method, path, { token, body } = {}) => {
+    if (method === "GET" && path.startsWith("/api/v1/chat/conversations?")) {
+      return { status: 200, ok: true, data: { items: [] } };
+    }
+    if (method === "GET" && path === "/api/v1/seller/chat/auto-reply") {
+      return { status: 200, ok: true, data: { config: { enabled: Boolean(autoReplies.get(token)) } } };
+    }
+    if (method === "PUT" && path === "/api/v1/seller/chat/auto-reply") {
+      autoReplies.set(token, body);
+      return { status: 200, ok: true, data: { config: body } };
+    }
+    if (method === "POST" && path === "/api/v1/chat/conversations") {
+      return { status: 200, ok: true, data: { conversation: { id: `conv-${body.shop_id}` } } };
+    }
+    if (method === "GET" && path.includes("/messages?limit=")) {
+      const convId = path.split("/")[5];
+      return { status: 200, ok: true, data: { items: messagesByConv.get(convId) || [] } };
+    }
+    if (method === "POST" && path.endsWith("/messages")) {
+      const convId = path.split("/")[5];
+      const list = messagesByConv.get(convId) || [];
+      list.push(body);
+      messagesByConv.set(convId, list);
+      return { status: 201, ok: true, data: { message: body } };
+    }
+    throw new Error(`unexpected chatApi call: ${method} ${path}`);
+  };
+  const c1 = await seedChatSampleData({ buyerToken: "buyer-tok", sellerByStaticShopId, productByStaticId, apiFn: chatApi });
+  assert.equal(c1.skipped, false);
+  assert.equal(c1.created, 2);
+  assert.equal(c1.messagesSent, 6);
+  const c2 = await seedChatSampleData({ buyerToken: "buyer-tok", sellerByStaticShopId, productByStaticId, apiFn: chatApi });
+  assert.equal(c2.created, 0);
+  assert.equal(c2.existing, 2);
+  assert.equal(c2.messagesSent, 0);
 });

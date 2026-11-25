@@ -25,15 +25,22 @@ const (
 	maxTimestampSkew = 5 * time.Minute
 )
 
-// Payload mirrors docs/contracts.md §4.9 for POST /webhooks/shipping/{carrier}.
+// Payload mirrors docs/contracts.md §4.9 for POST /webhooks/shipping/{carrier},
+// and also accepts optional native GHTK webhook fields as fallbacks.
 type Payload struct {
-	EventID      string `json:"event_id"`
-	TrackingCode string `json:"tracking_code"`
-	OrderID      string `json:"order_id"`
-	RawStatus    string `json:"raw_status"`
-	Status       string `json:"status"`
-	Description  string `json:"description"`
-	OccurredAt   string `json:"occurred_at"`
+	EventID      string          `json:"event_id"`
+	TrackingCode string          `json:"tracking_code"`
+	OrderID      string          `json:"order_id"`
+	RawStatus    string          `json:"raw_status"`
+	Status       string          `json:"status"`
+	Description  string          `json:"description"`
+	OccurredAt   string          `json:"occurred_at"`
+	Hash         string          `json:"hash,omitempty"`
+	LabelID      string          `json:"label_id,omitempty"`
+	PartnerID    string          `json:"partner_id,omitempty"`
+	StatusID     json.RawMessage `json:"status_id,omitempty"`
+	ActionTime   string          `json:"action_time,omitempty"`
+	Reason       string          `json:"reason,omitempty"`
 }
 
 // Handler verifies HMAC-SHA256 signatures and delegates shipping carrier webhooks.
@@ -129,30 +136,53 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	eventID := strings.TrimSpace(payload.EventID)
+	if eventID == "" {
+		eventID = strings.TrimSpace(payload.Hash)
+	}
+	trackingCode := strings.TrimSpace(payload.TrackingCode)
+	if trackingCode == "" {
+		trackingCode = strings.TrimSpace(payload.LabelID)
+	}
+	orderID := strings.TrimSpace(payload.OrderID)
+	if orderID == "" {
+		orderID = strings.TrimSpace(payload.PartnerID)
+	}
 	rawStatus := strings.TrimSpace(payload.RawStatus)
 	if rawStatus == "" {
 		rawStatus = strings.TrimSpace(payload.Status)
 	}
+	if rawStatus == "" && len(payload.StatusID) > 0 {
+		rawStatus = parseStatusID(payload.StatusID)
+	}
+	description := strings.TrimSpace(payload.Description)
+	if description == "" {
+		description = strings.TrimSpace(payload.Reason)
+	}
 
+	occurredAtRaw := strings.TrimSpace(payload.OccurredAt)
+	if occurredAtRaw == "" {
+		occurredAtRaw = strings.TrimSpace(payload.ActionTime)
+	}
 	var occurredAt time.Time
-	if strings.TrimSpace(payload.OccurredAt) != "" {
-		parsed, err := time.Parse(time.RFC3339, payload.OccurredAt)
+	if occurredAtRaw != "" {
+		parsed, err := parseWebhookTime(occurredAtRaw)
 		if err != nil {
 			h.writeError(w, r, http.StatusBadRequest, "INVALID_OCCURRED_AT", "occurred_at must be RFC3339")
 			return
 		}
-		occurredAt = parsed.UTC()
+		occurredAt = parsed
 	} else {
 		occurredAt = h.nowFn()
 	}
 
 	sh, outcome, err := h.svc.HandleWebhook(ctx, service.WebhookInput{
-		EventID:      payload.EventID,
+		EventID:      eventID,
 		CarrierCode:  carrierCode,
-		TrackingCode: payload.TrackingCode,
-		OrderID:      payload.OrderID,
+		TrackingCode: trackingCode,
+		OrderID:      orderID,
 		RawStatus:    rawStatus,
-		Description:  payload.Description,
+		Description:  description,
 		OccurredAt:   occurredAt,
 	})
 	if err != nil {
@@ -162,7 +192,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, store.ErrCarrierMismatch):
 			h.logger.WarnContext(ctx, "rejected shipping webhook with mismatched carrier",
 				slog.String("carrier", carrierCode),
-				slog.String("event_id", payload.EventID),
+				slog.String("event_id", eventID),
 			)
 			h.writeError(w, r, http.StatusBadRequest, "CARRIER_MISMATCH", "webhook carrier does not match shipment carrier")
 		case errors.Is(err, store.ErrNotFound):
@@ -170,7 +200,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		default:
 			h.logger.ErrorContext(ctx, "process shipping webhook failed",
 				slog.String("carrier", carrierCode),
-				slog.String("event_id", payload.EventID),
+				slog.String("event_id", eventID),
 				slog.String("error", err.Error()),
 			)
 			h.writeError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to process shipping webhook")
@@ -187,10 +217,39 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		resp["order_id"] = sh.OrderID
 		resp["status"] = sh.Status
 		resp["tracking_code"] = sh.TrackingCode
+		if sh.Direction != "" {
+			resp["direction"] = sh.Direction
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func parseStatusID(raw json.RawMessage) string {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return ""
+	}
+	var asStr string
+	if err := json.Unmarshal(raw, &asStr); err == nil {
+		return strings.TrimSpace(asStr)
+	}
+	var asNum int64
+	if err := json.Unmarshal(raw, &asNum); err == nil {
+		return strconv.FormatInt(asNum, 10)
+	}
+	return strings.Trim(s, "\"")
+}
+
+func parseWebhookTime(raw string) (time.Time, error) {
+	if ts, err := time.Parse(time.RFC3339, raw); err == nil {
+		return ts.UTC(), nil
+	}
+	if ts, err := time.Parse("2006-01-02 15:04:05", raw); err == nil {
+		return ts.UTC(), nil
+	}
+	return time.Time{}, errors.New("invalid timestamp")
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, code int, errCode, msg string) {

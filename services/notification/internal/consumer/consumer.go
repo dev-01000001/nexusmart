@@ -6,16 +6,21 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nexusmart/core/pkg/common/jetstream"
+	"github.com/nexusmart/core/pkg/common/logger"
 	"github.com/nexusmart/core/pkg/common/telemetry"
 	"github.com/nexusmart/core/services/notification/internal/service"
 	"github.com/nexusmart/core/services/notification/internal/store"
+	otelcodes "go.opentelemetry.io/otel/codes"
 )
+
+var rawOTPFieldPattern = regexp.MustCompile(`(?i)("otp"\s*:\s*)(?:"[^"]*"|\d+)`)
 
 // EventProcessor processes a decoded canonical event.
 type EventProcessor interface {
@@ -70,10 +75,22 @@ type jsDLQPublisher struct {
 	js nats.JetStreamContext
 }
 
-func (p jsDLQPublisher) PublishDLQ(ctx context.Context, subject string, data []byte) error {
+func newDLQMessage(ctx context.Context, subject string, data []byte) *nats.Msg {
 	msg := nats.NewMsg(subject)
 	msg.Data = data
-	_, err := p.js.PublishMsg(msg, nats.Context(ctx))
+	if msg.Header == nil {
+		msg.Header = nats.Header{}
+	}
+	carrier := map[string]string{}
+	telemetry.InjectTraceHeaders(ctx, carrier)
+	for k, v := range carrier {
+		msg.Header.Set(k, v)
+	}
+	return msg
+}
+
+func (p jsDLQPublisher) PublishDLQ(ctx context.Context, subject string, data []byte) error {
+	_, err := p.js.PublishMsg(newDLQMessage(ctx, subject, data), nats.Context(ctx))
 	return err
 }
 
@@ -225,7 +242,9 @@ func (c *Consumer) HandleMessage(baseCtx context.Context, msg Message) {
 		errMsg := "malformed event envelope"
 		if err != nil {
 			errMsg = fmt.Sprintf("malformed event envelope: %v", err)
+			span.RecordError(err)
 		}
+		span.SetStatus(otelcodes.Error, errMsg)
 		if c.routeToDLQ(ctx, env.EventID, msg.Subject(), msg.Data(), errMsg, int(delivered)) {
 			_ = msg.Ack()
 			return
@@ -242,11 +261,13 @@ func (c *Consumer) HandleMessage(baseCtx context.Context, msg Message) {
 		if c.isShuttingDown(baseCtx) {
 			return
 		}
+		span.RecordError(err)
+		span.SetStatus(otelcodes.Error, err.Error())
 		c.logger.ErrorContext(ctx, "notification event processing failed",
 			slog.String("subject", msg.Subject()),
 			slog.String("event_id", env.EventID),
 			slog.Uint64("attempt", delivered),
-			slog.String("error", err.Error()),
+			slog.String("error", logger.ScrubSecrets(err.Error())),
 		)
 		if errors.Is(err, service.ErrMalformedPayload) || delivered >= c.maxAttempts {
 			if c.routeToDLQ(ctx, env.EventID, msg.Subject(), msg.Data(), err.Error(), int(delivered)) {
@@ -274,11 +295,13 @@ func (c *Consumer) HandleMessage(baseCtx context.Context, msg Message) {
 // using a detached bounded context. Returns true iff at least one durable DLQ sink succeeded.
 func (c *Consumer) routeToDLQ(ctx context.Context, eventID, subject string, raw []byte, errMsg string, attempts int) bool {
 	safeRaw := sanitizeDLQPayload(subject, raw)
+	safeErrMsg := logger.ScrubSecrets(errMsg)
+
 	c.logger.WarnContext(ctx, "routing poison message to DLQ",
 		slog.String("event_id", eventID),
 		slog.String("subject", subject),
 		slog.Int("attempts", attempts),
-		slog.String("error", errMsg),
+		slog.String("error", safeErrMsg),
 	)
 
 	dlqCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dlqWriteTimeout)
@@ -286,7 +309,7 @@ func (c *Consumer) routeToDLQ(ctx context.Context, eventID, subject string, raw 
 
 	saved := false
 	if c.dlqStore != nil {
-		if err := c.dlqStore.InsertDeadLetter(dlqCtx, eventID, subject, safeRaw, errMsg, attempts); err != nil {
+		if err := c.dlqStore.InsertDeadLetter(dlqCtx, eventID, subject, safeRaw, safeErrMsg, attempts); err != nil {
 			c.logger.ErrorContext(dlqCtx, "failed to save dead_letter_events record",
 				slog.String("event_id", eventID),
 				slog.String("error", err.Error()),
@@ -300,7 +323,7 @@ func (c *Consumer) routeToDLQ(ctx context.Context, eventID, subject string, raw 
 		dlqPayload, err := json.Marshal(map[string]any{
 			"event_id":         eventID,
 			"original_subject": subject,
-			"error":            errMsg,
+			"error":            safeErrMsg,
 			"attempts":         attempts,
 			"failed_at":        time.Now().UTC().Format(time.RFC3339),
 			"original_payload": string(safeRaw),
@@ -326,61 +349,85 @@ func (c *Consumer) routeToDLQ(ctx context.Context, eventID, subject string, raw 
 }
 
 var sensitivePayloadFields = map[string]struct{}{
-	"reset_token":    {},
-	"otp":            {},
-	"account_number": {},
+	"reset_token":     {},
+	"otp":             {},
+	"account_number":  {},
+	"street_address":  {},
+	"address_line":    {},
+	"recipient_phone": {},
+	"phone":           {},
+	"recipient_name":  {},
 }
 
 func isSensitiveSubject(subject string) bool {
 	switch strings.TrimSpace(subject) {
-	case "user.password_reset_requested", "user.registered", "user.shop_bank_account_otp", "user.phone_otp_requested":
+	case "user.password_reset_requested", "user.registered", "user.shop_bank_account_otp", "user.phone_otp_requested", "order.address_updated":
 		return true
 	default:
 		return false
 	}
 }
 
-// sanitizeDLQPayload redacts secret tokens (e.g. reset_token, otp, account_number) before persisting to dead_letter_events or NEXUSMART_DLQ.
+// sanitizeDLQPayload redacts secret tokens and recipient PII (e.g. reset_token, otp, account_number,
+// street_address, phone, email, full_name) before persisting to dead_letter_events or NEXUSMART_DLQ.
 func sanitizeDLQPayload(subject string, raw []byte) []byte {
-	var top any
-	if err := json.Unmarshal(raw, &top); err != nil {
-		if isSensitiveSubject(subject) {
-			return []byte(`{"redacted":true}`)
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err == nil {
+		sanitized := sanitizeJSONValue(decoded)
+		if out, marshalErr := json.Marshal(sanitized); marshalErr == nil {
+			return out
 		}
-		return raw
-	}
-	if !redactValue(top) {
-		return raw
-	}
-	encoded, err := json.Marshal(top)
-	if err != nil {
 		return []byte(`{"redacted":true}`)
 	}
-	return encoded
+	if isSensitiveSubject(subject) {
+		return []byte(`{"redacted":true}`)
+	}
+	scrubbed := rawOTPFieldPattern.ReplaceAllString(string(raw), `${1}"[REDACTED]"`)
+	return []byte(logger.ScrubSecrets(scrubbed))
 }
 
-func redactValue(v any) bool {
-	changed := false
-	switch node := v.(type) {
+func sanitizeJSONValue(v any) any {
+	switch val := v.(type) {
 	case map[string]any:
-		for k, val := range node {
+		out := make(map[string]any, len(val))
+		for k, item := range val {
 			if _, sensitive := sensitivePayloadFields[strings.ToLower(strings.TrimSpace(k))]; sensitive {
-				node[k] = "[REDACTED]"
-				changed = true
+				out[k] = "[REDACTED]"
 				continue
 			}
-			if redactValue(val) {
-				changed = true
+			switch child := item.(type) {
+			case map[string]any, []any:
+				out[k] = sanitizeJSONValue(child)
+			case string:
+				out[k] = logger.RedactValue(k, child)
+			case nil:
+				out[k] = nil
+			default:
+				lower := strings.ToLower(k)
+				switch {
+				case strings.Contains(lower, "phone"):
+					out[k] = logger.MaskPhone(fmt.Sprint(child))
+				case strings.Contains(lower, "email"):
+					out[k] = logger.MaskEmail(fmt.Sprint(child))
+				case logger.RedactValue(k, "probe") == "[REDACTED]":
+					out[k] = "[REDACTED]"
+				default:
+					out[k] = child
+				}
 			}
 		}
+		return out
 	case []any:
-		for _, item := range node {
-			if redactValue(item) {
-				changed = true
-			}
+		out := make([]any, len(val))
+		for i, item := range val {
+			out[i] = sanitizeJSONValue(item)
 		}
+		return out
+	case string:
+		return logger.ScrubSecrets(val)
+	default:
+		return v
 	}
-	return changed
 }
 
 type natsMessageAdapter struct {

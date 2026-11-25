@@ -43,6 +43,7 @@ type MemoryStore struct {
 	outbox               []db.OutboxEvent
 	processedEvents      map[string]db.ProcessedEvent
 	deadLetters          []db.DeadLetterEvent
+	addressChanges       map[string]db.OrderAddressChange
 }
 
 // NewMemoryStore initializes an empty MemoryStore.
@@ -58,6 +59,7 @@ func NewMemoryStore() *MemoryStore {
 		returnRequests:       make(map[string]db.ReturnRequest),
 		returnEvents:         make(map[string][]db.ReturnEvent),
 		processedEvents:      make(map[string]db.ProcessedEvent),
+		addressChanges:       make(map[string]db.OrderAddressChange),
 	}
 }
 
@@ -162,6 +164,15 @@ func (m *MemoryStore) SetOrderPaymentExpiresAt(orderID string, t time.Time) {
 		ord.PaymentExpiresAt = &ts
 		m.orders[orderID] = ord
 	}
+}
+
+// SeedLegacyOrder inserts a raw order (potentially with empty SalesChannel simulating a pre-migration row) for tests.
+func (m *MemoryStore) SeedLegacyOrder(group db.CheckoutGroup, ord db.Order, items []db.OrderItem) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.groups[group.ID] = group
+	m.orders[ord.ID] = ord
+	m.items[ord.ID] = append([]db.OrderItem(nil), items...)
 }
 
 // SetCheckoutGroupUpdatedAt overrides updated_at for testing stale checkout group cleanup.
@@ -287,16 +298,22 @@ func (m *MemoryStore) CreateCheckoutGroup(_ context.Context, arg db.CreateChecko
 		}
 	}
 	now := time.Now().UTC()
+	ch := arg.SalesChannel
+	if ch == "" {
+		ch = "MARKETPLACE"
+	}
 	g := db.CheckoutGroup{
-		ID:              arg.ID,
-		BuyerID:         arg.BuyerID,
-		IdempotencyKey:  arg.IdempotencyKey,
-		RequestHash:     arg.RequestHash,
-		Status:          arg.Status,
-		PaymentMethod:   arg.PaymentMethod,
-		TotalPayableVND: arg.TotalPayableVND,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:               arg.ID,
+		BuyerID:          arg.BuyerID,
+		IdempotencyKey:   arg.IdempotencyKey,
+		RequestHash:      arg.RequestHash,
+		Status:           arg.Status,
+		PaymentMethod:    arg.PaymentMethod,
+		TotalPayableVND:  arg.TotalPayableVND,
+		SalesChannel:     ch,
+		StorefrontShopID: arg.StorefrontShopID,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	m.groups[g.ID] = g
 	cp := g
@@ -381,6 +398,10 @@ func (m *MemoryStore) PersistCheckoutBatch(_ context.Context, batch CheckoutBatc
 	out := make([]OrderAggregate, 0, len(batch.Orders))
 
 	for _, rec := range batch.Orders {
+		ordChannel := rec.Order.SalesChannel
+		if ordChannel == "" {
+			ordChannel = "MARKETPLACE"
+		}
 		ord := db.Order{
 			ID:                         rec.Order.ID,
 			OrderCode:                  rec.Order.OrderCode,
@@ -412,6 +433,8 @@ func (m *MemoryStore) PersistCheckoutBatch(_ context.Context, batch CheckoutBatc
 			ShippingAddressJSON:        rec.Order.ShippingAddressJSON,
 			PaymentExpiresAt:           rec.Order.PaymentExpiresAt,
 			ConfirmedAt:                rec.Order.ConfirmedAt,
+			SalesChannel:               ordChannel,
+			StorefrontShopID:           rec.Order.StorefrontShopID,
 			CreatedAt:                  now,
 			UpdatedAt:                  now,
 		}
@@ -830,12 +853,13 @@ func (m *MemoryStore) UpdateGroupPaymentOnRetry(_ context.Context, params RetryP
 				CreatedAt:  now,
 			})
 			payloadBytes, err := json.Marshal(events.OrderConfirmedPayload{
-				OrderID:         ord.ID,
-				OrderCode:       ord.OrderCode,
-				BuyerID:         ord.BuyerID,
-				ShopID:          ord.ShopID,
-				PaymentMethod:   ord.PaymentMethod,
-				TotalPayableVND: ord.TotalPayableVND,
+				OrderID:          ord.ID,
+				OrderCode:        ord.OrderCode,
+				BuyerID:          ord.BuyerID,
+				ShopID:           ord.ShopID,
+				StorefrontShopID: ord.StorefrontShopID,
+				PaymentMethod:    ord.PaymentMethod,
+				TotalPayableVND:  ord.TotalPayableVND,
 			})
 			if err != nil {
 				return fmt.Errorf("marshal order.confirmed on COD switch: %w", err)
@@ -1036,39 +1060,18 @@ func (m *MemoryStore) ListOrdersByCheckoutGroup(_ context.Context, checkoutGroup
 	return aggs, nil
 }
 
-func (m *MemoryStore) ListOrdersFiltered(_ context.Context, buyerID, shopID, status string, limit, offset int32) ([]OrderAggregate, int64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var matched []OrderAggregate
-	for _, ord := range m.orders {
-		if buyerID != "" && ord.BuyerID != buyerID {
-			continue
-		}
-		if shopID != "" && ord.ShopID != shopID {
-			continue
-		}
-		if status != "" && ord.Status != status {
-			continue
-		}
-		agg, _ := m.getOrderLocked(ord.ID)
-		matched = append(matched, *agg)
-	}
-	sort.Slice(matched, func(i, j int) bool {
-		if !matched[i].Order.CreatedAt.Equal(matched[j].Order.CreatedAt) {
-			return matched[i].Order.CreatedAt.After(matched[j].Order.CreatedAt)
-		}
-		return matched[i].Order.ID > matched[j].Order.ID
+func (m *MemoryStore) ListOrdersFiltered(ctx context.Context, buyerID, shopID, status string, limit, offset int32) ([]OrderAggregate, int64, error) {
+	res, err := m.ListOrdersWithFilter(ctx, OrderListFilter{
+		BuyerID: buyerID,
+		ShopID:  shopID,
+		Status:  status,
+		Limit:   limit,
+		Offset:  offset,
 	})
-	total := int64(len(matched))
-	start := int(offset)
-	if start >= len(matched) {
-		return []OrderAggregate{}, total, nil
+	if err != nil {
+		return nil, 0, err
 	}
-	end := start + int(limit)
-	if end > len(matched) {
-		end = len(matched)
-	}
-	return matched[start:end], total, nil
+	return res.Orders, res.Total, nil
 }
 
 func (m *MemoryStore) GetOrderTimeline(_ context.Context, orderID string) ([]db.OrderTimelineEvent, error) {
@@ -1250,22 +1253,24 @@ func (m *MemoryStore) TransitionOrdersPaymentResult(_ context.Context, params Pa
 		if targetStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
 			eventType = events.SubjectOrderConfirmed
 			payloadBytes, _ = json.Marshal(events.OrderConfirmedPayload{
-				OrderID:         ord.ID,
-				OrderCode:       ord.OrderCode,
-				BuyerID:         ord.BuyerID,
-				ShopID:          ord.ShopID,
-				PaymentMethod:   ord.PaymentMethod,
-				TotalPayableVND: ord.TotalPayableVND,
+				OrderID:          ord.ID,
+				OrderCode:        ord.OrderCode,
+				BuyerID:          ord.BuyerID,
+				ShopID:           ord.ShopID,
+				StorefrontShopID: ord.StorefrontShopID,
+				PaymentMethod:    ord.PaymentMethod,
+				TotalPayableVND:  ord.TotalPayableVND,
 			})
 		} else {
 			eventType = events.SubjectOrderCancelled
 			payloadBytes, _ = json.Marshal(events.OrderCancelledPayload{
-				OrderID:   ord.ID,
-				OrderCode: ord.OrderCode,
-				BuyerID:   ord.BuyerID,
-				ShopID:    ord.ShopID,
-				Reason:    note,
-				WasPaid:   false,
+				OrderID:          ord.ID,
+				OrderCode:        ord.OrderCode,
+				BuyerID:          ord.BuyerID,
+				ShopID:           ord.ShopID,
+				StorefrontShopID: ord.StorefrontShopID,
+				Reason:           note,
+				WasPaid:          false,
 			})
 		}
 		m.appendOutboxLocked(db.OutboxEvent{
@@ -1512,6 +1517,9 @@ func (m *MemoryStore) MarkOrderShipmentCreating(_ context.Context, orderID strin
 	cur := statemachine.StringToStatus(ord.Status)
 	if cur != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED && cur != orderv1.OrderStatus_ORDER_STATUS_PREPARING {
 		return "", fmt.Errorf("%w: cannot create shipment from status %s", statemachine.ErrInvalidTransition, statemachine.StatusToString(cur))
+	}
+	if m.hasOpenAddressChangeLocked(ord.ID) {
+		return "", ErrAddressChangeInProgress
 	}
 	token := uuid.NewString()
 	markedAt := now
@@ -2168,12 +2176,13 @@ func (m *MemoryStore) transitionOrderToShippingLocked(ord db.Order, carrierCode,
 		CreatedAt:  now,
 	})
 	payloadBytes, _ := json.Marshal(events.OrderShippedPayload{
-		OrderID:      ord.ID,
-		OrderCode:    ord.OrderCode,
-		BuyerID:      ord.BuyerID,
-		ShopID:       ord.ShopID,
-		CarrierCode:  ord.CarrierCode,
-		TrackingCode: ord.TrackingCode,
+		OrderID:          ord.ID,
+		OrderCode:        ord.OrderCode,
+		BuyerID:          ord.BuyerID,
+		ShopID:           ord.ShopID,
+		StorefrontShopID: ord.StorefrontShopID,
+		CarrierCode:      ord.CarrierCode,
+		TrackingCode:     ord.TrackingCode,
 	})
 	m.appendOutboxLocked(db.OutboxEvent{
 		ID:          uuid.NewString(),
@@ -2244,6 +2253,11 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 			outcome.NeedsOrphanShipmentCancel = true
 		}
 		outcome.Order, _ = m.getOrderLocked(ord.ID)
+		return outcome, nil
+	}
+
+	// G3: Suppress delayed shipment.updated events for an old shipment cancelled by UpdateOrderAddress.
+	if evTracking != "" && m.isCancelledAddressChangeTrackingLocked(ord.ID, evTracking) {
 		return outcome, nil
 	}
 
@@ -2424,12 +2438,13 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 				deliveredCarrier = evCarrier
 			}
 			payloadBytes, _ := json.Marshal(events.OrderDeliveredPayload{
-				OrderID:      ord.ID,
-				OrderCode:    ord.OrderCode,
-				BuyerID:      ord.BuyerID,
-				ShopID:       ord.ShopID,
-				CarrierCode:  deliveredCarrier,
-				TrackingCode: ord.TrackingCode,
+				OrderID:          ord.ID,
+				OrderCode:        ord.OrderCode,
+				BuyerID:          ord.BuyerID,
+				ShopID:           ord.ShopID,
+				StorefrontShopID: ord.StorefrontShopID,
+				CarrierCode:      deliveredCarrier,
+				TrackingCode:     ord.TrackingCode,
 			})
 			m.appendOutboxLocked(db.OutboxEvent{
 				ID:          uuid.NewString(),
@@ -2494,16 +2509,17 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 				CreatedAt:  now,
 			})
 			payloadBytes, _ := json.Marshal(events.OrderReturnedPayload{
-				OrderID:         ord.ID,
-				OrderCode:       ord.OrderCode,
-				CheckoutGroupID: ord.CheckoutGroupID,
-				BuyerID:         ord.BuyerID,
-				ShopID:          ord.ShopID,
-				PaymentMethod:   ord.PaymentMethod,
-				FromStatus:      statemachine.StatusToString(cur),
-				TotalPayableVND: ord.TotalPayableVND,
-				Reason:          note,
-				WasPaid:         wasPaid,
+				OrderID:          ord.ID,
+				OrderCode:        ord.OrderCode,
+				CheckoutGroupID:  ord.CheckoutGroupID,
+				BuyerID:          ord.BuyerID,
+				ShopID:           ord.ShopID,
+				StorefrontShopID: ord.StorefrontShopID,
+				PaymentMethod:    ord.PaymentMethod,
+				FromStatus:       statemachine.StatusToString(cur),
+				TotalPayableVND:  ord.TotalPayableVND,
+				Reason:           note,
+				WasPaid:          wasPaid,
 			})
 			m.appendOutboxLocked(db.OutboxEvent{
 				ID:          uuid.NewString(),

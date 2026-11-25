@@ -1,8 +1,10 @@
 -- name: CreateCheckoutGroup :one
 INSERT INTO checkout_groups (
-    id, buyer_id, idempotency_key, request_hash, status, payment_method, total_payable_vnd
+    id, buyer_id, idempotency_key, request_hash, status, payment_method, total_payable_vnd,
+    sales_channel, storefront_shop_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7
+    $1, $2, $3, $4, $5, $6, $7,
+    $8, $9
 )
 RETURNING *;
 
@@ -176,7 +178,8 @@ INSERT INTO orders (
     platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd,
     shipping_fee_vnd, commission_vnd, payment_fee_vnd, payment_fee_bps, total_payable_vnd,
     carrier_code, service_code, tracking_code, label_url, cancel_reason,
-    shipping_address_json, payment_expires_at, confirmed_at
+    shipping_address_json, payment_expires_at, confirmed_at,
+    sales_channel, storefront_shop_id
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
     $7, $8, $9,
@@ -185,7 +188,8 @@ INSERT INTO orders (
     $15, $16, $17,
     $18, $19, $20, $21, $22,
     $23, $24, $25, $26, $27,
-    $28, $29, $30
+    $28, $29, $30,
+    $31, $32
 )
 RETURNING *;
 
@@ -215,6 +219,16 @@ RETURNING *;
 SELECT *
 FROM orders
 WHERE id = $1;
+
+-- name: GetOrderByCode :one
+SELECT *
+FROM orders
+WHERE order_code = $1;
+
+-- name: ListOrdersByIDs :many
+SELECT *
+FROM orders
+WHERE id = ANY(sqlc.arg(ids)::text[]);
 
 -- name: GetOrderByIDForUpdate :one
 SELECT *
@@ -253,6 +267,20 @@ FROM orders
 WHERE (sqlc.arg(buyer_id)::text = '' OR buyer_id = sqlc.arg(buyer_id)::text)
   AND (sqlc.arg(shop_id)::text = '' OR shop_id = sqlc.arg(shop_id)::text)
   AND (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text)
+  AND (cardinality(sqlc.arg(statuses)::text[]) = 0 OR status = ANY(sqlc.arg(statuses)::text[]))
+  AND (sqlc.arg(carrier_code)::text = '' OR carrier_code = sqlc.arg(carrier_code)::text)
+  AND (sqlc.arg(payment_method)::text = '' OR payment_method = sqlc.arg(payment_method)::text)
+  AND (
+      sqlc.arg(keyword_pattern)::text = ''
+      OR order_code ILIKE sqlc.arg(keyword_pattern)::text ESCAPE '\'
+      OR COALESCE(shipping_address_json->>'recipient_name', '') ILIKE sqlc.arg(keyword_pattern)::text ESCAPE '\'
+  )
+  AND (
+      sqlc.narg(due_cutoff)::timestamptz IS NULL
+      OR COALESCE(confirmed_at, created_at) <= sqlc.narg(due_cutoff)::timestamptz
+  )
+  AND (sqlc.arg(sales_channel)::text = '' OR sales_channel = sqlc.arg(sales_channel)::text)
+  AND (sqlc.arg(storefront_shop_id)::text = '' OR storefront_shop_id = sqlc.arg(storefront_shop_id)::text)
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 
@@ -261,7 +289,46 @@ SELECT COUNT(*)
 FROM orders
 WHERE (sqlc.arg(buyer_id)::text = '' OR buyer_id = sqlc.arg(buyer_id)::text)
   AND (sqlc.arg(shop_id)::text = '' OR shop_id = sqlc.arg(shop_id)::text)
-  AND (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text);
+  AND (sqlc.arg(status)::text = '' OR status = sqlc.arg(status)::text)
+  AND (cardinality(sqlc.arg(statuses)::text[]) = 0 OR status = ANY(sqlc.arg(statuses)::text[]))
+  AND (sqlc.arg(carrier_code)::text = '' OR carrier_code = sqlc.arg(carrier_code)::text)
+  AND (sqlc.arg(payment_method)::text = '' OR payment_method = sqlc.arg(payment_method)::text)
+  AND (
+      sqlc.arg(keyword_pattern)::text = ''
+      OR order_code ILIKE sqlc.arg(keyword_pattern)::text ESCAPE '\'
+      OR COALESCE(shipping_address_json->>'recipient_name', '') ILIKE sqlc.arg(keyword_pattern)::text ESCAPE '\'
+  )
+  AND (
+      sqlc.narg(due_cutoff)::timestamptz IS NULL
+      OR COALESCE(confirmed_at, created_at) <= sqlc.narg(due_cutoff)::timestamptz
+  )
+  AND (sqlc.arg(sales_channel)::text = '' OR sales_channel = sqlc.arg(sales_channel)::text)
+  AND (sqlc.arg(storefront_shop_id)::text = '' OR storefront_shop_id = sqlc.arg(storefront_shop_id)::text);
+
+-- name: CountOrdersByStatus :many
+SELECT status, COUNT(*)::bigint AS count
+FROM orders
+WHERE (sqlc.arg(buyer_id)::text = '' OR buyer_id = sqlc.arg(buyer_id)::text)
+  AND (sqlc.arg(shop_id)::text = '' OR shop_id = sqlc.arg(shop_id)::text)
+  AND (sqlc.arg(sales_channel)::text = '' OR sales_channel = sqlc.arg(sales_channel)::text)
+  AND (sqlc.arg(storefront_shop_id)::text = '' OR storefront_shop_id = sqlc.arg(storefront_shop_id)::text)
+GROUP BY status
+ORDER BY status ASC;
+
+-- name: GetPickingListByOrderIDs :many
+SELECT oi.sku_id,
+       MAX(oi.product_id)::text AS product_id,
+       MAX(oi.product_name)::text AS product_name,
+       MAX(oi.sku_name)::text AS sku_name,
+       COALESCE(SUM(oi.quantity), 0)::int AS total_quantity,
+       COUNT(DISTINCT oi.order_id)::int AS order_count,
+       ARRAY_AGG(DISTINCT o.order_code ORDER BY o.order_code)::text[] AS order_codes
+FROM orders o
+JOIN order_items oi ON oi.order_id = o.id
+WHERE o.shop_id = $1
+  AND o.id = ANY(sqlc.arg(order_ids)::text[])
+GROUP BY oi.sku_id
+ORDER BY oi.sku_id ASC;
 
 -- name: AttachCheckoutPaymentToOrders :exec
 UPDATE orders
@@ -1051,3 +1118,170 @@ FROM orders
 WHERE buyer_id = $1
   AND payment_method = 'COD'
   AND status IN ('COMPLETED', 'RETURNED');
+
+-- Wave 3b-3 (A8: G1-G3): Durable order_address_changes intent queries.
+
+-- name: InsertOrderAddressChange :one
+INSERT INTO order_address_changes (
+    id, order_id, buyer_id, idempotency_key, request_hash, new_address_json,
+    carrier_code, service_code, old_carrier_code, old_service_code, old_tracking_code,
+    had_shipment, shipment_cancelled,
+    old_shipping_fee_vnd, new_shipping_fee_vnd, applied_shipping_fee_vnd,
+    old_total_payable_vnd, new_total_payable_vnd,
+    fee_adjusted, needs_cod_adjust, cod_adjusted,
+    state, next_attempt_at, claimed_until, claim_token,
+    trace_id, traceparent, created_at, updated_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10, $11,
+    $12, $13,
+    $14, $15, $16,
+    $17, $18,
+    $19, $20, $21,
+    $22, $23, $24, $25,
+    $26, $27, $28, $29
+)
+RETURNING *;
+
+-- name: GetOrderAddressChangeByID :one
+SELECT *
+FROM order_address_changes
+WHERE id = $1;
+
+-- name: GetOrderAddressChangeByIDForUpdate :one
+SELECT *
+FROM order_address_changes
+WHERE id = $1
+FOR UPDATE;
+
+-- name: GetOpenOrderAddressChangeByOrderID :one
+SELECT *
+FROM order_address_changes
+WHERE order_id = $1
+  AND state NOT IN ('COMPLETED', 'ABORTED')
+LIMIT 1;
+
+-- name: GetOrderAddressChangeByOrderAndIdemKey :one
+SELECT *
+FROM order_address_changes
+WHERE order_id = $1
+  AND idempotency_key = $2
+  AND idempotency_key <> ''
+LIMIT 1;
+
+-- name: HasOpenOrderAddressChange :one
+SELECT EXISTS (
+    SELECT 1
+    FROM order_address_changes
+    WHERE order_id = $1
+      AND state NOT IN ('COMPLETED', 'ABORTED')
+);
+
+-- name: ListOpenOrderAddressChangesByOrderIDs :many
+SELECT *
+FROM order_address_changes
+WHERE order_id = ANY(sqlc.arg(order_ids)::text[])
+  AND state NOT IN ('COMPLETED', 'ABORTED');
+
+-- name: IsCancelledAddressChangeTracking :one
+SELECT EXISTS (
+    SELECT 1
+    FROM order_address_changes
+    WHERE order_id = $1
+      AND shipment_cancelled = TRUE
+      AND old_tracking_code <> ''
+      AND LOWER(old_tracking_code) = LOWER(sqlc.arg(tracking_code)::text)
+);
+
+-- name: UpdateOrderAddressChangeState :one
+UPDATE order_address_changes
+SET state = $2,
+    shipment_cancelled = $3,
+    cod_adjusted = $4,
+    shipment_recreated = $5,
+    shipment_queued = $6,
+    shipment_job_id = $7,
+    new_tracking_code = $8,
+    outbox_emitted = $9,
+    abort_code = $10,
+    last_error = $11,
+    claimed_until = $12,
+    claim_token = $13,
+    updated_at = $14
+WHERE id = $1
+  AND claim_token = sqlc.arg(expected_claim_token)::text
+RETURNING *;
+
+-- name: ReleaseOrderAddressChangeWithBackoff :execrows
+UPDATE order_address_changes
+SET attempts = attempts + 1,
+    next_attempt_at = $2,
+    claimed_until = NULL,
+    claim_token = '',
+    last_error = $3,
+    updated_at = $4
+WHERE id = $1
+  AND claim_token = sqlc.arg(expected_claim_token)::text
+  AND state NOT IN ('COMPLETED', 'ABORTED');
+
+-- name: RenewOrderAddressChangeLease :one
+UPDATE order_address_changes
+SET claimed_until = $2,
+    updated_at = $3
+WHERE id = $1
+  AND claim_token = sqlc.arg(expected_claim_token)::text
+  AND state NOT IN ('COMPLETED', 'ABORTED')
+RETURNING *;
+
+-- name: ClaimOrderAddressChangeByID :one
+UPDATE order_address_changes
+SET claimed_until = $2,
+    claim_token = $3,
+    updated_at = $4
+WHERE id = $1
+  AND state NOT IN ('COMPLETED', 'ABORTED')
+  AND (claimed_until IS NULL OR claimed_until <= $4)
+RETURNING *;
+
+-- name: ClaimDueOrderAddressChanges :many
+WITH due AS (
+    SELECT id
+    FROM order_address_changes
+    WHERE state NOT IN ('COMPLETED', 'ABORTED')
+      AND next_attempt_at <= sqlc.arg(now)::timestamptz
+      AND (claimed_until IS NULL OR claimed_until <= sqlc.arg(now)::timestamptz)
+      AND (cardinality(sqlc.arg(exclude_ids)::text[]) = 0 OR NOT (id = ANY(sqlc.arg(exclude_ids)::text[])))
+    ORDER BY next_attempt_at ASC, created_at ASC, id ASC
+    LIMIT sqlc.arg(batch_limit)::int
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE order_address_changes c
+SET claimed_until = sqlc.arg(now)::timestamptz + (sqlc.arg(lease_ms)::bigint * INTERVAL '1 millisecond'),
+    claim_token = sqlc.arg(claim_token)::text,
+    updated_at = sqlc.arg(now)::timestamptz
+FROM due
+WHERE c.id = due.id
+RETURNING c.*;
+
+-- name: UpdateOrderAddressAndFees :one
+UPDATE orders
+SET shipping_address_json = $2,
+    shipping_fee_vnd = $3,
+    total_payable_vnd = $4,
+    carrier_code = $5,
+    service_code = $6,
+    tracking_code = '',
+    label_url = '',
+    shipment_job_status = '',
+    pending_shipment_cancel = FALSE,
+    pending_shipment_cancel_at = NULL,
+    pending_shipment_cancel_token = '',
+    updated_at = $7
+WHERE id = $1
+RETURNING *;
+
+-- name: AdjustCheckoutGroupTotalPayable :exec
+UPDATE checkout_groups
+SET total_payable_vnd = GREATEST(0, total_payable_vnd + sqlc.arg(delta_vnd)::bigint),
+    updated_at = NOW()
+WHERE id = $1;

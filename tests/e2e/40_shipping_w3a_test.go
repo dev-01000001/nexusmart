@@ -94,6 +94,7 @@ func TestE2E_ShippingWave3a(t *testing.T) {
 		coResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "shpw3a-co-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			FromCart:      false,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},

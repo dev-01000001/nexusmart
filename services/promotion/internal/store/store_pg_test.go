@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -1054,13 +1055,13 @@ func TestPGStore_W3A_R2_LockedSync_ZeroUsage_And_004Idempotent(t *testing.T) {
 		t.Fatalf("promotion_user_usage missing expected rows: relZeroV=%v relZeroF=%v actOneV=%v", sawRelZeroV, sawRelZeroF, sawActOneV)
 	}
 
-	// 5. Manually re-running 004_w3a_per_user_usage_and_sync.sql is completely safe and preserves exact usage counts.
-	sql004, err := os.ReadFile("migrations/004_w3a_per_user_usage_and_sync.sql")
+	// 5. Manually re-running 005_w3a_per_user_usage_and_sync.sql is completely safe and preserves exact usage counts.
+	sql004, err := os.ReadFile("migrations/005_w3a_per_user_usage_and_sync.sql")
 	if err != nil {
-		t.Fatalf("read 004 migration: %v", err)
+		t.Fatalf("read 005 migration: %v", err)
 	}
 	if _, err := pool.Exec(ctx, string(sql004)); err != nil {
-		t.Fatalf("manual re-exec of 004_w3a_per_user_usage_and_sync.sql failed: %v", err)
+		t.Fatalf("manual re-exec of 005_w3a_per_user_usage_and_sync.sql failed: %v", err)
 	}
 	if q, err := pgUserUsageQty(ctx, st, domain.UsageKindVoucher, v.ID, buyerRel); err != nil || q != 0 {
 		t.Fatalf("after 004 re-exec: buyerRel voucher used_qty=%d err=%v (want 0)", q, err)
@@ -1113,9 +1114,9 @@ func TestPGStore_W3A_R4_004BackfillIncludesReleased(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sql004, err := os.ReadFile("migrations/004_w3a_per_user_usage_and_sync.sql")
+	sql004, err := os.ReadFile("migrations/005_w3a_per_user_usage_and_sync.sql")
 	if err != nil {
-		t.Fatalf("read 004 migration: %v", err)
+		t.Fatalf("read 005 migration: %v", err)
 	}
 	if _, err := pool.Exec(ctx, string(sql004)); err != nil {
 		t.Fatalf("re-exec 004: %v", err)
@@ -1167,4 +1168,300 @@ func pgUserUsageQty(ctx context.Context, st store.Store, kind, targetID, userID 
 		return 0, err
 	}
 	return m[k], nil
+}
+
+// TestPGStore_Phase0BUpgrade_NullJSONBAndBackfill simulates upgrading a live phase-0b database
+// (001-002 applied, reservations carrying Go nil-slice 'null'::jsonb alongside empty/populated arrays)
+// through the real migrator (003-007 applied twice) and verifies backfill counts and JSONB array invariants.
+func TestPGStore_Phase0BUpgrade_NullJSONBAndBackfill(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_PROMOTION_DB_URL"))
+	if dsn == "" {
+		t.Skip("set TEST_PROMOTION_DB_URL to run real Postgres tests")
+	}
+	ctx := context.Background()
+
+	adminPool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgxpool.New (admin): %v", err)
+	}
+	t.Cleanup(adminPool.Close)
+
+	schema := "phase0b_upgrade_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+	identSchema := pgx.Identifier{schema}.Sanitize()
+	if _, err := adminPool.Exec(ctx, "CREATE SCHEMA "+identSchema); err != nil {
+		t.Fatalf("create isolated schema %s: %v", schema, err)
+	}
+	t.Cleanup(func() {
+		_, _ = adminPool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+identSchema+" CASCADE")
+	})
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("pgxpool.ParseConfig: %v", err)
+	}
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = make(map[string]string)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("pgxpool.NewWithConfig: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	// 1. Apply phase-0b migrations 001 and 002 directly (no promotion_schema_migrations table yet).
+	for _, file := range []string{
+		"migrations/001_init.sql",
+		"migrations/002_flash_sale_window_status.sql",
+	} {
+		sqlBytes, readErr := os.ReadFile(file)
+		if readErr != nil {
+			t.Fatalf("read %s: %v", file, readErr)
+		}
+		if _, execErr := pool.Exec(ctx, string(sqlBytes)); execErr != nil {
+			t.Fatalf("exec %s: %v", file, execErr)
+		}
+	}
+
+	now := time.Now().UTC()
+	startsAt := now.Add(-time.Hour)
+	endsAt := now.Add(2 * time.Hour)
+
+	const (
+		shopID     = "shop-0b-1"
+		vShopID    = "v-0b-shop"
+		vPlatID    = "v-0b-plat"
+		fsID       = "fs-0b-1"
+		fiID       = "fi-0b-1"
+		uNull      = "u-0b-null"
+		uEmpty     = "u-0b-empty"
+		uFlashOnly = "u-0b-flash-only"
+		uMixed     = "u-0b-mixed"
+		uRelOnly   = "u-0b-rel-only"
+	)
+
+	// 2. Seed phase-0b vouchers, flash sale, flash sale item, and reservations (using only phase-0b columns).
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO vouchers (
+			id, code, name, scope, shop_id, discount_type, value_vnd, discount_percent,
+			max_discount_vnd, min_order_vnd, quota, used_count, per_user_limit,
+			budget_vnd, used_budget_vnd, starts_at, ends_at, is_active, created_by
+		) VALUES
+			($1, 'SHOP0B', 'Shop 0b', 'SHOP', $3, 'FIXED', 10000, 0, 0, 0, 100, 1, 5, 0, 0, $4, $5, TRUE, 'seller-1'),
+			($2, 'PLAT0B', 'Plat 0b', 'PLATFORM', '', 'FIXED', 20000, 0, 0, 0, 100, 1, 5, 100000, 20000, $4, $5, TRUE, 'admin-1')
+	`, vShopID, vPlatID, shopID, startsAt, endsAt); err != nil {
+		t.Fatalf("seed phase-0b vouchers: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO flash_sales (id, name, starts_at, ends_at, status, created_by)
+		VALUES ($1, 'Flash 0b', $2, $3, 'ACTIVE', 'admin-1')
+	`, fsID, startsAt, endsAt); err != nil {
+		t.Fatalf("seed phase-0b flash_sales: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO flash_sale_items (
+			id, flash_sale_id, shop_id, sku_id, flash_price_vnd, total_slots, remaining_slots, per_user_limit, status
+		) VALUES ($1, $2, $3, 'sku-0b-1', 120000, 50, 47, 5, 'APPROVED')
+	`, fiID, fsID, shopID); err != nil {
+		t.Fatalf("seed phase-0b flash_sale_items: %v", err)
+	}
+
+	seedReservations := []struct {
+		orderID      string
+		userID       string
+		status       string
+		vouchersJSON string
+		flashJSON    string
+	}{
+		// Phase-0b nil slices marshaled to JSON 'null' (both RESERVED and RELEASED).
+		{"ord-0b-null-res", uNull, "RESERVED", "null", "null"},
+		{"ord-0b-null-rel", uNull, "RELEASED", "null", "null"},
+		// Explicit empty JSON arrays.
+		{"ord-0b-empty-res", uEmpty, "RESERVED", "[]", "[]"},
+		// Live phase-0b common case: vouchers_json = 'null', flash_sale_items_json has an item (without shop_id).
+		{"ord-0b-flash-only", uFlashOnly, "RESERVED", "null", `[{"flash_sale_item_id":"` + fiID + `","sku_id":"sku-0b-1","quantity":1}]`},
+		// RESERVED with both SHOP and PLATFORM vouchers + flash item (qty=2).
+		{
+			"ord-0b-mixed-res", uMixed, "RESERVED",
+			`[{"voucher_id":"` + vShopID + `","scope":"SHOP","shop_id":"` + shopID + `","discount_vnd":10000,"has_budget":false},{"voucher_id":"` + vPlatID + `","scope":"PLATFORM","discount_vnd":20000,"has_budget":true}]`,
+			`[{"flash_sale_item_id":"` + fiID + `","sku_id":"sku-0b-1","quantity":2,"shop_id":"` + shopID + `"}]`,
+		},
+		// RELEASED for same user uMixed: must NOT add to uMixed's RESERVED count.
+		{
+			"ord-0b-mixed-rel", uMixed, "RELEASED",
+			`[{"voucher_id":"` + vShopID + `","scope":"SHOP","shop_id":"` + shopID + `","discount_vnd":10000,"has_budget":false}]`,
+			`[{"flash_sale_item_id":"` + fiID + `","sku_id":"sku-0b-1","quantity":3,"shop_id":"` + shopID + `"}]`,
+		},
+		// RELEASED-only user: must backfill used_qty = 0 rows for SHOP voucher, PLATFORM voucher, and flash item.
+		{
+			"ord-0b-rel-only", uRelOnly, "RELEASED",
+			`[{"voucher_id":"` + vShopID + `","scope":"SHOP","shop_id":"` + shopID + `","discount_vnd":10000,"has_budget":false},{"voucher_id":"` + vPlatID + `","scope":"PLATFORM","discount_vnd":20000,"has_budget":true}]`,
+			`[{"flash_sale_item_id":"` + fiID + `","sku_id":"sku-0b-1","quantity":1}]`,
+		},
+	}
+	for _, r := range seedReservations {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO promotion_reservations (
+				order_id, user_id, status, coins_used, vouchers_json, flash_sale_items_json, breakdown_json
+			) VALUES ($1, $2, $3, 0, $4::jsonb, $5::jsonb, '{}'::jsonb)
+		`, r.orderID, r.userID, r.status, r.vouchersJSON, r.flashJSON); err != nil {
+			t.Fatalf("seed reservation %s: %v", r.orderID, err)
+		}
+	}
+
+	assertUpgradedState := func(phase string) {
+		t.Helper()
+
+		type usageKey struct {
+			kind, targetID, userID string
+		}
+		wantUsage := map[usageKey]int32{
+			{domain.UsageKindVoucher, vShopID, uMixed}:   1,
+			{domain.UsageKindVoucher, vPlatID, uMixed}:   1,
+			{domain.UsageKindFlash, fiID, uMixed}:        2,
+			{domain.UsageKindFlash, fiID, uFlashOnly}:    1,
+			{domain.UsageKindVoucher, vShopID, uRelOnly}: 0,
+			{domain.UsageKindVoucher, vPlatID, uRelOnly}: 0,
+			{domain.UsageKindFlash, fiID, uRelOnly}:      0,
+		}
+		gotRows := queryAllUserUsage(ctx, t, pool)
+		if len(gotRows) != len(wantUsage) {
+			t.Fatalf("%s: promotion_user_usage row count mismatch: got %d (%+v), want %d", phase, len(gotRows), gotRows, len(wantUsage))
+		}
+		for _, row := range gotRows {
+			k := usageKey{row.Kind, row.TargetID, row.UserID}
+			wantQty, ok := wantUsage[k]
+			if !ok {
+				t.Fatalf("%s: unexpected promotion_user_usage row %+v", phase, row)
+			}
+			if row.UsedQty != wantQty {
+				t.Fatalf("%s: promotion_user_usage[%+v] = %d, want %d", phase, k, row.UsedQty, wantQty)
+			}
+		}
+
+		// Verify zero non-array JSONB rows remain across promotion_reservations, vouchers, and flash_sales.
+		var badResCount int
+		if err := pool.QueryRow(ctx, `
+			SELECT COUNT(*)
+			FROM promotion_reservations
+			WHERE jsonb_typeof(vouchers_json) IS DISTINCT FROM 'array'
+			   OR jsonb_typeof(flash_sale_items_json) IS DISTINCT FROM 'array'
+			   OR jsonb_typeof(shop_program_items_json) IS DISTINCT FROM 'array'
+			   OR jsonb_typeof(released_shops_json) IS DISTINCT FROM 'array'
+		`).Scan(&badResCount); err != nil {
+			t.Fatalf("%s: check promotion_reservations JSONB types: %v", phase, err)
+		}
+		if badResCount != 0 {
+			t.Fatalf("%s: found %d promotion_reservations rows with non-array JSONB column(s)", phase, badResCount)
+		}
+
+		var badCatCount int
+		if err := pool.QueryRow(ctx, `
+			SELECT (
+				SELECT COUNT(*) FROM vouchers WHERE jsonb_typeof(category_ids) IS DISTINCT FROM 'array'
+			) + (
+				SELECT COUNT(*) FROM flash_sales WHERE jsonb_typeof(category_ids) IS DISTINCT FROM 'array'
+			)
+		`).Scan(&badCatCount); err != nil {
+			t.Fatalf("%s: check category_ids JSONB types: %v", phase, err)
+		}
+		if badCatCount != 0 {
+			t.Fatalf("%s: found %d vouchers/flash_sales rows with non-array category_ids", phase, badCatCount)
+		}
+	}
+
+	// 3. Run real migrator twice (1st applies 001..007 onto phase-0b DB; 2nd verifies migrator idempotency).
+	st := store.NewPostgresStore(pool)
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate (1st upgrade from phase-0b): %v", err)
+	}
+	assertUpgradedState("after 1st Migrate")
+
+	var appliedCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM promotion_schema_migrations`).Scan(&appliedCount); err != nil {
+		t.Fatalf("count promotion_schema_migrations: %v", err)
+	}
+	if appliedCount != 7 {
+		t.Fatalf("expected 7 applied migrations recorded, got %d", appliedCount)
+	}
+
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate (2nd idempotency): %v", err)
+	}
+	assertUpgradedState("after 2nd Migrate")
+
+	// Also delete 003..007 from promotion_schema_migrations and re-run Migrate() so 003..007 SQL itself executes twice.
+	if _, err := pool.Exec(ctx, `DELETE FROM promotion_schema_migrations WHERE name >= '003_'`); err != nil {
+		t.Fatalf("reset 003..007 migration records: %v", err)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate (re-exec 003..007): %v", err)
+	}
+	assertUpgradedState("after re-exec 003..007")
+
+	// 4. Verify runtime writes with nil slices persist '[]'::jsonb (never 'null'::jsonb) across all JSONB array columns.
+	vNew, err := st.CreateVoucher(ctx, domain.Voucher{
+		Code: "NILCAT0B", Name: "Nil Cat", Scope: domain.VoucherScopePlatform,
+		DiscountType: domain.DiscountTypeFixed, ValueVND: 10000, Quota: 10, PerUserLimit: 2,
+		StartsAt: startsAt, EndsAt: endsAt, IsActive: true, Status: domain.VoucherStatusActive,
+		CategoryIDs: nil,
+	})
+	if err != nil {
+		t.Fatalf("CreateVoucher(nil CategoryIDs): %v", err)
+	}
+	if _, err := st.UpdateVoucher(ctx, vNew.ID, func(cur *domain.Voucher, hasActive bool) error {
+		if hasActive {
+			return fmt.Errorf("expected hasActive=false for new voucher")
+		}
+		cur.CategoryIDs = nil
+		return nil
+	}); err != nil {
+		t.Fatalf("UpdateVoucher(nil CategoryIDs): %v", err)
+	}
+	fsNew, err := st.CreateFlashSale(ctx, domain.FlashSale{
+		Name: "Nil Cat FS", StartsAt: startsAt, EndsAt: endsAt, CategoryIDs: nil,
+	})
+	if err != nil {
+		t.Fatalf("CreateFlashSale(nil CategoryIDs): %v", err)
+	}
+	const ordNil = "ord-0b-runtime-nil"
+	if _, _, err := st.CommitReservation(ctx, domain.PromotionReservation{
+		OrderID:          ordNil,
+		UserID:           "u-0b-runtime-nil",
+		Vouchers:         nil,
+		FlashSaleItems:   nil,
+		ShopProgramItems: nil,
+	}, now); err != nil {
+		t.Fatalf("CommitReservation(nil slices): %v", err)
+	}
+	if _, err := st.ReleaseReservation(ctx, ordNil); err != nil {
+		t.Fatalf("ReleaseReservation(nil slices): %v", err)
+	}
+
+	var vCat, fsCat, rVouch, rFlash, rShopProg, rRelShops string
+	if err := pool.QueryRow(ctx, `SELECT category_ids::text FROM vouchers WHERE id = $1`, vNew.ID).Scan(&vCat); err != nil {
+		t.Fatalf("read voucher category_ids: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT category_ids::text FROM flash_sales WHERE id = $1`, fsNew.ID).Scan(&fsCat); err != nil {
+		t.Fatalf("read flash_sales category_ids: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT vouchers_json::text, flash_sale_items_json::text, shop_program_items_json::text, released_shops_json::text
+		FROM promotion_reservations
+		WHERE order_id = $1
+	`, ordNil).Scan(&rVouch, &rFlash, &rShopProg, &rRelShops); err != nil {
+		t.Fatalf("read runtime nil reservation JSONB columns: %v", err)
+	}
+	for col, got := range map[string]string{
+		"vouchers.category_ids":                          vCat,
+		"flash_sales.category_ids":                       fsCat,
+		"promotion_reservations.vouchers_json":           rVouch,
+		"promotion_reservations.flash_sale_items_json":   rFlash,
+		"promotion_reservations.shop_program_items_json": rShopProg,
+		"promotion_reservations.released_shops_json":     rRelShops,
+	} {
+		if got != "[]" {
+			t.Fatalf("expected %s to persist '[]', got %q", col, got)
+		}
+	}
 }

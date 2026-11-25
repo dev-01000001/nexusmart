@@ -8,24 +8,20 @@ import shared from "./adminShared.module.css";
 
 export interface AdminStateGateProps {
   title: string;
-  subtitle?: string;
   emptyTitle: string;
   emptyMessage: string;
   errorTitle: string;
   errorMessage: string;
-  lastUpdated?: string;
   loadingRows?: number;
   children: (params: { initialQuery: string; initialSelected: string | null }) => React.ReactNode;
 }
 
 export function AdminStateGate({
   title,
-  subtitle,
   emptyTitle,
   emptyMessage,
   errorTitle,
   errorMessage,
-  lastUpdated = "20/11/2026 · 01:12",
   loadingRows = 5,
   children,
 }: AdminStateGateProps) {
@@ -47,7 +43,6 @@ export function AdminStateGate({
         <header className={shared.titleRow}>
           <div className={shared.titleBlock}>
             <h1 className={shared.pageTitle}>{title}</h1>
-            {subtitle && <p className={shared.pageSubtitle}>{subtitle}</p>}
           </div>
         </header>
 
@@ -56,7 +51,8 @@ export function AdminStateGate({
             <StateView
               kind="loading"
               surface="app"
-              title="Đang đồng bộ dữ liệu quản trị..."
+              skeletonVariant="table"
+              title="Đang đồng bộ dữ liệu..."
               rows={loadingRows}
             />
           )}
@@ -66,7 +62,7 @@ export function AdminStateGate({
               surface="app"
               title={emptyTitle}
               message={emptyMessage}
-              actionLabel="Quay lại danh sách mặc định"
+              actionLabel="Quay lại danh sách"
               onAction={handleResetState}
             />
           )}
@@ -76,8 +72,7 @@ export function AdminStateGate({
               surface="app"
               title={errorTitle}
               message={errorMessage}
-              lastUpdated={lastUpdated}
-              actionLabel="Thử tải lại"
+              actionLabel="Thử lại"
               onAction={handleResetState}
             />
           )}
@@ -98,7 +93,7 @@ export function AdminSuspenseFallback({ title }: { title: string }) {
         </div>
       </header>
       <div className={shared.stateWrap}>
-        <StateView kind="loading" surface="app" rows={4} />
+        <StateView kind="loading" surface="app" skeletonVariant="table" rows={4} />
       </div>
     </div>
   );

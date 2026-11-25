@@ -10,6 +10,23 @@ import (
 	"time"
 )
 
+const adjustCheckoutGroupTotalPayable = `-- name: AdjustCheckoutGroupTotalPayable :exec
+UPDATE checkout_groups
+SET total_payable_vnd = GREATEST(0, total_payable_vnd + $2::bigint),
+    updated_at = NOW()
+WHERE id = $1
+`
+
+type AdjustCheckoutGroupTotalPayableParams struct {
+	ID       string `json:"id"`
+	DeltaVnd int64  `json:"delta_vnd"`
+}
+
+func (q *Queries) AdjustCheckoutGroupTotalPayable(ctx context.Context, arg AdjustCheckoutGroupTotalPayableParams) error {
+	_, err := q.db.Exec(ctx, adjustCheckoutGroupTotalPayable, arg.ID, arg.DeltaVnd)
+	return err
+}
+
 const attachCheckoutPaymentToOrders = `-- name: AttachCheckoutPaymentToOrders :exec
 UPDATE orders
 SET payment_id = CASE
@@ -79,6 +96,167 @@ type ClaimCheckoutGroupForCleanupParams struct {
 func (q *Queries) ClaimCheckoutGroupForCleanup(ctx context.Context, arg ClaimCheckoutGroupForCleanupParams) error {
 	_, err := q.db.Exec(ctx, claimCheckoutGroupForCleanup, arg.ID, arg.PaymentStatus)
 	return err
+}
+
+const claimDueOrderAddressChanges = `-- name: ClaimDueOrderAddressChanges :many
+WITH due AS (
+    SELECT id
+    FROM order_address_changes
+    WHERE state NOT IN ('COMPLETED', 'ABORTED')
+      AND next_attempt_at <= $1::timestamptz
+      AND (claimed_until IS NULL OR claimed_until <= $1::timestamptz)
+      AND (cardinality($4::text[]) = 0 OR NOT (id = ANY($4::text[])))
+    ORDER BY next_attempt_at ASC, created_at ASC, id ASC
+    LIMIT $5::int
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE order_address_changes c
+SET claimed_until = $1::timestamptz + ($2::bigint * INTERVAL '1 millisecond'),
+    claim_token = $3::text,
+    updated_at = $1::timestamptz
+FROM due
+WHERE c.id = due.id
+RETURNING c.id, c.order_id, c.buyer_id, c.idempotency_key, c.request_hash, c.new_address_json, c.carrier_code, c.service_code, c.old_carrier_code, c.old_service_code, c.old_tracking_code, c.had_shipment, c.shipment_cancelled, c.old_shipping_fee_vnd, c.new_shipping_fee_vnd, c.applied_shipping_fee_vnd, c.old_total_payable_vnd, c.new_total_payable_vnd, c.fee_adjusted, c.needs_cod_adjust, c.cod_adjusted, c.state, c.shipment_recreated, c.shipment_queued, c.shipment_job_id, c.new_tracking_code, c.outbox_emitted, c.attempts, c.next_attempt_at, c.claimed_until, c.claim_token, c.abort_code, c.last_error, c.trace_id, c.traceparent, c.created_at, c.updated_at
+`
+
+type ClaimDueOrderAddressChangesParams struct {
+	Now        time.Time `json:"now"`
+	LeaseMs    int64     `json:"lease_ms"`
+	ClaimToken string    `json:"claim_token"`
+	ExcludeIds []string  `json:"exclude_ids"`
+	BatchLimit int32     `json:"batch_limit"`
+}
+
+func (q *Queries) ClaimDueOrderAddressChanges(ctx context.Context, arg ClaimDueOrderAddressChangesParams) ([]OrderAddressChange, error) {
+	rows, err := q.db.Query(ctx, claimDueOrderAddressChanges,
+		arg.Now,
+		arg.LeaseMs,
+		arg.ClaimToken,
+		arg.ExcludeIds,
+		arg.BatchLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OrderAddressChange{}
+	for rows.Next() {
+		var i OrderAddressChange
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrderID,
+			&i.BuyerID,
+			&i.IdempotencyKey,
+			&i.RequestHash,
+			&i.NewAddressJSON,
+			&i.CarrierCode,
+			&i.ServiceCode,
+			&i.OldCarrierCode,
+			&i.OldServiceCode,
+			&i.OldTrackingCode,
+			&i.HadShipment,
+			&i.ShipmentCancelled,
+			&i.OldShippingFeeVND,
+			&i.NewShippingFeeVND,
+			&i.AppliedShippingFeeVND,
+			&i.OldTotalPayableVND,
+			&i.NewTotalPayableVND,
+			&i.FeeAdjusted,
+			&i.NeedsCODAdjust,
+			&i.CODAdjusted,
+			&i.State,
+			&i.ShipmentRecreated,
+			&i.ShipmentQueued,
+			&i.ShipmentJobID,
+			&i.NewTrackingCode,
+			&i.OutboxEmitted,
+			&i.Attempts,
+			&i.NextAttemptAt,
+			&i.ClaimedUntil,
+			&i.ClaimToken,
+			&i.AbortCode,
+			&i.LastError,
+			&i.TraceID,
+			&i.Traceparent,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const claimOrderAddressChangeByID = `-- name: ClaimOrderAddressChangeByID :one
+UPDATE order_address_changes
+SET claimed_until = $2,
+    claim_token = $3,
+    updated_at = $4
+WHERE id = $1
+  AND state NOT IN ('COMPLETED', 'ABORTED')
+  AND (claimed_until IS NULL OR claimed_until <= $4)
+RETURNING id, order_id, buyer_id, idempotency_key, request_hash, new_address_json, carrier_code, service_code, old_carrier_code, old_service_code, old_tracking_code, had_shipment, shipment_cancelled, old_shipping_fee_vnd, new_shipping_fee_vnd, applied_shipping_fee_vnd, old_total_payable_vnd, new_total_payable_vnd, fee_adjusted, needs_cod_adjust, cod_adjusted, state, shipment_recreated, shipment_queued, shipment_job_id, new_tracking_code, outbox_emitted, attempts, next_attempt_at, claimed_until, claim_token, abort_code, last_error, trace_id, traceparent, created_at, updated_at
+`
+
+type ClaimOrderAddressChangeByIDParams struct {
+	ID           string     `json:"id"`
+	ClaimedUntil *time.Time `json:"claimed_until"`
+	ClaimToken   string     `json:"claim_token"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+func (q *Queries) ClaimOrderAddressChangeByID(ctx context.Context, arg ClaimOrderAddressChangeByIDParams) (OrderAddressChange, error) {
+	row := q.db.QueryRow(ctx, claimOrderAddressChangeByID,
+		arg.ID,
+		arg.ClaimedUntil,
+		arg.ClaimToken,
+		arg.UpdatedAt,
+	)
+	var i OrderAddressChange
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.IdempotencyKey,
+		&i.RequestHash,
+		&i.NewAddressJSON,
+		&i.CarrierCode,
+		&i.ServiceCode,
+		&i.OldCarrierCode,
+		&i.OldServiceCode,
+		&i.OldTrackingCode,
+		&i.HadShipment,
+		&i.ShipmentCancelled,
+		&i.OldShippingFeeVND,
+		&i.NewShippingFeeVND,
+		&i.AppliedShippingFeeVND,
+		&i.OldTotalPayableVND,
+		&i.NewTotalPayableVND,
+		&i.FeeAdjusted,
+		&i.NeedsCODAdjust,
+		&i.CODAdjusted,
+		&i.State,
+		&i.ShipmentRecreated,
+		&i.ShipmentQueued,
+		&i.ShipmentJobID,
+		&i.NewTrackingCode,
+		&i.OutboxEmitted,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.ClaimedUntil,
+		&i.ClaimToken,
+		&i.AbortCode,
+		&i.LastError,
+		&i.TraceID,
+		&i.Traceparent,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const claimPendingOutboxEvents = `-- name: ClaimPendingOutboxEvents :many
@@ -179,7 +357,7 @@ SET orphan_shipment_needs_manual_review = FALSE,
     updated_at = NOW()
 WHERE id = $1
   AND orphan_shipment_needs_manual_review = TRUE
-RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 `
 
 func (q *Queries) ClearOrderOrphanShipmentManualReview(ctx context.Context, id string) (Order, error) {
@@ -215,6 +393,8 @@ func (q *Queries) ClearOrderOrphanShipmentManualReview(ctx context.Context, id s
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RefundedVND,
 		&i.ConfirmedAt,
 		&i.PendingShipmentCancel,
@@ -340,7 +520,7 @@ SET status = CASE
     updated_at = NOW()
 WHERE id = $1
   AND status = 'IN_PROGRESS'
-RETURNING id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json, pay_url
+RETURNING id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, sales_channel, storefront_shop_id, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json, pay_url
 `
 
 type CompleteCheckoutGroupParams struct {
@@ -385,6 +565,8 @@ func (q *Queries) CompleteCheckoutGroup(ctx context.Context, arg CompleteCheckou
 		&i.ResponseSnapshotJSON,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RequestHash,
 		&i.RetryIdempotencyKey,
 		&i.RetryFromPaymentID,
@@ -396,22 +578,102 @@ func (q *Queries) CompleteCheckoutGroup(ctx context.Context, arg CompleteCheckou
 	return i, err
 }
 
+const countOrdersByStatus = `-- name: CountOrdersByStatus :many
+SELECT status, COUNT(*)::bigint AS count
+FROM orders
+WHERE ($1::text = '' OR buyer_id = $1::text)
+  AND ($2::text = '' OR shop_id = $2::text)
+  AND ($3::text = '' OR sales_channel = $3::text)
+  AND ($4::text = '' OR storefront_shop_id = $4::text)
+GROUP BY status
+ORDER BY status ASC
+`
+
+type CountOrdersByStatusParams struct {
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	SalesChannel     string `json:"sales_channel"`
+	StorefrontShopID string `json:"storefront_shop_id"`
+}
+
+type CountOrdersByStatusRow struct {
+	Status string `json:"status"`
+	Count  int64  `json:"count"`
+}
+
+func (q *Queries) CountOrdersByStatus(ctx context.Context, arg CountOrdersByStatusParams) ([]CountOrdersByStatusRow, error) {
+	rows, err := q.db.Query(ctx, countOrdersByStatus,
+		arg.BuyerID,
+		arg.ShopID,
+		arg.SalesChannel,
+		arg.StorefrontShopID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountOrdersByStatusRow{}
+	for rows.Next() {
+		var i CountOrdersByStatusRow
+		if err := rows.Scan(&i.Status, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countOrdersFiltered = `-- name: CountOrdersFiltered :one
 SELECT COUNT(*)
 FROM orders
 WHERE ($1::text = '' OR buyer_id = $1::text)
   AND ($2::text = '' OR shop_id = $2::text)
   AND ($3::text = '' OR status = $3::text)
+  AND (cardinality($4::text[]) = 0 OR status = ANY($4::text[]))
+  AND ($5::text = '' OR carrier_code = $5::text)
+  AND ($6::text = '' OR payment_method = $6::text)
+  AND (
+      $7::text = ''
+      OR order_code ILIKE $7::text ESCAPE '\'
+      OR COALESCE(shipping_address_json->>'recipient_name', '') ILIKE $7::text ESCAPE '\'
+  )
+  AND (
+      $8::timestamptz IS NULL
+      OR COALESCE(confirmed_at, created_at) <= $8::timestamptz
+  )
+  AND ($9::text = '' OR sales_channel = $9::text)
+  AND ($10::text = '' OR storefront_shop_id = $10::text)
 `
 
 type CountOrdersFilteredParams struct {
-	BuyerID string `json:"buyer_id"`
-	ShopID  string `json:"shop_id"`
-	Status  string `json:"status"`
+	BuyerID          string     `json:"buyer_id"`
+	ShopID           string     `json:"shop_id"`
+	Status           string     `json:"status"`
+	Statuses         []string   `json:"statuses"`
+	CarrierCode      string     `json:"carrier_code"`
+	PaymentMethod    string     `json:"payment_method"`
+	KeywordPattern   string     `json:"keyword_pattern"`
+	DueCutoff        *time.Time `json:"due_cutoff"`
+	SalesChannel     string     `json:"sales_channel"`
+	StorefrontShopID string     `json:"storefront_shop_id"`
 }
 
 func (q *Queries) CountOrdersFiltered(ctx context.Context, arg CountOrdersFilteredParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countOrdersFiltered, arg.BuyerID, arg.ShopID, arg.Status)
+	row := q.db.QueryRow(ctx, countOrdersFiltered,
+		arg.BuyerID,
+		arg.ShopID,
+		arg.Status,
+		arg.Statuses,
+		arg.CarrierCode,
+		arg.PaymentMethod,
+		arg.KeywordPattern,
+		arg.DueCutoff,
+		arg.SalesChannel,
+		arg.StorefrontShopID,
+	)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -453,21 +715,25 @@ func (q *Queries) CountReturnRequestsFiltered(ctx context.Context, arg CountRetu
 
 const createCheckoutGroup = `-- name: CreateCheckoutGroup :one
 INSERT INTO checkout_groups (
-    id, buyer_id, idempotency_key, request_hash, status, payment_method, total_payable_vnd
+    id, buyer_id, idempotency_key, request_hash, status, payment_method, total_payable_vnd,
+    sales_channel, storefront_shop_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7
+    $1, $2, $3, $4, $5, $6, $7,
+    $8, $9
 )
-RETURNING id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json, pay_url
+RETURNING id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, sales_channel, storefront_shop_id, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json, pay_url
 `
 
 type CreateCheckoutGroupParams struct {
-	ID              string `json:"id"`
-	BuyerID         string `json:"buyer_id"`
-	IdempotencyKey  string `json:"idempotency_key"`
-	RequestHash     string `json:"request_hash"`
-	Status          string `json:"status"`
-	PaymentMethod   string `json:"payment_method"`
-	TotalPayableVND int64  `json:"total_payable_vnd"`
+	ID               string `json:"id"`
+	BuyerID          string `json:"buyer_id"`
+	IdempotencyKey   string `json:"idempotency_key"`
+	RequestHash      string `json:"request_hash"`
+	Status           string `json:"status"`
+	PaymentMethod    string `json:"payment_method"`
+	TotalPayableVND  int64  `json:"total_payable_vnd"`
+	SalesChannel     string `json:"sales_channel"`
+	StorefrontShopID string `json:"storefront_shop_id"`
 }
 
 func (q *Queries) CreateCheckoutGroup(ctx context.Context, arg CreateCheckoutGroupParams) (CheckoutGroup, error) {
@@ -479,6 +745,8 @@ func (q *Queries) CreateCheckoutGroup(ctx context.Context, arg CreateCheckoutGro
 		arg.Status,
 		arg.PaymentMethod,
 		arg.TotalPayableVND,
+		arg.SalesChannel,
+		arg.StorefrontShopID,
 	)
 	var i CheckoutGroup
 	err := row.Scan(
@@ -496,6 +764,8 @@ func (q *Queries) CreateCheckoutGroup(ctx context.Context, arg CreateCheckoutGro
 		&i.ResponseSnapshotJSON,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RequestHash,
 		&i.RetryIdempotencyKey,
 		&i.RetryFromPaymentID,
@@ -513,7 +783,7 @@ SET deadline_at = $2,
     deadline_extension_count = deadline_extension_count + 1,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
+RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, shop_id, items_json, seller_note, reverse_tracking_code, reverse_label_url, refund_amount_vnd, refund_id, order_code, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_approval_status, refund_attempt
 `
 
 type ExtendReturnRequestDeadlineParams struct {
@@ -533,13 +803,18 @@ func (q *Queries) ExtendReturnRequestDeadline(ctx context.Context, arg ExtendRet
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.OrderCode,
 		&i.ShopID,
+		&i.ItemsJSON,
+		&i.SellerNote,
+		&i.ReverseTrackingCode,
+		&i.ReverseLabelURL,
+		&i.RefundAmountVND,
+		&i.RefundID,
+		&i.OrderCode,
 		&i.SellerResponse,
 		&i.SellerEvidenceURLsJSON,
 		&i.DisputeReason,
 		&i.AdminNote,
-		&i.RefundAmountVND,
 		&i.ReturnTrackingCode,
 		&i.ReturnLabelURL,
 		&i.ReturnFeeVND,
@@ -557,7 +832,6 @@ func (q *Queries) ExtendReturnRequestDeadline(ctx context.Context, arg ExtendRet
 		&i.EscalatedFromCancelFailure,
 		&i.RequireApprovalIfLarge,
 		&i.RefundRequestedBy,
-		&i.RefundID,
 		&i.RefundApprovalStatus,
 		&i.RefundAttempt,
 	)
@@ -1062,7 +1336,7 @@ func (q *Queries) GetBuyerTerminalCODStats(ctx context.Context, buyerID string) 
 }
 
 const getCheckoutGroupByID = `-- name: GetCheckoutGroupByID :one
-SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json, pay_url
+SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, sales_channel, storefront_shop_id, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json, pay_url
 FROM checkout_groups
 WHERE id = $1
 `
@@ -1085,6 +1359,8 @@ func (q *Queries) GetCheckoutGroupByID(ctx context.Context, id string) (Checkout
 		&i.ResponseSnapshotJSON,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RequestHash,
 		&i.RetryIdempotencyKey,
 		&i.RetryFromPaymentID,
@@ -1097,7 +1373,7 @@ func (q *Queries) GetCheckoutGroupByID(ctx context.Context, id string) (Checkout
 }
 
 const getCheckoutGroupByIDForUpdate = `-- name: GetCheckoutGroupByIDForUpdate :one
-SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json, pay_url
+SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, sales_channel, storefront_shop_id, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json, pay_url
 FROM checkout_groups
 WHERE id = $1
 FOR UPDATE
@@ -1121,6 +1397,8 @@ func (q *Queries) GetCheckoutGroupByIDForUpdate(ctx context.Context, id string) 
 		&i.ResponseSnapshotJSON,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RequestHash,
 		&i.RetryIdempotencyKey,
 		&i.RetryFromPaymentID,
@@ -1133,7 +1411,7 @@ func (q *Queries) GetCheckoutGroupByIDForUpdate(ctx context.Context, id string) 
 }
 
 const getCheckoutGroupByPaymentID = `-- name: GetCheckoutGroupByPaymentID :one
-SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json, pay_url
+SELECT id, buyer_id, idempotency_key, status, payment_method, payment_id, payment_status, qr_url, qr_code, payment_expires_at, total_payable_vnd, response_snapshot_json, created_at, updated_at, sales_channel, storefront_shop_id, request_hash, retry_idempotency_key, retry_from_payment_id, pending_stock_confirm, needs_cleanup, warnings_json, pay_url
 FROM checkout_groups
 WHERE payment_id = $1
   AND status <> 'FAILED'
@@ -1159,6 +1437,8 @@ func (q *Queries) GetCheckoutGroupByPaymentID(ctx context.Context, paymentID str
 		&i.ResponseSnapshotJSON,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RequestHash,
 		&i.RetryIdempotencyKey,
 		&i.RetryFromPaymentID,
@@ -1171,7 +1451,7 @@ func (q *Queries) GetCheckoutGroupByPaymentID(ctx context.Context, paymentID str
 }
 
 const getCheckoutGroupForIdempotency = `-- name: GetCheckoutGroupForIdempotency :one
-SELECT g.id, g.buyer_id, g.idempotency_key, g.status, g.payment_method, g.payment_id, g.payment_status, g.qr_url, g.qr_code, g.payment_expires_at, g.total_payable_vnd, g.response_snapshot_json, g.created_at, g.updated_at, g.request_hash, g.retry_idempotency_key, g.retry_from_payment_id, g.pending_stock_confirm, g.needs_cleanup, g.warnings_json, g.pay_url,
+SELECT g.id, g.buyer_id, g.idempotency_key, g.status, g.payment_method, g.payment_id, g.payment_status, g.qr_url, g.qr_code, g.payment_expires_at, g.total_payable_vnd, g.response_snapshot_json, g.created_at, g.updated_at, g.sales_channel, g.storefront_shop_id, g.request_hash, g.retry_idempotency_key, g.retry_from_payment_id, g.pending_stock_confirm, g.needs_cleanup, g.warnings_json, g.pay_url,
        EXISTS (SELECT 1 FROM orders o WHERE o.checkout_group_id = g.id) AS has_orders
 FROM checkout_groups g
 WHERE g.buyer_id = $1
@@ -1209,6 +1489,8 @@ type GetCheckoutGroupForIdempotencyRow struct {
 	ResponseSnapshotJSON []byte     `json:"response_snapshot_json"`
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
+	SalesChannel         string     `json:"sales_channel"`
+	StorefrontShopID     string     `json:"storefront_shop_id"`
 	RequestHash          string     `json:"request_hash"`
 	RetryIdempotencyKey  string     `json:"retry_idempotency_key"`
 	RetryFromPaymentID   string     `json:"retry_from_payment_id"`
@@ -1237,6 +1519,8 @@ func (q *Queries) GetCheckoutGroupForIdempotency(ctx context.Context, arg GetChe
 		&i.ResponseSnapshotJSON,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RequestHash,
 		&i.RetryIdempotencyKey,
 		&i.RetryFromPaymentID,
@@ -1249,8 +1533,282 @@ func (q *Queries) GetCheckoutGroupForIdempotency(ctx context.Context, arg GetChe
 	return i, err
 }
 
+const getOpenOrderAddressChangeByOrderID = `-- name: GetOpenOrderAddressChangeByOrderID :one
+SELECT id, order_id, buyer_id, idempotency_key, request_hash, new_address_json, carrier_code, service_code, old_carrier_code, old_service_code, old_tracking_code, had_shipment, shipment_cancelled, old_shipping_fee_vnd, new_shipping_fee_vnd, applied_shipping_fee_vnd, old_total_payable_vnd, new_total_payable_vnd, fee_adjusted, needs_cod_adjust, cod_adjusted, state, shipment_recreated, shipment_queued, shipment_job_id, new_tracking_code, outbox_emitted, attempts, next_attempt_at, claimed_until, claim_token, abort_code, last_error, trace_id, traceparent, created_at, updated_at
+FROM order_address_changes
+WHERE order_id = $1
+  AND state NOT IN ('COMPLETED', 'ABORTED')
+LIMIT 1
+`
+
+func (q *Queries) GetOpenOrderAddressChangeByOrderID(ctx context.Context, orderID string) (OrderAddressChange, error) {
+	row := q.db.QueryRow(ctx, getOpenOrderAddressChangeByOrderID, orderID)
+	var i OrderAddressChange
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.IdempotencyKey,
+		&i.RequestHash,
+		&i.NewAddressJSON,
+		&i.CarrierCode,
+		&i.ServiceCode,
+		&i.OldCarrierCode,
+		&i.OldServiceCode,
+		&i.OldTrackingCode,
+		&i.HadShipment,
+		&i.ShipmentCancelled,
+		&i.OldShippingFeeVND,
+		&i.NewShippingFeeVND,
+		&i.AppliedShippingFeeVND,
+		&i.OldTotalPayableVND,
+		&i.NewTotalPayableVND,
+		&i.FeeAdjusted,
+		&i.NeedsCODAdjust,
+		&i.CODAdjusted,
+		&i.State,
+		&i.ShipmentRecreated,
+		&i.ShipmentQueued,
+		&i.ShipmentJobID,
+		&i.NewTrackingCode,
+		&i.OutboxEmitted,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.ClaimedUntil,
+		&i.ClaimToken,
+		&i.AbortCode,
+		&i.LastError,
+		&i.TraceID,
+		&i.Traceparent,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getOrderAddressChangeByID = `-- name: GetOrderAddressChangeByID :one
+SELECT id, order_id, buyer_id, idempotency_key, request_hash, new_address_json, carrier_code, service_code, old_carrier_code, old_service_code, old_tracking_code, had_shipment, shipment_cancelled, old_shipping_fee_vnd, new_shipping_fee_vnd, applied_shipping_fee_vnd, old_total_payable_vnd, new_total_payable_vnd, fee_adjusted, needs_cod_adjust, cod_adjusted, state, shipment_recreated, shipment_queued, shipment_job_id, new_tracking_code, outbox_emitted, attempts, next_attempt_at, claimed_until, claim_token, abort_code, last_error, trace_id, traceparent, created_at, updated_at
+FROM order_address_changes
+WHERE id = $1
+`
+
+func (q *Queries) GetOrderAddressChangeByID(ctx context.Context, id string) (OrderAddressChange, error) {
+	row := q.db.QueryRow(ctx, getOrderAddressChangeByID, id)
+	var i OrderAddressChange
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.IdempotencyKey,
+		&i.RequestHash,
+		&i.NewAddressJSON,
+		&i.CarrierCode,
+		&i.ServiceCode,
+		&i.OldCarrierCode,
+		&i.OldServiceCode,
+		&i.OldTrackingCode,
+		&i.HadShipment,
+		&i.ShipmentCancelled,
+		&i.OldShippingFeeVND,
+		&i.NewShippingFeeVND,
+		&i.AppliedShippingFeeVND,
+		&i.OldTotalPayableVND,
+		&i.NewTotalPayableVND,
+		&i.FeeAdjusted,
+		&i.NeedsCODAdjust,
+		&i.CODAdjusted,
+		&i.State,
+		&i.ShipmentRecreated,
+		&i.ShipmentQueued,
+		&i.ShipmentJobID,
+		&i.NewTrackingCode,
+		&i.OutboxEmitted,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.ClaimedUntil,
+		&i.ClaimToken,
+		&i.AbortCode,
+		&i.LastError,
+		&i.TraceID,
+		&i.Traceparent,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getOrderAddressChangeByIDForUpdate = `-- name: GetOrderAddressChangeByIDForUpdate :one
+SELECT id, order_id, buyer_id, idempotency_key, request_hash, new_address_json, carrier_code, service_code, old_carrier_code, old_service_code, old_tracking_code, had_shipment, shipment_cancelled, old_shipping_fee_vnd, new_shipping_fee_vnd, applied_shipping_fee_vnd, old_total_payable_vnd, new_total_payable_vnd, fee_adjusted, needs_cod_adjust, cod_adjusted, state, shipment_recreated, shipment_queued, shipment_job_id, new_tracking_code, outbox_emitted, attempts, next_attempt_at, claimed_until, claim_token, abort_code, last_error, trace_id, traceparent, created_at, updated_at
+FROM order_address_changes
+WHERE id = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetOrderAddressChangeByIDForUpdate(ctx context.Context, id string) (OrderAddressChange, error) {
+	row := q.db.QueryRow(ctx, getOrderAddressChangeByIDForUpdate, id)
+	var i OrderAddressChange
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.IdempotencyKey,
+		&i.RequestHash,
+		&i.NewAddressJSON,
+		&i.CarrierCode,
+		&i.ServiceCode,
+		&i.OldCarrierCode,
+		&i.OldServiceCode,
+		&i.OldTrackingCode,
+		&i.HadShipment,
+		&i.ShipmentCancelled,
+		&i.OldShippingFeeVND,
+		&i.NewShippingFeeVND,
+		&i.AppliedShippingFeeVND,
+		&i.OldTotalPayableVND,
+		&i.NewTotalPayableVND,
+		&i.FeeAdjusted,
+		&i.NeedsCODAdjust,
+		&i.CODAdjusted,
+		&i.State,
+		&i.ShipmentRecreated,
+		&i.ShipmentQueued,
+		&i.ShipmentJobID,
+		&i.NewTrackingCode,
+		&i.OutboxEmitted,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.ClaimedUntil,
+		&i.ClaimToken,
+		&i.AbortCode,
+		&i.LastError,
+		&i.TraceID,
+		&i.Traceparent,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getOrderAddressChangeByOrderAndIdemKey = `-- name: GetOrderAddressChangeByOrderAndIdemKey :one
+SELECT id, order_id, buyer_id, idempotency_key, request_hash, new_address_json, carrier_code, service_code, old_carrier_code, old_service_code, old_tracking_code, had_shipment, shipment_cancelled, old_shipping_fee_vnd, new_shipping_fee_vnd, applied_shipping_fee_vnd, old_total_payable_vnd, new_total_payable_vnd, fee_adjusted, needs_cod_adjust, cod_adjusted, state, shipment_recreated, shipment_queued, shipment_job_id, new_tracking_code, outbox_emitted, attempts, next_attempt_at, claimed_until, claim_token, abort_code, last_error, trace_id, traceparent, created_at, updated_at
+FROM order_address_changes
+WHERE order_id = $1
+  AND idempotency_key = $2
+  AND idempotency_key <> ''
+LIMIT 1
+`
+
+type GetOrderAddressChangeByOrderAndIdemKeyParams struct {
+	OrderID        string `json:"order_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+func (q *Queries) GetOrderAddressChangeByOrderAndIdemKey(ctx context.Context, arg GetOrderAddressChangeByOrderAndIdemKeyParams) (OrderAddressChange, error) {
+	row := q.db.QueryRow(ctx, getOrderAddressChangeByOrderAndIdemKey, arg.OrderID, arg.IdempotencyKey)
+	var i OrderAddressChange
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.IdempotencyKey,
+		&i.RequestHash,
+		&i.NewAddressJSON,
+		&i.CarrierCode,
+		&i.ServiceCode,
+		&i.OldCarrierCode,
+		&i.OldServiceCode,
+		&i.OldTrackingCode,
+		&i.HadShipment,
+		&i.ShipmentCancelled,
+		&i.OldShippingFeeVND,
+		&i.NewShippingFeeVND,
+		&i.AppliedShippingFeeVND,
+		&i.OldTotalPayableVND,
+		&i.NewTotalPayableVND,
+		&i.FeeAdjusted,
+		&i.NeedsCODAdjust,
+		&i.CODAdjusted,
+		&i.State,
+		&i.ShipmentRecreated,
+		&i.ShipmentQueued,
+		&i.ShipmentJobID,
+		&i.NewTrackingCode,
+		&i.OutboxEmitted,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.ClaimedUntil,
+		&i.ClaimToken,
+		&i.AbortCode,
+		&i.LastError,
+		&i.TraceID,
+		&i.Traceparent,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getOrderByCode = `-- name: GetOrderByCode :one
+SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+FROM orders
+WHERE order_code = $1
+`
+
+func (q *Queries) GetOrderByCode(ctx context.Context, orderCode string) (Order, error) {
+	row := q.db.QueryRow(ctx, getOrderByCode, orderCode)
+	var i Order
+	err := row.Scan(
+		&i.ID,
+		&i.OrderCode,
+		&i.CheckoutGroupID,
+		&i.BuyerID,
+		&i.ShopID,
+		&i.Status,
+		&i.PaymentMethod,
+		&i.PaymentID,
+		&i.PaymentStatus,
+		&i.SubtotalVND,
+		&i.FlashSaleDiscountVND,
+		&i.ShopVoucherDiscountVND,
+		&i.PlatformVoucherDiscountVND,
+		&i.FreeshipDiscountVND,
+		&i.CoinsDiscountVND,
+		&i.ShippingFeeVND,
+		&i.CommissionVND,
+		&i.TotalPayableVND,
+		&i.CarrierCode,
+		&i.ServiceCode,
+		&i.TrackingCode,
+		&i.LabelURL,
+		&i.CancelReason,
+		&i.ShippingAddressJSON,
+		&i.PaymentExpiresAt,
+		&i.DeliveredAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
+		&i.RefundedVND,
+		&i.ConfirmedAt,
+		&i.PendingShipmentCancel,
+		&i.PendingCancelCompensation,
+		&i.OrphanShipmentNeedsManualReview,
+		&i.PendingReturnCompensation,
+		&i.PendingShipmentCancelAt,
+		&i.PendingShipmentCancelToken,
+		&i.ShopProgramDiscountVND,
+		&i.ShopFreeshipDiscountVND,
+		&i.PaymentFeeVND,
+		&i.PaymentFeeBPS,
+		&i.SettlementRefundedVND,
+		&i.ShipmentJobStatus,
+	)
+	return i, err
+}
+
 const getOrderByID = `-- name: GetOrderByID :one
-SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 FROM orders
 WHERE id = $1
 `
@@ -1288,6 +1846,8 @@ func (q *Queries) GetOrderByID(ctx context.Context, id string) (Order, error) {
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RefundedVND,
 		&i.ConfirmedAt,
 		&i.PendingShipmentCancel,
@@ -1307,7 +1867,7 @@ func (q *Queries) GetOrderByID(ctx context.Context, id string) (Order, error) {
 }
 
 const getOrderByIDForUpdate = `-- name: GetOrderByIDForUpdate :one
-SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 FROM orders
 WHERE id = $1
 FOR UPDATE
@@ -1346,6 +1906,8 @@ func (q *Queries) GetOrderByIDForUpdate(ctx context.Context, id string) (Order, 
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RefundedVND,
 		&i.ConfirmedAt,
 		&i.PendingShipmentCancel,
@@ -1364,8 +1926,67 @@ func (q *Queries) GetOrderByIDForUpdate(ctx context.Context, id string) (Order, 
 	return i, err
 }
 
+const getPickingListByOrderIDs = `-- name: GetPickingListByOrderIDs :many
+SELECT oi.sku_id,
+       MAX(oi.product_id)::text AS product_id,
+       MAX(oi.product_name)::text AS product_name,
+       MAX(oi.sku_name)::text AS sku_name,
+       COALESCE(SUM(oi.quantity), 0)::int AS total_quantity,
+       COUNT(DISTINCT oi.order_id)::int AS order_count,
+       ARRAY_AGG(DISTINCT o.order_code ORDER BY o.order_code)::text[] AS order_codes
+FROM orders o
+JOIN order_items oi ON oi.order_id = o.id
+WHERE o.shop_id = $1
+  AND o.id = ANY($2::text[])
+GROUP BY oi.sku_id
+ORDER BY oi.sku_id ASC
+`
+
+type GetPickingListByOrderIDsParams struct {
+	ShopID   string   `json:"shop_id"`
+	OrderIds []string `json:"order_ids"`
+}
+
+type GetPickingListByOrderIDsRow struct {
+	SKUID         string   `json:"sku_id"`
+	ProductID     string   `json:"product_id"`
+	ProductName   string   `json:"product_name"`
+	SKUName       string   `json:"sku_name"`
+	TotalQuantity int32    `json:"total_quantity"`
+	OrderCount    int32    `json:"order_count"`
+	OrderCodes    []string `json:"order_codes"`
+}
+
+func (q *Queries) GetPickingListByOrderIDs(ctx context.Context, arg GetPickingListByOrderIDsParams) ([]GetPickingListByOrderIDsRow, error) {
+	rows, err := q.db.Query(ctx, getPickingListByOrderIDs, arg.ShopID, arg.OrderIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetPickingListByOrderIDsRow{}
+	for rows.Next() {
+		var i GetPickingListByOrderIDsRow
+		if err := rows.Scan(
+			&i.SKUID,
+			&i.ProductID,
+			&i.ProductName,
+			&i.SKUName,
+			&i.TotalQuantity,
+			&i.OrderCount,
+			&i.OrderCodes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getReturnRequestByID = `-- name: GetReturnRequestByID :one
-SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
+SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, shop_id, items_json, seller_note, reverse_tracking_code, reverse_label_url, refund_amount_vnd, refund_id, order_code, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_approval_status, refund_attempt
 FROM return_requests
 WHERE id = $1
 `
@@ -1382,13 +2003,18 @@ func (q *Queries) GetReturnRequestByID(ctx context.Context, id string) (ReturnRe
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.OrderCode,
 		&i.ShopID,
+		&i.ItemsJSON,
+		&i.SellerNote,
+		&i.ReverseTrackingCode,
+		&i.ReverseLabelURL,
+		&i.RefundAmountVND,
+		&i.RefundID,
+		&i.OrderCode,
 		&i.SellerResponse,
 		&i.SellerEvidenceURLsJSON,
 		&i.DisputeReason,
 		&i.AdminNote,
-		&i.RefundAmountVND,
 		&i.ReturnTrackingCode,
 		&i.ReturnLabelURL,
 		&i.ReturnFeeVND,
@@ -1406,7 +2032,6 @@ func (q *Queries) GetReturnRequestByID(ctx context.Context, id string) (ReturnRe
 		&i.EscalatedFromCancelFailure,
 		&i.RequireApprovalIfLarge,
 		&i.RefundRequestedBy,
-		&i.RefundID,
 		&i.RefundApprovalStatus,
 		&i.RefundAttempt,
 	)
@@ -1414,7 +2039,7 @@ func (q *Queries) GetReturnRequestByID(ctx context.Context, id string) (ReturnRe
 }
 
 const getReturnRequestByIDForUpdate = `-- name: GetReturnRequestByIDForUpdate :one
-SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
+SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, shop_id, items_json, seller_note, reverse_tracking_code, reverse_label_url, refund_amount_vnd, refund_id, order_code, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_approval_status, refund_attempt
 FROM return_requests
 WHERE id = $1
 FOR UPDATE
@@ -1432,13 +2057,18 @@ func (q *Queries) GetReturnRequestByIDForUpdate(ctx context.Context, id string) 
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.OrderCode,
 		&i.ShopID,
+		&i.ItemsJSON,
+		&i.SellerNote,
+		&i.ReverseTrackingCode,
+		&i.ReverseLabelURL,
+		&i.RefundAmountVND,
+		&i.RefundID,
+		&i.OrderCode,
 		&i.SellerResponse,
 		&i.SellerEvidenceURLsJSON,
 		&i.DisputeReason,
 		&i.AdminNote,
-		&i.RefundAmountVND,
 		&i.ReturnTrackingCode,
 		&i.ReturnLabelURL,
 		&i.ReturnFeeVND,
@@ -1456,7 +2086,6 @@ func (q *Queries) GetReturnRequestByIDForUpdate(ctx context.Context, id string) 
 		&i.EscalatedFromCancelFailure,
 		&i.RequireApprovalIfLarge,
 		&i.RefundRequestedBy,
-		&i.RefundID,
 		&i.RefundApprovalStatus,
 		&i.RefundAttempt,
 	)
@@ -1464,7 +2093,7 @@ func (q *Queries) GetReturnRequestByIDForUpdate(ctx context.Context, id string) 
 }
 
 const getReturnRequestByOrderID = `-- name: GetReturnRequestByOrderID :one
-SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
+SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, shop_id, items_json, seller_note, reverse_tracking_code, reverse_label_url, refund_amount_vnd, refund_id, order_code, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_approval_status, refund_attempt
 FROM return_requests
 WHERE order_id = $1
 `
@@ -1481,13 +2110,18 @@ func (q *Queries) GetReturnRequestByOrderID(ctx context.Context, orderID string)
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.OrderCode,
 		&i.ShopID,
+		&i.ItemsJSON,
+		&i.SellerNote,
+		&i.ReverseTrackingCode,
+		&i.ReverseLabelURL,
+		&i.RefundAmountVND,
+		&i.RefundID,
+		&i.OrderCode,
 		&i.SellerResponse,
 		&i.SellerEvidenceURLsJSON,
 		&i.DisputeReason,
 		&i.AdminNote,
-		&i.RefundAmountVND,
 		&i.ReturnTrackingCode,
 		&i.ReturnLabelURL,
 		&i.ReturnFeeVND,
@@ -1505,7 +2139,6 @@ func (q *Queries) GetReturnRequestByOrderID(ctx context.Context, orderID string)
 		&i.EscalatedFromCancelFailure,
 		&i.RequireApprovalIfLarge,
 		&i.RefundRequestedBy,
-		&i.RefundID,
 		&i.RefundApprovalStatus,
 		&i.RefundAttempt,
 	)
@@ -1520,6 +2153,22 @@ SELECT EXISTS (
 
 func (q *Queries) HasActiveReturnRequestForOrder(ctx context.Context, orderID string) (bool, error) {
 	row := q.db.QueryRow(ctx, hasActiveReturnRequestForOrder, orderID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const hasOpenOrderAddressChange = `-- name: HasOpenOrderAddressChange :one
+SELECT EXISTS (
+    SELECT 1
+    FROM order_address_changes
+    WHERE order_id = $1
+      AND state NOT IN ('COMPLETED', 'ABORTED')
+)
+`
+
+func (q *Queries) HasOpenOrderAddressChange(ctx context.Context, orderID string) (bool, error) {
+	row := q.db.QueryRow(ctx, hasOpenOrderAddressChange, orderID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -1576,7 +2225,8 @@ INSERT INTO orders (
     platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd,
     shipping_fee_vnd, commission_vnd, payment_fee_vnd, payment_fee_bps, total_payable_vnd,
     carrier_code, service_code, tracking_code, label_url, cancel_reason,
-    shipping_address_json, payment_expires_at, confirmed_at
+    shipping_address_json, payment_expires_at, confirmed_at,
+    sales_channel, storefront_shop_id
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
     $7, $8, $9,
@@ -1585,9 +2235,10 @@ INSERT INTO orders (
     $15, $16, $17,
     $18, $19, $20, $21, $22,
     $23, $24, $25, $26, $27,
-    $28, $29, $30
+    $28, $29, $30,
+    $31, $32
 )
-RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 `
 
 type InsertOrderParams struct {
@@ -1621,6 +2272,8 @@ type InsertOrderParams struct {
 	ShippingAddressJSON        []byte     `json:"shipping_address_json"`
 	PaymentExpiresAt           *time.Time `json:"payment_expires_at"`
 	ConfirmedAt                *time.Time `json:"confirmed_at"`
+	SalesChannel               string     `json:"sales_channel"`
+	StorefrontShopID           string     `json:"storefront_shop_id"`
 }
 
 func (q *Queries) InsertOrder(ctx context.Context, arg InsertOrderParams) (Order, error) {
@@ -1655,6 +2308,8 @@ func (q *Queries) InsertOrder(ctx context.Context, arg InsertOrderParams) (Order
 		arg.ShippingAddressJSON,
 		arg.PaymentExpiresAt,
 		arg.ConfirmedAt,
+		arg.SalesChannel,
+		arg.StorefrontShopID,
 	)
 	var i Order
 	err := row.Scan(
@@ -1687,6 +2342,8 @@ func (q *Queries) InsertOrder(ctx context.Context, arg InsertOrderParams) (Order
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RefundedVND,
 		&i.ConfirmedAt,
 		&i.PendingShipmentCancel,
@@ -1701,6 +2358,138 @@ func (q *Queries) InsertOrder(ctx context.Context, arg InsertOrderParams) (Order
 		&i.PaymentFeeBPS,
 		&i.SettlementRefundedVND,
 		&i.ShipmentJobStatus,
+	)
+	return i, err
+}
+
+const insertOrderAddressChange = `-- name: InsertOrderAddressChange :one
+
+INSERT INTO order_address_changes (
+    id, order_id, buyer_id, idempotency_key, request_hash, new_address_json,
+    carrier_code, service_code, old_carrier_code, old_service_code, old_tracking_code,
+    had_shipment, shipment_cancelled,
+    old_shipping_fee_vnd, new_shipping_fee_vnd, applied_shipping_fee_vnd,
+    old_total_payable_vnd, new_total_payable_vnd,
+    fee_adjusted, needs_cod_adjust, cod_adjusted,
+    state, next_attempt_at, claimed_until, claim_token,
+    trace_id, traceparent, created_at, updated_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10, $11,
+    $12, $13,
+    $14, $15, $16,
+    $17, $18,
+    $19, $20, $21,
+    $22, $23, $24, $25,
+    $26, $27, $28, $29
+)
+RETURNING id, order_id, buyer_id, idempotency_key, request_hash, new_address_json, carrier_code, service_code, old_carrier_code, old_service_code, old_tracking_code, had_shipment, shipment_cancelled, old_shipping_fee_vnd, new_shipping_fee_vnd, applied_shipping_fee_vnd, old_total_payable_vnd, new_total_payable_vnd, fee_adjusted, needs_cod_adjust, cod_adjusted, state, shipment_recreated, shipment_queued, shipment_job_id, new_tracking_code, outbox_emitted, attempts, next_attempt_at, claimed_until, claim_token, abort_code, last_error, trace_id, traceparent, created_at, updated_at
+`
+
+type InsertOrderAddressChangeParams struct {
+	ID                    string     `json:"id"`
+	OrderID               string     `json:"order_id"`
+	BuyerID               string     `json:"buyer_id"`
+	IdempotencyKey        string     `json:"idempotency_key"`
+	RequestHash           string     `json:"request_hash"`
+	NewAddressJSON        []byte     `json:"new_address_json"`
+	CarrierCode           string     `json:"carrier_code"`
+	ServiceCode           string     `json:"service_code"`
+	OldCarrierCode        string     `json:"old_carrier_code"`
+	OldServiceCode        string     `json:"old_service_code"`
+	OldTrackingCode       string     `json:"old_tracking_code"`
+	HadShipment           bool       `json:"had_shipment"`
+	ShipmentCancelled     bool       `json:"shipment_cancelled"`
+	OldShippingFeeVND     int64      `json:"old_shipping_fee_vnd"`
+	NewShippingFeeVND     int64      `json:"new_shipping_fee_vnd"`
+	AppliedShippingFeeVND int64      `json:"applied_shipping_fee_vnd"`
+	OldTotalPayableVND    int64      `json:"old_total_payable_vnd"`
+	NewTotalPayableVND    int64      `json:"new_total_payable_vnd"`
+	FeeAdjusted           bool       `json:"fee_adjusted"`
+	NeedsCODAdjust        bool       `json:"needs_cod_adjust"`
+	CODAdjusted           bool       `json:"cod_adjusted"`
+	State                 string     `json:"state"`
+	NextAttemptAt         time.Time  `json:"next_attempt_at"`
+	ClaimedUntil          *time.Time `json:"claimed_until"`
+	ClaimToken            string     `json:"claim_token"`
+	TraceID               string     `json:"trace_id"`
+	Traceparent           string     `json:"traceparent"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+}
+
+// Wave 3b-3 (A8: G1-G3): Durable order_address_changes intent queries.
+func (q *Queries) InsertOrderAddressChange(ctx context.Context, arg InsertOrderAddressChangeParams) (OrderAddressChange, error) {
+	row := q.db.QueryRow(ctx, insertOrderAddressChange,
+		arg.ID,
+		arg.OrderID,
+		arg.BuyerID,
+		arg.IdempotencyKey,
+		arg.RequestHash,
+		arg.NewAddressJSON,
+		arg.CarrierCode,
+		arg.ServiceCode,
+		arg.OldCarrierCode,
+		arg.OldServiceCode,
+		arg.OldTrackingCode,
+		arg.HadShipment,
+		arg.ShipmentCancelled,
+		arg.OldShippingFeeVND,
+		arg.NewShippingFeeVND,
+		arg.AppliedShippingFeeVND,
+		arg.OldTotalPayableVND,
+		arg.NewTotalPayableVND,
+		arg.FeeAdjusted,
+		arg.NeedsCODAdjust,
+		arg.CODAdjusted,
+		arg.State,
+		arg.NextAttemptAt,
+		arg.ClaimedUntil,
+		arg.ClaimToken,
+		arg.TraceID,
+		arg.Traceparent,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	var i OrderAddressChange
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.IdempotencyKey,
+		&i.RequestHash,
+		&i.NewAddressJSON,
+		&i.CarrierCode,
+		&i.ServiceCode,
+		&i.OldCarrierCode,
+		&i.OldServiceCode,
+		&i.OldTrackingCode,
+		&i.HadShipment,
+		&i.ShipmentCancelled,
+		&i.OldShippingFeeVND,
+		&i.NewShippingFeeVND,
+		&i.AppliedShippingFeeVND,
+		&i.OldTotalPayableVND,
+		&i.NewTotalPayableVND,
+		&i.FeeAdjusted,
+		&i.NeedsCODAdjust,
+		&i.CODAdjusted,
+		&i.State,
+		&i.ShipmentRecreated,
+		&i.ShipmentQueued,
+		&i.ShipmentJobID,
+		&i.NewTrackingCode,
+		&i.OutboxEmitted,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.ClaimedUntil,
+		&i.ClaimToken,
+		&i.AbortCode,
+		&i.LastError,
+		&i.TraceID,
+		&i.Traceparent,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -1855,7 +2644,7 @@ INSERT INTO return_requests (
     $1, $2, $3, $4, $5, $6, $7,
     $8, $9, $10
 )
-RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
+RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, shop_id, items_json, seller_note, reverse_tracking_code, reverse_label_url, refund_amount_vnd, refund_id, order_code, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_approval_status, refund_attempt
 `
 
 type InsertReturnRequestParams struct {
@@ -1894,13 +2683,18 @@ func (q *Queries) InsertReturnRequest(ctx context.Context, arg InsertReturnReque
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.OrderCode,
 		&i.ShopID,
+		&i.ItemsJSON,
+		&i.SellerNote,
+		&i.ReverseTrackingCode,
+		&i.ReverseLabelURL,
+		&i.RefundAmountVND,
+		&i.RefundID,
+		&i.OrderCode,
 		&i.SellerResponse,
 		&i.SellerEvidenceURLsJSON,
 		&i.DisputeReason,
 		&i.AdminNote,
-		&i.RefundAmountVND,
 		&i.ReturnTrackingCode,
 		&i.ReturnLabelURL,
 		&i.ReturnFeeVND,
@@ -1918,7 +2712,6 @@ func (q *Queries) InsertReturnRequest(ctx context.Context, arg InsertReturnReque
 		&i.EscalatedFromCancelFailure,
 		&i.RequireApprovalIfLarge,
 		&i.RefundRequestedBy,
-		&i.RefundID,
 		&i.RefundApprovalStatus,
 		&i.RefundAttempt,
 	)
@@ -1968,6 +2761,29 @@ func (q *Queries) InsertTimelineEvent(ctx context.Context, arg InsertTimelineEve
 	return i, err
 }
 
+const isCancelledAddressChangeTracking = `-- name: IsCancelledAddressChangeTracking :one
+SELECT EXISTS (
+    SELECT 1
+    FROM order_address_changes
+    WHERE order_id = $1
+      AND shipment_cancelled = TRUE
+      AND old_tracking_code <> ''
+      AND LOWER(old_tracking_code) = LOWER($2::text)
+)
+`
+
+type IsCancelledAddressChangeTrackingParams struct {
+	OrderID      string `json:"order_id"`
+	TrackingCode string `json:"tracking_code"`
+}
+
+func (q *Queries) IsCancelledAddressChangeTracking(ctx context.Context, arg IsCancelledAddressChangeTrackingParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isCancelledAddressChangeTracking, arg.OrderID, arg.TrackingCode)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const isEventProcessed = `-- name: IsEventProcessed :one
 SELECT EXISTS (
     SELECT 1 FROM processed_events WHERE event_id = $1
@@ -1979,6 +2795,71 @@ func (q *Queries) IsEventProcessed(ctx context.Context, eventID string) (bool, e
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const listOpenOrderAddressChangesByOrderIDs = `-- name: ListOpenOrderAddressChangesByOrderIDs :many
+SELECT id, order_id, buyer_id, idempotency_key, request_hash, new_address_json, carrier_code, service_code, old_carrier_code, old_service_code, old_tracking_code, had_shipment, shipment_cancelled, old_shipping_fee_vnd, new_shipping_fee_vnd, applied_shipping_fee_vnd, old_total_payable_vnd, new_total_payable_vnd, fee_adjusted, needs_cod_adjust, cod_adjusted, state, shipment_recreated, shipment_queued, shipment_job_id, new_tracking_code, outbox_emitted, attempts, next_attempt_at, claimed_until, claim_token, abort_code, last_error, trace_id, traceparent, created_at, updated_at
+FROM order_address_changes
+WHERE order_id = ANY($1::text[])
+  AND state NOT IN ('COMPLETED', 'ABORTED')
+`
+
+func (q *Queries) ListOpenOrderAddressChangesByOrderIDs(ctx context.Context, orderIds []string) ([]OrderAddressChange, error) {
+	rows, err := q.db.Query(ctx, listOpenOrderAddressChangesByOrderIDs, orderIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OrderAddressChange{}
+	for rows.Next() {
+		var i OrderAddressChange
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrderID,
+			&i.BuyerID,
+			&i.IdempotencyKey,
+			&i.RequestHash,
+			&i.NewAddressJSON,
+			&i.CarrierCode,
+			&i.ServiceCode,
+			&i.OldCarrierCode,
+			&i.OldServiceCode,
+			&i.OldTrackingCode,
+			&i.HadShipment,
+			&i.ShipmentCancelled,
+			&i.OldShippingFeeVND,
+			&i.NewShippingFeeVND,
+			&i.AppliedShippingFeeVND,
+			&i.OldTotalPayableVND,
+			&i.NewTotalPayableVND,
+			&i.FeeAdjusted,
+			&i.NeedsCODAdjust,
+			&i.CODAdjusted,
+			&i.State,
+			&i.ShipmentRecreated,
+			&i.ShipmentQueued,
+			&i.ShipmentJobID,
+			&i.NewTrackingCode,
+			&i.OutboxEmitted,
+			&i.Attempts,
+			&i.NextAttemptAt,
+			&i.ClaimedUntil,
+			&i.ClaimToken,
+			&i.AbortCode,
+			&i.LastError,
+			&i.TraceID,
+			&i.Traceparent,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listOrderItemsByOrderID = `-- name: ListOrderItemsByOrderID :many
@@ -2061,7 +2942,7 @@ func (q *Queries) ListOrderTimelineByOrderID(ctx context.Context, orderID string
 }
 
 const listOrdersByCheckoutGroup = `-- name: ListOrdersByCheckoutGroup :many
-SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 FROM orders
 WHERE checkout_group_id = $1
 ORDER BY shop_id ASC, created_at ASC
@@ -2106,6 +2987,8 @@ func (q *Queries) ListOrdersByCheckoutGroup(ctx context.Context, checkoutGroupID
 			&i.CompletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.SalesChannel,
+			&i.StorefrontShopID,
 			&i.RefundedVND,
 			&i.ConfirmedAt,
 			&i.PendingShipmentCancel,
@@ -2132,7 +3015,7 @@ func (q *Queries) ListOrdersByCheckoutGroup(ctx context.Context, checkoutGroupID
 }
 
 const listOrdersByCheckoutGroupForUpdate = `-- name: ListOrdersByCheckoutGroupForUpdate :many
-SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 FROM orders
 WHERE checkout_group_id = $1
 ORDER BY shop_id ASC, created_at ASC, id ASC
@@ -2178,6 +3061,80 @@ func (q *Queries) ListOrdersByCheckoutGroupForUpdate(ctx context.Context, checko
 			&i.CompletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.SalesChannel,
+			&i.StorefrontShopID,
+			&i.RefundedVND,
+			&i.ConfirmedAt,
+			&i.PendingShipmentCancel,
+			&i.PendingCancelCompensation,
+			&i.OrphanShipmentNeedsManualReview,
+			&i.PendingReturnCompensation,
+			&i.PendingShipmentCancelAt,
+			&i.PendingShipmentCancelToken,
+			&i.ShopProgramDiscountVND,
+			&i.ShopFreeshipDiscountVND,
+			&i.PaymentFeeVND,
+			&i.PaymentFeeBPS,
+			&i.SettlementRefundedVND,
+			&i.ShipmentJobStatus,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOrdersByIDs = `-- name: ListOrdersByIDs :many
+SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+FROM orders
+WHERE id = ANY($1::text[])
+`
+
+func (q *Queries) ListOrdersByIDs(ctx context.Context, ids []string) ([]Order, error) {
+	rows, err := q.db.Query(ctx, listOrdersByIDs, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Order{}
+	for rows.Next() {
+		var i Order
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrderCode,
+			&i.CheckoutGroupID,
+			&i.BuyerID,
+			&i.ShopID,
+			&i.Status,
+			&i.PaymentMethod,
+			&i.PaymentID,
+			&i.PaymentStatus,
+			&i.SubtotalVND,
+			&i.FlashSaleDiscountVND,
+			&i.ShopVoucherDiscountVND,
+			&i.PlatformVoucherDiscountVND,
+			&i.FreeshipDiscountVND,
+			&i.CoinsDiscountVND,
+			&i.ShippingFeeVND,
+			&i.CommissionVND,
+			&i.TotalPayableVND,
+			&i.CarrierCode,
+			&i.ServiceCode,
+			&i.TrackingCode,
+			&i.LabelURL,
+			&i.CancelReason,
+			&i.ShippingAddressJSON,
+			&i.PaymentExpiresAt,
+			&i.DeliveredAt,
+			&i.CompletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.SalesChannel,
+			&i.StorefrontShopID,
 			&i.RefundedVND,
 			&i.ConfirmedAt,
 			&i.PendingShipmentCancel,
@@ -2204,21 +3161,42 @@ func (q *Queries) ListOrdersByCheckoutGroupForUpdate(ctx context.Context, checko
 }
 
 const listOrdersFiltered = `-- name: ListOrdersFiltered :many
-SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 FROM orders
 WHERE ($1::text = '' OR buyer_id = $1::text)
   AND ($2::text = '' OR shop_id = $2::text)
   AND ($3::text = '' OR status = $3::text)
+  AND (cardinality($4::text[]) = 0 OR status = ANY($4::text[]))
+  AND ($5::text = '' OR carrier_code = $5::text)
+  AND ($6::text = '' OR payment_method = $6::text)
+  AND (
+      $7::text = ''
+      OR order_code ILIKE $7::text ESCAPE '\'
+      OR COALESCE(shipping_address_json->>'recipient_name', '') ILIKE $7::text ESCAPE '\'
+  )
+  AND (
+      $8::timestamptz IS NULL
+      OR COALESCE(confirmed_at, created_at) <= $8::timestamptz
+  )
+  AND ($9::text = '' OR sales_channel = $9::text)
+  AND ($10::text = '' OR storefront_shop_id = $10::text)
 ORDER BY created_at DESC, id DESC
-LIMIT $5 OFFSET $4
+LIMIT $12 OFFSET $11
 `
 
 type ListOrdersFilteredParams struct {
-	BuyerID    string `json:"buyer_id"`
-	ShopID     string `json:"shop_id"`
-	Status     string `json:"status"`
-	PageOffset int32  `json:"page_offset"`
-	PageLimit  int32  `json:"page_limit"`
+	BuyerID          string     `json:"buyer_id"`
+	ShopID           string     `json:"shop_id"`
+	Status           string     `json:"status"`
+	Statuses         []string   `json:"statuses"`
+	CarrierCode      string     `json:"carrier_code"`
+	PaymentMethod    string     `json:"payment_method"`
+	KeywordPattern   string     `json:"keyword_pattern"`
+	DueCutoff        *time.Time `json:"due_cutoff"`
+	SalesChannel     string     `json:"sales_channel"`
+	StorefrontShopID string     `json:"storefront_shop_id"`
+	PageOffset       int32      `json:"page_offset"`
+	PageLimit        int32      `json:"page_limit"`
 }
 
 func (q *Queries) ListOrdersFiltered(ctx context.Context, arg ListOrdersFilteredParams) ([]Order, error) {
@@ -2226,6 +3204,13 @@ func (q *Queries) ListOrdersFiltered(ctx context.Context, arg ListOrdersFiltered
 		arg.BuyerID,
 		arg.ShopID,
 		arg.Status,
+		arg.Statuses,
+		arg.CarrierCode,
+		arg.PaymentMethod,
+		arg.KeywordPattern,
+		arg.DueCutoff,
+		arg.SalesChannel,
+		arg.StorefrontShopID,
 		arg.PageOffset,
 		arg.PageLimit,
 	)
@@ -2266,6 +3251,8 @@ func (q *Queries) ListOrdersFiltered(ctx context.Context, arg ListOrdersFiltered
 			&i.CompletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.SalesChannel,
+			&i.StorefrontShopID,
 			&i.RefundedVND,
 			&i.ConfirmedAt,
 			&i.PendingShipmentCancel,
@@ -2292,7 +3279,7 @@ func (q *Queries) ListOrdersFiltered(ctx context.Context, arg ListOrdersFiltered
 }
 
 const listOrdersNeedingManualReview = `-- name: ListOrdersNeedingManualReview :many
-SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+SELECT id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 FROM orders
 WHERE orphan_shipment_needs_manual_review = TRUE
 ORDER BY updated_at ASC, id ASC
@@ -2344,6 +3331,8 @@ func (q *Queries) ListOrdersNeedingManualReview(ctx context.Context, arg ListOrd
 			&i.CompletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.SalesChannel,
+			&i.StorefrontShopID,
 			&i.RefundedVND,
 			&i.ConfirmedAt,
 			&i.PendingShipmentCancel,
@@ -2406,7 +3395,7 @@ func (q *Queries) ListReturnEventsByRequestID(ctx context.Context, returnRequest
 }
 
 const listReturnRequestsFiltered = `-- name: ListReturnRequestsFiltered :many
-SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
+SELECT id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, shop_id, items_json, seller_note, reverse_tracking_code, reverse_label_url, refund_amount_vnd, refund_id, order_code, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_approval_status, refund_attempt
 FROM return_requests
 WHERE ($1::text = '' OR buyer_id = $1::text)
   AND ($2::text = '' OR shop_id = $2::text)
@@ -2447,13 +3436,18 @@ func (q *Queries) ListReturnRequestsFiltered(ctx context.Context, arg ListReturn
 			&i.Status,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.OrderCode,
 			&i.ShopID,
+			&i.ItemsJSON,
+			&i.SellerNote,
+			&i.ReverseTrackingCode,
+			&i.ReverseLabelURL,
+			&i.RefundAmountVND,
+			&i.RefundID,
+			&i.OrderCode,
 			&i.SellerResponse,
 			&i.SellerEvidenceURLsJSON,
 			&i.DisputeReason,
 			&i.AdminNote,
-			&i.RefundAmountVND,
 			&i.ReturnTrackingCode,
 			&i.ReturnLabelURL,
 			&i.ReturnFeeVND,
@@ -2471,7 +3465,6 @@ func (q *Queries) ListReturnRequestsFiltered(ctx context.Context, arg ListReturn
 			&i.EscalatedFromCancelFailure,
 			&i.RequireApprovalIfLarge,
 			&i.RefundRequestedBy,
-			&i.RefundID,
 			&i.RefundApprovalStatus,
 			&i.RefundAttempt,
 		); err != nil {
@@ -2630,6 +3623,41 @@ func (q *Queries) MarkOutboxEventPublished(ctx context.Context, arg MarkOutboxEv
 	return result.RowsAffected(), nil
 }
 
+const releaseOrderAddressChangeWithBackoff = `-- name: ReleaseOrderAddressChangeWithBackoff :execrows
+UPDATE order_address_changes
+SET attempts = attempts + 1,
+    next_attempt_at = $2,
+    claimed_until = NULL,
+    claim_token = '',
+    last_error = $3,
+    updated_at = $4
+WHERE id = $1
+  AND claim_token = $5::text
+  AND state NOT IN ('COMPLETED', 'ABORTED')
+`
+
+type ReleaseOrderAddressChangeWithBackoffParams struct {
+	ID                 string    `json:"id"`
+	NextAttemptAt      time.Time `json:"next_attempt_at"`
+	LastError          string    `json:"last_error"`
+	UpdatedAt          time.Time `json:"updated_at"`
+	ExpectedClaimToken string    `json:"expected_claim_token"`
+}
+
+func (q *Queries) ReleaseOrderAddressChangeWithBackoff(ctx context.Context, arg ReleaseOrderAddressChangeWithBackoffParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseOrderAddressChangeWithBackoff,
+		arg.ID,
+		arg.NextAttemptAt,
+		arg.LastError,
+		arg.UpdatedAt,
+		arg.ExpectedClaimToken,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const releaseOutboxEventClaims = `-- name: ReleaseOutboxEventClaims :execrows
 UPDATE outbox_events
 SET claimed_until = NULL,
@@ -2650,6 +3678,73 @@ func (q *Queries) ReleaseOutboxEventClaims(ctx context.Context, arg ReleaseOutbo
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const renewOrderAddressChangeLease = `-- name: RenewOrderAddressChangeLease :one
+UPDATE order_address_changes
+SET claimed_until = $2,
+    updated_at = $3
+WHERE id = $1
+  AND claim_token = $4::text
+  AND state NOT IN ('COMPLETED', 'ABORTED')
+RETURNING id, order_id, buyer_id, idempotency_key, request_hash, new_address_json, carrier_code, service_code, old_carrier_code, old_service_code, old_tracking_code, had_shipment, shipment_cancelled, old_shipping_fee_vnd, new_shipping_fee_vnd, applied_shipping_fee_vnd, old_total_payable_vnd, new_total_payable_vnd, fee_adjusted, needs_cod_adjust, cod_adjusted, state, shipment_recreated, shipment_queued, shipment_job_id, new_tracking_code, outbox_emitted, attempts, next_attempt_at, claimed_until, claim_token, abort_code, last_error, trace_id, traceparent, created_at, updated_at
+`
+
+type RenewOrderAddressChangeLeaseParams struct {
+	ID                 string     `json:"id"`
+	ClaimedUntil       *time.Time `json:"claimed_until"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	ExpectedClaimToken string     `json:"expected_claim_token"`
+}
+
+func (q *Queries) RenewOrderAddressChangeLease(ctx context.Context, arg RenewOrderAddressChangeLeaseParams) (OrderAddressChange, error) {
+	row := q.db.QueryRow(ctx, renewOrderAddressChangeLease,
+		arg.ID,
+		arg.ClaimedUntil,
+		arg.UpdatedAt,
+		arg.ExpectedClaimToken,
+	)
+	var i OrderAddressChange
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.IdempotencyKey,
+		&i.RequestHash,
+		&i.NewAddressJSON,
+		&i.CarrierCode,
+		&i.ServiceCode,
+		&i.OldCarrierCode,
+		&i.OldServiceCode,
+		&i.OldTrackingCode,
+		&i.HadShipment,
+		&i.ShipmentCancelled,
+		&i.OldShippingFeeVND,
+		&i.NewShippingFeeVND,
+		&i.AppliedShippingFeeVND,
+		&i.OldTotalPayableVND,
+		&i.NewTotalPayableVND,
+		&i.FeeAdjusted,
+		&i.NeedsCODAdjust,
+		&i.CODAdjusted,
+		&i.State,
+		&i.ShipmentRecreated,
+		&i.ShipmentQueued,
+		&i.ShipmentJobID,
+		&i.NewTrackingCode,
+		&i.OutboxEmitted,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.ClaimedUntil,
+		&i.ClaimToken,
+		&i.AbortCode,
+		&i.LastError,
+		&i.TraceID,
+		&i.Traceparent,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const reportPlatformCompletedDaily = `-- name: ReportPlatformCompletedDaily :many
@@ -3242,7 +4337,7 @@ SET shipment_job_status = 'FAILED',
 WHERE id = $1
   AND tracking_code = ''
   AND status IN ('CONFIRMED', 'PREPARING')
-RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 `
 
 func (q *Queries) SetOrderShipmentJobFailed(ctx context.Context, id string) (Order, error) {
@@ -3278,6 +4373,8 @@ func (q *Queries) SetOrderShipmentJobFailed(ctx context.Context, id string) (Ord
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RefundedVND,
 		&i.ConfirmedAt,
 		&i.PendingShipmentCancel,
@@ -3304,7 +4401,7 @@ SET shipment_job_status = 'QUEUED',
     pending_shipment_cancel_token = '',
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 `
 
 func (q *Queries) SetOrderShipmentQueued(ctx context.Context, id string) (Order, error) {
@@ -3340,6 +4437,8 @@ func (q *Queries) SetOrderShipmentQueued(ctx context.Context, id string) (Order,
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RefundedVND,
 		&i.ConfirmedAt,
 		&i.PendingShipmentCancel,
@@ -3444,6 +4543,194 @@ func (q *Queries) UpdateCheckoutGroupPaymentStatus(ctx context.Context, arg Upda
 	return err
 }
 
+const updateOrderAddressAndFees = `-- name: UpdateOrderAddressAndFees :one
+UPDATE orders
+SET shipping_address_json = $2,
+    shipping_fee_vnd = $3,
+    total_payable_vnd = $4,
+    carrier_code = $5,
+    service_code = $6,
+    tracking_code = '',
+    label_url = '',
+    shipment_job_status = '',
+    pending_shipment_cancel = FALSE,
+    pending_shipment_cancel_at = NULL,
+    pending_shipment_cancel_token = '',
+    updated_at = $7
+WHERE id = $1
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+`
+
+type UpdateOrderAddressAndFeesParams struct {
+	ID                  string    `json:"id"`
+	ShippingAddressJSON []byte    `json:"shipping_address_json"`
+	ShippingFeeVND      int64     `json:"shipping_fee_vnd"`
+	TotalPayableVND     int64     `json:"total_payable_vnd"`
+	CarrierCode         string    `json:"carrier_code"`
+	ServiceCode         string    `json:"service_code"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
+func (q *Queries) UpdateOrderAddressAndFees(ctx context.Context, arg UpdateOrderAddressAndFeesParams) (Order, error) {
+	row := q.db.QueryRow(ctx, updateOrderAddressAndFees,
+		arg.ID,
+		arg.ShippingAddressJSON,
+		arg.ShippingFeeVND,
+		arg.TotalPayableVND,
+		arg.CarrierCode,
+		arg.ServiceCode,
+		arg.UpdatedAt,
+	)
+	var i Order
+	err := row.Scan(
+		&i.ID,
+		&i.OrderCode,
+		&i.CheckoutGroupID,
+		&i.BuyerID,
+		&i.ShopID,
+		&i.Status,
+		&i.PaymentMethod,
+		&i.PaymentID,
+		&i.PaymentStatus,
+		&i.SubtotalVND,
+		&i.FlashSaleDiscountVND,
+		&i.ShopVoucherDiscountVND,
+		&i.PlatformVoucherDiscountVND,
+		&i.FreeshipDiscountVND,
+		&i.CoinsDiscountVND,
+		&i.ShippingFeeVND,
+		&i.CommissionVND,
+		&i.TotalPayableVND,
+		&i.CarrierCode,
+		&i.ServiceCode,
+		&i.TrackingCode,
+		&i.LabelURL,
+		&i.CancelReason,
+		&i.ShippingAddressJSON,
+		&i.PaymentExpiresAt,
+		&i.DeliveredAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
+		&i.RefundedVND,
+		&i.ConfirmedAt,
+		&i.PendingShipmentCancel,
+		&i.PendingCancelCompensation,
+		&i.OrphanShipmentNeedsManualReview,
+		&i.PendingReturnCompensation,
+		&i.PendingShipmentCancelAt,
+		&i.PendingShipmentCancelToken,
+		&i.ShopProgramDiscountVND,
+		&i.ShopFreeshipDiscountVND,
+		&i.PaymentFeeVND,
+		&i.PaymentFeeBPS,
+		&i.SettlementRefundedVND,
+		&i.ShipmentJobStatus,
+	)
+	return i, err
+}
+
+const updateOrderAddressChangeState = `-- name: UpdateOrderAddressChangeState :one
+UPDATE order_address_changes
+SET state = $2,
+    shipment_cancelled = $3,
+    cod_adjusted = $4,
+    shipment_recreated = $5,
+    shipment_queued = $6,
+    shipment_job_id = $7,
+    new_tracking_code = $8,
+    outbox_emitted = $9,
+    abort_code = $10,
+    last_error = $11,
+    claimed_until = $12,
+    claim_token = $13,
+    updated_at = $14
+WHERE id = $1
+  AND claim_token = $15::text
+RETURNING id, order_id, buyer_id, idempotency_key, request_hash, new_address_json, carrier_code, service_code, old_carrier_code, old_service_code, old_tracking_code, had_shipment, shipment_cancelled, old_shipping_fee_vnd, new_shipping_fee_vnd, applied_shipping_fee_vnd, old_total_payable_vnd, new_total_payable_vnd, fee_adjusted, needs_cod_adjust, cod_adjusted, state, shipment_recreated, shipment_queued, shipment_job_id, new_tracking_code, outbox_emitted, attempts, next_attempt_at, claimed_until, claim_token, abort_code, last_error, trace_id, traceparent, created_at, updated_at
+`
+
+type UpdateOrderAddressChangeStateParams struct {
+	ID                 string     `json:"id"`
+	State              string     `json:"state"`
+	ShipmentCancelled  bool       `json:"shipment_cancelled"`
+	CODAdjusted        bool       `json:"cod_adjusted"`
+	ShipmentRecreated  bool       `json:"shipment_recreated"`
+	ShipmentQueued     bool       `json:"shipment_queued"`
+	ShipmentJobID      string     `json:"shipment_job_id"`
+	NewTrackingCode    string     `json:"new_tracking_code"`
+	OutboxEmitted      bool       `json:"outbox_emitted"`
+	AbortCode          string     `json:"abort_code"`
+	LastError          string     `json:"last_error"`
+	ClaimedUntil       *time.Time `json:"claimed_until"`
+	ClaimToken         string     `json:"claim_token"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	ExpectedClaimToken string     `json:"expected_claim_token"`
+}
+
+func (q *Queries) UpdateOrderAddressChangeState(ctx context.Context, arg UpdateOrderAddressChangeStateParams) (OrderAddressChange, error) {
+	row := q.db.QueryRow(ctx, updateOrderAddressChangeState,
+		arg.ID,
+		arg.State,
+		arg.ShipmentCancelled,
+		arg.CODAdjusted,
+		arg.ShipmentRecreated,
+		arg.ShipmentQueued,
+		arg.ShipmentJobID,
+		arg.NewTrackingCode,
+		arg.OutboxEmitted,
+		arg.AbortCode,
+		arg.LastError,
+		arg.ClaimedUntil,
+		arg.ClaimToken,
+		arg.UpdatedAt,
+		arg.ExpectedClaimToken,
+	)
+	var i OrderAddressChange
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.BuyerID,
+		&i.IdempotencyKey,
+		&i.RequestHash,
+		&i.NewAddressJSON,
+		&i.CarrierCode,
+		&i.ServiceCode,
+		&i.OldCarrierCode,
+		&i.OldServiceCode,
+		&i.OldTrackingCode,
+		&i.HadShipment,
+		&i.ShipmentCancelled,
+		&i.OldShippingFeeVND,
+		&i.NewShippingFeeVND,
+		&i.AppliedShippingFeeVND,
+		&i.OldTotalPayableVND,
+		&i.NewTotalPayableVND,
+		&i.FeeAdjusted,
+		&i.NeedsCODAdjust,
+		&i.CODAdjusted,
+		&i.State,
+		&i.ShipmentRecreated,
+		&i.ShipmentQueued,
+		&i.ShipmentJobID,
+		&i.NewTrackingCode,
+		&i.OutboxEmitted,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.ClaimedUntil,
+		&i.ClaimToken,
+		&i.AbortCode,
+		&i.LastError,
+		&i.TraceID,
+		&i.Traceparent,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateOrderCompleted = `-- name: UpdateOrderCompleted :one
 UPDATE orders
 SET status = 'COMPLETED',
@@ -3451,7 +4738,7 @@ SET status = 'COMPLETED',
     settlement_refunded_vnd = refunded_vnd,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 `
 
 func (q *Queries) UpdateOrderCompleted(ctx context.Context, id string) (Order, error) {
@@ -3487,6 +4774,8 @@ func (q *Queries) UpdateOrderCompleted(ctx context.Context, id string) (Order, e
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RefundedVND,
 		&i.ConfirmedAt,
 		&i.PendingShipmentCancel,
@@ -3514,7 +4803,7 @@ SET status = 'DELIVERED',
     delivered_at = NOW(),
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 `
 
 type UpdateOrderDeliveredParams struct {
@@ -3556,6 +4845,8 @@ func (q *Queries) UpdateOrderDelivered(ctx context.Context, arg UpdateOrderDeliv
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RefundedVND,
 		&i.ConfirmedAt,
 		&i.PendingShipmentCancel,
@@ -3587,7 +4878,7 @@ SET payment_method = $2,
     updated_at = NOW()
 WHERE id = $1
   AND status = 'PENDING'
-RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 `
 
 type UpdateOrderPaymentOnRetryParams struct {
@@ -3643,6 +4934,8 @@ func (q *Queries) UpdateOrderPaymentOnRetry(ctx context.Context, arg UpdateOrder
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RefundedVND,
 		&i.ConfirmedAt,
 		&i.PendingShipmentCancel,
@@ -3691,7 +4984,7 @@ SET status = 'PREPARING',
     pending_shipment_cancel_token = '',
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 `
 
 type UpdateOrderPreparingWithShipmentParams struct {
@@ -3741,6 +5034,8 @@ func (q *Queries) UpdateOrderPreparingWithShipment(ctx context.Context, arg Upda
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RefundedVND,
 		&i.ConfirmedAt,
 		&i.PendingShipmentCancel,
@@ -3794,7 +5089,7 @@ SET status = 'SHIPPING',
     shipment_job_status = '',
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 `
 
 type UpdateOrderShippedFromWebhookParams struct {
@@ -3842,6 +5137,8 @@ func (q *Queries) UpdateOrderShippedFromWebhook(ctx context.Context, arg UpdateO
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RefundedVND,
 		&i.ConfirmedAt,
 		&i.PendingShipmentCancel,
@@ -3871,7 +5168,7 @@ SET carrier_code = CASE WHEN carrier_code = '' OR LOWER(carrier_code) = 'fallbac
     pending_shipment_cancel_token = '',
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 `
 
 type UpdateOrderShippingLabelParams struct {
@@ -3919,6 +5216,8 @@ func (q *Queries) UpdateOrderShippingLabel(ctx context.Context, arg UpdateOrderS
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RefundedVND,
 		&i.ConfirmedAt,
 		&i.PendingShipmentCancel,
@@ -3947,7 +5246,7 @@ SET status = $2,
     shipment_job_status = CASE WHEN $2 IN ('CANCELLED', 'RETURNED', 'SHIPPING', 'DELIVERED', 'COMPLETED') THEN '' ELSE shipment_job_status END,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
+RETURNING id, order_code, checkout_group_id, buyer_id, shop_id, status, payment_method, payment_id, payment_status, subtotal_vnd, flash_sale_discount_vnd, shop_voucher_discount_vnd, platform_voucher_discount_vnd, freeship_discount_vnd, coins_discount_vnd, shipping_fee_vnd, commission_vnd, total_payable_vnd, carrier_code, service_code, tracking_code, label_url, cancel_reason, shipping_address_json, payment_expires_at, delivered_at, completed_at, created_at, updated_at, sales_channel, storefront_shop_id, refunded_vnd, confirmed_at, pending_shipment_cancel, pending_cancel_compensation, orphan_shipment_needs_manual_review, pending_return_compensation, pending_shipment_cancel_at, pending_shipment_cancel_token, shop_program_discount_vnd, shop_freeship_discount_vnd, payment_fee_vnd, payment_fee_bps, settlement_refunded_vnd, shipment_job_status
 `
 
 type UpdateOrderStatusParams struct {
@@ -3997,6 +5296,8 @@ func (q *Queries) UpdateOrderStatus(ctx context.Context, arg UpdateOrderStatusPa
 		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SalesChannel,
+		&i.StorefrontShopID,
 		&i.RefundedVND,
 		&i.ConfirmedAt,
 		&i.PendingShipmentCancel,
@@ -4042,7 +5343,7 @@ SET refund_done = $2,
     refund_approval_status = CASE WHEN $9::bool THEN $10::text ELSE refund_approval_status END,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
+RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, shop_id, items_json, seller_note, reverse_tracking_code, reverse_label_url, refund_amount_vnd, refund_id, order_code, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_approval_status, refund_attempt
 `
 
 type UpdateReturnRequestSideEffectsParams struct {
@@ -4081,13 +5382,18 @@ func (q *Queries) UpdateReturnRequestSideEffects(ctx context.Context, arg Update
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.OrderCode,
 		&i.ShopID,
+		&i.ItemsJSON,
+		&i.SellerNote,
+		&i.ReverseTrackingCode,
+		&i.ReverseLabelURL,
+		&i.RefundAmountVND,
+		&i.RefundID,
+		&i.OrderCode,
 		&i.SellerResponse,
 		&i.SellerEvidenceURLsJSON,
 		&i.DisputeReason,
 		&i.AdminNote,
-		&i.RefundAmountVND,
 		&i.ReturnTrackingCode,
 		&i.ReturnLabelURL,
 		&i.ReturnFeeVND,
@@ -4105,7 +5411,6 @@ func (q *Queries) UpdateReturnRequestSideEffects(ctx context.Context, arg Update
 		&i.EscalatedFromCancelFailure,
 		&i.RequireApprovalIfLarge,
 		&i.RefundRequestedBy,
-		&i.RefundID,
 		&i.RefundApprovalStatus,
 		&i.RefundAttempt,
 	)
@@ -4140,7 +5445,7 @@ SET status = $2,
     refund_attempt = $25,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
+RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, shop_id, items_json, seller_note, reverse_tracking_code, reverse_label_url, refund_amount_vnd, refund_id, order_code, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_approval_status, refund_attempt
 `
 
 type UpdateReturnRequestStateParams struct {
@@ -4209,13 +5514,18 @@ func (q *Queries) UpdateReturnRequestState(ctx context.Context, arg UpdateReturn
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.OrderCode,
 		&i.ShopID,
+		&i.ItemsJSON,
+		&i.SellerNote,
+		&i.ReverseTrackingCode,
+		&i.ReverseLabelURL,
+		&i.RefundAmountVND,
+		&i.RefundID,
+		&i.OrderCode,
 		&i.SellerResponse,
 		&i.SellerEvidenceURLsJSON,
 		&i.DisputeReason,
 		&i.AdminNote,
-		&i.RefundAmountVND,
 		&i.ReturnTrackingCode,
 		&i.ReturnLabelURL,
 		&i.ReturnFeeVND,
@@ -4233,7 +5543,6 @@ func (q *Queries) UpdateReturnRequestState(ctx context.Context, arg UpdateReturn
 		&i.EscalatedFromCancelFailure,
 		&i.RequireApprovalIfLarge,
 		&i.RefundRequestedBy,
-		&i.RefundID,
 		&i.RefundApprovalStatus,
 		&i.RefundAttempt,
 	)
@@ -4252,7 +5561,7 @@ SET return_tracking_code = $2,
     escalated_from_cancel_failure = FALSE,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, order_code, shop_id, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, refund_amount_vnd, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_id, refund_approval_status, refund_attempt
+RETURNING id, order_id, buyer_id, reason, evidence_urls_json, status, created_at, updated_at, shop_id, items_json, seller_note, reverse_tracking_code, reverse_label_url, refund_amount_vnd, refund_id, order_code, seller_response, seller_evidence_urls_json, dispute_reason, admin_note, return_tracking_code, return_label_url, return_fee_vnd, return_fee_bearer, goods_received, should_restock, refund_done, promo_released, restock_done, deadline_at, return_shipment_terminal, previous_return_trackings_json, deadline_extension_count, escalated_from_transit_timeout, escalated_from_cancel_failure, require_approval_if_large, refund_requested_by, refund_approval_status, refund_attempt
 `
 
 type UpdateReturnShipmentInfoParams struct {
@@ -4281,13 +5590,18 @@ func (q *Queries) UpdateReturnShipmentInfo(ctx context.Context, arg UpdateReturn
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.OrderCode,
 		&i.ShopID,
+		&i.ItemsJSON,
+		&i.SellerNote,
+		&i.ReverseTrackingCode,
+		&i.ReverseLabelURL,
+		&i.RefundAmountVND,
+		&i.RefundID,
+		&i.OrderCode,
 		&i.SellerResponse,
 		&i.SellerEvidenceURLsJSON,
 		&i.DisputeReason,
 		&i.AdminNote,
-		&i.RefundAmountVND,
 		&i.ReturnTrackingCode,
 		&i.ReturnLabelURL,
 		&i.ReturnFeeVND,
@@ -4305,7 +5619,6 @@ func (q *Queries) UpdateReturnShipmentInfo(ctx context.Context, arg UpdateReturn
 		&i.EscalatedFromCancelFailure,
 		&i.RequireApprovalIfLarge,
 		&i.RefundRequestedBy,
-		&i.RefundID,
 		&i.RefundApprovalStatus,
 		&i.RefundAttempt,
 	)

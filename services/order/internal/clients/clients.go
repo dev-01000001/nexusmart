@@ -62,6 +62,7 @@ type PaymentClient interface {
 	CreateRefund(ctx context.Context, req *paymentv1.CreateRefundRequest, opts ...grpc.CallOption) (*paymentv1.CreateRefundResponse, error)
 	GetFeeConfig(ctx context.Context, req *paymentv1.GetFeeConfigRequest, opts ...grpc.CallOption) (*paymentv1.GetFeeConfigResponse, error)
 	GetPaymentMethodConfigs(ctx context.Context, req *paymentv1.GetPaymentMethodConfigsRequest, opts ...grpc.CallOption) (*paymentv1.GetPaymentMethodConfigsResponse, error)
+	AdjustCODShippingFee(ctx context.Context, req *paymentv1.AdjustCODShippingFeeRequest, opts ...grpc.CallOption) (*paymentv1.AdjustCODShippingFeeResponse, error)
 }
 
 // ShippingClient defines the subset of ShippingService RPCs required by OrderService.
@@ -95,7 +96,7 @@ func DialAll(cfg config.Config, svc *auth.Manager) (*Bundle, error) {
 			addr,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithChainUnaryInterceptor(
-				timeoutAndAuthClientInterceptor(cfg.GRPCCallTimeout, svc),
+				TimeoutAndAuthClientInterceptor(cfg.GRPCCallTimeout, svc),
 				telemetry.GRPCUnaryClientInterceptor(cfg.ServiceName),
 			),
 		)
@@ -224,6 +225,11 @@ func AuthClientInterceptor(defaultTimeout time.Duration, svc *auth.Manager) grpc
 	return timeoutAndAuthClientInterceptor(defaultTimeout, svc)
 }
 
+// TimeoutAndAuthClientInterceptor is an alias for AuthClientInterceptor kept for callers and tests.
+func TimeoutAndAuthClientInterceptor(defaultTimeout time.Duration, svc *auth.Manager) grpc.UnaryClientInterceptor {
+	return timeoutAndAuthClientInterceptor(defaultTimeout, svc)
+}
+
 func timeoutAndAuthClientInterceptor(defaultTimeout time.Duration, svc *auth.Manager) grpc.UnaryClientInterceptor {
 	return func(
 		ctx context.Context,
@@ -242,6 +248,9 @@ func timeoutAndAuthClientInterceptor(defaultTimeout time.Duration, svc *auth.Man
 		}
 
 		if claims, ok := auth.ClaimsFromContext(ctx); ok && claims.Service != "" {
+			if svc == nil {
+				return status.Error(codes.Internal, "service auth manager not configured")
+			}
 			tok, err := svc.SignServiceToken(claims.Service)
 			if err != nil {
 				return status.Error(codes.Internal, "sign service token")

@@ -122,11 +122,15 @@ func (s *PromotionService) SyncRedisFromStore(ctx context.Context) error {
 		}
 	}
 
-	items, err := s.store.ListApprovedFlashSaleItems(ctx)
+	now := s.nowFn()
+	items, err := s.store.ListActiveApprovedFlashSaleItems(ctx, now)
 	if err != nil {
 		return fmt.Errorf("list approved flash items for redis sync: %w", err)
 	}
 	for _, item := range items {
+		if item.WindowStatus == domain.FlashWindowStatusEnded || !item.EndsAt.After(now) {
+			continue
+		}
 		if _, syncErr := s.syncFlashItemRedis(ctx, item.ID, false); syncErr != nil {
 			return fmt.Errorf("sync flash item %s to redis: %w", item.ID, syncErr)
 		}
@@ -169,7 +173,7 @@ func (s *PromotionService) syncVoucherRedis(ctx context.Context, voucherID strin
 func (s *PromotionService) reconcileFlashItemFn(ctx context.Context, item *domain.FlashSaleItem) error {
 	rCtx, cancel := s.lockedRedisCtx(ctx)
 	defer cancel()
-	if item.Status != domain.FlashStatusApproved {
+	if item.Status != domain.FlashStatusApproved || item.WindowStatus == domain.FlashWindowStatusEnded {
 		return s.engine.DeleteFlashItemSlots(rCtx, item.ID)
 	}
 	return s.engine.InitFlashItemSlots(rCtx, item.ID, min(max(item.RemainingSlots, 0), item.TotalSlots), true)
@@ -514,9 +518,13 @@ func (s *PromotionService) CreateVoucher(ctx context.Context, req *promotionv1.C
 
 // ListAvailableVouchers filters vouchers and computes live Redis eligibility + reasons.
 func (s *PromotionService) ListAvailableVouchers(ctx context.Context, req *promotionv1.ListAvailableVouchersRequest) (*promotionv1.ListAvailableVouchersResponse, error) {
+	channel, storefrontShopID, err := normalizeSalesChannel(req.GetSalesChannel(), req.GetStorefrontShopId())
+	if err != nil {
+		return nil, err
+	}
+
 	var scopeFilter string
 	if req.GetScope() != promotionv1.VoucherScope_VOUCHER_SCOPE_UNSPECIFIED {
-		var err error
 		scopeFilter, err = protoScopeToDomain(req.GetScope())
 		if err != nil {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -578,6 +586,17 @@ func (s *PromotionService) ListAvailableVouchers(ctx context.Context, req *promo
 		userID = claims.UserID()
 	}
 
+	if channel == domain.SalesChannelStorefront {
+		if shopFilter != "" && shopFilter != storefrontShopID {
+			return nil, status.Errorf(codes.InvalidArgument, "STOREFRONT_SHOP_MISMATCH: shop_id %q does not match storefront_shop_id %q", shopFilter, storefrontShopID)
+		}
+		if scopeFilter != "" && scopeFilter != domain.VoucherScopeShop {
+			return &promotionv1.ListAvailableVouchersResponse{}, nil
+		}
+		shopFilter = storefrontShopID
+		scopeFilter = domain.VoucherScopeShop
+	}
+
 	vouchers, err := s.store.ListVouchers(ctx, shopFilter, scopeFilter)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list vouchers: %v", err)
@@ -586,9 +605,12 @@ func (s *PromotionService) ListAvailableVouchers(ctx context.Context, req *promo
 		return &promotionv1.ListAvailableVouchersResponse{}, nil
 	}
 
-	savedMap, err := s.store.GetUserSavedVoucherIDs(ctx, userID)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "load saved vouchers: %v", err)
+	savedMap := map[string]bool{}
+	if userID != "" {
+		savedMap, err = s.store.GetUserSavedVoucherIDs(ctx, userID)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "load saved vouchers: %v", err)
+		}
 	}
 
 	redisKeys := make([]string, 0, len(vouchers)*3)
@@ -808,7 +830,7 @@ func (s *PromotionService) CreateFlashSale(ctx context.Context, req *promotionv1
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "create flash sale: %v", err)
 	}
-	return &promotionv1.CreateFlashSaleResponse{FlashSale: flashSaleToProto(fs, nil)}, nil
+	return &promotionv1.CreateFlashSaleResponse{FlashSale: flashSaleToProto(fs, nil, s.nowFn())}, nil
 }
 
 // RegisterFlashSaleItem enrolls a seller SKU into a flash sale after full SKU, price, category, stock & overlap checks.
@@ -863,7 +885,7 @@ func (s *PromotionService) RegisterFlashSaleItem(ctx context.Context, req *promo
 		return nil, status.Errorf(codes.Internal, "get flash sale: %v", err)
 	}
 	now := s.nowFn()
-	if !fs.EndsAt.After(now) {
+	if fs.Status == domain.FlashWindowStatusEnded || !fs.EndsAt.After(now) {
 		return nil, status.Error(codes.FailedPrecondition, "flash sale has already ended")
 	}
 
@@ -929,6 +951,9 @@ func (s *PromotionService) ApproveFlashSaleItem(ctx context.Context, req *promot
 		}
 		return nil, status.Errorf(codes.Internal, "get flash sale item: %v", err)
 	}
+	if req.GetApprove() && (existing.WindowStatus == domain.FlashWindowStatusEnded || !existing.EndsAt.After(now)) {
+		return nil, status.Error(codes.FailedPrecondition, "FLASH_SALE_ENDED: flash sale has already ended")
+	}
 	// Fast-path idempotency: skip SKU stock/price re-validation; for APPROVED, call InitFlashItemSlots
 	// with overwrite=false (SetNX) so a prior post-commit Redis init failure self-heals without overwriting live slots.
 	if existing.Status == targetStatus {
@@ -956,8 +981,8 @@ func (s *PromotionService) ApproveFlashSaleItem(ctx context.Context, req *promot
 			}
 			return nil, status.Errorf(codes.Internal, "get flash sale: %v", err)
 		}
-		if !fs.EndsAt.After(now) {
-			return nil, status.Error(codes.FailedPrecondition, "flash sale has already ended")
+		if fs.Status == domain.FlashWindowStatusEnded || !fs.EndsAt.After(now) {
+			return nil, status.Error(codes.FailedPrecondition, "FLASH_SALE_ENDED: flash sale has already ended")
 		}
 		origPrice, vErr := s.validateFlashSaleSKU(ctx, fs, existing.ShopID, existing.SKUID, existing.FlashPriceVND, existing.TotalSlots, true)
 		if vErr != nil {
@@ -972,7 +997,7 @@ func (s *PromotionService) ApproveFlashSaleItem(ctx context.Context, req *promot
 		case errors.Is(err, store.ErrNotFound):
 			return nil, status.Error(codes.NotFound, "flash sale item not found")
 		case errors.Is(err, store.ErrFlashSaleEnded):
-			return nil, status.Error(codes.FailedPrecondition, "flash sale has already ended")
+			return nil, status.Error(codes.FailedPrecondition, "FLASH_SALE_ENDED: flash sale has already ended")
 		case errors.Is(err, store.ErrInvalidFlashTransition):
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		case errors.Is(err, store.ErrOverlappingFlashSale):
@@ -991,14 +1016,125 @@ func (s *PromotionService) ApproveFlashSaleItem(ctx context.Context, req *promot
 		if live, liveOK, getErr := s.engine.GetInt64(ctx, lua.FlashRemainingKey(item.ID)); getErr == nil && liveOK {
 			remaining = min(max(remaining, 0), max(int32(live), 0))
 		}
+	} else {
+		if err := s.engine.DeleteFlashItemSlots(ctx, item.ID); err != nil {
+			return nil, status.Errorf(codes.Internal, "delete rejected flash sale redis slots: %v", err)
+		}
 	}
 
 	return &promotionv1.ApproveFlashSaleItemResponse{Item: flashSaleItemToProto(item, remaining)}, nil
 }
 
+// EndFlashSaleWindow immediately ends/cancels a flash sale window (requires flash_sales.write capability)
+// and deletes Redis slot keys for its approved items idempotently.
+func (s *PromotionService) EndFlashSaleWindow(ctx context.Context, req *promotionv1.EndFlashSaleWindowRequest) (*promotionv1.EndFlashSaleWindowResponse, error) {
+	claims, err := requireEndUserClaims(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !auth.HasCapability(claims, auth.CapFlashSalesWrite) {
+		return nil, status.Error(codes.PermissionDenied, "insufficient permissions to end flash sale windows")
+	}
+
+	windowID := strings.TrimSpace(req.GetWindowId())
+	if windowID == "" {
+		return nil, status.Error(codes.InvalidArgument, "window_id is required")
+	}
+
+	now := s.nowFn()
+	fs, unreleased, err := s.store.EndFlashSaleWindow(ctx, windowID, now)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, status.Error(codes.NotFound, "flash sale window not found")
+		}
+		return nil, status.Errorf(codes.Internal, "end flash sale window: %v", err)
+	}
+
+	var releasedCount int32
+	for _, it := range unreleased {
+		if relErr := s.releaseFlashItemSlots(ctx, it.ID, now); relErr != nil {
+			s.logger.WarnContext(ctx, "failed to clear flash sale redis slots while ending window",
+				slog.String("window_id", windowID),
+				slog.String("item_id", it.ID),
+				slog.String("error", relErr.Error()),
+			)
+			continue
+		}
+		releasedCount++
+	}
+
+	return &promotionv1.EndFlashSaleWindowResponse{
+		Window:        flashSaleToProto(fs, nil, now),
+		ReleasedItems: releasedCount,
+	}, nil
+}
+
+// SweepExpiredFlashSales marks expired flash sale windows ENDED and clears their Redis slot keys.
+func (s *PromotionService) SweepExpiredFlashSales(ctx context.Context) (int, error) {
+	now := s.nowFn()
+	expired, err := s.store.ListExpiredUnreleasedFlashSaleItems(ctx, now)
+	if err != nil {
+		return 0, fmt.Errorf("list expired unreleased flash sale items: %w", err)
+	}
+	released := 0
+	var firstErr error
+	for _, it := range expired {
+		if relErr := s.releaseFlashItemSlots(ctx, it.ID, now); relErr != nil {
+			if firstErr == nil {
+				firstErr = relErr
+			}
+			s.logger.WarnContext(ctx, "failed to sweep expired flash sale item",
+				slog.String("flash_sale_id", it.FlashSaleID),
+				slog.String("item_id", it.ID),
+				slog.String("error", relErr.Error()),
+			)
+			continue
+		}
+		released++
+	}
+	return released, firstErr
+}
+
+// StartFlashSaleSweeper periodically marks expired flash sale windows ENDED and clears their Redis slots until ctx is canceled.
+func (s *PromotionService) StartFlashSaleSweeper(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				sweepCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				n, err := s.SweepExpiredFlashSales(sweepCtx)
+				cancel()
+				if err != nil && ctx.Err() == nil {
+					s.logger.WarnContext(sweepCtx, "flash sale expiry sweep error", slog.String("error", err.Error()))
+				} else if n > 0 {
+					s.logger.InfoContext(sweepCtx, "swept expired flash sale items", slog.Int("released_items", n))
+				}
+			}
+		}
+	}()
+}
+
+func (s *PromotionService) releaseFlashItemSlots(ctx context.Context, itemID string, now time.Time) error {
+	if err := s.engine.DeleteFlashItemSlots(ctx, itemID); err != nil {
+		return fmt.Errorf("delete flash sale redis slots: %w", err)
+	}
+	if err := s.store.MarkFlashSaleItemStockReleased(ctx, itemID, now); err != nil {
+		return err
+	}
+	return nil
+}
+
 // ListActiveFlashSales returns active (and optionally upcoming) flash sales with live remaining slots from Redis.
 func (s *PromotionService) ListActiveFlashSales(ctx context.Context, req *promotionv1.ListActiveFlashSalesRequest) (*promotionv1.ListActiveFlashSalesResponse, error) {
-	sales, err := s.store.ListFlashSales(ctx, s.nowFn(), req.GetIncludeUpcoming())
+	now := s.nowFn()
+	sales, err := s.store.ListFlashSales(ctx, now, req.GetIncludeUpcoming())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list flash sales: %v", err)
 	}
@@ -1018,7 +1154,7 @@ func (s *PromotionService) ListActiveFlashSales(ctx context.Context, req *promot
 		FlashSales: make([]*promotionv1.FlashSale, 0, len(sales)),
 	}
 	for i := range sales {
-		resp.FlashSales = append(resp.FlashSales, flashSaleToProto(&sales[i], liveSlots))
+		resp.FlashSales = append(resp.FlashSales, flashSaleToProto(&sales[i], liveSlots, now))
 	}
 	return resp, nil
 }
@@ -1113,6 +1249,25 @@ func (s *PromotionService) PreviewDiscounts(ctx context.Context, req *promotionv
 		return nil, status.Error(codes.InvalidArgument, "coins_to_use must be non-negative")
 	}
 
+	channel, storefrontShopID, err := normalizeSalesChannel(req.GetSalesChannel(), req.GetStorefrontShopId())
+	if err != nil {
+		return nil, err
+	}
+	if channel == domain.SalesChannelStorefront {
+		if err := s.validateStorefrontPromotion(
+			ctx,
+			storefrontShopID,
+			req.GetShopItems(),
+			req.GetShopVoucherIds(),
+			req.GetPlatformVoucherId(),
+			req.GetFreeshipVoucherId(),
+			req.GetCoinsToUse(),
+			nil,
+		); err != nil {
+			return nil, err
+		}
+	}
+
 	calcInput, err := s.buildCalcInput(ctx, userID, req.GetShopItems(), req.GetShopVoucherIds(), req.GetPlatformVoucherId(), req.GetFreeshipVoucherId(), req.GetCoinsToUse(), false, nil)
 	if err != nil {
 		return nil, err
@@ -1159,6 +1314,25 @@ func (s *PromotionService) ReservePromotion(ctx context.Context, req *promotionv
 		return nil, status.Error(codes.InvalidArgument, "shop_items is required")
 	}
 
+	channel, storefrontShopID, err := normalizeSalesChannel(req.GetSalesChannel(), req.GetStorefrontShopId())
+	if err != nil {
+		return nil, err
+	}
+	if channel == domain.SalesChannelStorefront {
+		if err := s.validateStorefrontPromotion(
+			ctx,
+			storefrontShopID,
+			req.GetShopItems(),
+			req.GetShopVoucherIds(),
+			req.GetPlatformVoucherId(),
+			req.GetFreeshipVoucherId(),
+			req.GetCoinsToUse(),
+			req.GetFlashSaleItems(),
+		); err != nil {
+			return nil, err
+		}
+	}
+
 	// Fast idempotency check in Postgres
 	if existing, err := s.store.GetReservation(ctx, orderID); err == nil {
 		if existing.UserID != "" && existing.UserID != userID {
@@ -1188,7 +1362,6 @@ func (s *PromotionService) ReservePromotion(ctx context.Context, req *promotionv
 		reservedShopProgs []domain.ReservedShopProgramItem
 		coinsToDeduct     int64
 		luaOutcome        lua.ReserveOutcome
-		err               error
 	)
 
 	// Flash sale quantities are derived EXCLUSIVELY from shop_items
@@ -1318,7 +1491,7 @@ func (s *PromotionService) ReservePromotion(ctx context.Context, req *promotionv
 
 		breakdownBytes, marshalErr := protojson.Marshal(breakdown)
 		if marshalErr != nil {
-			s.compensateRedisRelease(orderID)
+			s.compensateRedisRelease(ctx, orderID)
 			s.reconcileTargetsDetached(true, userID, reservedVouchers, reservedFlash, reservedShopProgs)
 			return nil, status.Errorf(codes.Internal, "marshal discount breakdown: %v", marshalErr)
 		}
@@ -1354,7 +1527,7 @@ func (s *PromotionService) ReservePromotion(ctx context.Context, req *promotionv
 			}
 
 			compensateAndHeal := func() {
-				s.compensateRedisRelease(orderID)
+				s.compensateRedisRelease(ctx, orderID)
 				s.reconcileTargetsDetached(true, userID, reservedVouchers, reservedFlash, reservedShopProgs)
 			}
 			switch {
@@ -1498,7 +1671,8 @@ func (s *PromotionService) ReleasePromotion(ctx context.Context, req *promotionv
 }
 
 // ReleasePromotionShop idempotently releases one shop sub-order's share (coins, shop voucher,
-// flash sale slots, shop discount program limits) from a checkout group's reservation.
+// flash sale slots, shop discount program limits) from a checkout group's reservation
+// and claws back any `order_completed_reward` coins previously credited for order_id.
 func (s *PromotionService) ReleasePromotionShop(ctx context.Context, req *promotionv1.ReleasePromotionShopRequest) (*promotionv1.ReleasePromotionShopResponse, error) {
 	if _, err := requireAdminOrService(ctx, "only admins or internal services can release shop promotions"); err != nil {
 		return nil, err
@@ -1695,11 +1869,11 @@ func collectReservationRedisKeys(
 	return keys
 }
 
-func (s *PromotionService) compensateRedisRelease(orderID string) {
-	compCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (s *PromotionService) compensateRedisRelease(ctx context.Context, orderID string) {
+	compCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if _, err := s.engine.Release(compCtx, orderID); err != nil {
-		s.logger.Error("failed to compensate redis promotion reservation after postgres failure",
+		s.logger.ErrorContext(compCtx, "failed to compensate redis promotion reservation after postgres failure",
 			slog.String("order_id", orderID),
 			slog.String("error", err.Error()),
 		)
@@ -1826,8 +2000,8 @@ func (s *PromotionService) validateMergedFlashReservations(
 		if fi.Status != domain.FlashStatusApproved {
 			return nil, nil, status.Errorf(codes.FailedPrecondition, "flash sale item %s is not approved", id)
 		}
-		// Strictly half-open [StartsAt, EndsAt): upcoming and ended slots are rejected.
-		if now.Before(fi.StartsAt) || !now.Before(fi.EndsAt) {
+		// Strictly half-open [StartsAt, EndsAt) and not ENDED: upcoming and ended slots are rejected.
+		if fi.WindowStatus == domain.FlashWindowStatusEnded || now.Before(fi.StartsAt) || !now.Before(fi.EndsAt) {
 			return nil, nil, status.Errorf(codes.FailedPrecondition, "flash sale item %s is outside active window", id)
 		}
 		if mf.skuID != "" && fi.SKUID != "" && mf.skuID != fi.SKUID {
@@ -2425,7 +2599,7 @@ func voucherToProto(
 	}
 }
 
-func flashSaleToProto(fs *domain.FlashSale, liveSlots map[string]int64) *promotionv1.FlashSale {
+func flashSaleToProto(fs *domain.FlashSale, liveSlots map[string]int64, now time.Time) *promotionv1.FlashSale {
 	items := make([]*promotionv1.FlashSaleItem, 0, len(fs.Items))
 	for i := range fs.Items {
 		item := &fs.Items[i]
@@ -2437,6 +2611,13 @@ func flashSaleToProto(fs *domain.FlashSale, liveSlots map[string]int64) *promoti
 		}
 		items = append(items, flashSaleItemToProto(item, rem))
 	}
+	st := domain.FlashWindowStatusActive
+	switch {
+	case fs.Status == domain.FlashWindowStatusEnded || !fs.EndsAt.After(now):
+		st = domain.FlashWindowStatusEnded
+	case now.Before(fs.StartsAt):
+		st = "UPCOMING"
+	}
 	return &promotionv1.FlashSale{
 		Id:                 fs.ID,
 		Name:               fs.Name,
@@ -2445,6 +2626,7 @@ func flashSaleToProto(fs *domain.FlashSale, liveSlots map[string]int64) *promoti
 		Items:              items,
 		MinDiscountPercent: fs.MinDiscountPercent,
 		CategoryIds:        append([]string(nil), fs.CategoryIDs...),
+		Status:             st,
 	}
 }
 
@@ -2552,6 +2734,141 @@ func isVoucherBudgetExhausted(v *domain.Voucher, remBudget, orderAmountVND int64
 	return false
 }
 
+func normalizeSalesChannel(rawChannel, rawStorefrontShopID string) (string, string, error) {
+	ch := strings.ToUpper(strings.TrimSpace(rawChannel))
+	shopID := strings.TrimSpace(rawStorefrontShopID)
+	if ch == "" {
+		ch = domain.SalesChannelMarketplace
+	}
+	switch ch {
+	case domain.SalesChannelMarketplace:
+		if shopID != "" {
+			return "", "", status.Error(codes.InvalidArgument, "storefront_shop_id must be empty when sales_channel is MARKETPLACE")
+		}
+		return domain.SalesChannelMarketplace, "", nil
+	case domain.SalesChannelStorefront:
+		if shopID == "" {
+			return "", "", status.Error(codes.InvalidArgument, "storefront_shop_id is required when sales_channel is STOREFRONT")
+		}
+		return domain.SalesChannelStorefront, shopID, nil
+	default:
+		return "", "", status.Errorf(codes.InvalidArgument, "invalid sales_channel %q: must be MARKETPLACE or STOREFRONT", rawChannel)
+	}
+}
+
+func (s *PromotionService) validateStorefrontPromotion(
+	ctx context.Context,
+	storefrontShopID string,
+	shopItems []*promotionv1.ShopDiscountInput,
+	shopVoucherIDs map[string]string,
+	platformVoucherID string,
+	freeshipVoucherID string,
+	coinsToUse int64,
+	explicitFlashItems []*promotionv1.FlashSaleReservationItem,
+) error {
+	if strings.TrimSpace(platformVoucherID) != "" {
+		return status.Error(codes.InvalidArgument, "STOREFRONT_VOUCHER_NOT_ALLOWED: platform vouchers cannot be used on STOREFRONT channel")
+	}
+	if strings.TrimSpace(freeshipVoucherID) != "" {
+		return status.Error(codes.InvalidArgument, "STOREFRONT_VOUCHER_NOT_ALLOWED: freeship vouchers cannot be used on STOREFRONT channel")
+	}
+	if coinsToUse > 0 {
+		return status.Error(codes.InvalidArgument, "STOREFRONT_COINS_NOT_ALLOWED: platform coins cannot be used on STOREFRONT channel")
+	}
+
+	checkedFlash := make(map[string]bool)
+	checkFlashShop := func(fiID string) error {
+		fiID = strings.TrimSpace(fiID)
+		if fiID == "" || checkedFlash[fiID] {
+			return nil
+		}
+		checkedFlash[fiID] = true
+		fi, err := s.store.GetFlashSaleItem(ctx, fiID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return nil
+			}
+			return status.Errorf(codes.Internal, "load flash sale item %s: %v", fiID, err)
+		}
+		if fi.ShopID != storefrontShopID {
+			return status.Errorf(codes.InvalidArgument, "STOREFRONT_FLASH_SALE_SHOP_MISMATCH: flash sale item %s belongs to shop %q, not storefront shop %q", fiID, fi.ShopID, storefrontShopID)
+		}
+		return nil
+	}
+
+	checkedShopProg := make(map[string]bool)
+	checkShopProgramShop := func(spID string) error {
+		spID = strings.TrimSpace(spID)
+		if spID == "" || checkedShopProg[spID] {
+			return nil
+		}
+		checkedShopProg[spID] = true
+		spi, err := s.store.GetShopDiscountProgramItem(ctx, spID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return nil
+			}
+			return status.Errorf(codes.Internal, "load shop discount program item %s: %v", spID, err)
+		}
+		if spi.ShopID != storefrontShopID {
+			return status.Errorf(codes.InvalidArgument, "STOREFRONT_SHOP_PROGRAM_MISMATCH: shop discount program item %s belongs to shop %q, not storefront shop %q", spID, spi.ShopID, storefrontShopID)
+		}
+		return nil
+	}
+
+	for _, ps := range shopItems {
+		sid := strings.TrimSpace(ps.GetShopId())
+		if sid != storefrontShopID {
+			return status.Errorf(codes.InvalidArgument, "STOREFRONT_SHOP_MISMATCH: shop %q does not match storefront shop %q", sid, storefrontShopID)
+		}
+		for _, line := range ps.GetItems() {
+			if err := checkFlashShop(line.GetFlashSaleItemId()); err != nil {
+				return err
+			}
+			if err := checkShopProgramShop(line.GetShopDiscountProgramItemId()); err != nil {
+				return err
+			}
+		}
+	}
+	for _, f := range explicitFlashItems {
+		if err := checkFlashShop(f.GetFlashSaleItemId()); err != nil {
+			return err
+		}
+	}
+
+	shopKeys := make([]string, 0, len(shopVoucherIDs))
+	for k := range shopVoucherIDs {
+		shopKeys = append(shopKeys, k)
+	}
+	sort.Strings(shopKeys)
+	for _, rawShopID := range shopKeys {
+		vid := strings.TrimSpace(shopVoucherIDs[rawShopID])
+		if vid == "" {
+			continue
+		}
+		mapShopID := strings.TrimSpace(rawShopID)
+		if mapShopID != storefrontShopID {
+			return status.Errorf(codes.InvalidArgument, "STOREFRONT_VOUCHER_SHOP_MISMATCH: shop voucher for shop %q is not allowed on storefront shop %q", mapShopID, storefrontShopID)
+		}
+		v, err := s.store.GetVoucherByIDOrCode(ctx, vid)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			}
+			return status.Errorf(codes.Internal, "load voucher %s: %v", vid, err)
+		}
+		if v.Scope != domain.VoucherScopeShop {
+			return status.Errorf(codes.InvalidArgument, "STOREFRONT_VOUCHER_NOT_ALLOWED: voucher %s has scope %s; only SHOP vouchers are allowed on STOREFRONT channel", v.Code, v.Scope)
+		}
+		if v.ShopID != storefrontShopID {
+			return status.Errorf(codes.InvalidArgument, "STOREFRONT_VOUCHER_SHOP_MISMATCH: shop voucher %s belongs to shop %q, not storefront shop %q", v.Code, v.ShopID, storefrontShopID)
+		}
+	}
+	return nil
+}
+
+// resolveUserID requires valid authentication claims and enforces user_id ownership.
+// Anonymous callers and service tokens are always rejected.
 func resolveUserID(ctx context.Context, reqUserID string) (string, error) {
 	reqUserID = strings.TrimSpace(reqUserID)
 	claims, ok := auth.ClaimsFromContext(ctx)
@@ -2561,13 +2878,23 @@ func resolveUserID(ctx context.Context, reqUserID string) (string, error) {
 	if claims.Service != "" {
 		return "", status.Error(codes.PermissionDenied, "service identity not allowed for this RPC")
 	}
-	if reqUserID == "" {
-		return claims.UserID(), nil
+	if isAdmin(claims) {
+		if reqUserID != "" {
+			return reqUserID, nil
+		}
+		if uid := strings.TrimSpace(claims.UserID()); uid != "" {
+			return uid, nil
+		}
+		return "", status.Error(codes.InvalidArgument, "user_id is required")
 	}
-	if reqUserID != claims.UserID() && !isAdmin(claims) {
+	claimUID := strings.TrimSpace(claims.UserID())
+	if claimUID == "" {
+		return "", status.Error(codes.Unauthenticated, "invalid authentication claims")
+	}
+	if reqUserID != "" && reqUserID != claimUID {
 		return "", status.Error(codes.PermissionDenied, "cannot access another user's resources")
 	}
-	return reqUserID, nil
+	return claimUID, nil
 }
 
 func requireCapabilityOrService(ctx context.Context, capName, msg string) (*auth.Claims, error) {

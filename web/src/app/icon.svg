@@ -1,12 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-  <rect width="32" height="32" rx="4" fill="#edf1f4" />
+  <rect width="32" height="32" rx="6" fill="#1f3038" />
   <path
-    d="M7 24.5V7.5L19 24.5V7.5"
+    d="M7.5 24.5V7.5L18.5 24.5V7.5"
     fill="none"
-    stroke="#1f3038"
-    stroke-width="2.8"
+    stroke="#f7f9fa"
+    stroke-width="2.6"
     stroke-linecap="square"
     stroke-linejoin="miter"
   />
-  <path d="M25 7.5V24.5" fill="none" stroke="#0d7480" stroke-width="2.8" stroke-linecap="square" />
+  <path
+    d="M24.5 7.5V24.5"
+    fill="none"
+    stroke="#66ccd7"
+    stroke-width="2.6"
+    stroke-linecap="square"
+  />
 </svg>

@@ -1,6 +1,9 @@
 package e2e
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // StatusEquals compares status strings ignoring case and optional proto enum prefixes
 // (e.g. "ORDER_STATUS_CONFIRMED", "CONFIRMED", and "confirmed" all match "CONFIRMED").
@@ -188,19 +191,20 @@ type SKUInputDTO struct {
 }
 
 type SKUDTO struct {
-	ID             string            `json:"id"`
-	ProductID      string            `json:"product_id"`
-	ShopID         string            `json:"shop_id"`
-	ProductName    string            `json:"product_name"`
-	SKUCode        string            `json:"sku_code"`
-	Name           string            `json:"name"`
-	Attributes     map[string]string `json:"attributes"`
-	PriceVND       int64             `json:"price_vnd"`
-	Stock          int32             `json:"stock"`
-	ReservedStock  int32             `json:"reserved_stock"`
-	AvailableStock int32             `json:"available_stock"`
-	Version        int64             `json:"version"`
-	WeightGrams    int32             `json:"weight_grams"`
+	ID                     string            `json:"id"`
+	ProductID              string            `json:"product_id"`
+	ShopID                 string            `json:"shop_id"`
+	ProductName            string            `json:"product_name"`
+	SKUCode                string            `json:"sku_code"`
+	Name                   string            `json:"name"`
+	Attributes             map[string]string `json:"attributes"`
+	PriceVND               int64             `json:"price_vnd"`
+	Stock                  int32             `json:"stock"`
+	ReservedStock          int32             `json:"reserved_stock"`
+	FlashSaleReservedStock int32             `json:"flash_sale_reserved_stock"`
+	AvailableStock         int32             `json:"available_stock"`
+	Version                int64             `json:"version"`
+	WeightGrams            int32             `json:"weight_grams"`
 }
 
 type CreateProductRequest struct {
@@ -350,7 +354,14 @@ type FlashSaleDTO struct {
 	Name     string             `json:"name"`
 	StartsAt string             `json:"starts_at"`
 	EndsAt   string             `json:"ends_at"`
+	Status   string             `json:"status"`
 	Items    []FlashSaleItemDTO `json:"items"`
+}
+
+type EndFlashSaleWindowResponse struct {
+	FlashSale     FlashSaleDTO `json:"flash_sale"`
+	Window        FlashSaleDTO `json:"window"`
+	ReleasedItems int32        `json:"released_items"`
 }
 
 type FlashSaleResponse struct {
@@ -415,6 +426,8 @@ type PreviewDiscountsRequest struct {
 	PlatformVoucherID string                 `json:"platform_voucher_id,omitempty"`
 	FreeshipVoucherID string                 `json:"freeship_voucher_id,omitempty"`
 	CoinsToUse        int64                  `json:"coins_to_use,omitempty"`
+	SalesChannel      string                 `json:"sales_channel,omitempty"`
+	StorefrontShopID  string                 `json:"storefront_shop_id,omitempty"`
 }
 
 type DiscountBreakdownDTO struct {
@@ -517,6 +530,8 @@ type CheckoutRequest struct {
 	CoinsToUse        int64                   `json:"coins_to_use,omitempty"`
 	PaymentMethod     string                  `json:"payment_method"`
 	ShippingChoices   []ShopShippingChoiceDTO `json:"shipping_choices,omitempty"`
+	SalesChannel      string                  `json:"sales_channel,omitempty"`
+	StorefrontShopID  string                  `json:"storefront_shop_id,omitempty"`
 }
 
 type OrderItemDTO struct {
@@ -572,6 +587,8 @@ type OrderDTO struct {
 	LabelURL                 string                  `json:"label_url"`
 	ShipmentJobStatus        string                  `json:"shipment_job_status"`
 	PaymentExpiresAt         string                  `json:"payment_expires_at"`
+	SalesChannel             string                  `json:"sales_channel"`
+	StorefrontShopID         string                  `json:"storefront_shop_id"`
 	Items                    []OrderItemDTO          `json:"items"`
 	Timeline                 []OrderTimelineEventDTO `json:"timeline"`
 }
@@ -589,6 +606,8 @@ type CheckoutResponse struct {
 	TotalPayableVND  int64      `json:"total_payable_vnd"`
 	IdempotentReplay bool       `json:"idempotent_replay"`
 	Warnings         []string   `json:"warnings"`
+	SalesChannel     string     `json:"sales_channel"`
+	StorefrontShopID string     `json:"storefront_shop_id"`
 }
 
 type OrderResponse struct {
@@ -621,20 +640,33 @@ type SellerShipResponse struct {
 
 // --- Payments, Webhooks & Ledger ---
 
+type ShopAllocationDTO struct {
+	OrderID          string `json:"order_id"`
+	ShopID           string `json:"shop_id"`
+	SubtotalVND      int64  `json:"subtotal_vnd"`
+	CommissionVND    int64  `json:"commission_vnd"`
+	ShippingFeeVND   int64  `json:"shipping_fee_vnd"`
+	SalesChannel     string `json:"sales_channel"`
+	StorefrontShopID string `json:"storefront_shop_id"`
+}
+
 type PaymentDTO struct {
-	PaymentID    string `json:"payment_id"`
-	ID           string `json:"id"`
-	OrderGroupID string `json:"order_group_id"`
-	OrderID      string `json:"order_id"`
-	UserID       string `json:"user_id"`
-	AmountVND    int64  `json:"amount_vnd"`
-	Method       string `json:"method"`
-	Status       string `json:"status"`
-	QRURL        string `json:"qr_url"`
-	QRCode       string `json:"qr_code"`
-	PayURL       string `json:"pay_url"`
-	ProviderRef  string `json:"provider_ref"`
-	ExpiresAt    string `json:"expires_at"`
+	PaymentID        string              `json:"payment_id"`
+	ID               string              `json:"id"`
+	OrderGroupID     string              `json:"order_group_id"`
+	OrderID          string              `json:"order_id"`
+	UserID           string              `json:"user_id"`
+	AmountVND        int64               `json:"amount_vnd"`
+	Method           string              `json:"method"`
+	Status           string              `json:"status"`
+	QRURL            string              `json:"qr_url"`
+	QRCode           string              `json:"qr_code"`
+	PayURL           string              `json:"pay_url"`
+	ProviderRef      string              `json:"provider_ref"`
+	ExpiresAt        string              `json:"expires_at"`
+	SalesChannel     string              `json:"sales_channel"`
+	StorefrontShopID string              `json:"storefront_shop_id"`
+	ShopAllocations  []ShopAllocationDTO `json:"shop_allocations"`
 }
 
 type PaymentResponse struct {
@@ -707,6 +739,33 @@ type LedgerSummaryResponse struct {
 	TotalCreditsVND int64               `json:"total_credits_vnd"`
 	IsBalanced      bool                `json:"is_balanced"`
 	Accounts        []AccountBalanceDTO `json:"accounts"`
+	SalesChannel    string              `json:"sales_channel"`
+}
+
+type ReconciliationItemDTO struct {
+	PaymentID         string `json:"payment_id"`
+	ProviderTxID      string `json:"provider_tx_id"`
+	LocalAmountVND    int64  `json:"local_amount_vnd"`
+	ProviderAmountVND int64  `json:"provider_amount_vnd"`
+	Status            string `json:"status"`
+	Note              string `json:"note"`
+	SalesChannel      string `json:"sales_channel"`
+	StorefrontShopID  string `json:"storefront_shop_id"`
+}
+
+type ReconciliationRequest struct {
+	Date         string `json:"date,omitempty"`
+	SalesChannel string `json:"sales_channel,omitempty"`
+}
+
+type ReconciliationResponse struct {
+	RunID                string                  `json:"run_id"`
+	MatchedCount         int32                   `json:"matched_count"`
+	MissingLocalCount    int32                   `json:"missing_local_count"`
+	MissingProviderCount int32                   `json:"missing_provider_count"`
+	AmountMismatchCount  int32                   `json:"amount_mismatch_count"`
+	Items                []ReconciliationItemDTO `json:"items"`
+	SalesChannel         string                  `json:"sales_channel"`
 }
 
 // --- Notifications ---
@@ -729,4 +788,134 @@ type NotificationsListResponse struct {
 	Page        int32             `json:"page"`
 	PageSize    int32             `json:"page_size"`
 	Total       int64             `json:"total"`
+}
+
+// --- Sites & Audit Logs (Phase 2) ---
+
+type PublicShopDTO struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+}
+
+type SiteDTO struct {
+	ID                     string          `json:"id"`
+	ShopID                 string          `json:"shop_id"`
+	ShopName               string          `json:"shop_name"`
+	Subdomain              string          `json:"subdomain"`
+	PrimaryHost            string          `json:"primary_host"`
+	Status                 string          `json:"status"`
+	Config                 json.RawMessage `json:"config"`
+	PublishedVersionID     string          `json:"published_version_id"`
+	PublishedVersionNumber int32           `json:"published_version_number"`
+	PublishedAt            string          `json:"published_at,omitempty"`
+	SuspendedReason        string          `json:"suspended_reason"`
+	CreatedAt              string          `json:"created_at,omitempty"`
+	UpdatedAt              string          `json:"updated_at,omitempty"`
+}
+
+type SiteVersionDTO struct {
+	ID            string          `json:"id"`
+	SiteID        string          `json:"site_id"`
+	VersionNumber int32           `json:"version_number"`
+	Config        json.RawMessage `json:"config"`
+	PublishedBy   string          `json:"published_by"`
+	Note          string          `json:"note"`
+	CreatedAt     string          `json:"created_at,omitempty"`
+}
+
+type PublicSiteResponse struct {
+	Site SiteDTO       `json:"site"`
+	Shop PublicShopDTO `json:"shop"`
+}
+
+type SellerSiteResponse struct {
+	Site SiteDTO `json:"site"`
+}
+
+type SitePublishResponse struct {
+	Site    SiteDTO        `json:"site"`
+	Version SiteVersionDTO `json:"version"`
+}
+
+type SiteVersionsListResponse struct {
+	Versions []SiteVersionDTO `json:"versions"`
+	Page     int32            `json:"page"`
+	PageSize int32            `json:"page_size"`
+	Total    int64            `json:"total"`
+}
+
+type AdminSitesListResponse struct {
+	Sites    []SiteDTO `json:"sites"`
+	Page     int32     `json:"page"`
+	PageSize int32     `json:"page_size"`
+	Total    int64     `json:"total"`
+}
+
+type PublishedSiteSummaryDTO struct {
+	SiteID      string `json:"site_id"`
+	ShopID      string `json:"shop_id"`
+	ShopName    string `json:"shop_name"`
+	Subdomain   string `json:"subdomain"`
+	PrimaryHost string `json:"primary_host"`
+	LogoURL     string `json:"logo_url"`
+	CoverURL    string `json:"cover_url"`
+	Tagline     string `json:"tagline"`
+}
+
+type PublishedSitesDirectoryResponse struct {
+	Sites    []PublishedSiteSummaryDTO `json:"sites"`
+	Total    int64                     `json:"total"`
+	Page     int32                     `json:"page"`
+	PageSize int32                     `json:"page_size"`
+}
+
+type AuditLogDTO struct {
+	ID         string `json:"id"`
+	ActorID    string `json:"actor_id"`
+	ActorRole  string `json:"actor_role"`
+	Action     string `json:"action"`
+	TargetType string `json:"target_type"`
+	TargetID   string `json:"target_id"`
+	BeforeJSON string `json:"before_json"`
+	AfterJSON  string `json:"after_json"`
+	Reason     string `json:"reason"`
+	IPAddress  string `json:"ip_address"`
+	CreatedAt  string `json:"created_at,omitempty"`
+}
+
+type AuditLogsListResponse struct {
+	Items    []AuditLogDTO `json:"items"`
+	Page     int32         `json:"page"`
+	PageSize int32         `json:"page_size"`
+	Total    int64         `json:"total"`
+}
+
+// --- Custom Domains (Phase 5) ---
+
+type DomainVerificationRecordDTO struct {
+	Type  string `json:"type"`
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+type SiteDomainDTO struct {
+	ID           string                        `json:"id"`
+	Host         string                        `json:"host"`
+	Kind         string                        `json:"kind"`
+	Status       string                        `json:"status"`
+	IsPrimary    bool                          `json:"is_primary"`
+	Verification []DomainVerificationRecordDTO `json:"verification"`
+	LastError    string                        `json:"last_error,omitempty"`
+	VerifiedAt   string                        `json:"verified_at,omitempty"`
+	CreatedAt    string                        `json:"created_at,omitempty"`
+}
+
+type SiteDomainResponse struct {
+	Domain SiteDomainDTO `json:"domain"`
+}
+
+type SiteDomainsListResponse struct {
+	Domains []SiteDomainDTO `json:"domains"`
 }

@@ -17,6 +17,7 @@ enum OrderStatus {
   ORDER_STATUS_CANCELLED = 7;
   ORDER_STATUS_RETURN_REQUESTED = 8;
   ORDER_STATUS_RETURNED = 9;
+  reserved 10 to 13;
 }
 
 enum OrderPaymentMethod {
@@ -141,6 +142,10 @@ message Order {
   bool needs_manual_review = 37;
   // Async shipment creation job status: "", "QUEUED", or "FAILED" (E18).
   string shipment_job_status = 38;
+  // Immutable sales channel recorded at creation: "MARKETPLACE" or "STOREFRONT".
+  string sales_channel = 39;
+  // Immutable shop ID for STOREFRONT orders; empty for MARKETPLACE orders.
+  string storefront_shop_id = 40;
 }
 
 message ReturnEvent {
@@ -205,6 +210,10 @@ message CreateCheckoutRequest {
   int64 coins_to_use = 9;
   OrderPaymentMethod payment_method = 10;
   repeated ShopShippingChoice shipping_choices = 11;
+  // Optional sales channel: "" (defaults to "MARKETPLACE"), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 12;
+  // Required active shop ID when sales_channel is "STOREFRONT"; must be empty for "MARKETPLACE".
+  string storefront_shop_id = 13;
 }
 
 message CreateCheckoutResponse {
@@ -221,6 +230,8 @@ message CreateCheckoutResponse {
   repeated string warnings = 11;
   // Redirect/deep-link URL for e-wallet payments (e.g. ZaloPay; empty for COD/VietQR) (F1/F8).
   string pay_url = 12;
+  string sales_channel = 13;
+  string storefront_shop_id = 14;
 }
 
 message GetOrderRequest {
@@ -241,11 +252,24 @@ message ListOrdersRequest {
   string role_scope = 4;
   int32 page = 5;
   int32 page_size = 6;
+  // Extended seller/admin filters and status summary counts (S04/UC-S15, G8).
+  string carrier_code = 7;
+  string keyword = 8;
+  OrderPaymentMethod payment_method = 9;
+  google.protobuf.Timestamp due_before = 10;
+  repeated OrderStatus statuses = 11;
+  bool include_status_counts = 12;
+  // Optional sales channel filter: "" (all), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 13;
+  // Optional storefront filter: only orders placed on this shop's own site (STOREFRONT channel).
+  string storefront_shop_id = 14;
 }
 
 message ListOrdersResponse {
   repeated Order orders = 1;
   int64 total = 2;
+  // Populated when include_status_counts = true (S04, G8).
+  repeated OrderStatusCount status_counts = 3;
 }
 
 message CancelOrderRequest {
@@ -538,6 +562,142 @@ message ResolveOrderReviewResponse {
   Order order = 1;
 }
 
+enum BatchShipOrderOutcome {
+  BATCH_SHIP_ORDER_OUTCOME_UNSPECIFIED = 0;
+  BATCH_SHIP_ORDER_OUTCOME_QUEUED = 1;
+  BATCH_SHIP_ORDER_OUTCOME_SKIPPED = 2;
+}
+
+message PublicOrderItem {
+  string product_name = 1;
+  string sku_name = 2;
+  int32 quantity = 3;
+  int64 line_total_vnd = 4;
+}
+
+message PublicOrderTimelineEvent {
+  OrderStatus to_status = 1;
+  google.protobuf.Timestamp created_at = 2;
+}
+
+// Guest-safe order summary returned by public LookupOrder (UC-B08, G7).
+// Strictly omits street_address, email, full recipient name/phone, buyer_id, label_url, and platform fees.
+message PublicOrderSummary {
+  string order_code = 1;
+  OrderStatus status = 2;
+  OrderPaymentMethod payment_method = 3;
+  string payment_status = 4;
+  int64 subtotal_vnd = 5;
+  int64 shipping_fee_vnd = 6;
+  int64 total_payable_vnd = 7;
+  string carrier_code = 8;
+  string tracking_code = 9;
+  string province_name = 10;
+  string ward_name = 11;
+  string recipient_name_masked = 12;
+  string recipient_phone_masked = 13;
+  repeated PublicOrderItem items = 14;
+  repeated PublicOrderTimelineEvent timeline = 15;
+  google.protobuf.Timestamp created_at = 16;
+  google.protobuf.Timestamp updated_at = 17;
+  google.protobuf.Timestamp delivered_at = 18;
+}
+
+message LookupOrderRequest {
+  string order_code = 1;
+  string phone = 2;
+  // Optional storefront tenant scope: when set, matches only STOREFRONT orders with matching storefront_shop_id.
+  string storefront_shop_id = 3;
+}
+
+message LookupOrderResponse {
+  PublicOrderSummary order = 1;
+}
+
+message UpdateOrderAddressRequest {
+  string order_id = 1;
+  // Required saved address ID belonging to the buyer's address book (G1-G3).
+  string address_id = 2;
+  // True to preview shipping fee delta without mutating order, payment, or shipment (G1-G3).
+  bool preview_only = 3;
+  // Required true when applying a COD address change with fee_delta_vnd > 0 (G2).
+  bool accept_fee_increase = 4;
+  // Exact previewed new_shipping_fee_vnd confirmed by the buyer when accept_fee_increase = true;
+  // mismatch against fresh live quote fails with 409 ADDRESS_FEE_CHANGED returning the new quote (G2).
+  int64 expected_new_shipping_fee_vnd = 5;
+  string idempotency_key = 6;
+}
+
+message UpdateOrderAddressResponse {
+  Order order = 1;
+  int64 old_shipping_fee_vnd = 2;
+  int64 new_shipping_fee_vnd = 3;
+  // Signed difference: new_shipping_fee_vnd - old_shipping_fee_vnd.
+  int64 fee_delta_vnd = 4;
+  int64 old_total_payable_vnd = 5;
+  // Unchanged for prepaid orders when fee_delta_vnd <= 0; adjusted for COD (G2).
+  int64 new_total_payable_vnd = 6;
+  bool preview_only = 7;
+  // True when shipping fee & total payable were (or will be) adjusted (COD); false when prepaid total stays unchanged.
+  bool fee_adjusted = 8;
+  // True in preview when COD fee_delta_vnd > 0 and buyer must confirm accept_fee_increase + expected_new_shipping_fee_vnd.
+  bool requires_fee_confirmation = 9;
+  // True in preview when prepaid order fee_delta_vnd > 0 (applying returns 409 ADDRESS_FEE_INCREASE_PREPAID, G2).
+  bool blocked_prepaid_increase = 10;
+  // True when an active forward shipment was cancelled and recreated synchronously (G3).
+  bool shipment_recreated = 11;
+  // True when shipment recreation fell back to the async shipment_create_jobs queue (G3).
+  bool shipment_queued = 12;
+  string shipment_job_id = 13;
+  OrderAddressSnapshot resolved_address = 14;
+}
+
+message BatchShipOrderResult {
+  string order_id = 1;
+  string order_code = 2;
+  BatchShipOrderOutcome outcome = 3;
+  // Populated when outcome = SKIPPED (e.g. ORDER_CANCELLED, INVALID_STATUS, ALREADY_HAS_SHIPMENT, ALREADY_QUEUED,
+  // PAYMENT_NOT_INITIALIZED, SHOP_PICKUP_ADDRESS_REQUIRED, UNSUPPORTED_WARD, CARRIER_REJECTED, INTERNAL_ERROR).
+  string reason_code = 4;
+  string message = 5;
+  string shipment_job_id = 6;
+  string tracking_code = 7;
+}
+
+message BatchShipOrdersRequest {
+  // Max 50 order IDs belonging to the authenticated seller's shop (G4).
+  repeated string order_ids = 1;
+  string carrier_code = 2;
+  string service_code = 3;
+}
+
+message BatchShipOrdersResponse {
+  repeated BatchShipOrderResult results = 1;
+  int32 queued_count = 2;
+  int32 skipped_count = 3;
+}
+
+message PickingListItem {
+  string sku_id = 1;
+  string product_id = 2;
+  string product_name = 3;
+  string sku_name = 4;
+  int32 total_quantity = 5;
+  int32 order_count = 6;
+  repeated string order_codes = 7;
+}
+
+message GetPickingListRequest {
+  // Max 50 order IDs belonging to the authenticated seller's shop (G4).
+  repeated string order_ids = 1;
+}
+
+message GetPickingListResponse {
+  repeated PickingListItem items = 1;
+  int32 order_count = 2;
+  int32 total_units = 3;
+}
+
 service OrderService {
   rpc CreateCheckout(CreateCheckoutRequest) returns (CreateCheckoutResponse);
   rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
@@ -562,4 +722,8 @@ service OrderService {
   rpc GetPlatformReport(GetPlatformReportRequest) returns (GetPlatformReportResponse);
   rpc ListOrdersNeedingReview(ListOrdersNeedingReviewRequest) returns (ListOrdersNeedingReviewResponse);
   rpc ResolveOrderReview(ResolveOrderReviewRequest) returns (ResolveOrderReviewResponse);
+  rpc LookupOrder(LookupOrderRequest) returns (LookupOrderResponse);
+  rpc UpdateOrderAddress(UpdateOrderAddressRequest) returns (UpdateOrderAddressResponse);
+  rpc BatchShipOrders(BatchShipOrdersRequest) returns (BatchShipOrdersResponse);
+  rpc GetPickingList(GetPickingListRequest) returns (GetPickingListResponse);
 }

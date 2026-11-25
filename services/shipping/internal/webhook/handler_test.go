@@ -94,12 +94,29 @@ func (s *stubRepo) GetShipmentByTrackingCode(_ context.Context, trackingCode str
 	cp := *sh
 	return &cp, nil
 }
+func (s *stubRepo) GetShipmentsByTrackingCodes(_ context.Context, trackingCodes []string) ([]store.Shipment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]store.Shipment, 0, len(trackingCodes))
+	seen := make(map[string]bool, len(trackingCodes))
+	for _, code := range trackingCodes {
+		if seen[code] {
+			continue
+		}
+		seen[code] = true
+		if sh, ok := s.byTracking[code]; ok {
+			out = append(out, *sh)
+		}
+	}
+	return out, nil
+}
 func (s *stubRepo) ListShipmentEvents(_ context.Context, _ string) ([]store.ShipmentEvent, error) {
 	return nil, nil
 }
 func (s *stubRepo) CreateShipment(_ context.Context, sh *store.Shipment, _ *store.ShipmentEvent) (*store.Shipment, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	sh.Direction = store.NormalizeDirection(sh.Direction)
 	cp := *sh
 	cp.Direction = store.NormalizeDirection(cp.Direction)
 	s.shipments[cp.OrderID+":"+cp.Direction] = &cp
@@ -636,5 +653,162 @@ func TestReview_LabelHandlerSecurityCSPXSSJSONErrorsAndSellerAsBuyer(t *testing.
 		if !strings.HasPrefix(errRec.Header().Get("Content-Type"), "application/json") {
 			t.Fatalf("%s: expected Content-Type application/json, got %q", tc.name, errRec.Header().Get("Content-Type"))
 		}
+	}
+}
+
+func TestGHTKWebhookCanonicalNativeReturnAndErrors(t *testing.T) {
+	const secret = "test-ghtk-webhook-secret"
+	repo := newStubRepo()
+	_, _, _ = repo.CreateShipment(context.Background(), &store.Shipment{
+		ID:           uuid.NewString(),
+		OrderID:      "ord-ghtk-1",
+		ShopID:       "shop-1",
+		CarrierCode:  carrier.CodeGHTK,
+		TrackingCode: "GHTK-AABBCCDD11",
+		Status:       carrier.StatusCreated,
+		Direction:    store.DirectionForward,
+	}, nil)
+	_, _, _ = repo.CreateShipment(context.Background(), &store.Shipment{
+		ID:              uuid.NewString(),
+		OrderID:         "ord-ghtk-1",
+		ShopID:          "shop-1",
+		CarrierCode:     carrier.CodeGHTK,
+		TrackingCode:    "GHTK-RET1122334",
+		Status:          carrier.StatusCreated,
+		Direction:       store.DirectionReturn,
+		ReturnRequestID: "ret-wh-1",
+	}, nil)
+
+	var logBuf bytes.Buffer
+	jsonLog := slog.New(slog.NewJSONHandler(&logBuf, nil))
+	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc := service.NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h := NewHandler(secret, svc, jsonLog)
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	h.nowFn = func() time.Time { return now }
+
+	r := chi.NewRouter()
+	r.Post("/webhooks/shipping/{carrier}", h.ServeHTTP)
+
+	sendRawTo := func(carrierPath string, raw []byte, sigPrefix bool, tsHeader string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/shipping/"+carrierPath, bytes.NewReader(raw))
+		sig := Sign(secret, raw)
+		if sigPrefix {
+			sig = "sha256=" + sig
+		}
+		req.Header.Set("X-Signature", sig)
+		req.Header.Set("X-Timestamp", tsHeader)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+	sendRaw := func(raw []byte, sigPrefix bool, tsHeader string) *httptest.ResponseRecorder {
+		return sendRawTo("ghtk", raw, sigPrefix, tsHeader)
+	}
+
+	validTS := strconv.FormatInt(now.Unix(), 10)
+
+	// 1. Native GHTK payload with sha256= signature prefix, numeric status_id=5 (delivering), SQL action_time.
+	nativeBody, _ := json.Marshal(map[string]any{
+		"hash":        "ghtk-hash-1",
+		"label_id":    "GHTK-AABBCCDD11",
+		"partner_id":  "ord-ghtk-1",
+		"status_id":   5,
+		"action_time": "2026-11-20 12:00:00",
+		"reason":      "Đã giao hàng/Chưa đối soát",
+	})
+	rec := sendRaw(nativeBody, true, validTS)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for native GHTK webhook, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	fwd, _ := repo.GetShipmentByOrderID(context.Background(), "ord-ghtk-1", store.DirectionForward)
+	if fwd.Status != carrier.StatusDelivering {
+		t.Fatalf("expected forward status delivering, got %s", fwd.Status)
+	}
+
+	// 1b. Native GHTK payload sent to mismatched carrier path must log resolved event_id (=hash), not empty payload.EventID.
+	logBuf.Reset()
+	mismatchNative, _ := json.Marshal(map[string]any{
+		"hash":        "ghtk-hash-mismatch-99",
+		"label_id":    "GHTK-AABBCCDD11",
+		"status_id":   6,
+		"action_time": "2026-11-20 12:01:00",
+	})
+	recMismatch := sendRawTo("ghn", mismatchNative, false, validTS)
+	if recMismatch.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 CARRIER_MISMATCH for GHTK shipment on /ghn path, got %d body=%s", recMismatch.Code, recMismatch.Body.String())
+	}
+	if !strings.Contains(logBuf.String(), `"event_id":"ghtk-hash-mismatch-99"`) {
+		t.Fatalf("expected mismatch log to include resolved hash event_id, got: %s", logBuf.String())
+	}
+
+	// 2. Canonical GHTK webhook updating return shipment via numeric code "21" (returned).
+	retBody, _ := json.Marshal(map[string]any{
+		"event_id":      "ghtk-ret-21",
+		"tracking_code": "GHTK-RET1122334",
+		"raw_status":    "21",
+		"description":   "Đã trả hàng về shop",
+		"occurred_at":   now.Format(time.RFC3339),
+	})
+	rec = sendRaw(retBody, false, validTS)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for return GHTK webhook, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var respMap map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &respMap)
+	if respMap["status"] != carrier.StatusReturned || respMap["direction"] != store.DirectionReturn {
+		t.Fatalf("expected status=returned direction=RETURN, got %+v", respMap)
+	}
+
+	// 3. Duplicate & stale out-of-order rejection on GHTK return shipment (now terminal).
+	recDup := sendRaw(retBody, false, validTS)
+	if recDup.Code != http.StatusOK {
+		t.Fatalf("expected 200 on duplicate GHTK webhook, got %d", recDup.Code)
+	}
+	var dupMap map[string]any
+	_ = json.Unmarshal(recDup.Body.Bytes(), &dupMap)
+	if dupMap["outcome"] != string(store.WebhookOutcomeDuplicate) {
+		t.Fatalf("expected duplicate outcome, got %+v", dupMap)
+	}
+
+	staleBody, _ := json.Marshal(map[string]any{
+		"event_id":      "ghtk-ret-stale",
+		"tracking_code": "GHTK-RET1122334",
+		"raw_status":    "20",
+		"occurred_at":   now.Add(time.Minute).Format(time.RFC3339),
+	})
+	recStale := sendRaw(staleBody, false, validTS)
+	if recStale.Code != http.StatusOK {
+		t.Fatalf("expected 200 on stale terminal GHTK webhook, got %d", recStale.Code)
+	}
+	var staleMap map[string]any
+	_ = json.Unmarshal(recStale.Body.Bytes(), &staleMap)
+	if staleMap["outcome"] != string(store.WebhookOutcomeStale) {
+		t.Fatalf("expected stale outcome on terminal return shipment, got %+v", staleMap)
+	}
+
+	// 4. Error responses: non-numeric X-Timestamp (401), malformed JSON (400), invalid occurred_at (400), unknown status (400), missing shipment (404).
+	if rec := sendRaw(retBody, false, "not-an-int"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on non-numeric X-Timestamp, got %d", rec.Code)
+	}
+	if rec := sendRaw([]byte("{bad-json"), false, validTS); rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on malformed JSON, got %d", rec.Code)
+	}
+	badTime, _ := json.Marshal(map[string]any{"event_id": "e-t", "tracking_code": "GHTK-AABBCCDD11", "raw_status": "6", "occurred_at": "bad-time"})
+	if rec := sendRaw(badTime, false, validTS); rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on invalid occurred_at, got %d", rec.Code)
+	}
+	badStatus, _ := json.Marshal(map[string]any{"event_id": "e-s", "tracking_code": "GHTK-AABBCCDD11", "raw_status": "9999"})
+	if rec := sendRaw(badStatus, false, validTS); rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on unknown status, got %d", rec.Code)
+	}
+	notFound, _ := json.Marshal(map[string]any{"event_id": "e-nf", "tracking_code": "GHTK-MISSING", "raw_status": "6"})
+	if rec := sendRaw(notFound, false, validTS); rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 on unknown shipment, got %d", rec.Code)
+	}
+
+	// VerifySignature edge cases.
+	if VerifySignature(nil, []byte("body"), "abcd") || VerifySignature([]byte(secret), []byte("body"), "not-hex!") {
+		t.Fatalf("expected VerifySignature false for empty secret / invalid hex")
 	}
 }

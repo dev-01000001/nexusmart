@@ -128,6 +128,7 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.product.v1.ProductService/ConfirmStock",
 		"/nexusmart.product.v1.ProductService/RestockOrderItems",
 		"/nexusmart.product.v1.ProductService/GetCategoryDescendants",
+		"/nexusmart.product.v1.ProductService/ListProductsForIndex",
 		"/nexusmart.promotion.v1.PromotionService/ReleasePromotion",
 		"/nexusmart.promotion.v1.PromotionService/ReleasePromotionShop",
 		"/nexusmart.promotion.v1.PromotionService/CreditCoins",
@@ -137,6 +138,10 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.shipping.v1.ShippingService/CancelShipment",
 		"/nexusmart.shipping.v1.ShippingService/CreateReturnShipment",
 		"/nexusmart.shipping.v1.ShippingService/GetShopShippingSettings",
+		"/nexusmart.shipping.v1.ShippingService/CreateShipment",
+		"/nexusmart.search.v1.SearchService/HybridSearch",
+		"/nexusmart.search.v1.SearchService/ReindexAll",
+		"/nexusmart.search.v1.SearchService/GetReindexStatus",
 	}
 	userOnlyInternalRPCs := []string{
 		// UserService
@@ -167,6 +172,18 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.user.v1.UserService/AdminListShopApprovals",
 		"/nexusmart.user.v1.UserService/AdminDecideShopSuspension",
 		"/nexusmart.user.v1.UserService/AdminUnsuspendShop",
+		"/nexusmart.user.v1.UserService/GetSiteDraft",
+		"/nexusmart.user.v1.UserService/SaveSiteDraft",
+		"/nexusmart.user.v1.UserService/PublishSite",
+		"/nexusmart.user.v1.UserService/RollbackSite",
+		"/nexusmart.user.v1.UserService/ListSiteVersions",
+		"/nexusmart.user.v1.UserService/ListSites",
+		"/nexusmart.user.v1.UserService/SuspendSite",
+		"/nexusmart.user.v1.UserService/ApplySiteTemplate",
+		"/nexusmart.user.v1.UserService/AddCustomDomain",
+		"/nexusmart.user.v1.UserService/CheckCustomDomain",
+		"/nexusmart.user.v1.UserService/RemoveCustomDomain",
+		"/nexusmart.user.v1.UserService/ListSiteDomains",
 		// ProductService
 		"/nexusmart.product.v1.ProductService/CreateCategory",
 		"/nexusmart.product.v1.ProductService/UpdateCategory",
@@ -187,6 +204,11 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.product.v1.ProductService/DeleteBannedKeyword",
 		"/nexusmart.product.v1.ProductService/PreviewBannedKeyword",
 		"/nexusmart.product.v1.ProductService/RescanProductsForBannedContent",
+		"/nexusmart.product.v1.ProductService/ListStockHistory",
+		"/nexusmart.product.v1.ProductService/CreateProductImportJob",
+		"/nexusmart.product.v1.ProductService/GetProductImportJob",
+		"/nexusmart.product.v1.ProductService/ListProductImportRows",
+		"/nexusmart.product.v1.ProductService/ConfirmProductImportJob",
 		// CartService
 		"/nexusmart.cart.v1.CartService/GetCart",
 		"/nexusmart.cart.v1.CartService/AddItem",
@@ -202,6 +224,7 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.promotion.v1.PromotionService/CreateFlashSale",
 		"/nexusmart.promotion.v1.PromotionService/RegisterFlashSaleItem",
 		"/nexusmart.promotion.v1.PromotionService/ApproveFlashSaleItem",
+		"/nexusmart.promotion.v1.PromotionService/EndFlashSaleWindow",
 		"/nexusmart.promotion.v1.PromotionService/ListFlashSaleItems",
 		"/nexusmart.promotion.v1.PromotionService/ListAllFlashSales",
 		"/nexusmart.promotion.v1.PromotionService/CreateShopDiscountProgram",
@@ -233,8 +256,10 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.order.v1.OrderService/GetPlatformReport",
 		"/nexusmart.order.v1.OrderService/ListOrdersNeedingReview",
 		"/nexusmart.order.v1.OrderService/ResolveOrderReview",
+		"/nexusmart.order.v1.OrderService/UpdateOrderAddress",
+		"/nexusmart.order.v1.OrderService/BatchShipOrders",
+		"/nexusmart.order.v1.OrderService/GetPickingList",
 		// ShippingService
-		"/nexusmart.shipping.v1.ShippingService/CreateShipment",
 		"/nexusmart.shipping.v1.ShippingService/RequestRedelivery",
 		"/nexusmart.shipping.v1.ShippingService/UpdateShopShippingSettings",
 		"/nexusmart.shipping.v1.ShippingService/AdminListCarriers",
@@ -245,6 +270,26 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.notification.v1.NotificationService/MarkRead",
 		"/nexusmart.notification.v1.NotificationService/GetPreferences",
 		"/nexusmart.notification.v1.NotificationService/UpdatePreferences",
+		// SearchService
+		"/nexusmart.search.v1.SearchService/ListSearchHistory",
+		"/nexusmart.search.v1.SearchService/DeleteSearchHistory",
+		// ChatService
+		"/nexusmart.chat.v1.ChatService/CreateOrGetConversation",
+		"/nexusmart.chat.v1.ChatService/GetConversation",
+		"/nexusmart.chat.v1.ChatService/ListConversations",
+		"/nexusmart.chat.v1.ChatService/ListMessages",
+		"/nexusmart.chat.v1.ChatService/SendMessage",
+		"/nexusmart.chat.v1.ChatService/MarkRead",
+		"/nexusmart.chat.v1.ChatService/CreateWSTicket",
+		"/nexusmart.chat.v1.ChatService/GetAutoReplyConfig",
+		"/nexusmart.chat.v1.ChatService/UpsertAutoReplyConfig",
+		// AssistantService
+		"/nexusmart.assistant.v1.AssistantService/Handoff",
+		"/nexusmart.assistant.v1.AssistantService/SellerReport",
+		"/nexusmart.assistant.v1.AssistantService/DescribeProduct",
+		"/nexusmart.assistant.v1.AssistantService/SuggestReply",
+		"/nexusmart.assistant.v1.AssistantService/RefreshReviewSummary",
+		"/nexusmart.assistant.v1.AssistantService/SubmitFeedback",
 	}
 	expectedPublicRPCs := []string{
 		"/nexusmart.user.v1.UserService/Register",
@@ -256,6 +301,12 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.user.v1.UserService/RefreshToken",
 		"/nexusmart.user.v1.UserService/GetShop",
 		"/nexusmart.user.v1.UserService/ListPublicShops",
+		"/nexusmart.user.v1.UserService/GetSiteByHost",
+		"/nexusmart.user.v1.UserService/GetSiteByShop",
+		"/nexusmart.user.v1.UserService/ListPublishedSites",
+		"/nexusmart.user.v1.UserService/ListSiteTemplates",
+		"/nexusmart.user.v1.UserService/GetSiteTemplate",
+		"/nexusmart.order.v1.OrderService/LookupOrder",
 		"/nexusmart.shipping.v1.ShippingService/ListProvinces",
 		"/nexusmart.shipping.v1.ShippingService/ListWards",
 		"/nexusmart.shipping.v1.ShippingService/MapLegacyAddress",
@@ -268,6 +319,11 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.product.v1.ProductService/ListProducts",
 		"/nexusmart.product.v1.ProductService/GetSKUsBatch",
 		"/nexusmart.product.v1.ProductService/ListProductReviews",
+		"/nexusmart.search.v1.SearchService/SearchProducts",
+		"/nexusmart.search.v1.SearchService/Suggest",
+		"/nexusmart.search.v1.SearchService/SimilarProducts",
+		"/nexusmart.chat.v1.ChatService/ExchangeWSTicket",
+		"/nexusmart.assistant.v1.AssistantService/GetReviewSummary",
 	}
 
 	if got, want := len(serviceAllowedRPCs)+len(userOnlyInternalRPCs), len(internalRPCs); got != want {
@@ -354,11 +410,37 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		{"/nexusmart.order.v1.OrderService/GetPlatformReport", adminTok, "admin-1"},
 		{"/nexusmart.order.v1.OrderService/ListOrdersNeedingReview", adminTok, "admin-1"},
 		{"/nexusmart.order.v1.OrderService/ResolveOrderReview", adminTok, "admin-1"},
+		{"/nexusmart.order.v1.OrderService/UpdateOrderAddress", buyerTok, "buyer-1"},
+		{"/nexusmart.order.v1.OrderService/BatchShipOrders", sellerTok, "seller-1"},
+		{"/nexusmart.order.v1.OrderService/GetPickingList", sellerTok, "seller-1"},
+		{"/nexusmart.product.v1.ProductService/ListStockHistory", sellerTok, "seller-1"},
+		{"/nexusmart.product.v1.ProductService/CreateProductImportJob", sellerTok, "seller-1"},
+		{"/nexusmart.product.v1.ProductService/GetProductImportJob", sellerTok, "seller-1"},
+		{"/nexusmart.product.v1.ProductService/ListProductImportRows", sellerTok, "seller-1"},
+		{"/nexusmart.product.v1.ProductService/ConfirmProductImportJob", sellerTok, "seller-1"},
+		{"/nexusmart.product.v1.ProductService/ListProductsForIndex", adminTok, "admin-1"},
+		{"/nexusmart.search.v1.SearchService/SearchProducts", buyerTok, "buyer-1"},
+		{"/nexusmart.search.v1.SearchService/HybridSearch", buyerTok, "buyer-1"},
+		{"/nexusmart.search.v1.SearchService/ListSearchHistory", buyerTok, "buyer-1"},
+		{"/nexusmart.search.v1.SearchService/DeleteSearchHistory", buyerTok, "buyer-1"},
+		{"/nexusmart.search.v1.SearchService/ReindexAll", adminTok, "admin-1"},
+		{"/nexusmart.search.v1.SearchService/GetReindexStatus", adminTok, "admin-1"},
 		{"/nexusmart.cart.v1.CartService/GetCart", buyerTok, "buyer-1"},
 		{"/nexusmart.cart.v1.CartService/AddItem", buyerTok, "buyer-1"},
 		{"/nexusmart.cart.v1.CartService/UpdateItemQty", buyerTok, "buyer-1"},
 		{"/nexusmart.cart.v1.CartService/RemoveItem", buyerTok, "buyer-1"},
 		{"/nexusmart.cart.v1.CartService/ClearItems", buyerTok, "buyer-1"},
+		{"/nexusmart.user.v1.UserService/SaveSiteDraft", sellerTok, "seller-1"},
+		{"/nexusmart.user.v1.UserService/AddCustomDomain", sellerTok, "seller-1"},
+		{"/nexusmart.user.v1.UserService/ListSiteDomains", sellerTok, "seller-1"},
+		{"/nexusmart.user.v1.UserService/SuspendSite", adminTok, "admin-1"},
+		{"/nexusmart.user.v1.UserService/ApplySiteTemplate", sellerTok, "seller-1"},
+		{"/nexusmart.promotion.v1.PromotionService/EndFlashSaleWindow", adminTok, "admin-1"},
+		{"/nexusmart.search.v1.SearchService/SimilarProducts", buyerTok, "buyer-1"},
+		{"/nexusmart.chat.v1.ChatService/SendMessage", buyerTok, "buyer-1"},
+		{"/nexusmart.chat.v1.ChatService/UpsertAutoReplyConfig", sellerTok, "seller-1"},
+		{"/nexusmart.assistant.v1.AssistantService/Handoff", buyerTok, "buyer-1"},
+		{"/nexusmart.assistant.v1.AssistantService/SellerReport", sellerTok, "seller-1"},
 	} {
 		claims, err := callInterceptor(t, users, svc, tc.method, MDAuthorization, "Bearer "+tc.tok)
 		if err != nil || claims == nil || claims.UserID() != tc.wantID {
@@ -633,4 +715,48 @@ func unquoteASTString(t *testing.T, filePath string, expr ast.Expr) string {
 		t.Fatalf("%s: unquote %s: %v", filePath, bl.Value, err)
 	}
 	return s
+}
+
+func TestGRPCInterceptorInternalRPCMatrix(t *testing.T) {
+	users, _ := NewManager("user-key", 15*time.Minute)
+	svc, _ := NewManager("service-key", ServiceTokenTTL)
+
+	svcTok, _ := svc.SignServiceToken("order-service")
+	userTok, _, _, _ := users.SignAccessToken("buyer-1", "buyer", "")
+
+	// Every internal RPC must reject anonymous callers with Unauthenticated.
+	// RPCs marked true accept service tokens; RPCs marked false reject service tokens with PermissionDenied.
+	for method, allowSvc := range internalRPCs {
+		if _, err := callInterceptor(t, users, svc, method); status.Code(err) != codes.Unauthenticated {
+			t.Errorf("anonymous %s: want Unauthenticated, got %v", method, err)
+		}
+		claims, err := callInterceptor(t, users, svc, method, MDAuthorization, "Bearer "+userTok)
+		if err != nil || claims == nil || claims.UserID() != "buyer-1" {
+			t.Errorf("user JWT %s: want buyer-1 claims, got claims=%+v err=%v", method, claims, err)
+		}
+		svcClaims, svcErr := callInterceptor(t, users, svc, method, MDAuthorization, "Bearer "+svcTok)
+		if allowSvc {
+			if svcErr != nil || svcClaims == nil || svcClaims.Service != "order-service" {
+				t.Errorf("service token on allowed %s: want order-service claims, got claims=%+v err=%v", method, svcClaims, svcErr)
+			}
+		} else {
+			if status.Code(svcErr) != codes.PermissionDenied {
+				t.Errorf("service token on user-only %s: want PermissionDenied, got %v", method, svcErr)
+			}
+		}
+	}
+
+	// Public site lookup RPCs must stay anonymous-accessible (no JWT required).
+	for _, pubMethod := range []string{
+		"/nexusmart.user.v1.UserService/GetSiteByHost",
+		"/nexusmart.user.v1.UserService/GetSiteByShop",
+		"/nexusmart.user.v1.UserService/ListPublishedSites",
+		"/nexusmart.user.v1.UserService/ListSiteTemplates",
+		"/nexusmart.user.v1.UserService/GetSiteTemplate",
+	} {
+		claims, err := callInterceptor(t, users, svc, pubMethod)
+		if err != nil || claims != nil {
+			t.Errorf("public site RPC %s: want anonymous nil claims, got claims=%+v err=%v", pubMethod, claims, err)
+		}
+	}
 }

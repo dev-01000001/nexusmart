@@ -1,0 +1,41 @@
+# Staging overrides for web (namespace: nexusmart-staging)
+replicaCount: 1
+
+image:
+  tag: "staging"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+pdb:
+  enabled: false
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+  hosts:
+    - host: "staging.nexusmart.local"
+      paths:
+        - path: "/"
+          pathType: Prefix
+    - host: "*.staging.nexusmart.local"
+      paths:
+        - path: "/"
+          pathType: Prefix
+  tls: []
+
+config:
+  COOKIE_SECURE: "false"
+  APP_ORIGIN: "https://staging.nexusmart.local"
+  SITE_ROOT_DOMAIN: "staging.nexusmart.local"
+  # Replace *.local with a real public HTTPS/WSS domain in external staging (config.ts rejects .local hosts).
+  PUBLIC_GATEWAY_URL: "https://api.staging.nexusmart.local"
+  CHAT_WS_URL: "wss://api.staging.nexusmart.local/api/v1/chat/ws"

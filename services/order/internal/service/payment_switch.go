@@ -544,6 +544,8 @@ func PlanRetryPaymentSwitch(in RetrySwitchInput) (*RetrySwitchPlan, error) {
 			CommissionVnd:       commTotal,
 			ShippingFeeVnd:      ship,
 			PlatformDiscountVnd: platformDiscount,
+			SalesChannel:        effectiveSalesChannel(ord.SalesChannel),
+			StorefrontShopId:    ord.StorefrontShopID,
 		})
 	}
 

@@ -1,0 +1,26 @@
+# Production overrides for user (namespace: nexusmart-production)
+replicaCount: 2
+
+image:
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 150m
+    memory: 192Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+config:
+  ADMIN_BOOTSTRAP_EMAIL: "admin@nexusmart.vn"
+  SITE_ROOT_DOMAIN: "nexusmart.vn"
+  CF_MODE: "mock"
+  CF_ORIGIN_HOST: "origin.nexusmart.vn"
+  CF_CNAME_TARGET: "shops.nexusmart.vn"
+  CF_POLL_INTERVAL: "5m"

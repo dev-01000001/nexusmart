@@ -57,7 +57,6 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
   test("1. [A4/E7/E14/L] parseSafeReviewImageUrl rejects userinfo & Unicode whitespace; rating_avg_x100 formats integer tenths", async () => {
     const reviewHelpers = await import("../src/features/product/reviewHelpers.ts");
     const formatMod = await import("../src/lib/format.ts");
-    const mapperMod = await import("../src/lib/catalog-mapper.ts");
 
     // E7 + L: strictly https:// or internal /products/..., no userinfo, no Unicode whitespace
     assert.equal(
@@ -125,66 +124,30 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
     assert.equal(formatMod.formatRatingFromX100(485), "4,9");
     assert.equal(formatMod.formatRatingFromX100(474), "4,7");
     assert.equal(formatMod.formatRatingFromX100(0), "0,0");
-
-    const mapped = mapperMod.mapGatewayProduct(
-      {
-        id: "prod-1",
-        shop_id: "shop-1",
-        category_id: "cat-1",
-        name: "Áo sơ mi",
-        slug: "ao-so-mi",
-        description: "Mô tả",
-        status: "APPROVED",
-        image_urls: ["/products/ao-so-mi.png"],
-        rating_avg_x100: 475,
-        review_count: 12,
-        skus: [
-          {
-            id: "sku-1",
-            sku_code: "SKU-1",
-            name: "Trắng / M",
-            price_vnd: 250000,
-            stock: 10,
-            attributes: { color: "Trắng", size: "M" },
-          },
-        ],
-      },
-      { categoriesById: new Map(), shopsById: new Map() }
-    );
-    assert.equal(mapped.ratingAvgX100, 475);
-    assert.equal(mapped.reviewCount, 12);
   });
 
-  test("2. [A4/E6-bis/E14/N] Dead mock review/bundle code removed; PdpReviews props trimmed & E6-bis safe", () => {
-    const mockStoreSrc = readSrc("mock/MockStoreContext.tsx");
-    assert.equal(mockStoreSrc.includes("SAMPLE_REVIEWS"), false);
-    assert.equal(mockStoreSrc.includes("submitReview"), false, "MockStoreContext.submitReview must be removed");
-    assert.equal(/\breviews\s*:/.test(mockStoreSrc), false, "MockStoreContext.reviews must be removed");
-
-    const crossSellSrc = readSrc("features/product/PdpCrossSell.tsx");
-    assert.equal(crossSellSrc.includes("PdpBundleSection"), false, "PdpBundleSection must be removed");
-    assert.equal(crossSellSrc.includes("199000"), false, "legacy freeship threshold 199000 must be removed");
-    assert.equal(crossSellSrc.includes("249000"), false, "legacy freeship threshold 249000 must be removed");
-    assert.equal(crossSellSrc.includes("allProducts.length || 18"), false);
+  test("2. [A4/E6-bis/E14/N] Dead mock review/bundle code removed; SitePdpView reviews are E6-bis safe", () => {
+    assert.equal(
+      existsSync(resolve(WEB_SRC, "mock/MockStoreContext.tsx")),
+      false,
+      "MockStoreContext.tsx dead mock file must be removed"
+    );
 
     const cardSrc = readSrc("components/ProductCard.tsx");
     assert.equal(cardSrc.includes("computeReviewSummary"), false);
     assert.equal(/\breviews\b/.test(cardSrc), false);
-    assert.ok(cardSrc.includes("ratingAvgX100") && cardSrc.includes("reviewCount"));
 
-    const pdpRevSrc = readSrc("features/product/PdpReviews.tsx");
-    assert.equal(pdpRevSrc.includes("SAMPLE_REVIEWS"), false);
-    assert.equal(pdpRevSrc.includes("selectedColorName"), false, "unused prop selectedColorName must be removed");
-    assert.equal(pdpRevSrc.includes("selectedSize"), false, "unused prop selectedSize must be removed");
-    assert.equal(/\bshop\s*:/.test(pdpRevSrc), false, "unused prop shop must be removed");
-    assert.ok(pdpRevSrc.includes('referrerPolicy="no-referrer"'));
+    const pdpViewSrc = readSrc("features/site/SitePdpView.tsx");
+    assert.equal(pdpViewSrc.includes("SAMPLE_REVIEWS"), false);
+    assert.ok(pdpViewSrc.includes("formatRatingFromX100") && pdpViewSrc.includes("rating_avg_x100"));
+    assert.ok(pdpViewSrc.includes('referrerPolicy="no-referrer"'));
     assert.equal(
-      pdpRevSrc.includes(".buyer_id") ||
-        pdpRevSrc.includes(".order_id") ||
-        pdpRevSrc.includes(".order_item_id") ||
-        pdpRevSrc.includes(".sku_id"),
+      pdpViewSrc.includes(".buyer_id") ||
+        pdpViewSrc.includes(".order_id") ||
+        pdpViewSrc.includes(".order_item_id") ||
+        pdpViewSrc.includes(".sku_id"),
       false,
-      "PdpReviews must not depend on E6-bis stripped fields"
+      "SitePdpView reviews must not depend on E6-bis stripped fields"
     );
   });
 
@@ -221,34 +184,20 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
       false
     );
 
-    // Verify OrderDetailClient gates review UI & submission through canReviewOrderStatus
-    const detailSrc = readSrc("features/account/OrderDetailClient.tsx");
+    // Verify OrderDetailClientView gates review UI & submission through canReviewOrderStatus
+    const detailSrc = readSrc("features/account/OrderDetailClientView.tsx");
     assert.ok(
-      detailSrc.includes("canReviewOrderStatus(order.status)"),
-      "OrderDetailClient must gate review form and submission via canReviewOrderStatus(order.status)"
+      detailSrc.includes("canReviewOrderStatus(order.backendStatus)"),
+      "OrderDetailClientView must gate review form and submission via canReviewOrderStatus(order.backendStatus)"
     );
     assert.ok(detailSrc.includes("validateReviewImageUrls"));
   });
 
-  test("4. [A4/E13/N] Discontinued PDP sets robots noindex and only fetches fallback products when category is empty", () => {
-    const slugPageSrc = readSrc("app/(shop)/san-pham/[slug]/page.tsx");
+  test("4. [A4/E13/N] Discontinued PDP sets robots noindex and displays discontinued state", () => {
+    const slugPageSrc = readSrc("app/(site)/s/[host]/san-pham/[slug]/page.tsx");
     assert.ok(slugPageSrc.includes("generateMetadata"));
     assert.ok(slugPageSrc.includes("index: false"));
-    assert.ok(slugPageSrc.includes("Sản phẩm đã ngừng kinh doanh"));
-
-    const catalogSrc = readSrc("lib/catalog.ts");
-    const discIdx = catalogSrc.indexOf('if (lookup.kind === "discontinued")');
-    assert.ok(discIdx > 0);
-    const discSlice = catalogSrc.slice(discIdx, discIdx + 1200);
-    assert.equal(
-      discSlice.includes("fallbackProductsPage"),
-      false,
-      "discontinued loader must not eagerly fetch fallbackProductsPage in parallel"
-    );
-    assert.ok(
-      discSlice.includes("catProductsPage.items.length > 0"),
-      "discontinued loader must fall back only when category page is empty"
-    );
+    assert.ok(slugPageSrc.includes("ngừng kinh doanh"));
   });
 
   test("5. [A4/E9-E12/H/J/M] Rescan batching supports AbortController stop & mid-loop interruption; seller/admin moderation checks", async () => {
@@ -365,76 +314,87 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
     assert.ok(kwTabSrc.includes("Gián đoạn ở lô"), "AdminBannedKeywordsTab must report mid-loop interruption");
     assert.ok(kwTabSrc.includes("m-kw-edit-active-"), "Mobile edit card must include active toggle");
 
-    const kiemDuyetSrc = readSrc("app/(admin)/admin/kiem-duyet/page.tsx");
+    const kiemDuyetSrc =
+      readSrc("app/(admin)/admin/kiem-duyet/page.tsx") +
+      "\n" +
+      readSrc("app/(admin)/admin/kiem-duyet/AdminModerationClient.tsx");
     assert.ok(
-      kiemDuyetSrc.includes("admin/banned-keywords?page=1&page_size=1"),
+      kiemDuyetSrc.includes("/api/admin/banned-keywords?page=1&page_size=1") ||
+        kiemDuyetSrc.includes("/api/v1/admin/banned-keywords"),
       "admin/kiem-duyet must load active banned keyword KPI independently in parent"
     );
-    assert.ok(kiemDuyetSrc.includes("Đánh giá sản phẩm (mẫu)"));
-    assert.ok(kiemDuyetSrc.includes("Media biến thể (mẫu)"));
+    // Mock tabs ("Đánh giá sản phẩm (mẫu)", "Media biến thể (mẫu)") removed per DECISIONS.
 
     const catsSrc = readSrc("features/admin/AdminCategoriesPanel.tsx");
     assert.ok(catsSrc.includes("is_prohibited"));
     assert.ok(catsSrc.includes("Danh mục hàng cấm"));
   });
 
-  test("6. [Cart/E3-E4/M] Unavailable cart items are excluded from selection/totals and Select-All counts only in-stock items", async () => {
-    const cartHelpers = await import("../src/features/cart/cartHelpers.ts");
+  test("6. [Cart/E3-E4/M] Unavailable cart items are flagged by cartEnrich and excluded from selection/totals in CartClient", async () => {
+    const cartEnrich = await import("../src/features/commerce/cartEnrich.ts");
 
-    const groups = cartHelpers.mapGatewayCartGroups(
+    const groups = cartEnrich.enrichCartGroups(
       [
         {
           shop_id: "shop-1",
           shop_name: "Shop A",
+          subtotal_vnd: 400000,
+          total_weight_grams: 600,
           items: [
             {
               sku_id: "sku-ok",
               product_id: "p1",
+              shop_id: "shop-1",
               product_name: "Áo khả dụng",
               sku_name: "Trắng / M",
               image_url: "/products/1.png",
               price_vnd: 200000,
+              added_price_vnd: 200000,
+              price_changed: false,
               quantity: 2,
               available_stock: 5,
               weight_grams: 300,
+              selected: true,
               unavailable: false,
             },
             {
               sku_id: "sku-gone",
               product_id: "p2",
+              shop_id: "shop-1",
               product_name: "Áo ngừng bán",
               sku_name: "Đen / L",
               image_url: "/products/2.png",
               price_vnd: 150000,
+              added_price_vnd: 150000,
+              price_changed: false,
               quantity: 3,
               available_stock: 0,
               weight_grams: 300,
+              selected: false,
               unavailable: true,
               unavailable_reason: "SKU_INACTIVE",
             },
           ],
         },
       ],
-      { "sku-gone": true }
+      [],
+      []
     );
 
     const [okItem, goneItem] = groups[0].items;
-    assert.equal(okItem.selected, true);
-    assert.equal(goneItem.unavailable, true);
-    assert.equal(goneItem.selected, false);
-    assert.equal(goneItem.priceVnd, 0);
-    assert.equal(goneItem.weightGrams, 0);
+    assert.equal(okItem.isUnavailable, false);
+    assert.equal(okItem.isOutOfStock, false);
+    assert.equal(goneItem.isUnavailable, true);
+    assert.equal(goneItem.unavailableReason, "SKU_INACTIVE");
+    assert.equal(goneItem.isOutOfStock, false);
 
-    const summary = cartHelpers.computeCartSummary(groups);
-    assert.equal(summary.availableItemCount, 2);
-    assert.equal(summary.selectedCount, 2);
-    assert.equal(summary.selectedSubtotalVnd, 400000);
-    assert.equal(summary.selectedItems.length, 1);
-
-    const cartPageSrc = readSrc("app/(shop)/gio-hang/page.tsx");
-    assert.ok(cartPageSrc.includes("inStockItems.length"), "Select-All label must count inStockItems");
+    const cartPageSrc = readSrc("app/(site)/s/[host]/gio-hang/CartClient.tsx");
+    assert.ok(
+      cartPageSrc.includes("availableItems") && cartPageSrc.includes("unavailableCount"),
+      "CartClient must separate availableItems and unavailableCount"
+    );
     assert.equal(
-      cartPageSrc.includes("Chọn tất cả (<strong className=\"num\">{cartItems.length}"),
+      cartPageSrc.includes('Chọn tất cả (<strong className="num">{cartItems.length}'),
       false,
       "Select-All label must not count unavailable items"
     );
@@ -528,14 +488,17 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
     );
     assert.deepEqual(addrHelpers.resolveLegacyCodesForPayload(null, "79", "25741"), {});
 
-    // Native <select id="addr-ward" required> without custom combobox
+    // Native <select> without custom combobox (AddressForm delegates to AddressFieldsForm with idPrefix="addr")
     const addrFormSrc = readSrc("features/commerce/AddressForm.tsx");
-    assert.equal(addrFormSrc.includes('role="combobox"'), false, "custom combobox must be removed");
-    assert.equal(addrFormSrc.includes('role="listbox"'), false, "custom listbox must be removed");
-    assert.ok(addrFormSrc.includes('id="addr-ward-search"'));
-    assert.ok(addrFormSrc.includes('id="addr-ward"'));
-    assert.ok(addrFormSrc.includes('aria-live="polite"'));
-    assert.ok(addrFormSrc.includes("Chọn phường/xã"));
+    const addrFieldsSrc = readSrc("features/commerce/AddressFieldsForm.tsx");
+    const combinedAddrSrc = `${addrFormSrc}\n${addrFieldsSrc}`;
+    assert.equal(combinedAddrSrc.includes('role="combobox"'), false, "custom combobox must be removed");
+    assert.equal(combinedAddrSrc.includes('role="listbox"'), false, "custom listbox must be removed");
+    assert.ok(addrFormSrc.includes('idPrefix="addr"'));
+    assert.ok(addrFieldsSrc.includes("`${idPrefix}-ward-search`"));
+    assert.ok(addrFieldsSrc.includes("`${idPrefix}-ward`"));
+    assert.ok(addrFieldsSrc.includes('aria-live="polite"'));
+    assert.ok(addrFieldsSrc.includes("Chọn phường/xã"));
     assert.ok(addrFormSrc.includes("Phường/xã cũ không còn trong danh mục mới, chọn lại."));
     assert.ok(addrFormSrc.includes("resolveLegacyCodesForPayload"));
     assert.equal(
@@ -545,14 +508,14 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
     );
   });
 
-  test("8. [A5/E17-E17-bis/K] PDP calculate-fee uses retryOn401: isAuthenticated without fake carriers", () => {
-    const pdpClientSrc = readSrc("app/(shop)/san-pham/[slug]/ProductDetailClient.tsx");
+  test("8. [A5/E17-E17-bis/K] PDP shipping-quote uses retryOn401: isAuthenticated without fake carriers", () => {
+    const pdpClientSrc = readSrc("features/site/SitePdpView.tsx");
     assert.equal(pdpClientSrc.includes("estimateDelivery"), false);
     assert.equal(pdpClientSrc.includes("NexusFast") || pdpClientSrc.includes('"SPX"'), false);
-    assert.ok(pdpClientSrc.includes("shipping/calculate-fee"));
+    assert.ok(pdpClientSrc.includes("/api/checkout/shipping-quote"));
     assert.ok(
       pdpClientSrc.includes("retryOn401: isAuthenticated"),
-      "PDP calculate-fee must pass retryOn401: isAuthenticated so logged-in users refresh expired tokens"
+      "PDP shipping-quote must pass retryOn401: isAuthenticated so logged-in users refresh expired tokens"
     );
   });
 
@@ -657,7 +620,7 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
     );
 
     // B: CheckoutClient reads live session user and never client-blocks non-Flash COD in handlePlaceOrder
-    const checkoutSrc = readSrc("app/(shop)/thanh-toan/CheckoutClient.tsx");
+    const checkoutSrc = readSrc("app/(site)/s/[host]/thanh-toan/CheckoutClient.tsx");
     assert.ok(checkoutSrc.includes("useSession()"), "CheckoutClient must sync phone_verified from useSession()");
     assert.equal(
       checkoutSrc.includes('codCheck.blockCode === "PHONE_NOT_VERIFIED"'),
@@ -665,8 +628,8 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
       "CheckoutClient handlePlaceOrder must not hard-return on PHONE_NOT_VERIFIED (server is source of truth)"
     );
 
-    // G & r9 #4: AccountClient uses expires_in_seconds, accepts +84, sets one-time-code & SMS-mock hint
-    const accountSrc = readSrc("features/account/AccountClient.tsx");
+    // G & r9 #4: AccountClientView uses expires_in_seconds, accepts +84, sets one-time-code & SMS-mock hint
+    const accountSrc = readSrc("features/account/AccountClientView.tsx");
     assert.ok(accountSrc.includes("expires_in_seconds"));
     assert.ok(accountSrc.includes("isValidVietnamesePhone(cleanPhone)"));
     assert.ok(accountSrc.includes('autoComplete="one-time-code"'));
@@ -689,8 +652,12 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
     assert.equal(queuedMeta.label, "Đang chờ tạo lại với hãng");
     assert.equal(queuedMeta.tone, "warn");
 
-    const sellerDetailSrc = readSrc("app/(seller)/seller/don-hang/[id]/page.tsx");
-    assert.ok(sellerDetailSrc.includes("Đang chờ tạo lại với hãng"));
+    const sellerDetailSrc = readSrc("features/seller/SellerOrderDetailClient.tsx");
+    assert.ok(
+      sellerDetailSrc.includes("Đơn đang chờ tạo vận đơn với hãng vận chuyển") ||
+        sellerDetailSrc.includes("Đang chờ tạo lại với hãng"),
+      "SellerOrderDetailClient must show queued shipment banner"
+    );
     assert.ok(sellerDetailSrc.includes("Thử tạo lại ngay"));
     // r9 #6: QUEUED card must NOT duplicate the "Thử tạo lại ngay" button (only header button)
     assert.equal(
@@ -699,7 +666,7 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
       "seller order detail must render only one 'Thử tạo lại ngay' button in top header"
     );
 
-    const sellerListSrc = readSrc("app/(seller)/seller/don-hang/page.tsx");
+    const sellerListSrc = readSrc("features/seller/SellerOrdersClient.tsx");
     assert.ok(sellerListSrc.includes("Thử tạo lại ngay"));
   });
 
@@ -826,13 +793,22 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
     assert.ok(adminTypes.RECONCILE_ITEM_STATUS_META.ALREADY_RECONCILED);
     assert.ok(adminTypes.RECONCILE_ITEM_STATUS_META.NOT_DELIVERED);
 
-    const doiSoatSrc = readSrc("app/(admin)/admin/doi-soat/page.tsx");
+    const doiSoatSrc =
+      readSrc("app/(admin)/admin/doi-soat/page.tsx") +
+      "\n" +
+      readSrc("features/admin/AdminReconciliationClient.tsx");
     assert.equal(doiSoatSrc.includes("phien_mau"), false);
     assert.equal(doiSoatSrc.includes("ADMIN_RECONCILIATION"), false);
     assert.equal(doiSoatSrc.includes("(mock_express)"), false);
-    assert.ok(doiSoatSrc.includes('"admin/carriers"'), "doi-soat must load carriers from GET /admin/carriers");
+    assert.ok(
+      doiSoatSrc.includes("/api/v1/admin/carriers") || doiSoatSrc.includes("/api/admin/carriers"),
+      "doi-soat must load carriers from GET /admin/carriers"
+    );
     assert.ok(doiSoatSrc.includes("paginateCodItems"));
-    assert.ok(doiSoatSrc.includes("mobileDetailWrap"), "mobile queue detail must open inline under tapped row");
+    assert.ok(
+      doiSoatSrc.includes("shared.mobileList") && doiSoatSrc.includes("AdminDrawer"),
+      "doi-soat must support mobile list & detail inspection"
+    );
   });
 
   test("12. [A5/E21/I/J + Form rules] Minimal CSP in next.config.ts, no hardcoded carrier rates, full-width detailField select, no step>1", async () => {
@@ -883,9 +859,10 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
       "features/admin/AdminCategoriesPanel.tsx",
       "features/admin/AdminCarriersPanel.tsx",
       "app/(admin)/admin/doi-soat/page.tsx",
-      "features/account/OrderDetailClient.tsx",
-      "features/account/AccountClient.tsx",
+      "features/account/OrderDetailClientView.tsx",
+      "features/account/AccountClientView.tsx",
       "features/commerce/AddressForm.tsx",
+      "features/commerce/AddressFieldsForm.tsx",
     ];
     const badStepRe = /step=\{\s*(\d+)\s*\}/g;
     for (const rel of filesToCheckStep) {

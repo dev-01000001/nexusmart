@@ -1,0 +1,104 @@
+/* Integrated hero door control: inline [brand].[rootDomain] field + primary CTA on one row when wide enough. */
+
+.wrap {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.controlRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 10px;
+  width: 100%;
+}
+
+.inputGroup {
+  flex: 1 1 280px;
+  min-width: 0;
+  min-height: 52px;
+  background: var(--bg-0);
+  border: 1px solid var(--control);
+  border-radius: var(--radius-shop);
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  gap: 2px;
+  transition: border-color var(--t-hover) var(--ease-out);
+}
+
+.inputGroup:focus-within {
+  border-color: var(--accent);
+}
+
+input.input {
+  flex: 1 1 100px;
+  min-width: 0;
+  height: 50px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-1);
+  font-size: 16px;
+  font-weight: 500;
+  padding: 0;
+  outline: none;
+}
+
+input.input::placeholder {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.domainSuffix {
+  flex: none;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-3);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.cta {
+  flex: 0 0 auto;
+  min-height: 52px;
+  padding-inline: 24px;
+  white-space: nowrap;
+}
+
+.status {
+  min-height: 20px;
+  font-size: var(--step-small);
+  line-height: 1.4;
+  transition: opacity var(--t-hover) var(--ease-out);
+}
+
+.statusEmpty {
+  opacity: 0;
+}
+
+.statusOk {
+  color: var(--positive);
+  font-weight: 500;
+}
+
+.statusWarn {
+  color: var(--amber-ink);
+  font-weight: 500;
+}
+
+@media (max-width: 520px) {
+  .inputGroup {
+    flex: 1 1 100%;
+    padding: 0 12px;
+  }
+
+  .domainSuffix {
+    font-size: 13px;
+  }
+
+  .cta {
+    width: 100%;
+  }
+}

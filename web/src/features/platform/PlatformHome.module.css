@@ -1,0 +1,155 @@
+/* NexusMart Platform Home — Frost & Slate + Archivo.
+   Section 5 FAQ (sticky left heading + filled color tiles switching to teal accent on open). */
+
+.page {
+  width: 100%;
+  background: var(--bg-1);
+  color: var(--ink-1);
+}
+
+/* Section 5: Filled-tile FAQ accordion */
+.faqBand {
+  width: 100%;
+  background: var(--bg-1);
+  padding: var(--section) var(--margin);
+}
+
+.faqGrid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: clamp(24px, 3.6vw, 48px);
+  align-items: start;
+}
+
+.faqLeadCol {
+  grid-column: 1 / 5;
+  position: sticky;
+  top: 96px;
+}
+
+.faqHeading {
+  font-size: var(--step-head);
+  color: var(--ink-1);
+}
+
+.faqList {
+  grid-column: 5 / 13;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.faqTile {
+  background: var(--bg-2);
+  color: var(--ink-1);
+  border-radius: var(--radius-shop);
+  transition:
+    background-color var(--t-ui) var(--ease-out),
+    color var(--t-ui) var(--ease-out);
+}
+
+.faqTile:hover {
+  background: var(--bg-3);
+}
+
+.faqTile[open] {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.faqSummary {
+  list-style: none;
+  min-height: 72px;
+  padding: 20px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  cursor: pointer;
+}
+
+.faqSummary::-webkit-details-marker {
+  display: none;
+}
+
+.faqQuestion {
+  font-size: clamp(1.0625rem, 1.35vw, 1.25rem);
+  color: inherit;
+  line-height: 1.35;
+}
+
+.faqPlus {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.faqPlus::before,
+.faqPlus::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 16px;
+  height: 2px;
+  background: currentColor;
+  transform: translateY(-50%);
+  transition: transform var(--t-ui) var(--ease-expo);
+}
+
+.faqPlus::after {
+  transform: translateY(-50%) rotate(90deg);
+}
+
+.faqTile[open] .faqPlus::after {
+  transform: translateY(-50%) rotate(0deg);
+}
+
+.faqAnswerWrap {
+  padding: 0 24px 24px;
+  animation: faqOpen 240ms var(--ease-out) both;
+}
+
+@keyframes faqOpen {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.faqAnswer {
+  font-size: clamp(1rem, 1.05vw, 1.0625rem);
+  line-height: 1.55;
+  color: inherit;
+  max-width: 52ch;
+}
+
+@media (max-width: 900px) {
+  .faqGrid {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+
+  .faqLeadCol {
+    grid-column: auto;
+    position: static;
+  }
+
+  .faqList {
+    grid-column: auto;
+  }
+
+  .faqSummary {
+    min-height: 64px;
+    padding: 18px 20px;
+  }
+
+  .faqAnswerWrap {
+    padding: 0 20px 20px;
+  }
+}

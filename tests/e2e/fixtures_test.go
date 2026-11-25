@@ -958,3 +958,86 @@ func TestClient429WithoutRetryAfterReturnsImmediately(t *testing.T) {
 		t.Fatalf("429 without Retry-After slept unexpectedly (%s)", elapsed)
 	}
 }
+
+func TestW3B42RawHTTP429RetryAndNoRetry(t *testing.T) {
+	origSleep := w3b42RawHTTPSleep
+	t.Cleanup(func() { w3b42RawHTTPSleep = origSleep })
+
+	t.Run("RetriesWithRetryAfterThenSucceeds", func(t *testing.T) {
+		var hits atomic.Int32
+		var sleeps []time.Duration
+		w3b42RawHTTPSleep = func(_ context.Context, d time.Duration) error {
+			sleeps = append(sleeps, d)
+			return nil
+		}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if hits.Add(1) <= 2 {
+				w.Header().Set("Retry-After", "2")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":{"code":"RATE_LIMITED"}}`))
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))
+		defer srv.Close()
+
+		code, _, body := w3b42RawHTTP(context.Background(), t, http.MethodGet, srv.URL+"/test", "", "", nil)
+		if code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", code, string(body))
+		}
+		if got := hits.Load(); got != 3 {
+			t.Fatalf("hits = %d, want 3 (2 retries + 1 success)", got)
+		}
+		if len(sleeps) != 2 || sleeps[0] != 2250*time.Millisecond || sleeps[1] != 2250*time.Millisecond {
+			t.Fatalf("sleeps = %v, want two 2.25s waits", sleeps)
+		}
+	})
+
+	t.Run("CapsAtFiveRetriesOnPersistent429", func(t *testing.T) {
+		var hits atomic.Int32
+		var sleepCount int
+		w3b42RawHTTPSleep = func(_ context.Context, _ time.Duration) error {
+			sleepCount++
+			return nil
+		}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"code":"RATE_LIMITED"}}`))
+		}))
+		defer srv.Close()
+
+		code, _, _ := w3b42RawHTTP(context.Background(), t, http.MethodGet, srv.URL+"/test", "", "", nil)
+		if code != http.StatusTooManyRequests {
+			t.Fatalf("status = %d, want 429", code)
+		}
+		if got := hits.Load(); got != w3b42RawHTTPMax429Retries+1 {
+			t.Fatalf("hits = %d, want %d (1 initial + %d retries)", got, w3b42RawHTTPMax429Retries+1, w3b42RawHTTPMax429Retries)
+		}
+		if sleepCount != w3b42RawHTTPMax429Retries {
+			t.Fatalf("sleepCount = %d, want %d", sleepCount, w3b42RawHTTPMax429Retries)
+		}
+	})
+
+	t.Run("NoRetryDoesNotRetryRateLimitTests", func(t *testing.T) {
+		var hits atomic.Int32
+		w3b42RawHTTPSleep = func(_ context.Context, _ time.Duration) error {
+			t.Fatalf("w3b42RawHTTPNoRetry must not sleep")
+			return nil
+		}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			w.Header().Set("Retry-After", "3")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"code":"RATE_LIMITED"}}`))
+		}))
+		defer srv.Close()
+
+		code, _, _ := w3b42RawHTTPNoRetry(context.Background(), t, http.MethodGet, srv.URL+"/test", "", "", nil)
+		if code != http.StatusTooManyRequests || hits.Load() != 1 {
+			t.Fatalf("code=%d hits=%d, want 429 and 1 hit", code, hits.Load())
+		}
+	})
+}

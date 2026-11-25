@@ -1301,7 +1301,7 @@ func TestW2BPayloadsPresenceFlagsPrivacyAndManualReviewVisibility(t *testing.T) 
 	}
 
 	// Buyer routes:
-	reqCheckout := httptest.NewRequest(http.MethodPost, "/api/v1/checkout", strings.NewReader(`{"address_id":"a1","payment_method":"COD","items":[{"sku_id":"sku-a1","quantity":1}]}`))
+	reqCheckout := httptest.NewRequest(http.MethodPost, "/api/v1/checkout", strings.NewReader(`{"address_id":"a1","payment_method":"COD","sales_channel":"MARKETPLACE","items":[{"sku_id":"sku-a1","quantity":1}]}`))
 	reqCheckout.Header.Set("Authorization", "Bearer "+buyerTok)
 	reqCheckout.Header.Set("Idempotency-Key", "idem-buyer-privacy-1")
 	recCheckout := httptest.NewRecorder()
@@ -1834,7 +1834,7 @@ func TestW2BRound4ReviewFixes(t *testing.T) {
 	t.Run("CheckoutWarningsAndIgnoresClientShopProgramItemID", func(t *testing.T) {
 		orderMock.checkoutWarnings = nil
 		rec := do(http.MethodPost, "/api/v1/checkout", buyerTok,
-			`{"address_id":"a1","payment_method":"COD","items":[{"sku_id":"sku-a1","quantity":1,"shop_program_item_id":"spoofed-prog-id"}]}`,
+			`{"address_id":"a1","payment_method":"COD","sales_channel":"MARKETPLACE","items":[{"sku_id":"sku-a1","quantity":1,"shop_program_item_id":"spoofed-prog-id"}]}`,
 			map[string]string{"Idempotency-Key": "idem-r4-co-1"})
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("POST /checkout with extra shop_program_item_id: want 201, got %d (%s)", rec.Code, rec.Body.String())
@@ -1848,7 +1848,7 @@ func TestW2BRound4ReviewFixes(t *testing.T) {
 
 		orderMock.checkoutWarnings = []string{"shop discount per_user_limit reached"}
 		rec2 := do(http.MethodPost, "/api/v1/checkout", buyerTok,
-			`{"address_id":"a1","payment_method":"COD","items":[{"sku_id":"sku-a1","quantity":1}]}`,
+			`{"address_id":"a1","payment_method":"COD","sales_channel":"MARKETPLACE","items":[{"sku_id":"sku-a1","quantity":1}]}`,
 			map[string]string{"Idempotency-Key": "idem-r4-co-2"})
 		if rec2.Code != http.StatusCreated || !strings.Contains(rec2.Body.String(), `"warnings":["shop discount per_user_limit reached"]`) {
 			t.Fatalf("POST /checkout missing populated warnings: code=%d body=%s", rec2.Code, rec2.Body.String())

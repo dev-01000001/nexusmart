@@ -18,7 +18,7 @@ use crate::domain::{
 use crate::error::{PaymentError, Result};
 use crate::telemetry::mask_secret;
 use crate::vietqr::{execute_http_json_with_retry, execute_with_retry, CircuitBreaker, RetryError};
-use crate::webhook_security::compute_hmac_hex;
+use crate::webhook_security::{compute_hmac_hex, ensure_webhook_secret_usable};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -1233,6 +1233,7 @@ impl MockZaloPay {
 #[derive(Clone)]
 pub struct ZaloPayAdapter {
     config: ZaloPayConfig,
+    is_production: bool,
     http_client: Client,
     breaker: CircuitBreaker,
     mock: Option<MockZaloPay>,
@@ -1243,6 +1244,7 @@ impl fmt::Debug for ZaloPayAdapter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ZaloPayAdapter")
             .field("config", &self.config)
+            .field("is_production", &self.is_production)
             .field("circuit_state", &self.breaker.state())
             .field("has_mock", &self.mock.is_some())
             .finish()
@@ -1251,10 +1253,17 @@ impl fmt::Debug for ZaloPayAdapter {
 
 impl ZaloPayAdapter {
     pub fn from_config(cfg: &Config) -> Result<Self> {
-        Self::try_from_zalopay_config(&cfg.zalopay)
+        Self::try_from_zalopay_config_with_env(&cfg.zalopay, cfg.is_production())
     }
 
     pub fn try_from_zalopay_config(cfg: &ZaloPayConfig) -> Result<Self> {
+        Self::try_from_zalopay_config_with_env(cfg, false)
+    }
+
+    pub fn try_from_zalopay_config_with_env(
+        cfg: &ZaloPayConfig,
+        is_production: bool,
+    ) -> Result<Self> {
         cfg.validate().map_err(PaymentError::Validation)?;
         let http_client = Client::builder()
             .timeout(cfg.http_timeout)
@@ -1268,6 +1277,7 @@ impl ZaloPayAdapter {
 
         Ok(Self {
             config: cfg.clone(),
+            is_production,
             http_client,
             breaker: CircuitBreaker::new(5, Duration::from_secs(30)),
             mock,
@@ -1284,11 +1294,32 @@ impl ZaloPayAdapter {
             .expect("reqwest client build");
         Self {
             config: cfg,
+            is_production: false,
             http_client,
             breaker: CircuitBreaker::new(5, Duration::from_secs(30)),
             mock: Some(mock),
             mock_backoff: Duration::from_millis(1),
         }
+    }
+
+    /// Sets whether this adapter enforces production callback guards.
+    pub fn with_production(mut self, is_production: bool) -> Self {
+        self.is_production = is_production;
+        self
+    }
+
+    pub fn is_production(&self) -> bool {
+        self.is_production
+    }
+
+    /// Guards incoming ZaloPay callbacks against mock mode or placeholder `key2` in production.
+    pub fn ensure_callback_usable(&self) -> Result<()> {
+        if self.is_production && self.config.mode != ZaloPayMode::Sandbox {
+            return Err(PaymentError::ServiceUnavailable(
+                "ZaloPay callbacks disabled: mock mode is not allowed in production".to_string(),
+            ));
+        }
+        ensure_webhook_secret_usable(self.effective_key2(), self.is_production)
     }
 
     /// Replaces the circuit breaker (useful in tests with short open durations).
@@ -1732,13 +1763,15 @@ impl ZaloPayAdapter {
         Ok(resp)
     }
 
-    /// Convenience wrapper verifying an incoming callback using this adapter's effective `key2`.
+    /// Convenience wrapper verifying an incoming callback using this adapter's effective `key2`,
+    /// enforcing production guards against mock mode and placeholder keys.
     pub fn verify_callback_request(
         &self,
         req: &ZaloPayCallbackRequest,
         now: DateTime<Utc>,
         replay_window_secs: i64,
     ) -> Result<VerifiedZaloPayCallback> {
+        self.ensure_callback_usable()?;
         verify_and_parse_callback(req, self.effective_key2(), now, replay_window_secs)
     }
 }

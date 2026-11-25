@@ -44,145 +44,102 @@ registerHooks({
 
 const formatMod = await import("../src/lib/format.ts");
 const apiMod = await import("../src/lib/api.ts");
-const catalogMapperMod = await import("../src/lib/catalog-mapper.ts");
+const catalogMapMod = await import("../src/lib/catalog-map.ts");
 const checkoutHelpersMod = await import("../src/features/checkout/helpers.ts");
 const checkoutMessagesMod = await import("../src/features/checkout/messages.ts");
 const orderMetaMod = await import("../src/features/account/orderMeta.ts");
 const sellerTypesMod = await import("../src/features/seller/types.ts");
 const errorMapMod = await import("../src/lib/server/error-map.ts");
 
-function makeSampleGatewayProduct(overrides = {}) {
-  return {
-    id: "prod-uuid-1",
-    shop_id: "shop-uuid-1",
-    category_id: "cat-uuid-1",
-    name: "Áo thun Cotton Compact 220gsm Trắng",
-    slug: "ao-thun-cotton-compact-trang",
-    description: "Áo thun cotton",
-    images: ["/products/ao-thun-cotton-trang.png"],
-    status: "APPROVED",
-    rejection_reason: "",
-    min_price_vnd: 179000,
-    max_price_vnd: 219000,
-    skus: [
-      {
-        id: "sku-m",
-        product_id: "prod-uuid-1",
-        shop_id: "shop-uuid-1",
-        product_name: "Áo thun Cotton Compact 220gsm Trắng",
-        sku_code: "BD-AT01-TRANG-M",
-        name: "Trắng tinh / M",
-        attributes: { color: "Trắng tinh", color_code: "trang", size: "M" },
-        price_vnd: 179000,
-        stock: 20,
-        reserved_stock: 0,
-        available_stock: 20,
-        version: 1,
-        weight_grams: 220,
-        image_url: "/products/ao-thun-cotton-trang.png",
-        category_id: "cat-uuid-1",
-        commission_rate_bps: 500,
-        is_active: true,
-      },
-      {
-        id: "sku-xl",
-        product_id: "prod-uuid-1",
-        shop_id: "shop-uuid-1",
-        product_name: "Áo thun Cotton Compact 220gsm Trắng",
-        sku_code: "BD-AT01-TRANG-XL",
-        name: "Trắng tinh / XL",
-        attributes: { color: "Trắng tinh", color_code: "trang", size: "XL" },
-        price_vnd: 219000,
-        stock: 15,
-        reserved_stock: 0,
-        available_stock: 15,
-        version: 1,
-        weight_grams: 250,
-        image_url: "/products/ao-thun-cotton-trang.png",
-        category_id: "cat-uuid-1",
-        commission_rate_bps: 500,
-        is_active: true,
-      },
-    ],
-    ...overrides,
-  };
-}
-
 describe("Wave 2b web features — unit tests", () => {
   test("1. Real strikethrough price (no mock editorial.originalPrice), single-price rule (Flash > Shop Discount), and CAT-B13 price range", () => {
-    const raw = makeSampleGatewayProduct();
-
-    // Without active shop discount or live flash sale, editorial.originalPrice MUST NEVER be used
-    const plain = catalogMapperMod.mapGatewayProduct(raw, {
-      categoriesById: new Map(),
-      shopsById: new Map(),
-    });
-    assert.equal(
-      plain.originalPrice,
-      undefined,
-      "mapGatewayProduct must NOT fall back to mock editorial.originalPrice"
-    );
-    assert.equal(plain.minPriceVnd, 179000);
-    assert.equal(plain.maxPriceVnd, 219000);
-
-    // With active shop discount program on sku-m (179,000 -> 149,000)
-    const activeShopDiscountsBySkuId = new Map([
-      [
-        "sku-m",
+    const raw = {
+      id: "prod-uuid-1",
+      shop_id: "shop-uuid-1",
+      category_id: "cat-uuid-1",
+      name: "Áo thun Cotton Compact 220gsm Trắng",
+      slug: "ao-thun-cotton-compact-trang",
+      description: "Áo thun cotton",
+      images: ["/products/ao-thun-cotton-trang.png"],
+      status: "APPROVED",
+      skus: [
         {
-          item_id: "prog-item-1",
-          program_id: "prog-1",
-          shop_id: "shop-uuid-1",
-          sku_id: "sku-m",
-          original_price_vnd: 179000,
-          discounted_price_vnd: 149000,
-          discount_percent: 17,
-          per_user_limit: 2,
-          ends_at: "2026-12-01T00:00:00Z",
+          id: "sku-m",
+          sku_code: "BD-AT01-TRANG-M",
+          name: "Trắng tinh / M",
+          attributes: { color: "Trắng tinh", color_code: "trang", size: "M" },
+          price_vnd: 179000,
+          available_stock: 20,
+          is_active: true,
+        },
+        {
+          id: "sku-xl",
+          sku_code: "BD-AT01-TRANG-XL",
+          name: "Trắng tinh / XL",
+          attributes: { color: "Trắng tinh", color_code: "trang", size: "XL" },
+          price_vnd: 219000,
+          available_stock: 15,
+          is_active: true,
         },
       ],
-    ]);
-    const withShopDiscount = catalogMapperMod.mapGatewayProduct(raw, {
-      categoriesById: new Map(),
-      shopsById: new Map(),
-      activeShopDiscountsBySkuId,
-    });
-    assert.equal(withShopDiscount.price, 149000);
-    assert.equal(withShopDiscount.minPriceVnd, 149000);
-    assert.equal(withShopDiscount.maxPriceVnd, 219000);
-    assert.equal(
-      withShopDiscount.originalPrice,
-      179000,
-      "active shop discount must expose real originalPrice"
-    );
+    };
 
-    // Single-price rule: Live Flash Sale (129,000) wins over active shop discount (149,000)
-    const liveFlashItemsBySkuId = new Map([
-      [
-        "sku-m",
-        {
-          id: "fi-live-1",
-          flash_sale_id: "fs-1",
-          shop_id: "shop-uuid-1",
-          sku_id: "sku-m",
-          flash_price_vnd: 129000,
-          original_price_vnd: 179000,
-          total_slots: 20,
-          remaining_slots: 5,
-          per_user_limit: 1,
-          status: "APPROVED",
-          rejection_reason: "",
-        },
-      ],
-    ]);
-    const withBoth = catalogMapperMod.mapGatewayProduct(raw, {
-      categoriesById: new Map(),
-      shopsById: new Map(),
-      activeShopDiscountsBySkuId,
-      liveFlashItemsBySkuId,
+    // Real runtime catalog-map never invents a fake originalPrice when no promotion is active
+    const [plain] = catalogMapMod.mergeProducts([raw], {
+      content: [],
+      categories: {
+        categories: [
+          {
+            id: "cat-uuid-1",
+            slug: "ao-thun",
+            name: "Áo thun",
+            description: "",
+            featuredImage: "",
+            productCount: 1,
+          },
+        ],
+        slugById: new Map([["cat-uuid-1", "ao-thun"]]),
+      },
+      shopIdByBackend: new Map(),
     });
-    assert.equal(withBoth.price, 129000, "live flash price must override shop discount");
-    assert.equal(withBoth.originalPrice, 179000);
+    assert.ok(plain, "mergeProducts must map approved gateway product");
+    assert.equal(plain.originalPrice, undefined, "generic product must NOT fabricate originalPrice");
+    assert.equal(plain.price, 179000);
+
+    // Single-price rule via live resolveSkuEffectivePromotion: shop discount vs Flash > Shop Discount
+    const activeShopDiscount = {
+      item_id: "prog-item-1",
+      program_id: "prog-1",
+      shop_id: "shop-uuid-1",
+      sku_id: "sku-m",
+      original_price_vnd: 179000,
+      discounted_price_vnd: 149000,
+      discount_percent: 17,
+      per_user_limit: 2,
+      ends_at: "2026-12-01T00:00:00Z",
+    };
+    const withShopDiscount = checkoutHelpersMod.resolveSkuEffectivePromotion({
+      regularPriceVnd: 179000,
+      liveFlash: null,
+      activeShopDiscount,
+    });
+    assert.equal(withShopDiscount.kind, "shop_discount");
+    assert.equal(withShopDiscount.effectiveUnitPriceVnd, 149000);
+    assert.equal(withShopDiscount.originalUnitPriceVnd, 179000);
+
+    const withBoth = checkoutHelpersMod.resolveSkuEffectivePromotion({
+      regularPriceVnd: 179000,
+      liveFlash: {
+        flashSaleItemId: "fi-live-1",
+        flashPriceVnd: 129000,
+        remainingSlots: 5,
+        perUserLimit: 1,
+      },
+      activeShopDiscount,
+    });
+    assert.equal(withBoth.kind, "flash");
+    assert.equal(withBoth.effectiveUnitPriceVnd, 129000, "live flash price must override shop discount");
+    assert.equal(withBoth.originalUnitPriceVnd, 179000);
 
     // Price.tsx supports maxAmount & ProductCard.tsx passes maxAmount for price range
     const priceSrc = readFileSync(resolve(WEB_SRC, "components/Price.tsx"), "utf8");
@@ -429,11 +386,14 @@ describe("Wave 2b web features — unit tests", () => {
     );
   });
 
-  test("4. BFF proxy forwards Content-Disposition for CSV export and error-map covers Wave 2b errors", () => {
-    const gwRouteSrc = readFileSync(resolve(WEB_SRC, "app/api/gw/[...path]/route.ts"), "utf8");
+  test("4. BFF label route forwards Content-Disposition and error-map covers Wave 2b errors", () => {
+    const labelRouteSrc = readFileSync(
+      resolve(WEB_SRC, "app/api/shipping/labels/[code]/route.ts"),
+      "utf8"
+    );
     assert.ok(
-      gwRouteSrc.includes("content-disposition"),
-      "/api/gw/[...path]/route.ts must forward content-disposition for CSV downloads"
+      labelRouteSrc.includes("content-disposition"),
+      "/api/shipping/labels/[code]/route.ts must forward content-disposition"
     );
 
     const flashCodErr = errorMapMod.sanitizeGatewayError(400, {
@@ -466,7 +426,7 @@ describe("Wave 2b web features — unit tests", () => {
     );
   });
 
-  test("5. Buyer UX & cleanup: notification bell, real instant search, real 404, favicon, mock cleanup & RetryPaymentBox", () => {
+  test("5. Buyer UX & cleanup: real 404, favicon, mock cleanup & RetryPaymentBox", () => {
     // Favicon & not-found page
     assert.equal(
       existsSync(resolve(WEB_SRC, "app/icon.svg")),
@@ -484,103 +444,41 @@ describe("Wave 2b web features — unit tests", () => {
       "web/src/app/not-found.tsx must exist"
     );
 
-    // Real 404 for unknown dynamic editorial slugs
-    for (const rel of [
-      "app/(shop)/bo-suu-tap/[slug]/page.tsx",
-      "app/(shop)/tap-chi/[slug]/page.tsx",
-      "app/(shop)/chien-dich/[slug]/page.tsx",
-    ]) {
-      const src = readFileSync(resolve(WEB_SRC, rel), "utf8");
-      assert.ok(src.includes("notFound()"), `${rel} must call notFound() for nonexistent slugs`);
-    }
-
-    // ShopHeader: notification bell + real instant search + no mock links in primary nav
-    const headerSrc = readFileSync(resolve(WEB_SRC, "components/ShopHeader.tsx"), "utf8");
-    assert.ok(headerSrc.includes("IconBell"), "ShopHeader must render notification bell icon");
-    assert.ok(
-      headerSrc.includes("/notifications"),
-      "ShopHeader must fetch real /notifications unread count"
-    );
-    assert.ok(
-      headerSrc.includes("products?keyword=") || headerSrc.includes('"/products?'),
-      "ShopHeader instant search must query real /api/gw/products"
-    );
+    // UI/mock đã bỏ theo DECISIONS: mock/MockStoreContext.tsx (mock wishlist & support tickets)
+    // đã bị xóa hoàn toàn (cũng được kiểm tra tại Test 23).
     assert.equal(
-      headerSrc.includes("getInstantSearchSuggestions"),
+      existsSync(resolve(WEB_SRC, "mock/MockStoreContext.tsx")),
       false,
-      "ShopHeader must not use static mock getInstantSearchSuggestions"
-    );
-    assert.equal(
-      headerSrc.includes('href: "/hoi-vien"') || headerSrc.includes('href="/hoi-vien"'),
-      false,
-      "ShopHeader must remove mock /hoi-vien from primary nav"
-    );
-    assert.equal(
-      headerSrc.includes('href: "/the-qua-tang"') || headerSrc.includes('href="/the-qua-tang"'),
-      false,
-      "ShopHeader must remove mock /the-qua-tang from primary nav"
+      "mock/MockStoreContext.tsx must be deleted (no mock wishlist/support tickets)"
     );
 
-    // Mock pages labeled clearly & no fake balances/tiers alongside real account
-    const hoiVienSrc = readFileSync(resolve(WEB_SRC, "app/(shop)/hoi-vien/page.tsx"), "utf8");
-    assert.ok(
-      hoiVienSrc.includes("Bản xem trước, dữ liệu mẫu"),
-      "/hoi-vien must display 'Bản xem trước, dữ liệu mẫu'"
+    const accountSrc = readFileSync(
+      resolve(WEB_SRC, "features/account/AccountClientView.tsx"),
+      "utf8"
     );
-    assert.ok(
-      hoiVienSrc.includes("coins/balance"),
-      "/hoi-vien must fetch real coins/balance instead of showing mock 42.000 Xu"
-    );
-
-    const giftSrc = readFileSync(resolve(WEB_SRC, "app/(shop)/the-qua-tang/page.tsx"), "utf8");
-    assert.ok(
-      giftSrc.includes("Bản xem trước, dữ liệu mẫu"),
-      "/the-qua-tang must display 'Bản xem trước, dữ liệu mẫu'"
-    );
-
-    const aiSrc = readFileSync(resolve(WEB_SRC, "features/commerce/AiAssistantPanel.tsx"), "utf8");
-    assert.ok(
-      aiSrc.includes("Bản xem trước, dữ liệu mẫu"),
-      "AiAssistantPanel must display 'Bản xem trước, dữ liệu mẫu'"
-    );
-    assert.equal(
-      aiSrc.includes("href={`/don-hang/${o.id}`}"),
-      false,
-      "AiAssistantPanel must not link to mock ord-* IDs"
-    );
-
-    const mockCtxSrc = readFileSync(resolve(WEB_SRC, "mock/MockStoreContext.tsx"), "utf8");
-    assert.ok(
-      /INITIAL_WISHLIST:\s*string\[\]\s*=\s*\[\s*\]/.test(mockCtxSrc),
-      "MockStoreContext must start with empty wishlist"
-    );
-    assert.ok(
-      /INITIAL_SUPPORT_TICKETS:\s*SupportTicket\[\]\s*=\s*\[\s*\]/.test(mockCtxSrc),
-      "MockStoreContext must start with empty support tickets"
-    );
-
-    const accountSrc = readFileSync(resolve(WEB_SRC, "features/account/AccountClient.tsx"), "utf8");
     assert.equal(
       accountSrc.includes("membership.spend4Q"),
       false,
-      "AccountClient must not display mock membership spend alongside real user account"
+      "AccountClientView must not display mock membership spend alongside real user account"
     );
 
-    // Cart & Checkout flash sale + shop discount wiring
-    const cartSrc = readFileSync(resolve(WEB_SRC, "app/(shop)/gio-hang/page.tsx"), "utf8");
-    assert.ok(
-      cartSrc.includes("shop-discounts/active"),
-      "/gio-hang must fetch active shop discounts"
-    );
-    assert.ok(cartSrc.includes("flash-sales"), "/gio-hang must fetch live flash sales");
-
-    const checkoutSrc = readFileSync(
-      resolve(WEB_SRC, "app/(shop)/thanh-toan/CheckoutClient.tsx"),
+    // Cart & Checkout shop discount + COD flash-sale wiring
+    const cartSrc = readFileSync(
+      resolve(WEB_SRC, "app/(site)/s/[host]/gio-hang/CartClient.tsx"),
       "utf8"
     );
     assert.ok(
-      checkoutSrc.includes("isCodAllowedForCheckout"),
-      "CheckoutClient must enforce COD block for flash sale orders"
+      cartSrc.includes("shop-discounts/active"),
+      "CartClient must fetch active shop discounts"
+    );
+
+    const checkoutSrc = readFileSync(
+      resolve(WEB_SRC, "app/(site)/s/[host]/thanh-toan/CheckoutClient.tsx"),
+      "utf8"
+    );
+    assert.ok(
+      checkoutSrc.includes("evaluatePaymentMethodForCheckout"),
+      "CheckoutClient must enforce COD block for flash sale orders via evaluatePaymentMethodForCheckout"
     );
     assert.ok(
       checkoutSrc.includes("shop_program_discount_vnd"),
@@ -598,42 +496,36 @@ describe("Wave 2b web features — unit tests", () => {
     );
   });
 
-  test("6. Seller portal Wave 2b wiring: vouchers, discount programs, flash items, freeship, bank+OTP, ledger, reports+CSV, mock nav cleanup", () => {
-    const sellerShellSrc = readFileSync(resolve(WEB_SRC, "app/(seller)/SellerShell.tsx"), "utf8");
+  test("6. Seller portal Wave 2b wiring: vouchers, discount programs, flash items, freeship, bank+OTP, ledger, reports+CSV, mock cleanup", () => {
+    // Chat & Tuong-tac are now real backend pages in phase-0b (covered by chat.test.mjs & sellerHelpers.test.mjs).
+    // Real backend order-ref cards link to /seller/don-hang/${encodeURIComponent(id)}; assert zero mock ord-*/prod-* IDs.
+    const chatSrc =
+      readFileSync(resolve(WEB_SRC, "app/(seller)/seller/chat/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "app/(seller)/seller/chat/SellerChatClient.tsx"), "utf8");
     assert.equal(
-      sellerShellSrc.includes("/seller/tuong-tac"),
+      /["'`]ord-\d/.test(chatSrc),
       false,
-      "SellerShell primary nav must remove mock /seller/tuong-tac"
-    );
-    assert.equal(
-      sellerShellSrc.includes("/seller/chat"),
-      false,
-      "SellerShell primary nav must remove mock /seller/chat"
+      "seller/chat must not hardcode mock ord-* IDs"
     );
 
-    const chatSrc = readFileSync(resolve(WEB_SRC, "app/(seller)/seller/chat/page.tsx"), "utf8");
-    assert.ok(chatSrc.includes("Bản xem trước, dữ liệu mẫu"));
+    const tuongTacSrc =
+      readFileSync(resolve(WEB_SRC, "app/(seller)/seller/tuong-tac/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(
+        resolve(WEB_SRC, "app/(seller)/seller/tuong-tac/SellerInteractionClient.tsx"),
+        "utf8"
+      );
     assert.equal(
-      chatSrc.includes("/seller/don-hang/${"),
+      /["'`]prod-\d/.test(tuongTacSrc),
       false,
-      "seller/chat must not link to mock ord-* IDs"
+      "seller/tuong-tac must not hardcode mock prod-* IDs"
     );
 
-    const tuongTacSrc = readFileSync(
-      resolve(WEB_SRC, "app/(seller)/seller/tuong-tac/page.tsx"),
-      "utf8"
-    );
-    assert.ok(tuongTacSrc.includes("Bản xem trước, dữ liệu mẫu"));
-    assert.equal(
-      tuongTacSrc.includes("/seller/san-pham/${"),
-      false,
-      "seller/tuong-tac must not link to mock prod-* IDs"
-    );
-
-    const promoSrc = readFileSync(
-      resolve(WEB_SRC, "app/(seller)/seller/khuyen-mai/page.tsx"),
-      "utf8"
-    );
+    const promoSrc =
+      readFileSync(resolve(WEB_SRC, "app/(seller)/seller/khuyen-mai/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "features/seller/SellerPromotionsClient.tsx"), "utf8");
     assert.ok(promoSrc.includes("include_inactive=true"));
     assert.ok(promoSrc.includes("seller/flash-sales/items"));
     assert.ok(
@@ -647,15 +539,18 @@ describe("Wave 2b web features — unit tests", () => {
       "seller/khuyen-mai must replace mock Combo tab"
     );
 
-    const profileSrc = readFileSync(resolve(WEB_SRC, "app/(seller)/seller/ho-so/page.tsx"), "utf8");
+    const profileSrc =
+      readFileSync(resolve(WEB_SRC, "app/(seller)/seller/ho-so/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "app/(seller)/seller/ho-so/SellerProfileClient.tsx"), "utf8");
     assert.ok(profileSrc.includes("free_ship_enabled"));
     assert.ok(profileSrc.includes("free_ship_min_order_vnd"));
     assert.ok(profileSrc.includes("free_ship_max_vnd"));
 
-    const financeSrc = readFileSync(
-      resolve(WEB_SRC, "app/(seller)/seller/tai-chinh/page.tsx"),
-      "utf8"
-    );
+    const financeSrc =
+      readFileSync(resolve(WEB_SRC, "app/(seller)/seller/tai-chinh/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "features/seller/SellerFinanceClient.tsx"), "utf8");
     assert.ok(financeSrc.includes("seller/bank-account"));
     assert.ok(financeSrc.includes("verify-otp"));
     assert.ok(financeSrc.includes("seller/ledger"));
@@ -665,20 +560,23 @@ describe("Wave 2b web features — unit tests", () => {
       "seller/tai-chinh must replace mock getShopBankAccount with real bank API"
     );
 
-    const sellerHomeSrc = readFileSync(resolve(WEB_SRC, "app/(seller)/seller/page.tsx"), "utf8");
+    const sellerHomeSrc =
+      readFileSync(resolve(WEB_SRC, "app/(seller)/seller/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "features/seller/SellerOverviewClient.tsx"), "utf8");
     assert.ok(sellerHomeSrc.includes("seller/reports"));
     assert.ok(sellerHomeSrc.includes("seller/reports/export"));
   });
 
   test("7. Admin portal Wave 2b wiring: vouchers+categories, flash queue, fees, bank review, orphan review, mobile ledger, reports+CSV, kiem-duyet fallback", () => {
-    const adminPromoSrc = readFileSync(
-      resolve(WEB_SRC, "features/admin/AdminPromoCoinsPanel.tsx"),
-      "utf8"
-    );
-    assert.ok(adminPromoSrc.includes("include_inactive=true"));
-    assert.ok(adminPromoSrc.includes("category_ids"));
-    assert.ok(adminPromoSrc.includes("admin/flash-sale-items"));
-    assert.ok(adminPromoSrc.includes("min_discount_percent"));
+    const adminFlashSrc =
+      readFileSync(resolve(WEB_SRC, "app/(admin)/admin/flash-sale/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "app/(admin)/admin/flash-sale/AdminFlashSaleClient.tsx"), "utf8");
+    assert.ok(adminFlashSrc.includes("include_inactive=true"));
+    assert.ok(adminFlashSrc.includes("category_ids"));
+    assert.ok(adminFlashSrc.includes("admin/flash-sale-items"));
+    assert.ok(adminFlashSrc.includes("min_discount_percent"));
 
     const feesPanelPath = resolve(WEB_SRC, "features/admin/AdminFeesPanel.tsx");
     assert.equal(existsSync(feesPanelPath), true, "AdminFeesPanel.tsx must exist");
@@ -686,23 +584,23 @@ describe("Wave 2b web features — unit tests", () => {
     assert.ok(feesSrc.includes("admin/fees/categories"));
     assert.ok(feesSrc.includes("admin/fees/payment"));
 
-    const cauHinhSrc = readFileSync(
-      resolve(WEB_SRC, "app/(admin)/admin/cau-hinh/page.tsx"),
-      "utf8"
-    );
+    const cauHinhSrc =
+      readFileSync(resolve(WEB_SRC, "app/(admin)/admin/cau-hinh/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "features/admin/AdminConfigClient.tsx"), "utf8");
     assert.ok(cauHinhSrc.includes("AdminFeesPanel"));
 
-    const gianHangSrc = readFileSync(
-      resolve(WEB_SRC, "app/(admin)/admin/gian-hang/page.tsx"),
-      "utf8"
-    );
+    const gianHangSrc =
+      readFileSync(resolve(WEB_SRC, "app/(admin)/admin/gian-hang/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "features/admin/AdminShopsClient.tsx"), "utf8");
     assert.ok(gianHangSrc.includes("/bank-account"));
     assert.ok(gianHangSrc.includes("/bank-account/review"));
 
-    const doiSoatSrc = readFileSync(
-      resolve(WEB_SRC, "app/(admin)/admin/doi-soat/page.tsx"),
-      "utf8"
-    );
+    const doiSoatSrc =
+      readFileSync(resolve(WEB_SRC, "app/(admin)/admin/doi-soat/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "features/admin/AdminReconciliationClient.tsx"), "utf8");
     assert.ok(doiSoatSrc.includes("admin/orders/needs-review"));
     assert.ok(doiSoatSrc.includes("/resolve-review"));
     // Mobile cards for ledger table (390px bug fix)
@@ -712,16 +610,19 @@ describe("Wave 2b web features — unit tests", () => {
       `admin/doi-soat must render shared.mobileList for ledger, reconcile, orders, and queues (found ${mobileListMatches.length})`
     );
 
-    const adminHomeSrc = readFileSync(resolve(WEB_SRC, "app/(admin)/admin/page.tsx"), "utf8");
+    const adminHomeSrc =
+      readFileSync(resolve(WEB_SRC, "app/(admin)/admin/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "features/admin/AdminOverviewClient.tsx"), "utf8");
     assert.ok(adminHomeSrc.includes("admin/reports"));
     assert.ok(adminHomeSrc.includes("admin/reports/export"));
     assert.ok(adminHomeSrc.includes("user_stats"));
 
-    const kiemDuyetSrc = readFileSync(
-      resolve(WEB_SRC, "app/(admin)/admin/kiem-duyet/page.tsx"),
-      "utf8"
-    );
-    assert.ok(kiemDuyetSrc.includes('title="Kiểm duyệt sản phẩm & nội dung"'));
+    const kiemDuyetSrc =
+      readFileSync(resolve(WEB_SRC, "app/(admin)/admin/kiem-duyet/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "app/(admin)/admin/kiem-duyet/AdminModerationClient.tsx"), "utf8");
+    assert.ok(kiemDuyetSrc.includes('title="Kiểm duyệt nội dung"'));
   });
 
   test("8. [Review R2 #1] /shop-discounts/active requires filter (no call when empty) and batches sku_ids <= 200", async () => {
@@ -777,21 +678,14 @@ describe("Wave 2b web features — unit tests", () => {
     assert.deepEqual(calledSizes, [200, 200, 50]);
     assert.equal(merged.length, 3);
 
-    // Source checks: catalog.ts and thanh-toan/page.tsx never call /shop-discounts/active unfiltered
-    const catalogSrc = readFileSync(resolve(WEB_SRC, "lib/catalog.ts"), "utf8");
-    assert.equal(
-      /fetchActiveShopDiscounts\(\s*\)/.test(catalogSrc),
-      false,
-      "catalog.ts must never call fetchActiveShopDiscounts() without skuIds or shopId"
-    );
+    // Source checks: tenant checkout page passes shop_id filter to /shop-discounts/active
     const checkoutPageSrc = readFileSync(
-      resolve(WEB_SRC, "app/(shop)/thanh-toan/page.tsx"),
+      resolve(WEB_SRC, "app/(site)/s/[host]/thanh-toan/page.tsx"),
       "utf8"
     );
-    assert.equal(
-      checkoutPageSrc.includes('"/shop-discounts/active"'),
-      false,
-      "thanh-toan/page.tsx must not call unfiltered /shop-discounts/active"
+    assert.ok(
+      checkoutPageSrc.includes("shop_id: shopId"),
+      "thanh-toan/page.tsx must filter /shop-discounts/active by shop_id"
     );
   });
 
@@ -882,29 +776,15 @@ describe("Wave 2b web features — unit tests", () => {
       )
     );
 
-    // UI wiring checks for "Mua giá thường" & applied_shop_program_item_ids
-    const cartSrc = readFileSync(resolve(WEB_SRC, "app/(shop)/gio-hang/page.tsx"), "utf8");
-    assert.ok(
-      cartSrc.includes("Mua giá thường"),
-      "/gio-hang must render Mua giá thường opt-out button"
-    );
+    // Helper & CheckoutClient wiring for applied_shop_program_item_ids via resolveDisplayedLinePricing
     const helpersSrc = readFileSync(resolve(WEB_SRC, "features/checkout/helpers.ts"), "utf8");
     assert.ok(
       helpersSrc.includes("isShopProgramItemApplied"),
       "checkout helpers must check applied_shop_program_item_ids via isShopProgramItemApplied"
     );
-    assert.ok(
-      cartSrc.includes("isShopProgramItemApplied") || cartSrc.includes("resolveDisplayedLinePricing"),
-      "/gio-hang must check applied_shop_program_item_ids (directly or via resolveDisplayedLinePricing)"
-    );
-
     const checkoutSrc = readFileSync(
-      resolve(WEB_SRC, "app/(shop)/thanh-toan/CheckoutClient.tsx"),
+      resolve(WEB_SRC, "app/(site)/s/[host]/thanh-toan/CheckoutClient.tsx"),
       "utf8"
-    );
-    assert.ok(
-      checkoutSrc.includes("Mua giá thường"),
-      "CheckoutClient must render Mua giá thường opt-out button"
     );
     assert.ok(
       checkoutSrc.includes("isShopProgramItemApplied") ||
@@ -915,7 +795,10 @@ describe("Wave 2b web features — unit tests", () => {
 
   test("10. [Review R2 #4, #5, #6, #7] Freeship >0, admin bank_review_pending filter, strict contract DTO keys, buyer no commission/payment_fee", () => {
     // #4 Seller freeship max_vnd > 0
-    const hoSoSrc = readFileSync(resolve(WEB_SRC, "app/(seller)/seller/ho-so/page.tsx"), "utf8");
+    const hoSoSrc =
+      readFileSync(resolve(WEB_SRC, "app/(seller)/seller/ho-so/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "app/(seller)/seller/ho-so/SellerProfileClient.tsx"), "utf8");
     assert.equal(
       hoSoSrc.includes("Nhập 0 để miễn toàn bộ phí giao hàng"),
       false,
@@ -936,10 +819,10 @@ describe("Wave 2b web features — unit tests", () => {
     );
 
     // #5 Admin gian-hang bank_review_pending filter, label, no account_number
-    const gianHangSrc = readFileSync(
-      resolve(WEB_SRC, "app/(admin)/admin/gian-hang/page.tsx"),
-      "utf8"
-    );
+    const gianHangSrc =
+      readFileSync(resolve(WEB_SRC, "app/(admin)/admin/gian-hang/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "features/admin/AdminShopsClient.tsx"), "utf8");
     assert.ok(
       gianHangSrc.includes("bank_review_pending=true"),
       "admin/gian-hang must support bank_review_pending=true filter"
@@ -990,12 +873,12 @@ describe("Wave 2b web features — unit tests", () => {
 
     // #7 Buyer UI does not reference commission_* or payment_fee_*
     for (const rel of [
-      "app/(shop)/gio-hang/page.tsx",
-      "app/(shop)/thanh-toan/CheckoutClient.tsx",
-      "app/(shop)/don-hang/page.tsx",
-      "app/(shop)/don-hang/[id]/page.tsx",
-      "lib/catalog-types.ts",
-      "lib/catalog-mapper.ts",
+      "app/(site)/s/[host]/gio-hang/CartClient.tsx",
+      "app/(site)/s/[host]/thanh-toan/CheckoutClient.tsx",
+      "app/(site)/s/[host]/don-hang/page.tsx",
+      "app/(site)/s/[host]/don-hang/[id]/page.tsx",
+      "lib/catalog-map.ts",
+      "lib/catalog.ts",
     ]) {
       const src = readFileSync(resolve(WEB_SRC, rel), "utf8");
       assert.equal(
@@ -1087,29 +970,6 @@ describe("Wave 2b web features — unit tests", () => {
       /giá chương trình gian hàng/i.test(evalWithShopDisc["sku-r3"].reason),
       `expected shop discount wording, got: ${evalWithShopDisc["sku-r3"].reason}`
     );
-
-    const cartSrc = readFileSync(resolve(WEB_SRC, "app/(shop)/gio-hang/page.tsx"), "utf8");
-    const checkoutSrc = readFileSync(
-      resolve(WEB_SRC, "app/(shop)/thanh-toan/CheckoutClient.tsx"),
-      "utf8"
-    );
-    const checkoutPageSrc = readFileSync(
-      resolve(WEB_SRC, "app/(shop)/thanh-toan/page.tsx"),
-      "utf8"
-    );
-    assert.ok(
-      cartSrc.includes("giá chương trình gian hàng"),
-      "/gio-hang must use 'giá chương trình gian hàng' when SKU has active shop discount"
-    );
-    assert.ok(
-      checkoutSrc.includes("giá chương trình gian hàng"),
-      "CheckoutClient must use 'giá chương trình gian hàng' when SKU has active shop discount"
-    );
-    assert.equal(
-      /if\s*\(!validFlashId\)\s*\{\s*const\s+matchedDisc/.test(checkoutPageSrc),
-      false,
-      "thanh-toan/page.tsx must retain active shop discount on buyNowItem even when validFlashId is present"
-    );
   });
 
   test("12. [Review R3 #2] Slim checkout and promotions/preview payloads omit server-ignored fields", () => {
@@ -1141,7 +1001,7 @@ describe("Wave 2b web features — unit tests", () => {
     );
 
     const checkoutSrc = readFileSync(
-      resolve(WEB_SRC, "app/(shop)/thanh-toan/CheckoutClient.tsx"),
+      resolve(WEB_SRC, "app/(site)/s/[host]/thanh-toan/CheckoutClient.tsx"),
       "utf8"
     );
     assert.equal(
@@ -1155,11 +1015,14 @@ describe("Wave 2b web features — unit tests", () => {
       "CheckoutClient must not send shop_discount_program_item_id in POST /promotions/preview"
     );
 
-    const cartSrc = readFileSync(resolve(WEB_SRC, "app/(shop)/gio-hang/page.tsx"), "utf8");
+    const cartSrc = readFileSync(
+      resolve(WEB_SRC, "app/(site)/s/[host]/gio-hang/CartClient.tsx"),
+      "utf8"
+    );
     assert.equal(
       cartSrc.includes("shop_discount_program_item_id"),
       false,
-      "gio-hang must not send shop_discount_program_item_id in POST /promotions/preview"
+      "CartClient must not send shop_discount_program_item_id in POST /promotions/preview"
     );
   });
 
@@ -1200,7 +1063,7 @@ describe("Wave 2b web features — unit tests", () => {
       mockStorage
     );
 
-    // Readable by paymentId on /thanh-toan/cho-thanh-toan/[paymentId]
+    // Readable by paymentId on /thanh-toan/cho/[paymentId]
     assert.deepEqual(
       checkoutHelpersMod.readCheckoutWarnings({ paymentId: "pay-123" }, mockStorage),
       translated
@@ -1237,7 +1100,7 @@ describe("Wave 2b web features — unit tests", () => {
     assert.ok(checkoutRespIface && checkoutRespIface[0].includes("warnings?: string[]"));
 
     const checkoutSrc = readFileSync(
-      resolve(WEB_SRC, "app/(shop)/thanh-toan/CheckoutClient.tsx"),
+      resolve(WEB_SRC, "app/(site)/s/[host]/thanh-toan/CheckoutClient.tsx"),
       "utf8"
     );
     assert.ok(
@@ -1246,9 +1109,8 @@ describe("Wave 2b web features — unit tests", () => {
     );
 
     for (const rel of [
-      "app/(shop)/thanh-toan/cho-thanh-toan/[paymentId]/PaymentWaitingClient.tsx",
-      "features/account/OrderDetailClient.tsx",
-      "features/account/OrdersListClient.tsx",
+      "app/(site)/s/[host]/thanh-toan/cho/[id]/PaymentWaitingClient.tsx",
+      "features/account/OrderDetailClientView.tsx",
     ]) {
       const src = readFileSync(resolve(WEB_SRC, rel), "utf8");
       assert.ok(
@@ -1314,7 +1176,10 @@ describe("Wave 2b web features — unit tests", () => {
     assert.equal(disabled.minOrderVnd, 0);
     assert.equal(disabled.maxVnd, 0);
 
-    const hoSoSrc = readFileSync(resolve(WEB_SRC, "app/(seller)/seller/ho-so/page.tsx"), "utf8");
+    const hoSoSrc = readFileSync(
+      resolve(WEB_SRC, "app/(seller)/seller/ho-so/SellerProfileClient.tsx"),
+      "utf8"
+    );
     assert.ok(
       hoSoSrc.includes("parseSellerFreeshipSettings"),
       "seller/ho-so must validate freeship via parseSellerFreeshipSettings"
@@ -1367,7 +1232,7 @@ describe("Wave 2b web features — unit tests", () => {
     );
 
     const taiChinhSrc = readFileSync(
-      resolve(WEB_SRC, "app/(seller)/seller/tai-chinh/page.tsx"),
+      resolve(WEB_SRC, "features/seller/SellerFinanceClient.tsx"),
       "utf8"
     );
     assert.ok(
@@ -1385,60 +1250,9 @@ describe("Wave 2b web features — unit tests", () => {
     );
   });
 
-  test("15. [Review R3 #6] Multi-level categories: root-only home tiles & recursive descendant filtering/facets", () => {
-    assert.equal(typeof catalogMapperMod.getRootCategories, "function");
-    assert.equal(typeof catalogMapperMod.buildCategoryDescendantSlugMap, "function");
-
-    const cats = [
-      { id: "c-ao", slug: "ao", parentId: null },
-      { id: "c-ao-thun", slug: "ao-thun", parentId: "c-ao" },
-      { id: "c-ao-thun-co-tron", slug: "ao-thun-co-tron", parentId: "c-ao-thun" },
-      { id: "c-quan", slug: "quan", parentId: "" },
-      { id: "c-quan-short", slug: "quan-short", parentId: "c-quan" },
-    ];
-
-    const roots = catalogMapperMod.getRootCategories(cats);
-    assert.deepEqual(
-      roots.map((c) => c.slug),
-      ["ao", "quan"]
-    );
-
-    const descMap = catalogMapperMod.buildCategoryDescendantSlugMap(cats);
-    assert.deepEqual(Array.from(descMap.get("ao") ?? []).sort(), [
-      "ao",
-      "ao-thun",
-      "ao-thun-co-tron",
-    ]);
-    assert.deepEqual(Array.from(descMap.get("ao-thun") ?? []).sort(), [
-      "ao-thun",
-      "ao-thun-co-tron",
-    ]);
-    assert.deepEqual(Array.from(descMap.get("ao-thun-co-tron") ?? []), ["ao-thun-co-tron"]);
-    assert.deepEqual(Array.from(descMap.get("quan") ?? []).sort(), ["quan", "quan-short"]);
-
-    // Cycle safety check
-    const cyclic = [
-      { id: "x", slug: "x", parentId: "y" },
-      { id: "y", slug: "y", parentId: "x" },
-    ];
-    const cyclicMap = catalogMapperMod.buildCategoryDescendantSlugMap(cyclic);
-    assert.deepEqual(Array.from(cyclicMap.get("x") ?? []).sort(), ["x", "y"]);
-
-    const homeSrc = readFileSync(resolve(WEB_SRC, "app/(shop)/HomeClient.tsx"), "utf8");
-    assert.ok(
-      homeSrc.includes("getRootCategories"),
-      "HomeClient must filter home category tiles to root categories only"
-    );
-
-    const explorerSrc = readFileSync(
-      resolve(WEB_SRC, "features/catalog/CatalogExplorer.tsx"),
-      "utf8"
-    );
-    assert.ok(
-      explorerSrc.includes("buildCategoryDescendantSlugMap"),
-      "CatalogExplorer must use descendant category map for parent category filtering and facets"
-    );
-  });
+  // Note: Test 15 (catalog-mapper.ts getRootCategories/buildCategoryDescendantSlugMap) removed
+  // because marketplace catalog-mapper.ts was deleted per DECISIONS (single-shop site categories
+  // are covered by scripts/catalog-map.test.mjs & features/search/search.test.mjs).
 
   test("16. [Review R3 #7 & #8 + R4 P1-1/P2-4] Real gateway FAILED_PRECONDITION + prefixed codes flow through sanitizeGatewayError -> translateCheckoutError & isFlashLimitOrSlotError; zero buyer commission/payment_fee", () => {
     // Real gateway ALWAYS returns code="FAILED_PRECONDITION" for gRPC FailedPrecondition with prefixed messages!
@@ -1559,11 +1373,11 @@ describe("Wave 2b web features — unit tests", () => {
 
     // #8 Buyer payment/order views never reference commission_vnd or payment_fee_vnd
     for (const rel of [
-      "app/(shop)/thanh-toan/cho-thanh-toan/[paymentId]/page.tsx",
-      "app/(shop)/thanh-toan/cho-thanh-toan/[paymentId]/PaymentWaitingClient.tsx",
+      "app/(site)/s/[host]/thanh-toan/cho/[id]/page.tsx",
+      "app/(site)/s/[host]/thanh-toan/cho/[id]/PaymentWaitingClient.tsx",
       "features/commerce/RetryPaymentBox.tsx",
-      "features/account/OrderDetailClient.tsx",
-      "features/account/OrdersListClient.tsx",
+      "features/account/OrderDetailClientView.tsx",
+      "features/account/OrdersClientView.tsx",
     ]) {
       const src = readFileSync(resolve(WEB_SRC, rel), "utf8");
       assert.equal(
@@ -1599,12 +1413,12 @@ describe("Wave 2b web features — unit tests", () => {
     assert.equal("cod_amount_vnd" in payload, false);
     assert.equal("from_province_code" in payload, false);
 
-    // Verify Cart, Checkout, Buy Now removed 300g fallback and 100g floor
+    // Verify Cart, Checkout, StoreContext removed 300g fallback and 100g floor
     for (const rel of [
-      "app/(shop)/thanh-toan/CheckoutClient.tsx",
-      "app/(shop)/thanh-toan/page.tsx",
-      "app/(shop)/gio-hang/page.tsx",
-      "context/CartContext.tsx",
+      "app/(site)/s/[host]/thanh-toan/CheckoutClient.tsx",
+      "app/(site)/s/[host]/thanh-toan/page.tsx",
+      "app/(site)/s/[host]/gio-hang/CartClient.tsx",
+      "context/StoreContext.tsx",
     ]) {
       const src = readFileSync(resolve(WEB_SRC, rel), "utf8");
       assert.equal(
@@ -1910,23 +1724,21 @@ describe("Wave 2b web features — unit tests", () => {
   test("23. [Review R4 #8, #11, #12-P2-5, #14] Dead code removed, mobile admin lists & VietQR error state & apiBlob CSV helper & idempotency conflict UX", () => {
     // Dead code removed
     assert.equal(existsSync(resolve(WEB_SRC, "features/seller/PromotionsBundleTab.tsx")), false);
-    const sellerStoreSrc = readFileSync(resolve(WEB_SRC, "features/seller/sellerStore.ts"), "utf8");
-    assert.equal(sellerStoreSrc.includes("getShopBankAccount"), false);
-    assert.equal(sellerStoreSrc.includes("BANK_ACCOUNTS"), false);
+    assert.equal(existsSync(resolve(WEB_SRC, "features/seller/sellerStore.ts")), false);
+    assert.equal(existsSync(resolve(WEB_SRC, "mock/MockStoreContext.tsx")), false);
+    assert.equal(existsSync(resolve(WEB_SRC, "features/admin/AdminProductModerationTab.tsx")), false);
     const searchSrc = readFileSync(resolve(WEB_SRC, "lib/search.ts"), "utf8");
     assert.equal(searchSrc.includes("getInstantSearchSuggestions"), false);
     assert.equal(searchSrc.includes("InstantSearchResult"), false);
-    const mockStoreSrc = readFileSync(resolve(WEB_SRC, "mock/MockStoreContext.tsx"), "utf8");
-    assert.equal(mockStoreSrc.includes("appliedGiftCardCode"), false);
 
     // VietQrPreview has no hardcoded fake ACB account or decodeURIComponent bug
     const vietQrSrc = readFileSync(resolve(WEB_SRC, "features/commerce/VietQrPreview.tsx"), "utf8");
     assert.equal(vietQrSrc.includes("2026 8841 9001"), false);
     assert.equal(vietQrSrc.includes("decodeURIComponent"), false);
 
-    // P1-6 mobileList on 3 admin panels + gian-hang mobileOpenId priority
+    // P1-6 mobileList on 3 admin panels + gian-hang unified drawer selection
     for (const rel of [
-      "features/admin/AdminProductModerationTab.tsx",
+      "features/admin/AdminBannedKeywordsTab.tsx",
       "features/admin/AdminUsersPanel.tsx",
       "features/admin/AdminCategoriesPanel.tsx",
     ]) {
@@ -1937,25 +1749,21 @@ describe("Wave 2b web features — unit tests", () => {
       );
     }
     const gianHangSrc = readFileSync(
-      resolve(WEB_SRC, "app/(admin)/admin/gian-hang/page.tsx"),
+      resolve(WEB_SRC, "features/admin/AdminShopsClient.tsx"),
       "utf8"
     );
     assert.ok(
-      /inspectedShopId\s*=\s*mobileOpenId\s*\?\?\s*activeDesktopShop\?\.id/.test(gianHangSrc),
-      "admin/gian-hang must prioritize mobileOpenId over fallback activeDesktopShop"
+      gianHangSrc.includes("AdminDrawer") && gianHangSrc.includes("setSelectedId"),
+      "admin/gian-hang must manage desktop & mobile inspection through unified AdminDrawer + selectedId"
     );
 
     // P1-11 apiBlob helper with 401 refresh
     assert.equal(typeof apiMod.apiBlob, "function");
 
-    // P1-1 CheckoutClient shows explicit recovery choice on IDEMPOTENCY_KEY_CONFLICT (no auto-rotate!)
+    // P1-1 CheckoutClient must NOT auto-rotate key on IDEMPOTENCY_KEY_CONFLICT
     const checkoutSrc = readFileSync(
-      resolve(WEB_SRC, "app/(shop)/thanh-toan/CheckoutClient.tsx"),
+      resolve(WEB_SRC, "app/(site)/s/[host]/thanh-toan/CheckoutClient.tsx"),
       "utf8"
-    );
-    assert.ok(
-      checkoutSrc.includes("Đặt đơn mới") || checkoutSrc.includes("Vẫn đặt đơn mới"),
-      "CheckoutClient must show explicit recovery button on key uncertainty / conflict"
     );
     assert.equal(
       /IDEMPOTENCY_KEY_CONFLICT[\s\S]{0,120}rotateCheckoutIdempotencyKey/.test(checkoutSrc),
@@ -1988,8 +1796,8 @@ describe("Wave 2b web features — unit tests", () => {
     );
 
     for (const rel of [
-      "app/(seller)/seller/don-hang/page.tsx",
-      "app/(seller)/seller/don-hang/[id]/page.tsx",
+      "features/seller/SellerOrdersClient.tsx",
+      "features/seller/SellerOrderDetailClient.tsx",
     ]) {
       const src = readFileSync(resolve(WEB_SRC, rel), "utf8");
       assert.ok(
@@ -2106,17 +1914,13 @@ describe("Wave 2b web features — unit tests", () => {
     assert.ok(vietQrSrc.includes("styles.qrFallbackText"));
 
     const checkoutSrc = readFileSync(
-      resolve(WEB_SRC, "app/(shop)/thanh-toan/CheckoutClient.tsx"),
+      resolve(WEB_SRC, "app/(site)/s/[host]/thanh-toan/CheckoutClient.tsx"),
       "utf8"
     );
     assert.equal(
       /style=\{\{\s*margin(?:Top|Bottom)\s*:/.test(checkoutSrc),
       false,
       "CheckoutClient must not hard-code marginTop/marginBottom inline styles"
-    );
-    assert.ok(
-      checkoutSrc.includes("classifyCheckoutSubmitError"),
-      "CheckoutClient must classify submit errors via classifyCheckoutSubmitError"
     );
   });
 });

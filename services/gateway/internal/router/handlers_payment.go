@@ -33,25 +33,29 @@ type shopAllocationDTO struct {
 	CommissionVND       int64  `json:"commission_vnd"`
 	ShippingFeeVND      int64  `json:"shipping_fee_vnd"`
 	PlatformDiscountVND int64  `json:"platform_discount_vnd"`
+	SalesChannel        string `json:"sales_channel"`
+	StorefrontShopID    string `json:"storefront_shop_id"`
 }
 
 type paymentDTO struct {
-	PaymentID       string               `json:"payment_id"`
-	OrderGroupID    string               `json:"order_group_id"`
-	OrderID         string               `json:"order_id"`
-	UserID          string               `json:"user_id"`
-	AmountVND       int64                `json:"amount_vnd"`
-	Method          string               `json:"method"`
-	Status          string               `json:"status"`
-	QRURL           string               `json:"qr_url"`
-	QRCode          string               `json:"qr_code"`
-	PayURL          string               `json:"pay_url"`
-	Provider        string               `json:"provider"`
-	ProviderRef     string               `json:"provider_ref"`
-	ShopAllocations []*shopAllocationDTO `json:"shop_allocations"`
-	ExpiresAt       string               `json:"expires_at,omitempty"`
-	CreatedAt       string               `json:"created_at,omitempty"`
-	UpdatedAt       string               `json:"updated_at,omitempty"`
+	PaymentID        string               `json:"payment_id"`
+	OrderGroupID     string               `json:"order_group_id"`
+	OrderID          string               `json:"order_id"`
+	UserID           string               `json:"user_id"`
+	AmountVND        int64                `json:"amount_vnd"`
+	Method           string               `json:"method"`
+	Status           string               `json:"status"`
+	QRURL            string               `json:"qr_url"`
+	QRCode           string               `json:"qr_code"`
+	PayURL           string               `json:"pay_url"`
+	Provider         string               `json:"provider"`
+	ProviderRef      string               `json:"provider_ref"`
+	ShopAllocations  []*shopAllocationDTO `json:"shop_allocations"`
+	SalesChannel     string               `json:"sales_channel"`
+	StorefrontShopID string               `json:"storefront_shop_id"`
+	ExpiresAt        string               `json:"expires_at,omitempty"`
+	CreatedAt        string               `json:"created_at,omitempty"`
+	UpdatedAt        string               `json:"updated_at,omitempty"`
 }
 
 type publicPaymentMethodConfigDTO struct {
@@ -138,6 +142,8 @@ type reconciliationItemDTO struct {
 	TrackingCode      string `json:"tracking_code"`
 	OrderID           string `json:"order_id"`
 	LineNumber        int32  `json:"line_number"`
+	SalesChannel      string `json:"sales_channel"`
+	StorefrontShopID  string `json:"storefront_shop_id"`
 }
 
 type reconciliationRunSummaryDTO struct {
@@ -157,6 +163,9 @@ type reconciliationRunSummaryDTO struct {
 	Status                 string `json:"status"`
 	CreatedBy              string `json:"created_by"`
 	CreatedAt              string `json:"created_at,omitempty"`
+	SalesChannel           string `json:"sales_channel,omitempty"`
+	AutoHealedCount        int32  `json:"auto_healed_count,omitempty"`
+	CompletedAt            string `json:"completed_at,omitempty"`
 }
 
 type sellerLedgerEntryDTO struct {
@@ -285,25 +294,29 @@ func mapPayment(p *paymentv1.Payment) *paymentDTO {
 			CommissionVND:       a.GetCommissionVnd(),
 			ShippingFeeVND:      a.GetShippingFeeVnd(),
 			PlatformDiscountVND: a.GetPlatformDiscountVnd(),
+			SalesChannel:        normalizeSalesChannelOutput(a.GetSalesChannel()),
+			StorefrontShopID:    a.GetStorefrontShopId(),
 		})
 	}
 	return &paymentDTO{
-		PaymentID:       p.GetPaymentId(),
-		OrderGroupID:    p.GetOrderGroupId(),
-		OrderID:         p.GetOrderId(),
-		UserID:          p.GetUserId(),
-		AmountVND:       p.GetAmountVnd(),
-		Method:          paymentMethodString(p.GetMethod()),
-		Status:          paymentStatusString(p.GetStatus()),
-		QRURL:           p.GetQrUrl(),
-		QRCode:          p.GetQrCode(),
-		PayURL:          p.GetPayUrl(),
-		Provider:        p.GetProvider(),
-		ProviderRef:     p.GetProviderRef(),
-		ShopAllocations: allocs,
-		ExpiresAt:       httpx.FormatTimestamp(p.GetExpiresAt()),
-		CreatedAt:       httpx.FormatTimestamp(p.GetCreatedAt()),
-		UpdatedAt:       httpx.FormatTimestamp(p.GetUpdatedAt()),
+		PaymentID:        p.GetPaymentId(),
+		OrderGroupID:     p.GetOrderGroupId(),
+		OrderID:          p.GetOrderId(),
+		UserID:           p.GetUserId(),
+		AmountVND:        p.GetAmountVnd(),
+		Method:           paymentMethodString(p.GetMethod()),
+		Status:           paymentStatusString(p.GetStatus()),
+		QRURL:            p.GetQrUrl(),
+		QRCode:           p.GetQrCode(),
+		PayURL:           p.GetPayUrl(),
+		Provider:         p.GetProvider(),
+		ProviderRef:      p.GetProviderRef(),
+		ShopAllocations:  allocs,
+		SalesChannel:     normalizeSalesChannelOutput(p.GetSalesChannel()),
+		StorefrontShopID: p.GetStorefrontShopId(),
+		ExpiresAt:        httpx.FormatTimestamp(p.GetExpiresAt()),
+		CreatedAt:        httpx.FormatTimestamp(p.GetCreatedAt()),
+		UpdatedAt:        httpx.FormatTimestamp(p.GetUpdatedAt()),
 	}
 }
 
@@ -419,6 +432,8 @@ func mapReconciliationItem(it *paymentv1.ReconciliationItem) *reconciliationItem
 		TrackingCode:      it.GetTrackingCode(),
 		OrderID:           it.GetOrderId(),
 		LineNumber:        it.GetLineNumber(),
+		SalesChannel:      normalizeSalesChannelOutput(it.GetSalesChannel()),
+		StorefrontShopID:  it.GetStorefrontShopId(),
 	}
 }
 
@@ -443,6 +458,9 @@ func mapReconciliationRunSummary(run *paymentv1.ReconciliationRunSummary) *recon
 		Status:                 run.GetStatus(),
 		CreatedBy:              run.GetCreatedBy(),
 		CreatedAt:              httpx.FormatTimestamp(run.GetCreatedAt()),
+		SalesChannel:           run.GetSalesChannel(),
+		AutoHealedCount:        run.GetAutoHealedCount(),
+		CompletedAt:            httpx.FormatTimestamp(run.GetCompletedAt()),
 	}
 }
 
@@ -640,11 +658,15 @@ func (h *handler) handleRetryPayment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleSellerBalance(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.Payment.GetSellerBalance(ctx, &paymentv1.GetSellerBalanceRequest{
-		ShopId: auth.ShopIDFromContext(r.Context()),
+		ShopId: shopID,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
@@ -659,10 +681,17 @@ func (h *handler) handleSellerBalance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleAdminLedgerSummary(w http.ResponseWriter, r *http.Request) {
+	salesChannel, errMsg := validateSalesChannelFilter(r.URL.Query().Get("sales_channel"))
+	if errMsg != "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", errMsg)
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
-	resp, err := h.clients.Payment.GetLedgerSummary(ctx, &paymentv1.GetLedgerSummaryRequest{})
+	resp, err := h.clients.Payment.GetLedgerSummary(ctx, &paymentv1.GetLedgerSummaryRequest{
+		SalesChannel: salesChannel,
+	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
 		return
@@ -681,6 +710,7 @@ func (h *handler) handleAdminLedgerSummary(w http.ResponseWriter, r *http.Reques
 		"total_debits_vnd":  resp.GetTotalDebitsVnd(),
 		"total_credits_vnd": resp.GetTotalCreditsVnd(),
 		"is_balanced":       resp.GetIsBalanced(),
+		"sales_channel":     resp.GetSalesChannel(),
 		"accounts":          accounts,
 	})
 }
@@ -727,10 +757,20 @@ func (h *handler) handleAdminRefundPayment(w http.ResponseWriter, r *http.Reques
 
 func (h *handler) handleAdminReconcilePayments(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Date string `json:"date"`
+		Date         string `json:"date"`
+		SalesChannel string `json:"sales_channel"`
 	}
 	if err := httpx.DecodeOptionalJSON(r, &body); err != nil {
 		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	rawChannel := body.SalesChannel
+	if strings.TrimSpace(rawChannel) == "" {
+		rawChannel = r.URL.Query().Get("sales_channel")
+	}
+	salesChannel, errMsg := validateSalesChannelFilter(rawChannel)
+	if errMsg != "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", errMsg)
 		return
 	}
 
@@ -738,7 +778,8 @@ func (h *handler) handleAdminReconcilePayments(w http.ResponseWriter, r *http.Re
 	defer cancel()
 
 	resp, err := h.clients.Payment.RunReconciliation(ctx, &paymentv1.RunReconciliationRequest{
-		Date: body.Date,
+		Date:         body.Date,
+		SalesChannel: salesChannel,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
@@ -754,6 +795,8 @@ func (h *handler) handleAdminReconcilePayments(w http.ResponseWriter, r *http.Re
 		"missing_local_count":    resp.GetMissingLocalCount(),
 		"missing_provider_count": resp.GetMissingProviderCount(),
 		"amount_mismatch_count":  resp.GetAmountMismatchCount(),
+		"auto_healed_count":      resp.GetAutoHealedCount(),
+		"sales_channel":          resp.GetSalesChannel(),
 		"items":                  items,
 	})
 }
@@ -1492,14 +1535,20 @@ func (h *handler) handleAdminListReconciliationRuns(w http.ResponseWriter, r *ht
 		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "run_type must be vietqr or cod_file")
 		return
 	}
+	salesChannel, errMsg := validateSalesChannelFilter(r.URL.Query().Get("sales_channel"))
+	if errMsg != "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", errMsg)
+		return
+	}
 
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.Payment.ListReconciliationRuns(ctx, &paymentv1.ListReconciliationRunsRequest{
-		RunType:  runType,
-		Page:     page,
-		PageSize: pageSize,
+		RunType:      runType,
+		Page:         page,
+		PageSize:     pageSize,
+		SalesChannel: salesChannel,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)

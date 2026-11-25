@@ -99,11 +99,14 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 	}
 	versions := []string{
 		"0001_init.sql",
-		"0002_add_shop_slug.sql",
-		"0003_cod_rejections.sql",
-		"0004_password_resets_and_lock_reason.sql",
-		"0005_shop_bank_accounts.sql",
-		"0006_shop_verified_owner_name_and_otp_publish.sql",
+		"0002_sites.sql",
+		"0003_domains_cloudflare.sql",
+		"0004_site_templates.sql",
+		"0005_add_shop_slug.sql",
+		"0006_cod_rejections.sql",
+		"0007_password_resets_and_lock_reason.sql",
+		"0008_shop_bank_accounts.sql",
+		"0009_shop_verified_owner_name_and_otp_publish.sql",
 	}
 	for _, v := range versions {
 		sqlBytes, err := fs.ReadFile(migrations.Files, v)

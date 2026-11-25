@@ -1,0 +1,139 @@
+/* Seller Draft Preview (/seller/site/xem-truoc) */
+
+.previewWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.previewBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  flex-wrap: wrap;
+  padding: 12px 18px;
+  border-radius: var(--radius-card);
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+}
+
+.bannerLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.bannerBadge {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: var(--band-dark-elevated);
+  color: var(--band-dark-ink);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.bannerTitle {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  color: var(--band-dark-ink);
+}
+
+.bannerHost {
+  font-size: 13px;
+  color: var(--band-dark-muted);
+  word-break: break-all;
+}
+
+.viewSwitcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border-radius: var(--radius-control);
+  background: var(--band-dark-elevated);
+  flex-wrap: wrap;
+}
+
+.viewLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--band-dark-muted);
+  white-space: nowrap;
+  transition:
+    background-color var(--t-hover) ease,
+    color var(--t-hover) ease;
+}
+
+.viewLink:hover {
+  color: var(--band-dark-ink);
+}
+
+.viewLinkActive {
+  background: var(--surface-white);
+  color: var(--ink-strong);
+  font-weight: 600;
+}
+
+.bannerActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: var(--radius-control);
+  background: var(--surface-white);
+  color: var(--ink-strong);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: opacity var(--t-hover) ease;
+}
+
+.backLink:hover {
+  opacity: 0.92;
+}
+
+.previewFrame {
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border); /* taste-skill-ignore: isolated draft preview viewport frame */
+  overflow: hidden;
+  min-width: 0;
+  background: var(--card);
+}
+
+@media (max-width: 640px) {
+  .previewBanner {
+    padding: 12px 14px;
+  }
+
+  .viewSwitcher {
+    width: 100%;
+  }
+
+  .bannerActions,
+  .backLink {
+    width: 100%;
+  }
+}

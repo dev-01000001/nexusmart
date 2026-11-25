@@ -1,28 +1,34 @@
 # NexusMart
 
-NexusMart là sàn thương mại điện tử đa gian hàng theo kiến trúc 11 microservice sau một API gateway (hiện repo có 9 service backend lõi trong `services/` và frontend `web/`). Hệ thống dùng Go cho API gateway và phần lớn service, Rust cho Payment (và AIOps theo đặc tả), TypeScript + Next.js cho web người mua, người bán và quản trị. Mỗi service có database riêng, giao tiếp đồng bộ qua REST/gRPC (`proto/`) và bất đồng bộ qua NATS JetStream.
+NexusMart là nền tảng thương mại điện tử đa cửa hàng độc lập theo tên miền phụ/tên miền riêng (đã bỏ sàn chung), gồm **13 service backend** trong `services/` (1 API gateway + 12 microservice: 11 Go là `gateway`, `user`, `product`, `cart`, `promotion`, `order`, `shipping`, `notification`, `search`, `chat`, `assistant`; 2 Rust là `payment`, `aiops`) và frontend Next.js 15 + TypeScript (`web/`). Mỗi service sở hữu datastore riêng (10 DB PostgreSQL tách biệt, Redis cho `cart`/`gateway`, Meilisearch + `pgvector` cho `search`), giao tiếp đồng bộ qua REST/gRPC (`proto/`) và bất đồng bộ qua NATS JetStream.
 
 ## Tài liệu chính
 
 - `docs/spec.md` — đặc tả phạm vi, lộ trình, use case (xuất từ file xlsx).
-- `docs/contracts.md` — hợp đồng REST, gRPC, NATS JetStream, saga đặt hàng.
-- `docs/adr/` — các Architecture Decision Record.
+- `docs/contracts.md` — hợp đồng REST, gRPC, NATS JetStream, saga đặt hàng, host routing và kênh bán.
+- `docs/UPGRADE_FROM_PHASE_0B.md` — hướng dẫn nâng cấp từng bước từ nhánh `phase-0b` và quy trình quay lui.
+- `docs/adr/` — các Architecture Decision Record (quyết định gộp nhánh ở `docs/adr/0010-unify-main-and-phase-0b.md`).
 - `CLAUDE.md` — quy trình manager, skill review và lệnh kiểm tra.
 - `AGENTS.md` — quy tắc và ràng buộc bắt buộc cho coder agent.
+- `web/CLAUDE.md` và `services/payment/CLAUDE.md` — hướng dẫn riêng cho frontend và Payment Rust.
 
 ## Chạy nhanh
 
-Toolchain cần có: `go` 1.22, `buf`, `protoc`, `golangci-lint`, `sqlc`, `cargo` (kèm `rustfmt`, `clippy`), `docker`, `node`. `Makefile` tự thêm `~/.local/bin`, `~/go/bin`, `~/.cargo/bin` vào `PATH`.
+Toolchain cần có: `go` 1.22, `buf`, `protoc`, `golangci-lint`, `sqlc`, `cargo` (kèm `rustfmt`, `clippy`), `docker`, `node` (24). `Makefile` tự thêm `~/.local/bin`, `~/go/bin`, `~/.cargo/bin` vào `PATH`.
 
 ```bash
 cp .env.example .env            # tuỳ chọn nếu cần đổi biến môi trường cục bộ
-make up                         # cổng host bị chiếm thì override, ví dụ: GATEWAY_PORT=28080 make up
-make e2e                        # chạy bộ E2E trong container compose (cần make up trước)
-make lint                       # buf lint, gofmt, golangci-lint, rustfmt, clippy
-make test                       # go test -race từng module Go + cargo test
+make up                         # khởi động 12 backend service + web + hạ tầng (cổng bị chiếm thì override, ví dụ: GATEWAY_PORT=28080 make up)
+make seed                       # nạp dữ liệu mẫu idempotent qua Gateway REST + Mailpit
+make e2e                        # chạy bộ E2E Go trong container compose (cần make up trước)
+make e2e-web                    # chạy bộ E2E web BFF trong container compose
+make lint                       # buf lint, gofmt, golangci-lint, rustfmt, clippy (payment & aiops)
+make test                       # go test -race từng module Go + cargo test (payment & aiops)
+make test-db                    # chạy toàn bộ test tích hợp Postgres/pgvector/Redis/NATS thật (0 skip)
+make obs-up                     # tùy chọn: bật stack observability (Prometheus/Loki/Tempo/Grafana) + aiops
 ```
 
-Kiểm tra frontend (`web/`): `cd web && npm ci`, rồi `npm run lint`, `npm run format:check`, `npm run build`, `npm run check:data`.
+Kiểm tra frontend (`web/`): `cd web && npm ci`, rồi `npm run lint`, `npm run format:check`, `npm run test:unit`, `npm run check:data`, `npm run build`.
 
 ## Thiết lập Claude Code cho thành viên mới
 

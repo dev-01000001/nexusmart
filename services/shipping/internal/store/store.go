@@ -92,28 +92,34 @@ func NormalizeDirection(dir string) string {
 
 // Shipment represents a persisted shipping consignment (FORWARD or RETURN).
 type Shipment struct {
-	ID               string
-	OrderID          string
-	ShopID           string
-	BuyerID          string
-	Direction        string
-	ReturnRequestID  string
-	RedeliveryCount  int32
-	CarrierCode      string
-	ServiceCode      string
-	TrackingCode     string
-	LabelURL         string
-	Status           string
-	FeeVND           int64
-	CODAmountVND     int64
-	WeightGrams      int32
-	FromProvinceCode string
-	FromWardCode     string
-	ToProvinceCode   string
-	ToWardCode       string
-	LastEventAt      *time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                string
+	OrderID           string
+	ShopID            string
+	BuyerID           string
+	Direction         string
+	ReturnRequestID   string
+	RedeliveryCount   int32
+	CarrierCode       string
+	ServiceCode       string
+	TrackingCode      string
+	LabelURL          string
+	Status            string
+	FeeVND            int64
+	CODAmountVND      int64
+	WeightGrams       int32
+	FromName          string
+	FromPhone         string
+	FromStreetAddress string
+	FromProvinceCode  string
+	FromWardCode      string
+	ToName            string
+	ToPhone           string
+	ToStreetAddress   string
+	ToProvinceCode    string
+	ToWardCode        string
+	LastEventAt       *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // ShipmentEvent represents a status transition entry in a shipment timeline.
@@ -250,6 +256,7 @@ type Repository interface {
 	CountInactiveShipmentsByOrder(ctx context.Context, orderID, direction string) (int, error)
 	AcquireOrderDirectionLock(ctx context.Context, orderID, direction string) (func(), error)
 	GetShipmentByTrackingCode(ctx context.Context, trackingCode string) (*Shipment, error)
+	GetShipmentsByTrackingCodes(ctx context.Context, trackingCodes []string) ([]Shipment, error)
 	ListShipmentEvents(ctx context.Context, shipmentID string) ([]ShipmentEvent, error)
 	CreateShipment(ctx context.Context, s *Shipment, initialEvent *ShipmentEvent) (*Shipment, bool, error)
 	CreateShipmentWithOutbox(ctx context.Context, s *Shipment, initialEvent *ShipmentEvent, outbox *JobOutboxParams) (*Shipment, bool, error)
@@ -457,7 +464,30 @@ func (s *PGStore) AcquireOrderDirectionLock(ctx context.Context, orderID, direct
 	return unlock, nil
 }
 
-// MigrateAndSeed applies embedded SQL migrations and idempotently seeds 34 provinces, wards, and legacy mappings.
+const (
+	migration0001Init            = "000001_init.sql"
+	migration0002ReturnShipments = "000002_return_shipments.sql"
+)
+
+// bootstrapMigrationVersions decides which historical migrations are already present on an
+// unversioned database (empty schema_migrations) so MigrateAndSeed never re-runs phase-0b's
+// 000002_return_shipments.sql (which has a lowercase direction CHECK and non-partial unique index).
+func bootstrapMigrationVersions(existingAppliedCount int, hasShipmentsTable, hasDirectionColumn bool) []string {
+	if existingAppliedCount > 0 {
+		return nil
+	}
+	var seeded []string
+	if hasShipmentsTable {
+		seeded = append(seeded, migration0001Init)
+	}
+	if hasDirectionColumn {
+		seeded = append(seeded, migration0002ReturnShipments)
+	}
+	return seeded
+}
+
+// MigrateAndSeed applies embedded SQL migrations tracked in schema_migrations (bootstrapping
+// unversioned phase-0b/legacy databases safely) and idempotently seeds 34 provinces, wards, and legacy mappings.
 // Acquires a session-scoped PostgreSQL advisory lock so concurrent replicas starting simultaneously never race on DDL or seeds.
 func (s *PGStore) MigrateAndSeed(ctx context.Context) error {
 	entries, err := fs.ReadDir(migrations.FS, ".")
@@ -487,14 +517,90 @@ func (s *PGStore) MigrateAndSeed(ctx context.Context) error {
 		_, _ = conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, migrateAdvisoryLockKey)
 	}()
 
+	if _, err := conn.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version TEXT PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)
+	`); err != nil {
+		return fmt.Errorf("create schema_migrations table: %w", err)
+	}
+
+	applied := make(map[string]bool)
+	rows, err := conn.Query(ctx, `SELECT version FROM schema_migrations`)
+	if err != nil {
+		return fmt.Errorf("list applied migrations: %w", err)
+	}
+	for rows.Next() {
+		var ver string
+		if scanErr := rows.Scan(&ver); scanErr != nil {
+			rows.Close()
+			return fmt.Errorf("scan applied migration: %w", scanErr)
+		}
+		applied[ver] = true
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		rows.Close()
+		return fmt.Errorf("iterate applied migrations: %w", rowsErr)
+	}
+	rows.Close()
+
+	if len(applied) == 0 {
+		var hasShipments, hasDirection bool
+		if err := conn.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.tables
+				WHERE table_schema = current_schema() AND table_name = 'shipments'
+			)
+		`).Scan(&hasShipments); err != nil {
+			return fmt.Errorf("check shipments table for migration bootstrap: %w", err)
+		}
+		if hasShipments {
+			if err := conn.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM information_schema.columns
+					WHERE table_schema = current_schema() AND table_name = 'shipments' AND column_name = 'direction'
+				)
+			`).Scan(&hasDirection); err != nil {
+				return fmt.Errorf("check shipments.direction for migration bootstrap: %w", err)
+			}
+		}
+		for _, ver := range bootstrapMigrationVersions(len(applied), hasShipments, hasDirection) {
+			if _, err := conn.Exec(ctx, `
+				INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING
+			`, ver); err != nil {
+				return fmt.Errorf("bootstrap schema_migrations %s: %w", ver, err)
+			}
+			applied[ver] = true
+		}
+	}
+
 	for _, name := range files {
+		if applied[name] {
+			continue
+		}
 		raw, readErr := fs.ReadFile(migrations.FS, name)
 		if readErr != nil {
 			return fmt.Errorf("read migration %s: %w", name, readErr)
 		}
-		if _, execErr := conn.Exec(ctx, string(raw)); execErr != nil {
+		tx, txErr := conn.Begin(ctx)
+		if txErr != nil {
+			return fmt.Errorf("begin migration %s tx: %w", name, txErr)
+		}
+		if _, execErr := tx.Exec(ctx, string(raw)); execErr != nil {
+			_ = tx.Rollback(ctx)
 			return fmt.Errorf("apply migration %s: %w", name, execErr)
 		}
+		if _, recErr := tx.Exec(ctx, `
+			INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING
+		`, name); recErr != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("record migration %s: %w", name, recErr)
+		}
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			return fmt.Errorf("commit migration %s: %w", name, commitErr)
+		}
+		applied[name] = true
 	}
 
 	return s.seedAddressCatalog(ctx, conn)
@@ -808,6 +914,7 @@ func (s *PGStore) MapLegacyAddress(ctx context.Context, legacyProv, legacyDist, 
 		return &address.LegacyMatch{Found: false}, nil
 	}
 
+	// Score best match: exact (prov+dist+ward) > (prov+dist) or (prov+ward) > (prov default).
 	var match address.LegacyMatch
 	err := s.pool.QueryRow(ctx, `
 		SELECT
@@ -821,12 +928,14 @@ func (s *PGStore) MapLegacyAddress(ctx context.Context, legacyProv, legacyDist, 
 		  AND (
 			(m.legacy_district_norm = $2 AND m.legacy_ward_norm = $3)
 			OR (m.legacy_district_norm = $2 AND $2 <> '')
+			OR (m.legacy_ward_norm = $3 AND $3 <> '' AND $2 = '')
 			OR (m.legacy_district_norm = '' AND m.legacy_ward_norm = '')
 		  )
 		ORDER BY
 			CASE
 				WHEN m.legacy_district_norm = $2 AND m.legacy_ward_norm = $3 AND $3 <> '' THEN 3
 				WHEN m.legacy_district_norm = $2 AND $2 <> '' THEN 2
+				WHEN m.legacy_ward_norm = $3 AND $3 <> '' AND $2 = '' THEN 2
 				ELSE 1
 			END DESC,
 			m.id ASC
@@ -854,7 +963,8 @@ const shipmentColumns = `
 	id, order_id, shop_id, buyer_id, direction, return_request_id, redelivery_count,
 	carrier_code, service_code, tracking_code, label_url,
 	status, fee_vnd, cod_amount_vnd, weight_grams,
-	from_province_code, from_ward_code, to_province_code, to_ward_code,
+	from_name, from_phone, from_street_address, from_province_code, from_ward_code,
+	to_name, to_phone, to_street_address, to_province_code, to_ward_code,
 	last_event_at, created_at, updated_at
 `
 
@@ -876,8 +986,14 @@ func scanShipment(row pgx.Row) (*Shipment, error) {
 		&sh.FeeVND,
 		&sh.CODAmountVND,
 		&sh.WeightGrams,
+		&sh.FromName,
+		&sh.FromPhone,
+		&sh.FromStreetAddress,
 		&sh.FromProvinceCode,
 		&sh.FromWardCode,
+		&sh.ToName,
+		&sh.ToPhone,
+		&sh.ToStreetAddress,
 		&sh.ToProvinceCode,
 		&sh.ToWardCode,
 		&sh.LastEventAt,
@@ -890,6 +1006,7 @@ func scanShipment(row pgx.Row) (*Shipment, error) {
 		}
 		return nil, err
 	}
+	sh.Direction = NormalizeDirection(sh.Direction)
 	return &sh, nil
 }
 
@@ -941,6 +1058,27 @@ func (s *PGStore) GetShipmentByTrackingCode(ctx context.Context, trackingCode st
 	return scanShipment(s.pool.QueryRow(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE tracking_code = $1`, trackingCode))
 }
 
+func (s *PGStore) GetShipmentsByTrackingCodes(ctx context.Context, trackingCodes []string) ([]Shipment, error) {
+	if len(trackingCodes) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE tracking_code = ANY($1::text[])`, trackingCodes)
+	if err != nil {
+		return nil, fmt.Errorf("get shipments by tracking codes: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]Shipment, 0, len(trackingCodes))
+	for rows.Next() {
+		sh, scanErr := scanShipment(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan shipment by tracking code: %w", scanErr)
+		}
+		out = append(out, *sh)
+	}
+	return out, rows.Err()
+}
+
 func (s *PGStore) ListShipmentEvents(ctx context.Context, shipmentID string) ([]ShipmentEvent, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, shipment_id, status, raw_status, description, occurred_at, created_at
@@ -982,15 +1120,17 @@ func (s *PGStore) CreateShipment(ctx context.Context, sh *Shipment, initialEvent
 			id, order_id, shop_id, buyer_id, direction, return_request_id, redelivery_count,
 			carrier_code, service_code, tracking_code, label_url,
 			status, fee_vnd, cod_amount_vnd, weight_grams,
-			from_province_code, from_ward_code, to_province_code, to_ward_code,
+			from_name, from_phone, from_street_address, from_province_code, from_ward_code,
+			to_name, to_phone, to_street_address, to_province_code, to_ward_code,
 			created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
 		ON CONFLICT (order_id, direction) WHERE status <> 'cancelled' AND NOT (direction = 'RETURN' AND status = 'returned') DO NOTHING
 	`,
 		sh.ID, sh.OrderID, sh.ShopID, sh.BuyerID, sh.Direction, sh.ReturnRequestID, sh.RedeliveryCount,
 		sh.CarrierCode, sh.ServiceCode, sh.TrackingCode, sh.LabelURL,
 		sh.Status, sh.FeeVND, sh.CODAmountVND, sh.WeightGrams,
-		sh.FromProvinceCode, sh.FromWardCode, sh.ToProvinceCode, sh.ToWardCode,
+		sh.FromName, sh.FromPhone, sh.FromStreetAddress, sh.FromProvinceCode, sh.FromWardCode,
+		sh.ToName, sh.ToPhone, sh.ToStreetAddress, sh.ToProvinceCode, sh.ToWardCode,
 		sh.CreatedAt, sh.UpdatedAt,
 	)
 	if err != nil {

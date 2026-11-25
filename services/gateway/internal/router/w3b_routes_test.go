@@ -1238,7 +1238,7 @@ func TestW3B_A5_ShippingOrderPhoneOTPAndCODImport(t *testing.T) {
 		hw.order.mu.Lock()
 		hw.order.checkoutErr = status.Error(codes.FailedPrecondition, code+": blocked")
 		hw.order.mu.Unlock()
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/checkout", strings.NewReader(`{"address_id":"a1","from_cart":true,"payment_method":"COD"}`))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/checkout", strings.NewReader(`{"address_id":"a1","from_cart":true,"payment_method":"COD","sales_channel":"MARKETPLACE"}`))
 		req.Header.Set("Authorization", "Bearer "+buyerTok)
 		req.Header.Set("Idempotency-Key", "idem-"+code)
 		rec := httptest.NewRecorder()

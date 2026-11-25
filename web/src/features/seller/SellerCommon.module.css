@@ -1,23 +1,23 @@
-/* Shared Achromatic Ledger primitives for NexusMart Seller Center (seller-sheet.md)
-   Single left edge: page header indented by --card-pad (20px) to align with card titles, numbers, and plots.
-   Bimodal tight radii: 8px cards (--radius-card), 6px controls (--radius-control), 0 shadows at rest.
-   Consistent 16px gutter (--gap) everywhere. */
+/* Shared Framed-Sheet Operational Primitives for NexusMart Seller Center
+   - Zero gradients, zero resting shadows, zero font sizes below 13px (--fs-small).
+   - Single left edge: h1, strips, cards, and tables align flush within the white sheet.
+   - Interactive controls carry crisp hover/focus/press states with Frost & Slate tokens. */
 
 .page {
   display: flex;
   flex-direction: column;
-  gap: var(--gap);
+  gap: 20px;
   width: 100%;
+  max-width: 100%;
   min-width: 0;
 }
 
-/* Indented page header matching card inner padding so h1, card titles, KPIs, and plots share one left edge */
 .pageHeader {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 0 var(--card-pad);
+  min-height: 36px;
 }
 
 .headerText {
@@ -29,16 +29,11 @@
 
 .title {
   font-size: var(--fs-title);
-  line-height: 1.2;
-  font-weight: 600;
-  letter-spacing: -0.015em;
-  color: var(--ink);
-}
-
-.finding {
-  font-size: 14px;
-  line-height: 20px;
-  color: var(--muted);
+  line-height: 1.16;
+  font-stretch: 94%;
+  font-weight: 640;
+  letter-spacing: -0.02em;
+  color: var(--ink-1);
 }
 
 .suspendedBanner {
@@ -75,22 +70,25 @@
   align-items: center;
   gap: 8px;
   flex: none;
+  flex-wrap: wrap;
 }
 
-/* White card on frost ground (--bg), flat 1px border, elevation-free */
+/* Operational panel inside the white sheet */
 .card {
-  background: var(--card);
-  border: 1px solid var(--border); /* taste-skill-ignore: app panel 1px border per seller-sheet.md */
+  background: var(--bg-0);
+  border: 1px solid var(--border);
   border-radius: var(--radius-card);
   padding: var(--card-pad);
   min-width: 0;
+  max-width: 100%;
 }
 
 .cardFlush {
-  background: var(--card);
-  border: 1px solid var(--border); /* taste-skill-ignore: app panel 1px border per seller-sheet.md */
+  background: var(--bg-0);
+  border: 1px solid var(--border);
   border-radius: var(--radius-card);
   min-width: 0;
+  max-width: 100%;
   overflow: hidden;
 }
 
@@ -100,50 +98,55 @@
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 14px;
+  flex-wrap: wrap;
 }
 
 .cardTitle {
   font-size: var(--fs-section);
-  line-height: 22px;
+  line-height: 1.3;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--ink-1);
 }
 
 .cardMeta {
   font-size: 13px;
   line-height: 18px;
-  color: var(--muted);
+  color: var(--ink-3);
 }
 
 .cardLink {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  min-height: 28px;
+  padding-block: 2px;
   font-size: 13px;
   font-weight: 500;
-  color: var(--ink);
+  color: var(--accent);
   white-space: nowrap;
   text-underline-offset: 3px;
+  transition: color var(--t-hover) var(--ease-out);
 }
 
 .cardLink:hover {
+  color: var(--accent-hover);
   text-decoration: underline;
 }
 
-/* Divided balance strip — one white card split by 1px vertical dividers */
+/* Divided balance strip — one container split by 1px vertical dividers */
 .balanceStrip {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  background: var(--card);
-  border: 1px solid var(--border); /* taste-skill-ignore: divided KPI container per seller-sheet.md §5 */
+  background: var(--bg-0);
+  border: 1px solid var(--border);
   border-radius: var(--radius-card);
 }
 
 .balanceStrip3 {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  background: var(--card);
-  border: 1px solid var(--border); /* taste-skill-ignore: divided KPI container per seller-sheet.md §5 */
+  background: var(--bg-0);
+  border: 1px solid var(--border);
   border-radius: var(--radius-card);
 }
 
@@ -151,53 +154,48 @@
   padding: 16px var(--card-pad);
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
 }
 
 .balanceCell + .balanceCell {
-  border-left: 1px solid var(--border); /* taste-skill-ignore: 1px KPI cell divider per seller-sheet.md §5 */
+  border-left: 1px solid var(--border);
 }
 
 .balanceLabel {
   font-size: 13px;
   line-height: 18px;
-  color: var(--muted);
+  font-weight: 500;
+  color: var(--ink-3);
 }
 
 .balanceValue {
   font-size: var(--fs-kpi);
   line-height: 1.15;
-  font-weight: 600;
-  letter-spacing: -0.015em;
-  color: var(--ink);
+  font-weight: 450;
+  letter-spacing: -0.02em;
+  color: var(--ink-1);
   font-variant-numeric: tabular-nums;
 }
 
 .balanceValueZero {
-  color: var(--muted);
-  font-weight: 500;
+  color: var(--ink-3);
+  font-weight: 400;
 }
 
 .balanceCaption {
   font-size: 13px;
   line-height: 18px;
-  color: var(--muted);
+  color: var(--ink-3);
 }
 
-.balanceActionLink {
-  font-size: 13px;
-  line-height: 18px;
-  font-weight: 500;
-  color: var(--ink);
-  text-underline-offset: 2px;
+/* Count cards filter row (61px tall, 12px padding, 8px gap, accent selected border + pale tint) */
+.countCards3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
 }
 
-.balanceActionLink:hover {
-  text-decoration: underline;
-}
-
-/* Count cards filter row (seller-sheet.md §5 list pattern: 61px tall, 12px padding, 8px gap) */
 .countCards4 {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -211,35 +209,42 @@
 }
 
 .countCard {
-  min-height: 61px;
+  min-height: 62px;
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   align-items: flex-start;
   text-align: left;
-  background: var(--card);
-  border: 1px solid var(--border); /* taste-skill-ignore: peer count filter card per seller-sheet.md §5 */
+  background: var(--bg-0);
+  border: 1px solid var(--border);
   border-radius: var(--radius-card);
   cursor: pointer;
   transition:
-    border-color var(--t-hover) ease,
-    background-color var(--t-hover) ease;
+    border-color var(--t-hover) var(--ease-out),
+    background-color var(--t-hover) var(--ease-out),
+    transform var(--t-press) var(--ease-out);
 }
 
 .countCard:hover {
   border-color: var(--control);
+  background: var(--bg-1);
 }
 
-.countCardSelected {
-  border: 1.5px solid var(--accent); /* taste-skill-ignore: selected count filter card per seller-sheet.md §5 */
-  background: #f0f7f8;
+.countCard:active {
+  transform: scale(0.99);
+}
+
+.countCardSelected,
+.countCardSelected:hover {
+  border: 1.5px solid var(--accent);
+  background: var(--accent-tint);
 }
 
 .countCardLabel {
   font-size: 13px;
   line-height: 18px;
-  color: var(--muted);
+  color: var(--ink-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -247,15 +252,15 @@
 }
 
 .countCardSelected .countCardLabel {
-  color: var(--ink);
-  font-weight: 500;
+  color: var(--accent-tint-ink);
+  font-weight: 600;
 }
 
 .countCardValue {
-  font-size: 16px;
+  font-size: 17px;
   line-height: 22px;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--ink-1);
   font-variant-numeric: tabular-nums;
 }
 
@@ -264,71 +269,112 @@
   display: none;
 }
 
-/* Underline tabs on full-width 1px rule (app-screens.md §4.4) */
+/* Sliding Underline Tabs on full-width 1px rule */
 .underlineTabs {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 24px;
-  border-bottom: 1px solid var(--border); /* taste-skill-ignore: underline tab rule per app-screens.md §4.4 */
-  padding: 0 var(--card-pad);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.underlineTabs::-webkit-scrollbar {
+  display: none;
 }
 
 .underlineTab {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 10px 0;
   font-size: 14px;
   line-height: 20px;
   font-weight: 500;
-  color: var(--muted);
+  color: var(--ink-3);
   white-space: nowrap;
   cursor: pointer;
-  transition: color var(--t-hover) ease;
+  flex: none;
+  transition: color var(--t-hover) var(--ease-out);
 }
 
 .underlineTab:hover {
-  color: var(--ink);
+  color: var(--ink-1);
 }
 
 .underlineTabActive {
-  color: var(--ink);
+  color: var(--ink-1);
+  font-weight: 600;
 }
 
-.underlineTabActive::after {
+/* Fallback static underline if rendered without SellerSlidingTabs */
+.underlineTabActive:not(:has(~ .underlineSlider))::after {
   content: "";
   position: absolute;
   left: 0;
   right: 0;
   bottom: -1px;
   height: 2px;
-  background: var(--ink);
+  background: var(--accent);
 }
 
-/* Segmented control (width: max-content on desktop, full-width below 480px) */
+.underlineTabCount {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.underlineTabActive .underlineTabCount {
+  color: var(--accent);
+}
+
+.underlineSlider {
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+  pointer-events: none;
+  transition:
+    transform var(--t-ui) var(--ease-expo),
+    width var(--t-ui) var(--ease-expo),
+    opacity var(--t-hover) var(--ease-out);
+}
+
+/* Segmented control */
 .segmented {
   display: inline-flex;
   width: max-content;
   max-width: 100%;
-  padding: 2px;
+  padding: 3px;
   border-radius: var(--radius-card);
-  background: var(--surface);
+  background: var(--bg-2);
 }
 
 .segmentedBtn {
-  height: 28px;
+  height: 30px;
   padding: 0 12px;
   border-radius: var(--radius-control);
   font-size: 13px;
   font-weight: 500;
-  color: var(--muted);
+  color: var(--ink-3);
   white-space: nowrap;
   transition:
-    background-color var(--t-hover) ease,
-    color var(--t-hover) ease;
+    background-color var(--t-hover) var(--ease-out),
+    color var(--t-hover) var(--ease-out);
+}
+
+.segmentedBtn:hover {
+  color: var(--ink-1);
 }
 
 .segmentedBtnActive {
-  background: var(--card);
-  color: var(--ink);
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-weight: 600;
 }
 
 /* Toolbar & form inputs */
@@ -352,13 +398,14 @@
 .toolbarMeta {
   font-size: 13px;
   line-height: 18px;
-  color: var(--muted);
+  color: var(--ink-3);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .searchWrap {
   position: relative;
-  width: 280px;
+  width: 308px;
   max-width: 100%;
 }
 
@@ -367,34 +414,49 @@
   left: 11px;
   top: 50%;
   transform: translateY(-50%);
-  color: var(--muted);
+  color: var(--ink-3);
   pointer-events: none;
   display: inline-flex;
 }
 
 input.searchInput {
   width: 100%;
-  height: 34px;
+  height: 36px;
   padding: 0 12px 0 34px;
   border: 1px solid var(--control);
   border-radius: var(--radius-control);
-  background: var(--card);
-  color: var(--ink);
-  font-size: 13px;
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-size: 14px;
+  transition: border-color var(--t-hover) var(--ease-out);
+}
+
+input.searchInput:hover {
+  border-color: var(--ink-3);
+}
+
+input.searchInput:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 input.searchInput::placeholder {
-  color: var(--muted);
+  color: var(--ink-3);
 }
 
 select.filterSelect {
-  height: 34px;
+  height: 36px;
   padding: 0 12px;
   border: 1px solid var(--control);
   border-radius: var(--radius-control);
-  background: var(--card);
-  color: var(--ink);
-  font-size: 13px;
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-size: 14px;
+  transition: border-color var(--t-hover) var(--ease-out);
+}
+
+select.filterSelect:hover {
+  border-color: var(--ink-3);
 }
 
 .field {
@@ -408,13 +470,13 @@ select.filterSelect {
   font-size: 13px;
   line-height: 18px;
   font-weight: 500;
-  color: var(--ink);
+  color: var(--ink-1);
 }
 
 .fieldHint {
   font-size: 13px;
   line-height: 18px;
-  color: var(--muted);
+  color: var(--ink-3);
 }
 
 .fieldError {
@@ -429,10 +491,24 @@ textarea.textArea {
   width: 100%;
   border: 1px solid var(--control);
   border-radius: var(--radius-control);
-  background: var(--card);
-  color: var(--ink);
+  background: var(--bg-0);
+  color: var(--ink-1);
   font-size: 14px;
   padding: 0 12px;
+  transition: border-color var(--t-hover) var(--ease-out);
+}
+
+input.textInput:hover,
+select.textInput:hover,
+textarea.textArea:hover {
+  border-color: var(--ink-3);
+}
+
+input.textInput:focus,
+select.textInput:focus,
+textarea.textArea:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 input.textInput,
@@ -449,10 +525,10 @@ textarea.textArea {
 
 input.textInput::placeholder,
 textarea.textArea::placeholder {
-  color: var(--muted);
+  color: var(--ink-3);
 }
 
-/* Rule-based tables: 12px sentence-case grey headers, zero zebra striping, zero header fill */
+/* Rule-based Operational Tables (48-56px rows, hover highlight, hover-revealed actions) */
 .tableWrap {
   width: 100%;
   overflow-x: auto;
@@ -466,10 +542,10 @@ table.dataTable {
 
 table.dataTable th {
   height: 36px;
-  padding: 0 12px;
+  padding: 0 8px;
   font-size: 13px;
-  font-weight: 400;
-  color: var(--muted);
+  font-weight: 500;
+  color: var(--ink-3);
   text-align: left;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
@@ -477,19 +553,28 @@ table.dataTable th {
 
 table.dataTable th:first-child,
 table.dataTable td:first-child {
-  padding-left: 0;
+  padding-left: 2px;
 }
 
 table.dataTable th:last-child,
 table.dataTable td:last-child {
-  padding-right: 0;
+  padding-right: 2px;
+}
+
+table.dataTable tbody tr {
+  transition: background-color var(--t-hover) var(--ease-out);
+}
+
+table.dataTable tbody tr:hover {
+  background: var(--bg-1);
 }
 
 table.dataTable td {
-  padding: 12px;
+  height: 54px;
+  padding: 6px 8px;
   font-size: 14px;
   line-height: 20px;
-  color: var(--ink);
+  color: var(--ink-2);
   border-bottom: 1px solid var(--rule);
   vertical-align: middle;
 }
@@ -499,10 +584,10 @@ table.dataTable tbody tr:last-child td {
 }
 
 table.dataTable tfoot td {
-  padding: 12px;
+  padding: 12px 10px;
   font-size: 14px;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--ink-1);
   border-top: 1px solid var(--border);
   border-bottom: 0;
 }
@@ -516,32 +601,103 @@ td.numCol {
   font-variant-numeric: tabular-nums;
 }
 
+.rowSelected,
+table.dataTable tbody tr.rowSelected:hover {
+  background: var(--accent-tint);
+}
+
+.checkCol {
+  width: 36px;
+  text-align: center;
+}
+
+input.rowCheck {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+/* Row actions hidden at rest on pointer hover devices, shown on row hover/focus and always on touch */
+.rowHoverActions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity var(--t-hover) var(--ease-out);
+}
+
+.rowHoverActionsVisible,
+table.dataTable tbody tr:hover .rowHoverActions,
+table.dataTable tbody tr:focus-within .rowHoverActions,
+.rowHoverParent:hover .rowHoverActions,
+.rowHoverParent:focus-within .rowHoverActions {
+  opacity: 1;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .rowHoverActions {
+    opacity: 1;
+  }
+}
+
+.thumbPlaceholder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-3);
+}
+
 .cellSub {
   display: block;
   font-size: 13px;
   line-height: 18px;
-  color: var(--muted);
-  margin-top: 2px;
+  color: var(--ink-3);
+  margin-top: 1px;
 }
 
 .cellLink {
-  font-weight: 500;
-  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding-block: 2px;
+  font-weight: 600;
+  color: var(--ink-1);
   text-underline-offset: 2px;
   white-space: nowrap;
 }
 
 .cellLink:hover {
+  color: var(--accent);
   text-decoration: underline;
 }
 
-/* Pale status pills (app-screens.md §7.6) */
+.rowTriggerBtn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding-block: 2px;
+  font-weight: 600;
+  color: var(--ink-1);
+  text-align: left;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.rowTriggerBtn:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* Semantic Status Pills (>= 13px floor) */
 .pill {
   display: inline-flex;
   align-items: center;
   height: 24px;
   padding: 0 9px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: 13px;
   line-height: 1;
   font-weight: 500;
@@ -566,6 +722,34 @@ td.numCol {
   color: var(--pill-negative-ink);
 }
 
+/* Sales channel origin badges (13px floor) */
+.channelTag {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: var(--radius-chip);
+  font-size: 13px;
+  line-height: 1;
+  font-weight: 500;
+  white-space: nowrap;
+  flex: none;
+  background: var(--bg-2);
+  color: var(--ink-2);
+}
+
+.channelTagStorefront {
+  background: var(--accent-tint);
+  color: var(--accent-tint-ink);
+}
+
+.channelTagCompact {
+  height: 20px;
+  padding: 0 6px;
+  font-size: 13px;
+  font-stretch: 92%;
+}
+
 /* Semantic delta text */
 .deltaPos {
   color: var(--positive);
@@ -578,22 +762,22 @@ td.numCol {
 }
 
 .deltaFlat {
-  color: var(--muted);
+  color: var(--ink-3);
   font-variant-numeric: tabular-nums;
 }
 
-/* Toggle switch (app-screens.md §8.1: 32x20 near-black when on) */
+/* Toggle switch */
 input.toggleSwitch {
   appearance: none;
-  width: 32px;
+  width: 34px;
   height: 20px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--control);
   position: relative;
   cursor: pointer;
   flex: none;
   border: 0;
-  transition: background-color var(--t-ui) ease;
+  transition: background-color var(--t-ui) var(--ease-out);
 }
 
 input.toggleSwitch::after {
@@ -604,33 +788,397 @@ input.toggleSwitch::after {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: var(--card);
-  transition: transform var(--t-ui) var(--ease-out);
+  background: var(--bg-0);
+  transition: transform var(--t-ui) var(--ease-expo);
 }
 
 input.toggleSwitch:checked {
-  background: var(--ink);
+  background: var(--accent);
 }
 
 input.toggleSwitch:checked::after {
-  transform: translateX(12px);
+  transform: translateX(14px);
 }
 
-/* Inline empty strip inside a card keeping frame intact */
+/* Inline empty strip */
 .inlineEmpty {
   grid-column: 1 / -1;
   width: 100%;
-  padding: 20px 16px;
-  border: 1px dashed var(--control); /* taste-skill-ignore: empty block slot per app-screens.md §11 */
+  padding: 24px 16px;
+  border: 1px dashed var(--control);
   border-radius: var(--radius-control);
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 14px;
   text-align: center;
+}
+
+/* Floating Slide-Up Bulk Action Bar */
+.bulkBar {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 75;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px 10px 18px;
+  border-radius: 10px;
+  background: var(--ink-1);
+  color: var(--bg-0);
+  max-width: calc(100vw - 32px);
+  animation: nmBulkUp 240ms var(--ease-expo);
+}
+
+.bulkCount {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.bulkActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.bulkPrimaryBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background-color var(--t-hover) var(--ease-out);
+}
+
+.bulkPrimaryBtn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.bulkPrimaryBtn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.bulkClearBtn {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  color: var(--band-dark-muted);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.bulkClearBtn:hover {
+  color: var(--bg-0);
+}
+
+/* Slide-Over Detail Drawer (open 260ms ease-expo, close 180ms ease-exit) */
+.drawerBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 85;
+  background: rgba(21, 34, 41, 0.36);
+  display: flex;
+  justify-content: flex-end;
+  animation: nmScrimIn 220ms var(--ease-out);
+}
+
+.drawerBackdropClosing {
+  animation: nmScrimOut 180ms var(--ease-exit) forwards;
+  pointer-events: none;
+}
+
+.drawerPanel {
+  width: min(500px, 100vw);
+  height: 100svh;
+  background: var(--bg-0);
+  border-left: 1px solid var(--border);
+  border-radius: var(--radius-sheet) 0 0 var(--radius-sheet);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: nmDrawerIn 260ms var(--ease-expo);
+}
+
+.drawerPanel:focus {
+  outline: none;
+}
+
+.drawerPanelClosing {
+  animation: nmDrawerOut 180ms var(--ease-exit) forwards;
+}
+
+.drawerHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.drawerHeadText {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.drawerTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.drawerTitle {
+  font-size: 18px;
+  line-height: 1.25;
+  font-weight: 640;
+  color: var(--ink-1);
+}
+
+.drawerSubtitle {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ink-3);
+}
+
+.drawerCloseBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-control);
+  background: var(--bg-1);
+  color: var(--ink-2);
+  flex: none;
+  transition: background-color var(--t-hover) var(--ease-out);
+}
+
+.drawerCloseBtn:hover {
+  background: var(--bg-3);
+  color: var(--ink-1);
+}
+
+.drawerBody {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.drawerFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-1);
+  flex: none;
+}
+
+.drawerSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.drawerSectionTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+
+.drawerKvList {
+  display: flex;
+  flex-direction: column;
+}
+
+.drawerKvRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.drawerKvRow:last-child {
+  border-bottom: 0;
+}
+
+.drawerKvKey {
+  color: var(--ink-3);
+  flex: none;
+}
+
+.drawerKvVal {
+  color: var(--ink-1);
+  font-weight: 500;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Collapsible Accordion (<details>) */
+.accordion {
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.accordionSummary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+  padding: 12px 16px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-1);
+  user-select: none;
+  transition: background-color var(--t-hover) var(--ease-out);
+}
+
+.accordionSummary::-webkit-details-marker {
+  display: none;
+}
+
+.accordionSummary:hover {
+  background: var(--bg-1);
+}
+
+.accordionMeta {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ink-3);
+}
+
+.accordionChevron {
+  display: inline-flex;
+  color: var(--ink-3);
+  transition: transform var(--t-hover) var(--ease-out);
+  flex: none;
+}
+
+.accordion[open] > .accordionSummary .accordionChevron {
+  transform: rotate(180deg);
+}
+
+.accordionBody {
+  padding: 16px;
+  border-top: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
 /* Distinct phone mobile rows (shown <= 640px, hidden on desktop) */
 .mobileList {
   display: none;
+}
+
+@keyframes nmBulkUp {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 16px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@keyframes nmScrimIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes nmScrimOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes nmDrawerIn {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes nmDrawerOut {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@media (max-width: 1340px) {
+  table.dataTable th,
+  table.dataTable td {
+    padding: 6px 5px;
+    font-size: 13px;
+  }
+
+  .checkCol {
+    width: 26px;
+  }
+}
+
+@media (max-width: 1160px) {
+  .card {
+    padding: 12px;
+  }
+
+  table.dataTable th,
+  table.dataTable td {
+    padding: 6px 3px;
+    font-size: 13px;
+  }
+
+  .checkCol {
+    width: 22px;
+  }
+
+  .pill {
+    padding: 0 6px;
+    font-stretch: 90%;
+  }
 }
 
 @media (max-width: 1040px) {
@@ -641,29 +1189,16 @@ input.toggleSwitch:checked::after {
 
 @media (max-width: 860px) {
   .pageHeader {
-    padding: 0;
     flex-direction: column;
     align-items: flex-start;
-    gap: 12px;
+    gap: 10px;
   }
 
   .headerActions {
     width: 100%;
-    flex-wrap: wrap;
-  }
-
-  .underlineTabs {
-    padding: 0;
-    gap: 6px 16px;
-    flex-wrap: wrap;
-    overflow-x: visible;
   }
 
   .balanceStrip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .balanceStrip3 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -671,31 +1206,66 @@ input.toggleSwitch:checked::after {
     padding: 14px 16px;
   }
 
-  .balanceCell + .balanceCell {
+  .balanceStrip .balanceCell + .balanceCell {
     border-left: 0;
   }
 
-  .balanceCell:nth-child(n + 3) {
-    border-top: 1px solid var(--border); /* taste-skill-ignore: 2x2 mobile KPI horizontal hairline */
+  .balanceStrip .balanceCell:nth-child(n + 3) {
+    border-top: 1px solid var(--border);
   }
 
-  .balanceCell:nth-child(2n) {
-    border-left: 1px solid var(--border); /* taste-skill-ignore: 2x2 mobile KPI vertical hairline */
+  .balanceStrip .balanceCell:nth-child(2n) {
+    border-left: 1px solid var(--border);
   }
 
-  .balanceStrip3 .balanceCell:last-child:nth-child(odd) {
-    grid-column: 1 / -1;
-    border-left: 0;
+  .balanceStrip3 .balanceValue {
+    font-size: clamp(18px, 2.8vw, var(--fs-kpi));
   }
 
   .card {
     padding: 16px;
   }
+
+  .bulkBar {
+    bottom: 72px;
+    left: 12px;
+    right: 12px;
+    transform: none;
+    max-width: none;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    animation: nmScrimIn 180ms var(--ease-out);
+  }
+
+  .drawerPanel {
+    border-radius: 0;
+  }
 }
 
 @media (max-width: 640px) {
+  .balanceStrip,
+  .balanceStrip3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .balanceStrip .balanceCell:nth-child(2n) {
+    border-left: 0;
+  }
+
+  .balanceStrip .balanceCell + .balanceCell,
+  .balanceStrip3 .balanceCell + .balanceCell {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .balanceValue,
+  .balanceStrip3 .balanceValue {
+    font-size: clamp(20px, 6vw, var(--fs-kpi));
+  }
+
   .title {
-    font-size: 21px;
+    font-size: 22px;
   }
 
   .cardHeader {
@@ -711,8 +1281,10 @@ input.toggleSwitch:checked::after {
 
   .segmentedBtn {
     flex: 1 1 auto;
+    min-height: 36px;
   }
 
+  .countCards3,
   .countCards4,
   .countCards6 {
     display: none;
@@ -721,36 +1293,44 @@ input.toggleSwitch:checked::after {
   .chipScroller {
     display: flex;
     gap: 8px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     overflow-x: auto;
     padding-bottom: 2px;
+    scrollbar-width: none;
     -webkit-overflow-scrolling: touch;
+  }
+
+  .chipScroller::-webkit-scrollbar {
+    display: none;
   }
 
   .chipBtn {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    min-height: 36px;
+    min-height: 40px;
     padding: 0 12px;
     border-radius: var(--radius-control);
-    border: 1px solid var(--border); /* taste-skill-ignore: mobile filter chip per seller-sheet.md */
-    background: var(--card);
+    border: 1px solid var(--border);
+    background: var(--bg-0);
     font-size: 13px;
-    color: var(--muted);
+    color: var(--ink-3);
     white-space: nowrap;
     flex: none;
   }
 
   .chipBtnActive {
-    border: 1.5px solid var(--accent); /* taste-skill-ignore: active mobile filter chip */
-    background: #f0f7f8;
-    color: var(--ink);
-    font-weight: 500;
+    border: 1.5px solid var(--accent);
+    background: var(--accent-tint);
+    color: var(--accent-tint-ink);
+    font-weight: 600;
   }
 
   .chipCount {
     font-weight: 600;
-    color: var(--ink);
+    color: var(--ink-1);
     font-variant-numeric: tabular-nums;
   }
 
@@ -782,6 +1362,8 @@ input.toggleSwitch:checked::after {
   .mobileList {
     display: flex;
     flex-direction: column;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .mobileRow {
@@ -789,10 +1371,12 @@ input.toggleSwitch:checked::after {
     flex-direction: column;
     gap: 8px;
     padding: 12px 0;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .mobileRow + .mobileRow {
-    border-top: 1px solid var(--rule); /* taste-skill-ignore: mobile list row divider */
+    border-top: 1px solid var(--rule);
   }
 
   .mobileRowTop {
@@ -800,6 +1384,7 @@ input.toggleSwitch:checked::after {
     align-items: flex-start;
     justify-content: space-between;
     gap: 10px;
+    min-width: 0;
   }
 
   .mobileRowMeta {
@@ -809,7 +1394,7 @@ input.toggleSwitch:checked::after {
     gap: 8px;
     flex-wrap: wrap;
     font-size: 13px;
-    color: var(--muted);
+    color: var(--ink-3);
   }
 }
 

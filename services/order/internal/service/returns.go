@@ -190,6 +190,7 @@ func (s *OrderService) RequestReturn(ctx context.Context, req *orderv1.RequestRe
 		CheckoutGroupID:    agg.Order.CheckoutGroupID,
 		BuyerID:            agg.Order.BuyerID,
 		ShopID:             agg.Order.ShopID,
+		StorefrontShopID:   agg.Order.StorefrontShopID,
 		Status:             statemachine.ReturnStatusToString(orderv1.ReturnStatus_RETURN_STATUS_PENDING),
 		PreviousStatus:     "",
 		Reason:             reason,

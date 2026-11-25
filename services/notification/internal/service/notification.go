@@ -43,6 +43,8 @@ type NotificationService struct {
 	repo         store.Repository
 	mailer       mailer.Sender
 	userResolver userclient.Resolver
+	siteResolver userclient.SiteResolver
+	siteLinks    SiteLinkConfig
 	logger       *slog.Logger
 	webBaseURL   string
 
@@ -56,18 +58,24 @@ func NewNotificationService(
 	mailSender mailer.Sender,
 	userResolver userclient.Resolver,
 	logger *slog.Logger,
+	opts ...Option,
 ) *NotificationService {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &NotificationService{
+	s := &NotificationService{
 		repo:         repo,
 		mailer:       mailSender,
 		userResolver: userResolver,
+		siteLinks:    SiteLinkConfig{Scheme: "https", LookupTimeout: defaultSiteLookupTimeout},
 		logger:       logger,
 		webBaseURL:   defaultWebBaseURL,
 		shopCache:    make(map[string]store.ShopOwner),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // SetWebBaseURL overrides the web base URL used in transactional email links (e.g. password reset).
@@ -268,6 +276,18 @@ func (s *NotificationService) ProcessEvent(ctx context.Context, subject string, 
 		}
 	}
 
+	// Buyer order links point to the order page on the shop site host where the order was placed
+	// (resolved via UserService OUTSIDE Postgres tx; lookup failures only drop the link).
+	// Seller (/seller/...) and non-order links remain untouched.
+	for i := range plan.deliveries {
+		d := &plan.deliveries[i]
+		if !d.resolveOrderSite || d.userID == "" {
+			continue
+		}
+		link := s.resolveOrderURL(ctx, d.siteOrderID, d.siteOrderGroupID, d.siteStorefrontShop)
+		applyDeliveryOrderLink(d, link)
+	}
+
 	// Short DB-only transaction: atomic processed_events dedup + cache upserts + in-app notifications + email dedup claims.
 	type outboundEmail struct {
 		userID string
@@ -322,9 +342,6 @@ func (s *NotificationService) ProcessEvent(ctx context.Context, subject string, 
 					n := *d.inApp
 					n.UserID = d.userID
 					n.EventID = env.EventID
-					if d.resolvePayLink {
-						n.Link = resolvePaymentOrderLink(ctx, tx, d.payOrderID, d.payOrderGroupID)
-					}
 					if _, insertErr := tx.InsertNotification(ctx, n); insertErr != nil {
 						return insertErr
 					}
@@ -505,18 +522,19 @@ func shouldSendEmail(p store.Preferences, category string) bool {
 }
 
 type recipientDelivery struct {
-	role            string // "buyer", "seller", or "user"
-	userID          string
-	shopID          string
-	requireUser     bool
-	category        string
-	inApp           *store.Notification
-	email           *mailer.Message
-	forceEmail      bool
-	emailDedupKey   string
-	resolvePayLink  bool
-	payOrderID      string
-	payOrderGroupID string
+	role               string // "buyer", "seller", or "user"
+	userID             string
+	shopID             string
+	requireUser        bool
+	category           string
+	inApp              *store.Notification
+	email              *mailer.Message
+	forceEmail         bool
+	emailDedupKey      string
+	resolveOrderSite   bool // buyer order/payment/shipment/return/address links resolved via sitelink.go
+	siteOrderID        string
+	siteOrderGroupID   string
+	siteStorefrontShop string
 }
 
 type eventPlan struct {
@@ -892,13 +910,14 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "order.created":
 		var p struct {
-			CheckoutGroupID string `json:"checkout_group_id"`
-			OrderID         string `json:"order_id"`
-			OrderCode       string `json:"order_code"`
-			BuyerID         string `json:"buyer_id"`
-			ShopID          string `json:"shop_id"`
-			PaymentMethod   string `json:"payment_method"`
-			TotalPayableVND int64  `json:"total_payable_vnd"`
+			CheckoutGroupID  string `json:"checkout_group_id"`
+			OrderID          string `json:"order_id"`
+			OrderCode        string `json:"order_code"`
+			BuyerID          string `json:"buyer_id"`
+			ShopID           string `json:"shop_id"`
+			StorefrontShopID string `json:"storefront_shop_id"`
+			PaymentMethod    string `json:"payment_method"`
+			TotalPayableVND  int64  `json:"total_payable_vnd"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.OrderID == "" || p.BuyerID == "" {
 			return nil, fmt.Errorf("%w: invalid order.created payload", ErrMalformedPayload)
@@ -922,21 +941,24 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		}
 		return &eventPlan{
 			cacheOrder: &store.OrderParticipant{
-				OrderID:         p.OrderID,
-				BuyerID:         p.BuyerID,
-				ShopID:          p.ShopID,
-				OrderCode:       p.OrderCode,
-				CheckoutGroupID: p.CheckoutGroupID,
+				OrderID:          p.OrderID,
+				BuyerID:          p.BuyerID,
+				ShopID:           p.ShopID,
+				OrderCode:        p.OrderCode,
+				CheckoutGroupID:  p.CheckoutGroupID,
+				StorefrontShopID: p.StorefrontShopID,
 			},
 			deliveries: []recipientDelivery{{
-				role:     "buyer",
-				userID:   p.BuyerID,
-				category: store.CategoryOrder,
+				role:               "buyer",
+				userID:             p.BuyerID,
+				category:           store.CategoryOrder,
+				resolveOrderSite:   true,
+				siteOrderID:        p.OrderID,
+				siteStorefrontShop: p.StorefrontShopID,
 				inApp: &store.Notification{
 					Category:  store.CategoryOrder,
 					Title:     title,
 					Body:      body,
-					Link:      orderLink(p.OrderID),
 					CreatedAt: now,
 				},
 				email: &mailer.Message{
@@ -948,12 +970,14 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "order.confirmed":
 		var p struct {
-			OrderID         string `json:"order_id"`
-			OrderCode       string `json:"order_code"`
-			BuyerID         string `json:"buyer_id"`
-			ShopID          string `json:"shop_id"`
-			PaymentMethod   string `json:"payment_method"`
-			TotalPayableVND int64  `json:"total_payable_vnd"`
+			CheckoutGroupID  string `json:"checkout_group_id"`
+			OrderID          string `json:"order_id"`
+			OrderCode        string `json:"order_code"`
+			BuyerID          string `json:"buyer_id"`
+			ShopID           string `json:"shop_id"`
+			StorefrontShopID string `json:"storefront_shop_id"`
+			PaymentMethod    string `json:"payment_method"`
+			TotalPayableVND  int64  `json:"total_payable_vnd"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.OrderID == "" || p.BuyerID == "" {
 			return nil, fmt.Errorf("%w: invalid order.confirmed payload", ErrMalformedPayload)
@@ -970,14 +994,16 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 			sellerBody = fmt.Sprintf("Gian hàng có đơn hàng mới %s (%s, tổng thanh toán %s). Vui lòng xác nhận và chuẩn bị hàng.", code, methodLabel, amount)
 		}
 		deliveries := []recipientDelivery{{
-			role:     "buyer",
-			userID:   p.BuyerID,
-			category: store.CategoryOrder,
+			role:               "buyer",
+			userID:             p.BuyerID,
+			category:           store.CategoryOrder,
+			resolveOrderSite:   true,
+			siteOrderID:        p.OrderID,
+			siteStorefrontShop: p.StorefrontShopID,
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
 				Title:     fmt.Sprintf("Đơn hàng %s đã được xác nhận", code),
 				Body:      buyerBody,
-				Link:      orderLink(p.OrderID),
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
@@ -1005,21 +1031,28 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		}
 		return &eventPlan{
 			cacheOrder: &store.OrderParticipant{
-				OrderID:   p.OrderID,
-				BuyerID:   p.BuyerID,
-				ShopID:    p.ShopID,
-				OrderCode: p.OrderCode,
+				OrderID:          p.OrderID,
+				BuyerID:          p.BuyerID,
+				ShopID:           p.ShopID,
+				OrderCode:        p.OrderCode,
+				CheckoutGroupID:  p.CheckoutGroupID,
+				StorefrontShopID: p.StorefrontShopID,
 			},
 			deliveries: deliveries,
 		}, nil
 
+	case "order.address_updated":
+		return buildOrderAddressUpdatedPlan(env.Payload, now)
+
 	case "order.cancelled":
 		var p struct {
-			OrderID   string `json:"order_id"`
-			OrderCode string `json:"order_code"`
-			BuyerID   string `json:"buyer_id"`
-			ShopID    string `json:"shop_id"`
-			Reason    string `json:"reason"`
+			CheckoutGroupID  string `json:"checkout_group_id"`
+			OrderID          string `json:"order_id"`
+			OrderCode        string `json:"order_code"`
+			BuyerID          string `json:"buyer_id"`
+			ShopID           string `json:"shop_id"`
+			StorefrontShopID string `json:"storefront_shop_id"`
+			Reason           string `json:"reason"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.OrderID == "" || p.BuyerID == "" {
 			return nil, fmt.Errorf("%w: invalid order.cancelled payload", ErrMalformedPayload)
@@ -1032,14 +1065,16 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		buyerBody := fmt.Sprintf("Đơn hàng %s đã bị hủy.%s", code, reasonSuffix)
 		sellerBody := fmt.Sprintf("Đơn hàng %s của gian hàng đã bị hủy.%s", code, reasonSuffix)
 		deliveries := []recipientDelivery{{
-			role:     "buyer",
-			userID:   p.BuyerID,
-			category: store.CategoryOrder,
+			role:               "buyer",
+			userID:             p.BuyerID,
+			category:           store.CategoryOrder,
+			resolveOrderSite:   true,
+			siteOrderID:        p.OrderID,
+			siteStorefrontShop: p.StorefrontShopID,
 			inApp: &store.Notification{
 				Category:  store.CategoryOrder,
 				Title:     fmt.Sprintf("Đơn hàng %s đã hủy", code),
 				Body:      buyerBody,
-				Link:      orderLink(p.OrderID),
 				CreatedAt: now,
 			},
 			email: &mailer.Message{
@@ -1067,22 +1102,26 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		}
 		return &eventPlan{
 			cacheOrder: &store.OrderParticipant{
-				OrderID:   p.OrderID,
-				BuyerID:   p.BuyerID,
-				ShopID:    p.ShopID,
-				OrderCode: p.OrderCode,
+				OrderID:          p.OrderID,
+				BuyerID:          p.BuyerID,
+				ShopID:           p.ShopID,
+				OrderCode:        p.OrderCode,
+				CheckoutGroupID:  p.CheckoutGroupID,
+				StorefrontShopID: p.StorefrontShopID,
 			},
 			deliveries: deliveries,
 		}, nil
 
 	case "order.shipped":
 		var p struct {
-			OrderID      string `json:"order_id"`
-			OrderCode    string `json:"order_code"`
-			BuyerID      string `json:"buyer_id"`
-			ShopID       string `json:"shop_id"`
-			CarrierCode  string `json:"carrier_code"`
-			TrackingCode string `json:"tracking_code"`
+			CheckoutGroupID  string `json:"checkout_group_id"`
+			OrderID          string `json:"order_id"`
+			OrderCode        string `json:"order_code"`
+			BuyerID          string `json:"buyer_id"`
+			ShopID           string `json:"shop_id"`
+			StorefrontShopID string `json:"storefront_shop_id"`
+			CarrierCode      string `json:"carrier_code"`
+			TrackingCode     string `json:"tracking_code"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.OrderID == "" || p.BuyerID == "" {
 			return nil, fmt.Errorf("%w: invalid order.shipped payload", ErrMalformedPayload)
@@ -1091,20 +1130,24 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		body := fmt.Sprintf("Đơn hàng %s đã được bàn giao cho %s (mã vận đơn: %s).", code, carrierLabel(p.CarrierCode), p.TrackingCode)
 		return &eventPlan{
 			cacheOrder: &store.OrderParticipant{
-				OrderID:   p.OrderID,
-				BuyerID:   p.BuyerID,
-				ShopID:    p.ShopID,
-				OrderCode: p.OrderCode,
+				OrderID:          p.OrderID,
+				BuyerID:          p.BuyerID,
+				ShopID:           p.ShopID,
+				OrderCode:        p.OrderCode,
+				CheckoutGroupID:  p.CheckoutGroupID,
+				StorefrontShopID: p.StorefrontShopID,
 			},
 			deliveries: []recipientDelivery{{
-				role:     "buyer",
-				userID:   p.BuyerID,
-				category: store.CategoryOrder,
+				role:               "buyer",
+				userID:             p.BuyerID,
+				category:           store.CategoryOrder,
+				resolveOrderSite:   true,
+				siteOrderID:        p.OrderID,
+				siteStorefrontShop: p.StorefrontShopID,
 				inApp: &store.Notification{
 					Category:  store.CategoryOrder,
 					Title:     fmt.Sprintf("Đơn hàng %s đang được giao", code),
 					Body:      body,
-					Link:      orderLink(p.OrderID),
 					CreatedAt: now,
 				},
 				email: &mailer.Message{
@@ -1116,11 +1159,13 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "order.delivered":
 		var p struct {
-			OrderID      string `json:"order_id"`
-			OrderCode    string `json:"order_code"`
-			BuyerID      string `json:"buyer_id"`
-			ShopID       string `json:"shop_id"`
-			TrackingCode string `json:"tracking_code"`
+			CheckoutGroupID  string `json:"checkout_group_id"`
+			OrderID          string `json:"order_id"`
+			OrderCode        string `json:"order_code"`
+			BuyerID          string `json:"buyer_id"`
+			ShopID           string `json:"shop_id"`
+			StorefrontShopID string `json:"storefront_shop_id"`
+			TrackingCode     string `json:"tracking_code"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.OrderID == "" || p.BuyerID == "" {
 			return nil, fmt.Errorf("%w: invalid order.delivered payload", ErrMalformedPayload)
@@ -1129,21 +1174,25 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		body := fmt.Sprintf("Đơn hàng %s (mã vận đơn %s) đã giao thành công. Vui lòng kiểm tra và xác nhận đã nhận hàng.", code, p.TrackingCode)
 		return &eventPlan{
 			cacheOrder: &store.OrderParticipant{
-				OrderID:   p.OrderID,
-				BuyerID:   p.BuyerID,
-				ShopID:    p.ShopID,
-				OrderCode: p.OrderCode,
+				OrderID:          p.OrderID,
+				BuyerID:          p.BuyerID,
+				ShopID:           p.ShopID,
+				OrderCode:        p.OrderCode,
+				CheckoutGroupID:  p.CheckoutGroupID,
+				StorefrontShopID: p.StorefrontShopID,
 			},
 			deliveries: []recipientDelivery{{
-				role:          "buyer",
-				userID:        p.BuyerID,
-				category:      store.CategoryOrder,
-				emailDedupKey: deliveredEmailDedupKey(p.OrderID),
+				role:               "buyer",
+				userID:             p.BuyerID,
+				category:           store.CategoryOrder,
+				emailDedupKey:      deliveredEmailDedupKey(p.OrderID),
+				resolveOrderSite:   true,
+				siteOrderID:        p.OrderID,
+				siteStorefrontShop: p.StorefrontShopID,
 				inApp: &store.Notification{
 					Category:  store.CategoryOrder,
 					Title:     fmt.Sprintf("Đơn hàng %s đã giao thành công", code),
 					Body:      body,
-					Link:      orderLink(p.OrderID),
 					CreatedAt: now,
 				},
 				email: &mailer.Message{
@@ -1155,11 +1204,13 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "order.completed":
 		var p struct {
-			OrderID     string `json:"order_id"`
-			OrderCode   string `json:"order_code"`
-			BuyerID     string `json:"buyer_id"`
-			ShopID      string `json:"shop_id"`
-			CoinsReward int64  `json:"coins_reward"`
+			CheckoutGroupID  string `json:"checkout_group_id"`
+			OrderID          string `json:"order_id"`
+			OrderCode        string `json:"order_code"`
+			BuyerID          string `json:"buyer_id"`
+			ShopID           string `json:"shop_id"`
+			StorefrontShopID string `json:"storefront_shop_id"`
+			CoinsReward      int64  `json:"coins_reward"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.OrderID == "" || p.BuyerID == "" {
 			return nil, fmt.Errorf("%w: invalid order.completed payload", ErrMalformedPayload)
@@ -1173,20 +1224,24 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		}
 		return &eventPlan{
 			cacheOrder: &store.OrderParticipant{
-				OrderID:   p.OrderID,
-				BuyerID:   p.BuyerID,
-				ShopID:    p.ShopID,
-				OrderCode: p.OrderCode,
+				OrderID:          p.OrderID,
+				BuyerID:          p.BuyerID,
+				ShopID:           p.ShopID,
+				OrderCode:        p.OrderCode,
+				CheckoutGroupID:  p.CheckoutGroupID,
+				StorefrontShopID: p.StorefrontShopID,
 			},
 			deliveries: []recipientDelivery{{
-				role:     "buyer",
-				userID:   p.BuyerID,
-				category: store.CategoryOrder,
+				role:               "buyer",
+				userID:             p.BuyerID,
+				category:           store.CategoryOrder,
+				resolveOrderSite:   true,
+				siteOrderID:        p.OrderID,
+				siteStorefrontShop: p.StorefrontShopID,
 				inApp: &store.Notification{
 					Category:  store.CategoryOrder,
 					Title:     fmt.Sprintf("Đơn hàng %s hoàn tất", code),
 					Body:      body,
-					Link:      orderLink(p.OrderID),
 					CreatedAt: now,
 				},
 				email: &mailer.Message{
@@ -1198,12 +1253,13 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "order.returned":
 		var p struct {
-			OrderID         string `json:"order_id"`
-			OrderCode       string `json:"order_code"`
-			CheckoutGroupID string `json:"checkout_group_id"`
-			BuyerID         string `json:"buyer_id"`
-			ShopID          string `json:"shop_id"`
-			Reason          string `json:"reason"`
+			OrderID          string `json:"order_id"`
+			OrderCode        string `json:"order_code"`
+			CheckoutGroupID  string `json:"checkout_group_id"`
+			BuyerID          string `json:"buyer_id"`
+			ShopID           string `json:"shop_id"`
+			StorefrontShopID string `json:"storefront_shop_id"`
+			Reason           string `json:"reason"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.OrderID == "" || p.BuyerID == "" {
 			return nil, fmt.Errorf("%w: invalid order.returned payload", ErrMalformedPayload)
@@ -1215,21 +1271,24 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		}
 		return &eventPlan{
 			cacheOrder: &store.OrderParticipant{
-				OrderID:         p.OrderID,
-				BuyerID:         p.BuyerID,
-				ShopID:          p.ShopID,
-				OrderCode:       p.OrderCode,
-				CheckoutGroupID: p.CheckoutGroupID,
+				OrderID:          p.OrderID,
+				BuyerID:          p.BuyerID,
+				ShopID:           p.ShopID,
+				OrderCode:        p.OrderCode,
+				CheckoutGroupID:  p.CheckoutGroupID,
+				StorefrontShopID: p.StorefrontShopID,
 			},
 			deliveries: []recipientDelivery{{
-				role:     "buyer",
-				userID:   p.BuyerID,
-				category: store.CategoryOrder,
+				role:               "buyer",
+				userID:             p.BuyerID,
+				category:           store.CategoryOrder,
+				resolveOrderSite:   true,
+				siteOrderID:        p.OrderID,
+				siteStorefrontShop: p.StorefrontShopID,
 				inApp: &store.Notification{
 					Category:  store.CategoryOrder,
 					Title:     fmt.Sprintf("Đơn hàng %s đã hoàn hàng", code),
 					Body:      body,
-					Link:      orderLink(p.OrderID),
 					CreatedAt: now,
 				},
 				email: &mailer.Message{
@@ -1244,13 +1303,14 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "payment.succeeded":
 		var p struct {
-			PaymentID    string `json:"payment_id"`
-			OrderID      string `json:"order_id"`
-			OrderGroupID string `json:"order_group_id"`
-			UserID       string `json:"user_id"`
-			AmountVND    int64  `json:"amount_vnd"`
-			Method       string `json:"method"`
-			ProviderTxID string `json:"provider_tx_id"`
+			PaymentID        string `json:"payment_id"`
+			OrderID          string `json:"order_id"`
+			OrderGroupID     string `json:"order_group_id"`
+			UserID           string `json:"user_id"`
+			AmountVND        int64  `json:"amount_vnd"`
+			Method           string `json:"method"`
+			ProviderTxID     string `json:"provider_tx_id"`
+			StorefrontShopID string `json:"storefront_shop_id"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.UserID == "" {
 			return nil, fmt.Errorf("%w: invalid payment.succeeded payload", ErrMalformedPayload)
@@ -1272,17 +1332,17 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		}
 		return &eventPlan{
 			deliveries: []recipientDelivery{{
-				role:            "buyer",
-				userID:          p.UserID,
-				category:        store.CategoryOrder,
-				resolvePayLink:  true,
-				payOrderID:      p.OrderID,
-				payOrderGroupID: p.OrderGroupID,
+				role:               "buyer",
+				userID:             p.UserID,
+				category:           store.CategoryOrder,
+				resolveOrderSite:   true,
+				siteOrderID:        p.OrderID,
+				siteOrderGroupID:   p.OrderGroupID,
+				siteStorefrontShop: p.StorefrontShopID,
 				inApp: &store.Notification{
 					Category:  store.CategoryOrder,
 					Title:     title,
 					Body:      body,
-					Link:      "/don-hang",
 					CreatedAt: now,
 				},
 				email: &mailer.Message{
@@ -1294,11 +1354,12 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "payment.failed":
 		var p struct {
-			PaymentID    string `json:"payment_id"`
-			OrderID      string `json:"order_id"`
-			OrderGroupID string `json:"order_group_id"`
-			UserID       string `json:"user_id"`
-			Reason       string `json:"reason"`
+			PaymentID        string `json:"payment_id"`
+			OrderID          string `json:"order_id"`
+			OrderGroupID     string `json:"order_group_id"`
+			UserID           string `json:"user_id"`
+			Reason           string `json:"reason"`
+			StorefrontShopID string `json:"storefront_shop_id"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.UserID == "" {
 			return nil, fmt.Errorf("%w: invalid payment.failed payload", ErrMalformedPayload)
@@ -1309,17 +1370,17 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		}
 		return &eventPlan{
 			deliveries: []recipientDelivery{{
-				role:            "buyer",
-				userID:          p.UserID,
-				category:        store.CategoryOrder,
-				resolvePayLink:  true,
-				payOrderID:      p.OrderID,
-				payOrderGroupID: p.OrderGroupID,
+				role:               "buyer",
+				userID:             p.UserID,
+				category:           store.CategoryOrder,
+				resolveOrderSite:   true,
+				siteOrderID:        p.OrderID,
+				siteOrderGroupID:   p.OrderGroupID,
+				siteStorefrontShop: p.StorefrontShopID,
 				inApp: &store.Notification{
 					Category:  store.CategoryOrder,
 					Title:     "Thanh toán thất bại",
 					Body:      body,
-					Link:      "/don-hang",
 					CreatedAt: now,
 				},
 				email: &mailer.Message{
@@ -1331,11 +1392,12 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "payment.expired":
 		var p struct {
-			PaymentID    string `json:"payment_id"`
-			OrderID      string `json:"order_id"`
-			OrderGroupID string `json:"order_group_id"`
-			UserID       string `json:"user_id"`
-			Reason       string `json:"reason"`
+			PaymentID        string `json:"payment_id"`
+			OrderID          string `json:"order_id"`
+			OrderGroupID     string `json:"order_group_id"`
+			UserID           string `json:"user_id"`
+			Reason           string `json:"reason"`
+			StorefrontShopID string `json:"storefront_shop_id"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.UserID == "" {
 			return nil, fmt.Errorf("%w: invalid payment.expired payload", ErrMalformedPayload)
@@ -1343,17 +1405,17 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		body := fmt.Sprintf("Phiên thanh toán %s đã hết hạn và đơn hàng đã được hủy tự động.", p.PaymentID)
 		return &eventPlan{
 			deliveries: []recipientDelivery{{
-				role:            "buyer",
-				userID:          p.UserID,
-				category:        store.CategoryOrder,
-				resolvePayLink:  true,
-				payOrderID:      p.OrderID,
-				payOrderGroupID: p.OrderGroupID,
+				role:               "buyer",
+				userID:             p.UserID,
+				category:           store.CategoryOrder,
+				resolveOrderSite:   true,
+				siteOrderID:        p.OrderID,
+				siteOrderGroupID:   p.OrderGroupID,
+				siteStorefrontShop: p.StorefrontShopID,
 				inApp: &store.Notification{
 					Category:  store.CategoryOrder,
 					Title:     "Thanh toán hết hạn",
 					Body:      body,
-					Link:      "/don-hang",
 					CreatedAt: now,
 				},
 				email: &mailer.Message{
@@ -1365,13 +1427,14 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 
 	case "payment.refunded":
 		var p struct {
-			RefundID     string `json:"refund_id"`
-			PaymentID    string `json:"payment_id"`
-			OrderID      string `json:"order_id"`
-			OrderGroupID string `json:"order_group_id"`
-			UserID       string `json:"user_id"`
-			AmountVND    int64  `json:"amount_vnd"`
-			Reason       string `json:"reason"`
+			RefundID         string `json:"refund_id"`
+			PaymentID        string `json:"payment_id"`
+			OrderID          string `json:"order_id"`
+			OrderGroupID     string `json:"order_group_id"`
+			UserID           string `json:"user_id"`
+			AmountVND        int64  `json:"amount_vnd"`
+			Reason           string `json:"reason"`
+			StorefrontShopID string `json:"storefront_shop_id"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.UserID == "" {
 			return nil, fmt.Errorf("%w: invalid payment.refunded payload", ErrMalformedPayload)
@@ -1383,17 +1446,17 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		}
 		return &eventPlan{
 			deliveries: []recipientDelivery{{
-				role:            "buyer",
-				userID:          p.UserID,
-				category:        store.CategoryOrder,
-				resolvePayLink:  true,
-				payOrderID:      p.OrderID,
-				payOrderGroupID: p.OrderGroupID,
+				role:               "buyer",
+				userID:             p.UserID,
+				category:           store.CategoryOrder,
+				resolveOrderSite:   true,
+				siteOrderID:        p.OrderID,
+				siteOrderGroupID:   p.OrderGroupID,
+				siteStorefrontShop: p.StorefrontShopID,
 				inApp: &store.Notification{
 					Category:  store.CategoryOrder,
 					Title:     "Hoàn tiền thành công",
 					Body:      body,
-					Link:      "/don-hang",
 					CreatedAt: now,
 				},
 				email: &mailer.Message{
@@ -1412,6 +1475,7 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 			UserID           string `json:"user_id"`
 			AmountVND        int64  `json:"amount_vnd"`
 			ProviderRefundID string `json:"provider_refund_id"`
+			StorefrontShopID string `json:"storefront_shop_id"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil || p.UserID == "" {
 			return nil, fmt.Errorf("%w: invalid payment.refund_settled payload", ErrMalformedPayload)
@@ -1428,17 +1492,17 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		}
 		return &eventPlan{
 			deliveries: []recipientDelivery{{
-				role:            "buyer",
-				userID:          p.UserID,
-				category:        store.CategoryOrder,
-				resolvePayLink:  true,
-				payOrderID:      p.OrderID,
-				payOrderGroupID: p.OrderGroupID,
+				role:               "buyer",
+				userID:             p.UserID,
+				category:           store.CategoryOrder,
+				resolveOrderSite:   true,
+				siteOrderID:        p.OrderID,
+				siteOrderGroupID:   p.OrderGroupID,
+				siteStorefrontShop: p.StorefrontShopID,
 				inApp: &store.Notification{
 					Category:  store.CategoryOrder,
 					Title:     "Hoàn tiền đã được chuyển khoản",
 					Body:      body,
-					Link:      "/don-hang",
 					CreatedAt: now,
 				},
 				email: &mailer.Message{
@@ -1552,6 +1616,175 @@ func buildShopStatusChangedPlan(raw json.RawMessage, envOccurredAt string, now t
 	}, nil
 }
 
+type orderAddressUpdatedPayload struct {
+	OrderID           string `json:"order_id"`
+	OrderCode         string `json:"order_code"`
+	BuyerID           string `json:"buyer_id"`
+	ShopID            string `json:"shop_id"`
+	StorefrontShopID  string `json:"storefront_shop_id"`
+	OldFeeVND         int64  `json:"old_fee_vnd"`
+	NewFeeVND         int64  `json:"new_fee_vnd"`
+	TrackingCode      string `json:"tracking_code"`
+	ShipmentRecreated bool   `json:"shipment_recreated"`
+	ShipmentQueued    bool   `json:"shipment_queued"`
+	ProvinceName      string `json:"province_name"`
+	WardName          string `json:"ward_name"`
+}
+
+func buildOrderAddressUpdatedPlan(raw json.RawMessage, now time.Time) (*eventPlan, error) {
+	var p orderAddressUpdatedPayload
+	if err := json.Unmarshal(raw, &p); err != nil ||
+		strings.TrimSpace(p.OrderID) == "" ||
+		strings.TrimSpace(p.ShopID) == "" {
+		return nil, fmt.Errorf("%w: invalid order.address_updated payload", ErrMalformedPayload)
+	}
+	p.OrderID = strings.TrimSpace(p.OrderID)
+	p.OrderCode = strings.TrimSpace(p.OrderCode)
+	p.BuyerID = strings.TrimSpace(p.BuyerID)
+	p.ShopID = strings.TrimSpace(p.ShopID)
+	p.StorefrontShopID = strings.TrimSpace(p.StorefrontShopID)
+	p.TrackingCode = strings.TrimSpace(p.TrackingCode)
+	p.ProvinceName = strings.TrimSpace(p.ProvinceName)
+	p.WardName = strings.TrimSpace(p.WardName)
+
+	plan := &eventPlan{}
+	if p.BuyerID != "" {
+		plan.cacheOrder = &store.OrderParticipant{
+			OrderID:          p.OrderID,
+			BuyerID:          p.BuyerID,
+			ShopID:           p.ShopID,
+			OrderCode:        p.OrderCode,
+			StorefrontShopID: p.StorefrontShopID,
+		}
+	}
+
+	buildDeliveries := func(buyerID, orderCode, storefrontShopID string) []recipientDelivery {
+		code := orderLabel(orderCode, p.OrderID)
+		area := formatAddressArea(p.WardName, p.ProvinceName)
+		needsReprint := p.ShipmentRecreated || p.ShipmentQueued
+
+		feeDiff := p.NewFeeVND - p.OldFeeVND
+		feeDelta := ""
+		if feeDiff > 0 {
+			feeDelta = "+" + FormatVND(feeDiff)
+		} else if feeDiff < 0 {
+			feeDelta = FormatVND(feeDiff)
+		}
+
+		sellerTitle := fmt.Sprintf("Đơn hàng %s đã cập nhật địa chỉ giao hàng", code)
+		sellerSubject := fmt.Sprintf("NexusMart - Đơn hàng %s đã cập nhật địa chỉ giao hàng", code)
+		if needsReprint {
+			sellerTitle = fmt.Sprintf("Đơn hàng %s đổi địa chỉ - cần in lại nhãn vận đơn", code)
+			sellerSubject = fmt.Sprintf("NexusMart - Đơn hàng %s đổi địa chỉ giao hàng (cần in lại nhãn vận đơn)", code)
+		}
+
+		var sellerBody strings.Builder
+		if area != "" {
+			fmt.Fprintf(&sellerBody, "Người mua đã cập nhật địa chỉ giao hàng cho đơn hàng %s sang khu vực %s.", code, area)
+		} else {
+			fmt.Fprintf(&sellerBody, "Người mua đã cập nhật địa chỉ giao hàng cho đơn hàng %s.", code)
+		}
+		if feeDiff != 0 {
+			fmt.Fprintf(&sellerBody, " Phí vận chuyển thay đổi từ %s thành %s (%s).", FormatVND(p.OldFeeVND), FormatVND(p.NewFeeVND), feeDelta)
+		}
+		if p.ShipmentRecreated {
+			if p.TrackingCode != "" {
+				fmt.Fprintf(&sellerBody, " Vận đơn cũ đã bị hủy và tạo lại vận đơn mới (mã vận đơn: %s). Vui lòng in lại nhãn vận đơn mới trước khi bàn giao hàng.", p.TrackingCode)
+			} else {
+				sellerBody.WriteString(" Vận đơn cũ đã bị hủy và tạo lại vận đơn mới. Vui lòng in lại nhãn vận đơn mới trước khi bàn giao hàng.")
+			}
+		} else if p.ShipmentQueued {
+			sellerBody.WriteString(" Vận đơn cũ đã bị hủy và hệ thống đang xếp hàng đợi tạo lại vận đơn mới. Vui lòng theo dõi mã vận đơn mới và in lại nhãn vận đơn mới trước khi bàn giao hàng.")
+		}
+
+		deliveries := []recipientDelivery{{
+			role:     "seller",
+			shopID:   p.ShopID,
+			category: store.CategoryOrder,
+			inApp: &store.Notification{
+				Category:  store.CategoryOrder,
+				Title:     sellerTitle,
+				Body:      sellerBody.String(),
+				Link:      sellerOrderLink(p.OrderID),
+				CreatedAt: now,
+			},
+			email: &mailer.Message{
+				Subject: sellerSubject,
+				Body:    sellerBody.String() + "\n",
+			},
+		}}
+
+		if buyerID != "" {
+			var buyerBody strings.Builder
+			if area != "" {
+				fmt.Fprintf(&buyerBody, "Địa chỉ giao hàng của đơn %s đã được cập nhật sang khu vực %s.", code, area)
+			} else {
+				fmt.Fprintf(&buyerBody, "Địa chỉ giao hàng của đơn %s đã được cập nhật thành công.", code)
+			}
+			if feeDiff != 0 {
+				fmt.Fprintf(&buyerBody, " Phí vận chuyển thay đổi từ %s thành %s (%s).", FormatVND(p.OldFeeVND), FormatVND(p.NewFeeVND), feeDelta)
+			}
+			if p.ShipmentRecreated && p.TrackingCode != "" {
+				fmt.Fprintf(&buyerBody, " Mã vận đơn mới: %s.", p.TrackingCode)
+			} else if p.ShipmentQueued {
+				buyerBody.WriteString(" Hệ thống đang cập nhật lại vận đơn cho đơn hàng của bạn.")
+			}
+
+			deliveries = append(deliveries, recipientDelivery{
+				role:               "buyer",
+				userID:             buyerID,
+				category:           store.CategoryOrder,
+				resolveOrderSite:   true,
+				siteOrderID:        p.OrderID,
+				siteStorefrontShop: storefrontShopID,
+				inApp: &store.Notification{
+					Category:  store.CategoryOrder,
+					Title:     fmt.Sprintf("Đã cập nhật địa chỉ đơn hàng %s", code),
+					Body:      buyerBody.String(),
+					CreatedAt: now,
+				},
+			})
+		}
+
+		return deliveries
+	}
+
+	plan.deliveries = buildDeliveries(p.BuyerID, p.OrderCode, p.StorefrontShopID)
+	if p.BuyerID == "" || p.OrderCode == "" || p.StorefrontShopID == "" {
+		plan.lookupOrderID = p.OrderID
+		plan.applyParticipant = func(part store.OrderParticipant, found bool) {
+			if !found {
+				return
+			}
+			if p.BuyerID == "" {
+				p.BuyerID = part.BuyerID
+			}
+			if p.OrderCode == "" {
+				p.OrderCode = part.OrderCode
+			}
+			if p.StorefrontShopID == "" {
+				p.StorefrontShopID = part.StorefrontShopID
+			}
+			plan.deliveries = buildDeliveries(p.BuyerID, p.OrderCode, p.StorefrontShopID)
+		}
+	}
+
+	return plan, nil
+}
+
+func formatAddressArea(wardName, provinceName string) string {
+	wardName = strings.TrimSpace(wardName)
+	provinceName = strings.TrimSpace(provinceName)
+	switch {
+	case wardName != "" && provinceName != "":
+		return wardName + ", " + provinceName
+	case wardName != "":
+		return wardName
+	default:
+		return provinceName
+	}
+}
+
 type returnUpdatedPayload struct {
 	ReturnRequestID      string `json:"return_request_id"`
 	OrderID              string `json:"order_id"`
@@ -1559,6 +1792,7 @@ type returnUpdatedPayload struct {
 	CheckoutGroupID      string `json:"checkout_group_id"`
 	BuyerID              string `json:"buyer_id"`
 	ShopID               string `json:"shop_id"`
+	StorefrontShopID     string `json:"storefront_shop_id"`
 	Status               string `json:"status"`
 	PreviousStatus       string `json:"previous_status"`
 	Reason               string `json:"reason"`
@@ -1576,16 +1810,18 @@ func buildReturnUpdatedPlan(raw json.RawMessage, now time.Time) (*eventPlan, err
 	p.OrderID = strings.TrimSpace(p.OrderID)
 	p.BuyerID = strings.TrimSpace(p.BuyerID)
 	p.ShopID = strings.TrimSpace(p.ShopID)
+	p.StorefrontShopID = strings.TrimSpace(p.StorefrontShopID)
 	p.OrderCode = strings.TrimSpace(p.OrderCode)
 
 	plan := &eventPlan{}
 	if p.BuyerID != "" {
 		plan.cacheOrder = &store.OrderParticipant{
-			OrderID:         p.OrderID,
-			BuyerID:         p.BuyerID,
-			ShopID:          p.ShopID,
-			OrderCode:       p.OrderCode,
-			CheckoutGroupID: strings.TrimSpace(p.CheckoutGroupID),
+			OrderID:          p.OrderID,
+			BuyerID:          p.BuyerID,
+			ShopID:           p.ShopID,
+			OrderCode:        p.OrderCode,
+			CheckoutGroupID:  strings.TrimSpace(p.CheckoutGroupID),
+			StorefrontShopID: p.StorefrontShopID,
 		}
 	}
 
@@ -1594,15 +1830,17 @@ func buildReturnUpdatedPlan(raw json.RawMessage, now time.Time) (*eventPlan, err
 		buyerTitle, buyerBody, buyerSubj, sellerTitle, sellerBody, sellerSubj := formatReturnMessages(p, code)
 		return []recipientDelivery{
 			{
-				role:        "buyer",
-				userID:      p.BuyerID,
-				requireUser: true,
-				category:    store.CategoryOrder,
+				role:               "buyer",
+				userID:             p.BuyerID,
+				requireUser:        true,
+				category:           store.CategoryOrder,
+				resolveOrderSite:   true,
+				siteOrderID:        p.OrderID,
+				siteStorefrontShop: p.StorefrontShopID,
 				inApp: &store.Notification{
 					Category:  store.CategoryOrder,
 					Title:     buyerTitle,
 					Body:      buyerBody,
-					Link:      orderLink(p.OrderID),
 					CreatedAt: now,
 				},
 				email: &mailer.Message{
@@ -1631,7 +1869,7 @@ func buildReturnUpdatedPlan(raw json.RawMessage, now time.Time) (*eventPlan, err
 	}
 
 	plan.deliveries = buildDeliveries(p.OrderCode)
-	if p.BuyerID == "" || p.ShopID == "" || p.OrderCode == "" {
+	if p.BuyerID == "" || p.ShopID == "" || p.OrderCode == "" || p.StorefrontShopID == "" {
 		plan.lookupOrderID = p.OrderID
 		plan.applyParticipant = func(part store.OrderParticipant, found bool) {
 			if !found {
@@ -1645,6 +1883,9 @@ func buildReturnUpdatedPlan(raw json.RawMessage, now time.Time) (*eventPlan, err
 			}
 			if p.OrderCode == "" {
 				p.OrderCode = part.OrderCode
+			}
+			if p.StorefrontShopID == "" {
+				p.StorefrontShopID = part.StorefrontShopID
 			}
 			plan.deliveries = buildDeliveries(p.OrderCode)
 		}
@@ -1806,17 +2047,18 @@ func formatReturnMessages(p returnUpdatedPayload, code string) (buyerTitle, buye
 }
 
 type shipmentUpdatedPayload struct {
-	ShipmentID      string `json:"shipment_id"`
-	OrderID         string `json:"order_id"`
-	ShopID          string `json:"shop_id"`
-	BuyerID         string `json:"buyer_id"`
-	CarrierCode     string `json:"carrier_code"`
-	TrackingCode    string `json:"tracking_code"`
-	Status          string `json:"status"`
-	Description     string `json:"description"`
-	Direction       string `json:"direction"`
-	ReturnRequestID string `json:"return_request_id"`
-	RedeliveryCount int32  `json:"redelivery_count"`
+	ShipmentID       string `json:"shipment_id"`
+	OrderID          string `json:"order_id"`
+	ShopID           string `json:"shop_id"`
+	StorefrontShopID string `json:"storefront_shop_id"`
+	BuyerID          string `json:"buyer_id"`
+	CarrierCode      string `json:"carrier_code"`
+	TrackingCode     string `json:"tracking_code"`
+	Status           string `json:"status"`
+	Description      string `json:"description"`
+	Direction        string `json:"direction"`
+	ReturnRequestID  string `json:"return_request_id"`
+	RedeliveryCount  int32  `json:"redelivery_count"`
 }
 
 func buildShipmentUpdatedPlan(raw json.RawMessage, now time.Time) (*eventPlan, error) {
@@ -1827,6 +2069,7 @@ func buildShipmentUpdatedPlan(raw json.RawMessage, now time.Time) (*eventPlan, e
 	p.OrderID = strings.TrimSpace(p.OrderID)
 	p.BuyerID = strings.TrimSpace(p.BuyerID)
 	p.ShopID = strings.TrimSpace(p.ShopID)
+	p.StorefrontShopID = strings.TrimSpace(p.StorefrontShopID)
 	p.TrackingCode = strings.TrimSpace(p.TrackingCode)
 
 	dir := strings.ToUpper(strings.TrimSpace(p.Direction))
@@ -1871,6 +2114,9 @@ func buildShipmentUpdatedPlan(raw json.RawMessage, now time.Time) (*eventPlan, e
 		if p.ShopID == "" {
 			p.ShopID = part.ShopID
 		}
+		if p.StorefrontShopID == "" {
+			p.StorefrontShopID = part.StorefrontShopID
+		}
 		plan.deliveries = buildDeliveries(part.OrderCode)
 	}
 	return plan, nil
@@ -1912,16 +2158,18 @@ func buildForwardShipmentDeliveries(
 	}
 
 	deliveries := []recipientDelivery{{
-		role:          "buyer",
-		userID:        p.BuyerID,
-		requireUser:   true,
-		category:      store.CategoryOrder,
-		emailDedupKey: dedupKey,
+		role:               "buyer",
+		userID:             p.BuyerID,
+		requireUser:        true,
+		category:           store.CategoryOrder,
+		emailDedupKey:      dedupKey,
+		resolveOrderSite:   true,
+		siteOrderID:        p.OrderID,
+		siteStorefrontShop: p.StorefrontShopID,
 		inApp: &store.Notification{
 			Category:  store.CategoryOrder,
 			Title:     fmt.Sprintf("Cập nhật vận chuyển: %s", statusLabel),
 			Body:      buyerBody,
-			Link:      orderLink(p.OrderID),
 			CreatedAt: now,
 		},
 		email: buyerEmail,
@@ -1982,15 +2230,17 @@ func buildReturnShipmentDeliveries(
 	}
 
 	deliveries := []recipientDelivery{{
-		role:        "buyer",
-		userID:      p.BuyerID,
-		requireUser: true,
-		category:    store.CategoryOrder,
+		role:               "buyer",
+		userID:             p.BuyerID,
+		requireUser:        true,
+		category:           store.CategoryOrder,
+		resolveOrderSite:   true,
+		siteOrderID:        p.OrderID,
+		siteStorefrontShop: p.StorefrontShopID,
 		inApp: &store.Notification{
 			Category:  store.CategoryOrder,
 			Title:     fmt.Sprintf("Cập nhật vận đơn trả hàng: %s", statusLabel),
 			Body:      buyerBody,
-			Link:      orderLink(p.OrderID),
 			CreatedAt: now,
 		},
 		email: buyerEmail,
@@ -2123,46 +2373,6 @@ func shipmentCreateFailedDedupKey(jobID string) string {
 
 func sentEmailDedupKey(eventID, userID string) string {
 	return "event_sent:" + strings.TrimSpace(eventID) + ":" + strings.TrimSpace(userID)
-}
-
-func resolvePaymentOrderLink(ctx context.Context, tx store.TxStore, orderID, orderGroupID string) string {
-	orderID = strings.TrimSpace(orderID)
-	orderGroupID = strings.TrimSpace(orderGroupID)
-
-	// 1. Distinct order_id and order_group_id means the event already carries a real sub-order ID.
-	if orderID != "" && orderGroupID != "" && orderID != orderGroupID {
-		return orderLink(orderID)
-	}
-
-	// 2. If orderID matches a known sub-order directly, link straight to it.
-	if orderID != "" {
-		if _, found, err := tx.GetOrderParticipant(ctx, orderID); err == nil && found {
-			return orderLink(orderID)
-		}
-	}
-
-	// 3. Look up sub-orders belonging to checkout_group_id (orderGroupID, or orderID when group ID is absent).
-	groupLookup := orderGroupID
-	if groupLookup == "" {
-		groupLookup = orderID
-	}
-	if groupLookup != "" {
-		if parts, err := tx.ListOrderParticipantsByGroup(ctx, groupLookup); err == nil && len(parts) > 0 {
-			if len(parts) == 1 {
-				return orderLink(parts[0].OrderID)
-			}
-			// Multi-shop checkout group: link to the orders list rather than a 404 checkout_group_id URL.
-			return "/don-hang"
-		}
-	}
-
-	// 4. Never emit /don-hang/<checkout_group_id> when orderID is missing or known to be checkout_group_id.
-	if orderID == "" || (orderGroupID != "" && orderID == orderGroupID) {
-		return "/don-hang"
-	}
-
-	// 5. Fallback for sub-order refund arriving before order.created is cached (orderGroupID == "").
-	return orderLink(orderID)
 }
 
 // FormatInt formats an integer with Vietnamese dot thousands separators (e.g., 256500 -> "256.500").
@@ -2370,14 +2580,6 @@ func orderLabel(code, id string) string {
 		return code
 	}
 	return id
-}
-
-func orderLink(orderID string) string {
-	orderID = strings.TrimSpace(orderID)
-	if orderID == "" {
-		return "/don-hang"
-	}
-	return "/don-hang/" + orderID
 }
 
 func sellerOrderLink(orderID string) string {

@@ -92,7 +92,8 @@ type DLQPublisher interface {
 	PublishDLQ(ctx context.Context, subject string, payload []byte, headers map[string]string) error
 }
 
-// OrderCompletedConsumer consumes `order.completed` from NATS JetStream and idempotently credits reward coins.
+// OrderCompletedConsumer consumes `order.completed` and `user.shop_status_changed` from NATS JetStream,
+// idempotently crediting reward coins and syncing shop suspension state.
 type OrderCompletedConsumer struct {
 	store           store.Store
 	logger          *slog.Logger
@@ -109,7 +110,7 @@ type OrderCompletedConsumer struct {
 	wg              sync.WaitGroup
 }
 
-// NewOrderCompletedConsumer builds a JetStream consumer for `order.completed`.
+// NewOrderCompletedConsumer builds a JetStream consumer for `order.completed` and `user.shop_status_changed`.
 func NewOrderCompletedConsumer(st store.Store, js nats.JetStreamContext, streamName string, logger *slog.Logger) *OrderCompletedConsumer {
 	if logger == nil {
 		logger = slog.Default()
@@ -428,6 +429,9 @@ func (c *OrderCompletedConsumer) handleNATSMsg(parentCtx context.Context, msg *n
 
 	msgCtx, cancel := context.WithTimeout(parentCtx, defaultConsumerMsgTimeout)
 	defer cancel()
+	if len(headers) > 0 {
+		msgCtx = telemetry.ExtractTraceHeaders(msgCtx, headers)
+	}
 
 	action, retryErr := c.processMessageWithSubject(msgCtx, msg.Subject, msg.Data, headers, delivered)
 	if parentCtx.Err() != nil || c.isStopping() {

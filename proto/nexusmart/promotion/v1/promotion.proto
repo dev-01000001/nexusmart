@@ -91,6 +91,7 @@ message FlashSale {
   repeated FlashSaleItem items = 5;
   int32 min_discount_percent = 6;
   repeated string category_ids = 7;
+  string status = 8;
 }
 
 message ShopDiscountProgramItemInput {
@@ -292,6 +293,10 @@ message ListAvailableVouchersRequest {
   // For seller/admin management listings (includes PAUSED/scheduled/expired; excludes DELETED unless filtered).
   bool include_inactive = 5;
   VoucherStatus status = 6;
+  // Optional sales channel: "" (defaults to "MARKETPLACE"), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 7;
+  // Storefront shop ID when sales_channel is "STOREFRONT".
+  string storefront_shop_id = 8;
 }
 
 message ListAvailableVouchersResponse {
@@ -344,6 +349,15 @@ message ApproveFlashSaleItemRequest {
 
 message ApproveFlashSaleItemResponse {
   FlashSaleItem item = 1;
+}
+
+message EndFlashSaleWindowRequest {
+  string window_id = 1;
+}
+
+message EndFlashSaleWindowResponse {
+  FlashSale window = 1;
+  int32 released_items = 2;
 }
 
 message ListActiveFlashSalesRequest {
@@ -465,6 +479,10 @@ message PreviewDiscountsRequest {
   string platform_voucher_id = 4;
   string freeship_voucher_id = 5;
   int64 coins_to_use = 6;
+  // Optional sales channel: "" (defaults to "MARKETPLACE"), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 7;
+  // Required shop ID when sales_channel is "STOREFRONT"; empty for "MARKETPLACE".
+  string storefront_shop_id = 8;
 }
 
 message PreviewDiscountsResponse {
@@ -482,6 +500,10 @@ message ReservePromotionRequest {
   repeated FlashSaleReservationItem flash_sale_items = 7;
   repeated ShopDiscountInput shop_items = 8;
   repeated ShopDiscountProgramReservationItem shop_discount_program_items = 9;
+  // Optional sales channel: "" (defaults to "MARKETPLACE"), "MARKETPLACE", or "STOREFRONT".
+  string sales_channel = 10;
+  // Required shop ID when sales_channel is "STOREFRONT"; empty for "MARKETPLACE".
+  string storefront_shop_id = 11;
 }
 
 message ReservePromotionResponse {
@@ -527,6 +549,7 @@ service PromotionService {
   rpc CreateFlashSale(CreateFlashSaleRequest) returns (CreateFlashSaleResponse);
   rpc RegisterFlashSaleItem(RegisterFlashSaleItemRequest) returns (RegisterFlashSaleItemResponse);
   rpc ApproveFlashSaleItem(ApproveFlashSaleItemRequest) returns (ApproveFlashSaleItemResponse);
+  rpc EndFlashSaleWindow(EndFlashSaleWindowRequest) returns (EndFlashSaleWindowResponse);
   rpc ListActiveFlashSales(ListActiveFlashSalesRequest) returns (ListActiveFlashSalesResponse);
   rpc ListFlashSaleItems(ListFlashSaleItemsRequest) returns (ListFlashSaleItemsResponse);
   rpc ListAllFlashSales(ListAllFlashSalesRequest) returns (ListAllFlashSalesResponse);

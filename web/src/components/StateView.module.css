@@ -3,53 +3,67 @@
   flex-direction: column;
   align-items: flex-start;
   justify-content: center;
-  gap: 10px;
+  gap: 14px;
   padding: 28px 24px;
-  background: var(--surface-white);
+  background: var(--bg-2);
   color: var(--ink);
   width: 100%;
+  border-radius: var(--radius-shop);
 }
 
 .appContainer {
   border-radius: var(--radius-card);
   background: var(--card);
-  border: 1px dashed var(--control); /* taste-skill-ignore: app empty/error slot per app-screens.md §11 */
   padding: 24px 20px;
 }
 
-.title {
-  font-size: 18px;
-  font-weight: 500;
-  color: var(--ink);
+.loading {
+  background: transparent;
+  padding: 8px 0;
 }
 
-.appContainer .title {
+.appContainer.loading {
+  background: var(--card);
+  padding: 20px;
+}
+
+.copyStack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 52ch;
+}
+
+.title {
   font-size: 16px;
+  font-weight: 560;
+  line-height: 1.35;
+  color: var(--ink);
 }
 
 .message {
-  font-size: 16px;
-  line-height: 1.55;
-  color: var(--ink);
-  max-width: 56ch;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--muted);
 }
 
 .appContainer .message {
   font-size: 14px;
-  color: var(--muted);
 }
 
 .meta {
   font-size: 13px;
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .errorHeading {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 16px;
-  font-weight: 500;
+  font-size: 15px;
+  font-weight: 560;
+  line-height: 1.35;
   color: var(--negative);
 }
 
@@ -57,27 +71,102 @@
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  margin-top: 4px;
 }
 
-/* Flat skeleton loading bars without shimmer gradients (app-screens.md §11) */
-.skeletonWrap {
+/* Flat tonal skeletons · zero gradients, calm opacity pulse disabled in reduced-motion */
+.skeletonWrap,
+.skeletonDetail {
   display: grid;
   gap: 12px;
   width: 100%;
 }
 
-.skeletonBar {
-  height: 16px;
-  background: var(--raised);
-  border-radius: 4px;
+.skeletonCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--gutter);
+  width: 100%;
+}
+
+.skeletonCard {
+  display: grid;
+  gap: 10px;
+}
+
+.skeletonBar,
+.skeletonTall,
+.skeletonMedia,
+.skeletonLineWide,
+.skeletonLineMid,
+.skeletonLineShort,
+.skeletonBlock {
+  background: var(--bg-3);
+  border-radius: var(--radius-shop);
+}
+
+.appContainer .skeletonBar,
+.appContainer .skeletonTall,
+.appContainer .skeletonLineWide,
+.appContainer .skeletonLineMid,
+.appContainer .skeletonLineShort,
+.appContainer .skeletonBlock {
+  border-radius: var(--radius-control);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .skeletonBar,
+  .skeletonTall,
+  .skeletonMedia,
+  .skeletonLineWide,
+  .skeletonLineMid,
+  .skeletonLineShort,
+  .skeletonBlock {
+    animation: nm-skeleton-pulse 1500ms var(--ease-in-out) infinite;
+  }
+}
+
+@keyframes nm-skeleton-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.48;
+  }
+}
+
+.skeletonMedia {
+  width: 100%;
+  aspect-ratio: 3 / 4;
 }
 
 .skeletonTall {
-  height: 28px;
-  width: 42%;
-  background: var(--raised);
-  border-radius: 4px;
+  height: 24px;
+  width: 38%;
+}
+
+.skeletonLineWide {
+  height: 16px;
+  width: 82%;
+}
+
+.skeletonLineMid {
+  height: 14px;
+  width: 58%;
+}
+
+.skeletonLineShort {
+  height: 14px;
+  width: 44%;
+}
+
+.skeletonBlock {
+  height: 120px;
+  width: 100%;
+}
+
+.skeletonBar {
+  height: 16px;
 }
 
 .skeletonRow {

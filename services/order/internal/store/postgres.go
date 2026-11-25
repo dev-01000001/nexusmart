@@ -207,6 +207,9 @@ func (s *PostgresStore) CreateCheckoutGroup(ctx context.Context, arg db.CreateCh
 		return nil, fmt.Errorf("check idempotency checkout group: %w", err)
 	}
 
+	if strings.TrimSpace(arg.SalesChannel) == "" {
+		arg.SalesChannel = "MARKETPLACE"
+	}
 	row, err := q.CreateCheckoutGroup(ctx, arg)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -309,6 +312,9 @@ func (s *PostgresStore) PersistCheckoutBatch(ctx context.Context, batch Checkout
 	result := make([]OrderAggregate, 0, len(batch.Orders))
 
 	for _, rec := range batch.Orders {
+		if strings.TrimSpace(rec.Order.SalesChannel) == "" {
+			rec.Order.SalesChannel = "MARKETPLACE"
+		}
 		ord, err := q.InsertOrder(ctx, rec.Order)
 		if err != nil {
 			return nil, fmt.Errorf("insert order %s: %w", rec.Order.ID, err)
@@ -726,12 +732,13 @@ func (s *PostgresStore) UpdateGroupPaymentOnRetry(ctx context.Context, params Re
 			}
 
 			payloadBytes, mErr := json.Marshal(events.OrderConfirmedPayload{
-				OrderID:         updated.ID,
-				OrderCode:       updated.OrderCode,
-				BuyerID:         updated.BuyerID,
-				ShopID:          updated.ShopID,
-				PaymentMethod:   updated.PaymentMethod,
-				TotalPayableVND: updated.TotalPayableVND,
+				OrderID:          updated.ID,
+				OrderCode:        updated.OrderCode,
+				BuyerID:          updated.BuyerID,
+				ShopID:           updated.ShopID,
+				StorefrontShopID: updated.StorefrontShopID,
+				PaymentMethod:    updated.PaymentMethod,
+				TotalPayableVND:  updated.TotalPayableVND,
 			})
 			if mErr != nil {
 				return fmt.Errorf("marshal order.confirmed on COD switch: %w", mErr)
@@ -956,55 +963,17 @@ func (s *PostgresStore) ListOrdersByCheckoutGroup(ctx context.Context, checkoutG
 }
 
 func (s *PostgresStore) ListOrdersFiltered(ctx context.Context, buyerID, shopID, status string, limit, offset int32) ([]OrderAggregate, int64, error) {
-	total, err := s.queries.CountOrdersFiltered(ctx, db.CountOrdersFilteredParams{
+	res, err := s.ListOrdersWithFilter(ctx, OrderListFilter{
 		BuyerID: buyerID,
 		ShopID:  shopID,
 		Status:  status,
+		Limit:   limit,
+		Offset:  offset,
 	})
 	if err != nil {
 		return nil, 0, err
 	}
-
-	rows, err := s.queries.ListOrdersFiltered(ctx, db.ListOrdersFilteredParams{
-		BuyerID:    buyerID,
-		ShopID:     shopID,
-		Status:     status,
-		PageLimit:  limit,
-		PageOffset: offset,
-	})
-	if err != nil {
-		return nil, 0, err
-	}
-
-	orderIDs := make([]string, 0, len(rows))
-	for _, ord := range rows {
-		orderIDs = append(orderIDs, ord.ID)
-	}
-	retByOrder, err := loadReturnSummaries(ctx, s.queries, orderIDs)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	aggs := make([]OrderAggregate, 0, len(rows))
-	for _, ord := range rows {
-		items, err := s.queries.ListOrderItemsByOrderID(ctx, ord.ID)
-		if err != nil {
-			return nil, 0, err
-		}
-		tl, err := s.queries.ListOrderTimelineByOrderID(ctx, ord.ID)
-		if err != nil {
-			return nil, 0, err
-		}
-		ret := retByOrder[ord.ID]
-		aggs = append(aggs, OrderAggregate{
-			Order:           ord,
-			Items:           items,
-			Timeline:        tl,
-			ReturnRequestID: ret.ID,
-			ReturnStatus:    ret.Status,
-		})
-	}
-	return aggs, total, nil
+	return res.Orders, res.Total, nil
 }
 
 func (s *PostgresStore) GetOrderTimeline(ctx context.Context, orderID string) ([]db.OrderTimelineEvent, error) {
@@ -1229,22 +1198,24 @@ func (s *PostgresStore) TransitionOrdersPaymentResult(ctx context.Context, param
 		if targetStatus == orderv1.OrderStatus_ORDER_STATUS_CONFIRMED {
 			eventType = events.SubjectOrderConfirmed
 			payloadBytes, err = json.Marshal(events.OrderConfirmedPayload{
-				OrderID:         updated.ID,
-				OrderCode:       updated.OrderCode,
-				BuyerID:         updated.BuyerID,
-				ShopID:          updated.ShopID,
-				PaymentMethod:   updated.PaymentMethod,
-				TotalPayableVND: updated.TotalPayableVND,
+				OrderID:          updated.ID,
+				OrderCode:        updated.OrderCode,
+				BuyerID:          updated.BuyerID,
+				ShopID:           updated.ShopID,
+				StorefrontShopID: updated.StorefrontShopID,
+				PaymentMethod:    updated.PaymentMethod,
+				TotalPayableVND:  updated.TotalPayableVND,
 			})
 		} else {
 			eventType = events.SubjectOrderCancelled
 			payloadBytes, err = json.Marshal(events.OrderCancelledPayload{
-				OrderID:   updated.ID,
-				OrderCode: updated.OrderCode,
-				BuyerID:   updated.BuyerID,
-				ShopID:    updated.ShopID,
-				Reason:    note,
-				WasPaid:   false,
+				OrderID:          updated.ID,
+				OrderCode:        updated.OrderCode,
+				BuyerID:          updated.BuyerID,
+				ShopID:           updated.ShopID,
+				StorefrontShopID: updated.StorefrontShopID,
+				Reason:           note,
+				WasPaid:          false,
 			})
 		}
 		if err != nil {
@@ -1580,6 +1551,14 @@ func (s *PostgresStore) MarkOrderShipmentCreating(ctx context.Context, orderID s
 	curStatus := statemachine.StringToStatus(ord.Status)
 	if curStatus != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED && curStatus != orderv1.OrderStatus_ORDER_STATUS_PREPARING {
 		return "", fmt.Errorf("%w: cannot create shipment from status %s", statemachine.ErrInvalidTransition, statemachine.StatusToString(curStatus))
+	}
+	// G3: Block shipment creation while an address change intent is open on this order.
+	hasOpenChange, err := q.HasOpenOrderAddressChange(ctx, ord.ID)
+	if err != nil {
+		return "", err
+	}
+	if hasOpenChange {
+		return "", ErrAddressChangeInProgress
 	}
 	// Always refresh pending_shipment_cancel_at and rotate token on every SellerShipOrder attempt/retry.
 	token := uuid.NewString()
@@ -2481,12 +2460,13 @@ func transitionOrderToShippingInTx(
 		return db.Order{}, err
 	}
 	payloadBytes, err := json.Marshal(events.OrderShippedPayload{
-		OrderID:      updated.ID,
-		OrderCode:    updated.OrderCode,
-		BuyerID:      updated.BuyerID,
-		ShopID:       updated.ShopID,
-		CarrierCode:  updated.CarrierCode,
-		TrackingCode: updated.TrackingCode,
+		OrderID:          updated.ID,
+		OrderCode:        updated.OrderCode,
+		BuyerID:          updated.BuyerID,
+		ShopID:           updated.ShopID,
+		StorefrontShopID: updated.StorefrontShopID,
+		CarrierCode:      updated.CarrierCode,
+		TrackingCode:     updated.TrackingCode,
 	})
 	if err != nil {
 		return db.Order{}, err
@@ -2600,6 +2580,23 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 		}
 		outcome.Order = agg
 		return outcome, nil
+	}
+
+	// G3: Suppress delayed shipment.updated events for an old shipment cancelled by UpdateOrderAddress.
+	if evTracking != "" {
+		isCancelledOld, err := q.IsCancelledAddressChangeTracking(ctx, db.IsCancelledAddressChangeTrackingParams{
+			OrderID:      ord.ID,
+			TrackingCode: evTracking,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if isCancelledOld {
+			if err := tx.Commit(ctx); err != nil {
+				return nil, err
+			}
+			return outcome, nil
+		}
 	}
 
 	// P1-5: Match tracking_code when the order already has one assigned (ignore stale replaced shipments).
@@ -2788,12 +2785,13 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 				deliveredCarrier = evCarrier
 			}
 			payloadBytes, err := json.Marshal(events.OrderDeliveredPayload{
-				OrderID:      updated.ID,
-				OrderCode:    updated.OrderCode,
-				BuyerID:      updated.BuyerID,
-				ShopID:       updated.ShopID,
-				CarrierCode:  deliveredCarrier,
-				TrackingCode: updated.TrackingCode,
+				OrderID:          updated.ID,
+				OrderCode:        updated.OrderCode,
+				BuyerID:          updated.BuyerID,
+				ShopID:           updated.ShopID,
+				StorefrontShopID: updated.StorefrontShopID,
+				CarrierCode:      deliveredCarrier,
+				TrackingCode:     updated.TrackingCode,
 			})
 			if err != nil {
 				return nil, err
@@ -2880,16 +2878,17 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 			}
 			wasPaid := strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") && ord.TotalPayableVND > 0
 			payloadBytes, err := json.Marshal(events.OrderReturnedPayload{
-				OrderID:         updated.ID,
-				OrderCode:       updated.OrderCode,
-				CheckoutGroupID: updated.CheckoutGroupID,
-				BuyerID:         updated.BuyerID,
-				ShopID:          updated.ShopID,
-				PaymentMethod:   updated.PaymentMethod,
-				FromStatus:      statemachine.StatusToString(curStatus),
-				TotalPayableVND: updated.TotalPayableVND,
-				Reason:          note,
-				WasPaid:         wasPaid,
+				OrderID:          updated.ID,
+				OrderCode:        updated.OrderCode,
+				CheckoutGroupID:  updated.CheckoutGroupID,
+				BuyerID:          updated.BuyerID,
+				ShopID:           updated.ShopID,
+				StorefrontShopID: updated.StorefrontShopID,
+				PaymentMethod:    updated.PaymentMethod,
+				FromStatus:       statemachine.StatusToString(curStatus),
+				TotalPayableVND:  updated.TotalPayableVND,
+				Reason:           note,
+				WasPaid:          wasPaid,
 			})
 			if err != nil {
 				return nil, err

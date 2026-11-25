@@ -7,7 +7,13 @@ export function SellerSuspense({ children }: { children: React.ReactNode }) {
   return (
     <Suspense
       fallback={
-        <StateView kind="loading" surface="app" title="Đang tải dữ liệu gian hàng..." rows={5} />
+        <StateView
+          kind="loading"
+          surface="app"
+          skeletonVariant="table"
+          title="Đang tải dữ liệu..."
+          rows={5}
+        />
       }
     >
       {children}

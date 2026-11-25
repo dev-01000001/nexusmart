@@ -285,9 +285,10 @@ func TestUpdateStockOptimisticLockingAndHistory(t *testing.T) {
 	})
 	skuID := prod.Skus[0].Id
 	sellerCtx := ctxWithRole("seller-shop-1", "seller", "shop-1")
+	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
 
 	// Reserve 4 units first so reserved_stock == 4
-	if _, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	if _, err := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 		OrderId: "order-1",
 		Items:   []*productv1.StockReservationItem{{SkuId: skuID, Quantity: 4}},
 	}); err != nil {
@@ -349,9 +350,10 @@ func TestReserveReleaseConfirmIdempotencyAndAtomicRollback(t *testing.T) {
 	})
 	skuA := prod.Skus[0].Id
 	skuB := prod.Skus[1].Id
+	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
 
 	// 1. Atomic rollback: SKU-A has enough (5 <= 10) but SKU-B lacks stock (5 > 2) -> ENTIRE TX must roll back!
-	_, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	_, err := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 		OrderId: "order-fail",
 		Items: []*productv1.StockReservationItem{
 			{SkuId: skuA, Quantity: 5},
@@ -372,7 +374,7 @@ func TestReserveReleaseConfirmIdempotencyAndAtomicRollback(t *testing.T) {
 	}
 
 	// 2. Idempotent ReserveStock: calling twice with same order_id reserves ONCE
-	res1, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	res1, err := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 		OrderId: "order-idem-1",
 		Items: []*productv1.StockReservationItem{
 			{SkuId: skuB, Quantity: 1},
@@ -383,7 +385,7 @@ func TestReserveReleaseConfirmIdempotencyAndAtomicRollback(t *testing.T) {
 		t.Fatalf("first ReserveStock failed: resp=%+v err=%v", res1, err)
 	}
 
-	res2, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	res2, err := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 		OrderId: "order-idem-1",
 		Items: []*productv1.StockReservationItem{
 			{SkuId: skuB, Quantity: 1},
@@ -423,7 +425,7 @@ func TestReserveReleaseConfirmIdempotencyAndAtomicRollback(t *testing.T) {
 	}
 
 	// 4. ConfirmStock idempotency & out-of-stock transition
-	if _, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	if _, err := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 		OrderId: "order-confirm-1",
 		Items:   []*productv1.StockReservationItem{{SkuId: skuB, Quantity: 2}},
 	}); err != nil {
@@ -459,6 +461,7 @@ func TestReserveStockConcurrentNoOversellAndRetry(t *testing.T) {
 		{SkuCode: "HOT-1", Name: "Limited Edition", PriceVnd: 500000, Stock: 10, WeightGrams: 500},
 	})
 	skuID := prod.Skus[0].Id
+	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
 
 	// Test 1: Deterministic optimistic-lock conflict retry using BeforeReserveWrite hook
 	var hookTriggered atomic.Int32
@@ -468,7 +471,7 @@ func TestReserveStockConcurrentNoOversellAndRetry(t *testing.T) {
 			_, _ = st.UpdateSKUStockOptimistic(context.Background(), skuID, 10, 1)
 		}
 	}
-	res, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	res, err := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 		OrderId: "order-retry-check",
 		Items:   []*productv1.StockReservationItem{{SkuId: skuID, Quantity: 2}},
 	})
@@ -502,7 +505,7 @@ func TestReserveStockConcurrentNoOversellAndRetry(t *testing.T) {
 		go func(oid string) {
 			defer wg.Done()
 			<-startCh
-			_, callErr := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+			_, callErr := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 				OrderId: oid,
 				Items:   []*productv1.StockReservationItem{{SkuId: skuID, Quantity: 1}},
 			})
@@ -539,7 +542,7 @@ func TestReserveStockConcurrentNoOversellAndRetry(t *testing.T) {
 		go func() {
 			defer wg2.Done()
 			<-start2
-			_, callErr := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+			_, callErr := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 				OrderId: "same-order-race",
 				Items:   []*productv1.StockReservationItem{{SkuId: sku2, Quantity: 3}},
 			})
@@ -804,7 +807,8 @@ func TestProductUpdateRejectAndOutOfStockTransitions(t *testing.T) {
 
 	// Reserve & Confirm all stock of BOTH SKUs -> product transitions to OUT_OF_STOCK
 	sku2ID := approved.Product.Skus[1].Id
-	if _, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	buyerCtx := ctxWithRole("buyer-1", "buyer", "")
+	if _, err := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 		OrderId: "ord-drain-all",
 		Items: []*productv1.StockReservationItem{
 			{SkuId: skuID, Quantity: 2},
@@ -1011,7 +1015,7 @@ func TestRestockOrderItems_IdempotentAuthAndOutOfStockRecovery(t *testing.T) {
 	skuB := prod.Skus[1].Id
 
 	// Drain all stock -> both SKUs and product become OUT_OF_STOCK.
-	if _, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	if _, err := srv.ReserveStock(ctxWithRole("buyer-rst", "buyer", ""), &productv1.ReserveStockRequest{
 		OrderId: "grp-drain",
 		Items: []*productv1.StockReservationItem{
 			{SkuId: skuA, Quantity: 3},

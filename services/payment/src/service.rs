@@ -18,18 +18,20 @@ use crate::domain::{
     decide_zalopay_window_exhausted, find_cod_carrier_mismatch, format_seller_ledger_description,
     format_settlement_note_with_masked_account, is_online_method,
     is_payment_already_cancelled_terminal, late_payment_refund_key, normalize_cod_carrier_code,
-    order_cancel_refund_key, order_expiry_candidate_indices, plan_initial_payment,
-    reconciliation_overpay_key, reconciliation_provider_matches_method, reconciliation_refund_key,
-    resolve_cod_payment_status, select_payment_for_group_action,
-    should_require_large_refund_approval, utc_to_vn_date, validate_allocations_sum,
-    validate_cod_reconciliation_rows, validate_group_can_create_payment,
-    validate_payment_idempotency_match, validate_payment_method_eligibility,
-    validate_reconciliation_provider_tx_accountable, validate_refund_bank_account,
-    validate_refund_eligibility, validate_refund_idempotency_match,
+    order_cancel_refund_key, order_expiry_candidate_indices, plan_cod_shipping_fee_adjustment,
+    plan_initial_payment, reconciliation_channel_matches, reconciliation_overpay_key,
+    reconciliation_provider_matches_method, reconciliation_refund_key, resolve_cod_payment_status,
+    select_payment_for_group_action, should_require_large_refund_approval, utc_to_vn_date,
+    validate_adjust_cod_shipping_fee_input, validate_allocations_sum,
+    validate_cod_fee_adjustment_replay, validate_cod_reconciliation_rows,
+    validate_group_can_create_payment, validate_payment_idempotency_match,
+    validate_payment_method_eligibility, validate_reconciliation_provider_tx_accountable,
+    validate_refund_bank_account, validate_refund_eligibility, validate_refund_idempotency_match,
     validate_resolve_reconciliation_idempotency_match, validate_set_fee_config,
     validate_settle_refund_idempotency_match, validate_suborder_refund_cap,
     validate_supersede_previous_payments, validate_update_payment_method_config, vn_day_utc_bounds,
-    vn_today, zalopay_late_sweep_backoff, AssignAmountSplit, CodAllocationMatchDecision,
+    vn_today, zalopay_late_sweep_backoff, AdjustCodShippingFeeInput, AdjustCodShippingFeeOutput,
+    AssignAmountSplit, ChannelAttribution, CodAllocationMatchDecision, CodFeeAdjustmentRecord,
     CodReconciliationRowInput, CreatePaymentInput, CreateRefundInput, CreateRefundOutput,
     DecideRefundApprovalInput, GetFeeConfigFilter, GetFeeConfigResult, GroupPaymentSelection,
     ImportCodReconciliationInput, ListReconciliationQueueResult, ListReconciliationRunsFilter,
@@ -38,10 +40,10 @@ use crate::domain::{
     PaymentRecord, PaymentSseEvent, PaymentWithAllocations, ProviderTxAccountingState,
     ReconciliationActionKind, ReconciliationDecision, ReconciliationItemRecord,
     ReconciliationQueueItem, ReconciliationReport, ReconciliationRunRecord, RefundRecord,
-    ResolveReconciliationInput, ResolveReconciliationOutput, ReturnAllocationAction,
+    ResolveReconciliationInput, ResolveReconciliationOutput, ReturnAllocationAction, SalesChannel,
     SellerLedgerAccountFilter, SellerLedgerEntryRecord, SellerPayoutRecord, SetFeeConfigInput,
     SettleRefundInput, SettleRefundOutput, ShopAllocationRecord, SubmitRefundBankAccountInput,
-    UpdatePaymentMethodConfigInput, ZaloPayWindowExhaustedDecision,
+    UpdatePaymentMethodConfigInput, ZaloPayWindowExhaustedDecision, ERR_COD_ALREADY_COLLECTED,
     PROVIDER_FINAL_STATUS_AMOUNT_MISMATCH, PROVIDER_FINAL_STATUS_LATE_REFUND_QUEUED,
     PROVIDER_FINAL_STATUS_MANUAL_REVIEW, PROVIDER_FINAL_STATUS_NOT_PAID,
     PROVIDER_FINAL_STATUS_PAID_CONFIRMED, REFUND_PROVIDER_STATUS_FAILED,
@@ -53,7 +55,8 @@ use crate::ledger::{
     self, build_cod_collect_tx, build_cod_reconcile_tx, build_escrow_release_tx,
     build_escrow_settle_tx, build_late_payment_refund_tx, build_post_settlement_refund_tx,
     build_reconciliation_refund_tx, build_refund_settle_tx, build_refund_tx,
-    build_seller_payout_tx, build_vietqr_confirm_tx, LedgerSummary, SellerBalance,
+    build_seller_payout_tx, build_vietqr_confirm_tx, build_zalopay_confirm_tx, LedgerSummary,
+    SellerBalance,
 };
 use crate::metrics::Metrics;
 use crate::telemetry::{mask_bank_account, mask_secret};
@@ -511,6 +514,9 @@ impl PaymentService {
 
         // Validate R1 money model: amount_vnd >= 0 and sum(R + Ship - D) == amount_vnd
         validate_allocations_sum(input.amount_vnd, &input.shop_allocations)?;
+        let channel =
+            ChannelAttribution::from_parts(&input.sales_channel, &input.storefront_shop_id)?;
+        channel.validate_allocations(&input.shop_allocations)?;
         let initial_plan = plan_initial_payment(input.method, input.amount_vnd)?;
 
         // Fast idempotency check before external VietQR call (P0-2: verify caller & params match)
@@ -530,6 +536,16 @@ impl PaymentService {
                         input.amount_vnd,
                         input.method,
                     )?;
+                    if ChannelAttribution::from_db(
+                        &existing.sales_channel,
+                        &existing.storefront_shop_id,
+                    ) != channel
+                    {
+                        return Err(PaymentError::Conflict(
+                            "idempotency_key already used with different payment parameters"
+                                .to_string(),
+                        ));
+                    }
                     let allocations = fetch_allocations_pool(&self.pool, existing.id).await?;
                     return Ok(PaymentWithAllocations {
                         payment: existing,
@@ -682,6 +698,16 @@ impl PaymentService {
                         input.amount_vnd,
                         input.method,
                     )?;
+                    if ChannelAttribution::from_db(
+                        &existing.sales_channel,
+                        &existing.storefront_shop_id,
+                    ) != channel
+                    {
+                        return Err(PaymentError::Conflict(
+                            "idempotency_key already used with different payment parameters"
+                                .to_string(),
+                        ));
+                    }
                     let allocations = fetch_allocations_tx(&mut tx, existing.id).await?;
                     tx.commit().await?;
                     return Ok(PaymentWithAllocations {
@@ -721,6 +747,15 @@ impl PaymentService {
             .map(|p| p.status.as_str())
             .collect();
         validate_group_can_create_payment(&existing_statuses, input.supersede_previous)?;
+
+        // Enforce immutability of sales_channel & storefront_shop_id across payment retries/supersedes.
+        if existing_group_payments.iter().any(|p| {
+            ChannelAttribution::from_db(&p.sales_channel, &p.storefront_shop_id) != channel
+        }) {
+            return Err(PaymentError::Validation(format!(
+                "sales_channel and storefront_shop_id are immutable for order {order_id}"
+            )));
+        }
 
         // F5 / p4 Item K: Defense-in-depth guards for `supersede_previous = true`:
         // old payment must be online, same `amount_vnd`, zero held/settled/refunded allocations,
@@ -804,9 +839,10 @@ impl PaymentService {
             INSERT INTO payments (
                 id, order_group_id, order_id, user_id, method, provider,
                 amount_vnd, status, provider_order_code, qr_code, qr_url, pay_url,
-                idempotency_key, expires_at, paid_at, trace_id
+                idempotency_key, expires_at, paid_at, trace_id,
+                sales_channel, storefront_shop_id
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
             RETURNING *
             "#,
         )
@@ -831,6 +867,8 @@ impl PaymentService {
         .bind(expires_at)
         .bind(paid_at)
         .bind(&input.trace_id)
+        .bind(channel.sales_channel.as_str())
+        .bind(&channel.storefront_shop_id)
         .fetch_one(&mut *tx)
         .await;
 
@@ -861,6 +899,16 @@ impl PaymentService {
                                 input.amount_vnd,
                                 input.method,
                             )?;
+                            if ChannelAttribution::from_db(
+                                &existing.sales_channel,
+                                &existing.storefront_shop_id,
+                            ) != channel
+                            {
+                                return Err(PaymentError::Conflict(
+                                    "idempotency_key already used with different payment parameters"
+                                        .to_string(),
+                                ));
+                            }
                             let allocations =
                                 fetch_allocations_pool(&self.pool, existing.id).await?;
                             return Ok(PaymentWithAllocations {
@@ -893,9 +941,10 @@ impl PaymentService {
                 r#"
                 INSERT INTO payment_shop_allocations (
                     payment_id, order_id, shop_id, subtotal_vnd, commission_vnd,
-                    shipping_fee_vnd, platform_discount_vnd, escrow_status
+                    shipping_fee_vnd, platform_discount_vnd, escrow_status,
+                    sales_channel, storefront_shop_id
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 RETURNING *
                 "#,
             )
@@ -907,6 +956,8 @@ impl PaymentService {
             .bind(alloc.shipping_fee_vnd)
             .bind(alloc.platform_discount_vnd)
             .bind(initial_plan.initial_escrow_status)
+            .bind(channel.sales_channel.as_str())
+            .bind(&channel.storefront_shop_id)
             .fetch_one(&mut *tx)
             .await?;
             allocations.push(rec);
@@ -933,6 +984,222 @@ impl PaymentService {
         Ok(PaymentWithAllocations {
             payment,
             allocations,
+        })
+    }
+
+    /// Adjusts `shipping_fee_vnd` (increase or decrease) on a single sub-order's uncollected COD
+    /// allocation (`payment.method == "COD"`, `payment.status == "pending"`,
+    /// `allocation.escrow_status == "awaiting_collection"`) and recomputes parent `payments.amount_vnd`
+    /// over all non-cancelled allocations in a single ACID transaction with zero ledger postings (G2).
+    pub async fn adjust_cod_shipping_fee(
+        &self,
+        input: AdjustCodShippingFeeInput,
+    ) -> Result<AdjustCodShippingFeeOutput> {
+        let (order_id, idempotency_key) = validate_adjust_cod_shipping_fee_input(
+            &input.order_id,
+            &input.idempotency_key,
+            input.new_shipping_fee_vnd,
+        )?;
+
+        let mut tx = self.pool.begin().await?;
+
+        if let Some(existing) = fetch_cod_fee_adjustment_by_key_tx(&mut tx, idempotency_key).await?
+        {
+            let out = build_cod_adjustment_replay_tx(
+                &mut tx,
+                &existing,
+                order_id,
+                input.new_shipping_fee_vnd,
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(out);
+        }
+
+        let group_keys: Option<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT p.order_id, p.order_group_id
+            FROM payments p
+            LEFT JOIN payment_shop_allocations a ON a.payment_id = p.id
+            WHERE a.order_id = $1 OR p.order_id = $1
+            ORDER BY
+                CASE p.status
+                    WHEN 'succeeded' THEN 1
+                    WHEN 'pending' THEN 2
+                    ELSE 3
+                END,
+                p.created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(order_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let Some((pay_order_id, pay_group_id)) = group_keys else {
+            return Err(PaymentError::NotFound(format!(
+                "payment not found for order {order_id}"
+            )));
+        };
+
+        // Lock checkout payment group in deterministic `ORDER BY id ASC FOR UPDATE` order
+        // (matching `collect_cod_order_allocations_tx` / `order.delivered` to prevent deadlocks).
+        let mut group = lock_payment_group_tx(&mut tx, &pay_order_id, &pay_group_id).await?;
+        if select_payment_for_group_action(&group) == GroupPaymentSelection::AllSupersededRetry {
+            group = lock_payment_group_tx(&mut tx, &pay_order_id, &pay_group_id).await?;
+        }
+        let payment = match select_payment_for_group_action(&group) {
+            GroupPaymentSelection::Found(idx) => group.swap_remove(idx),
+            GroupPaymentSelection::Empty => {
+                return Err(PaymentError::NotFound(format!(
+                    "payment not found for order {order_id}"
+                )));
+            }
+            GroupPaymentSelection::AllSupersededRetry => {
+                return Err(PaymentError::FailedPrecondition(format!(
+                    "{ERR_COD_ALREADY_COLLECTED}: payment was superseded"
+                )));
+            }
+        };
+
+        // Re-check idempotency after acquiring the payment row lock so concurrent duplicate calls
+        // serialize cleanly into `already_applied = true` even if `order.delivered` followed.
+        if let Some(existing) = fetch_cod_fee_adjustment_by_key_tx(&mut tx, idempotency_key).await?
+        {
+            let out = build_cod_adjustment_replay_tx(
+                &mut tx,
+                &existing,
+                order_id,
+                input.new_shipping_fee_vnd,
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(out);
+        }
+
+        let locked_allocs = sqlx::query_as::<_, ShopAllocationRecord>(
+            r#"
+            SELECT * FROM payment_shop_allocations
+            WHERE payment_id = $1
+            ORDER BY id ASC
+            FOR UPDATE
+            "#,
+        )
+        .bind(payment.id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let plan = plan_cod_shipping_fee_adjustment(
+            &payment,
+            &locked_allocs,
+            order_id,
+            input.new_shipping_fee_vnd,
+        )?;
+
+        sqlx::query(
+            r#"
+            UPDATE payment_shop_allocations
+            SET shipping_fee_vnd = $1
+            WHERE id = $2
+            "#,
+        )
+        .bind(plan.new_shipping_fee_vnd)
+        .bind(plan.allocation_id)
+        .execute(&mut *tx)
+        .await?;
+
+        let updated_payment = sqlx::query_as::<_, PaymentRecord>(
+            r#"
+            UPDATE payments
+            SET amount_vnd = $1, updated_at = NOW()
+            WHERE id = $2
+            RETURNING *
+            "#,
+        )
+        .bind(plan.new_payment_amount_vnd)
+        .bind(payment.id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let adj_insert = sqlx::query(
+            r#"
+            INSERT INTO cod_fee_adjustments (
+                idempotency_key, payment_id, order_id,
+                old_shipping_fee_vnd, new_shipping_fee_vnd, new_order_payable_vnd
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+        )
+        .bind(idempotency_key)
+        .bind(payment.id)
+        .bind(order_id)
+        .bind(plan.old_shipping_fee_vnd)
+        .bind(plan.new_shipping_fee_vnd)
+        .bind(plan.new_order_payable_vnd)
+        .execute(&mut *tx)
+        .await;
+
+        if let Err(err) = adj_insert {
+            if is_unique_violation(&err, "idempotency_key") {
+                let _ = tx.rollback().await;
+                if let Some(existing) = sqlx::query_as::<_, CodFeeAdjustmentRecord>(
+                    "SELECT * FROM cod_fee_adjustments WHERE idempotency_key = $1",
+                )
+                .bind(idempotency_key)
+                .fetch_optional(&self.pool)
+                .await?
+                {
+                    validate_cod_fee_adjustment_replay(
+                        &existing,
+                        order_id,
+                        input.new_shipping_fee_vnd,
+                    )?;
+                    let replay_payment =
+                        sqlx::query_as::<_, PaymentRecord>("SELECT * FROM payments WHERE id = $1")
+                            .bind(existing.payment_id)
+                            .fetch_one(&self.pool)
+                            .await?;
+                    let replay_allocs =
+                        fetch_allocations_pool(&self.pool, replay_payment.id).await?;
+                    return Ok(AdjustCodShippingFeeOutput {
+                        payment: PaymentWithAllocations {
+                            payment: replay_payment,
+                            allocations: replay_allocs,
+                        },
+                        old_shipping_fee_vnd: existing.old_shipping_fee_vnd,
+                        new_shipping_fee_vnd: existing.new_shipping_fee_vnd,
+                        new_order_payable_vnd: existing.new_order_payable_vnd,
+                        already_applied: true,
+                    });
+                }
+            }
+            return Err(PaymentError::Database(err));
+        }
+
+        let allocations = fetch_allocations_tx(&mut tx, updated_payment.id).await?;
+        tx.commit().await?;
+        self.emit_sse(&updated_payment);
+
+        info!(
+            trace_id = %input.trace_id,
+            payment_id = %updated_payment.id,
+            order_id = %order_id,
+            old_shipping_fee_vnd = plan.old_shipping_fee_vnd,
+            new_shipping_fee_vnd = plan.new_shipping_fee_vnd,
+            new_order_payable_vnd = plan.new_order_payable_vnd,
+            new_payment_amount_vnd = updated_payment.amount_vnd,
+            "adjusted uncollected COD shipping fee (0 ledger postings)"
+        );
+
+        Ok(AdjustCodShippingFeeOutput {
+            payment: PaymentWithAllocations {
+                payment: updated_payment,
+                allocations,
+            },
+            old_shipping_fee_vnd: plan.old_shipping_fee_vnd,
+            new_shipping_fee_vnd: plan.new_shipping_fee_vnd,
+            new_order_payable_vnd: plan.new_order_payable_vnd,
+            already_applied: false,
         })
     }
 
@@ -1374,6 +1641,8 @@ impl PaymentService {
                 "order_id": updated.order_id,
                 "user_id": updated.user_id,
                 "reason": effective_reason,
+                "sales_channel": updated.sales_channel,
+                "storefront_shop_id": updated.storefront_shop_id,
             }),
         )
         .await?;
@@ -1735,6 +2004,8 @@ impl PaymentService {
                             "order_id": row.order_id,
                             "user_id": row.user_id,
                             "reason": payload.status,
+                            "sales_channel": row.sales_channel,
+                            "storefront_shop_id": row.storefront_shop_id,
                         }),
                     )
                     .await?;
@@ -1887,6 +2158,9 @@ impl PaymentService {
         req: ZaloPayCallbackRequest,
         trace_id: &str,
     ) -> Result<ZaloPayCallbackOutcome> {
+        // Production safety guard: refuse mock mode or placeholder key2 in production.
+        self.zalopay.ensure_callback_usable()?;
+
         // Step 1: Constant-time MAC verification FIRST (0 DB reads/writes on failure).
         if verify_callback(&req.data, &req.mac, self.zalopay.effective_key2()).is_err() {
             self.metrics.record_webhook("zalopay_rejected_signature");
@@ -2744,6 +3018,7 @@ impl PaymentService {
         // D10 (N11): Determine `is_post_settlement` inside the SAME transaction where `allocations`
         // are locked `FOR UPDATE`, matching the exact ledger path posted below.
         let is_post_settlement = post_settlement_clawback.is_some();
+        let channel = resolve_refund_channel_tx(&mut tx, &payment, &order_id).await?;
 
         let draft = if let Some((shop_id, from_pending, from_available)) = post_settlement_clawback
         {
@@ -2754,9 +3029,16 @@ impl PaymentService {
                 from_pending,
                 from_available,
                 &refund.reason,
+                channel,
             )?
         } else {
-            build_refund_tx(refund.id, payment.id, refund.amount_vnd, &refund.reason)
+            build_refund_tx(
+                refund.id,
+                payment.id,
+                refund.amount_vnd,
+                &refund.reason,
+                channel,
+            )
         };
         if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
             self.metrics.record_ledger_tx("refund");
@@ -2952,6 +3234,8 @@ impl PaymentService {
                     "reason": reject_reason,
                     "rejected_by": checker,
                     "idempotency_key": rejected.idempotency_key,
+                    "sales_channel": payment.sales_channel,
+                    "storefront_shop_id": payment.storefront_shop_id,
                 }),
             )
             .await?;
@@ -3113,6 +3397,7 @@ impl PaymentService {
         })?;
 
         let is_post_settlement = post_settlement_clawback.is_some();
+        let channel = resolve_refund_channel_tx(&mut tx, &payment, &approved.order_id).await?;
         let draft = if let Some((shop_id, from_pending, from_available)) = post_settlement_clawback
         {
             build_post_settlement_refund_tx(
@@ -3122,6 +3407,7 @@ impl PaymentService {
                 from_pending,
                 from_available,
                 &approved.reason,
+                channel,
             )?
         } else {
             build_refund_tx(
@@ -3129,6 +3415,7 @@ impl PaymentService {
                 payment.id,
                 approved.amount_vnd,
                 &approved.reason,
+                channel,
             )
         };
         if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
@@ -3240,7 +3527,9 @@ impl PaymentService {
             SELECT r.id, r.payment_id, r.order_id, r.amount_vnd, r.reason, r.idempotency_key,
                    r.provider_m_refund_id, r.provider_status, r.provider_dispatch_attempted,
                    p.provider_tx_id, p.order_id AS payment_order_id,
-                   p.order_group_id AS payment_order_group_id, p.user_id AS payment_user_id
+                   p.order_group_id AS payment_order_group_id, p.user_id AS payment_user_id,
+                   p.sales_channel AS payment_sales_channel,
+                   p.storefront_shop_id AS payment_storefront_shop_id
             FROM refunds r
             JOIN payments p ON p.id = r.payment_id
             WHERE r.id = $1
@@ -3349,7 +3638,9 @@ impl PaymentService {
             SELECT r.id, r.payment_id, r.order_id, r.amount_vnd, r.reason, r.idempotency_key,
                    r.provider_m_refund_id, r.provider_status, r.provider_dispatch_attempted,
                    p.provider_tx_id, p.order_id AS payment_order_id,
-                   p.order_group_id AS payment_order_group_id, p.user_id AS payment_user_id
+                   p.order_group_id AS payment_order_group_id, p.user_id AS payment_user_id,
+                   p.sales_channel AS payment_sales_channel,
+                   p.storefront_shop_id AS payment_storefront_shop_id
             FROM refunds r
             JOIN payments p ON p.id = r.payment_id
             WHERE r.status = 'pending'
@@ -3776,7 +4067,11 @@ impl PaymentService {
             return Ok(());
         };
 
-        let draft = build_refund_settle_tx(updated.id, updated.amount_vnd);
+        let channel = ChannelAttribution::from_db(
+            &row.payment_sales_channel,
+            &row.payment_storefront_shop_id,
+        );
+        let draft = build_refund_settle_tx(updated.id, updated.amount_vnd, channel);
         if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
             self.metrics.record_ledger_tx("refund_settle");
         }
@@ -3792,6 +4087,8 @@ impl PaymentService {
                 "order_id": updated.order_id,
                 "user_id": row.payment_user_id,
                 "amount_vnd": updated.amount_vnd,
+                "sales_channel": row.payment_sales_channel,
+                "storefront_shop_id": row.payment_storefront_shop_id,
             }),
         )
         .await?;
@@ -4101,9 +4398,10 @@ impl PaymentService {
         // D9-bis point 9: lock the parent payment's checkout group (`payments ORDER BY id ASC`)
         // BEFORE locking the refund row so `payment.refund_settled` is strictly serialized with
         // `payment.refunded` / `payment.succeeded` on the same `order_group_id` without AB-BA deadlock.
-        let refund_payment_meta: (Uuid, String, String, String) = sqlx::query_as(
+        let refund_payment_meta: (Uuid, String, String, String, String, String) = sqlx::query_as(
             r#"
-            SELECT p.id, p.order_id, p.order_group_id, p.user_id
+            SELECT p.id, p.order_id, p.order_group_id, p.user_id,
+                   p.sales_channel, p.storefront_shop_id
             FROM refunds r
             JOIN payments p ON p.id = r.payment_id
             WHERE r.id = $1
@@ -4114,7 +4412,14 @@ impl PaymentService {
         .await?
         .ok_or_else(|| PaymentError::NotFound("refund not found".to_string()))?;
 
-        let (_, pay_order_id, pay_group_id, payment_user_id) = refund_payment_meta;
+        let (
+            _,
+            pay_order_id,
+            pay_group_id,
+            payment_user_id,
+            pay_sales_channel,
+            pay_storefront_shop_id,
+        ) = refund_payment_meta;
         let _locked_group = lock_payment_group_tx(&mut tx, &pay_order_id, &pay_group_id).await?;
 
         let refund =
@@ -4223,7 +4528,8 @@ impl PaymentService {
             Err(err) => return Err(PaymentError::Database(err)),
         };
 
-        let draft = build_refund_settle_tx(updated.id, updated.amount_vnd);
+        let channel = ChannelAttribution::from_db(&pay_sales_channel, &pay_storefront_shop_id);
+        let draft = build_refund_settle_tx(updated.id, updated.amount_vnd, channel);
         if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
             self.metrics.record_ledger_tx("refund_settle");
         }
@@ -4239,6 +4545,8 @@ impl PaymentService {
                 "order_id": updated.order_id,
                 "user_id": payment_user_id,
                 "amount_vnd": updated.amount_vnd,
+                "sales_channel": pay_sales_channel,
+                "storefront_shop_id": pay_storefront_shop_id,
             }),
         )
         .await?;
@@ -4620,7 +4928,12 @@ impl PaymentService {
         .fetch_one(&mut *tx)
         .await?;
 
-        let draft = build_seller_payout_tx(payout.id, shop_id, amount_vnd)?;
+        let draft = build_seller_payout_tx(
+            payout.id,
+            shop_id,
+            amount_vnd,
+            ChannelAttribution::marketplace(),
+        )?;
         if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
             self.metrics.record_ledger_tx("payout");
         }
@@ -4629,8 +4942,11 @@ impl PaymentService {
         Ok(payout)
     }
 
-    pub async fn get_ledger_summary(&self) -> Result<LedgerSummary> {
-        ledger::get_ledger_summary(&self.pool).await
+    pub async fn get_ledger_summary(
+        &self,
+        channel_filter: Option<SalesChannel>,
+    ) -> Result<LedgerSummary> {
+        ledger::get_ledger_summary(&self.pool, channel_filter).await
     }
 
     pub async fn get_seller_balance(&self, shop_id: &str) -> Result<SellerBalance> {
@@ -5220,6 +5536,10 @@ impl PaymentService {
                         } else {
                             format!("reconciliation_overpayment: {note}")
                         };
+                        let channel = ChannelAttribution::from_db(
+                            &locked.sales_channel,
+                            &locked.storefront_shop_id,
+                        );
                         let draft = build_reconciliation_refund_tx(
                             &rf_key,
                             &item.provider_tx_id,
@@ -5228,6 +5548,7 @@ impl PaymentService {
                                 "Overpayment excess {excess_vnd} VND for provider_tx_id {}",
                                 item.provider_tx_id
                             ),
+                            channel,
                         );
                         if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
                             self.metrics.record_ledger_tx("reconciliation_refund");
@@ -5331,6 +5652,10 @@ impl PaymentService {
                 } else {
                     note.to_string()
                 };
+                let channel = ChannelAttribution::from_db(
+                    &target_payment.sales_channel,
+                    &target_payment.storefront_shop_id,
+                );
                 let draft = build_reconciliation_refund_tx(
                     &rf_key,
                     &item.provider_tx_id,
@@ -5339,6 +5664,7 @@ impl PaymentService {
                         "Mismatched transfer {} booked to refund_payable via reconciliation item {}",
                         item.provider_tx_id, item.id
                     ),
+                    channel,
                 );
                 if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
                     self.metrics.record_ledger_tx("reconciliation_refund");
@@ -5864,6 +6190,8 @@ impl PaymentService {
                         "order_id": updated.order_id,
                         "user_id": updated.user_id,
                         "reason": "payment_timeout_expired",
+                        "sales_channel": updated.sales_channel,
+                        "storefront_shop_id": updated.storefront_shop_id,
                     }),
                 )
                 .await?;
@@ -6383,7 +6711,13 @@ impl PaymentService {
     /// - In `VietQrMode::Mock`, reads recorded provider transactions from `webhook_events` in Postgres (bounded by `received_at`).
     /// - On ANY error after creating the `reconciliation_runs` row, transitions `status = 'failed'` (P1-1).
     /// - Processes each matched provider transaction in its own short advisory-locked + group-locked transaction (P0-1 / P2-5).
-    pub async fn run_reconciliation(&self, run_date: NaiveDate) -> Result<ReconciliationReport> {
+    /// - Supports optional `channel_filter` (`MARKETPLACE` | `STOREFRONT`): channel-scoped runs inspect all local
+    ///   VietQR payments so the other channel's provider transfers are skipped rather than misclassified as `missing_local`.
+    pub async fn run_reconciliation(
+        &self,
+        run_date: NaiveDate,
+        channel_filter: Option<SalesChannel>,
+    ) -> Result<ReconciliationReport> {
         let today_vn = vn_today(Utc::now());
         if run_date > today_vn {
             return Err(PaymentError::Validation(format!(
@@ -6392,20 +6726,22 @@ impl PaymentService {
         }
 
         let provider_name = self.vietqr.mode().as_str().to_string();
+        let filter_str = channel_filter.map(SalesChannel::as_str).unwrap_or("");
         let run_id: Uuid = sqlx::query_scalar(
             r#"
-            INSERT INTO reconciliation_runs (provider, run_date, status, run_type)
-            VALUES ($1, $2, 'running', 'vietqr')
+            INSERT INTO reconciliation_runs (provider, run_date, status, run_type, sales_channel)
+            VALUES ($1, $2, 'running', 'vietqr', $3)
             RETURNING id
             "#,
         )
         .bind(&provider_name)
         .bind(run_date)
+        .bind(filter_str)
         .fetch_one(&self.pool)
         .await?;
 
         match self
-            .execute_reconciliation_run(run_id, &provider_name, run_date)
+            .execute_reconciliation_run(run_id, &provider_name, run_date, channel_filter)
             .await
         {
             Ok(report) => Ok(report),
@@ -6433,6 +6769,7 @@ impl PaymentService {
         run_id: Uuid,
         provider_name: &str,
         run_date: NaiveDate,
+        channel_filter: Option<SalesChannel>,
     ) -> Result<ReconciliationReport> {
         let provider_txs: Vec<ProviderTransaction> = match self.vietqr.mode() {
             VietQrMode::Mock => {
@@ -6543,6 +6880,15 @@ impl PaymentService {
         let mut items = Vec::new();
 
         for (ptx, local_opt) in ordered_txs {
+            if let Some(local) = local_opt {
+                if !reconciliation_channel_matches(&local.sales_channel, channel_filter) {
+                    continue;
+                }
+            } else if channel_filter.is_some() {
+                // Provider-only transactions have no local channel; report only on unfiltered runs.
+                continue;
+            }
+
             let mut tx = self.pool.begin().await?;
             // P0-1: Serialize per provider_tx_id BEFORE acquiring payment group locks.
             lock_provider_tx_xact(&mut tx, &ptx.provider_tx_id).await?;
@@ -6563,6 +6909,8 @@ impl PaymentService {
                                 None,
                                 Some(ptx.amount_vnd),
                                 "already accounted for via manual reconciliation or refund",
+                                "",
+                                "",
                             )
                             .await?,
                         );
@@ -6578,6 +6926,8 @@ impl PaymentService {
                                 None,
                                 Some(ptx.amount_vnd),
                                 "present in provider feed but missing in local payments",
+                                "",
+                                "",
                             )
                             .await?,
                         );
@@ -6616,6 +6966,10 @@ impl PaymentService {
                         .find(|p| p.id == local.id)
                         .cloned()
                         .unwrap_or_else(|| local.clone());
+                    let local_ch = ChannelAttribution::from_db(
+                        &current.sales_channel,
+                        &current.storefront_shop_id,
+                    );
 
                     // P0-1 & P2-2: If this provider_tx_id is ALREADY accounted for (recorded on a
                     // payment, finalized assigned/refunded in reconciliation_queue, or refunded
@@ -6648,6 +7002,8 @@ impl PaymentService {
                                 Some(current.amount_vnd),
                                 Some(ptx.amount_vnd),
                                 detail,
+                                local_ch.sales_channel.as_str(),
+                                &local_ch.storefront_shop_id,
                             )
                             .await?,
                         );
@@ -6694,6 +7050,8 @@ impl PaymentService {
                                     Some(current.amount_vnd),
                                     Some(ptx.amount_vnd),
                                     "amount mismatch between local payment and provider",
+                                    local_ch.sales_channel.as_str(),
+                                    &local_ch.storefront_shop_id,
                                 )
                                 .await?,
                             );
@@ -6738,6 +7096,8 @@ impl PaymentService {
                                     Some(current.amount_vnd),
                                     Some(ptx.amount_vnd),
                                     "auto-healed missing webhook callback",
+                                    local_ch.sales_channel.as_str(),
+                                    &local_ch.storefront_shop_id,
                                 )
                                 .await?,
                             );
@@ -6774,6 +7134,8 @@ impl PaymentService {
                                     Some(current.amount_vnd),
                                     Some(ptx.amount_vnd),
                                     "late, duplicate, or terminal unpaid payment in provider feed; queued automatic late_payment refund",
+                                    local_ch.sales_channel.as_str(),
+                                    &local_ch.storefront_shop_id,
                                 )
                                 .await?,
                             );
@@ -6790,6 +7152,8 @@ impl PaymentService {
                                     Some(current.amount_vnd),
                                     Some(ptx.amount_vnd),
                                     "matched",
+                                    local_ch.sales_channel.as_str(),
+                                    &local_ch.storefront_shop_id,
                                 )
                                 .await?,
                             );
@@ -6806,7 +7170,12 @@ impl PaymentService {
 
         let mut tx = self.pool.begin().await?;
         for local in &local_paid_payments {
+            if !reconciliation_channel_matches(&local.sales_channel, channel_filter) {
+                continue;
+            }
             if !matched_payment_ids.contains(&local.id) {
+                let local_ch =
+                    ChannelAttribution::from_db(&local.sales_channel, &local.storefront_shop_id);
                 missing_provider_count += 1;
                 items.push(
                     insert_reconciliation_item(
@@ -6818,6 +7187,8 @@ impl PaymentService {
                         Some(local.amount_vnd),
                         None,
                         "local succeeded/refunded payment absent from provider report",
+                        local_ch.sales_channel.as_str(),
+                        &local_ch.storefront_shop_id,
                     )
                     .await?,
                 );
@@ -7116,6 +7487,8 @@ impl PaymentService {
                             row.tracking_code.trim(),
                             row.order_code.trim(),
                             line_number,
+                            "",
+                            "",
                         )
                         .await
                         {
@@ -7264,6 +7637,8 @@ impl PaymentService {
                 "",
                 order_code,
                 line_number,
+                "",
+                "",
             )
             .await?;
             tx.commit().await?;
@@ -7340,6 +7715,8 @@ impl PaymentService {
                 tracking_code,
                 order_code,
                 line_number,
+                "",
+                "",
             )
             .await?;
             tx.commit().await?;
@@ -7358,6 +7735,8 @@ impl PaymentService {
         }
         let primary_payment_id = allocs[0].payment_id;
         let primary_order_id = allocs[0].order_id.clone();
+        let primary_ch =
+            ChannelAttribution::from_db(&allocs[0].sales_channel, &allocs[0].storefront_shop_id);
 
         // Reject carrier mismatch when the allocation already records a non-empty `carrier_code`
         // differing from the uploaded file's carrier (applies to both tracking_code and order_code).
@@ -7392,6 +7771,8 @@ impl PaymentService {
                 tracking_code,
                 &primary_order_id,
                 line_number,
+                primary_ch.sales_channel.as_str(),
+                &primary_ch.storefront_shop_id,
             )
             .await?;
             tx.commit().await?;
@@ -7444,6 +7825,8 @@ impl PaymentService {
                     tracking_code,
                     &primary_order_id,
                     line_number,
+                    primary_ch.sales_channel.as_str(),
+                    &primary_ch.storefront_shop_id,
                 )
                 .await?;
                 tx.commit().await?;
@@ -7508,6 +7891,8 @@ impl PaymentService {
                     tracking_code,
                     &primary_order_id,
                     line_number,
+                    primary_ch.sales_channel.as_str(),
+                    &primary_ch.storefront_shop_id,
                 )
                 .await?;
                 tx.commit().await?;
@@ -7540,6 +7925,8 @@ impl PaymentService {
                     tracking_code,
                     &primary_order_id,
                     line_number,
+                    primary_ch.sales_channel.as_str(),
+                    &primary_ch.storefront_shop_id,
                 )
                 .await?;
                 tx.commit().await?;
@@ -7548,10 +7935,10 @@ impl PaymentService {
             CodAllocationMatchDecision::MatchAndPost => {
                 // Aggregate per `(payment_id, order_id, shop_id)` so multi-shop COD orders post
                 // deterministic `cod-reconcile:{payment_id}:{order_id}:{shop_id}` entries without collisions.
-                let mut grouped: Vec<(Uuid, String, String, i64)> = Vec::new();
+                let mut grouped: Vec<(Uuid, String, String, i64, ChannelAttribution)> = Vec::new();
                 for alloc in &allocs {
                     let sub_payable = allocation_buyer_payable_vnd(alloc)?;
-                    if let Some(entry) = grouped.iter_mut().find(|(pid, oid, sid, _)| {
+                    if let Some(entry) = grouped.iter_mut().find(|(pid, oid, sid, _, _)| {
                         *pid == alloc.payment_id && oid == &alloc.order_id && sid == &alloc.shop_id
                     }) {
                         entry.3 = entry.3.checked_add(sub_payable).ok_or_else(|| {
@@ -7563,15 +7950,19 @@ impl PaymentService {
                             alloc.order_id.clone(),
                             alloc.shop_id.clone(),
                             sub_payable,
+                            ChannelAttribution::from_db(
+                                &alloc.sales_channel,
+                                &alloc.storefront_shop_id,
+                            ),
                         ));
                     }
                 }
 
                 let mut posted_any = false;
                 let mut posted_vnd = 0_i64;
-                for (pid, oid, sid, amt_vnd) in &grouped {
+                for (pid, oid, sid, amt_vnd, ch) in &grouped {
                     if *amt_vnd > 0 {
-                        let draft = build_cod_reconcile_tx(*pid, oid, sid, *amt_vnd);
+                        let draft = build_cod_reconcile_tx(*pid, oid, sid, *amt_vnd, ch.clone());
                         if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
                             self.metrics.record_ledger_tx("cod_reconcile");
                             posted_any = true;
@@ -7637,6 +8028,8 @@ impl PaymentService {
                         tracking_code,
                         &primary_order_id,
                         line_number,
+                        primary_ch.sales_channel.as_str(),
+                        &primary_ch.storefront_shop_id,
                     )
                     .await?;
                     tx.commit().await?;
@@ -7657,6 +8050,8 @@ impl PaymentService {
                         tracking_code,
                         &primary_order_id,
                         line_number,
+                        primary_ch.sales_channel.as_str(),
+                        &primary_ch.storefront_shop_id,
                     )
                     .await?;
                     tx.commit().await?;
@@ -7666,7 +8061,8 @@ impl PaymentService {
         }
     }
 
-    /// Lists paginated reconciliation runs filtered optionally by `run_type` (`"vietqr"` | `"cod_file"`).
+    /// Lists paginated reconciliation runs filtered optionally by `run_type` (`"vietqr"` | `"cod_file"`)
+    /// and `sales_channel` (`"MARKETPLACE"` | `"STOREFRONT"`).
     pub async fn list_reconciliation_runs(
         &self,
         filter: ListReconciliationRunsFilter,
@@ -7678,15 +8074,18 @@ impl PaymentService {
             filter.page_size.min(100)
         };
         let offset = i64::from(page - 1) * i64::from(page_size);
+        let channel_str = filter.sales_channel.map(SalesChannel::as_str);
 
         let total: i64 = sqlx::query_scalar(
             r#"
             SELECT COUNT(*)::BIGINT
             FROM reconciliation_runs
             WHERE ($1::TEXT IS NULL OR run_type = $1)
+              AND ($2::TEXT IS NULL OR sales_channel = $2)
             "#,
         )
         .bind(filter.run_type.as_deref())
+        .bind(channel_str)
         .fetch_one(&self.pool)
         .await?;
 
@@ -7695,17 +8094,43 @@ impl PaymentService {
             SELECT *
             FROM reconciliation_runs
             WHERE ($1::TEXT IS NULL OR run_type = $1)
+              AND ($2::TEXT IS NULL OR sales_channel = $2)
             ORDER BY created_at DESC, id DESC
-            LIMIT $2 OFFSET $3
+            LIMIT $3 OFFSET $4
             "#,
         )
         .bind(filter.run_type.as_deref())
+        .bind(channel_str)
         .bind(i64::from(page_size))
         .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 
         Ok(ListReconciliationRunsResult { runs, total })
+    }
+
+    /// Lists historical reconciliation runs ordered newest-first (thin alias kept for phase-0b clients).
+    pub async fn list_reconciliation_reports(
+        &self,
+        limit: i32,
+        channel_filter: Option<SalesChannel>,
+    ) -> Result<Vec<ReconciliationRunRecord>> {
+        let effective_limit = if limit <= 0 { 30 } else { limit.min(100) } as i64;
+        let filter_str = channel_filter.map(SalesChannel::as_str);
+        let rows = sqlx::query_as::<_, ReconciliationRunRecord>(
+            r#"
+            SELECT *
+            FROM reconciliation_runs
+            WHERE ($1::TEXT IS NULL OR sales_channel = $1)
+            ORDER BY created_at DESC, id DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(filter_str)
+        .bind(effective_limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
     }
 
     /// Marks stale `cod_file` reconciliation runs stuck in `'running'` longer than `stale_after`
@@ -8267,11 +8692,14 @@ impl PaymentService {
                         if payment.method == "ZALOPAY" {
                             zalopay_auto_refund_id = Some(refund.id);
                         }
+                        let channel =
+                            resolve_refund_channel_tx(&mut tx, &payment, order_id).await?;
                         let draft = build_refund_tx(
                             refund.id,
                             payment.id,
                             refund.amount_vnd,
                             &refund.reason,
+                            channel,
                         );
                         if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
                             self.metrics.record_ledger_tx("refund");
@@ -8358,6 +8786,8 @@ struct ZaloPayRefundClaimRow {
     payment_order_id: String,
     payment_order_group_id: String,
     payment_user_id: String,
+    payment_sales_channel: String,
+    payment_storefront_shop_id: String,
 }
 
 /// Checks whether a duplicate `webhook_events.provider_tx_id` belongs to the SAME provider and
@@ -8842,7 +9272,10 @@ async fn collect_cod_order_allocations_tx(
         .await?;
 
         if total_allocs == 0 && payment.status == "pending" && payment.amount_vnd > 0 {
-            let draft = build_cod_collect_tx(payment.id, order_id, None, payment.amount_vnd);
+            let channel =
+                ChannelAttribution::from_db(&payment.sales_channel, &payment.storefront_shop_id);
+            let draft =
+                build_cod_collect_tx(payment.id, order_id, None, payment.amount_vnd, channel);
             if ledger::post_transaction(tx, &draft).await?.is_some() {
                 metrics.record_ledger_tx("payment_cod");
             }
@@ -8871,6 +9304,8 @@ async fn collect_cod_order_allocations_tx(
                     "amount_vnd": updated.amount_vnd,
                     "method": "COD",
                     "provider_tx_id": format!("{}:{order_id}", updated.provider_order_code),
+                    "sales_channel": updated.sales_channel,
+                    "storefront_shop_id": updated.storefront_shop_id,
                 }),
             )
             .await?;
@@ -8883,7 +9318,7 @@ async fn collect_cod_order_allocations_tx(
     // review2-P P2-7: aggregate per `(order_id, shop_id)` before posting `cod-collect` ledger
     // transactions (scoped with `shop_id`) so multiple allocations sharing an `order_id` never
     // collide on idempotency_key and drop collected cash.
-    let mut per_order_shop_collected: Vec<(String, String, i64)> = Vec::new();
+    let mut per_order_shop_collected: Vec<(String, String, i64, ChannelAttribution)> = Vec::new();
     let mut per_order_collected: Vec<(String, i64)> = Vec::new();
     for alloc in awaiting_allocs {
         let sub_payable = allocation_buyer_payable_vnd(&alloc)?;
@@ -8906,7 +9341,7 @@ async fn collect_cod_order_allocations_tx(
 
         if let Some(entry) = per_order_shop_collected
             .iter_mut()
-            .find(|(oid, sid, _)| oid == &alloc.order_id && sid == &alloc.shop_id)
+            .find(|(oid, sid, _, _)| oid == &alloc.order_id && sid == &alloc.shop_id)
         {
             entry.2 = entry
                 .2
@@ -8917,6 +9352,7 @@ async fn collect_cod_order_allocations_tx(
                 alloc.order_id.clone(),
                 alloc.shop_id.clone(),
                 sub_payable,
+                ChannelAttribution::from_db(&alloc.sales_channel, &alloc.storefront_shop_id),
             ));
         }
 
@@ -8933,13 +9369,14 @@ async fn collect_cod_order_allocations_tx(
         }
     }
 
-    for (collected_order_id, collected_shop_id, collected_vnd) in &per_order_shop_collected {
+    for (collected_order_id, collected_shop_id, collected_vnd, ch) in &per_order_shop_collected {
         if *collected_vnd > 0 {
             let draft = build_cod_collect_tx(
                 payment.id,
                 collected_order_id,
                 Some(collected_shop_id),
                 *collected_vnd,
+                ch.clone(),
             );
             if ledger::post_transaction(tx, &draft).await?.is_some() {
                 metrics.record_ledger_tx("payment_cod");
@@ -8963,6 +9400,8 @@ async fn collect_cod_order_allocations_tx(
                 "amount_vnd": collected_vnd,
                 "method": "COD",
                 "provider_tx_id": format!("{}:{collected_order_id}", payment.provider_order_code),
+                "sales_channel": payment.sales_channel,
+                "storefront_shop_id": payment.storefront_shop_id,
             }),
         )
         .await?;
@@ -9322,7 +9761,8 @@ async fn record_late_payment_refund_tx(
         .await?;
     }
 
-    let ledger_draft = build_late_payment_refund_tx(provider_tx_id, amount_vnd);
+    let channel = ChannelAttribution::from_db(&payment.sales_channel, &payment.storefront_shop_id);
+    let ledger_draft = build_late_payment_refund_tx(provider_tx_id, amount_vnd, channel);
     if ledger::post_transaction(tx, &ledger_draft).await?.is_some() {
         metrics.record_ledger_tx("late_payment_refund");
     }
@@ -9394,6 +9834,43 @@ async fn record_late_payment_refund_tx(
 
     // R3 / PAY-B6: Never emit payment.succeeded or payment.refunded for late/superseded payments.
     Ok(())
+}
+
+async fn fetch_cod_fee_adjustment_by_key_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    idempotency_key: &str,
+) -> Result<Option<CodFeeAdjustmentRecord>> {
+    let row = sqlx::query_as::<_, CodFeeAdjustmentRecord>(
+        "SELECT * FROM cod_fee_adjustments WHERE idempotency_key = $1",
+    )
+    .bind(idempotency_key)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row)
+}
+
+async fn build_cod_adjustment_replay_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    existing: &CodFeeAdjustmentRecord,
+    order_id: &str,
+    new_shipping_fee_vnd: i64,
+) -> Result<AdjustCodShippingFeeOutput> {
+    validate_cod_fee_adjustment_replay(existing, order_id, new_shipping_fee_vnd)?;
+    let payment = sqlx::query_as::<_, PaymentRecord>("SELECT * FROM payments WHERE id = $1")
+        .bind(existing.payment_id)
+        .fetch_one(&mut **tx)
+        .await?;
+    let allocations = fetch_allocations_tx(tx, payment.id).await?;
+    Ok(AdjustCodShippingFeeOutput {
+        payment: PaymentWithAllocations {
+            payment,
+            allocations,
+        },
+        old_shipping_fee_vnd: existing.old_shipping_fee_vnd,
+        new_shipping_fee_vnd: existing.new_shipping_fee_vnd,
+        new_order_payable_vnd: existing.new_order_payable_vnd,
+        already_applied: true,
+    })
 }
 
 async fn fetch_allocations_pool(
@@ -9555,13 +10032,20 @@ async fn confirm_online_payment_tx(
     .await?;
 
     if updated.amount_vnd > 0 {
-        let draft = build_vietqr_confirm_tx(updated.id, updated.amount_vnd);
+        let channel =
+            ChannelAttribution::from_db(&updated.sales_channel, &updated.storefront_shop_id);
+        let (draft, metric_label) = if updated.method == "ZALOPAY" {
+            (
+                build_zalopay_confirm_tx(updated.id, updated.amount_vnd, channel),
+                "payment_zalopay",
+            )
+        } else {
+            (
+                build_vietqr_confirm_tx(updated.id, updated.amount_vnd, channel),
+                "payment_vietqr",
+            )
+        };
         if ledger::post_transaction(tx, &draft).await?.is_some() {
-            let metric_label = if updated.method == "ZALOPAY" {
-                "payment_zalopay"
-            } else {
-                "payment_vietqr"
-            };
             metrics.record_ledger_tx(metric_label);
         }
     }
@@ -9593,6 +10077,8 @@ async fn confirm_online_payment_tx(
             "amount_vnd": updated.amount_vnd,
             "method": updated.method,
             "provider_tx_id": provider_tx_id,
+            "sales_channel": updated.sales_channel,
+            "storefront_shop_id": updated.storefront_shop_id,
         }),
     )
     .await?;
@@ -9808,7 +10294,9 @@ async fn release_pending_allocation_tx(
         compute_capped_escrow_release_vnd(split.seller_net_vnd, pending_bal, unmatured_hold_vnd);
 
     if release_amount > 0 {
-        let draft = build_escrow_release_tx(&alloc.order_id, &alloc.shop_id, release_amount)?;
+        let channel = ChannelAttribution::from_db(&alloc.sales_channel, &alloc.storefront_shop_id);
+        let draft =
+            build_escrow_release_tx(&alloc.order_id, &alloc.shop_id, release_amount, channel)?;
         if ledger::post_transaction(tx, &draft).await?.is_some() {
             metrics.record_ledger_tx("escrow_release");
         }
@@ -9876,6 +10364,8 @@ async fn settle_order_to_pending_tx(
         )?;
 
         if split.total_debit_vnd() > 0 {
+            let channel =
+                ChannelAttribution::from_db(&alloc.sales_channel, &alloc.storefront_shop_id);
             let draft = build_escrow_settle_tx(
                 &alloc.order_id,
                 &alloc.shop_id,
@@ -9884,6 +10374,7 @@ async fn settle_order_to_pending_tx(
                 split.seller_net_vnd,
                 split.commission_vnd,
                 split.shipping_fee_vnd,
+                channel,
             )?;
             if ledger::post_transaction(tx, &draft).await?.is_some() {
                 metrics.record_ledger_tx("escrow_settle");
@@ -9907,6 +10398,31 @@ async fn settle_order_to_pending_tx(
     Ok(settled)
 }
 
+async fn resolve_refund_channel_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    payment: &PaymentRecord,
+    order_id: &str,
+) -> Result<ChannelAttribution> {
+    let alloc_channel: Option<(String, String)> = sqlx::query_as(
+        r#"
+        SELECT sales_channel, storefront_shop_id
+        FROM payment_shop_allocations
+        WHERE payment_id = $1 AND order_id = $2
+        ORDER BY created_at ASC
+        LIMIT 1
+        "#,
+    )
+    .bind(payment.id)
+    .bind(order_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    Ok(match alloc_channel {
+        Some((ch, shop)) => ChannelAttribution::from_db(&ch, &shop),
+        None => ChannelAttribution::from_db(&payment.sales_channel, &payment.storefront_shop_id),
+    })
+}
+
 fn build_payment_refunded_payload(
     refund: &RefundRecord,
     payment: &PaymentRecord,
@@ -9922,6 +10438,8 @@ fn build_payment_refunded_payload(
         "reason": refund.reason,
         "is_post_settlement": is_post_settlement,
         "idempotency_key": refund.idempotency_key,
+        "sales_channel": payment.sales_channel,
+        "storefront_shop_id": payment.storefront_shop_id,
     })
 }
 
@@ -9958,6 +10476,8 @@ async fn insert_reconciliation_item(
     local_amount_vnd: Option<i64>,
     provider_amount_vnd: Option<i64>,
     details: &str,
+    sales_channel: &str,
+    storefront_shop_id: &str,
 ) -> Result<ReconciliationItemRecord> {
     insert_reconciliation_item_ext(
         tx,
@@ -9971,6 +10491,8 @@ async fn insert_reconciliation_item(
         "",
         "",
         0,
+        sales_channel,
+        storefront_shop_id,
     )
     .await
 }
@@ -9988,15 +10510,18 @@ async fn insert_reconciliation_item_ext(
     tracking_code: &str,
     order_id: &str,
     line_number: i32,
+    sales_channel: &str,
+    storefront_shop_id: &str,
 ) -> Result<ReconciliationItemRecord> {
     let rec = sqlx::query_as::<_, ReconciliationItemRecord>(
         r#"
         INSERT INTO reconciliation_items (
             run_id, classification, payment_id, provider_tx_id,
             local_amount_vnd, provider_amount_vnd, details,
-            tracking_code, order_id, line_number
+            tracking_code, order_id, line_number,
+            sales_channel, storefront_shop_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING *
         "#,
     )
@@ -10010,6 +10535,8 @@ async fn insert_reconciliation_item_ext(
     .bind(tracking_code)
     .bind(order_id)
     .bind(line_number)
+    .bind(sales_channel)
+    .bind(storefront_shop_id)
     .fetch_one(&mut **tx)
     .await?;
     Ok(rec)

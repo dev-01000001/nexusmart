@@ -236,8 +236,9 @@ func prodW2BCreateCODOrder(t *testing.T, env *testEnv, buyer *userFixture, selle
 	resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "prod-w2b-" + uuid.NewString(),
 	}, CheckoutRequest{
-		AddressID: buyer.AddressID,
-		FromCart:  false,
+		SalesChannel: "MARKETPLACE",
+		AddressID:    buyer.AddressID,
+		FromCart:     false,
 		Items: []CheckoutItemInputDTO{{
 			SKUID:    sku.ID,
 			Quantity: 1,

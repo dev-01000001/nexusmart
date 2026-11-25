@@ -7,6 +7,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/nexusmart/core/pkg/common/auth"
+	"github.com/nexusmart/core/services/order/internal/config"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -79,5 +80,46 @@ func TestWithInternalAdminContext_SendsServiceTokenNotBuyerJWT(t *testing.T) {
 	claims, err := svc.VerifyServiceToken(got[0])
 	if err != nil || claims.Service != InternalServiceName || claims.Role != auth.ServiceRole {
 		t.Fatalf("expected valid order-service token, claims=%+v err=%v", claims, err)
+	}
+
+	// Nil service auth manager on internal call fails closed with codes.Internal.
+	if err := TimeoutAndAuthClientInterceptor(time.Second, nil)(WithInternalAdminContext(buyerCtx), "/m", nil, nil, nil,
+		func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error { return nil }); status.Code(err) != codes.Internal {
+		t.Fatalf("nil svc manager: want Internal, got %v", err)
+	}
+}
+
+func TestDialAll_CloseAndRetryContextCancel(t *testing.T) {
+	svc, _ := auth.NewManager("dial-test-svc-key", auth.ServiceTokenTTL)
+	cfg := config.Load()
+	b, err := DialAll(cfg, svc)
+	if err != nil {
+		t.Fatalf("DialAll failed: %v", err)
+	}
+	if b.User == nil || b.Product == nil || b.Cart == nil || b.Promotion == nil || b.Payment == nil || b.Shipping == nil {
+		t.Fatalf("DialAll returned nil client in bundle: %+v", b)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatalf("Bundle.Close failed: %v", err)
+	}
+
+	// RetryIdempotent with maxAttempts < 1 runs once, and respects context cancellation.
+	calls := 0
+	if err := RetryIdempotent(context.Background(), 0, func(context.Context) error {
+		calls++
+		return nil
+	}); err != nil || calls != 1 {
+		t.Fatalf("maxAttempts=0: calls=%d err=%v", calls, err)
+	}
+
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := RetryIdempotent(cancelCtx, 3, func(context.Context) error {
+		return status.Error(codes.DeadlineExceeded, "slow")
+	}); err == nil {
+		t.Fatalf("expected context cancellation error")
+	}
+	if !isRetryable(status.Error(codes.ResourceExhausted, "rate limited")) {
+		t.Fatalf("expected ResourceExhausted to be retryable")
 	}
 }

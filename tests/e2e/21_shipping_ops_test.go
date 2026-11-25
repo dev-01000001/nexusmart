@@ -157,6 +157,7 @@ func shpW2CreateAndShipOrder(t *testing.T, env *testEnv, buyer *userFixture, buy
 	checkoutResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "shpw2-ord-" + uuid.NewString(),
 	}, CheckoutRequest{
+		SalesChannel:  "MARKETPLACE",
 		AddressID:     buyerAddrID,
 		FromCart:      false,
 		Items:         []CheckoutItemInputDTO{{SKUID: skuID, Quantity: 1}},

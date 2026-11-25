@@ -254,7 +254,8 @@ func TestUpdateProductStockUsesOptimisticPathHistoryAndStatusSync(t *testing.T) 
 	}
 
 	// 5. Stock cannot be reduced below reserved_stock via PUT.
-	if _, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	buyerCtx := ctxWithRole("buyer-catb4", "buyer", "")
+	if _, err := srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 		OrderId: "ord-catb4-res",
 		Items:   []*productv1.StockReservationItem{{SkuId: sku1.GetId(), Quantity: 4}},
 	}); err != nil {
@@ -277,7 +278,7 @@ func TestUpdateProductStockUsesOptimisticPathHistoryAndStatusSync(t *testing.T) 
 		if targetSKU == sku1.GetId() && !triggered {
 			triggered = true
 			// Simulate concurrent order reserving 1 more unit and bumping version.
-			_, _ = srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+			_, _ = srv.ReserveStock(buyerCtx, &productv1.ReserveStockRequest{
 				OrderId: "ord-catb4-concurrent",
 				Items:   []*productv1.StockReservationItem{{SkuId: sku1.GetId(), Quantity: 1}},
 			})

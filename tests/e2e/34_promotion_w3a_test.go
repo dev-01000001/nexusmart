@@ -160,6 +160,7 @@ func TestE2E_PromotionW3A_D3_ReserveOrderServiceOnly_AndCheckoutWithVoucher(t *t
 	checkoutResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "e2e-w3a-checkout-" + uuid.NewString(),
 	}, CheckoutRequest{
+		SalesChannel:   "MARKETPLACE",
 		AddressID:      addr.ID,
 		FromCart:       false,
 		Items:          []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},

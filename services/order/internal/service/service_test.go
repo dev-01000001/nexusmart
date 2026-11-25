@@ -109,8 +109,10 @@ func newMockUserClient() *mockUserClient {
 			},
 		},
 		shops: map[string]*userv1.Shop{
-			"shop-1": {Id: "shop-1", OwnerUserId: "seller-1", Name: "Shop Alpha", PickupAddressId: "addr-shop-1", ContactPhone: "0911111111", Status: userv1.ShopStatus_SHOP_STATUS_ACTIVE},
-			"shop-2": {Id: "shop-2", OwnerUserId: "seller-2", Name: "Shop Beta", PickupAddressId: "addr-shop-2", ContactPhone: "0922222222", Status: userv1.ShopStatus_SHOP_STATUS_ACTIVE},
+			"shop-1":         {Id: "shop-1", OwnerUserId: "seller-1", Name: "Shop Alpha", PickupAddressId: "addr-shop-1", ContactPhone: "0911111111", Status: userv1.ShopStatus_SHOP_STATUS_ACTIVE},
+			"shop-2":         {Id: "shop-2", OwnerUserId: "seller-2", Name: "Shop Beta", PickupAddressId: "addr-shop-2", ContactPhone: "0922222222", Status: userv1.ShopStatus_SHOP_STATUS_ACTIVE},
+			"shop-pending":   {Id: "shop-pending", OwnerUserId: "seller-3", Name: "Pending Shop", Status: userv1.ShopStatus_SHOP_STATUS_PENDING},
+			"shop-suspended": {Id: "shop-suspended", OwnerUserId: "seller-4", Name: "Suspended Shop", Status: userv1.ShopStatus_SHOP_STATUS_SUSPENDED},
 		},
 	}
 }
@@ -345,10 +347,12 @@ func (m *mockProductClient) ConfirmStock(ctx context.Context, req *productv1.Con
 }
 
 type mockCartClient struct {
-	mu           sync.Mutex
-	cart         *cartv1.Cart
-	clearCalls   [][]string
-	onClearItems func(ctx context.Context) error
+	mu            sync.Mutex
+	cart          *cartv1.Cart
+	getCartCalls  []*cartv1.GetCartRequest
+	clearCalls    [][]string
+	clearReqCalls []*cartv1.ClearItemsRequest
+	onClearItems  func(ctx context.Context) error
 }
 
 func newMockCartClient() *mockCartClient {
@@ -373,15 +377,34 @@ func newMockCartClient() *mockCartClient {
 	}
 }
 
-func (m *mockCartClient) GetCart(_ context.Context, _ *cartv1.GetCartRequest, _ ...grpc.CallOption) (*cartv1.GetCartResponse, error) {
+func (m *mockCartClient) GetCart(_ context.Context, req *cartv1.GetCartRequest, _ ...grpc.CallOption) (*cartv1.GetCartResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return &cartv1.GetCartResponse{Cart: m.cart}, nil
+	m.getCartCalls = append(m.getCartCalls, req)
+	if m.cart == nil {
+		return &cartv1.GetCartResponse{}, nil
+	}
+	filterShop := req.GetShopId()
+	if filterShop == "" {
+		return &cartv1.GetCartResponse{Cart: m.cart}, nil
+	}
+	filtered := &cartv1.Cart{UserId: m.cart.GetUserId()}
+	for _, grp := range m.cart.GetShopGroups() {
+		if grp.GetShopId() == filterShop {
+			filtered.ShopGroups = append(filtered.ShopGroups, grp)
+			for _, it := range grp.GetItems() {
+				filtered.TotalItems += it.GetQuantity()
+				filtered.TotalVnd += it.GetPriceVnd() * int64(it.GetQuantity())
+			}
+		}
+	}
+	return &cartv1.GetCartResponse{Cart: filtered}, nil
 }
 
 func (m *mockCartClient) ClearItems(ctx context.Context, req *cartv1.ClearItemsRequest, _ ...grpc.CallOption) (*cartv1.ClearItemsResponse, error) {
 	m.mu.Lock()
 	m.clearCalls = append(m.clearCalls, append([]string(nil), req.GetSkuIds()...))
+	m.clearReqCalls = append(m.clearReqCalls, req)
 	cb := m.onClearItems
 	m.mu.Unlock()
 	if cb != nil {
@@ -389,6 +412,36 @@ func (m *mockCartClient) ClearItems(ctx context.Context, req *cartv1.ClearItemsR
 			return nil, err
 		}
 	}
+	m.mu.Lock()
+	filterShop := strings.TrimSpace(req.GetShopId())
+	if filterShop != "" && m.cart != nil && len(req.GetSkuIds()) > 0 {
+		toRemove := make(map[string]bool, len(req.GetSkuIds()))
+		for _, id := range req.GetSkuIds() {
+			toRemove[id] = true
+		}
+		var remainingGroups []*cartv1.CartShopGroup
+		for _, grp := range m.cart.ShopGroups {
+			if grp.GetShopId() != filterShop {
+				remainingGroups = append(remainingGroups, grp)
+				continue
+			}
+			var kept []*cartv1.CartItem
+			for _, it := range grp.Items {
+				if !toRemove[it.SkuId] {
+					kept = append(kept, it)
+				}
+			}
+			if len(kept) > 0 {
+				remainingGroups = append(remainingGroups, &cartv1.CartShopGroup{
+					ShopId:   grp.GetShopId(),
+					ShopName: grp.GetShopName(),
+					Items:    kept,
+				})
+			}
+		}
+		m.cart.ShopGroups = remainingGroups
+	}
+	m.mu.Unlock()
 	return &cartv1.ClearItemsResponse{Ok: true}, nil
 }
 
@@ -545,6 +598,10 @@ type mockPaymentClient struct {
 	cancelCalls         []*paymentv1.CancelPaymentRequest
 	refundCalls         []*paymentv1.CreateRefundRequest
 	refundAuth          []authCallSnapshot
+	adjustCODCalls      []*paymentv1.AdjustCODShippingFeeRequest
+	adjustCODAuth       []authCallSnapshot
+	adjustCODErr        error
+	onAdjustCOD         func(ctx context.Context, req *paymentv1.AdjustCODShippingFeeRequest) (*paymentv1.AdjustCODShippingFeeResponse, error)
 }
 
 func (m *mockPaymentClient) CreatePayment(ctx context.Context, req *paymentv1.CreatePaymentRequest, _ ...grpc.CallOption) (*paymentv1.CreatePaymentResponse, error) {
@@ -774,6 +831,32 @@ func (m *mockPaymentClient) GetPaymentMethodConfigs(ctx context.Context, req *pa
 	}, nil
 }
 
+func (m *mockPaymentClient) AdjustCODShippingFee(ctx context.Context, req *paymentv1.AdjustCODShippingFeeRequest, _ ...grpc.CallOption) (*paymentv1.AdjustCODShippingFeeResponse, error) {
+	m.mu.Lock()
+	m.adjustCODCalls = append(m.adjustCODCalls, req)
+	var svcName string
+	if c, ok := auth.ClaimsFromContext(ctx); ok {
+		svcName = c.Service
+	}
+	m.adjustCODAuth = append(m.adjustCODAuth, authCallSnapshot{
+		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
+		rawToken: auth.RawTokenFromContext(ctx),
+	})
+	hook := m.onAdjustCOD
+	adjErr := m.adjustCODErr
+	m.mu.Unlock()
+	if hook != nil {
+		return hook(ctx, req)
+	}
+	if adjErr != nil {
+		return nil, adjErr
+	}
+	return &paymentv1.AdjustCODShippingFeeResponse{
+		NewShippingFeeVnd: req.GetNewShippingFeeVnd(),
+	}, nil
+}
+
 func (m *mockPaymentClient) GetFeeConfig(ctx context.Context, req *paymentv1.GetFeeConfigRequest, _ ...grpc.CallOption) (*paymentv1.GetFeeConfigResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -817,7 +900,9 @@ type mockShippingClient struct {
 	getShopSettingsCalls    []*shippingv1.GetShopShippingSettingsRequest
 	getShopSettingsAuth     []authCallSnapshot
 	createShipCalls         []*shippingv1.CreateShipmentRequest
+	createShipAuth          []authCallSnapshot
 	onCreateShipment        func(req *shippingv1.CreateShipmentRequest) (*shippingv1.CreateShipmentResponse, error)
+	onCreateShipmentCtx     func(ctx context.Context, req *shippingv1.CreateShipmentRequest) (*shippingv1.CreateShipmentResponse, error)
 	createReturnShipCalls   []*shippingv1.CreateReturnShipmentRequest
 	createReturnShipAuth    []authCallSnapshot
 	createReturnShipErr     error
@@ -826,6 +911,7 @@ type mockShippingClient struct {
 	cancelShipAuth          []authCallSnapshot
 	cancelShipErr           error
 	onCancelShipment        func(req *shippingv1.CancelShipmentRequest) error
+	onCancelShipmentCtx     func(ctx context.Context, req *shippingv1.CancelShipmentRequest) error
 	getShipCalls            []*shippingv1.GetShipmentRequest
 	getShipAuth             []authCallSnapshot
 	getShipResp             *shippingv1.GetShipmentResponse
@@ -851,26 +937,42 @@ func newMockShippingClient() *mockShippingClient {
 
 func (m *mockShippingClient) CalculateFee(_ context.Context, req *shippingv1.CalculateFeeRequest, _ ...grpc.CallOption) (*shippingv1.CalculateFeeResponse, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.calculateFeeCall++
 	m.calculateFeeReqs = append(m.calculateFeeReqs, req)
-	if m.onCalculateFee != nil {
-		return m.onCalculateFee(req)
+	hook := m.onCalculateFee
+	calcErr := m.calculateFeeErr
+	quotes := m.quotes
+	isEst := m.calculateFeeIsEstimated
+	m.mu.Unlock()
+	if hook != nil {
+		return hook(req)
 	}
-	if m.calculateFeeErr != nil {
-		return nil, m.calculateFeeErr
+	if calcErr != nil {
+		return nil, calcErr
 	}
-	return &shippingv1.CalculateFeeResponse{Quotes: m.quotes, IsEstimated: m.calculateFeeIsEstimated}, nil
+	return &shippingv1.CalculateFeeResponse{Quotes: quotes, IsEstimated: isEst}, nil
 }
 
-func (m *mockShippingClient) CreateShipment(_ context.Context, req *shippingv1.CreateShipmentRequest, _ ...grpc.CallOption) (*shippingv1.CreateShipmentResponse, error) {
+func (m *mockShippingClient) CreateShipment(ctx context.Context, req *shippingv1.CreateShipmentRequest, _ ...grpc.CallOption) (*shippingv1.CreateShipmentResponse, error) {
 	m.mu.Lock()
 	m.createShipCalls = append(m.createShipCalls, req)
+	var svcName string
+	if c, ok := auth.ClaimsFromContext(ctx); ok {
+		svcName = c.Service
+	}
+	m.createShipAuth = append(m.createShipAuth, authCallSnapshot{
+		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
+		rawToken: auth.RawTokenFromContext(ctx),
+	})
 	hook := m.onCreateShipment
+	hookCtx := m.onCreateShipmentCtx
 	m.mu.Unlock()
 	var resp *shippingv1.CreateShipmentResponse
 	var err error
-	if hook != nil {
+	if hookCtx != nil {
+		resp, err = hookCtx(ctx, req)
+	} else if hook != nil {
 		resp, err = hook(req)
 	} else {
 		resp = &shippingv1.CreateShipmentResponse{
@@ -953,9 +1055,18 @@ func (m *mockShippingClient) CancelShipment(ctx context.Context, req *shippingv1
 		rawToken: auth.RawTokenFromContext(ctx),
 	})
 	hook := m.onCancelShipment
+	hookCtx := m.onCancelShipmentCtx
 	cancelErr := m.cancelShipErr
 	trk := m.forwardTrackings[req.GetOrderId()]
 	m.mu.Unlock()
+	if hookCtx != nil {
+		if err := hookCtx(ctx, req); err != nil {
+			return nil, err
+		}
+		return &shippingv1.CancelShipmentResponse{
+			Shipment: &shippingv1.Shipment{OrderId: req.GetOrderId(), TrackingCode: trk, Status: shippingv1.ShipmentStatus_SHIPMENT_STATUS_CANCELLED},
+		}, nil
+	}
 	if hook != nil {
 		if err := hook(req); err != nil {
 			return nil, err

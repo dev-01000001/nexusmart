@@ -1,10 +1,48 @@
-/* Nhật ký kiểm toán (/admin/audit-log) — Work Sans tabular-nums audit table (zero monospace) */
+/* Nhật ký kiểm toán (/admin/audit-log) — Archivo tabular-nums (zero monospace) */
+
+.filterForm {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+}
+
+.filterField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.filterActions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.filterBtns {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.selectFull {
+  width: 100%;
+  height: 36px;
+}
 
 .timeCol {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
-  color: var(--muted);
-  font-size: 13px;
+  color: var(--ink-3);
+  font-size: var(--fs-small);
 }
 
 .targetCol {
@@ -18,35 +56,83 @@
 }
 
 .mobileAuditSummary {
-  margin-top: var(--space-1);
-  font-size: 13px;
-  line-height: 18px;
-  color: var(--ink);
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-small);
+  line-height: 1.4;
+  color: var(--ink-2);
 }
 
-.mobileDetailWell {
-  margin-top: var(--space-2);
+.diffBox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
 }
 
-.dateFilterField {
-  display: inline-flex;
-  align-items: center;
+.diffList {
+  display: flex;
+  flex-direction: column;
   gap: 6px;
 }
 
-.dateFilterLabel {
-  font-size: 13px;
-  color: var(--muted);
-  white-space: nowrap;
+.diffRow {
+  display: grid;
+  grid-template-columns: minmax(110px, 140px) minmax(0, 1fr);
+  gap: 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--rule);
 }
 
-.dateFilterInput {
-  height: 36px;
-  padding: 0 10px;
-  border-radius: var(--radius-control);
-  border: 1px solid #d4dde1;
-  background: var(--card);
-  color: var(--ink);
-  font-size: 13px;
+.diffRow:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.diffKey {
+  font-size: var(--fs-small);
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.diffVal {
+  font-size: var(--fs-small);
+  color: var(--ink-1);
+  word-break: break-word;
+}
+
+.paginationRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
+  flex-wrap: wrap;
+}
+
+.paginationInfo {
+  font-size: var(--fs-small);
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+.paginationBtns {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+@media (max-width: 960px) {
+  .filterForm {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .filterForm {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

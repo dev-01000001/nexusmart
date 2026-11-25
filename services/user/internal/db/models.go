@@ -47,6 +47,24 @@ type CodRejection struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type Domain struct {
+	ID                 string     `json:"id"`
+	SiteID             string     `json:"site_id"`
+	Host               string     `json:"host"`
+	Kind               string     `json:"kind"`
+	IsPrimary          bool       `json:"is_primary"`
+	VerifiedAt         *time.Time `json:"verified_at"`
+	TlsStatus          string     `json:"tls_status"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	Status             string     `json:"status"`
+	CfRecordID         *string    `json:"cf_record_id"`
+	CfCustomHostnameID *string    `json:"cf_custom_hostname_id"`
+	Verification       []byte     `json:"verification"`
+	LastCheckedAt      *time.Time `json:"last_checked_at"`
+	LastError          *string    `json:"last_error"`
+}
+
 type OutboxEvent struct {
 	ID           string     `json:"id"`
 	Seq          int64      `json:"seq"`
@@ -136,6 +154,46 @@ type ShopSuspensionApproval struct {
 	DecidedNote   string     `json:"decided_note"`
 	CreatedAt     time.Time  `json:"created_at"`
 	DecidedAt     *time.Time `json:"decided_at"`
+}
+
+type Site struct {
+	ID                 string     `json:"id"`
+	ShopID             string     `json:"shop_id"`
+	Subdomain          string     `json:"subdomain"`
+	Status             string     `json:"status"`
+	DraftConfig        []byte     `json:"draft_config"`
+	PublishedVersionID *string    `json:"published_version_id"`
+	PublishedAt        *time.Time `json:"published_at"`
+	SuspendedReason    string     `json:"suspended_reason"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	TemplateID         *string    `json:"template_id"`
+}
+
+type SiteTemplate struct {
+	ID              string    `json:"id"`
+	Slug            string    `json:"slug"`
+	Name            string    `json:"name"`
+	Category        string    `json:"category"`
+	Archetype       string    `json:"archetype"`
+	Description     string    `json:"description"`
+	PreviewImageUrl string    `json:"preview_image_url"`
+	Tags            []string  `json:"tags"`
+	Config          []byte    `json:"config"`
+	IsActive        bool      `json:"is_active"`
+	SortOrder       int32     `json:"sort_order"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type SiteVersion struct {
+	ID            string    `json:"id"`
+	SiteID        string    `json:"site_id"`
+	VersionNumber int32     `json:"version_number"`
+	Config        []byte    `json:"config"`
+	PublishedBy   string    `json:"published_by"`
+	Note          string    `json:"note"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type User struct {

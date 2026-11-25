@@ -31,17 +31,18 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "cart service exited with error: %v\n", err)
+	serviceName := env.EnvString("SERVICE_NAME", "cart")
+	log := logger.New(serviceName, logger.WithLevel(parseLogLevel(env.EnvString("LOG_LEVEL", "info"))))
+	if err := run(serviceName, log); err != nil {
+		log.Error("cart service exited with error", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(serviceName string, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	serviceName := env.EnvString("SERVICE_NAME", "cart")
 	grpcPort := env.EnvString("GRPC_PORT", "50053")
 	httpPort := env.EnvString("HTTP_PORT", "8083")
 	redisAddr := env.EnvString("REDIS_ADDR", "redis:6379")
@@ -49,14 +50,12 @@ func run() error {
 	userAddr := env.EnvString("USER_GRPC_ADDR", "")
 	jwtSecret := env.EnvString("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me")
 	otelEndpoint := env.EnvString("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-	logLevel := parseLogLevel(env.EnvString("LOG_LEVEL", "info"))
-
-	log := logger.New(serviceName, logger.WithLevel(logLevel))
+	otelInsecure := env.EnvBool("OTEL_EXPORTER_OTLP_INSECURE", true)
 
 	shutdownTelemetry, err := telemetry.Init(ctx, telemetry.Config{
 		ServiceName:  serviceName,
 		OTLPEndpoint: otelEndpoint,
-		Insecure:     true,
+		Insecure:     otelInsecure,
 	})
 	if err != nil {
 		return fmt.Errorf("init telemetry: %w", err)

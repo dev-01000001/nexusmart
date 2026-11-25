@@ -2,15 +2,16 @@ use std::convert::Infallible;
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
-use axum::extract::{MatchedPath, Path, Request, State};
+use axum::extract::{MatchedPath, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use futures_util::stream::{self, Stream, StreamExt};
+use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, error, info, warn, Instrument};
@@ -20,14 +21,17 @@ use crate::auth::{
     resolve_payment_read_scope, seller_scoped_amount_vnd, seller_scoped_order_id, Caller, GrpcAuth,
     PaymentViewScope, CAP_LEDGER_READ, CAP_RECONCILIATION_WRITE,
 };
-use crate::domain::{vn_today, PaymentSseEvent, PaymentWithAllocations};
+use crate::config::VietQrMode;
+use crate::domain::{vn_today, PaymentSseEvent, PaymentWithAllocations, SalesChannel};
 use crate::error::PaymentError;
 use crate::metrics::red_metrics_middleware;
 use crate::service::{PaymentService, ZaloPayCallbackOutcome};
 use crate::telemetry::{
     attach_parent_context, extract_context_from_http, extract_or_generate_trace_id, mask_secret,
 };
-use crate::webhook_security::{verify_webhook_request, IncomingWebhookPayload};
+use crate::webhook_security::{
+    ensure_webhook_secret_usable, verify_webhook_request, IncomingWebhookPayload,
+};
 use crate::zalopay::{
     ZaloPayCallbackRequest, ZALOPAY_CALLBACK_RETURN_INVALID_MAC, ZALOPAY_CALLBACK_RETURN_RETRY,
 };
@@ -36,6 +40,28 @@ use crate::zalopay::{
 pub struct HttpState {
     pub service: PaymentService,
     pub auth: GrpcAuth,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct LedgerSummaryQuery {
+    #[serde(default)]
+    sales_channel: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ReconciliationQuery {
+    #[serde(default)]
+    date: String,
+    #[serde(default)]
+    sales_channel: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ReconciliationReportsQuery {
+    #[serde(default)]
+    limit: Option<i32>,
+    #[serde(default)]
+    sales_channel: String,
 }
 
 pub fn build_router(service: PaymentService, auth: GrpcAuth) -> Router {
@@ -58,6 +84,10 @@ pub fn build_router(service: PaymentService, auth: GrpcAuth) -> Router {
         .route(
             "/internal/reconciliation/run",
             post(internal_reconciliation_run),
+        )
+        .route(
+            "/internal/reconciliation/reports",
+            get(internal_reconciliation_reports),
         )
         .layer(middleware::from_fn_with_state(
             metrics,
@@ -199,7 +229,7 @@ async fn handle_payment_webhook(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, PaymentError> {
-    process_webhook_http(state, trace_ext, headers, body, "payment_gateway").await
+    process_webhook_http(state, trace_ext, headers, body, "payment_gateway", false).await
 }
 
 async fn handle_vietqr_webhook(
@@ -209,7 +239,7 @@ async fn handle_vietqr_webhook(
     body: Bytes,
 ) -> Result<impl IntoResponse, PaymentError> {
     let default_provider = state.service.vietqr().mode().as_str();
-    process_webhook_http(state, trace_ext, headers, body, default_provider).await
+    process_webhook_http(state, trace_ext, headers, body, default_provider, true).await
 }
 
 /// ZaloPay v2 IPN / Callback endpoint (`POST /webhooks/zalopay`, F2 & F2-bis).
@@ -217,6 +247,7 @@ async fn handle_vietqr_webhook(
 /// - `1` (HTTP 200): confirmed, duplicate, queued for reconciliation/late-refund, or terminal ignore.
 /// - `-1` (HTTP 401 on invalid MAC; HTTP 400 on malformed/mismatched request): rejected, 0 DB writes.
 /// - `0` (HTTP 200): transient error / still processing so ZaloPay retries up to 3 times.
+/// - HTTP 503 when running in `APP_ENV=production` with mock mode or placeholder `ZALOPAY_KEY2`.
 ///
 /// Never logs raw callback body, full MAC, or signing keys.
 async fn handle_zalopay_webhook(
@@ -233,6 +264,28 @@ async fn handle_zalopay_webhook(
                 header_str(&headers, "x-trace-id"),
             )
         });
+
+    if let Err(err) = state.service.zalopay().ensure_callback_usable() {
+        let (status, metric_label) = match &err {
+            PaymentError::ServiceUnavailable(_) => {
+                (StatusCode::SERVICE_UNAVAILABLE, "rejected_misconfigured")
+            }
+            _ => (StatusCode::UNAUTHORIZED, "rejected_signature"),
+        };
+        state.service.metrics().record_webhook(metric_label);
+        warn!(
+            trace_id = %trace_id,
+            reason = %err,
+            "rejected ZaloPay callback due to unsafe production or missing key2 configuration"
+        );
+        return (
+            status,
+            Json(json!({
+                "return_code": ZALOPAY_CALLBACK_RETURN_INVALID_MAC,
+                "return_message": err.to_string(),
+            })),
+        );
+    }
 
     let cb_req: ZaloPayCallbackRequest = match serde_json::from_slice(&body) {
         Ok(req) => req,
@@ -302,6 +355,7 @@ async fn process_webhook_http(
     headers: HeaderMap,
     body: Bytes,
     default_provider: &str,
+    require_non_mock_vietqr_in_prod: bool,
 ) -> Result<impl IntoResponse, PaymentError> {
     let trace_id = trace_ext
         .map(|Extension(RequestTraceId(id))| id)
@@ -312,15 +366,48 @@ async fn process_webhook_http(
             )
         });
 
+    let cfg = state.service.config();
+    if require_non_mock_vietqr_in_prod
+        && cfg.is_production()
+        && state.service.vietqr().mode() == VietQrMode::Mock
+    {
+        state
+            .service
+            .metrics()
+            .record_webhook("rejected_misconfigured");
+        warn!(
+            trace_id = %trace_id,
+            "rejected VietQR webhook: mock mode is not allowed in production"
+        );
+        return Err(PaymentError::ServiceUnavailable(
+            "VietQR webhooks disabled: mock mode is not allowed in production".to_string(),
+        ));
+    }
+
+    if let Err(err) = ensure_webhook_secret_usable(&cfg.webhook_secret, cfg.is_production()) {
+        let metric_label = if matches!(err, PaymentError::ServiceUnavailable(_)) {
+            "rejected_misconfigured"
+        } else {
+            "rejected_signature"
+        };
+        state.service.metrics().record_webhook(metric_label);
+        warn!(
+            trace_id = %trace_id,
+            reason = %err,
+            "rejected webhook: webhook secret is missing or placeholder"
+        );
+        return Err(err);
+    }
+
     let signature = header_str(&headers, "x-signature");
     let timestamp = header_str(&headers, "x-timestamp");
 
     if let Err(err) = verify_webhook_request(
-        &state.service.config().webhook_secret,
+        &cfg.webhook_secret,
         &body,
         signature,
         timestamp,
-        state.service.config().webhook_replay_window_secs,
+        cfg.webhook_replay_window_secs,
         Utc::now(),
     ) {
         state.service.metrics().record_webhook("rejected_signature");
@@ -349,6 +436,7 @@ async fn process_webhook_http(
 }
 
 /// Server-Sent Events stream for checkout payment status updates (UC-PAY01).
+/// Enforces Bearer JWT authentication and payment ownership (defense-in-depth behind gateway).
 async fn payment_events_sse(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -520,9 +608,11 @@ fn require_capability(
 async fn internal_ledger_summary(
     State(state): State<HttpState>,
     headers: HeaderMap,
+    Query(query): Query<LedgerSummaryQuery>,
 ) -> Result<impl IntoResponse, PaymentError> {
     require_capability(&state, &headers, CAP_LEDGER_READ, "InternalLedgerSummary")?;
-    let summary = state.service.get_ledger_summary().await?;
+    let channel_filter = SalesChannel::parse_filter(&query.sales_channel)?;
+    let summary = state.service.get_ledger_summary(channel_filter).await?;
     Ok((StatusCode::OK, Json(summary)))
 }
 
@@ -549,6 +639,7 @@ async fn internal_reconciliation_queue(
 async fn internal_reconciliation_run(
     State(state): State<HttpState>,
     headers: HeaderMap,
+    Query(query): Query<ReconciliationQuery>,
 ) -> Result<impl IntoResponse, PaymentError> {
     let caller = require_capability(
         &state,
@@ -556,13 +647,44 @@ async fn internal_reconciliation_run(
         CAP_RECONCILIATION_WRITE,
         "InternalReconciliationRun",
     )?;
+    let run_date = if query.date.trim().is_empty() {
+        vn_today(Utc::now())
+    } else {
+        NaiveDate::parse_from_str(query.date.trim(), "%Y-%m-%d").map_err(|_| {
+            PaymentError::Validation("date must be formatted as YYYY-MM-DD".to_string())
+        })?
+    };
+    let channel_filter = SalesChannel::parse_filter(&query.sales_channel)?;
     info!(
         user_id = %caller.user_id,
+        run_date = %run_date,
+        sales_channel = ?channel_filter,
         "admin triggered payment reconciliation"
     );
-    let today = vn_today(Utc::now());
-    let report = state.service.run_reconciliation(today).await?;
+    let report = state
+        .service
+        .run_reconciliation(run_date, channel_filter)
+        .await?;
     Ok((StatusCode::OK, Json(report)))
+}
+
+async fn internal_reconciliation_reports(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<ReconciliationReportsQuery>,
+) -> Result<impl IntoResponse, PaymentError> {
+    require_capability(
+        &state,
+        &headers,
+        CAP_LEDGER_READ,
+        "InternalReconciliationReports",
+    )?;
+    let channel_filter = SalesChannel::parse_filter(&query.sales_channel)?;
+    let reports = state
+        .service
+        .list_reconciliation_reports(query.limit.unwrap_or(30), channel_filter)
+        .await?;
+    Ok((StatusCode::OK, Json(json!({ "reports": reports }))))
 }
 
 fn header_str<'a>(headers: &'a HeaderMap, key: &str) -> Option<&'a str> {
@@ -585,11 +707,8 @@ mod tests {
     const TEST_USER_JWT_SECRET: &str = "http-unit-test-user-jwt-secret";
     const TEST_SERVICE_JWT_SECRET: &str = "http-unit-test-service-jwt-secret";
 
-    fn test_router() -> (Router, Config) {
+    fn test_router_with_config(mut cfg: Config) -> (Router, Config) {
         crate::telemetry::init_test_tracing();
-        let mut cfg = Config::from_env();
-        cfg.webhook_secret = "unit-test-secret".to_string();
-        cfg.vietqr_mode = VietQrMode::Mock;
         cfg.database_url = "postgres://unit:unit@127.0.0.1:1/unit_test_db".to_string();
         let pool = PgPoolOptions::new()
             .acquire_timeout(Duration::from_millis(200))
@@ -599,6 +718,41 @@ mod tests {
         let auth =
             GrpcAuth::new(TEST_USER_JWT_SECRET, TEST_SERVICE_JWT_SECRET).expect("test GrpcAuth");
         (build_router(svc, auth), cfg)
+    }
+
+    fn test_router() -> (Router, Config) {
+        let mut cfg = Config::from_env();
+        cfg.app_env = crate::config::AppEnv::Development;
+        cfg.webhook_secret = "unit-test-secret".to_string();
+        cfg.vietqr_mode = VietQrMode::Mock;
+        cfg.zalopay = crate::config::ZaloPayConfig::mock_default();
+        test_router_with_config(cfg)
+    }
+
+    fn bearer_user(role: &str, user_id: &str, shop_id: &str) -> String {
+        let tok = sign_hs256(
+            TEST_USER_JWT_SECRET,
+            json!({
+                "sub": user_id,
+                "role": role,
+                "shop_id": shop_id,
+                "exp": Utc::now().timestamp() + 60,
+            }),
+        );
+        format!("Bearer {tok}")
+    }
+
+    fn bearer_service() -> String {
+        let tok = sign_hs256(
+            TEST_SERVICE_JWT_SECRET,
+            json!({
+                "sub": "order-service",
+                "role": "admin",
+                "service": "order-service",
+                "exp": Utc::now().timestamp() + 60,
+            }),
+        );
+        format!("Bearer {tok}")
     }
 
     #[tokio::test]
@@ -634,6 +788,7 @@ mod tests {
         let routes = [
             (Method::GET, "/internal/ledger/summary"),
             (Method::GET, "/internal/reconciliation/queue"),
+            (Method::GET, "/internal/reconciliation/reports"),
             (Method::POST, "/internal/reconciliation/run"),
         ];
 
@@ -776,7 +931,7 @@ mod tests {
             assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "case={case}");
         }
 
-        // Valid internal service token -> 403 (PaymentEventsSse is not in SERVICE_METHODS)
+        // Valid internal service token -> 403 (PaymentEventsSse is not in SERVICE_METHOD_ALLOWLIST)
         let svc_tok = sign_hs256(
             TEST_SERVICE_JWT_SECRET,
             json!({
@@ -816,6 +971,7 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert!(resp.headers().get("access-control-allow-origin").is_none());
+        assert!(resp.headers().get("x-trace-id").is_some());
 
         let metrics_resp = app
             .oneshot(
@@ -1100,6 +1256,8 @@ mod tests {
                 expires_at: None,
                 paid_at: Some(now),
                 trace_id: "trace-sse".into(),
+                sales_channel: "MARKETPLACE".into(),
+                storefront_shop_id: String::new(),
                 created_at: now,
                 updated_at: now,
             },
@@ -1121,6 +1279,8 @@ mod tests {
                     order_code: None,
                     cod_reconciled_at: None,
                     cod_reconciliation_run_id: None,
+                    sales_channel: "MARKETPLACE".into(),
+                    storefront_shop_id: String::new(),
                     created_at: now,
                 },
                 ShopAllocationRecord {
@@ -1140,6 +1300,8 @@ mod tests {
                     order_code: None,
                     cod_reconciled_at: None,
                     cod_reconciliation_run_id: None,
+                    sales_channel: "MARKETPLACE".into(),
+                    storefront_shop_id: String::new(),
                     created_at: now,
                 },
             ],
@@ -1341,7 +1503,11 @@ mod tests {
             );
 
             // ledger.read routes
-            for path in ["/internal/ledger/summary", "/internal/reconciliation/queue"] {
+            for path in [
+                "/internal/ledger/summary",
+                "/internal/reconciliation/queue",
+                "/internal/reconciliation/reports",
+            ] {
                 let allowed = matches!(role, "super_admin" | "admin" | "accountant" | "ops");
                 let resp = app
                     .clone()
@@ -1384,5 +1550,277 @@ mod tests {
                 assert_eq!(resp.status(), StatusCode::FORBIDDEN, "recon {role}");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_b1_http_internal_sales_channel_validation_and_reports_rbac() {
+        let (app, _) = test_router();
+
+        // Buyer JWT, Seller JWT, and service token -> 403 on /internal/reconciliation/reports
+        for auth_header in [
+            bearer_user("buyer", "u-1", ""),
+            bearer_user("seller", "u-2", "shop-1"),
+            bearer_service(),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::GET)
+                        .uri("/internal/reconciliation/reports")
+                        .header("authorization", &auth_header)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        }
+
+        // Admin JWT with invalid sales_channel filter -> 400 Bad Request across all 3 filtered routes
+        let admin = bearer_user("admin", "admin-1", "");
+        for (method, uri) in [
+            (
+                Method::GET,
+                "/internal/ledger/summary?sales_channel=INVALID",
+            ),
+            (
+                Method::POST,
+                "/internal/reconciliation/run?sales_channel=INVALID",
+            ),
+            (
+                Method::GET,
+                "/internal/reconciliation/reports?sales_channel=INVALID",
+            ),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("authorization", &admin)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_production_http_webhooks_reject_repo_mock_keys_while_dev_accepts() {
+        use crate::config::{
+            AppEnv, ZaloPayConfig, ZaloPayMode, DEFAULT_WEBHOOK_SECRET, DEFAULT_ZALOPAY_MOCK_KEY2,
+            DEV_ONLY_ZALOPAY_MOCK_KEY2,
+        };
+        use crate::zalopay::{MockZaloPay, ZaloPayCallbackData};
+
+        let now = Utc::now();
+        let fresh_ts = now.timestamp().to_string();
+
+        let make_zp_cb = |key2: &str, amount: i64| {
+            let payload = ZaloPayCallbackData {
+                app_id: 2554,
+                app_trans_id: "261124_NMATTACK0001".to_string(),
+                app_time: now.timestamp_millis(),
+                app_user: "buyer-1".to_string(),
+                amount,
+                embed_data: "{}".to_string(),
+                item: "[]".to_string(),
+                zp_trans_id: 261_124_000_001,
+                server_time: now.timestamp_millis(),
+                channel: 38,
+                merchant_user_id: "mu-1".to_string(),
+                user_fee_amount: 0,
+                discount_amount: 0,
+            };
+            serde_json::to_vec(&MockZaloPay::build_signed_callback(key2, &payload).unwrap())
+                .unwrap()
+        };
+
+        let forged_zp_dev_key = make_zp_cb(DEV_ONLY_ZALOPAY_MOCK_KEY2, 250_000);
+        let forged_zp_p0b_key = make_zp_cb(DEFAULT_ZALOPAY_MOCK_KEY2, 250_000);
+
+        // 1a. Production with real Sandbox keys rejects callbacks signed with repo mock keys (401).
+        let mut prod_cfg = Config::from_env();
+        prod_cfg.app_env = AppEnv::Production;
+        prod_cfg.zalopay = ZaloPayConfig::mock_default();
+        prod_cfg.zalopay.mode = ZaloPayMode::Sandbox;
+        prod_cfg.zalopay.app_id = Some(2554);
+        prod_cfg.zalopay.key1 = "prod-real-key1-987654321".to_string();
+        prod_cfg.zalopay.key2 = "prod-real-key2-abcdef123".to_string();
+        prod_cfg.vietqr_mode = VietQrMode::PayOs;
+        prod_cfg.webhook_secret = "prod-real-webhook-secret-998877".to_string();
+        let (prod_app, _) = test_router_with_config(prod_cfg);
+
+        for forged in [&forged_zp_dev_key, &forged_zp_p0b_key] {
+            let zp_resp = prod_app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/webhooks/zalopay")
+                        .header("content-type", "application/json")
+                        .body(Body::from(forged.clone()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(zp_resp.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        // 1b. Production rejects /webhooks/payment and /webhooks/vietqr signed with repo secrets (401).
+        let wh_body = r#"{"provider_tx_id":"TX-ATK","order_group_id":"grp-1","amount_vnd":100000,"status":"SUCCEEDED"}"#;
+        for repo_secret in [
+            DEFAULT_WEBHOOK_SECRET,
+            "dev-only-payment-webhook-hmac-secret",
+        ] {
+            let forged_sig = compute_hmac_hex(repo_secret, wh_body.as_bytes());
+            for uri in ["/webhooks/payment", "/webhooks/vietqr"] {
+                let resp = prod_app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(Method::POST)
+                            .uri(uri)
+                            .header("content-type", "application/json")
+                            .header("x-signature", &forged_sig)
+                            .header("x-timestamp", &fresh_ts)
+                            .body(Body::from(wh_body))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    resp.status(),
+                    StatusCode::UNAUTHORIZED,
+                    "{uri} {repo_secret}"
+                );
+            }
+        }
+
+        // 2. Misconfigured production router (mock mode / placeholder secrets) returns 503.
+        let mut mis_prod = Config::from_env();
+        mis_prod.app_env = AppEnv::Production;
+        mis_prod.zalopay = ZaloPayConfig::mock_default();
+        mis_prod.vietqr_mode = VietQrMode::Mock;
+        mis_prod.webhook_secret = "dev-only-payment-webhook-hmac-secret".to_string();
+        let (mis_app, _) = test_router_with_config(mis_prod);
+
+        let zp_mis_resp = mis_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/zalopay")
+                    .header("content-type", "application/json")
+                    .body(Body::from(forged_zp_dev_key))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(zp_mis_resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // Production with Sandbox mode but placeholder key2 also returns 503.
+        let mut mis_sandbox = Config::from_env();
+        mis_sandbox.app_env = AppEnv::Production;
+        mis_sandbox.zalopay = ZaloPayConfig::mock_default();
+        mis_sandbox.zalopay.mode = ZaloPayMode::Sandbox;
+        mis_sandbox.zalopay.app_id = Some(2554);
+        mis_sandbox.zalopay.key1 = "prod-real-key1-987654321".to_string();
+        mis_sandbox.zalopay.key2 = DEFAULT_ZALOPAY_MOCK_KEY2.to_string();
+        let (mis_sandbox_app, _) = test_router_with_config(mis_sandbox);
+        let zp_mis_sandbox_resp = mis_sandbox_app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/zalopay")
+                    .header("content-type", "application/json")
+                    .body(Body::from(forged_zp_p0b_key))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            zp_mis_sandbox_resp.status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+
+        let dev_sig = compute_hmac_hex("dev-only-payment-webhook-hmac-secret", wh_body.as_bytes());
+        for uri in ["/webhooks/payment", "/webhooks/vietqr"] {
+            let resp = mis_app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .header("x-signature", &dev_sig)
+                        .header("x-timestamp", &fresh_ts)
+                        .body(Body::from(wh_body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+        }
+
+        // 3. Dev config still accepts signatures made with DEV_ONLY_ZALOPAY_MOCK_KEY2 and dev webhook secret
+        //    (reaches payload validation -> 400 BAD_REQUEST on amount=0, proving HMAC passed).
+        let mut dev_cfg = Config::from_env();
+        dev_cfg.app_env = AppEnv::Development;
+        dev_cfg.zalopay = ZaloPayConfig::mock_default();
+        dev_cfg.vietqr_mode = VietQrMode::Mock;
+        dev_cfg.webhook_secret = "dev-only-payment-webhook-hmac-secret".to_string();
+        let (dev_app, _) = test_router_with_config(dev_cfg);
+
+        let dev_zp_zero_amt = make_zp_cb(DEV_ONLY_ZALOPAY_MOCK_KEY2, 0);
+        let dev_zp_resp = dev_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/zalopay")
+                    .header("content-type", "application/json")
+                    .body(Body::from(dev_zp_zero_amt))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(dev_zp_resp.status(), StatusCode::BAD_REQUEST);
+
+        let dev_wh_invalid_schema =
+            r#"{"provider_tx_id":"TX-DEV","amount_vnd":0,"status":"SUCCEEDED"}"#;
+        let dev_wh_sig = compute_hmac_hex(
+            "dev-only-payment-webhook-hmac-secret",
+            dev_wh_invalid_schema.as_bytes(),
+        );
+        let dev_vq_resp = dev_app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/vietqr")
+                    .header("content-type", "application/json")
+                    .header("x-signature", &dev_wh_sig)
+                    .header("x-timestamp", &fresh_ts)
+                    .body(Body::from(dev_wh_invalid_schema))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(dev_vq_resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_sse_event_names() {
+        assert_eq!(status_to_sse_event_name("succeeded"), "payment.succeeded");
+        assert_eq!(status_to_sse_event_name("expired"), "payment.expired");
+        assert_eq!(status_to_sse_event_name("failed"), "payment.failed");
+        assert_eq!(status_to_sse_event_name("cancelled"), "payment.failed");
+        assert_eq!(status_to_sse_event_name("superseded"), "payment.failed");
+        assert_eq!(status_to_sse_event_name("refunded"), "payment.refunded");
+        assert_eq!(status_to_sse_event_name("pending"), "payment.pending");
     }
 }

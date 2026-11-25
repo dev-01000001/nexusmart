@@ -26,6 +26,49 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+const (
+	SalesChannelMarketplace = "MARKETPLACE"
+	SalesChannelStorefront  = "STOREFRONT"
+)
+
+func normalizeSalesChannel(rawChannel, rawStorefrontShopID string) (string, string, error) {
+	ch := strings.ToUpper(strings.TrimSpace(rawChannel))
+	shopID := strings.TrimSpace(rawStorefrontShopID)
+	switch ch {
+	case "", SalesChannelMarketplace:
+		if shopID != "" {
+			return "", "", status.Error(codes.InvalidArgument, "INVALID_SALES_CHANNEL: storefront_shop_id must be empty for MARKETPLACE orders")
+		}
+		return SalesChannelMarketplace, "", nil
+	case SalesChannelStorefront:
+		if shopID == "" {
+			return "", "", status.Error(codes.InvalidArgument, "STOREFRONT_SHOP_REQUIRED: storefront_shop_id is required for STOREFRONT orders")
+		}
+		return SalesChannelStorefront, shopID, nil
+	default:
+		return "", "", status.Errorf(codes.InvalidArgument, "INVALID_SALES_CHANNEL: unsupported sales_channel %q (must be MARKETPLACE or STOREFRONT)", rawChannel)
+	}
+}
+
+func normalizeSalesChannelFilter(rawChannel string) (string, error) {
+	ch := strings.ToUpper(strings.TrimSpace(rawChannel))
+	switch ch {
+	case "":
+		return "", nil
+	case SalesChannelMarketplace, SalesChannelStorefront:
+		return ch, nil
+	default:
+		return "", status.Errorf(codes.InvalidArgument, "INVALID_SALES_CHANNEL: unsupported sales_channel filter %q (must be MARKETPLACE or STOREFRONT)", rawChannel)
+	}
+}
+
+func effectiveSalesChannel(ch string) string {
+	if strings.TrimSpace(ch) == "" {
+		return SalesChannelMarketplace
+	}
+	return ch
+}
+
 // OrderService implements all Order domain workflows, checkout saga, RBAC, and async handlers.
 type OrderService struct {
 	cfg                   config.Config
@@ -40,6 +83,11 @@ type OrderService struct {
 	acquireMaxWait        time.Duration
 	acquireInitialBackoff time.Duration
 	acquireMaxBackoff     time.Duration
+	// Optional overrides for fast deterministic lease-fence tests (defaults: 30s lease, 5s safety margin).
+	addressChangeLease       time.Duration
+	addressChangeLeaseSafety time.Duration
+	// Optional whitebox test hook invoked after each committed step of UpdateOrderAddress (G3 crash tests).
+	afterAddressChangeStep func(step int, changeID string) error
 }
 
 // NewOrderService constructs an OrderService.
@@ -200,16 +248,26 @@ func mapStoreError(err error) error {
 	if errors.Is(err, store.ErrNotFound) {
 		return status.Error(codes.NotFound, "record not found")
 	}
+	if errors.Is(err, store.ErrAddressChangeLostLease) {
+		return status.Error(codes.FailedPrecondition, store.ErrAddressChangeInProgress.Error())
+	}
 	if errors.Is(err, statemachine.ErrInvalidTransition) ||
 		errors.Is(err, statemachine.ErrInvalidReturnTransition) ||
 		errors.Is(err, store.ErrRetryPrecondition) ||
 		errors.Is(err, store.ErrDuplicateReturnRequest) ||
 		errors.Is(err, store.ErrReturnDeadlineNotReached) ||
-		errors.Is(err, store.ErrOrderNotNeedingReview) {
+		errors.Is(err, store.ErrOrderNotNeedingReview) ||
+		errors.Is(err, store.ErrAddressUpdateNotAllowed) ||
+		errors.Is(err, store.ErrAddressChangeInProgress) ||
+		errors.Is(err, store.ErrAddressChangeIdemConflict) ||
+		errors.Is(err, store.ErrCODLimitExceeded) {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	if _, ok := status.FromError(err); ok {
 		return err
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return status.FromContextError(err).Err()
 	}
 	return status.Errorf(codes.Internal, "internal order error: %v", err)
 }
@@ -259,6 +317,13 @@ func (s *OrderService) sellerConfirmTimeout() time.Duration {
 	return time.Duration(hours) * time.Hour
 }
 
+func (s *OrderService) batchShipMaxItems() int {
+	if s.cfg.BatchShipMaxItems <= 0 {
+		return 50
+	}
+	return s.cfg.BatchShipMaxItems
+}
+
 func (s *OrderService) returnSellerResponseDuration() time.Duration {
 	days := s.cfg.ReturnSellerResponseDays
 	if days <= 0 {
@@ -286,15 +351,16 @@ func (s *OrderService) returnInspectDuration() time.Duration {
 func (s *OrderService) buildOrderCompletedOutbox(ord db.Order, traceID, traceparent string) (db.InsertOutboxEventParams, error) {
 	coinsReward := ComputeOrderRewardCoins(ord, s.cfg.RewardCoinsBPS)
 	payloadBytes, err := json.Marshal(events.OrderCompletedPayload{
-		OrderID:         ord.ID,
-		OrderCode:       ord.OrderCode,
-		BuyerID:         ord.BuyerID,
-		ShopID:          ord.ShopID,
-		SubtotalVND:     ord.SubtotalVND,
-		CommissionVND:   ord.CommissionVND,
-		PaymentFeeVND:   ord.PaymentFeeVND,
-		TotalPayableVND: ord.TotalPayableVND,
-		CoinsReward:     coinsReward,
+		OrderID:          ord.ID,
+		OrderCode:        ord.OrderCode,
+		BuyerID:          ord.BuyerID,
+		ShopID:           ord.ShopID,
+		StorefrontShopID: ord.StorefrontShopID,
+		SubtotalVND:      ord.SubtotalVND,
+		CommissionVND:    ord.CommissionVND,
+		PaymentFeeVND:    ord.PaymentFeeVND,
+		TotalPayableVND:  ord.TotalPayableVND,
+		CoinsReward:      coinsReward,
 	})
 	if err != nil {
 		return db.InsertOutboxEventParams{}, fmt.Errorf("marshal order.completed event: %w", err)
@@ -432,6 +498,8 @@ func aggregateToProtoForCaller(agg store.OrderAggregate, caller callerIdentity) 
 		UpdatedAt:                  timestamppb.New(ord.UpdatedAt),
 		NeedsManualReview:          canReadAdminOrders && ord.OrphanShipmentNeedsManualReview,
 		ShipmentJobStatus:          ord.ShipmentJobStatus,
+		SalesChannel:               effectiveSalesChannel(ord.SalesChannel),
+		StorefrontShopId:           ord.StorefrontShopID,
 	}
 	if ord.PaymentExpiresAt != nil {
 		out.PaymentExpiresAt = timestamppb.New(*ord.PaymentExpiresAt)

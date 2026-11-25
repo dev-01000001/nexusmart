@@ -427,3 +427,144 @@ func TestConsumerRealNATSDLQRetryWithMaxDeliverHeadroomAndSanitization(t *testin
 		t.Fatalf("expected [REDACTED] in JetStream DLQ message, got: %s", string(dlqMsg.Data))
 	}
 }
+
+func TestConsumerRealNATSB1ProductEventsAndMalformedAddressUpdatedDLQ(t *testing.T) {
+	natsURL := requireNATSURL(t)
+	streamName := fmt.Sprintf("NEXUSMART_B1G3_%d", time.Now().UnixNano())
+	dlqStreamName := streamName + "_DLQ"
+
+	adminNC, err := nats.Connect(natsURL)
+	if err != nil {
+		t.Fatalf("connect admin nats: %v", err)
+	}
+	adminJS, err := adminNC.JetStream()
+	if err != nil {
+		adminNC.Close()
+		t.Fatalf("admin jetstream: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = adminJS.DeleteStream(streamName)
+		_ = adminJS.DeleteStream(dlqStreamName)
+		adminNC.Close()
+	})
+	if err := jetstream.EnsureStream(adminJS, &nats.StreamConfig{
+		Name:      streamName,
+		Subjects:  []string{"product.>", "order.>"},
+		Retention: nats.LimitsPolicy,
+		Storage:   nats.FileStorage,
+	}); err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+	if err := jetstream.EnsureStream(adminJS, &nats.StreamConfig{
+		Name:      dlqStreamName,
+		Subjects:  []string{"dlq.>"},
+		Retention: nats.LimitsPolicy,
+		Storage:   nats.FileStorage,
+	}); err != nil {
+		t.Fatalf("create dlq stream: %v", err)
+	}
+
+	nc, err := nats.Connect(natsURL)
+	if err != nil {
+		t.Fatalf("connect consumer nats: %v", err)
+	}
+	defer nc.Close()
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("consumer jetstream: %v", err)
+	}
+
+	repo := newNoopConsumerRepo()
+	svc := service.NewNotificationService(repo, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	dlqStore := &stubDLQ{}
+
+	c := NewConsumer(js, svc, nil, streamName, 5, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c.dlqStore = dlqStore
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("start consumer: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	// 1. Publish B1 product events -> all 3 must be Acked cleanly with 0 DLQ rows/messages.
+	b1Events := []struct {
+		subject string
+		eventID string
+		payload string
+	}{
+		{"product.upserted", "evt-nats-b1-upsert", `{"product_id":"p1","shop_id":"s1","name":"Áo Polo","min_price_vnd":199000,"status":"APPROVED"}`},
+		{"product.deleted", "evt-nats-b1-delete", `{"product_id":"p1","shop_id":"s1","reason":"HIDDEN"}`},
+		{"product.category_updated", "evt-nats-b1-cat", `{"category_id":"c1","name":"Áo Nam","action":"UPSERT"}`},
+	}
+	for _, ev := range b1Events {
+		raw, _ := json.Marshal(service.Envelope{
+			EventID:   ev.eventID,
+			EventType: ev.subject,
+			Payload:   json.RawMessage(ev.payload),
+		})
+		if _, err := adminJS.Publish(ev.subject, raw); err != nil {
+			t.Fatalf("publish %s: %v", ev.subject, err)
+		}
+	}
+
+	// 2. Publish malformed order.address_updated (missing shop_id, with rogue street_address/phone) ->
+	// must route to dlq.order.address_updated + dead_letter_events with PII redacted.
+	badAddrRaw, _ := json.Marshal(service.Envelope{
+		EventID:   "evt-nats-addr-bad",
+		EventType: "order.address_updated",
+		Payload:   json.RawMessage(`{"order_id":"ord-bad-nats","buyer_id":"b-1","street_address":"77 Hai Bà Trưng","recipient_phone":"0905554444"}`),
+	})
+	if _, err := adminJS.Publish("order.address_updated", badAddrRaw); err != nil {
+		t.Fatalf("publish malformed order.address_updated: %v", err)
+	}
+
+	// Wait until all 4 messages are acknowledged on primary stream AND the malformed event appears in DLQ stream.
+	deadline := time.Now().Add(8 * time.Second)
+	var dlqMsg *nats.RawStreamMsg
+	for time.Now().Before(deadline) {
+		info, infoErr := adminJS.ConsumerInfo(streamName, "notification-events-v1")
+		msg, getErr := adminJS.GetMsg(dlqStreamName, 1)
+		if infoErr == nil && info.AckFloor.Stream >= 4 && getErr == nil && msg != nil {
+			dlqMsg = msg
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if dlqMsg == nil {
+		t.Fatalf("expected all 4 events acked and 1 malformed address event in %s", dlqStreamName)
+	}
+
+	// Ensure ONLY the 1 malformed order.address_updated event entered DLQ (0 B1 events in DLQ).
+	dlqInfo, err := adminJS.StreamInfo(dlqStreamName)
+	if err != nil {
+		t.Fatalf("dlq stream info: %v", err)
+	}
+	if dlqInfo.State.Msgs != 1 {
+		t.Fatalf("expected exactly 1 DLQ message (malformed order.address_updated), got %d", dlqInfo.State.Msgs)
+	}
+	if dlqMsg.Subject != "dlq.order.address_updated" {
+		t.Fatalf("unexpected DLQ subject: %q", dlqMsg.Subject)
+	}
+	for _, secret := range []string{"77 Hai Bà Trưng", "0905554444"} {
+		if strings.Contains(string(dlqMsg.Data), secret) {
+			t.Fatalf("SECURITY: PII %q leaked into real JetStream DLQ: %s", secret, string(dlqMsg.Data))
+		}
+	}
+	if !strings.Contains(string(dlqMsg.Data), "[REDACTED]") {
+		t.Fatalf("expected [REDACTED] in real JetStream DLQ message, got: %s", string(dlqMsg.Data))
+	}
+
+	dlqStore.mu.Lock()
+	dbDLQCount := len(dlqStore.records)
+	dlqStore.mu.Unlock()
+	if dbDLQCount != 1 {
+		t.Fatalf("expected exactly 1 dead_letter_events row (0 for B1 events), got %d", dbDLQCount)
+	}
+	for _, ev := range b1Events {
+		if ok, _ := repo.IsEventProcessed(context.Background(), ev.eventID); !ok {
+			t.Errorf("expected B1 event %s processed cleanly", ev.eventID)
+		}
+	}
+}

@@ -311,13 +311,13 @@ describe("Wave 3b-2 web — A6 ZaloPay & Payment Method Config", () => {
   });
 
   test("3. [A6/F6/F7/F8] Source invariants: no hardcoded DEFAULT_COD_MAX_VND, no Ví NexusPay, real admin/payment-methods, mock-zalopay route", () => {
-    const checkoutPageSrc = readSrc("app/(shop)/thanh-toan/page.tsx");
+    const checkoutPageSrc = readSrc("app/(site)/s/[host]/thanh-toan/page.tsx");
     assert.ok(
       checkoutPageSrc.includes("/payment-methods"),
       "checkout page must fetch /payment-methods"
     );
 
-    const checkoutClientSrc = readSrc("app/(shop)/thanh-toan/CheckoutClient.tsx");
+    const checkoutClientSrc = readSrc("app/(site)/s/[host]/thanh-toan/CheckoutClient.tsx");
     assert.equal(
       checkoutClientSrc.includes("DEFAULT_COD_MAX_VND"),
       false,
@@ -325,8 +325,8 @@ describe("Wave 3b-2 web — A6 ZaloPay & Payment Method Config", () => {
     );
     assert.ok(checkoutClientSrc.includes("ZALOPAY"), "CheckoutClient must support ZALOPAY");
     assert.ok(
-      checkoutClientSrc.includes("resolvePostCheckoutHref"),
-      "CheckoutClient must route online vs 0 VND / COD checkout via resolvePostCheckoutHref"
+      checkoutClientSrc.includes("res.total_payable_vnd > 0"),
+      "CheckoutClient must skip waiting page for 0 VND orders"
     );
 
     const retryBoxSrc = readSrc("features/commerce/RetryPaymentBox.tsx");
@@ -340,7 +340,10 @@ describe("Wave 3b-2 web — A6 ZaloPay & Payment Method Config", () => {
     );
     assert.ok(retryBoxSrc.includes("Idempotency-Key"), "RetryPaymentBox must send Idempotency-Key");
 
-    const cauHinhSrc = readSrc("app/(admin)/admin/cau-hinh/page.tsx");
+    const cauHinhSrc =
+      readSrc("app/(admin)/admin/cau-hinh/page.tsx") +
+      "\n" +
+      readSrc("features/admin/AdminConfigClient.tsx");
     assert.ok(
       cauHinhSrc.includes("AdminPaymentMethodsPanel"),
       "cau-hinh must render AdminPaymentMethodsPanel"
@@ -378,7 +381,7 @@ describe("Wave 3b-2 web — A6 ZaloPay & Payment Method Config", () => {
     assert.ok(feesSrc.includes("ZALOPAY"), "AdminFeesPanel must support ZALOPAY payment fee");
 
     assert.equal(
-      existsSync(resolve(WEB_SRC, "app/(shop)/thanh-toan/mock-zalopay/page.tsx")),
+      existsSync(resolve(WEB_SRC, "app/(site)/s/[host]/thanh-toan/mock-zalopay/page.tsx")),
       true,
       "same-origin mock ZaloPay simulator page must exist at /thanh-toan/mock-zalopay"
     );
@@ -500,7 +503,7 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
       "(admin)/layout.tsx must accept all 6 ADMIN_STAFF_ROLES"
     );
 
-    const shellSrc = readSrc("app/(admin)/AdminShell.tsx");
+    const shellSrc = readSrc("features/admin/AdminShell.tsx");
     assert.ok(
       shellSrc.includes("canAccessAdminPath"),
       "AdminShell must guard disallowed routes before rendering children"
@@ -508,6 +511,11 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
     assert.ok(
       shellSrc.includes("roleHasCapability"),
       "AdminShell must filter nav & badge fetches by capability"
+    );
+    assert.equal(
+      shellSrc.includes("/admin/noi-dung") || shellSrc.includes("/admin/thanh-vien"),
+      false,
+      "AdminShell must not link to deleted /admin/noi-dung or /admin/thanh-vien"
     );
 
     const usersPanelSrc = readSrc("features/admin/AdminUsersPanel.tsx");
@@ -533,12 +541,25 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
       "AdminUsersPanel must gate staff creation on staff.create"
     );
 
-    const gianHangSrc = readSrc("app/(admin)/admin/gian-hang/page.tsx");
+    const gianHangSrc =
+      readSrc("app/(admin)/admin/gian-hang/page.tsx") +
+      "\n" +
+      readSrc("features/admin/AdminShopsClient.tsx");
     assert.ok(gianHangSrc.includes("/suspend"), "gian-hang must support shop suspension request");
     assert.ok(gianHangSrc.includes("/unsuspend"), "gian-hang must support shop unsuspension");
     assert.ok(
       gianHangSrc.includes("shops.bank.read"),
       "gian-hang must gate bank-account calls on shops.bank.read"
+    );
+
+    const sitesClientSrc = readSrc("features/admin/sites/AdminSitesClient.tsx");
+    assert.ok(
+      sitesClientSrc.includes('roleHasCapability(user.role, "sites.suspend")'),
+      "AdminSitesClient must gate suspend/unsuspend controls on sites.suspend"
+    );
+    assert.ok(
+      sitesClientSrc.includes('roleHasCapability(user.role, "sites.domains.write")'),
+      "AdminSitesClient must gate domain removal controls on sites.domains.write"
     );
 
     const approvalsPanelPath = resolve(WEB_SRC, "features/admin/AdminApprovalsPanel.tsx");
@@ -561,7 +582,10 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
       "AdminApprovalsPanel must enforce maker != checker"
     );
 
-    const doiSoatSrc = readSrc("app/(admin)/admin/doi-soat/page.tsx");
+    const doiSoatSrc =
+      readSrc("app/(admin)/admin/doi-soat/page.tsx") +
+      "\n" +
+      readSrc("features/admin/AdminReconciliationClient.tsx");
     assert.ok(
       doiSoatSrc.includes("PENDING_APPROVAL"),
       "doi-soat must support PENDING_APPROVAL refund status"
@@ -570,9 +594,13 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
       doiSoatSrc.includes("MANUAL_REVIEW"),
       "doi-soat must support MANUAL_REVIEW refund status"
     );
+    const cauHinhSrc =
+      readSrc("app/(admin)/admin/cau-hinh/page.tsx") +
+      "\n" +
+      readSrc("features/admin/AdminConfigClient.tsx");
     assert.ok(
-      doiSoatSrc.includes("AdminApprovalsPanel"),
-      "doi-soat must embed AdminApprovalsPanel"
+      cauHinhSrc.includes("AdminApprovalsPanel"),
+      "cau-hinh (tab duyet_hai_nguoi) must embed AdminApprovalsPanel"
     );
     assert.ok(
       doiSoatSrc.includes("carriers.read"),
@@ -601,19 +629,20 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
       "admin overview must gate admin/orders/needs-review on orders.read"
     );
 
-    const promoCoinsSrc = readSrc("features/admin/AdminPromoCoinsPanel.tsx");
+    const flashSaleSrc =
+      readSrc("app/(admin)/admin/flash-sale/page.tsx") +
+      "\n" +
+      readSrc("app/(admin)/admin/flash-sale/AdminFlashSaleClient.tsx");
     assert.ok(
-      promoCoinsSrc.includes("vouchers.read"),
-      "AdminPromoCoinsPanel must gate vouchers on vouchers.read"
+      flashSaleSrc.includes("vouchers.read"),
+      "AdminFlashSaleClient must gate vouchers on vouchers.read"
     );
     assert.ok(
-      promoCoinsSrc.includes("flash_sales.read"),
-      "AdminPromoCoinsPanel must gate flash sales on flash_sales.read"
+      flashSaleSrc.includes("flash_sales.read"),
+      "AdminFlashSaleClient must gate flash sales on flash_sales.read"
     );
-    assert.ok(
-      promoCoinsSrc.includes("coins.credit"),
-      "AdminPromoCoinsPanel must gate coin credit on coins.credit"
-    );
+    // Note: Admin coins credit write UI is read-only per DECISIONS; coins.credit capability
+    // remains enforced in CAPABILITY_MATRIX (tested in Test 4) and gateway router.go.
   });
 
   test("6. [Review #1, #2, #3, #6] Approvals DTO parity (decided_note), status filters, persistent toolbar on reload, and default-deny canAccessAdminPath", async () => {
@@ -671,15 +700,15 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
       "AdminApprovalsPanel must render filter toolbar before loading StateView"
     );
 
-    // #6: canAccessAdminPath must default-deny unknown admin routes while allowing all 9 known pages
+    // #6: canAccessAdminPath must default-deny unknown & deleted admin routes while allowing all 9 active pages
     const knownAdminRoutes = [
       "/admin",
       "/admin/gian-hang",
+      "/admin/sites",
       "/admin/kiem-duyet",
+      "/admin/flash-sale",
       "/admin/khieu-nai",
       "/admin/doi-soat",
-      "/admin/thanh-vien",
-      "/admin/noi-dung",
       "/admin/cau-hinh",
       "/admin/audit-log",
     ];
@@ -695,6 +724,8 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
       "/admin/secret",
       "/admin/bao-cao-noi-bo",
       "/admin/settings",
+      "/admin/thanh-vien",
+      "/admin/noi-dung",
       "/khong-phai-admin",
     ]) {
       assert.equal(
@@ -727,7 +758,7 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
     );
 
     // #7: /thanh-toan/mock-zalopay must NOT reflect untrusted query amount/app_trans_id as confirmed info
-    const mockZpSrc = readSrc("app/(shop)/thanh-toan/mock-zalopay/page.tsx");
+    const mockZpSrc = readSrc("app/(site)/s/[host]/thanh-toan/mock-zalopay/page.tsx");
     assert.equal(
       mockZpSrc.includes("searchParams"),
       false,
@@ -738,23 +769,23 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
       "mock-zalopay page must display neutral disclaimer: Trang mô phỏng, không phải trang ZaloPay thật"
     );
 
-    // #5 & bonus 11_ retry DTO parity
-    const e2e11Src = readFileSync(
-      resolve(REPO_ROOT, "tests/e2e-web/11_w3b2_zalopay_config.test.mjs"),
+    // #5 & bonus 19_ retry DTO parity (renumbered from 11_/12_ to 19_/20_ in phase-0b)
+    const e2e19Src = readFileSync(
+      resolve(REPO_ROOT, "tests/e2e-web/19_w3b2_zalopay_config.test.mjs"),
       "utf8"
     );
     assert.ok(
-      e2e11Src.includes(".payment?.payment_id"),
-      "e2e 11_ must read payment.payment_id matching gateway paymentDTO"
+      e2e19Src.includes("toVq.payment?.id") || e2e19Src.includes(".payment?.payment_id"),
+      "e2e 19_ must read retried payment id from /api/payments/[id]/retry"
     );
 
-    const e2e12Src = readFileSync(
-      resolve(REPO_ROOT, "tests/e2e-web/12_w3b2_admin_governance.test.mjs"),
+    const e2e20Src = readFileSync(
+      resolve(REPO_ROOT, "tests/e2e-web/20_w3b2_admin_governance.test.mjs"),
       "utf8"
     );
     assert.ok(
-      e2e12Src.includes("/api/gw/shops/register") && e2e12Src.includes("/review"),
-      "e2e 12_ test 3 must register & approve its own isolated shop instead of suspending a seeded shop"
+      e2e20Src.includes("createEphemeralSeller"),
+      "e2e 20_ must create its own isolated ephemeral shop instead of suspending a seeded shop"
     );
   });
 
@@ -822,14 +853,14 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
       true
     );
 
-    const orderDetailSrc = readSrc("features/account/OrderDetailClient.tsx");
+    const orderDetailSrc = readSrc("features/account/OrderDetailClientView.tsx");
     assert.ok(
       orderDetailSrc.includes("canSubmitBuyerRefundBankAccount"),
-      "OrderDetailClient must use canSubmitBuyerRefundBankAccount for bank form & change-bank button"
+      "OrderDetailClientView must use canSubmitBuyerRefundBankAccount for bank form & change-bank button"
     );
     assert.ok(
       orderDetailSrc.includes("ví ZaloPay"),
-      "OrderDetailClient must show ZaloPay-specific copy when refund is initializing or wallet-refunding"
+      "OrderDetailClientView must show ZaloPay-specific copy when refund is initializing or wallet-refunding"
     );
 
     // #2: Accountant manual settle rules (PENDING non-wallet OR MANUAL_REVIEW any method)
@@ -884,15 +915,18 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
       "ZaloPay đang hoàn tự động"
     );
 
-    const doiSoatSrc = readSrc("app/(admin)/admin/doi-soat/page.tsx");
+    const doiSoatSrc =
+      readSrc("app/(admin)/admin/doi-soat/page.tsx") +
+      "\n" +
+      readSrc("features/admin/AdminReconciliationClient.tsx");
     assert.ok(
       doiSoatSrc.includes("isAdminRefundManuallySettleable") &&
-        doiSoatSrc.includes("ZaloPay đang hoàn tự động"),
-      "doi-soat must block manual settlement on PENDING wallet refund and show ZaloPay auto-refund status"
+        doiSoatSrc.includes("getAdminRefundStatusMeta"),
+      "doi-soat must block manual settlement on PENDING wallet refund and render wallet status meta"
     );
     assert.ok(
-      doiSoatSrc.includes("status=MANUAL_REVIEW"),
-      "doi-soat must include MANUAL_REVIEW in badge count & filter visibility"
+      doiSoatSrc.includes('value="MANUAL_REVIEW"'),
+      "doi-soat must include MANUAL_REVIEW in refund status filter"
     );
 
     // #3: password_reset_failed activity label
@@ -1016,7 +1050,7 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
         total_payable_vnd: 150000,
         orders: [{ id: "ord-pos-1" }],
       }),
-      "/thanh-toan/cho-thanh-toan/pay-pos-1"
+      "/thanh-toan/cho/pay-pos-1"
     );
 
     // Result page status for 0 VND CONFIRMED + SUCCEEDED orders (ZALOPAY, VIETQR, COD)
@@ -1039,10 +1073,11 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
       );
     }
 
-    const checkoutClientSrc = readSrc("app/(shop)/thanh-toan/CheckoutClient.tsx");
+    const checkoutClientSrc = readSrc("app/(site)/s/[host]/thanh-toan/CheckoutClient.tsx");
     assert.ok(
-      checkoutClientSrc.includes("resolvePostCheckoutHref"),
-      "CheckoutClient must route post-checkout via resolvePostCheckoutHref"
+      checkoutClientSrc.includes("res.total_payable_vnd > 0") &&
+        checkoutClientSrc.includes('!== "SUCCEEDED"'),
+      "CheckoutClient must skip waiting page for 0 VND or already-SUCCEEDED orders"
     );
   });
 
@@ -1316,48 +1351,52 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
     const errorMap = await import("../src/lib/server/error-map.ts");
     const adminTypes = await import("../src/features/admin/types.ts");
 
-    // #1: SellerShopGate allowSuspended prop, suspended_reason/suspended_at, allowed vs blocked pages
-    const sellerCtxSrc = readSrc("features/seller/SellerContext.tsx");
+    // #1: SellerShell + isSellerRouteAllowedWhenSuspended enforce F12 suspended seller gating
+    const sellerVal = await import("../src/features/seller/sellerValidation.ts");
+    const sellerShellSrc = readSrc("features/seller/SellerShell.tsx");
     assert.ok(
-      sellerCtxSrc.includes("allowSuspended"),
-      "SellerShopGate must accept allowSuspended prop"
+      sellerShellSrc.includes("isSellerRouteAllowedWhenSuspended") &&
+        sellerShellSrc.includes("blockedBySuspension"),
+      "SellerShell must enforce isSellerRouteAllowedWhenSuspended gate when shop is SUSPENDED"
     );
     assert.ok(
-      sellerCtxSrc.includes("shop.suspended_reason") && sellerCtxSrc.includes("shop.suspended_at"),
-      "SellerShopGate must display shop.suspended_reason and shop.suspended_at (not rejection_reason)"
+      sellerShellSrc.includes("shop.suspended_reason") &&
+        sellerShellSrc.includes("shop.suspended_at"),
+      "SellerShell must display shop.suspended_reason and shop.suspended_at (not rejection_reason)"
     );
-    for (const relPath of [
-      "app/(seller)/seller/page.tsx",
-      "app/(seller)/seller/don-hang/page.tsx",
-      "app/(seller)/seller/don-hang/[id]/page.tsx",
-      "app/(seller)/seller/tra-hang/page.tsx",
-      "app/(seller)/seller/tai-chinh/page.tsx",
+    for (const allowedPath of [
+      "/seller",
+      "/seller/don-hang",
+      "/seller/don-hang/ord-123",
+      "/seller/tra-hang",
+      "/seller/tai-chinh",
     ]) {
-      const src = readSrc(relPath);
-      assert.ok(
-        src.includes("allowSuspended"),
-        `${relPath} must pass allowSuspended to SellerShopGate per F12`
+      assert.equal(
+        sellerVal.isSellerRouteAllowedWhenSuspended(allowedPath),
+        true,
+        `${allowedPath} must remain accessible when shop is SUSPENDED per F12`
       );
     }
-    for (const relPath of [
-      "app/(seller)/seller/san-pham/page.tsx",
-      "features/seller/ProductFormView.tsx",
-      "app/(seller)/seller/khuyen-mai/page.tsx",
-      "app/(seller)/seller/ho-so/page.tsx",
-      "app/(seller)/seller/chat/page.tsx",
-      "app/(seller)/seller/tuong-tac/page.tsx",
+    for (const blockedPath of [
+      "/seller/san-pham",
+      "/seller/san-pham/moi",
+      "/seller/khuyen-mai",
+      "/seller/ho-so",
+      "/seller/site",
+      "/seller/chat",
+      "/seller/tuong-tac",
+      "/seller/bao-cao-ai",
     ]) {
-      const src = readSrc(relPath);
       assert.equal(
-        src.includes("allowSuspended"),
+        sellerVal.isSellerRouteAllowedWhenSuspended(blockedPath),
         false,
-        `${relPath} must stay blocked when shop is SUSPENDED`
+        `${blockedPath} must stay blocked when shop is SUSPENDED`
       );
     }
 
-    // #3: localizeRefundReason wired into buyer OrderDetailClient, admin doi-soat, and AdminApprovalsPanel
-    const orderDetailSrc = readSrc("features/account/OrderDetailClient.tsx");
-    const doiSoatSrc = readSrc("app/(admin)/admin/doi-soat/page.tsx");
+    // #3: localizeRefundReason wired into buyer OrderDetailClientView, admin doi-soat, and AdminApprovalsPanel
+    const orderDetailSrc = readSrc("features/account/OrderDetailClientView.tsx");
+    const doiSoatSrc = readSrc("features/admin/AdminReconciliationClient.tsx");
     const approvalsSrc = readSrc("features/admin/AdminApprovalsPanel.tsx");
     assert.ok(orderDetailSrc.includes("localizeRefundReason"));
     assert.ok(doiSoatSrc.includes("localizeRefundReason"));
@@ -1433,9 +1472,9 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
     assert.equal(genericDup.message, "Thông tin đã tồn tại trong hệ thống.");
 
     // #7: Payment waiting page neutral loading, steps hidden after paid, paid total label, ZaloPay hold copy
-    const waitPageSrc = readSrc("app/(shop)/thanh-toan/cho-thanh-toan/[paymentId]/page.tsx");
+    const waitPageSrc = readSrc("app/(site)/s/[host]/thanh-toan/cho/[id]/page.tsx");
     const waitClientSrc = readSrc(
-      "app/(shop)/thanh-toan/cho-thanh-toan/[paymentId]/PaymentWaitingClient.tsx"
+      "app/(site)/s/[host]/thanh-toan/cho/[id]/PaymentWaitingClient.tsx"
     );
     assert.equal(
       waitPageSrc.includes("Đang tải thông tin thanh toán VietQR"),

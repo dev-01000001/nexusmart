@@ -47,6 +47,12 @@ const (
 	ProductService_DeleteBannedKeyword_FullMethodName            = "/nexusmart.product.v1.ProductService/DeleteBannedKeyword"
 	ProductService_PreviewBannedKeyword_FullMethodName           = "/nexusmart.product.v1.ProductService/PreviewBannedKeyword"
 	ProductService_RescanProductsForBannedContent_FullMethodName = "/nexusmart.product.v1.ProductService/RescanProductsForBannedContent"
+	ProductService_ListStockHistory_FullMethodName               = "/nexusmart.product.v1.ProductService/ListStockHistory"
+	ProductService_CreateProductImportJob_FullMethodName         = "/nexusmart.product.v1.ProductService/CreateProductImportJob"
+	ProductService_GetProductImportJob_FullMethodName            = "/nexusmart.product.v1.ProductService/GetProductImportJob"
+	ProductService_ListProductImportRows_FullMethodName          = "/nexusmart.product.v1.ProductService/ListProductImportRows"
+	ProductService_ConfirmProductImportJob_FullMethodName        = "/nexusmart.product.v1.ProductService/ConfirmProductImportJob"
+	ProductService_ListProductsForIndex_FullMethodName           = "/nexusmart.product.v1.ProductService/ListProductsForIndex"
 )
 
 // ProductServiceClient is the client API for ProductService service.
@@ -81,6 +87,12 @@ type ProductServiceClient interface {
 	DeleteBannedKeyword(ctx context.Context, in *DeleteBannedKeywordRequest, opts ...grpc.CallOption) (*DeleteBannedKeywordResponse, error)
 	PreviewBannedKeyword(ctx context.Context, in *PreviewBannedKeywordRequest, opts ...grpc.CallOption) (*PreviewBannedKeywordResponse, error)
 	RescanProductsForBannedContent(ctx context.Context, in *RescanProductsForBannedContentRequest, opts ...grpc.CallOption) (*RescanProductsForBannedContentResponse, error)
+	ListStockHistory(ctx context.Context, in *ListStockHistoryRequest, opts ...grpc.CallOption) (*ListStockHistoryResponse, error)
+	CreateProductImportJob(ctx context.Context, in *CreateProductImportJobRequest, opts ...grpc.CallOption) (*CreateProductImportJobResponse, error)
+	GetProductImportJob(ctx context.Context, in *GetProductImportJobRequest, opts ...grpc.CallOption) (*GetProductImportJobResponse, error)
+	ListProductImportRows(ctx context.Context, in *ListProductImportRowsRequest, opts ...grpc.CallOption) (*ListProductImportRowsResponse, error)
+	ConfirmProductImportJob(ctx context.Context, in *ConfirmProductImportJobRequest, opts ...grpc.CallOption) (*ConfirmProductImportJobResponse, error)
+	ListProductsForIndex(ctx context.Context, in *ListProductsForIndexRequest, opts ...grpc.CallOption) (*ListProductsForIndexResponse, error)
 }
 
 type productServiceClient struct {
@@ -371,6 +383,66 @@ func (c *productServiceClient) RescanProductsForBannedContent(ctx context.Contex
 	return out, nil
 }
 
+func (c *productServiceClient) ListStockHistory(ctx context.Context, in *ListStockHistoryRequest, opts ...grpc.CallOption) (*ListStockHistoryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListStockHistoryResponse)
+	err := c.cc.Invoke(ctx, ProductService_ListStockHistory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *productServiceClient) CreateProductImportJob(ctx context.Context, in *CreateProductImportJobRequest, opts ...grpc.CallOption) (*CreateProductImportJobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateProductImportJobResponse)
+	err := c.cc.Invoke(ctx, ProductService_CreateProductImportJob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *productServiceClient) GetProductImportJob(ctx context.Context, in *GetProductImportJobRequest, opts ...grpc.CallOption) (*GetProductImportJobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetProductImportJobResponse)
+	err := c.cc.Invoke(ctx, ProductService_GetProductImportJob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *productServiceClient) ListProductImportRows(ctx context.Context, in *ListProductImportRowsRequest, opts ...grpc.CallOption) (*ListProductImportRowsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListProductImportRowsResponse)
+	err := c.cc.Invoke(ctx, ProductService_ListProductImportRows_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *productServiceClient) ConfirmProductImportJob(ctx context.Context, in *ConfirmProductImportJobRequest, opts ...grpc.CallOption) (*ConfirmProductImportJobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConfirmProductImportJobResponse)
+	err := c.cc.Invoke(ctx, ProductService_ConfirmProductImportJob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *productServiceClient) ListProductsForIndex(ctx context.Context, in *ListProductsForIndexRequest, opts ...grpc.CallOption) (*ListProductsForIndexResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListProductsForIndexResponse)
+	err := c.cc.Invoke(ctx, ProductService_ListProductsForIndex_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ProductServiceServer is the server API for ProductService service.
 // All implementations must embed UnimplementedProductServiceServer
 // for forward compatibility.
@@ -403,6 +475,12 @@ type ProductServiceServer interface {
 	DeleteBannedKeyword(context.Context, *DeleteBannedKeywordRequest) (*DeleteBannedKeywordResponse, error)
 	PreviewBannedKeyword(context.Context, *PreviewBannedKeywordRequest) (*PreviewBannedKeywordResponse, error)
 	RescanProductsForBannedContent(context.Context, *RescanProductsForBannedContentRequest) (*RescanProductsForBannedContentResponse, error)
+	ListStockHistory(context.Context, *ListStockHistoryRequest) (*ListStockHistoryResponse, error)
+	CreateProductImportJob(context.Context, *CreateProductImportJobRequest) (*CreateProductImportJobResponse, error)
+	GetProductImportJob(context.Context, *GetProductImportJobRequest) (*GetProductImportJobResponse, error)
+	ListProductImportRows(context.Context, *ListProductImportRowsRequest) (*ListProductImportRowsResponse, error)
+	ConfirmProductImportJob(context.Context, *ConfirmProductImportJobRequest) (*ConfirmProductImportJobResponse, error)
+	ListProductsForIndex(context.Context, *ListProductsForIndexRequest) (*ListProductsForIndexResponse, error)
 	mustEmbedUnimplementedProductServiceServer()
 }
 
@@ -496,6 +574,24 @@ func (UnimplementedProductServiceServer) PreviewBannedKeyword(context.Context, *
 }
 func (UnimplementedProductServiceServer) RescanProductsForBannedContent(context.Context, *RescanProductsForBannedContentRequest) (*RescanProductsForBannedContentResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RescanProductsForBannedContent not implemented")
+}
+func (UnimplementedProductServiceServer) ListStockHistory(context.Context, *ListStockHistoryRequest) (*ListStockHistoryResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListStockHistory not implemented")
+}
+func (UnimplementedProductServiceServer) CreateProductImportJob(context.Context, *CreateProductImportJobRequest) (*CreateProductImportJobResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateProductImportJob not implemented")
+}
+func (UnimplementedProductServiceServer) GetProductImportJob(context.Context, *GetProductImportJobRequest) (*GetProductImportJobResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetProductImportJob not implemented")
+}
+func (UnimplementedProductServiceServer) ListProductImportRows(context.Context, *ListProductImportRowsRequest) (*ListProductImportRowsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListProductImportRows not implemented")
+}
+func (UnimplementedProductServiceServer) ConfirmProductImportJob(context.Context, *ConfirmProductImportJobRequest) (*ConfirmProductImportJobResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ConfirmProductImportJob not implemented")
+}
+func (UnimplementedProductServiceServer) ListProductsForIndex(context.Context, *ListProductsForIndexRequest) (*ListProductsForIndexResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListProductsForIndex not implemented")
 }
 func (UnimplementedProductServiceServer) mustEmbedUnimplementedProductServiceServer() {}
 func (UnimplementedProductServiceServer) testEmbeddedByValue()                        {}
@@ -1022,6 +1118,114 @@ func _ProductService_RescanProductsForBannedContent_Handler(srv interface{}, ctx
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ProductService_ListStockHistory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListStockHistoryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).ListStockHistory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_ListStockHistory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).ListStockHistory(ctx, req.(*ListStockHistoryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ProductService_CreateProductImportJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateProductImportJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).CreateProductImportJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_CreateProductImportJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).CreateProductImportJob(ctx, req.(*CreateProductImportJobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ProductService_GetProductImportJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetProductImportJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).GetProductImportJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_GetProductImportJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).GetProductImportJob(ctx, req.(*GetProductImportJobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ProductService_ListProductImportRows_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListProductImportRowsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).ListProductImportRows(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_ListProductImportRows_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).ListProductImportRows(ctx, req.(*ListProductImportRowsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ProductService_ConfirmProductImportJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConfirmProductImportJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).ConfirmProductImportJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_ConfirmProductImportJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).ConfirmProductImportJob(ctx, req.(*ConfirmProductImportJobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ProductService_ListProductsForIndex_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListProductsForIndexRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProductServiceServer).ListProductsForIndex(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProductService_ListProductsForIndex_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProductServiceServer).ListProductsForIndex(ctx, req.(*ListProductsForIndexRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ProductService_ServiceDesc is the grpc.ServiceDesc for ProductService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1140,6 +1344,30 @@ var ProductService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RescanProductsForBannedContent",
 			Handler:    _ProductService_RescanProductsForBannedContent_Handler,
+		},
+		{
+			MethodName: "ListStockHistory",
+			Handler:    _ProductService_ListStockHistory_Handler,
+		},
+		{
+			MethodName: "CreateProductImportJob",
+			Handler:    _ProductService_CreateProductImportJob_Handler,
+		},
+		{
+			MethodName: "GetProductImportJob",
+			Handler:    _ProductService_GetProductImportJob_Handler,
+		},
+		{
+			MethodName: "ListProductImportRows",
+			Handler:    _ProductService_ListProductImportRows_Handler,
+		},
+		{
+			MethodName: "ConfirmProductImportJob",
+			Handler:    _ProductService_ConfirmProductImportJob_Handler,
+		},
+		{
+			MethodName: "ListProductsForIndex",
+			Handler:    _ProductService_ListProductsForIndex_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

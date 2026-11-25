@@ -305,8 +305,9 @@ func w3b44CheckoutSingleItem(
 	resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "w3b44-co-" + uuid.NewString(),
 	}, CheckoutRequest{
-		AddressID: buyer.AddressID,
-		FromCart:  false,
+		SalesChannel: "MARKETPLACE",
+		AddressID:    buyer.AddressID,
+		FromCart:     false,
 		Items: []CheckoutItemInputDTO{
 			{SKUID: sku.ID, Quantity: qty, FlashSaleItemID: flashSaleItemID},
 		},
@@ -1024,6 +1025,7 @@ func TestE2E_W3B2_A6_ZaloPayAndPaymentMethods(t *testing.T) {
 		disCoResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3b44-dis-zalo-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     buyer.AddressID,
 			Items:         []CheckoutItemInputDTO{{SKUID: skuStd.ID, Quantity: 1}},
 			PaymentMethod: "ZALOPAY",
@@ -1047,6 +1049,7 @@ func TestE2E_W3B2_A6_ZaloPayAndPaymentMethods(t *testing.T) {
 		codOverResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3b44-cod-over500k-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     buyer.AddressID,
 			Items:         []CheckoutItemInputDTO{{SKUID: skuHigh.ID, Quantity: 1}},
 			PaymentMethod: "COD",
@@ -1060,6 +1063,7 @@ func TestE2E_W3B2_A6_ZaloPayAndPaymentMethods(t *testing.T) {
 		vqrUnderResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3b44-vqr-undermin-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     buyer.AddressID,
 			Items:         []CheckoutItemInputDTO{{SKUID: skuSmall.ID, Quantity: 1}},
 			PaymentMethod: "VIETQR",
@@ -1086,6 +1090,7 @@ func TestE2E_W3B2_A6_ZaloPayAndPaymentMethods(t *testing.T) {
 		zeroResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "w3b44-zero-min-exempt-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:      "MARKETPLACE",
 			AddressID:         buyer.AddressID,
 			Items:             []CheckoutItemInputDTO{{SKUID: skuSmall.ID, Quantity: 1}},
 			PlatformVoucherID: platV.ID,

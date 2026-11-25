@@ -55,6 +55,17 @@ type DeadLetterEvent struct {
 	CreatedAt    time.Time
 }
 
+type FlashSaleStockReservation struct {
+	FlashSaleItemID string
+	SkuID           string
+	ReservedQty     int32
+	ConsumedQty     int32
+	Status          string
+	EndsAt          time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 type OutboxEvent struct {
 	ID           string
 	EventType    string
@@ -100,6 +111,44 @@ type Product struct {
 	ShopSuspended   bool
 }
 
+type ProductImportJob struct {
+	ID           string
+	ShopID       string
+	CreatedBy    string
+	Filename     string
+	RawCsv       []byte
+	Status       string
+	TotalRows    int32
+	ValidRows    int32
+	InvalidRows  int32
+	CreatedRows  int32
+	FailedRows   int32
+	ErrorMessage string
+	ClaimedUntil *time.Time
+	ClaimToken   string
+	ConfirmedAt  *time.Time
+	FinishedAt   *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type ProductImportRow struct {
+	ID               string
+	JobID            string
+	RowNumber        int32
+	Status           string
+	ErrorCode        string
+	ErrorMessage     string
+	ProductName      string
+	SkuCode          string
+	CategoryID       string
+	PriceVnd         int64
+	Stock            int32
+	WeightGrams      int32
+	CreatedProductID string
+	RawRowJson       []byte
+}
+
 type ProductReview struct {
 	ID          string
 	ProductID   string
@@ -126,20 +175,21 @@ type ShopSuspensionState struct {
 }
 
 type Sku struct {
-	ID            string
-	ProductID     string
-	SkuCode       string
-	Name          string
-	Attributes    []byte
-	PriceVnd      int64
-	Stock         int32
-	ReservedStock int32
-	Version       int64
-	WeightGrams   int32
-	ImageURL      string
-	Status        string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID                     string
+	ProductID              string
+	SkuCode                string
+	Name                   string
+	Attributes             []byte
+	PriceVnd               int64
+	Stock                  int32
+	ReservedStock          int32
+	Version                int64
+	WeightGrams            int32
+	ImageURL               string
+	Status                 string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	FlashSaleReservedStock int32
 }
 
 type SkuPriceHistory struct {
@@ -181,4 +231,5 @@ type StockReservation struct {
 	Status             string
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	FlashSaleItemID    string
 }

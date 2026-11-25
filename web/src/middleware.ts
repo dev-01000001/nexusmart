@@ -1,138 +1,230 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import {
   ACCESS_COOKIE,
-  PROACTIVE_REFRESH_WINDOW_SECONDS,
   REFRESH_COOKIE,
-  buildCookieHeaderWithUpdates,
-  clearSessionCookies,
-  extractClientIp,
-  readJwtExp,
-  refreshTokensWithGateway,
-  sanitizeNextPath,
-  setSessionCookies,
-} from "@/lib/server/session";
+  buildSiteCspHeader,
+  getSiteRootDomain,
+} from "@/lib/server/config";
+import { GatewayError } from "@/lib/server/errors";
+import {
+  buildLoginRedirectUrl,
+  isPrefetchRequest,
+  resolveForwardedClientIp,
+  resolveRequestHost,
+  resolveRequestProto,
+} from "@/lib/server/http";
+import { lookupPublishedSiteHost, publishedSiteHostCache } from "@/lib/server/siteLookup";
+import {
+  accessExpiresSoon,
+  applyAuthCookiesToHeader,
+  clearAuthCookies,
+  rotateRefreshToken,
+  setAuthCookies,
+  type TokenPair,
+} from "@/lib/server/tokens";
+import { resolveTraceContext, type TraceContext } from "@/lib/server/trace";
+import {
+  classifyHost,
+  isApiPath,
+  isBlockedSitePath,
+  isBuyerApiPath,
+  isDirectInternalSitePath,
+  isProtectedPagePath,
+  isSiteApiPath,
+  isSiteMetadataPath,
+  isTenantSiteHost,
+  resolveCanonicalHostRedirect,
+} from "@/lib/site/host";
 
-const PROTECTED_PREFIXES = ["/tai-khoan", "/don-hang", "/thanh-toan", "/seller", "/admin"];
+/** Internal headers only the middleware may set; client-supplied copies are always dropped. */
+const INTERNAL_SITE_HEADERS = ["x-site-host", "x-site-id", "x-site-shop-id"] as const;
 
-function isProtectedPath(pathname: string): boolean {
-  return PROTECTED_PREFIXES.some(
-    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
-  );
+function withPageCsp(res: NextResponse): NextResponse {
+  res.headers.set("Content-Security-Policy", buildSiteCspHeader());
+  return res;
 }
 
-function isPrefetchRequest(req: NextRequest): boolean {
-  if (
-    req.headers.get("next-router-prefetch") !== null ||
-    req.headers.get("next-router-segment-prefetch") !== null ||
-    req.headers.get("x-middleware-prefetch") !== null
-  ) {
-    return true;
-  }
-  for (const name of ["purpose", "sec-purpose", "x-purpose"]) {
-    const val = req.headers.get(name)?.toLowerCase();
-    if (val && val.includes("prefetch")) {
-      return true;
-    }
-  }
-  return false;
+function notFoundResponse(): NextResponse {
+  return new NextResponse("Not Found", {
+    status: 404,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
 }
 
-function redirectToLogin(req: NextRequest): NextResponse {
-  const fullPath = sanitizeNextPath(`${req.nextUrl.pathname}${req.nextUrl.search}`, "/");
-  const loginUrl = new URL("/dang-nhap", req.url);
-  loginUrl.searchParams.set("next", fullPath);
-  return NextResponse.redirect(loginUrl, 307);
+function strippedHeaders(req: NextRequest): Headers {
+  const h = new Headers(req.headers);
+  for (const name of INTERNAL_SITE_HEADERS) h.delete(name);
+  return h;
 }
 
-export async function middleware(req: NextRequest) {
-  const { pathname } = req.nextUrl;
-  const needsAuth = isProtectedPath(pathname);
+export { isPrefetchRequest };
 
-  const accessToken = req.cookies.get(ACCESS_COOKIE)?.value;
-  const refreshToken = req.cookies.get(REFRESH_COOKIE)?.value;
+type Forward = (headers: Headers) => NextResponse;
 
-  if (!accessToken && !refreshToken) {
-    return needsAuth ? redirectToLogin(req) : NextResponse.next();
+/**
+ * Session upkeep for page requests on the CURRENT host only (cookies are host-only, so every
+ * site and the root rotate their own refresh token independently). Protected pages without a
+ * live session redirect to `/dang-nhap?next=…` on the same host.
+ */
+async function withSession(
+  req: NextRequest,
+  headers: Headers,
+  protectedRoute: boolean,
+  trace: TraceContext,
+  forward: Forward
+): Promise<NextResponse> {
+  const access = req.cookies.get(ACCESS_COOKIE)?.value;
+  const refresh = req.cookies.get(REFRESH_COOKIE)?.value;
+
+  const redirectToLogin = (clearCookies: boolean) => {
+    const res = NextResponse.redirect(buildLoginRedirectUrl(req), 307);
+    if (clearCookies) clearAuthCookies(res.cookies);
+    return res;
+  };
+  const forwardWithPair = (pair: TokenPair | null) => {
+    const updated = applyAuthCookiesToHeader(req.headers.get("cookie"), pair);
+    if (updated) headers.set("cookie", updated);
+    else headers.delete("cookie");
+    const res = forward(headers);
+    if (pair) setAuthCookies(res.cookies, pair);
+    else clearAuthCookies(res.cookies);
+    return res;
+  };
+
+  if (!access && !refresh) {
+    return protectedRoute ? redirectToLogin(false) : forward(headers);
   }
-
-  const nowSec = Math.floor(Date.now() / 1000);
-  const exp = readJwtExp(accessToken);
-  const accessValid = Boolean(accessToken && exp !== null && exp > nowSec);
-  const accessNearExpiry =
-    !accessToken || exp === null || exp - nowSec <= PROACTIVE_REFRESH_WINDOW_SECONDS;
-
-  if (!accessNearExpiry) {
-    return NextResponse.next();
-  }
-
-  if (!refreshToken) {
-    if (!accessValid) {
-      const res = needsAuth ? redirectToLogin(req) : NextResponse.next();
-      clearSessionCookies(res);
-      return res;
-    }
-    return NextResponse.next();
+  // Access token present and not close to expiry. Server Components still verify the real
+  // identity and role against backend /api/v1/users/me.
+  if (access && !accessExpiresSoon(access)) return forward(headers);
+  if (!refresh) {
+    return protectedRoute ? redirectToLogin(true) : forwardWithPair(null);
   }
 
   // Never rotate refresh tokens on speculative Next.js / browser prefetches.
   if (isPrefetchRequest(req)) {
-    return NextResponse.next();
+    return forward(headers);
   }
 
-  const refreshed = await refreshTokensWithGateway(refreshToken, {
-    clientIp: extractClientIp(req.headers),
-  });
-  if (refreshed.ok && refreshed.tokens) {
-    const requestHeaders = new Headers(req.headers);
-    requestHeaders.set(
-      "cookie",
-      buildCookieHeaderWithUpdates(req.headers.get("cookie"), {
-        [ACCESS_COOKIE]: refreshed.tokens.access_token,
-        [REFRESH_COOKIE]: refreshed.tokens.refresh_token,
-      })
-    );
-    const res = NextResponse.next({ request: { headers: requestHeaders } });
-    setSessionCookies(res, refreshed.tokens);
-    return res;
-  }
-
-  if (refreshed.status === 401 || refreshed.status === 403) {
-    const res = needsAuth ? redirectToLogin(req) : NextResponse.next();
-    clearSessionCookies(res);
-    return res;
-  }
-
-  // Transient gateway error: never misdirect a user with an active session to login.
-  if (accessValid) {
-    return NextResponse.next();
-  }
-
-  if (needsAuth) {
-    const isRateLimited = refreshed.status === 429;
-    const headers: Record<string, string> = {
-      "Content-Type": "text/plain; charset=utf-8",
-      "Cache-Control": "no-store",
-    };
-    if (isRateLimited && refreshed.retryAfter) {
-      headers["Retry-After"] = refreshed.retryAfter;
+  const clientIp = resolveForwardedClientIp(req.headers);
+  try {
+    const pair = await rotateRefreshToken(refresh, trace, { clientIp });
+    if (pair) return forwardWithPair(pair);
+    return protectedRoute ? redirectToLogin(true) : forwardWithPair(null);
+  } catch (err) {
+    // Transient gateway error or rate limit: never clear cookies or misdirect an active session.
+    if (access && !accessExpiresSoon(access, 0)) {
+      return forward(headers);
     }
-    return new NextResponse(
-      isRateLimited
-        ? "Bạn thao tác quá nhanh, vui lòng thử lại sau ít phút."
-        : "Hệ thống đang tạm bận, vui lòng thử lại sau ít phút.",
-      {
-        status: isRateLimited ? 429 : 503,
-        headers,
+    if (protectedRoute) {
+      const isRateLimited = err instanceof GatewayError && err.kind === "rate_limited";
+      const resHeaders: Record<string, string> = {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store",
+      };
+      if (isRateLimited && err.retryAfter) {
+        resHeaders["Retry-After"] = err.retryAfter;
       }
+      return new NextResponse(
+        isRateLimited
+          ? "Bạn thao tác quá nhanh, vui lòng thử lại sau ít phút."
+          : "Hệ thống đang tạm bận, vui lòng thử lại sau ít phút.",
+        {
+          status: isRateLimited ? 429 : 503,
+          headers: resHeaders,
+        }
+      );
+    }
+    return forward(headers);
+  }
+}
+
+export async function middleware(req: NextRequest) {
+  const { pathname, search } = req.nextUrl;
+
+  // Direct external access to internal `/s` or `/s/...` is ALWAYS 404 on every host.
+  if (isDirectInternalSitePath(pathname)) return notFoundResponse();
+
+  // Proxy trust rule: `TRUST_PROXY_HEADERS=true` honors x-forwarded-host, otherwise ONLY Host.
+  const rootDomain = getSiteRootDomain();
+  const hostClass = classifyHost(resolveRequestHost(req.headers, req.nextUrl.host), rootDomain);
+
+  // Unknown, reserved, multi-level, forbidden, or malformed host -> 404 without calling backend.
+  if (hostClass.kind === "unknown") return notFoundResponse();
+
+  const headers = strippedHeaders(req);
+  const trace = resolveTraceContext(req.headers);
+  headers.set("traceparent", trace.traceparent);
+  if (trace.tracestate) headers.set("tracestate", trace.tracestate);
+
+  if (isTenantSiteHost(hostClass)) {
+    // Seller/admin pages + APIs stay 404 on site & custom hosts without calling backend.
+    if (isBlockedSitePath(pathname)) return notFoundResponse();
+
+    const lookup = await publishedSiteHostCache.resolve(hostClass.hostname, (h) =>
+      lookupPublishedSiteHost(h, trace)
+    );
+    // 404 BEFORE any rewrite (prevents host cache poisoning & hides draft/suspended/unknown sites).
+    if (lookup.status !== "found") return notFoundResponse();
+
+    headers.set("x-site-host", hostClass.hostname);
+    headers.set("x-site-id", lookup.siteId);
+    headers.set("x-site-shop-id", lookup.shopId);
+
+    // Buyer + auth BFF APIs: route handlers re-derive the shop from Host and refresh tokens on 401.
+    // Robots/sitemap are host-aware route files. Never 308 APIs or robots/sitemap.
+    if (isSiteApiPath(pathname) || isSiteMetadataPath(pathname)) {
+      return NextResponse.next({ request: { headers } });
+    }
+
+    // Redirect GET page requests from a site's default subdomain to its active custom primary_host.
+    const redirectTarget = resolveCanonicalHostRedirect({
+      hostClass,
+      primaryHost: lookup.primaryHost,
+      rootDomain,
+      method: req.method,
+      pathname,
+      search,
+      proto: resolveRequestProto(req.headers, req.url),
+    });
+    if (redirectTarget) {
+      return NextResponse.redirect(redirectTarget, {
+        status: 308,
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
+
+    const rewriteUrl = req.nextUrl.clone();
+    rewriteUrl.pathname = `/s/${encodeURIComponent(hostClass.hostname)}${pathname === "/" ? "" : pathname}`;
+    return withPageCsp(
+      await withSession(req, headers, isProtectedPagePath(pathname, "site"), trace, (h) =>
+        NextResponse.rewrite(rewriteUrl, { request: { headers: h } })
+      )
     );
   }
 
-  return NextResponse.next();
+  // Root (platform) host: buyer commerce APIs do not exist here.
+  if (isBuyerApiPath(pathname)) return notFoundResponse();
+  if (isApiPath(pathname) || isSiteMetadataPath(pathname)) {
+    return NextResponse.next({ request: { headers } });
+  }
+  return withPageCsp(
+    await withSession(req, headers, isProtectedPagePath(pathname, "root"), trace, (h) =>
+      NextResponse.next({ request: { headers: h } })
+    )
+  );
 }
 
 export const config = {
   runtime: "nodejs",
   matcher: [
-    "/((?!api(?:/|$)|_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico|css|js|map|woff|woff2|txt|xml)$).*)",
+    /*
+     * Match pages, `/api/**`, `/robots.txt`, and `/sitemap.xml` so multi-tenant host isolation
+     * runs before any route handler. Excludes Next internals and static public media/assets.
+     */
+    "/((?!_next/static|_next/image|favicon\\.ico|products/|models/|banners/|videos/|atmosphere/|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico|mp4|webm|css|js|map|woff2?|ttf|json)$).*)",
   ],
 };

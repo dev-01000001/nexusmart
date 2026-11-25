@@ -13,10 +13,12 @@ import (
 	"unicode"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/gateway/internal/httpx"
+	"github.com/nexusmart/core/services/gateway/internal/middleware"
 )
 
 type orderItemDTO struct {
@@ -63,6 +65,8 @@ type orderDTO struct {
 	CheckoutGroupID            string                   `json:"checkout_group_id"`
 	BuyerID                    string                   `json:"buyer_id"`
 	ShopID                     string                   `json:"shop_id"`
+	SalesChannel               string                   `json:"sales_channel"`
+	StorefrontShopID           string                   `json:"storefront_shop_id"`
 	Status                     string                   `json:"status"`
 	PaymentMethod              string                   `json:"payment_method"`
 	PaymentID                  string                   `json:"payment_id"`
@@ -149,6 +153,21 @@ func mapOrderTimelineEvent(e *orderv1.OrderTimelineEvent) *orderTimelineEventDTO
 	}
 }
 
+func mapOrderAddressSnapshot(a *orderv1.OrderAddressSnapshot) *orderAddressSnapshotDTO {
+	if a == nil {
+		return nil
+	}
+	return &orderAddressSnapshotDTO{
+		RecipientName:  a.GetRecipientName(),
+		RecipientPhone: a.GetRecipientPhone(),
+		ProvinceCode:   a.GetProvinceCode(),
+		ProvinceName:   a.GetProvinceName(),
+		WardCode:       a.GetWardCode(),
+		WardName:       a.GetWardName(),
+		StreetAddress:  a.GetStreetAddress(),
+	}
+}
+
 func mapOrderForBuyer(o *orderv1.Order) *orderDTO {
 	return mapOrderView(o, false, false)
 }
@@ -203,18 +222,7 @@ func mapOrderView(o *orderv1.Order, showFees, isAdmin bool) *orderDTO {
 	for _, ev := range o.GetTimeline() {
 		timeline = append(timeline, mapOrderTimelineEvent(ev))
 	}
-	var addr *orderAddressSnapshotDTO
-	if a := o.GetShippingAddress(); a != nil {
-		addr = &orderAddressSnapshotDTO{
-			RecipientName:  a.GetRecipientName(),
-			RecipientPhone: a.GetRecipientPhone(),
-			ProvinceCode:   a.GetProvinceCode(),
-			ProvinceName:   a.GetProvinceName(),
-			WardCode:       a.GetWardCode(),
-			WardName:       a.GetWardName(),
-			StreetAddress:  a.GetStreetAddress(),
-		}
-	}
+	addr := mapOrderAddressSnapshot(o.GetShippingAddress())
 	var commVND, payFeeVND int64
 	var payFeeBps int32
 	var shipmentJobStatus string
@@ -232,6 +240,8 @@ func mapOrderView(o *orderv1.Order, showFees, isAdmin bool) *orderDTO {
 		CheckoutGroupID:            o.GetCheckoutGroupId(),
 		BuyerID:                    o.GetBuyerId(),
 		ShopID:                     o.GetShopId(),
+		SalesChannel:               normalizeSalesChannelOutput(o.GetSalesChannel()),
+		StorefrontShopID:           o.GetStorefrontShopId(),
 		Status:                     orderStatusString(o.GetStatus()),
 		PaymentMethod:              orderPaymentMethodString(o.GetPaymentMethod()),
 		PaymentID:                  o.GetPaymentId(),
@@ -501,9 +511,16 @@ func (h *handler) handleCheckout(w http.ResponseWriter, r *http.Request) {
 			CarrierCode string `json:"carrier_code"`
 			ServiceCode string `json:"service_code"`
 		} `json:"shipping_choices"`
+		SalesChannel     string `json:"sales_channel"`
+		StorefrontShopID string `json:"storefront_shop_id"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
 		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	salesChannel, storefrontShopID, errMsg := validateCheckoutSalesChannelInput(body.SalesChannel, body.StorefrontShopID)
+	if errMsg != "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", errMsg)
 		return
 	}
 
@@ -539,6 +556,8 @@ func (h *handler) handleCheckout(w http.ResponseWriter, r *http.Request) {
 		CoinsToUse:        body.CoinsToUse,
 		PaymentMethod:     parseOrderPaymentMethod(body.PaymentMethod),
 		ShippingChoices:   choices,
+		SalesChannel:      salesChannel,
+		StorefrontShopId:  storefrontShopID,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
@@ -573,6 +592,8 @@ func (h *handler) handleCheckout(w http.ResponseWriter, r *http.Request) {
 		"total_payable_vnd":  resp.GetTotalPayableVnd(),
 		"idempotent_replay":  resp.GetIdempotentReplay(),
 		"warnings":           warnings,
+		"sales_channel":      normalizeSalesChannelOutput(resp.GetSalesChannel()),
+		"storefront_shop_id": resp.GetStorefrontShopId(),
 	})
 }
 
@@ -582,15 +603,30 @@ func (h *handler) handleListBuyerOrders(w http.ResponseWriter, r *http.Request) 
 		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
 		return
 	}
+	q := r.URL.Query()
+	salesChannel, errMsg := validateSalesChannelFilter(q.Get("sales_channel"))
+	if errMsg != "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", errMsg)
+		return
+	}
+	// storefront_shop_id narrows the caller's OWN orders to one shop site; buyer_id always comes
+	// from the JWT, so this filter can never widen access.
+	storefrontShopID := strings.TrimSpace(q.Get("storefront_shop_id"))
+	if storefrontShopID != "" && uuid.Validate(storefrontShopID) != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "storefront_shop_id must be a UUID")
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.Order.ListOrders(ctx, &orderv1.ListOrdersRequest{
-		BuyerId:   auth.UserIDFromContext(r.Context()),
-		Status:    parseOrderStatus(r.URL.Query().Get("status")),
-		RoleScope: "buyer",
-		Page:      page,
-		PageSize:  pageSize,
+		BuyerId:          auth.UserIDFromContext(r.Context()),
+		Status:           parseOrderStatus(q.Get("status")),
+		RoleScope:        "buyer",
+		Page:             page,
+		PageSize:         pageSize,
+		SalesChannel:     salesChannel,
+		StorefrontShopId: storefrontShopID,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
@@ -715,20 +751,69 @@ func (h *handler) handleRequestReturn(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleSellerListOrders(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	page, pageSize, err := httpx.ParsePagination(r)
 	if err != nil {
 		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
 		return
 	}
+	q := r.URL.Query()
+	salesChannel, errMsg := validateSalesChannelFilter(q.Get("sales_channel"))
+	if errMsg != "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", errMsg)
+		return
+	}
+
+	var statuses []orderv1.OrderStatus
+	for _, raw := range q["statuses"] {
+		for _, part := range strings.Split(raw, ",") {
+			tok := strings.TrimSpace(part)
+			if tok == "" {
+				continue
+			}
+			st := parseOrderStatus(tok)
+			if st == orderv1.OrderStatus_ORDER_STATUS_UNSPECIFIED {
+				httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid status filter in statuses")
+				return
+			}
+			statuses = append(statuses, st)
+		}
+	}
+
+	var payMethod orderv1.OrderPaymentMethod
+	if rawPM := strings.TrimSpace(q.Get("payment_method")); rawPM != "" {
+		payMethod = parseOrderPaymentMethod(rawPM)
+		if payMethod == orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_UNSPECIFIED {
+			httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid payment_method filter")
+			return
+		}
+	}
+
+	dueBefore, err := httpx.ParseTimestamp(q.Get("due_before"))
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid due_before timestamp")
+		return
+	}
+
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.Order.ListOrders(ctx, &orderv1.ListOrdersRequest{
-		ShopId:    auth.ShopIDFromContext(r.Context()),
-		Status:    parseOrderStatus(r.URL.Query().Get("status")),
-		RoleScope: "seller",
-		Page:      page,
-		PageSize:  pageSize,
+		ShopId:              shopID,
+		Status:              parseOrderStatus(q.Get("status")),
+		Statuses:            statuses,
+		CarrierCode:         strings.TrimSpace(q.Get("carrier_code")),
+		PaymentMethod:       payMethod,
+		Keyword:             strings.TrimSpace(q.Get("keyword")),
+		DueBefore:           dueBefore,
+		IncludeStatusCounts: httpx.ParseBoolQuery(r, "include_status_counts"),
+		RoleScope:           "seller",
+		Page:                page,
+		PageSize:            pageSize,
+		SalesChannel:        salesChannel,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
@@ -739,15 +824,20 @@ func (h *handler) handleSellerListOrders(w http.ResponseWriter, r *http.Request)
 		items = append(items, mapOrderForSeller(o))
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"items":     items,
-		"page":      page,
-		"page_size": pageSize,
-		"total":     resp.GetTotal(),
+		"items":         items,
+		"page":          page,
+		"page_size":     pageSize,
+		"total":         resp.GetTotal(),
+		"status_counts": mapOrderStatusCounts(resp.GetStatusCounts()),
 	})
 }
 
+// handleSellerGetOrder fetches a single order belonging to the caller's shop (derived from JWT).
 func (h *handler) handleSellerGetOrder(w http.ResponseWriter, r *http.Request) {
-	shopID := auth.ShopIDFromContext(r.Context())
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
@@ -762,24 +852,25 @@ func (h *handler) handleSellerGetOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ord := resp.GetOrder()
-	if ord == nil {
-		httpx.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "order not found")
-		return
-	}
-	if ord.GetShopId() != shopID {
-		httpx.WriteError(w, r, http.StatusForbidden, "PERMISSION_DENIED", "cannot access another shop's order")
+	orderShopID := strings.TrimSpace(ord.GetShopId())
+	if ord == nil || orderShopID == "" || orderShopID != shopID {
+		httpx.WriteError(w, r, http.StatusForbidden, "PERMISSION_DENIED", "order does not belong to seller shop")
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"order": mapOrderForSeller(ord)})
 }
 
 func (h *handler) handleSellerConfirmOrder(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.Order.SellerConfirmOrder(ctx, &orderv1.SellerConfirmOrderRequest{
 		OrderId:      chi.URLParam(r, "id"),
-		ShopId:       auth.ShopIDFromContext(r.Context()),
+		ShopId:       shopID,
 		SellerUserId: auth.UserIDFromContext(r.Context()),
 	})
 	if err != nil {
@@ -790,6 +881,10 @@ func (h *handler) handleSellerConfirmOrder(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *handler) handleSellerShipOrder(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	var body struct {
 		CarrierCode string `json:"carrier_code"`
 		ServiceCode string `json:"service_code"`
@@ -803,7 +898,7 @@ func (h *handler) handleSellerShipOrder(w http.ResponseWriter, r *http.Request) 
 
 	resp, err := h.clients.Order.SellerShipOrder(ctx, &orderv1.SellerShipOrderRequest{
 		OrderId:      chi.URLParam(r, "id"),
-		ShopId:       auth.ShopIDFromContext(r.Context()),
+		ShopId:       shopID,
 		SellerUserId: auth.UserIDFromContext(r.Context()),
 		CarrierCode:  body.CarrierCode,
 		ServiceCode:  body.ServiceCode,
@@ -821,6 +916,315 @@ func (h *handler) handleSellerShipOrder(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// --- Wave 3b-3 A8: Public Order Lookup, Buyer Address Update, Seller Batch Ship & Picking List ---
+
+type publicOrderItemDTO struct {
+	ProductName  string `json:"product_name"`
+	SKUName      string `json:"sku_name"`
+	Quantity     int32  `json:"quantity"`
+	LineTotalVND int64  `json:"line_total_vnd"`
+}
+
+type publicOrderTimelineEventDTO struct {
+	ToStatus  string `json:"to_status"`
+	CreatedAt string `json:"created_at,omitempty"`
+}
+
+type publicOrderSummaryDTO struct {
+	OrderCode            string                         `json:"order_code"`
+	Status               string                         `json:"status"`
+	PaymentMethod        string                         `json:"payment_method"`
+	PaymentStatus        string                         `json:"payment_status"`
+	SubtotalVND          int64                          `json:"subtotal_vnd"`
+	ShippingFeeVND       int64                          `json:"shipping_fee_vnd"`
+	TotalPayableVND      int64                          `json:"total_payable_vnd"`
+	CarrierCode          string                         `json:"carrier_code"`
+	TrackingCode         string                         `json:"tracking_code"`
+	ProvinceName         string                         `json:"province_name"`
+	WardName             string                         `json:"ward_name"`
+	RecipientNameMasked  string                         `json:"recipient_name_masked"`
+	RecipientPhoneMasked string                         `json:"recipient_phone_masked"`
+	Items                []*publicOrderItemDTO          `json:"items"`
+	Timeline             []*publicOrderTimelineEventDTO `json:"timeline"`
+	CreatedAt            string                         `json:"created_at,omitempty"`
+	UpdatedAt            string                         `json:"updated_at,omitempty"`
+	DeliveredAt          string                         `json:"delivered_at,omitempty"`
+}
+
+func mapPublicOrderSummary(o *orderv1.PublicOrderSummary) *publicOrderSummaryDTO {
+	if o == nil {
+		return nil
+	}
+	items := make([]*publicOrderItemDTO, 0, len(o.GetItems()))
+	for _, it := range o.GetItems() {
+		if it == nil {
+			continue
+		}
+		items = append(items, &publicOrderItemDTO{
+			ProductName:  it.GetProductName(),
+			SKUName:      it.GetSkuName(),
+			Quantity:     it.GetQuantity(),
+			LineTotalVND: it.GetLineTotalVnd(),
+		})
+	}
+	timeline := make([]*publicOrderTimelineEventDTO, 0, len(o.GetTimeline()))
+	for _, ev := range o.GetTimeline() {
+		if ev == nil {
+			continue
+		}
+		timeline = append(timeline, &publicOrderTimelineEventDTO{
+			ToStatus:  orderStatusString(ev.GetToStatus()),
+			CreatedAt: httpx.FormatTimestamp(ev.GetCreatedAt()),
+		})
+	}
+	return &publicOrderSummaryDTO{
+		OrderCode:            o.GetOrderCode(),
+		Status:               orderStatusString(o.GetStatus()),
+		PaymentMethod:        orderPaymentMethodString(o.GetPaymentMethod()),
+		PaymentStatus:        o.GetPaymentStatus(),
+		SubtotalVND:          o.GetSubtotalVnd(),
+		ShippingFeeVND:       o.GetShippingFeeVnd(),
+		TotalPayableVND:      o.GetTotalPayableVnd(),
+		CarrierCode:          o.GetCarrierCode(),
+		TrackingCode:         o.GetTrackingCode(),
+		ProvinceName:         o.GetProvinceName(),
+		WardName:             o.GetWardName(),
+		RecipientNameMasked:  o.GetRecipientNameMasked(),
+		RecipientPhoneMasked: o.GetRecipientPhoneMasked(),
+		Items:                items,
+		Timeline:             timeline,
+		CreatedAt:            httpx.FormatTimestamp(o.GetCreatedAt()),
+		UpdatedAt:            httpx.FormatTimestamp(o.GetUpdatedAt()),
+		DeliveredAt:          httpx.FormatTimestamp(o.GetDeliveredAt()),
+	}
+}
+
+func (h *handler) handleLookupOrder(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		OrderCode        string `json:"order_code"`
+		Phone            string `json:"phone"`
+		StorefrontShopID string `json:"storefront_shop_id"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	orderCode := strings.TrimSpace(body.OrderCode)
+	phone := strings.TrimSpace(body.Phone)
+	storefrontShopID := strings.TrimSpace(body.StorefrontShopID)
+	if orderCode == "" || phone == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "order_code and phone are required")
+		return
+	}
+	if storefrontShopID != "" && uuid.Validate(storefrontShopID) != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "storefront_shop_id must be a UUID")
+		return
+	}
+	if !middleware.AllowOrderLookupCode(w, r, h.rateLimiter, h.rateLimitOrderLookupCodePer10Min, orderCode, h.log) {
+		return
+	}
+
+	// Strictly strip any caller Authorization header so public lookup remains guest-only (G7).
+	ctx, cancel := h.clients.PublicOutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Order.LookupOrder(ctx, &orderv1.LookupOrderRequest{
+		OrderCode:        orderCode,
+		Phone:            phone,
+		StorefrontShopId: storefrontShopID,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"order": mapPublicOrderSummary(resp.GetOrder()),
+	})
+}
+
+func (h *handler) handleUpdateOrderAddress(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		AddressID                 string `json:"address_id"`
+		PreviewOnly               bool   `json:"preview_only"`
+		AcceptFeeIncrease         bool   `json:"accept_fee_increase"`
+		ExpectedNewShippingFeeVND int64  `json:"expected_new_shipping_fee_vnd"`
+		IdempotencyKey            string `json:"idempotency_key"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+
+	addressID := strings.TrimSpace(body.AddressID)
+	if addressID == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "address_id is required")
+		return
+	}
+
+	idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idemKey == "" {
+		idemKey = strings.TrimSpace(body.IdempotencyKey)
+	}
+
+	var extraMD []string
+	if idemKey != "" {
+		extraMD = []string{"idempotency-key", idemKey}
+	}
+	ctx, cancel := h.clients.OutgoingContext(r.Context(), extraMD...)
+	defer cancel()
+
+	resp, err := h.clients.Order.UpdateOrderAddress(ctx, &orderv1.UpdateOrderAddressRequest{
+		OrderId:                   chi.URLParam(r, "id"),
+		AddressId:                 addressID,
+		PreviewOnly:               body.PreviewOnly,
+		AcceptFeeIncrease:         body.AcceptFeeIncrease,
+		ExpectedNewShippingFeeVnd: body.ExpectedNewShippingFeeVND,
+		IdempotencyKey:            idemKey,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"order":                     mapOrderForBuyer(resp.GetOrder()),
+		"old_shipping_fee_vnd":      resp.GetOldShippingFeeVnd(),
+		"new_shipping_fee_vnd":      resp.GetNewShippingFeeVnd(),
+		"fee_delta_vnd":             resp.GetFeeDeltaVnd(),
+		"old_total_payable_vnd":     resp.GetOldTotalPayableVnd(),
+		"new_total_payable_vnd":     resp.GetNewTotalPayableVnd(),
+		"preview_only":              resp.GetPreviewOnly(),
+		"fee_adjusted":              resp.GetFeeAdjusted(),
+		"requires_fee_confirmation": resp.GetRequiresFeeConfirmation(),
+		"blocked_prepaid_increase":  resp.GetBlockedPrepaidIncrease(),
+		"shipment_recreated":        resp.GetShipmentRecreated(),
+		"shipment_queued":           resp.GetShipmentQueued(),
+		"shipment_job_id":           resp.GetShipmentJobId(),
+		"resolved_address":          mapOrderAddressSnapshot(resp.GetResolvedAddress()),
+	})
+}
+
+type batchShipOrderResultDTO struct {
+	OrderID       string `json:"order_id"`
+	OrderCode     string `json:"order_code"`
+	Outcome       string `json:"outcome"`
+	ReasonCode    string `json:"reason_code"`
+	Message       string `json:"message"`
+	ShipmentJobID string `json:"shipment_job_id"`
+	TrackingCode  string `json:"tracking_code"`
+}
+
+func batchShipOutcomeString(o orderv1.BatchShipOrderOutcome) string {
+	switch o {
+	case orderv1.BatchShipOrderOutcome_BATCH_SHIP_ORDER_OUTCOME_QUEUED:
+		return "QUEUED"
+	case orderv1.BatchShipOrderOutcome_BATCH_SHIP_ORDER_OUTCOME_SKIPPED:
+		return "SKIPPED"
+	default:
+		return ""
+	}
+}
+
+func (h *handler) handleSellerBatchShipOrders(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		OrderIDs    []string `json:"order_ids"`
+		CarrierCode string   `json:"carrier_code"`
+		ServiceCode string   `json:"service_code"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Order.BatchShipOrders(ctx, &orderv1.BatchShipOrdersRequest{
+		OrderIds:    body.OrderIDs,
+		CarrierCode: strings.TrimSpace(body.CarrierCode),
+		ServiceCode: strings.TrimSpace(body.ServiceCode),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	results := make([]*batchShipOrderResultDTO, 0, len(resp.GetResults()))
+	for _, res := range resp.GetResults() {
+		if res == nil {
+			continue
+		}
+		results = append(results, &batchShipOrderResultDTO{
+			OrderID:       res.GetOrderId(),
+			OrderCode:     res.GetOrderCode(),
+			Outcome:       batchShipOutcomeString(res.GetOutcome()),
+			ReasonCode:    res.GetReasonCode(),
+			Message:       res.GetMessage(),
+			ShipmentJobID: res.GetShipmentJobId(),
+			TrackingCode:  res.GetTrackingCode(),
+		})
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"results":       results,
+		"queued_count":  resp.GetQueuedCount(),
+		"skipped_count": resp.GetSkippedCount(),
+	})
+}
+
+type pickingListItemDTO struct {
+	SKUID         string   `json:"sku_id"`
+	ProductID     string   `json:"product_id"`
+	ProductName   string   `json:"product_name"`
+	SKUName       string   `json:"sku_name"`
+	TotalQuantity int32    `json:"total_quantity"`
+	OrderCount    int32    `json:"order_count"`
+	OrderCodes    []string `json:"order_codes"`
+}
+
+func (h *handler) handleSellerPickingList(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		OrderIDs []string `json:"order_ids"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Order.GetPickingList(ctx, &orderv1.GetPickingListRequest{
+		OrderIds: body.OrderIDs,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	items := make([]*pickingListItemDTO, 0, len(resp.GetItems()))
+	for _, it := range resp.GetItems() {
+		if it == nil {
+			continue
+		}
+		codes := it.GetOrderCodes()
+		if codes == nil {
+			codes = []string{}
+		}
+		items = append(items, &pickingListItemDTO{
+			SKUID:         it.GetSkuId(),
+			ProductID:     it.GetProductId(),
+			ProductName:   it.GetProductName(),
+			SKUName:       it.GetSkuName(),
+			TotalQuantity: it.GetTotalQuantity(),
+			OrderCount:    it.GetOrderCount(),
+			OrderCodes:    codes,
+		})
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items":       items,
+		"order_count": resp.GetOrderCount(),
+		"total_units": resp.GetTotalUnits(),
+	})
+}
+
 func (h *handler) handleAdminListOrders(w http.ResponseWriter, r *http.Request) {
 	page, pageSize, err := httpx.ParsePagination(r)
 	if err != nil {
@@ -828,16 +1232,28 @@ func (h *handler) handleAdminListOrders(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	q := r.URL.Query()
+	salesChannel, errMsg := validateSalesChannelFilter(q.Get("sales_channel"))
+	if errMsg != "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", errMsg)
+		return
+	}
+	storefrontShopID := strings.TrimSpace(q.Get("storefront_shop_id"))
+	if storefrontShopID != "" && uuid.Validate(storefrontShopID) != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "storefront_shop_id must be a UUID")
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.Order.ListOrders(ctx, &orderv1.ListOrdersRequest{
-		BuyerId:   q.Get("buyer_id"),
-		ShopId:    q.Get("shop_id"),
-		Status:    parseOrderStatus(q.Get("status")),
-		RoleScope: "admin",
-		Page:      page,
-		PageSize:  pageSize,
+		BuyerId:          q.Get("buyer_id"),
+		ShopId:           q.Get("shop_id"),
+		Status:           parseOrderStatus(q.Get("status")),
+		RoleScope:        "admin",
+		Page:             page,
+		PageSize:         pageSize,
+		SalesChannel:     salesChannel,
+		StorefrontShopId: storefrontShopID,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)

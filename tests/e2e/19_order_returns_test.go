@@ -188,6 +188,7 @@ func ordW2CheckoutAndDeliver(
 	checkoutResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "ordw2-co-" + uuid.NewString(),
 	}, CheckoutRequest{
+		SalesChannel:  "MARKETPLACE",
 		AddressID:     addr.ID,
 		Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: qty}},
 		PaymentMethod: paymentMethod,
@@ -526,6 +527,7 @@ func TestE2E_OrderW2AReturnsAndShipments(t *testing.T) {
 			coResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 				"Idempotency-Key": "ordw2-e-" + label + "-" + uuid.NewString(),
 			}, CheckoutRequest{
+				SalesChannel:  "MARKETPLACE",
 				AddressID:     addr.ID,
 				Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 				PaymentMethod: "COD",
@@ -737,6 +739,7 @@ func TestE2E_OrderW2A_Review2EdgeCases(t *testing.T) {
 		coResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2-r3-zero-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:      "MARKETPLACE",
 			AddressID:         addr.ID,
 			Items:             []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 			PlatformVoucherID: platV.ID,
@@ -791,6 +794,7 @@ func TestE2E_OrderW2A_Review2EdgeCases(t *testing.T) {
 		coVQRResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyerVQR.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2-r3-7vqr-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addrVQR.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 2}},
 			PaymentMethod: "VIETQR",
@@ -869,6 +873,7 @@ func TestE2E_OrderW2A_Review2EdgeCases(t *testing.T) {
 		coCODResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyerCOD.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2-r3-7cod-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addrCOD.ID,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
 			PaymentMethod: "COD",
@@ -933,7 +938,8 @@ func TestE2E_OrderW2A_Review2EdgeCases(t *testing.T) {
 		coResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "ordw2-r3-8-" + uuid.NewString(),
 		}, CheckoutRequest{
-			AddressID: addr.ID,
+			SalesChannel: "MARKETPLACE",
+			AddressID:    addr.ID,
 			Items: []CheckoutItemInputDTO{
 				{SKUID: sku1.ID, Quantity: 1},
 				{SKUID: sku2.ID, Quantity: 1},

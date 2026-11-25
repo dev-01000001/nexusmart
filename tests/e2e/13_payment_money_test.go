@@ -144,6 +144,7 @@ func TestE2E_PaymentMoney_PAY_B4_CODLifecycle(t *testing.T) {
 	cod1Resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "payfix-cod-cancel-" + uuid.NewString(),
 	}, CheckoutRequest{
+		SalesChannel:  "MARKETPLACE",
 		AddressID:     addr.ID,
 		FromCart:      false,
 		Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
@@ -210,6 +211,7 @@ func TestE2E_PaymentMoney_PAY_B4_CODLifecycle(t *testing.T) {
 	cod2Resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "payfix-cod-deliver-" + uuid.NewString(),
 	}, CheckoutRequest{
+		SalesChannel:  "MARKETPLACE",
 		AddressID:     addr.ID,
 		FromCart:      false,
 		Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},
@@ -300,8 +302,9 @@ func TestE2E_PaymentMoney_PAY_B2_RefundAndEscrowInvariant(t *testing.T) {
 	checkoutResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "payfix-b2-" + uuid.NewString(),
 	}, CheckoutRequest{
-		AddressID: addr.ID,
-		FromCart:  false,
+		SalesChannel: "MARKETPLACE",
+		AddressID:    addr.ID,
+		FromCart:     false,
 		Items: []CheckoutItemInputDTO{
 			{SKUID: sku1.ID, Quantity: 1},
 			{SKUID: sku2.ID, Quantity: 1},
@@ -744,6 +747,7 @@ func TestE2E_PaymentMoney_R1_And_LatePayment(t *testing.T) {
 		checkoutResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "payfix-b1-" + uuid.NewString(),
 		}, CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			FromCart:      false,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 1}},

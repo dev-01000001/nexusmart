@@ -61,7 +61,7 @@ func TestW2B_Round3_ReleaseStockTombstoneSemantics(t *testing.T) {
 	}
 
 	// 4. Late ReserveStock after tombstone is still rejected and leaves reserved_stock == 0.
-	if _, err := srv.ReserveStock(context.Background(), &productv1.ReserveStockRequest{
+	if _, err := srv.ReserveStock(ctxWithRole("buyer-r3-tomb", "buyer", ""), &productv1.ReserveStockRequest{
 		OrderId: orderID,
 		Items:   []*productv1.StockReservationItem{{SkuId: skuID, Quantity: 2}},
 	}); status.Code(err) != codes.FailedPrecondition {

@@ -109,3 +109,19 @@ func (s *Server) ListOrdersNeedingReview(ctx context.Context, req *orderv1.ListO
 func (s *Server) ResolveOrderReview(ctx context.Context, req *orderv1.ResolveOrderReviewRequest) (*orderv1.ResolveOrderReviewResponse, error) {
 	return s.svc.ResolveOrderReview(ctx, req)
 }
+
+func (s *Server) LookupOrder(ctx context.Context, req *orderv1.LookupOrderRequest) (*orderv1.LookupOrderResponse, error) {
+	return s.svc.LookupOrder(ctx, req)
+}
+
+func (s *Server) UpdateOrderAddress(ctx context.Context, req *orderv1.UpdateOrderAddressRequest) (*orderv1.UpdateOrderAddressResponse, error) {
+	return s.svc.UpdateOrderAddress(ctx, req)
+}
+
+func (s *Server) BatchShipOrders(ctx context.Context, req *orderv1.BatchShipOrdersRequest) (*orderv1.BatchShipOrdersResponse, error) {
+	return s.svc.BatchShipOrders(ctx, req)
+}
+
+func (s *Server) GetPickingList(ctx context.Context, req *orderv1.GetPickingListRequest) (*orderv1.GetPickingListResponse, error) {
+	return s.svc.GetPickingList(ctx, req)
+}

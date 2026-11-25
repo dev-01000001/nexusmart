@@ -1,0 +1,24 @@
+# Staging overrides for user (namespace: nexusmart-staging)
+replicaCount: 1
+
+image:
+  tag: "staging"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+pdb:
+  enabled: false
+
+config:
+  SITE_ROOT_DOMAIN: "staging.nexusmart.local"
+  CF_MODE: "mock"
+  CF_ORIGIN_HOST: "origin.staging.nexusmart.local"
+  CF_CNAME_TARGET: "shops.staging.nexusmart.local"
+  CF_POLL_INTERVAL: "15s"

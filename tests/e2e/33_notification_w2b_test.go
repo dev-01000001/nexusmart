@@ -352,8 +352,9 @@ func TestNotificationW2B(t *testing.T) {
 		if _, err := env.mailpit.WaitForEmail(env.ctx(t), buyerA.Email, voucherCode, env.cfg.PollTimeout); err != nil {
 			t.Fatalf("buyerA voucher expiring email missing in Mailpit: %v", err)
 		}
+		// Per merged sitelink.go, order.created without storefront_shop_id/published site carries empty buyer link "".
 		notifW2BWaitNotification(t, env, buyerB.AccessToken, "buyerB sentinel order notification", func(n NotificationDTO) bool {
-			return n.Category == "ORDER" && n.Link == "/don-hang/"+sentinelOrderID
+			return n.Category == "ORDER" && n.Link == "" && strings.Contains(n.Title+" "+n.Body, "NM-SENTINEL-"+env.runID)
 		})
 		// Brief settle for duplicate evtA2 to finish being ignored.
 		time.Sleep(800 * time.Millisecond)

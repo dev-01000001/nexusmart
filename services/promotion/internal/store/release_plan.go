@@ -34,6 +34,7 @@ type ShopReleaseResult struct {
 	AllReleased                 bool
 	UserID                      string
 	CoinsReturned               int64
+	RewardCoinsClawedBack       int64
 	ShopVoucherReleased         bool
 	FlashQuantityReleased       int32
 	ShopProgramQuantityReleased int32

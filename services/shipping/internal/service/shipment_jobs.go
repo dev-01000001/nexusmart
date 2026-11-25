@@ -40,9 +40,13 @@ func (s *ShippingService) createForwardShipment(ctx context.Context, in CreateSh
 	if in.ShopID == "" {
 		return nil, fmt.Errorf("%w: shop_id is required", ErrInvalidArgument)
 	}
+	if in.CODAmountVND < 0 {
+		return nil, fmt.Errorf("%w: cod_amount_vnd must be >= 0", ErrInvalidArgument)
+	}
 	if in.WeightGrams <= 0 {
 		in.WeightGrams = s.resolveDefaultWeight(ctx, in.ShopID)
 	}
+	allowJob := enqueueOnTransient || in.EnqueueOnly
 
 	// Fast-path idempotency: existing active FORWARD shipment or active retry job.
 	if existing, err := s.repo.GetActiveShipmentByOrderID(ctx, in.OrderID, store.DirectionForward); err == nil && existing != nil {
@@ -50,7 +54,7 @@ func (s *ShippingService) createForwardShipment(ctx context.Context, in CreateSh
 	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, fmt.Errorf("check existing shipment: %w", err)
 	}
-	if enqueueOnTransient {
+	if allowJob {
 		if job, err := s.repo.GetActiveShipmentCreateJob(ctx, in.OrderID, store.DirectionForward); err == nil && job != nil {
 			return &CreateShipmentOutcome{Queued: true, JobID: job.ID}, nil
 		} else if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -71,7 +75,7 @@ func (s *ShippingService) createForwardShipment(ctx context.Context, in CreateSh
 	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, fmt.Errorf("recheck existing shipment: %w", err)
 	}
-	if enqueueOnTransient {
+	if allowJob {
 		if job, err := s.repo.GetActiveShipmentCreateJob(ctx, in.OrderID, store.DirectionForward); err == nil && job != nil {
 			return &CreateShipmentOutcome{Queued: true, JobID: job.ID}, nil
 		} else if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -98,6 +102,14 @@ func (s *ShippingService) createForwardShipment(ctx context.Context, in CreateSh
 	s.enrichGHNAddress(ctx, &in.FromAddress)
 	s.enrichGHNAddress(ctx, &in.ToAddress)
 
+	// G4 (UC-S15): Validate non-retryable preconditions and enqueue directly without calling carrier synchronously.
+	if in.EnqueueOnly {
+		if err := s.validateEnqueuePreconditions(ctx, provider, in); err != nil {
+			return nil, err
+		}
+		return s.enqueueShipmentCreateJob(ctx, in, provider.Code(), clientOrderCode, s.nowFn(), "")
+	}
+
 	res, err := provider.CreateShipment(ctx, carrier.ShipmentRequest{
 		OrderID:         in.OrderID,
 		ClientOrderCode: clientOrderCode,
@@ -111,7 +123,7 @@ func (s *ShippingService) createForwardShipment(ctx context.Context, in CreateSh
 	})
 	if err != nil {
 		if enqueueOnTransient && s.isTransientCreateCarrierError(ctx, err) {
-			return s.enqueueTransientCreateJob(ctx, in, provider.Code(), clientOrderCode, err)
+			return s.enqueueShipmentCreateJob(ctx, in, provider.Code(), clientOrderCode, s.nowFn().Add(s.createRetryBackoff(0)), err.Error())
 		}
 		return nil, s.classifyCarrierCreateError(ctx, provider.Code(), err)
 	}
@@ -152,21 +164,37 @@ func (s *ShippingService) isTransientCreateCarrierError(ctx context.Context, err
 	return true
 }
 
-func (s *ShippingService) enqueueTransientCreateJob(
+func (s *ShippingService) validateEnqueuePreconditions(ctx context.Context, provider carrier.Carrier, in CreateShipmentInput) error {
+	if provider.Code() == carrier.CodeGHN && !provider.IsMock() {
+		if in.ToAddress.GHNDistrictID <= 0 || strings.TrimSpace(in.ToAddress.GHNWardCode) == "" {
+			return s.classifyCarrierCreateError(ctx, provider.Code(), &carrier.NonRetryableError{
+				Err: fmt.Errorf("%w (to_ward_code=%s)", carrier.ErrMissingGHNMapping, in.ToAddress.WardCode),
+			})
+		}
+	}
+	return nil
+}
+
+func (s *ShippingService) enqueueShipmentCreateJob(
 	ctx context.Context,
 	in CreateShipmentInput,
 	carrierCode string,
 	clientOrderCode string,
-	cause error,
+	nextRetryAt time.Time,
+	lastError string,
 ) (*CreateShipmentOutcome, error) {
 	inCopy := in
 	inCopy.CarrierCode = carrierCode
+	inCopy.EnqueueOnly = false
 	reqJSON, err := json.Marshal(inCopy)
 	if err != nil {
 		return nil, fmt.Errorf("marshal shipment create job request: %w", err)
 	}
 
 	now := s.nowFn()
+	if nextRetryAt.IsZero() {
+		nextRetryAt = now
+	}
 	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 
@@ -182,8 +210,8 @@ func (s *ShippingService) enqueueTransientCreateJob(
 		Status:          store.JobStatusPending,
 		Attempts:        0,
 		MaxAttempts:     s.createRetryMax,
-		NextRetryAt:     now.Add(s.createRetryBackoff(0)),
-		LastError:       cause.Error(),
+		NextRetryAt:     nextRetryAt,
+		LastError:       lastError,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	})
@@ -191,37 +219,45 @@ func (s *ShippingService) enqueueTransientCreateJob(
 		return nil, fmt.Errorf("%w: persist shipment retry job: %w", ErrCarrierUnavailable, err)
 	}
 
-	s.logger.WarnContext(ctx, "carrier transient error on CreateShipment; queued async retry job",
-		slog.String("job_id", job.ID),
-		slog.String("order_id", in.OrderID),
-		slog.String("carrier", carrierCode),
-		slog.String("error", cause.Error()),
-	)
+	if lastError != "" {
+		s.logger.WarnContext(ctx, "carrier transient error on CreateShipment; queued async retry job",
+			slog.String("job_id", job.ID),
+			slog.String("order_id", in.OrderID),
+			slog.String("carrier", carrierCode),
+			slog.String("error", lastError),
+		)
+	}
 	return &CreateShipmentOutcome{Queued: true, JobID: job.ID}, nil
 }
 
 func (s *ShippingService) buildCreatedForwardShipment(in CreateShipmentInput, res *carrier.ShipmentResult) (*store.Shipment, *store.ShipmentEvent) {
 	now := s.nowFn()
 	sh := &store.Shipment{
-		ID:               uuid.NewString(),
-		OrderID:          in.OrderID,
-		ShopID:           in.ShopID,
-		BuyerID:          in.BuyerID,
-		Direction:        store.DirectionForward,
-		CarrierCode:      res.CarrierCode,
-		ServiceCode:      res.ServiceCode,
-		TrackingCode:     res.TrackingCode,
-		LabelURL:         res.LabelURL,
-		Status:           carrier.StatusCreated,
-		FeeVND:           res.FeeVND,
-		CODAmountVND:     in.CODAmountVND,
-		WeightGrams:      in.WeightGrams,
-		FromProvinceCode: in.FromAddress.ProvinceCode,
-		FromWardCode:     in.FromAddress.WardCode,
-		ToProvinceCode:   in.ToAddress.ProvinceCode,
-		ToWardCode:       in.ToAddress.WardCode,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                uuid.NewString(),
+		OrderID:           in.OrderID,
+		ShopID:            in.ShopID,
+		BuyerID:           in.BuyerID,
+		Direction:         store.DirectionForward,
+		CarrierCode:       res.CarrierCode,
+		ServiceCode:       res.ServiceCode,
+		TrackingCode:      res.TrackingCode,
+		LabelURL:          res.LabelURL,
+		Status:            carrier.StatusCreated,
+		FeeVND:            res.FeeVND,
+		CODAmountVND:      in.CODAmountVND,
+		WeightGrams:       in.WeightGrams,
+		FromName:          strings.TrimSpace(in.FromAddress.Name),
+		FromPhone:         strings.TrimSpace(in.FromAddress.Phone),
+		FromStreetAddress: strings.TrimSpace(in.FromAddress.StreetAddress),
+		FromProvinceCode:  in.FromAddress.ProvinceCode,
+		FromWardCode:      in.FromAddress.WardCode,
+		ToName:            strings.TrimSpace(in.ToAddress.Name),
+		ToPhone:           strings.TrimSpace(in.ToAddress.Phone),
+		ToStreetAddress:   strings.TrimSpace(in.ToAddress.StreetAddress),
+		ToProvinceCode:    in.ToAddress.ProvinceCode,
+		ToWardCode:        in.ToAddress.WardCode,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 	initEv := &store.ShipmentEvent{
 		ID:          uuid.NewString(),

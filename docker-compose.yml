@@ -2,6 +2,7 @@
 services:
   postgres:
     image: postgres:16-alpine
+    command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-nexusmart}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexusmart_dev_password}
@@ -17,6 +18,40 @@ services:
       interval: 5s
       timeout: 5s
       retries: 15
+
+  # Dedicated pgvector Postgres for search_db (G13): keeps shared postgres on postgres:16-alpine to avoid musl/glibc collation corruption; pinned >= 0.8 for hnsw.iterative_scan.
+  search-postgres:
+    image: pgvector/pgvector:0.8.7-pg16
+    mem_limit: 384m
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nexusmart}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexusmart_dev_password}
+      POSTGRES_DB: search_db
+    volumes:
+      - search_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-nexusmart} -d search_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  # Meilisearch Community pinned per ADR-0004/G13; internal compose network only (no host port published).
+  meilisearch:
+    image: getmeili/meilisearch:v1.58.0
+    mem_limit: 512m
+    environment:
+      MEILI_ENV: ${MEILI_ENV:-production}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-dev-only-meilisearch-master-key-change-me}
+      MEILI_NO_ANALYTICS: ${MEILI_NO_ANALYTICS:-true}
+      MEILI_MAX_INDEXING_MEMORY: ${MEILI_MAX_INDEXING_MEMORY:-256Mb}
+    volumes:
+      # Separate from phase-0b v1.12 volume (meilisearch_data): Meilisearch rejects cross-minor DB upgrades; rebuild index via POST /api/v1/admin/search/reindex.
+      - meilisearch_v1_58_data:/meili_data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:7700/health || curl -fsS http://127.0.0.1:7700/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   redis:
     image: redis:7-alpine
@@ -99,6 +134,13 @@ services:
       # Dev-only 32-byte base64 key for encrypting shop bank account numbers; replace in production.
       BANK_ACCOUNT_KEY: ${BANK_ACCOUNT_KEY:-ZGV2LW9ubHktYmFuay1hY2NvdW50LWtleS0zMmJ5dGU=}
       SHIPPING_GRPC_ADDR: shipping:50057
+      SITE_ROOT_DOMAIN: ${SITE_ROOT_DOMAIN:-nexusmart.localhost}
+      CF_MODE: ${CF_MODE:-mock}
+      CF_API_TOKEN: ${CF_API_TOKEN:-}
+      CF_ZONE_ID: ${CF_ZONE_ID:-}
+      CF_ORIGIN_HOST: ${CF_ORIGIN_HOST:-origin.nexusmart.localhost}
+      CF_CNAME_TARGET: ${CF_CNAME_TARGET:-shops.nexusmart.localhost}
+      CF_POLL_INTERVAL: ${CF_POLL_INTERVAL:-5s}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
       OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -133,6 +175,8 @@ services:
       # Lazy gRPC dial targets for review verification/display (E5/E6); never add order/user to product.depends_on (avoids cycle).
       ORDER_GRPC_ADDR: order:50055
       USER_GRPC_ADDR: user:50051
+      PRODUCT_IMPORT_MAX_ROWS: ${PRODUCT_IMPORT_MAX_ROWS:-1000}
+      PRODUCT_IMPORT_MAX_BYTES: ${PRODUCT_IMPORT_MAX_BYTES:-1048576}
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
@@ -197,8 +241,8 @@ services:
       NATS_URL: ${NATS_URL:-nats://nats:4222}
       NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
       PRODUCT_GRPC_ADDR: product:50052
-      SHIPPING_GRPC_ADDR: shipping:50057
       PROMOTION_VOUCHER_EXPIRY_NOTICE_HOURS: ${PROMOTION_VOUCHER_EXPIRY_NOTICE_HOURS:-24}
+      FLASH_SALE_SWEEP_INTERVAL: ${FLASH_SALE_SWEEP_INTERVAL:-2s}
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
@@ -253,7 +297,7 @@ services:
       ZALOPAY_KEY1: ${ZALOPAY_KEY1:-}
       ZALOPAY_KEY2: ${ZALOPAY_KEY2:-}
       ZALOPAY_CALLBACK_URL: ${ZALOPAY_CALLBACK_URL:-http://localhost:${GATEWAY_PORT:-8080}/webhooks/zalopay}
-      ZALOPAY_REDIRECT_URL: ${ZALOPAY_REDIRECT_URL:-${WEB_BASE_URL:-http://localhost:${WEB_PORT:-3000}}/thanh-toan/cho-thanh-toan}
+      ZALOPAY_REDIRECT_URL: ${ZALOPAY_REDIRECT_URL:-${WEB_BASE_URL:-http://localhost:${WEB_PORT:-3300}}/thanh-toan/cho}
       ZALOPAY_HTTP_TIMEOUT_SECS: ${ZALOPAY_HTTP_TIMEOUT_SECS:-10}
       ZALOPAY_LATE_SWEEP_WINDOW_HOURS: ${ZALOPAY_LATE_SWEEP_WINDOW_HOURS:-24}
       ZALOPAY_LATE_SWEEP_BATCH_LIMIT: ${ZALOPAY_LATE_SWEEP_BATCH_LIMIT:-25}
@@ -301,11 +345,14 @@ services:
       SHIPPING_TEST_FAULT_INJECTION: ${SHIPPING_TEST_FAULT_INJECTION:-false}
       # Dev-only 32-byte base64 key for encrypting carrier tokens; replace in production.
       SHIPPING_CONFIG_KEY: ${SHIPPING_CONFIG_KEY:-ZGV2LW9ubHktc2hpcHBpbmctY29uZmlnLWtleS0zMmI=}
-      SHIPPING_LABEL_BASE_URL: ${SHIPPING_LABEL_BASE_URL:-${WEB_BASE_URL:-http://localhost:${WEB_PORT:-3000}}/api/gw/shipping/labels}
+      SHIPPING_LABEL_BASE_URL: ${SHIPPING_LABEL_BASE_URL:-${WEB_BASE_URL:-http://localhost:${WEB_PORT:-3300}}/api/shipping/labels}
       GHN_MODE: ${GHN_MODE:-mock}
       GHN_BASE_URL: ${GHN_BASE_URL:-https://dev-online-gateway.ghn.vn/shiip/public-api}
       GHN_TOKEN: ${GHN_TOKEN:-sandbox-ghn-token}
       GHN_SHOP_ID: ${GHN_SHOP_ID:-0}
+      GHTK_MODE: ${GHTK_MODE:-mock}
+      GHTK_BASE_URL: ${GHTK_BASE_URL:-https://services-staging.ghtklab.com}
+      GHTK_TOKEN: ${GHTK_TOKEN:-sandbox-ghtk-token}
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
@@ -345,7 +392,9 @@ services:
       SMTP_PORT: ${SMTP_PORT:-1025}
       SMTP_FROM: ${SMTP_FROM:-no-reply@nexusmart.local}
       USER_GRPC_ADDR: user:50051
-      WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:${WEB_PORT:-3000}}
+      WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:${WEB_PORT:-3300}}
+      SITE_URL_SCHEME: ${SITE_URL_SCHEME:-https}
+      SITE_URL_PORT: ${SITE_URL_PORT:-}
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
@@ -397,6 +446,7 @@ services:
       ORDER_RETURN_SELLER_RESPONSE_DAYS: ${ORDER_RETURN_SELLER_RESPONSE_DAYS:-3}
       ORDER_RETURN_SHIP_DAYS: ${ORDER_RETURN_SHIP_DAYS:-5}
       ORDER_RETURN_INSPECT_DAYS: ${ORDER_RETURN_INSPECT_DAYS:-3}
+      ORDER_BATCH_SHIP_MAX_ITEMS: ${ORDER_BATCH_SHIP_MAX_ITEMS:-50}
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
@@ -429,6 +479,149 @@ services:
       timeout: 3s
       retries: 20
 
+  search:
+    build:
+      context: .
+      dockerfile: services/search/Dockerfile
+    environment:
+      SERVICE_NAME: search
+      GRPC_PORT: "50059"
+      HTTP_PORT: "8089"
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@search-postgres:5432/search_db?sslmode=disable
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
+      NATS_DLQ_STREAM: ${NATS_DLQ_STREAM:-NEXUSMART_DLQ}
+      MEILISEARCH_URL: ${MEILISEARCH_URL:-http://meilisearch:7700}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-dev-only-meilisearch-master-key-change-me}
+      PRODUCT_GRPC_ADDR: product:50052
+      USER_GRPC_ADDR: user:50051
+      EMBEDDING_MODE: ${EMBEDDING_MODE:-mock}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-1536}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      SEARCH_RRF_K: ${SEARCH_RRF_K:-60}
+      SEARCH_MEILI_TIMEOUT_MS: ${SEARCH_MEILI_TIMEOUT_MS:-1500}
+      SEARCH_VECTOR_TIMEOUT_MS: ${SEARCH_VECTOR_TIMEOUT_MS:-800}
+      SEARCH_VECTOR_MIN_SIMILARITY: ${SEARCH_VECTOR_MIN_SIMILARITY:-0.25}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "127.0.0.1:${SEARCH_HTTP_PORT:-8089}:8089"
+    depends_on:
+      search-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      meilisearch:
+        condition: service_started
+      user:
+        condition: service_healthy
+      product:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8089/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  assistant:
+    build:
+      context: .
+      dockerfile: services/assistant/Dockerfile
+    environment:
+      SERVICE_NAME: assistant
+      GRPC_PORT: "50061"
+      HTTP_PORT: "8091"
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@postgres:5432/assistant_db?sslmode=disable
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
+      GATEWAY_URL: http://gateway:8080
+      SEARCH_GRPC_ADDR: search:50059
+      PRODUCT_GRPC_ADDR: product:50052
+      CHAT_GRPC_ADDR: chat:50060
+      LLM_MODE: ${LLM_MODE:-mock}
+      LLM_MODEL: ${LLM_MODEL:-claude-opus-5-5}
+      LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+      EMBED_MODE: ${EMBED_MODE:-mock}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      ASSISTANT_DAILY_USER_TOKEN_LIMIT: ${ASSISTANT_DAILY_USER_TOKEN_LIMIT:-50000}
+      ASSISTANT_DAILY_COST_LIMIT_VND: ${ASSISTANT_DAILY_COST_LIMIT_VND:-500000}
+      ASSISTANT_CACHE_TTL: ${ASSISTANT_CACHE_TTL:-10m}
+      ASSISTANT_REVIEW_SUMMARY_TTL: ${ASSISTANT_REVIEW_SUMMARY_TTL:-1h}
+      ASSISTANT_MIN_REVIEWS_SUMMARY: ${ASSISTANT_MIN_REVIEWS_SUMMARY:-10}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "127.0.0.1:${ASSISTANT_HTTP_PORT:-8091}:8091"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8091/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  chat:
+    build:
+      context: .
+      dockerfile: services/chat/Dockerfile
+    environment:
+      SERVICE_NAME: chat
+      GRPC_PORT: "50060"
+      HTTP_PORT: "8090"
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@postgres:5432/chat_db?sslmode=disable
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      USER_GRPC_ADDR: user:50051
+      SITE_ROOT_DOMAIN: ${SITE_ROOT_DOMAIN:-nexusmart.localhost}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
+      CHAT_WS_TICKET_TTL: ${CHAT_WS_TICKET_TTL:-60s}
+      CHAT_WS_ALLOWED_ORIGINS: ${CHAT_WS_ALLOWED_ORIGINS:-}
+      CHAT_IMAGE_MAX_BYTES: ${CHAT_IMAGE_MAX_BYTES:-5242880}
+      CHAT_IMAGE_VALIDATE_MODE: ${CHAT_IMAGE_VALIDATE_MODE:-hybrid}
+      CHAT_IMAGE_ALLOWED_HOSTS: ${CHAT_IMAGE_ALLOWED_HOSTS:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "127.0.0.1:${CHAT_HTTP_PORT:-8090}:8090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      user:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8090/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   gateway:
     build:
       context: .
@@ -445,8 +638,16 @@ services:
       RATE_LIMIT_BANK_OTP_PER_MIN: ${RATE_LIMIT_BANK_OTP_PER_MIN:-5}
       RATE_LIMIT_PHONE_OTP_PER_MIN: ${RATE_LIMIT_PHONE_OTP_PER_MIN:-5}
       RATE_LIMIT_SHIPPING_FEE_PER_MIN: ${RATE_LIMIT_SHIPPING_FEE_PER_MIN:-30}
+      RATE_LIMIT_ORDER_LOOKUP_PER_MIN: ${RATE_LIMIT_ORDER_LOOKUP_PER_MIN:-10}
+      RATE_LIMIT_ORDER_LOOKUP_CODE_PER_10MIN: ${RATE_LIMIT_ORDER_LOOKUP_CODE_PER_10MIN:-5}
       RATE_LIMIT_WEBHOOK_PER_MIN: ${RATE_LIMIT_WEBHOOK_PER_MIN:-600}
-      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-web}
+      PRODUCT_IMPORT_MAX_ROWS: ${PRODUCT_IMPORT_MAX_ROWS:-1000}
+      PRODUCT_IMPORT_MAX_BYTES: ${PRODUCT_IMPORT_MAX_BYTES:-1048576}
+      SEARCH_FALLBACK_TIMEOUT_MS: ${SEARCH_FALLBACK_TIMEOUT_MS:-1500}
+      # Only trust proxy headers arriving over the dedicated internal BFF network (web -> gateway-bff),
+      # so external callers on GATEWAY_PORT and other compose containers cannot spoof X-Forwarded-For.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-${TRUSTED_PROXY_CIDRS:-172.31.250.0/28}}
+      SITE_ROOT_DOMAIN: ${SITE_ROOT_DOMAIN:-nexusmart.localhost}
       USER_GRPC_ADDR: user:50051
       PRODUCT_GRPC_ADDR: product:50052
       CART_GRPC_ADDR: cart:50053
@@ -457,11 +658,21 @@ services:
       SHIPPING_GRPC_ADDR: shipping:50057
       SHIPPING_HTTP_URL: http://shipping:8087
       NOTIFICATION_GRPC_ADDR: notification:50058
+      SEARCH_GRPC_ADDR: search:50059
+      CHAT_GRPC_ADDR: chat:50060
+      CHAT_HTTP_URL: http://chat:8090
+      ASSISTANT_GRPC_ADDR: assistant:50061
+      ASSISTANT_HTTP_URL: http://assistant:8091
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
       OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "${GATEWAY_PORT:-8080}:8080"
+    networks:
+      default:
+      bff:
+        aliases:
+          - gateway-bff
     depends_on:
       redis:
         condition: service_healthy
@@ -481,6 +692,12 @@ services:
         condition: service_healthy
       notification:
         condition: service_healthy
+      search:
+        condition: service_started
+      chat:
+        condition: service_healthy
+      assistant:
+        condition: service_healthy
       otel-collector:
         condition: service_started
     healthcheck:
@@ -489,6 +706,8 @@ services:
       timeout: 3s
       retries: 20
 
+  # Next.js storefront / seller center / admin (BFF). Talks to the gateway over the internal `bff`
+  # network (`gateway-bff`) so gateway trusts forwarded client IPs only from `web`.
   web:
     build:
       context: .
@@ -497,11 +716,21 @@ services:
       NODE_ENV: production
       PORT: "3000"
       HOSTNAME: "0.0.0.0"
-      GATEWAY_URL: http://gateway:8080
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:${WEB_PORT:-3000}}
+      GATEWAY_URL: http://gateway-bff:8080
+      GATEWAY_PORT: ${GATEWAY_PORT:-8080}
+      PUBLIC_GATEWAY_URL: ${PUBLIC_GATEWAY_URL:-}
+      CHAT_WS_URL: ${CHAT_WS_URL:-}
+      GATEWAY_TIMEOUT_MS: ${GATEWAY_TIMEOUT_MS:-8000}
+      COOKIE_SECURE: ${COOKIE_SECURE:-${WEB_COOKIE_SECURE:-false}}
+      APP_ORIGIN: ${APP_ORIGIN:-${WEB_APP_ORIGIN:-}}
+      SITE_ROOT_DOMAIN: ${SITE_ROOT_DOMAIN:-nexusmart.localhost}
+      REFRESH_TOKEN_TTL_SECONDS: ${REFRESH_TOKEN_TTL_SECONDS:-604800}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      - "${WEB_PORT:-3300}:3000"
+    networks:
+      - default
+      - bff
     depends_on:
       gateway:
         condition: service_healthy
@@ -509,8 +738,8 @@ services:
       test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:3000/ || exit 1"]
       interval: 10s
       timeout: 3s
-      retries: 15
       start_period: 15s
+      retries: 15
 
   # E2E suite (profile "e2e", started by `make e2e`). Runs inside the compose network because
   # service gRPC ports are deliberately not published to the host.
@@ -526,6 +755,7 @@ services:
       HOME: /tmp
       GOCACHE: /tmp/go-build
       GATEWAY_URL: http://gateway:8080
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
       USER_HTTP_URL: http://user:8081
       PRODUCT_HTTP_URL: http://product:8082
       CART_HTTP_URL: http://cart:8083
@@ -534,12 +764,22 @@ services:
       PAYMENT_HTTP_URL: http://payment:8086
       SHIPPING_HTTP_URL: http://shipping:8087
       NOTIFICATION_HTTP_URL: http://notification:8088
+      SEARCH_HTTP_URL: http://search:8089
+      CHAT_HTTP_URL: http://chat:8090
+      ASSISTANT_HTTP_URL: http://assistant:8091
       USER_GRPC_ADDR: user:50051
-      PROMOTION_GRPC_ADDR: promotion:50054
       PRODUCT_GRPC_ADDR: product:50052
+      CART_GRPC_ADDR: cart:50053
+      PROMOTION_GRPC_ADDR: promotion:50054
       ORDER_GRPC_ADDR: order:50055
       PAYMENT_GRPC_ADDR: payment:50056
       SHIPPING_GRPC_ADDR: shipping:50057
+      NOTIFICATION_GRPC_ADDR: notification:50058
+      SEARCH_GRPC_ADDR: search:50059
+      CHAT_GRPC_ADDR: chat:50060
+      ASSISTANT_GRPC_ADDR: assistant:50061
+      MEILISEARCH_URL: ${MEILISEARCH_URL:-http://meilisearch:7700}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-dev-only-meilisearch-master-key-change-me}
       OTEL_PROM_URL: http://otel-collector:8889/metrics
       OTEL_HEALTH_URL: http://otel-collector:13133/
       MAILPIT_URL: http://mailpit:8025
@@ -550,7 +790,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
       NATS_URL: ${NATS_URL:-nats://nats:4222}
-      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      SITE_ROOT_DOMAIN: ${SITE_ROOT_DOMAIN:-nexusmart.localhost}
       SHIPPING_TEST_FAULT_INJECTION: ${SHIPPING_TEST_FAULT_INJECTION:-false}
       SHIPPING_CREATE_RETRY_MAX: ${SHIPPING_CREATE_RETRY_MAX:-8}
       SHIPPING_CREATE_RETRY_BASE_MS: ${SHIPPING_CREATE_RETRY_BASE_MS:-2000}
@@ -561,7 +801,228 @@ services:
       CARRIER_CB_OPEN_TIMEOUT: ${CARRIER_CB_OPEN_TIMEOUT:-30s}
     command: ["go", "test", "-v", "-count=1", "-timeout", "20m", "./..."]
 
+  # Web E2E suite through the BFF (profile "e2e-web", started by `make e2e-web`, which brings
+  # `web` up with --no-deps first so running backend containers are never recreated).
+  e2e-web:
+    image: node:24-alpine
+    profiles: ["e2e-web"]
+    working_dir: /src
+    volumes:
+      - ./tests/e2e-web:/src:ro
+    environment:
+      WEB_URL: http://web:3000
+      WEB_ORIGIN: ${E2E_WEB_ORIGIN:-}
+      SITE_ROOT_DOMAIN: ${SITE_ROOT_DOMAIN:-nexusmart.localhost}
+      MAILPIT_URL: http://mailpit:8025
+      GATEWAY_URL: http://gateway:8080
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:-dev-only-payment-webhook-hmac-secret}
+      SHIPPING_WEBHOOK_SECRET: ${SHIPPING_WEBHOOK_SECRET:-dev-only-shipping-webhook-hmac-secret}
+      ZALOPAY_APP_ID: ${ZALOPAY_APP_ID:-}
+      ZALOPAY_KEY2: ${ZALOPAY_KEY2:-}
+    command: ["node", "--test", "--test-concurrency=1", "--test-reporter=spec"]
+
+  # --- Observability & AIOps stack (Swarm E, profile "obs" so default stack stays lean) ---
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: ["obs"]
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./deploy/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/observability/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    profiles: ["obs"]
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    volumes:
+      - ./deploy/observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "127.0.0.1:${ALERTMANAGER_PORT:-9093}:9093"
+    depends_on:
+      telegram-relay:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9093/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  telegram-relay:
+    build:
+      context: ./deploy/observability/telegram-relay
+      dockerfile: Dockerfile
+    profiles: ["obs"]
+    environment:
+      PORT: "8099"
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    ports:
+      - "127.0.0.1:${TELEGRAM_RELAY_PORT:-18099}:8099"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8099/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  loki:
+    image: grafana/loki:3.1.1
+    profiles: ["obs"]
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    volumes:
+      - ./deploy/observability/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki_data:/loki
+    ports:
+      - "127.0.0.1:${LOKI_PORT:-3100}:3100"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  promtail:
+    image: grafana/promtail:3.1.1
+    profiles: ["obs"]
+    command: ["-config.file=/etc/promtail/promtail-config.yaml"]
+    volumes:
+      - ./deploy/observability/promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      loki:
+        condition: service_healthy
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    profiles: ["obs"]
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./deploy/observability/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "127.0.0.1:${TEMPO_PORT:-3200}:3200"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3200/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    profiles: ["obs"]
+    command:
+      - "--housekeeping_interval=10s"
+      - "--docker_only=true"
+      - "--disable_metrics=percpu,sched,tcp,udp,disk,diskIO,hugetlb,referenced_memory,cpu_topology,resctrl"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    privileged: true
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    profiles: ["obs"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-nexusmart_obs_dev}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/service-red-overview.json
+    volumes:
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3400}:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 90s
+      retries: 15
+
+  aiops:
+    build:
+      context: .
+      dockerfile: services/aiops/Dockerfile
+    profiles: ["obs"]
+    environment:
+      SERVICE_NAME: aiops
+      HTTP_PORT: "8092"
+      PROMETHEUS_URL: http://prometheus:9090
+      LOKI_URL: http://loki:3100
+      TEMPO_URL: http://tempo:3200
+      NATS_MONITOR_URL: http://nats:8222/healthz
+      TELEGRAM_WEBHOOK_URL: http://telegram-relay:8099/webhook
+      AIOPS_POLL_INTERVAL_SECS: ${AIOPS_POLL_INTERVAL_SECS:-10}
+      AIOPS_DRY_RUN: ${AIOPS_DRY_RUN:-true}
+      AIOPS_AUTO_REMEDIATE: ${AIOPS_AUTO_REMEDIATE:-false}
+      AIOPS_ADAPTER: ${AIOPS_ADAPTER:-docker}
+      AIOPS_MAX_ACTIONS_PER_HOUR: ${AIOPS_MAX_ACTIONS_PER_HOUR:-3}
+      AIOPS_ZSCORE_THRESHOLD: ${AIOPS_ZSCORE_THRESHOLD:-3.0}
+      AIOPS_EWMA_ALPHA: ${AIOPS_EWMA_ALPHA:-0.3}
+      LLM_MODE: ${LLM_MODE:-mock}
+      LLM_MODEL: ${LLM_MODEL:-claude-opus-5-5}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LLM_DAILY_MAX_CALLS: ${LLM_DAILY_MAX_CALLS:-100}
+      LLM_DAILY_BUDGET_USD: ${LLM_DAILY_BUDGET_USD:-5.0}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "127.0.0.1:${AIOPS_HTTP_PORT:-8092}:8092"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+      telegram-relay:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8092/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 15
+
+networks:
+  default:
+  bff:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.250.0/28
+
 volumes:
   postgres_data:
+  search_postgres_data:
+  # New volume for Meilisearch v1.58.0 (v1.12 meilisearch_data is minor-version incompatible; reindex via POST /api/v1/admin/search/reindex).
+  meilisearch_v1_58_data:
   redis_data:
   nats_data:
+  prometheus_data:
+  loki_data:
+  tempo_data:
+  grafana_data:

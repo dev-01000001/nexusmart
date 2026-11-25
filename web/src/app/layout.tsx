@@ -1,39 +1,58 @@
 import type { Metadata } from "next";
-import { Work_Sans } from "next/font/google";
-import { SessionProvider } from "@/context/SessionContext";
-import { MockStoreProvider } from "@/mock/MockStoreContext";
-import { CartProvider } from "@/context/CartContext";
+import { Archivo } from "next/font/google";
+import { RevealObserver } from "@/components/Reveal";
+import { SessionProvider } from "@/components/SessionProvider";
+import { StoreProvider } from "@/context/StoreContext";
+import { getSession, type SessionUser } from "@/lib/server/session";
 import "@/styles/tokens.css";
 import "@/styles/globals.css";
 
-const workSans = Work_Sans({
+const archivo = Archivo({
   subsets: ["latin", "vietnamese"],
-  weight: ["300", "400", "500", "600"],
-  variable: "--font-work-sans",
+  axes: ["wdth"],
+  variable: "--font-archivo",
   display: "swap",
 });
 
 export const metadata: Metadata = {
   title: {
-    default: "NexusMart · Đồ basic đa gian hàng Việt Nam",
+    default: "NexusMart · Nền tảng tạo cửa hàng trực tuyến cho gian hàng Việt Nam",
     template: "%s · NexusMart",
   },
   description:
-    "Sàn thương mại điện tử đa gian hàng đồ basic nam nữ Việt Nam, minh bạch chất liệu và bảng size, giao hàng 34 tỉnh thành.",
+    "Nền tảng vận hành cửa hàng trực tuyến theo tên miền riêng cho gian hàng Việt Nam: giao diện tùy biến, tồn kho thời gian thực, thanh toán COD & VietQR, đối soát minh bạch.",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  let initialUser: SessionUser | null = null;
+  try {
+    const session = await getSession();
+    initialUser = session?.user ?? null;
+  } catch {
+    // Public storefront stays accessible when gateway is temporarily unavailable;
+    // protected pages enforce real session/role via requireSession()/requireRole().
+  }
+
   return (
-    <html lang="vi" className={workSans.variable}>
+    <html lang="vi" className={archivo.variable} suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "document.documentElement.classList.add('js');setTimeout(function(){if(!window.__nmRevealReady)document.documentElement.classList.remove('js');},3000);",
+          }}
+        />
+      </head>
       <body>
-        <SessionProvider>
-          <MockStoreProvider>
-            <CartProvider>{children}</CartProvider>
-          </MockStoreProvider>
+        <SessionProvider initialUser={initialUser}>
+          <StoreProvider>
+            <RevealObserver />
+            {children}
+          </StoreProvider>
         </SessionProvider>
       </body>
     </html>

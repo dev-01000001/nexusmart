@@ -206,19 +206,28 @@ describe("Wave 2a web features — unit tests", () => {
     );
 
     const detailSrc = readFileSync(
-      resolve(WEB_SRC, "features/account/OrderDetailClient.tsx"),
+      resolve(WEB_SRC, "features/account/OrderDetailClientView.tsx"),
       "utf8"
     );
     assert.ok(
       /chưa hỗ trợ tải ảnh trực tiếp/i.test(detailSrc),
-      "OrderDetailClient must explicitly note direct image upload is not yet supported"
+      "OrderDetailClientView must explicitly note direct image upload is not yet supported"
     );
-    assert.ok(detailSrc.includes("/escalate"), "OrderDetailClient must wire buyer escalate action");
-    assert.ok(detailSrc.includes("/evidence"), "OrderDetailClient must wire buyer add evidence action");
-    assert.ok(detailSrc.includes("/redelivery"), "OrderDetailClient must wire buyer redelivery action");
+    assert.ok(
+      detailSrc.includes("/escalate"),
+      "OrderDetailClientView must wire buyer escalate action"
+    );
+    assert.ok(
+      detailSrc.includes("/evidence"),
+      "OrderDetailClientView must wire buyer add evidence action"
+    );
+    assert.ok(
+      detailSrc.includes("/redelivery"),
+      "OrderDetailClientView must wire buyer redelivery action"
+    );
     assert.ok(
       detailSrc.includes("/bank-account"),
-      "OrderDetailClient must wire buyer refund bank account submission"
+      "OrderDetailClientView must wire buyer refund bank account submission"
     );
   });
 
@@ -274,10 +283,10 @@ describe("Wave 2a web features — unit tests", () => {
     assert.equal(deductions, 101000);
     assert.equal(sampleOrder.subtotal_vnd - deductions, net);
 
-    const financeSrc = readFileSync(
-      resolve(WEB_SRC, "app/(seller)/seller/tai-chinh/page.tsx"),
-      "utf8"
-    );
+    const financeSrc =
+      readFileSync(resolve(WEB_SRC, "app/(seller)/seller/tai-chinh/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "features/seller/SellerFinanceClient.tsx"), "utf8");
     assert.ok(
       financeSrc.includes("visibleDeductions"),
       "seller/tai-chinh must sum visibleDeductions instead of only visibleCommission"
@@ -295,8 +304,14 @@ describe("Wave 2a web features — unit tests", () => {
     // /seller/tra-hang page exists and SellerShell links to it
     const sellerReturnsPath = resolve(WEB_SRC, "app/(seller)/seller/tra-hang/page.tsx");
     assert.equal(existsSync(sellerReturnsPath), true, "/seller/tra-hang/page.tsx must exist");
-    const sellerReturnsSrc = readFileSync(sellerReturnsPath, "utf8");
-    assert.ok(sellerReturnsSrc.includes("seller/returns"), "seller/tra-hang must fetch seller/returns");
+    const sellerReturnsSrc =
+      readFileSync(sellerReturnsPath, "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "features/seller/SellerReturnsClient.tsx"), "utf8");
+    assert.ok(
+      sellerReturnsSrc.includes("seller/returns"),
+      "seller/tra-hang must fetch seller/returns"
+    );
     assert.ok(sellerReturnsSrc.includes("/respond"), "seller/tra-hang must wire respond endpoint");
     assert.ok(
       sellerReturnsSrc.includes("/confirm-received"),
@@ -304,17 +319,20 @@ describe("Wave 2a web features — unit tests", () => {
     );
     assert.ok(sellerReturnsSrc.includes("/dispute"), "seller/tra-hang must wire dispute endpoint");
 
-    const sellerShellSrc = readFileSync(resolve(WEB_SRC, "app/(seller)/SellerShell.tsx"), "utf8");
+    const sellerShellSrc = readFileSync(
+      resolve(WEB_SRC, "features/seller/SellerShell.tsx"),
+      "utf8"
+    );
     assert.ok(
       sellerShellSrc.includes("/seller/tra-hang"),
       "SellerShell navigation must include /seller/tra-hang"
     );
 
     // /seller/ho-so wires real seller/shipping-settings
-    const sellerProfileSrc = readFileSync(
-      resolve(WEB_SRC, "app/(seller)/seller/ho-so/page.tsx"),
-      "utf8"
-    );
+    const sellerProfileSrc =
+      readFileSync(resolve(WEB_SRC, "app/(seller)/seller/ho-so/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "app/(seller)/seller/ho-so/SellerProfileClient.tsx"), "utf8");
     assert.ok(
       sellerProfileSrc.includes("seller/shipping-settings"),
       "seller/ho-so must wire real GET/PUT seller/shipping-settings"
@@ -337,16 +355,22 @@ describe("Wave 2a web features — unit tests", () => {
     );
     for (const st of ["pending", "suspended", "assigned", "refunded"]) {
       const meta = adminTypesMod.getReconciliationQueueStatusMeta(st);
-      assert.ok(meta.label && meta.label.toLowerCase() !== st, `queue status ${st} must be localized`);
+      assert.ok(
+        meta.label && meta.label.toLowerCase() !== st,
+        `queue status ${st} must be localized`
+      );
     }
 
     // /admin/khieu-nai uses real admin/returns API, no mock disputes / NexusPay
-    const disputesSrc = readFileSync(
-      resolve(WEB_SRC, "app/(admin)/admin/khieu-nai/page.tsx"),
-      "utf8"
-    );
+    const disputesSrc =
+      readFileSync(resolve(WEB_SRC, "app/(admin)/admin/khieu-nai/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "features/admin/AdminReturnsClient.tsx"), "utf8");
     assert.ok(disputesSrc.includes("admin/returns"), "/admin/khieu-nai must use admin/returns API");
-    assert.ok(disputesSrc.includes("/resolve"), "/admin/khieu-nai must wire admin resolve endpoint");
+    assert.ok(
+      disputesSrc.includes("/resolve"),
+      "/admin/khieu-nai must wire admin resolve endpoint"
+    );
     assert.ok(
       disputesSrc.includes("return_fee_bearer"),
       "/admin/khieu-nai must send return_fee_bearer"
@@ -358,10 +382,10 @@ describe("Wave 2a web features — unit tests", () => {
     );
 
     // /admin/doi-soat includes reconciliation queue + pending refunds queue with Idempotency-Key
-    const doiSoatSrc = readFileSync(
-      resolve(WEB_SRC, "app/(admin)/admin/doi-soat/page.tsx"),
-      "utf8"
-    );
+    const doiSoatSrc =
+      readFileSync(resolve(WEB_SRC, "app/(admin)/admin/doi-soat/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "features/admin/AdminReconciliationClient.tsx"), "utf8");
     assert.ok(
       doiSoatSrc.includes("admin/reconciliation/queue"),
       "/admin/doi-soat must load admin/reconciliation/queue"
@@ -376,13 +400,16 @@ describe("Wave 2a web features — unit tests", () => {
     const carriersPanelPath = resolve(WEB_SRC, "features/admin/AdminCarriersPanel.tsx");
     assert.equal(existsSync(carriersPanelPath), true, "AdminCarriersPanel.tsx must exist");
     const carriersSrc = readFileSync(carriersPanelPath, "utf8");
-    assert.ok(carriersSrc.includes("admin/carriers"), "AdminCarriersPanel must use admin/carriers API");
+    assert.ok(
+      carriersSrc.includes("admin/carriers"),
+      "AdminCarriersPanel must use admin/carriers API"
+    );
     assert.ok(carriersSrc.includes("/test"), "AdminCarriersPanel must wire carrier test endpoint");
 
-    const cauHinhSrc = readFileSync(
-      resolve(WEB_SRC, "app/(admin)/admin/cau-hinh/page.tsx"),
-      "utf8"
-    );
+    const cauHinhSrc =
+      readFileSync(resolve(WEB_SRC, "app/(admin)/admin/cau-hinh/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "features/admin/AdminConfigClient.tsx"), "utf8");
     assert.ok(
       cauHinhSrc.includes("AdminCarriersPanel"),
       "/admin/cau-hinh must render AdminCarriersPanel"
@@ -403,18 +430,28 @@ describe("Wave 2a web features — unit tests", () => {
     assert.equal(
       existsSync(resolve(WEB_SRC, "app/(shop)/quen-mat-khau/page.tsx")),
       true,
-      "/quen-mat-khau page must exist"
+      "root /quen-mat-khau page must exist"
     );
     assert.equal(
       existsSync(resolve(WEB_SRC, "app/(shop)/dat-lai-mat-khau/page.tsx")),
       true,
-      "/dat-lai-mat-khau page must exist"
+      "root /dat-lai-mat-khau page must exist"
+    );
+    assert.equal(
+      existsSync(resolve(WEB_SRC, "app/(site)/s/[host]/quen-mat-khau/page.tsx")),
+      true,
+      "site /quen-mat-khau page must exist"
+    );
+    assert.equal(
+      existsSync(resolve(WEB_SRC, "app/(site)/s/[host]/dat-lai-mat-khau/page.tsx")),
+      true,
+      "site /dat-lai-mat-khau page must exist"
     );
 
-    const loginSrc = readFileSync(resolve(WEB_SRC, "app/(shop)/dang-nhap/page.tsx"), "utf8");
+    const loginSrc = readFileSync(resolve(WEB_SRC, "features/account/AuthForms.tsx"), "utf8");
     assert.ok(
       loginSrc.includes("/quen-mat-khau"),
-      "/dang-nhap must include a link to /quen-mat-khau"
+      "LoginForm must include a link to /quen-mat-khau"
     );
 
     // Error mapping: account locked preserves reason, 409 carrier picked up gives clear Vietnamese message
@@ -448,18 +485,21 @@ describe("Wave 2a web features — unit tests", () => {
       `409 picked-up error must explain carrier already picked up parcel, got: ${pickedUpRes.message}`
     );
 
-    // Revoked token 401 triggers clean logout + redirect to /dang-nhap in SessionContext
-    const sessionCtxSrc = readFileSync(resolve(WEB_SRC, "context/SessionContext.tsx"), "utf8");
+    // Revoked token 401 triggers clean logout + redirect to /dang-nhap in SessionProvider
+    const sessionCtxSrc = readFileSync(resolve(WEB_SRC, "components/SessionProvider.tsx"), "utf8");
     assert.ok(
       sessionCtxSrc.includes("/api/auth/logout") && sessionCtxSrc.includes("/dang-nhap"),
-      "SessionContext must call /api/auth/logout and redirect to /dang-nhap on SESSION_EXPIRED_EVENT"
+      "SessionProvider must call /api/auth/logout and redirect to /dang-nhap on SESSION_EXPIRED_EVENT"
     );
   });
 
   test("5. ORD-B12 & USR-B10: Vietnamese timeline notes, RETURNED filter tab, real seller cover, super_admin & audit time filters", () => {
     // ORD-B12 timeline localization
     const noteAwaiting = orderMetaMod.localizeTimelineNote("Order created awaiting payment");
-    assert.ok(!/order created/i.test(noteAwaiting), `must translate awaiting payment: ${noteAwaiting}`);
+    assert.ok(
+      !/order created/i.test(noteAwaiting),
+      `must translate awaiting payment: ${noteAwaiting}`
+    );
 
     const noteShipped = orderMetaMod.localizeTimelineNote(
       "Shipped via ghn (tracking: GHN-1E8BD14AE3)"
@@ -469,7 +509,10 @@ describe("Wave 2a web features — unit tests", () => {
     assert.ok(noteShipped.includes("Giao Hàng Nhanh"), "must localize carrier label");
 
     const noteTimeout = orderMetaMod.localizeTimelineNote("seller_confirm_timeout");
-    assert.ok(!/seller_confirm_timeout/i.test(noteTimeout), `must localize timeout: ${noteTimeout}`);
+    assert.ok(
+      !/seller_confirm_timeout/i.test(noteTimeout),
+      `must localize timeout: ${noteTimeout}`
+    );
 
     // R11: payment timeout & FAILED cancel_reason localization + wiring in buyer & seller order detail
     assert.equal(
@@ -493,20 +536,20 @@ describe("Wave 2a web features — unit tests", () => {
       "failed delivery attempt",
       "exact FAILED match must not match unrelated prose"
     );
-    const buyerDetailSrc = readFileSync(
-      resolve(WEB_SRC, "features/account/OrderDetailClient.tsx"),
+    const buyerOrderViewSrc = readFileSync(
+      resolve(WEB_SRC, "features/account/orderView.ts"),
       "utf8"
     );
     assert.ok(
-      buyerDetailSrc.includes("localizeTimelineNote(order.cancel_reason)"),
-      "OrderDetailClient must pass order.cancel_reason through localizeTimelineNote"
+      buyerOrderViewSrc.includes("localizeTimelineNote(o.cancel_reason)"),
+      "orderView.ts must pass o.cancel_reason through localizeTimelineNote"
     );
-    const sellerOrderDetailSrc = readFileSync(
-      resolve(WEB_SRC, "app/(seller)/seller/don-hang/[id]/page.tsx"),
-      "utf8"
-    );
+    const sellerOrderDetailSrc =
+      readFileSync(resolve(WEB_SRC, "app/(seller)/seller/don-hang/[id]/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "features/seller/SellerOrderDetailClient.tsx"), "utf8");
     assert.ok(
-      sellerOrderDetailSrc.includes("localizeTimelineNote(order.cancel_reason)"),
+      /localizeTimelineNote\(\s*order\.cancel_reason\b/.test(sellerOrderDetailSrc),
       "Seller order detail must pass order.cancel_reason through localizeTimelineNote"
     );
 
@@ -526,12 +569,8 @@ describe("Wave 2a web features — unit tests", () => {
     );
 
     // ORD-B12 seller order detail no hardcoded cover image
-    const sellerDetailSrc = readFileSync(
-      resolve(WEB_SRC, "app/(seller)/seller/don-hang/[id]/page.tsx"),
-      "utf8"
-    );
     assert.equal(
-      sellerDetailSrc.includes('src="/products/ao-thun-cotton-trang.png"'),
+      sellerOrderDetailSrc.includes('src="/products/ao-thun-cotton-trang.png"'),
       false,
       "/seller/don-hang/[id] must not hardcode /products/ao-thun-cotton-trang.png"
     );
@@ -546,10 +585,12 @@ describe("Wave 2a web features — unit tests", () => {
       "AdminUsersPanel must support super_admin role"
     );
 
-    const auditLogSrc = readFileSync(
-      resolve(WEB_SRC, "app/(admin)/admin/audit-log/page.tsx"),
-      "utf8"
-    );
+    const auditLogSrc =
+      readFileSync(resolve(WEB_SRC, "app/(admin)/admin/audit-log/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "features/admin/AdminAuditLogClient.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "features/admin/AdminAuditHelpers.ts"), "utf8");
     assert.ok(
       auditLogSrc.includes("from_time") && auditLogSrc.includes("to_time"),
       "/admin/audit-log must support from_time and to_time filters"
@@ -559,7 +600,10 @@ describe("Wave 2a web features — unit tests", () => {
     assert.equal(redirectMod.resolvePostLoginRedirect("admin", "/dat-lai-mat-khau"), "/admin");
     assert.equal(orderMetaMod.normalizeNotificationHref("/verify-otp"), "/dang-ky");
     assert.equal(orderMetaMod.normalizeNotificationHref("/seller/dashboard"), "/seller");
-    assert.equal(orderMetaMod.normalizeNotificationHref("/seller/orders/abc"), "/seller/don-hang/abc");
+    assert.equal(
+      orderMetaMod.normalizeNotificationHref("/seller/orders/abc"),
+      "/seller/don-hang/abc"
+    );
   });
 
   test("6. [Review #1] BFF proxy forwards CSP & X-Content-Type-Options, sandboxes text/html lacking CSP, and always sets nosniff", () => {
@@ -594,7 +638,10 @@ describe("Wave 2a web features — unit tests", () => {
     });
     const jsonOut = new Headers();
     proxySecMod.applyProxySecurityHeaders(jsonOut, jsonUp, "application/json");
-    assert.equal(jsonOut.get("content-security-policy"), "default-src 'none'; frame-ancestors 'none'");
+    assert.equal(
+      jsonOut.get("content-security-policy"),
+      "default-src 'none'; frame-ancestors 'none'"
+    );
     assert.equal(jsonOut.get("x-content-type-options"), "nosniff");
 
     // 4. Upstream response without headers -> still sets nosniff
@@ -602,14 +649,17 @@ describe("Wave 2a web features — unit tests", () => {
     proxySecMod.applyProxySecurityHeaders(emptyOut, null, "application/json");
     assert.equal(emptyOut.get("x-content-type-options"), "nosniff");
 
-    const gwRouteSrc = readFileSync(resolve(WEB_SRC, "app/api/gw/[...path]/route.ts"), "utf8");
+    const labelRouteSrc = readFileSync(
+      resolve(WEB_SRC, "app/api/shipping/labels/[code]/route.ts"),
+      "utf8"
+    );
     assert.ok(
-      gwRouteSrc.includes("applyProxySecurityHeaders"),
-      "/api/gw/[...path]/route.ts must call applyProxySecurityHeaders"
+      labelRouteSrc.includes("applyProxySecurityHeaders"),
+      "/api/shipping/labels/[code]/route.ts must call applyProxySecurityHeaders"
     );
   });
 
-  test("7. [Review #2] Label print links use BFF /api/gw/shipping/labels/<tracking_code>, open new tab, and show Ctrl+P hint", () => {
+  test("7. [Review #2] Label print links use BFF /api/shipping/labels/<tracking_code>, open new tab, and show Ctrl+P hint", () => {
     assert.equal(
       typeof orderMetaMod.buildShippingLabelHref,
       "function",
@@ -617,17 +667,21 @@ describe("Wave 2a web features — unit tests", () => {
     );
     assert.equal(
       orderMetaMod.buildShippingLabelHref("GHN-ABC 123"),
-      "/api/gw/shipping/labels/GHN-ABC%20123"
+      "/api/shipping/labels/GHN-ABC%20123"
+    );
+    assert.equal(
+      orderMetaMod.buildShippingLabelHref("GHN-ABC 123", "ord-1"),
+      "/api/shipping/labels/GHN-ABC%20123?order_id=ord-1"
     );
     assert.equal(orderMetaMod.buildShippingLabelHref("   "), null);
     assert.equal(orderMetaMod.buildShippingLabelHref(undefined), null);
 
     const files = [
-      "features/account/OrderDetailClient.tsx",
-      "app/(seller)/seller/don-hang/page.tsx",
-      "app/(seller)/seller/don-hang/[id]/page.tsx",
-      "app/(seller)/seller/tra-hang/page.tsx",
-      "app/(admin)/admin/khieu-nai/page.tsx",
+      "features/account/OrderDetailClientView.tsx",
+      "features/seller/SellerOrdersClient.tsx",
+      "features/seller/SellerOrderDetailClient.tsx",
+      "features/seller/SellerReturnsClient.tsx",
+      "features/admin/AdminReturnsClient.tsx",
     ];
     for (const rel of files) {
       const src = readFileSync(resolve(WEB_SRC, rel), "utf8");
@@ -691,10 +745,10 @@ describe("Wave 2a web features — unit tests", () => {
     assert.equal(chunkedRes.ok, false);
     assert.equal(chunkedRes.status, 413);
 
-    const gwRouteSrc = readFileSync(resolve(WEB_SRC, "app/api/gw/[...path]/route.ts"), "utf8");
+    const httpHelperSrc = readFileSync(resolve(WEB_SRC, "lib/server/http.ts"), "utf8");
     assert.ok(
-      gwRouteSrc.includes("readBoundedBody") && gwRouteSrc.includes("413"),
-      "/api/gw/[...path]/route.ts must enforce readBoundedBody and return 413"
+      httpHelperSrc.includes("readBoundedJson") && httpHelperSrc.includes("413"),
+      "lib/server/http.ts readJson must enforce readBoundedJson and map 413 PAYLOAD_TOO_LARGE"
     );
   });
 
@@ -727,18 +781,15 @@ describe("Wave 2a web features — unit tests", () => {
       "next.config.ts must set minimal safe Content-Security-Policy (Wave 3b-1)"
     );
 
-    const resetSrc = readFileSync(
-      resolve(WEB_SRC, "app/(shop)/dat-lai-mat-khau/page.tsx"),
-      "utf8"
-    );
+    const resetSrc = readFileSync(resolve(WEB_SRC, "features/account/AuthForms.tsx"), "utf8");
     assert.ok(
       resetSrc.includes("history.replaceState"),
-      "/dat-lai-mat-khau must strip token from URL via history.replaceState"
+      "ResetPasswordForm must strip token from URL via history.replaceState"
     );
     assert.equal(
       /console\.(log|info|warn|error|debug)\s*\([^)]*token/i.test(resetSrc),
       false,
-      "/dat-lai-mat-khau must never log reset token"
+      "ResetPasswordForm must never log reset token"
     );
   });
 
@@ -772,9 +823,9 @@ describe("Wave 2a web features — unit tests", () => {
     }
 
     for (const rel of [
-      "features/account/OrderDetailClient.tsx",
-      "app/(seller)/seller/tra-hang/page.tsx",
-      "app/(admin)/admin/khieu-nai/page.tsx",
+      "features/account/OrderDetailClientView.tsx",
+      "features/seller/SellerReturnsClient.tsx",
+      "features/admin/AdminReturnsClient.tsx",
     ]) {
       const src = readFileSync(resolve(WEB_SRC, rel), "utf8");
       assert.ok(src.includes("parseSafeEvidenceUrl"), `${rel} must use parseSafeEvidenceUrl`);
@@ -836,7 +887,8 @@ describe("Wave 2a web features — unit tests", () => {
     const emptyLock = errorMapMod.sanitizeGatewayError(403, {
       error: {
         code: "PERMISSION_DENIED",
-        message: "Tài khoản đã bị khóa. Vui lòng liên hệ hỗ trợ support@nexusmart.vn để được xử lý.",
+        message:
+          "Tài khoản đã bị khóa. Vui lòng liên hệ hỗ trợ support@nexusmart.vn để được xử lý.",
       },
     });
     assert.equal(
@@ -851,10 +903,10 @@ describe("Wave 2a web features — unit tests", () => {
   });
 
   test("12. [Edge #9] /dang-nhap?expired=1 waits for SessionProvider loading before calling /api/auth/logout", () => {
-    const loginSrc = readFileSync(resolve(WEB_SRC, "app/(shop)/dang-nhap/page.tsx"), "utf8");
+    const loginSrc = readFileSync(resolve(WEB_SRC, "features/account/AuthForms.tsx"), "utf8");
     assert.ok(
       /useSession\(\)/.test(loginSrc) && /loading/.test(loginSrc),
-      "/dang-nhap must read loading from useSession()"
+      "LoginForm must read loading from useSession()"
     );
     assert.ok(
       /if\s*\(\s*!expiredParam\s*\|\|\s*(?:loading|sessionLoading)\s*\|\|\s*isAuthenticated\s*\)\s*return;/.test(
@@ -887,11 +939,21 @@ describe("Wave 2a web features — unit tests", () => {
     ];
     for (const tt of allTargetTypes) {
       const label = adminTypesMod.getAdminAuditTargetTypeLabel(tt);
-      assert.ok(label && label !== tt, `target_type ${tt} must have a Vietnamese label, got ${label}`);
-      assert.equal(label.includes("_"), false, `label for ${tt} must not be raw snake_case: ${label}`);
+      assert.ok(
+        label && label !== tt,
+        `target_type ${tt} must have a Vietnamese label, got ${label}`
+      );
+      assert.equal(
+        label.includes("_"),
+        false,
+        `label for ${tt} must not be raw snake_case: ${label}`
+      );
     }
 
-    const auditSrc = readFileSync(resolve(WEB_SRC, "app/(admin)/admin/audit-log/page.tsx"), "utf8");
+    const auditSrc = readFileSync(
+      resolve(WEB_SRC, "features/admin/AdminAuditLogClient.tsx"),
+      "utf8"
+    );
     assert.ok(
       auditSrc.includes("getAdminAuditTargetTypeLabel") &&
         auditSrc.includes("ADMIN_AUDIT_TARGET_TYPE_LABELS"),
@@ -910,14 +972,20 @@ describe("Wave 2a web features — unit tests", () => {
       );
     }
 
-    const doiSoatSrc = readFileSync(resolve(WEB_SRC, "app/(admin)/admin/doi-soat/page.tsx"), "utf8");
+    const doiSoatSrc = readFileSync(
+      resolve(WEB_SRC, "features/admin/AdminReconciliationClient.tsx"),
+      "utf8"
+    );
     assert.equal(
       /s\s*===\s*"open"|s\s*===\s*"unresolved"|s\s*===\s*"suspend"/.test(doiSoatSrc),
       false,
       "isQueueItemActionable in /admin/doi-soat must not check nonexistent status aliases"
     );
 
-    const cauHinhSrc = readFileSync(resolve(WEB_SRC, "app/(admin)/admin/cau-hinh/page.tsx"), "utf8");
+    const cauHinhSrc =
+      readFileSync(resolve(WEB_SRC, "app/(admin)/admin/cau-hinh/page.tsx"), "utf8") +
+      "\n" +
+      readFileSync(resolve(WEB_SRC, "features/admin/AdminConfigClient.tsx"), "utf8");
     assert.equal(
       cauHinhSrc.includes("cfg-carriers-heading") || cauHinhSrc.includes("carriersDraft"),
       false,

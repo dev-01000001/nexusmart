@@ -32,9 +32,12 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 	}
 	preVersions := []string{
 		"0001_init.sql",
-		"0002_add_shop_slug.sql",
-		"0003_cod_rejections.sql",
-		"0004_password_resets_and_lock_reason.sql",
+		"0002_sites.sql",
+		"0003_domains_cloudflare.sql",
+		"0004_site_templates.sql",
+		"0005_add_shop_slug.sql",
+		"0006_cod_rejections.sql",
+		"0007_password_resets_and_lock_reason.sql",
 	}
 	for _, v := range preVersions {
 		var exists bool

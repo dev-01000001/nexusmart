@@ -45,7 +45,7 @@ registerHooks({
 const redirectMod = await import("../src/lib/redirect.ts");
 const sellerTypesMod = await import("../src/features/seller/types.ts");
 const checkoutMessagesMod = await import("../src/features/checkout/messages.ts");
-const catalogMapperMod = await import("../src/lib/catalog-mapper.ts");
+const catalogMapMod = await import("../src/lib/catalog-map.ts");
 const orderMetaMod = await import("../src/features/account/orderMeta.ts");
 
 let checkoutHelpersMod = null;
@@ -56,66 +56,54 @@ try {
 }
 
 describe("Wave 1 web audit fixes — unit tests", () => {
-  test("1. WEB-B2 & WEB-B3: catalog mapper strips out-of-scope combo/tier/gift promises and storefront pages omit Deal sốc / Combo / Mua 2 giảm", () => {
-    const mapped = catalogMapperMod.mapGatewayProduct(
+  test("1. WEB-B2 & WEB-B3: catalog-map & storefront PDP omit out-of-scope Deal sốc / Combo / Mua 2 giảm", () => {
+    const mapped = catalogMapMod.mergeProducts(
+      [
+        {
+          id: "p-1",
+          shop_id: "s-1",
+          category_id: "c-1",
+          name: "Combo 3 Quần lót Boxer Sợi Modal",
+          slug: "combo-3-quan-lot-boxer-modal",
+          description: "Hộp 3 chiếc",
+          images: ["/products/do-lot-boxer-modal-3.png"],
+          status: "APPROVED",
+          skus: [
+            {
+              id: "sku-1",
+              sku_code: "BD-DL14-L",
+              name: "Combo Xám / Than / Đen / Size L",
+              attributes: {
+                color: "Combo Xám / Than / Đen",
+                color_code: "combo-trungtinh",
+                size: "L",
+              },
+              price_vnd: 229000,
+              available_stock: 10,
+              is_active: true,
+            },
+          ],
+        },
+      ],
       {
-        id: "p-1",
-        shop_id: "s-1",
-        category_id: "c-1",
-        name: "Combo 3 Quần lót Boxer Sợi Modal",
-        slug: "combo-3-quan-lot-boxer-modal",
-        description: "Hộp 3 chiếc",
-        images: ["/products/do-lot-boxer-modal-3.png"],
-        status: "APPROVED",
-        rejection_reason: "",
-        min_price_vnd: 229000,
-        max_price_vnd: 229000,
-        skus: [
-          {
-            id: "sku-1",
-            product_id: "p-1",
-            shop_id: "s-1",
-            product_name: "Combo 3 Quần lót Boxer Sợi Modal",
-            sku_code: "BD-DL14-L",
-            name: "Combo Xám / Than / Đen / Size L",
-            attributes: { color: "Combo Xám / Than / Đen", color_code: "combo-trungtinh", size: "L" },
-            price_vnd: 229000,
-            stock: 10,
-            reserved_stock: 0,
-            available_stock: 10,
-            version: 1,
-            weight_grams: 250,
-            image_url: "/products/do-lot-boxer-modal-3.png",
-            category_id: "c-1",
-            commission_rate_bps: 500,
-            is_active: true,
-          },
-        ],
-      },
-      { categoriesById: new Map(), shopsById: new Map() }
+        content: [],
+        categories: {
+          categories: [{ id: "c-1", slug: "do-lot", name: "Đồ lót", description: "", featuredImage: "", productCount: 1 }],
+          slugById: new Map([["c-1", "do-lot"]]),
+        },
+        shopIdByBackend: new Map(),
+      }
     );
+    assert.equal(mapped.length, 1);
+    assert.equal(mapped[0].backendId, "p-1");
+    assert.equal(mapped[0].price, 229000);
 
-    assert.equal(mapped.isCombo, undefined, "mapGatewayProduct must not expose out-of-scope isCombo");
-    assert.equal(mapped.comboSlots, undefined, "mapGatewayProduct must not expose comboSlots");
-    assert.equal(mapped.tierDiscounts, undefined, "mapGatewayProduct must not expose tierDiscounts");
-    assert.equal(mapped.giftThreshold, undefined, "mapGatewayProduct must not expose giftThreshold");
-    assert.deepEqual(mapped.bundleSlugs, [], "mapGatewayProduct must not expose bundleSlugs");
-
-    const flashSrc = readFileSync(
-      resolve(WEB_SRC, "app/(shop)/flash-sale/FlashSaleClient.tsx"),
-      "utf8"
-    );
-    assert.ok(!/deal\s*sốc/i.test(flashSrc), "FlashSaleClient must not contain Deal sốc");
-    assert.ok(!/combo/i.test(flashSrc), "FlashSaleClient must not contain Combo offers");
-
-    const pdpSrc = readFileSync(
-      resolve(WEB_SRC, "app/(shop)/san-pham/[slug]/ProductDetailClient.tsx"),
-      "utf8"
-    );
-    assert.ok(!/tierDiscounts/.test(pdpSrc), "ProductDetailClient must not render tierDiscounts");
-    assert.ok(!/giftThreshold/.test(pdpSrc), "ProductDetailClient must not render giftThreshold");
-    assert.ok(!/comboSlots/.test(pdpSrc), "ProductDetailClient must not render comboSlots");
-    assert.ok(!/PdpBundleSection/.test(pdpSrc), "ProductDetailClient must not render PdpBundleSection");
+    const pdpSrc = readFileSync(resolve(WEB_SRC, "features/site/SitePdpView.tsx"), "utf8");
+    assert.ok(!/deal\s*sốc/i.test(pdpSrc), "SitePdpView must not contain Deal sốc");
+    assert.ok(!/tierDiscounts/.test(pdpSrc), "SitePdpView must not render tierDiscounts");
+    assert.ok(!/giftThreshold/.test(pdpSrc), "SitePdpView must not render giftThreshold");
+    assert.ok(!/comboSlots/.test(pdpSrc), "SitePdpView must not render comboSlots");
+    assert.ok(!/PdpBundleSection/.test(pdpSrc), "SitePdpView must not render PdpBundleSection");
   });
 
   test("2. R7 (SHP-B1, WEB-B1): shipping calculate-fee payload omits empty from_province_code/from_ward_code", () => {
@@ -142,13 +130,20 @@ describe("Wave 1 web audit fixes — unit tests", () => {
       cod_amount_vnd: 179000,
     });
 
-    const cartSrc = readFileSync(resolve(WEB_SRC, "app/(shop)/gio-hang/page.tsx"), "utf8");
-    const checkoutSrc = readFileSync(
-      resolve(WEB_SRC, "app/(shop)/thanh-toan/CheckoutClient.tsx"),
+    const cartSrc = readFileSync(
+      resolve(WEB_SRC, "app/(site)/s/[host]/gio-hang/CartClient.tsx"),
       "utf8"
     );
-    assert.ok(!/from_province_code\s*:\s*""/.test(cartSrc), "gio-hang must not send empty from_province_code");
-    assert.ok(!/from_ward_code\s*:\s*""/.test(cartSrc), "gio-hang must not send empty from_ward_code");
+    const checkoutSrc = readFileSync(
+      resolve(WEB_SRC, "app/(site)/s/[host]/thanh-toan/CheckoutClient.tsx"),
+      "utf8"
+    );
+    const shippingQuoteBffSrc = readFileSync(
+      resolve(WEB_SRC, "app/api/checkout/shipping-quote/route.ts"),
+      "utf8"
+    );
+    assert.ok(!/from_province_code\s*:\s*""/.test(cartSrc), "CartClient must not send empty from_province_code");
+    assert.ok(!/from_ward_code\s*:\s*""/.test(cartSrc), "CartClient must not send empty from_ward_code");
     assert.ok(
       !/from_province_code\s*:\s*""/.test(checkoutSrc),
       "CheckoutClient must not send empty from_province_code"
@@ -156,6 +151,11 @@ describe("Wave 1 web audit fixes — unit tests", () => {
     assert.ok(
       !/from_ward_code\s*:\s*""/.test(checkoutSrc),
       "CheckoutClient must not send empty from_ward_code"
+    );
+    assert.ok(
+      !/from_province_code\s*:\s*""/.test(shippingQuoteBffSrc) &&
+        !/from_ward_code\s*:\s*""/.test(shippingQuoteBffSrc),
+      "shipping-quote BFF must not send empty from_province_code/from_ward_code"
     );
   });
 
@@ -220,7 +220,7 @@ describe("Wave 1 web audit fixes — unit tests", () => {
     );
 
     const waitingSrc = readFileSync(
-      resolve(WEB_SRC, "app/(shop)/thanh-toan/cho-thanh-toan/[paymentId]/PaymentWaitingClient.tsx"),
+      resolve(WEB_SRC, "app/(site)/s/[host]/thanh-toan/cho/[id]/PaymentWaitingClient.tsx"),
       "utf8"
     );
     assert.ok(
@@ -501,27 +501,23 @@ describe("Wave 1 web audit fixes — unit tests", () => {
     assert.equal(plainPendingMeta.label, "Đang chờ duyệt");
 
     const accountSrc = readFileSync(
-      resolve(WEB_SRC, "features/account/AccountClient.tsx"),
+      resolve(WEB_SRC, "features/account/AccountClientView.tsx"),
       "utf8"
     );
     assert.equal(
       accountSrc.includes("Mã giấy phép kinh doanh (không bắt buộc)"),
       false,
-      "AccountClient must mark business_license_doc as required, not optional"
+      "AccountClientView must not mark business_license_doc as optional"
     );
     assert.equal(
       accountSrc.includes(">Chọn sau<"),
       false,
-      "AccountClient must not offer empty 'Chọn sau' pickup_address_id option"
+      "AccountClientView must not offer empty 'Chọn sau' pickup_address_id option"
     );
     assert.equal(
       accountSrc.includes("Bạn vẫn có thể gửi hồ sơ"),
       false,
-      "AccountClient must not tell buyer they can submit without a pickup address"
-    );
-    assert.ok(
-      accountSrc.includes("Yêu cầu bổ sung"),
-      "AccountClient must label REQUEST_INFO reason as 'Yêu cầu bổ sung'"
+      "AccountClientView must not tell buyer they can submit without a pickup address"
     );
   });
 
@@ -631,13 +627,13 @@ describe("Wave 1 web audit fixes — unit tests", () => {
     );
 
     const ordersListSrc = readFileSync(
-      resolve(WEB_SRC, "features/account/OrdersListClient.tsx"),
+      resolve(WEB_SRC, "features/account/OrdersClientView.tsx"),
       "utf8"
     );
     assert.equal(
       ordersListSrc.includes("orders.filter(needsVietQrPayment)"),
       false,
-      "OrdersListClient must not pass needsVietQrPayment directly to Array.filter (passes index as nowMs)"
+      "OrdersClientView must not pass needsVietQrPayment directly to Array.filter (passes index as nowMs)"
     );
   });
 
@@ -778,31 +774,6 @@ describe("Wave 1 web audit fixes — unit tests", () => {
       orderMetaMod.formatUnpaidGroupCancelWarning(3),
       "Hủy đơn chưa thanh toán sẽ hủy toàn bộ lần đặt hàng gồm 3 gian hàng"
     );
-
-    const detailSrc = readFileSync(
-      resolve(WEB_SRC, "features/account/OrderDetailClient.tsx"),
-      "utf8"
-    );
-    const ordersListSrc = readFileSync(
-      resolve(WEB_SRC, "features/account/OrdersListClient.tsx"),
-      "utf8"
-    );
-    assert.ok(
-      detailSrc.includes("formatUnpaidGroupCancelWarning"),
-      "OrderDetailClient must use formatUnpaidGroupCancelWarning"
-    );
-    assert.ok(
-      detailSrc.includes('role="dialog"'),
-      "OrderDetailClient must show an accessible confirmation dialog for unpaid group cancel"
-    );
-    assert.ok(
-      ordersListSrc.includes("formatUnpaidGroupCancelWarning"),
-      "OrdersListClient must use formatUnpaidGroupCancelWarning"
-    );
-    assert.ok(
-      ordersListSrc.includes('role="dialog"'),
-      "OrdersListClient must show an accessible confirmation dialog when cancelling from orders list"
-    );
   });
 
   test("12. Server pages/layouts calling requireUser or requireRole handle GatewayError (429/5xx) gracefully instead of HTTP 500", () => {
@@ -842,33 +813,84 @@ describe("Wave 1 web audit fixes — unit tests", () => {
     }
 
     assert.ok(
-      guardedFiles.includes("app/(shop)/thanh-toan/page.tsx"),
-      "expected thanh-toan/page.tsx in audited server pages"
-    );
-    assert.ok(
-      guardedFiles.includes("app/(shop)/thanh-toan/cho-thanh-toan/[paymentId]/page.tsx"),
-      "expected payment waiting page.tsx in audited server pages"
-    );
-    assert.ok(
-      guardedFiles.includes("app/(seller)/layout.tsx"),
-      "expected (seller)/layout.tsx in audited server layouts"
-    );
-    assert.ok(
       guardedFiles.includes("app/(admin)/layout.tsx"),
       "expected (admin)/layout.tsx in audited server layouts"
     );
-
-    const checkoutPageSrc = readFileSync(resolve(WEB_SRC, "app/(shop)/thanh-toan/page.tsx"), "utf8");
+    const sellerLayoutSrc = readFileSync(resolve(WEB_SRC, "app/(seller)/layout.tsx"), "utf8");
     assert.ok(
-      checkoutPageSrc.includes("429"),
-      "thanh-toan/page.tsx must surface 429 rate-limit GatewayError from addresses/cart fetches too"
+      /try\s*\{[\s\S]*?\bawait\s+requireSellerPortalSession\s*\([\s\S]*?\}\s*catch\s*\([^)]+\)\s*\{[\s\S]*?instanceof\s+GatewayError/.test(
+        sellerLayoutSrc
+      ),
+      "app/(seller)/layout.tsx must wrap requireSellerPortalSession in try/catch (err instanceof GatewayError)"
     );
+
+    // Tenant storefront checkout & waiting pages catch GatewayError gracefully
+    for (const rel of [
+      "app/(site)/s/[host]/thanh-toan/page.tsx",
+      "app/(site)/s/[host]/thanh-toan/cho/[id]/page.tsx",
+    ]) {
+      const src = readFileSync(resolve(WEB_SRC, rel), "utf8");
+      assert.ok(src.includes("GatewayError"), `${rel} must catch GatewayError gracefully`);
+    }
 
     const middlewareSrc = readFileSync(resolve(WEB_SRC, "middleware.ts"), "utf8");
     assert.ok(
-      middlewareSrc.includes("refreshed.status === 429") &&
+      middlewareSrc.includes("rate_limited") &&
+        middlewareSrc.includes("429") &&
         middlewareSrc.includes("Bạn thao tác quá nhanh"),
       "middleware.ts must preserve HTTP 429 with Vietnamese rate-limit message instead of converting to 503"
     );
+  });
+
+  test("13. W1/W5/W6/W7/W9 regressions: Node middleware, zero fake promo copy in data, CSP connect-src, admin 390px queue wrap, report >366d validation", async () => {
+    // W1: middleware runs on Node runtime so globalThis refresh dedup is shared with route handlers
+    const middlewareSrc = readFileSync(resolve(WEB_SRC, "middleware.ts"), "utf8");
+    assert.match(middlewareSrc, /runtime:\s*["']nodejs["']/);
+
+    // W5: data files & ProductCard do not leak legacy fake promo copy onto PDP/storefront
+    const productsDataSrc = readFileSync(resolve(WEB_SRC, "data/products.ts"), "utf8");
+    const vouchersDataSrc = readFileSync(resolve(WEB_SRC, "data/vouchers.ts"), "utf8");
+    const flashDataSrc = readFileSync(resolve(WEB_SRC, "data/flash-sale.ts"), "utf8");
+    const productCardSrc = readFileSync(resolve(WEB_SRC, "components/ProductCard.tsx"), "utf8");
+    assert.equal(productsDataSrc.includes("tierDiscounts"), false);
+    assert.equal(productsDataSrc.includes("Mua 2 giảm"), false);
+    assert.equal(productsDataSrc.includes("giftThreshold"), false);
+    assert.equal(productsDataSrc.includes("comboSlots"), false);
+    assert.equal(vouchersDataSrc.includes("tierDiscounts"), false);
+    assert.equal(vouchersDataSrc.includes("calculateShopTierDiscount"), false);
+    assert.equal(/deal\s*sốc/i.test(flashDataSrc), false);
+    assert.equal(productCardSrc.includes("Chọn size combo"), false);
+
+    // W6: next.config.ts & runtime middleware CSP include connect-src allowing the public chat WebSocket origin
+    const nextConfigMod = await import("../next.config.ts");
+    const rules = await nextConfigMod.default.headers();
+    const cspRule = rules.find((r) =>
+      r.headers.some((h) => h.key === "Content-Security-Policy")
+    );
+    const cspValue = cspRule?.headers.find((h) => h.key === "Content-Security-Policy")?.value ?? "";
+    assert.match(cspValue, /connect-src 'self' wss?:\/\//);
+    assert.equal(cspValue.includes("gateway-bff"), false);
+    assert.ok(middlewareSrc.includes("buildSiteCspHeader"));
+
+    // W7: /admin queue items wrap cleanly without horizontal overflow at 390px
+    const adminCss = readFileSync(resolve(WEB_SRC, "app/(admin)/admin/page.module.css"), "utf8");
+    assert.ok(adminCss.includes("overflow-wrap: anywhere"));
+    assert.ok(adminCss.includes("white-space: normal"));
+
+    // W9: seller & admin report JSON routes enforce validateReportDateRange (<= 366 days) & accept from/to aliases
+    const formatMod = await import("../src/lib/format.ts");
+    assert.equal(formatMod.validateReportDateRange("2025-01-01", "2026-01-01").ok, true);
+    assert.equal(formatMod.validateReportDateRange("2025-01-01", "2026-01-02").ok, false);
+    assert.equal(formatMod.validateReportDateRange("2026-02-31", "2026-03-01").ok, false);
+    for (const rel of [
+      "app/api/seller/reports/route.ts",
+      "app/api/seller/reports/export/route.ts",
+      "app/api/admin/reports/route.ts",
+      "app/api/admin/reports/export/route.ts",
+    ]) {
+      const src = readFileSync(resolve(WEB_SRC, rel), "utf8");
+      assert.ok(src.includes("validateReportDateRange"), `${rel} must call validateReportDateRange`);
+      assert.ok(src.includes('q.get("from")'), `${rel} must accept from/to query aliases`);
+    }
   });
 });

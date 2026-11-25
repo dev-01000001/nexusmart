@@ -327,7 +327,8 @@ func (s *Server) CreateReview(ctx context.Context, req *productv1.CreateReviewRe
 	var created store.ProductReview
 	err = s.store.WithTx(ctx, func(q store.Queries) error {
 		// E6: Lock products row first so concurrent reviews serialize rating_sum/review_count updates cleanly.
-		if _, lockErr := q.GetProductByIDForUpdateAny(ctx, productID); lockErr != nil {
+		lockedProd, lockErr := q.GetProductByIDForUpdateAny(ctx, productID)
+		if lockErr != nil {
 			return lockErr
 		}
 
@@ -362,10 +363,9 @@ func (s *Server) CreateReview(ctx context.Context, req *productv1.CreateReviewRe
 			ReviewID:      rev.ID,
 			ProductID:     rev.ProductID,
 			ShopID:        rev.ShopID,
-			OrderID:       rev.OrderID,
 			OrderItemID:   rev.OrderItemID,
-			BuyerID:       rev.BuyerID,
 			Rating:        rev.Rating,
+			Comment:       rev.Comment,
 			ReviewCount:   newCount,
 			RatingAvgX100: avgX100,
 			OccurredAt:    now.Format(time.RFC3339),
@@ -383,6 +383,23 @@ func (s *Server) CreateReview(ctx context.Context, req *productv1.CreateReviewRe
 			CreatedAt:   now,
 		}); obErr != nil {
 			return obErr
+		}
+
+		// G9: Keep search index rating_avg_x100 & review_count in sync within the same TX without mutating products.updated_at.
+		if lockedProd.DeletedAt == nil && isPublicProductStatusStr(lockedProd.Status) {
+			lockedProd.RatingSum = newSum
+			lockedProd.ReviewCount = newCount
+			eventUpdatedAt := now
+			if !eventUpdatedAt.After(lockedProd.UpdatedAt) {
+				eventUpdatedAt = lockedProd.UpdatedAt.UTC().Add(time.Microsecond)
+			}
+			skus, skuErr := q.ListSKUsByProductIDs(ctx, []string{productID})
+			if skuErr != nil {
+				return skuErr
+			}
+			if obErr := emitProductUpsertedOutbox(ctx, q, lockedProd, skus, eventUpdatedAt, now); obErr != nil {
+				return obErr
+			}
 		}
 
 		created = rev

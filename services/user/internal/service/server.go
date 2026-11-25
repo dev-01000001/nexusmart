@@ -12,6 +12,7 @@ import (
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/secretbox"
+	"github.com/nexusmart/core/services/user/internal/cloudflare"
 	"github.com/nexusmart/core/services/user/internal/db"
 	"github.com/nexusmart/core/services/user/internal/events"
 	"github.com/nexusmart/core/services/user/internal/password"
@@ -57,6 +58,10 @@ type Options struct {
 	PhoneOTPMaxAttempts     int
 	AddressCatalog          AddressCatalog
 	OutboxTrigger           chan<- struct{}
+	SiteRootDomain          string
+	Cloudflare              cloudflare.Client
+	CFMode                  string
+	CFPollInterval          time.Duration
 	Now                     func() time.Time
 }
 
@@ -115,6 +120,20 @@ func (o Options) withDefaults() Options {
 	if o.PhoneOTPMaxAttempts <= 0 {
 		o.PhoneOTPMaxAttempts = 5
 	}
+	o.SiteRootDomain = strings.Trim(strings.ToLower(strings.TrimSpace(o.SiteRootDomain)), ".")
+	if o.SiteRootDomain == "" {
+		o.SiteRootDomain = "nexusmart.localhost"
+	}
+	o.CFMode = strings.ToLower(strings.TrimSpace(o.CFMode))
+	if o.CFMode == "" {
+		o.CFMode = "mock"
+	}
+	if o.CFPollInterval <= 0 {
+		o.CFPollInterval = 5 * time.Minute
+	}
+	if o.Cloudflare == nil {
+		o.Cloudflare = cloudflare.NewMock("shops." + o.SiteRootDomain)
+	}
 	if o.Now == nil {
 		o.Now = func() time.Time { return time.Now().UTC() }
 	}
@@ -133,6 +152,7 @@ type Server struct {
 	bankBox       *secretbox.Box
 	shipping      AddressCatalog
 	outboxTrigger chan<- struct{}
+	cf            cloudflare.Client
 	log           *slog.Logger
 	opts          Options
 }
@@ -147,22 +167,27 @@ func NewServer(
 	log *slog.Logger,
 	opts Options,
 ) *Server {
+	resolved := opts.withDefaults()
 	return &Server{
 		store:         store,
 		sec:           sec,
 		hasher:        hasher,
 		authMgr:       authMgr,
 		pub:           pub,
-		bankBox:       opts.BankAccountBox,
-		shipping:      opts.AddressCatalog,
-		outboxTrigger: opts.OutboxTrigger,
+		bankBox:       resolved.BankAccountBox,
+		shipping:      resolved.AddressCatalog,
+		outboxTrigger: resolved.OutboxTrigger,
+		cf:            resolved.Cloudflare,
 		log:           log,
-		opts:          opts.withDefaults(),
+		opts:          resolved,
 	}
 }
 
 func (s *Server) now() time.Time {
-	return s.opts.Now().UTC()
+	if s.opts.Now != nil {
+		return s.opts.Now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func (s *Server) revokedBeforeTTL() time.Duration {
@@ -851,19 +876,22 @@ func (s *Server) RefreshToken(ctx context.Context, req *userv1.RefreshTokenReque
 }
 
 func (s *Server) Logout(ctx context.Context, req *userv1.LogoutRequest) (*userv1.LogoutResponse, error) {
-	claims, hasClaims := auth.ClaimsFromContext(ctx)
+	claims, err := s.requireAuthClaims(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if rawToken := strings.TrimSpace(req.GetRefreshToken()); rawToken != "" {
 		tokenHash := hashToken(rawToken)
-		existing, err := s.store.GetRefreshTokenByHash(ctx, tokenHash)
-		if err == nil {
-			if hasClaims && !isFullAdminRank(claims) && existing.UserID != claims.UserID() {
+		existing, lookupErr := s.store.GetRefreshTokenByHash(ctx, tokenHash)
+		if lookupErr == nil {
+			if !isFullAdminRank(claims) && existing.UserID != claims.UserID() {
 				return nil, status.Error(codes.PermissionDenied, "cannot revoke another user's refresh token")
 			}
 			_ = s.store.RevokeRefreshTokenFamily(ctx, existing.FamilyID)
 		}
 	}
 
-	if hasClaims && claims.JTI() != "" {
+	if claims.JTI() != "" {
 		ttl := s.opts.AccessTTL
 		if claims.ExpiresAt != nil {
 			if rem := time.Until(claims.ExpiresAt.Time); rem > 0 {
@@ -872,7 +900,7 @@ func (s *Server) Logout(ctx context.Context, req *userv1.LogoutRequest) (*userv1
 		}
 		_ = s.sec.RevokeJTI(ctx, claims.JTI(), ttl)
 	}
-	if hasClaims && claims.Service == "" && isValidUUID(claims.UserID()) {
+	if claims.Service == "" && isValidUUID(claims.UserID()) {
 		s.recordActivityBestEffort(ctx, claims.UserID(), ActivityEventLogout, ActivityCategoryAuth, auditIPFromContext(ctx, claims, ""), map[string]any{})
 	}
 
@@ -880,18 +908,16 @@ func (s *Server) Logout(ctx context.Context, req *userv1.LogoutRequest) (*userv1
 }
 
 func (s *Server) GetProfile(ctx context.Context, req *userv1.GetProfileRequest) (*userv1.GetProfileResponse, error) {
+	claims, err := s.requireAuthClaims(ctx)
+	if err != nil {
+		return nil, err
+	}
 	targetID := strings.TrimSpace(req.GetUserId())
-	if _, ok := auth.ClaimsFromContext(ctx); ok {
-		claims, err := s.requireAuthClaims(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if targetID == "" {
-			targetID = claims.UserID()
-		}
-		if targetID != claims.UserID() && claims.Service == "" && !isFullAdminRank(claims) {
-			return nil, status.Error(codes.PermissionDenied, "cannot read another user's profile")
-		}
+	if targetID == "" {
+		targetID = claims.UserID()
+	}
+	if targetID != claims.UserID() && claims.Service == "" && !isFullAdminRank(claims) {
+		return nil, status.Error(codes.PermissionDenied, "cannot read another user's profile")
 	}
 	if targetID == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id is required")
@@ -1754,6 +1780,10 @@ func (s *Server) ListAddresses(ctx context.Context, req *userv1.ListAddressesReq
 }
 
 func (s *Server) GetAddress(ctx context.Context, req *userv1.GetAddressRequest) (*userv1.GetAddressResponse, error) {
+	claims, err := s.requireAuthClaims(ctx)
+	if err != nil {
+		return nil, err
+	}
 	addressID := strings.TrimSpace(req.GetAddressId())
 	if addressID == "" {
 		return nil, status.Error(codes.InvalidArgument, "address_id is required")
@@ -1770,8 +1800,8 @@ func (s *Server) GetAddress(ctx context.Context, req *userv1.GetAddressRequest) 
 		return nil, status.Error(codes.Internal, "failed to load address")
 	}
 
-	if claims, ok := auth.ClaimsFromContext(ctx); ok && claims.UserID() != "" {
-		if claims.Service == "" && !isFullAdminRank(claims) && addr.UserID != claims.UserID() {
+	if claims.Service == "" {
+		if !isFullAdminRank(claims) && addr.UserID != claims.UserID() {
 			return nil, status.Error(codes.PermissionDenied, "cannot access another user's address")
 		}
 	} else if reqUserID := strings.TrimSpace(req.GetUserId()); reqUserID != "" && addr.UserID != reqUserID {

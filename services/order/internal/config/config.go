@@ -35,6 +35,7 @@ type Config struct {
 	ReturnSellerResponseDays  int
 	ReturnShipDays            int
 	ReturnInspectDays         int
+	BatchShipMaxItems         int
 	GRPCCallTimeout           time.Duration
 	OutboxPollInterval        time.Duration
 	ExpiryWatchdogTimeout     time.Duration
@@ -75,6 +76,7 @@ func Load() Config {
 		ReturnSellerResponseDays:  env.EnvInt("ORDER_RETURN_SELLER_RESPONSE_DAYS", 3),
 		ReturnShipDays:            env.EnvInt("ORDER_RETURN_SHIP_DAYS", 5),
 		ReturnInspectDays:         env.EnvInt("ORDER_RETURN_INSPECT_DAYS", 3),
+		BatchShipMaxItems:         env.EnvInt("ORDER_BATCH_SHIP_MAX_ITEMS", 50),
 		GRPCCallTimeout:           env.EnvDuration("ORDER_GRPC_TIMEOUT", 10*time.Second),
 		OutboxPollInterval:        env.EnvDuration("ORDER_OUTBOX_POLL_INTERVAL", 250*time.Millisecond),
 		ExpiryWatchdogPeriod:      env.EnvDuration("ORDER_EXPIRY_WATCHDOG_INTERVAL", 10*time.Second),

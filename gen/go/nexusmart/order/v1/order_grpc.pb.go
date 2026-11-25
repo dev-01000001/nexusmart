@@ -42,6 +42,10 @@ const (
 	OrderService_GetPlatformReport_FullMethodName       = "/nexusmart.order.v1.OrderService/GetPlatformReport"
 	OrderService_ListOrdersNeedingReview_FullMethodName = "/nexusmart.order.v1.OrderService/ListOrdersNeedingReview"
 	OrderService_ResolveOrderReview_FullMethodName      = "/nexusmart.order.v1.OrderService/ResolveOrderReview"
+	OrderService_LookupOrder_FullMethodName             = "/nexusmart.order.v1.OrderService/LookupOrder"
+	OrderService_UpdateOrderAddress_FullMethodName      = "/nexusmart.order.v1.OrderService/UpdateOrderAddress"
+	OrderService_BatchShipOrders_FullMethodName         = "/nexusmart.order.v1.OrderService/BatchShipOrders"
+	OrderService_GetPickingList_FullMethodName          = "/nexusmart.order.v1.OrderService/GetPickingList"
 )
 
 // OrderServiceClient is the client API for OrderService service.
@@ -71,6 +75,10 @@ type OrderServiceClient interface {
 	GetPlatformReport(ctx context.Context, in *GetPlatformReportRequest, opts ...grpc.CallOption) (*GetPlatformReportResponse, error)
 	ListOrdersNeedingReview(ctx context.Context, in *ListOrdersNeedingReviewRequest, opts ...grpc.CallOption) (*ListOrdersNeedingReviewResponse, error)
 	ResolveOrderReview(ctx context.Context, in *ResolveOrderReviewRequest, opts ...grpc.CallOption) (*ResolveOrderReviewResponse, error)
+	LookupOrder(ctx context.Context, in *LookupOrderRequest, opts ...grpc.CallOption) (*LookupOrderResponse, error)
+	UpdateOrderAddress(ctx context.Context, in *UpdateOrderAddressRequest, opts ...grpc.CallOption) (*UpdateOrderAddressResponse, error)
+	BatchShipOrders(ctx context.Context, in *BatchShipOrdersRequest, opts ...grpc.CallOption) (*BatchShipOrdersResponse, error)
+	GetPickingList(ctx context.Context, in *GetPickingListRequest, opts ...grpc.CallOption) (*GetPickingListResponse, error)
 }
 
 type orderServiceClient struct {
@@ -311,6 +319,46 @@ func (c *orderServiceClient) ResolveOrderReview(ctx context.Context, in *Resolve
 	return out, nil
 }
 
+func (c *orderServiceClient) LookupOrder(ctx context.Context, in *LookupOrderRequest, opts ...grpc.CallOption) (*LookupOrderResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LookupOrderResponse)
+	err := c.cc.Invoke(ctx, OrderService_LookupOrder_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orderServiceClient) UpdateOrderAddress(ctx context.Context, in *UpdateOrderAddressRequest, opts ...grpc.CallOption) (*UpdateOrderAddressResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateOrderAddressResponse)
+	err := c.cc.Invoke(ctx, OrderService_UpdateOrderAddress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orderServiceClient) BatchShipOrders(ctx context.Context, in *BatchShipOrdersRequest, opts ...grpc.CallOption) (*BatchShipOrdersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BatchShipOrdersResponse)
+	err := c.cc.Invoke(ctx, OrderService_BatchShipOrders_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *orderServiceClient) GetPickingList(ctx context.Context, in *GetPickingListRequest, opts ...grpc.CallOption) (*GetPickingListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetPickingListResponse)
+	err := c.cc.Invoke(ctx, OrderService_GetPickingList_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OrderServiceServer is the server API for OrderService service.
 // All implementations must embed UnimplementedOrderServiceServer
 // for forward compatibility.
@@ -338,6 +386,10 @@ type OrderServiceServer interface {
 	GetPlatformReport(context.Context, *GetPlatformReportRequest) (*GetPlatformReportResponse, error)
 	ListOrdersNeedingReview(context.Context, *ListOrdersNeedingReviewRequest) (*ListOrdersNeedingReviewResponse, error)
 	ResolveOrderReview(context.Context, *ResolveOrderReviewRequest) (*ResolveOrderReviewResponse, error)
+	LookupOrder(context.Context, *LookupOrderRequest) (*LookupOrderResponse, error)
+	UpdateOrderAddress(context.Context, *UpdateOrderAddressRequest) (*UpdateOrderAddressResponse, error)
+	BatchShipOrders(context.Context, *BatchShipOrdersRequest) (*BatchShipOrdersResponse, error)
+	GetPickingList(context.Context, *GetPickingListRequest) (*GetPickingListResponse, error)
 	mustEmbedUnimplementedOrderServiceServer()
 }
 
@@ -416,6 +468,18 @@ func (UnimplementedOrderServiceServer) ListOrdersNeedingReview(context.Context, 
 }
 func (UnimplementedOrderServiceServer) ResolveOrderReview(context.Context, *ResolveOrderReviewRequest) (*ResolveOrderReviewResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ResolveOrderReview not implemented")
+}
+func (UnimplementedOrderServiceServer) LookupOrder(context.Context, *LookupOrderRequest) (*LookupOrderResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method LookupOrder not implemented")
+}
+func (UnimplementedOrderServiceServer) UpdateOrderAddress(context.Context, *UpdateOrderAddressRequest) (*UpdateOrderAddressResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateOrderAddress not implemented")
+}
+func (UnimplementedOrderServiceServer) BatchShipOrders(context.Context, *BatchShipOrdersRequest) (*BatchShipOrdersResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method BatchShipOrders not implemented")
+}
+func (UnimplementedOrderServiceServer) GetPickingList(context.Context, *GetPickingListRequest) (*GetPickingListResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetPickingList not implemented")
 }
 func (UnimplementedOrderServiceServer) mustEmbedUnimplementedOrderServiceServer() {}
 func (UnimplementedOrderServiceServer) testEmbeddedByValue()                      {}
@@ -852,6 +916,78 @@ func _OrderService_ResolveOrderReview_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OrderService_LookupOrder_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LookupOrderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrderServiceServer).LookupOrder(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrderService_LookupOrder_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrderServiceServer).LookupOrder(ctx, req.(*LookupOrderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OrderService_UpdateOrderAddress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateOrderAddressRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrderServiceServer).UpdateOrderAddress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrderService_UpdateOrderAddress_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrderServiceServer).UpdateOrderAddress(ctx, req.(*UpdateOrderAddressRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OrderService_BatchShipOrders_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BatchShipOrdersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrderServiceServer).BatchShipOrders(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrderService_BatchShipOrders_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrderServiceServer).BatchShipOrders(ctx, req.(*BatchShipOrdersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _OrderService_GetPickingList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPickingListRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrderServiceServer).GetPickingList(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrderService_GetPickingList_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrderServiceServer).GetPickingList(ctx, req.(*GetPickingListRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // OrderService_ServiceDesc is the grpc.ServiceDesc for OrderService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -950,6 +1086,22 @@ var OrderService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResolveOrderReview",
 			Handler:    _OrderService_ResolveOrderReview_Handler,
+		},
+		{
+			MethodName: "LookupOrder",
+			Handler:    _OrderService_LookupOrder_Handler,
+		},
+		{
+			MethodName: "UpdateOrderAddress",
+			Handler:    _OrderService_UpdateOrderAddress_Handler,
+		},
+		{
+			MethodName: "BatchShipOrders",
+			Handler:    _OrderService_BatchShipOrders_Handler,
+		},
+		{
+			MethodName: "GetPickingList",
+			Handler:    _OrderService_GetPickingList_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

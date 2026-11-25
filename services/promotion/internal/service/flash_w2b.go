@@ -197,7 +197,8 @@ func (s *PromotionService) ListAllFlashSales(ctx context.Context, req *promotion
 		return nil, status.Errorf(codes.InvalidArgument, "invalid flash sale window status %q (expected UPCOMING, ACTIVE, or ENDED)", statusFilter)
 	}
 
-	sales, total, err := s.store.ListAllFlashSales(ctx, s.nowFn(), statusFilter, req.GetPage(), req.GetPageSize())
+	now := s.nowFn()
+	sales, total, err := s.store.ListAllFlashSales(ctx, now, statusFilter, req.GetPage(), req.GetPageSize())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list all flash sales: %v", err)
 	}
@@ -215,7 +216,7 @@ func (s *PromotionService) ListAllFlashSales(ctx context.Context, req *promotion
 
 	pbSales := make([]*promotionv1.FlashSale, 0, len(sales))
 	for i := range sales {
-		pbSales = append(pbSales, flashSaleToProto(&sales[i], liveSlots))
+		pbSales = append(pbSales, flashSaleToProto(&sales[i], liveSlots, now))
 	}
 	return &promotionv1.ListAllFlashSalesResponse{
 		FlashSales: pbSales,

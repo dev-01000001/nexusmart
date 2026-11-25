@@ -150,6 +150,8 @@ export interface Order {
   id: string;
   orderCode: string;
   parentOrderCode?: string;
+  salesChannel?: "MARKETPLACE" | "STOREFRONT";
+  storefrontShopId?: string;
   shopId: string;
   shopName: string;
   buyerName: string;

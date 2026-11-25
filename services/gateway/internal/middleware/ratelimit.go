@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -170,6 +171,94 @@ func RateLimitShippingFee(limiter RateLimiter, limitPerMin int, log *slog.Logger
 		}
 		return "rl:shipping_fee:ip:" + tp.ClientIP(r)
 	})
+}
+
+// NormalizeOrderLookupCode normalizes an order_code for per-code rate-limit bucketing (G7).
+func NormalizeOrderLookupCode(raw string) string {
+	return strings.ToUpper(strings.TrimSpace(raw))
+}
+
+const maxOrderLookupCodeLen = 128
+
+// RateLimitOrderLookupIP enforces the per-IP sliding-window limit on public POST /api/v1/orders/lookup (G7):
+// `rl:order_lookup:ip:<ip>` (ipLimitPerMin / 1m). Tripping the limit returns HTTP 429 RATE_LIMIT_EXCEEDED + Retry-After.
+// Per-order-code limiting is checked via AllowOrderLookupCode inside the handler after decoding the JSON body once.
+func RateLimitOrderLookupIP(
+	limiter RateLimiter,
+	ipLimitPerMin int,
+	log *slog.Logger,
+	tp *TrustedProxies,
+) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		if limiter == nil || ipLimitPerMin <= 0 {
+			return next
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ipKey := "rl:order_lookup:ip:" + tp.ClientIP(r)
+			if !checkOrderLookupLimit(w, r, limiter, ipKey, ipLimitPerMin, time.Minute, log) {
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// AllowOrderLookupCode enforces the per-order-code sliding-window limit on the exact order_code
+// decoded by the lookup handler (G7): `rl:order_lookup:code:<normalized_code>` (codeLimitPer10Min / 10m).
+// Returns false after writing the HTTP error response if rejected.
+func AllowOrderLookupCode(
+	w http.ResponseWriter,
+	r *http.Request,
+	limiter RateLimiter,
+	codeLimitPer10Min int,
+	orderCode string,
+	log *slog.Logger,
+) bool {
+	normCode := NormalizeOrderLookupCode(orderCode)
+	if normCode == "" {
+		return true
+	}
+	if len(normCode) > maxOrderLookupCodeLen {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "order_code exceeds maximum length")
+		return false
+	}
+	if limiter == nil || codeLimitPer10Min <= 0 {
+		return true
+	}
+	codeKey := "rl:order_lookup:code:" + normCode
+	return checkOrderLookupLimit(w, r, limiter, codeKey, codeLimitPer10Min, 10*time.Minute, log)
+}
+
+func checkOrderLookupLimit(
+	w http.ResponseWriter,
+	r *http.Request,
+	limiter RateLimiter,
+	key string,
+	limit int,
+	window time.Duration,
+	log *slog.Logger,
+) bool {
+	res, err := limiter.Allow(r.Context(), key, limit, window)
+	if err != nil {
+		if log != nil {
+			log.WarnContext(r.Context(), "order lookup rate limiter unavailable, failing open", slog.String("error", err.Error()))
+		}
+		return true
+	}
+
+	w.Header().Set("X-RateLimit-Limit", strconv.Itoa(limit))
+	w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
+
+	if !res.Allowed {
+		retrySec := int(math.Ceil(res.RetryAfter.Seconds()))
+		if retrySec < 1 {
+			retrySec = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(retrySec))
+		httpx.WriteError(w, r, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "rate limit exceeded, please retry later")
+		return false
+	}
+	return true
 }
 
 func rateLimitMiddleware(

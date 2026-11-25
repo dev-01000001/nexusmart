@@ -112,8 +112,9 @@ func notifW2CreateCODOrder(
 	resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "notif-w2-" + uuid.NewString(),
 	}, CheckoutRequest{
-		AddressID: buyer.AddressID,
-		FromCart:  false,
+		SalesChannel: "MARKETPLACE",
+		AddressID:    buyer.AddressID,
+		FromCart:     false,
 		Items: []CheckoutItemInputDTO{{
 			SKUID:    sku.ID,
 			Quantity: 1,
@@ -330,13 +331,13 @@ func TestNotificationW2(t *testing.T) {
 		}
 
 		wantSellerLink := "/seller/don-hang/" + deliveredOrder.ID
-		wantBuyerLink := "/don-hang/" + deliveredOrder.ID
 
 		notifW2WaitNotification(t, env, seller.AccessToken, "seller return request notification", func(n NotificationDTO) bool {
 			return n.Category == "ORDER" && n.Link == wantSellerLink && strings.Contains(strings.ToLower(n.Title+" "+n.Body), "trả hàng")
 		})
+		// Per merged sitelink.go, MARKETPLACE orders without a published storefront site carry empty buyer link "".
 		notifW2WaitNotification(t, env, buyer.AccessToken, "buyer return request notification", func(n NotificationDTO) bool {
-			return n.Category == "ORDER" && n.Link == wantBuyerLink && strings.Contains(strings.ToLower(n.Title+" "+n.Body), "trả hàng")
+			return n.Category == "ORDER" && n.Link == "" && strings.Contains(strings.ToLower(n.Title+" "+n.Body), "trả hàng")
 		})
 		if _, err := env.mailpit.WaitForEmail(env.ctx(t), seller.Email, "yêu cầu trả hàng", env.cfg.PollTimeout); err != nil {
 			t.Fatalf("seller return request email missing in Mailpit: %v", err)

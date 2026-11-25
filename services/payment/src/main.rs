@@ -21,8 +21,17 @@ use nexusmart_payment::workers;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config = Config::try_from_env().map_err(anyhow::Error::msg)?;
+    let config = Config::from_env();
     let _tracer_provider = init_telemetry(&config.service_name, config.otel_endpoint.as_deref());
+
+    if let Err(err) = config.validate() {
+        error!(
+            service = "payment",
+            error = %err,
+            "refusing to start NexusMart Payment service with unsafe configuration"
+        );
+        return Err(anyhow::Error::msg(err));
+    }
 
     info!(?config, "starting NexusMart Payment service");
 
@@ -76,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
         let _ = signal_tx.send(true);
     });
 
+    // Build shared HS256 JWT authenticator for both HTTP (SSE / internal ops) and gRPC servers
     let grpc_auth = GrpcAuth::new(&config.jwt_secret, &config.service_jwt_secret)?;
 
     // HTTP server on port 8086 (Axum)

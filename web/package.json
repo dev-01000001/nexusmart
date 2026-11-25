@@ -8,12 +8,16 @@
     "start": "next start",
     "lint": "eslint .",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\"",
-    "check:data": "node scripts/check-data.mjs"
+    "check:data": "node scripts/check-data.mjs",
+    "test:unit": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \"src/**/*.test.mjs\" \"scripts/**/*.test.mjs\""
   },
   "dependencies": {
-    "next": "^15.5.0",
+    "next": "^15.5.29",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
+  },
+  "overrides": {
+    "postcss": "^8.5.33"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.1",

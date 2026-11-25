@@ -1,49 +1,62 @@
-import { NextRequest, NextResponse } from "next/server";
-import type { GatewayLoginResponse, LoginRequestBody } from "@/lib/gateway-types";
-import { verifyCsrfOrigin } from "@/lib/server/csrf";
-import { gatewayErrorResponse, gatewayFetch } from "@/lib/server/gateway";
-import { PAYLOAD_TOO_LARGE_BODY, readBoundedJson } from "@/lib/server/proxy-security";
-import { extractClientIp, setSessionCookies } from "@/lib/server/session";
+import { cookies } from "next/headers";
+import { gw } from "@/lib/server/gateway";
+import { GatewayError } from "@/lib/server/errors";
+import { apiRoute, readJson } from "@/lib/server/http";
+import { type GatewayUser, toSessionUser } from "@/lib/server/session";
+import { setAuthCookies } from "@/lib/server/tokens";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(req: NextRequest) {
-  const csrfErr = verifyCsrfOrigin(req);
-  if (csrfErr) return csrfErr;
+interface LoginInput {
+  email?: string;
+  password?: string;
+}
 
-  const parsed = await readBoundedJson<Partial<LoginRequestBody>>(req);
-  if (!parsed.ok) {
-    if (parsed.status === 413) {
-      return NextResponse.json(PAYLOAD_TOO_LARGE_BODY, {
-        status: 413,
-        headers: { "Cache-Control": "no-store" },
-      });
+interface GatewayLoginResponse {
+  access_token?: string;
+  refresh_token?: string;
+  expires_in_seconds?: number;
+  user?: GatewayUser | null;
+}
+
+export const POST = apiRoute(
+  async (req) => {
+    const body = await readJson<LoginInput>(req);
+    const email = (body.email ?? "").trim();
+    const password = body.password ?? "";
+    if (!email || !password) {
+      throw new GatewayError("invalid", "INVALID_ARGUMENT");
     }
-    return NextResponse.json(
-      { error: { code: "INVALID_JSON", message: "Thông tin đăng nhập không hợp lệ." } },
-      { status: 400, headers: { "Cache-Control": "no-store" } }
-    );
-  }
-  const body = parsed.data;
 
-  try {
-    const data = await gatewayFetch<GatewayLoginResponse>("/auth/login", {
+    const res = await gw<GatewayLoginResponse>("/api/v1/auth/login", {
       method: "POST",
-      token: false,
-      clientIp: extractClientIp(req.headers),
-      body: {
-        email: typeof body.email === "string" ? body.email.trim() : "",
-        password: typeof body.password === "string" ? body.password : "",
-      },
+      auth: "none",
+      body: { email, password },
     });
 
-    const res = NextResponse.json(
-      { user: data.user },
-      { status: 200, headers: { "Cache-Control": "no-store" } }
+    if (!res.access_token || !res.refresh_token || !res.user?.id) {
+      throw new GatewayError("unavailable");
+    }
+
+    const store = await cookies();
+    setAuthCookies(store, {
+      accessToken: res.access_token,
+      refreshToken: res.refresh_token,
+      expiresIn: Number(res.expires_in_seconds) || 900,
+    });
+
+    return Response.json(
+      { user: toSessionUser(res.user) },
+      { headers: { "Cache-Control": "no-store" } }
     );
-    setSessionCookies(res, data);
-    return res;
-  } catch (err) {
-    return gatewayErrorResponse(err);
+  },
+  {
+    messages: {
+      INVALID_ARGUMENT: "Vui lòng nhập đầy đủ email và mật khẩu hợp lệ.",
+      UNAUTHENTICATED: "Email hoặc mật khẩu chưa chính xác.",
+      FAILED_PRECONDITION:
+        "Tài khoản chưa xác thực OTP. Bạn vui lòng kiểm tra hộp thư để xác thực.",
+      RESOURCE_EXHAUSTED: "Bạn đã đăng nhập sai quá nhiều lần. Vui lòng thử lại sau ít phút.",
+    },
   }
-}
+);

@@ -1,28 +1,20 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import type {
-  GatewayProduct,
-  GatewayShopDiscountProgram,
-  GatewayShopDiscountProgramResponse,
-  GatewaySKU,
-  PaginatedResponse,
-} from "@/lib/gateway-types";
 import { api, getErrorMessage } from "@/lib/api";
 import { formatPromotionErrorMessage } from "@/features/checkout/messages";
 import { Button, StateView } from "@/components";
 import { formatDateTimeVi, formatDiscountPercent, formatInt, formatVnd } from "@/lib/format";
-import {
-  DISCOUNT_PROGRAM_STATUS_META,
-  getProductCoverImage,
-  translateShopDiscountWarning,
-} from "./types";
+import { statusPillClass } from "./SellerUiPrimitives";
+import type { GwSellerProduct, GwSellerSku, GwShopDiscountProgram } from "./sellerApiTypes";
+import { DISCOUNT_PROGRAM_STATUS_META, translateShopDiscountWarning } from "./types";
 import common from "./SellerCommon.module.css";
-import styles from "./PromotionsExtra.module.css";
+import styles from "@/app/(seller)/seller/khuyen-mai/page.module.css";
 
 interface Props {
   shopName: string;
-  products: GatewayProduct[];
+  initialPrograms: GwShopDiscountProgram[];
+  products: GwSellerProduct[];
   showForm: boolean;
   onOpenForm: () => void;
   onCloseForm: () => void;
@@ -41,15 +33,9 @@ function toDatetimeLocalValue(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function pillClassForTone(tone: "neutral" | "warn" | "pos" | "neg"): string {
-  if (tone === "pos") return `${common.pill} ${common.pillPos}`;
-  if (tone === "warn") return `${common.pill} ${common.pillWarn}`;
-  if (tone === "neg") return `${common.pill} ${common.pillNeg}`;
-  return common.pill;
-}
-
 export function PromotionsDiscountProgramsTab({
   shopName,
+  initialPrograms,
   products,
   showForm,
   onOpenForm,
@@ -57,8 +43,8 @@ export function PromotionsDiscountProgramsTab({
   onNotify,
   onCountChange,
 }: Props) {
-  const [programs, setPrograms] = useState<GatewayShopDiscountProgram[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [programs, setPrograms] = useState<GwShopDiscountProgram[]>(initialPrograms);
+  const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<"ALL" | "ACTIVE" | "SCHEDULED" | "ENDED">("ALL");
   const [serverWarnings, setServerWarnings] = useState<string[]>([]);
@@ -80,7 +66,7 @@ export function PromotionsDiscountProgramsTab({
   const [endingId, setEndingId] = useState<string | null>(null);
 
   const skuLookup = useMemo(() => {
-    const map = new Map<string, { product: GatewayProduct; sku: GatewaySKU }>();
+    const map = new Map<string, { product: GwSellerProduct; sku: GwSellerSku }>();
     for (const product of products) {
       for (const sku of product.skus ?? []) {
         map.set(sku.id, { product, sku });
@@ -103,22 +89,18 @@ export function PromotionsDiscountProgramsTab({
     setLoading(true);
     setErrorMsg(null);
     try {
-      const res = await api<PaginatedResponse<GatewayShopDiscountProgram>>(
-        "seller/discount-programs?page=1&page_size=50"
+      const res = await api<{ items?: GwShopDiscountProgram[] }>(
+        "/api/seller/discount-programs?page=1&page_size=50"
       );
       const list = res.items ?? [];
       setPrograms(list);
       onCountChange?.(list.length);
     } catch (err) {
-      setErrorMsg(getErrorMessage(err, "Không thể tải danh sách chương trình giảm giá của shop."));
+      setErrorMsg(getErrorMessage(err, "Không thể tải danh sách chương trình giảm giá."));
     } finally {
       setLoading(false);
     }
   }, [onCountChange]);
-
-  useEffect(() => {
-    void loadPrograms();
-  }, [loadPrograms]);
 
   useEffect(() => {
     if (showForm && !editingId && draftItems.length === 0 && selectableSkus.length > 0) {
@@ -149,7 +131,7 @@ export function PromotionsDiscountProgramsTab({
     }
   }, [showForm, resetForm]);
 
-  const handleStartEdit = (program: GatewayShopDiscountProgram) => {
+  const handleStartEdit = (program: GwShopDiscountProgram) => {
     setEditingId(program.id);
     setName(program.name);
     setStartsAt(
@@ -250,7 +232,7 @@ export function PromotionsDiscountProgramsTab({
       }
       if (found && discounted >= found.sku.price_vnd) {
         setFormError(
-          `Giá giảm của ${found.sku.sku_code} phải thấp hơn giá niêm yết (${formatVnd(found.sku.price_vnd)}).`
+          `Giá giảm của ${found.sku.sku_code} phải thấp hơn giá gốc (${formatVnd(found.sku.price_vnd)}).`
         );
         return;
       }
@@ -265,11 +247,11 @@ export function PromotionsDiscountProgramsTab({
     setSubmitting(true);
     try {
       const res = editingId
-        ? await api<GatewayShopDiscountProgramResponse>(
-            `seller/discount-programs/${encodeURIComponent(editingId)}`,
+        ? await api<{ program?: GwShopDiscountProgram; warnings?: string[] }>(
+            `/api/seller/discount-programs/${encodeURIComponent(editingId)}`,
             {
               method: "PUT",
-              json: {
+              body: {
                 name: cleanName,
                 starts_at: startDate.toISOString(),
                 ends_at: endDate.toISOString(),
@@ -278,15 +260,18 @@ export function PromotionsDiscountProgramsTab({
               },
             }
           )
-        : await api<GatewayShopDiscountProgramResponse>("seller/discount-programs", {
-            method: "POST",
-            json: {
-              name: cleanName,
-              starts_at: startDate.toISOString(),
-              ends_at: endDate.toISOString(),
-              items: payloadItems,
-            },
-          });
+        : await api<{ program?: GwShopDiscountProgram; warnings?: string[] }>(
+            "/api/seller/discount-programs",
+            {
+              method: "POST",
+              body: {
+                name: cleanName,
+                starts_at: startDate.toISOString(),
+                ends_at: endDate.toISOString(),
+                items: payloadItems,
+              },
+            }
+          );
 
       setServerWarnings(res.warnings ?? []);
       resetForm();
@@ -294,8 +279,8 @@ export function PromotionsDiscountProgramsTab({
       await loadPrograms();
       onNotify(
         editingId
-          ? `Đã cập nhật chương trình giảm giá "${cleanName}".`
-          : `Đã tạo chương trình giảm giá "${cleanName}" cho ${formatInt(payloadItems.length)} SKU.`
+          ? `Đã cập nhật chương trình "${cleanName}".`
+          : `Đã tạo chương trình "${cleanName}" cho ${formatInt(payloadItems.length)} SKU.`
       );
     } catch (err) {
       setFormError(
@@ -310,11 +295,11 @@ export function PromotionsDiscountProgramsTab({
     }
   };
 
-  const handleEndProgram = async (program: GatewayShopDiscountProgram) => {
+  const handleEndProgram = async (program: GwShopDiscountProgram) => {
     setEndingId(program.id);
     try {
-      await api<{ program: GatewayShopDiscountProgram }>(
-        `seller/discount-programs/${encodeURIComponent(program.id)}/end`,
+      await api<{ program?: GwShopDiscountProgram }>(
+        `/api/seller/discount-programs/${encodeURIComponent(program.id)}/end`,
         { method: "POST" }
       );
       setConfirmEndId(null);
@@ -347,12 +332,12 @@ export function PromotionsDiscountProgramsTab({
     .filter((p) => p.status === "ACTIVE" || p.status === "SCHEDULED")
     .reduce((sum, p) => sum + (p.items?.length ?? 0), 0);
 
-  if (loading) {
+  if (loading && programs.length === 0) {
     return (
       <StateView
         kind="loading"
         surface="app"
-        title="Đang tải danh sách chương trình giảm giá gian hàng..."
+        title="Đang tải chương trình giảm giá gian hàng..."
         rows={4}
       />
     );
@@ -363,7 +348,7 @@ export function PromotionsDiscountProgramsTab({
       <StateView
         kind="error"
         surface="app"
-        title="Không thể tải chương trình giảm giá gian hàng"
+        title="Không thể tải chương trình giảm giá"
         message={errorMsg}
         actionLabel="Thử lại"
         onAction={() => void loadPrograms()}
@@ -375,38 +360,33 @@ export function PromotionsDiscountProgramsTab({
     <div className={styles.sectionStack}>
       <section className={common.balanceStrip3} aria-label="Tổng hợp chương trình giảm giá shop">
         <div className={common.balanceCell}>
-          <span className={common.balanceLabel}>Đang áp dụng</span>
+          <span className={common.balanceLabel}>Đang chạy</span>
           <span
-            className={`${common.balanceValue} ${activeCount === 0 ? common.balanceValueZero : ""}`}
+            className={`${common.balanceValue} num ${activeCount === 0 ? common.balanceValueZero : ""}`}
           >
             {formatInt(activeCount)}
           </span>
-          <span className={common.balanceCaption}>Hiển thị giá gốc gạch thật trên sàn</span>
         </div>
         <div className={common.balanceCell}>
           <span className={common.balanceLabel}>Đã lên lịch</span>
           <span
-            className={`${common.balanceValue} ${scheduledCount === 0 ? common.balanceValueZero : ""}`}
+            className={`${common.balanceValue} num ${scheduledCount === 0 ? common.balanceValueZero : ""}`}
           >
             {formatInt(scheduledCount)}
           </span>
-          <span className={common.balanceCaption}>Tự động kích hoạt khi đến giờ bắt đầu</span>
         </div>
         <div className={common.balanceCell}>
           <span className={common.balanceLabel}>SKU đang tham gia</span>
           <span
-            className={`${common.balanceValue} ${totalSkuItems === 0 ? common.balanceValueZero : ""}`}
+            className={`${common.balanceValue} num ${totalSkuItems === 0 ? common.balanceValueZero : ""}`}
           >
             {formatInt(totalSkuItems)}
-          </span>
-          <span className={common.balanceCaption}>
-            Flash sale sẽ tự động ưu tiên nếu trùng khung giờ
           </span>
         </div>
       </section>
 
       {serverWarnings.length > 0 && (
-        <section className={common.card} role="status" aria-label="Cảnh báo giá từ hệ thống">
+        <section className={common.card} role="status" aria-label="Cảnh báo đối chiếu giá">
           <div className={common.cardHeader}>
             <span className={`${common.pill} ${common.pillWarn}`}>
               Cảnh báo đối chiếu giá 30 ngày
@@ -415,11 +395,9 @@ export function PromotionsDiscountProgramsTab({
               Ẩn thông báo
             </button>
           </div>
-          <ul style={{ margin: 0, paddingLeft: 18, color: "var(--ink)", fontSize: 13 }}>
+          <ul className={styles.warningList}>
             {serverWarnings.map((w, idx) => (
-              <li key={idx} style={{ marginBottom: 4 }}>
-                {translateShopDiscountWarning(w, skuLookup)}
-              </li>
+              <li key={idx}>{translateShopDiscountWarning(w, skuLookup)}</li>
             ))}
           </ul>
         </section>
@@ -430,17 +408,15 @@ export function PromotionsDiscountProgramsTab({
           className={styles.inlineFormCard}
           onSubmit={(e) => void handleSubmit(e)}
           aria-label="Biểu mẫu chương trình giảm giá shop"
+          noValidate
         >
           <div className={common.cardHeader}>
             <div>
               <h2 className={common.cardTitle}>
-                {editingId
-                  ? "Chỉnh sửa chương trình giảm giá gian hàng"
-                  : "Tạo chương trình giảm giá gian hàng mới"}
+                {editingId ? "Chỉnh sửa chương trình giảm giá" : "Tạo chương trình giảm giá shop"}
               </h2>
               <span className={common.cardMeta}>
-                Mỗi SKU chỉ thuộc 1 chương trình đang chạy tại một thời điểm · Giá giảm trực tiếp
-                trên trang sản phẩm và giỏ hàng
+                Mỗi SKU chỉ thuộc 1 chương trình đang chạy tại một thời điểm
               </span>
             </div>
           </div>
@@ -453,7 +429,7 @@ export function PromotionsDiscountProgramsTab({
 
           {selectableSkus.length === 0 ? (
             <p className={common.cardMeta}>
-              Gian hàng chưa có biến thể SKU đang mở bán để đưa vào chương trình giảm giá.
+              Chưa có biến thể SKU đang mở bán để đưa vào chương trình giảm giá.
             </p>
           ) : (
             <>
@@ -468,7 +444,7 @@ export function PromotionsDiscountProgramsTab({
                     className={common.textInput}
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    placeholder="Ví dụ: Ưu đãi cuối tuần giảm 15%"
+                    placeholder="Ưu đãi cuối tuần giảm 15%"
                     required
                   />
                 </div>
@@ -500,17 +476,17 @@ export function PromotionsDiscountProgramsTab({
                 </div>
               </div>
 
-              <div className={common.cardHeader} style={{ marginTop: 8 }}>
+              <div className={common.cardHeader}>
                 <span className={common.fieldLabel}>
-                  Danh sách SKU áp dụng ({formatInt(draftItems.length)})
+                  Danh sách SKU ({formatInt(draftItems.length)})
                 </span>
                 <div className={styles.actionPair}>
                   <input
                     type="number"
                     min={1}
                     max={90}
-                    className={common.textInput}
-                    style={{ width: 78, height: 32 }}
+                    step={1}
+                    className={`${common.textInput} ${styles.quickPctInput}`}
                     value={quickPct}
                     onChange={(e) => setQuickPct(e.target.value)}
                     aria-label="Phần trăm giảm nhanh"
@@ -536,7 +512,7 @@ export function PromotionsDiscountProgramsTab({
                 </div>
               </div>
 
-              <div className={styles.sectionStack} style={{ gap: 10, marginBottom: 14 }}>
+              <div className={styles.sectionStack}>
                 {draftItems.map((row, idx) => {
                   const found = skuLookup.get(row.sku_id);
                   const regPrice = found?.sku.price_vnd ?? 0;
@@ -599,8 +575,8 @@ export function PromotionsDiscountProgramsTab({
                         <input
                           id={`dp-price-${idx}`}
                           type="number"
-                          step={1}
                           min={1}
+                          step={1}
                           className={common.textInput}
                           value={row.discounted_price_vnd}
                           onChange={(e) =>
@@ -628,6 +604,7 @@ export function PromotionsDiscountProgramsTab({
                           id={`dp-limit-${idx}`}
                           type="number"
                           min={0}
+                          step={1}
                           className={common.textInput}
                           value={row.per_user_limit}
                           onChange={(e) =>
@@ -670,12 +647,12 @@ export function PromotionsDiscountProgramsTab({
                 >
                   Hủy
                 </Button>
-                <Button type="submit" variant="ink" size="sm" shape="app" disabled={submitting}>
+                <Button type="submit" variant="primary" size="sm" shape="app" disabled={submitting}>
                   {submitting
                     ? "Đang lưu..."
                     : editingId
                       ? "Cập nhật chương trình"
-                      : "Lưu chương trình giảm giá"}
+                      : "Lưu chương trình"}
                 </Button>
               </div>
             </>
@@ -689,9 +666,6 @@ export function PromotionsDiscountProgramsTab({
             <h2 id="shop-discount-list-heading" className={common.cardTitle}>
               Chương trình giảm giá của {shopName}
             </h2>
-            <span className={common.cardMeta}>
-              Tự động gạch giá gốc thật trên trang sản phẩm, giỏ hàng và thanh toán
-            </span>
           </div>
           <div className={common.segmented} role="tablist" aria-label="Lọc trạng thái chương trình">
             {(
@@ -728,7 +702,7 @@ export function PromotionsDiscountProgramsTab({
                   <tr>
                     <th>Tên chương trình</th>
                     <th>Thời gian áp dụng</th>
-                    <th>SKU & mức giảm</th>
+                    <th>SKU &amp; mức giảm</th>
                     <th>Trạng thái</th>
                     <th className={common.numCol}>Thao tác</th>
                   </tr>
@@ -755,7 +729,7 @@ export function PromotionsDiscountProgramsTab({
                               className={`${common.pill} ${common.pillWarn}`}
                               style={{ marginTop: 4 }}
                             >
-                              Cảnh báo tăng giá gốc 30 ngày
+                              Cảnh báo tăng giá 30 ngày
                             </span>
                           )}
                         </td>
@@ -768,27 +742,20 @@ export function PromotionsDiscountProgramsTab({
                           </span>
                         </td>
                         <td>
-                          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                          <div className={styles.programItemsList}>
                             {(program.items ?? []).slice(0, 3).map((it) => {
                               const found = skuLookup.get(it.sku_id);
+                              const thumb =
+                                found?.sku.image_url || found?.product.images?.[0] || null;
                               return (
-                                <div
-                                  key={it.id || it.sku_id}
-                                  style={{ display: "flex", alignItems: "center", gap: 8 }}
-                                >
-                                  {found && (
+                                <div key={it.id || it.sku_id} className={styles.programItemRow}>
+                                  {thumb && (
                                     <img
-                                      src={
-                                        found.sku.image_url || getProductCoverImage(found.product)
-                                      }
-                                      alt={found.product.name}
+                                      src={thumb}
+                                      alt={found?.product.name ?? it.sku_id}
                                       width={26}
                                       height={34}
-                                      style={{
-                                        borderRadius: 4,
-                                        objectFit: "cover",
-                                        background: "var(--surface)",
-                                      }}
+                                      className={styles.programItemThumb}
                                     />
                                   )}
                                   <div>
@@ -807,9 +774,6 @@ export function PromotionsDiscountProgramsTab({
                                       {it.per_user_limit > 0
                                         ? ` · Tối đa ${formatInt(it.per_user_limit)}/khách`
                                         : ""}
-                                      {it.price_inflation_flagged
-                                        ? " · Cảnh báo cao hơn giá thấp nhất 30 ngày"
-                                        : ""}
                                     </span>
                                   </div>
                                 </div>
@@ -823,55 +787,44 @@ export function PromotionsDiscountProgramsTab({
                           </div>
                         </td>
                         <td>
-                          <span className={pillClassForTone(meta.tone)}>{meta.label}</span>
+                          <span className={statusPillClass(meta.tone)}>{meta.label}</span>
                         </td>
                         <td className={common.numCol}>
                           {canModify ? (
-                            <div
-                              className={styles.actionPair}
-                              style={{ justifyContent: "flex-end" }}
-                            >
-                              <Button
+                            <div className={styles.switchWrap}>
+                              <button
                                 type="button"
-                                variant="outline"
-                                size="sm"
-                                shape="app"
+                                className={styles.inlineBtn}
                                 onClick={() => handleStartEdit(program)}
                               >
                                 Sửa
-                              </Button>
+                              </button>
                               {confirmEndId === program.id ? (
                                 <>
-                                  <Button
+                                  <button
                                     type="button"
-                                    variant="danger"
-                                    size="sm"
-                                    shape="app"
+                                    className={`${styles.inlineBtn} ${styles.inlineDangerBtn}`}
                                     disabled={endingId === program.id}
                                     onClick={() => void handleEndProgram(program)}
                                   >
                                     {endingId === program.id ? "Đang dừng..." : "Xác nhận dừng"}
-                                  </Button>
-                                  <Button
+                                  </button>
+                                  <button
                                     type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    shape="app"
+                                    className={styles.inlineBtn}
                                     onClick={() => setConfirmEndId(null)}
                                   >
                                     Hủy
-                                  </Button>
+                                  </button>
                                 </>
                               ) : (
-                                <Button
+                                <button
                                   type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  shape="app"
+                                  className={styles.inlineBtn}
                                   onClick={() => setConfirmEndId(program.id)}
                                 >
                                   Kết thúc
-                                </Button>
+                                </button>
                               )}
                             </div>
                           ) : (
@@ -892,9 +845,6 @@ export function PromotionsDiscountProgramsTab({
                   tone: "neutral" as const,
                 };
                 const canModify = program.status === "ACTIVE" || program.status === "SCHEDULED";
-                const hasInflationFlag = (program.items ?? []).some(
-                  (it) => it.price_inflation_flagged
-                );
                 return (
                   <div key={program.id} className={common.mobileRow}>
                     <div className={common.mobileRowTop}>
@@ -905,61 +855,48 @@ export function PromotionsDiscountProgramsTab({
                           {program.starts_at ? formatDateTimeVi(program.starts_at) : "—"}
                         </span>
                       </div>
-                      <span className={pillClassForTone(meta.tone)}>{meta.label}</span>
+                      <span className={statusPillClass(meta.tone)}>{meta.label}</span>
                     </div>
-                    {hasInflationFlag && (
-                      <span className={`${common.pill} ${common.pillWarn}`}>
-                        Cảnh báo tăng giá gốc 30 ngày
-                      </span>
-                    )}
                     <div className={common.mobileRowMeta}>
                       <span>
                         Hết hạn: {program.ends_at ? formatDateTimeVi(program.ends_at) : "—"}
                       </span>
                       {canModify && (
                         <div className={styles.actionPair}>
-                          <Button
+                          <button
                             type="button"
-                            variant="outline"
-                            size="sm"
-                            shape="app"
+                            className={styles.inlineBtn}
                             onClick={() => handleStartEdit(program)}
                           >
                             Sửa
-                          </Button>
+                          </button>
                           {confirmEndId === program.id ? (
                             <>
-                              <Button
+                              <button
                                 type="button"
-                                variant="ink"
-                                size="sm"
-                                shape="app"
+                                className={`${styles.inlineBtn} ${styles.inlineDangerBtn}`}
                                 disabled={endingId === program.id}
                                 onClick={() => void handleEndProgram(program)}
                               >
-                                {endingId === program.id ? "Đang xử lý..." : "Xác nhận kết thúc"}
-                              </Button>
-                              <Button
+                                {endingId === program.id ? "Đang dừng..." : "Xác nhận"}
+                              </button>
+                              <button
                                 type="button"
-                                variant="outline"
-                                size="sm"
-                                shape="app"
+                                className={styles.inlineBtn}
                                 onClick={() => setConfirmEndId(null)}
                               >
                                 Hủy
-                              </Button>
+                              </button>
                             </>
                           ) : (
-                            <Button
+                            <button
                               type="button"
-                              variant="outline"
-                              size="sm"
-                              shape="app"
+                              className={styles.inlineBtn}
                               disabled={endingId === program.id}
                               onClick={() => setConfirmEndId(program.id)}
                             >
                               Kết thúc
-                            </Button>
+                            </button>
                           )}
                         </div>
                       )}

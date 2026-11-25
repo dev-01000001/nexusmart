@@ -8,6 +8,7 @@ export interface FlashSaleItem {
   totalQuota: number;
   remainingQuota: number;
   limitPerBuyer: number;
+  itemIdBySku?: Record<string, string>; // backend flash sale item id per SKU id
 }
 
 export interface FlashSaleSlot {
@@ -17,42 +18,15 @@ export interface FlashSaleSlot {
   endTime: string;
   status: FlashSlotStatus;
   statusLabel: string;
+  startsAt?: string; // ISO instant from the gateway
+  endsAt?: string;
   maxItemsPerOrder?: number;
   items: FlashSaleItem[];
 }
 
-export interface ShockDealItem {
-  id: string;
-  productId: string;
-  dealPrice: number; // integer VND
-  originalPrice: number; // integer VND
-  totalQuota: number;
-  remainingQuota: number;
-  limitPerOrder: number; // 1 SP / lần
-  limitPerDay: number; // tối đa 2 SP / ngày
-  returnEligible: boolean;
-  note: string;
-}
-
-export interface ComboOffer {
-  id: string;
-  slug: string;
-  title: string;
-  subtitle: string;
-  shopId: string;
-  productIds: string[];
-  comboPrice: number; // integer VND
-  originalTotalPrice: number; // integer VND
-  discountLabel: string;
-  note: string;
-}
-
 export const FLASH_SALE_RULES = {
   maxItemsPerOrder: 3,
-  shockDealMaxPerOrder: 1,
-  shockDealMaxPerDay: 2,
-  stackableWithTierDiscount: true,
-  note: "Mỗi đơn Flash sale chọn tối đa 3 sản phẩm ưu đãi; Săn deal sốc giới hạn 1 sản phẩm/lần và tối đa 2 lượt/ngày.",
+  note: "Mỗi đơn Flash sale chọn tối đa 3 sản phẩm ưu đãi.",
 } as const;
 
 export const FLASH_SALE_SLOTS: FlashSaleSlot[] = [
@@ -279,108 +253,6 @@ export const FLASH_SALE_SLOTS: FlashSaleSlot[] = [
         limitPerBuyer: 2,
       },
     ],
-  },
-];
-
-export const SHOCK_DEALS: ShockDealItem[] = [
-  {
-    id: "shock-1",
-    productId: "prod-at-dryfit",
-    dealPrice: 99000,
-    originalPrice: 199000,
-    totalQuota: 40,
-    remainingQuota: 9,
-    limitPerOrder: 1,
-    limitPerDay: 2,
-    returnEligible: false,
-    note: "Giới hạn 1 chiếc/đơn · Không áp dụng đổi trả.",
-  },
-  {
-    id: "shock-2",
-    productId: "prod-tat-cothap",
-    dealPrice: 69000,
-    originalPrice: 109000,
-    totalQuota: 60,
-    remainingQuota: 17,
-    limitPerOrder: 1,
-    limitPerDay: 2,
-    returnEligible: false,
-    note: "Giới hạn 1 bộ/đơn · Không áp dụng đổi trả.",
-  },
-  {
-    id: "shock-3",
-    productId: "prod-short-run",
-    dealPrice: 149000,
-    originalPrice: 259000,
-    totalQuota: 35,
-    remainingQuota: 6,
-    limitPerOrder: 1,
-    limitPerDay: 2,
-    returnEligible: false,
-    note: "Suất chạy bộ giới hạn 1 chiếc/đơn · Không đổi trả.",
-  },
-  {
-    id: "shock-4",
-    productId: "prod-at-xanhthan",
-    dealPrice: 129000,
-    originalPrice: 219000,
-    totalQuota: 50,
-    remainingQuota: 14,
-    limitPerOrder: 1,
-    limitPerDay: 2,
-    returnEligible: false,
-    note: "Suất khung trưa giới hạn 1 chiếc/đơn · Không đổi trả.",
-  },
-];
-
-export const COMBO_OFFERS: ComboOffer[] = [
-  {
-    id: "combo-basic-duo",
-    slug: "combo-2-ao-cotton-220gsm",
-    title: "Combo 2 Áo thun Cotton Compact 220gsm",
-    subtitle: "Trắng tinh + Xám đá · Xưởng Dệt Bạch Đằng",
-    shopId: "shop-bach-dang",
-    productIds: ["prod-at-trang", "prod-at-xamda"],
-    comboPrice: 329000,
-    originalTotalPrice: 368000,
-    discountLabel: "Tiết kiệm 39.000₫",
-    note: "Giao chung 1 kiện từ Hải Phòng, đủ mốc freeship toàn sàn.",
-  },
-  {
-    id: "combo-run-kit",
-    slug: "bo-chay-bo-dryfit-short-5-inch",
-    title: "Bộ Chạy bộ Dry-Fit + Quần Short 5 inch",
-    subtitle: "Siêu nhẹ thoát ẩm nhanh · Kho Basic Sài Gòn",
-    shopId: "shop-sai-gon",
-    productIds: ["prod-at-dryfit", "prod-short-run"],
-    comboPrice: 339000,
-    originalTotalPrice: 378000,
-    discountLabel: "Tiết kiệm 39.000₫",
-    note: "Giao nhanh 2–4 giờ nội thành TP.HCM, đủ mốc freeship.",
-  },
-  {
-    id: "combo-office-smart",
-    slug: "bo-cong-so-polo-pique-short-linen",
-    title: "Bộ Công sở Polo Pique + Short Linen",
-    subtitle: "Sợi thực vật thoáng mát · Sợi Tự Nhiên Đà Nẵng",
-    shopId: "shop-da-nang",
-    productIds: ["prod-polo-kem", "prod-short-linen"],
-    comboPrice: 519000,
-    originalTotalPrice: 568000,
-    discountLabel: "Tiết kiệm 49.000₫",
-    note: "Dùng thêm mã DANANG30 và NEXUS30 khi đặt hàng.",
-  },
-  {
-    id: "combo-terry-daily",
-    slug: "bo-jogger-terry-tat-cotton",
-    title: "Bộ Jogger Nỉ Terry + 5 đôi Tất Cotton",
-    subtitle: "Nỉ chân cua 320gsm giữ form · Dệt Kim Hà Nội",
-    shopId: "shop-ha-noi",
-    productIds: ["prod-jogger-terry", "prod-tat-cotrung"],
-    comboPrice: 429000,
-    originalTotalPrice: 478000,
-    discountLabel: "Tiết kiệm 49.000₫",
-    note: "Giao chung 1 kiện từ Hà Nội, dùng thêm mã HANOI15.",
   },
 ];
 

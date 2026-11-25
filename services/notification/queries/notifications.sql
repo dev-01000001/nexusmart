@@ -99,22 +99,23 @@ FROM user_contacts
 WHERE user_id = $1;
 
 -- name: UpsertOrderParticipant :exec
-INSERT INTO order_participants (order_id, buyer_id, shop_id, order_code, checkout_group_id, updated_at)
-VALUES ($1, $2, $3, $4, $5, NOW())
+INSERT INTO order_participants (order_id, buyer_id, shop_id, order_code, checkout_group_id, storefront_shop_id, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, NOW())
 ON CONFLICT (order_id) DO UPDATE SET
     buyer_id = CASE WHEN EXCLUDED.buyer_id <> '' THEN EXCLUDED.buyer_id ELSE order_participants.buyer_id END,
     shop_id = CASE WHEN EXCLUDED.shop_id <> '' THEN EXCLUDED.shop_id ELSE order_participants.shop_id END,
     order_code = CASE WHEN EXCLUDED.order_code <> '' THEN EXCLUDED.order_code ELSE order_participants.order_code END,
     checkout_group_id = CASE WHEN EXCLUDED.checkout_group_id <> '' THEN EXCLUDED.checkout_group_id ELSE order_participants.checkout_group_id END,
+    storefront_shop_id = CASE WHEN EXCLUDED.storefront_shop_id <> '' THEN EXCLUDED.storefront_shop_id ELSE order_participants.storefront_shop_id END,
     updated_at = NOW();
 
 -- name: GetOrderParticipant :one
-SELECT order_id, buyer_id, shop_id, order_code, checkout_group_id, updated_at
+SELECT order_id, buyer_id, shop_id, order_code, checkout_group_id, storefront_shop_id, updated_at
 FROM order_participants
 WHERE order_id = $1;
 
 -- name: ListOrderParticipantsByCheckoutGroup :many
-SELECT order_id, buyer_id, shop_id, order_code, checkout_group_id, updated_at
+SELECT order_id, buyer_id, shop_id, order_code, checkout_group_id, storefront_shop_id, updated_at
 FROM order_participants
 WHERE checkout_group_id = $1
 ORDER BY order_id ASC;

@@ -5,6 +5,10 @@ export interface IconProps {
   className?: string;
 }
 
+/**
+ * Shared 1.5px stroke geometry on a crisp 20x20 grid.
+ * Consistent cap, join, and optical padding across storefront, seller, and admin UI.
+ */
 const baseProps = (size: number, className?: string) => ({
   width: size,
   height: size,
@@ -19,7 +23,7 @@ const baseProps = (size: number, className?: string) => ({
 });
 
 /**
- * Minimal woven-thread monogram mark for NexusMart (never a black square with a letter).
+ * Minimal woven-thread monogram mark for NexusMart.
  */
 export function NexusMark({
   size = 20,
@@ -51,7 +55,7 @@ export function IconSearch({ size = 16, className }: IconProps) {
   return (
     <svg {...baseProps(size, className)}>
       <circle cx="9" cy="9" r="5.5" />
-      <path d="M13.2 13.2L17 17" />
+      <path d="M13.2 13.2L16.8 16.8" />
     </svg>
   );
 }
@@ -117,10 +121,53 @@ export function IconChevronRight({ size = 14, className }: IconProps) {
   );
 }
 
+export function IconChevronLeft({ size = 14, className }: IconProps) {
+  return (
+    <svg {...baseProps(size, className)}>
+      <path d="M12.5 4.5L7 10L12.5 15.5" />
+    </svg>
+  );
+}
+
 export function IconChevronDown({ size = 14, className }: IconProps) {
   return (
     <svg {...baseProps(size, className)}>
       <path d="M5 7.5L10 12.5L15 7.5" />
+    </svg>
+  );
+}
+
+export function IconChevronUp({ size = 14, className }: IconProps) {
+  return (
+    <svg {...baseProps(size, className)}>
+      <path d="M5 12.5L10 7.5L15 12.5" />
+    </svg>
+  );
+}
+
+export function IconArrowRight({ size = 14, className }: IconProps) {
+  return (
+    <svg {...baseProps(size, className)}>
+      <path d="M4 10H16" />
+      <path d="M11 5L16 10L11 15" />
+    </svg>
+  );
+}
+
+export function IconArrowLeft({ size = 14, className }: IconProps) {
+  return (
+    <svg {...baseProps(size, className)}>
+      <path d="M16 10H4" />
+      <path d="M9 5L4 10L9 15" />
+    </svg>
+  );
+}
+
+export function IconArrowUpRight({ size = 14, className }: IconProps) {
+  return (
+    <svg {...baseProps(size, className)}>
+      <path d="M6 14L14 6" />
+      <path d="M7.5 6H14V12.5" />
     </svg>
   );
 }
@@ -195,7 +242,7 @@ export function IconTag({ size = 16, className }: IconProps) {
   return (
     <svg {...baseProps(size, className)}>
       <path d="M3.5 10.2V4.5H9.2L16.2 11.5L10.5 17.2L3.5 10.2Z" />
-      <circle cx="7" cy="7.5" r="1" />
+      <circle cx="7.2" cy="7.5" r="0.9" />
     </svg>
   );
 }
@@ -205,7 +252,7 @@ export function IconWallet({ size = 16, className }: IconProps) {
     <svg {...baseProps(size, className)}>
       <rect x="3.5" y="5" width="13" height="10.5" rx="1.5" />
       <path d="M12.5 10.2H16.5" />
-      <circle cx="13.2" cy="10.2" r="0.6" fill="currentColor" />
+      <circle cx="13.2" cy="10.2" r="0.85" fill="currentColor" stroke="none" />
     </svg>
   );
 }
@@ -213,12 +260,28 @@ export function IconWallet({ size = 16, className }: IconProps) {
 export function IconSliders({ size = 16, className }: IconProps) {
   return (
     <svg {...baseProps(size, className)}>
-      <path d="M4 6H16" />
-      <path d="M4 10H16" />
-      <path d="M4 14H16" />
-      <circle cx="7.5" cy="6" r="1.5" fill="var(--bg)" />
-      <circle cx="12.5" cy="10" r="1.5" fill="var(--bg)" />
-      <circle cx="8.5" cy="14" r="1.5" fill="var(--bg)" />
+      <path d="M3.5 6H6M9 6H16.5" />
+      <circle cx="7.5" cy="6" r="1.5" />
+      <path d="M3.5 10H11M14 10H16.5" />
+      <circle cx="12.5" cy="10" r="1.5" />
+      <path d="M3.5 14H7M10 14H16.5" />
+      <circle cx="8.5" cy="14" r="1.5" />
+    </svg>
+  );
+}
+
+export function IconFilter({ size = 16, className }: IconProps) {
+  return (
+    <svg {...baseProps(size, className)}>
+      <path d="M3.5 5H16.5L11.8 10.6V15.5L8.2 14V10.6L3.5 5Z" />
+    </svg>
+  );
+}
+
+export function IconCommand({ size = 15, className }: IconProps) {
+  return (
+    <svg {...baseProps(size, className)}>
+      <path d="M7.5 7.5H5.8C4.8 7.5 4 6.7 4 5.8C4 4.8 4.8 4 5.8 4C6.7 4 7.5 4.8 7.5 5.8V14.2C7.5 15.2 6.7 16 5.8 16C4.8 16 4 15.2 4 14.2C4 13.3 4.8 12.5 5.8 12.5H14.2C15.2 12.5 16 13.3 16 14.2C16 15.2 15.2 16 14.2 16C13.3 16 12.5 15.2 12.5 14.2V5.8C12.5 4.8 13.3 4 14.2 4C15.2 4 16 4.8 16 5.8C16 6.7 15.2 7.5 14.2 7.5H7.5Z" />
     </svg>
   );
 }
@@ -236,8 +299,8 @@ export function IconAlert({ size = 16, className }: IconProps) {
   return (
     <svg {...baseProps(size, className)}>
       <circle cx="10" cy="10" r="6.5" />
-      <path d="M10 6.8V10.4" />
-      <circle cx="10" cy="13.2" r="0.6" fill="currentColor" />
+      <path d="M10 6.8V10.3" />
+      <circle cx="10" cy="13.2" r="0.85" fill="currentColor" stroke="none" />
     </svg>
   );
 }
@@ -268,15 +331,6 @@ export function IconTruck({ size = 16, className }: IconProps) {
       <path d="M12 8H15.2L17 10.5V13.5H12" />
       <circle cx="6.2" cy="14.5" r="1.5" />
       <circle cx="14.2" cy="14.5" r="1.5" />
-    </svg>
-  );
-}
-
-export function IconArrowUpRight({ size = 14, className }: IconProps) {
-  return (
-    <svg {...baseProps(size, className)}>
-      <path d="M6 14L14 6" />
-      <path d="M7.5 6H14V12.5" />
     </svg>
   );
 }
@@ -317,7 +371,7 @@ export function IconStar({
 export function IconGift({ size = 16, className }: IconProps) {
   return (
     <svg {...baseProps(size, className)}>
-      <rect x="3.5" y="8" width="13" height="8.5" rx="0.5" />
+      <rect x="3.5" y="8" width="13" height="8.5" rx="1" />
       <path d="M3 5.5H17V8H3V5.5Z" />
       <path d="M10 5.5V16.5" />
       <path d="M10 5.5C9.2 3.8 7.4 3.2 6.4 4.1C5.6 4.8 6.4 5.5 10 5.5Z" />
@@ -326,10 +380,23 @@ export function IconGift({ size = 16, className }: IconProps) {
   );
 }
 
-export function IconPlay({ size = 15, className }: IconProps) {
+export function IconPlay({
+  size = 15,
+  className,
+  filled = false,
+}: IconProps & { filled?: boolean }) {
+  return (
+    <svg {...baseProps(size, className)} fill={filled ? "currentColor" : "none"}>
+      <path d="M6.5 4.8L15 10L6.5 15.2V4.8Z" />
+    </svg>
+  );
+}
+
+export function IconPause({ size = 15, className }: IconProps) {
   return (
     <svg {...baseProps(size, className)}>
-      <path d="M6.5 4.8L15 10L6.5 15.2V4.8Z" fill="currentColor" />
+      <path d="M7 5V15" />
+      <path d="M13 5V15" />
     </svg>
   );
 }
@@ -345,7 +412,7 @@ export function IconPhone({ size = 15, className }: IconProps) {
 export function IconMail({ size = 15, className }: IconProps) {
   return (
     <svg {...baseProps(size, className)}>
-      <rect x="3" y="5" width="14" height="10" rx="1" />
+      <rect x="3" y="5" width="14" height="10" rx="1.5" />
       <path d="M3.5 5.8L10 10.5L16.5 5.8" />
     </svg>
   );
@@ -383,6 +450,43 @@ export function IconDownload({ size = 15, className }: IconProps) {
       <path d="M10 3.5V12.5" />
       <path d="M6.5 9.5L10 13L13.5 9.5" />
       <path d="M4 15.5H16" />
+    </svg>
+  );
+}
+
+export function IconCopy({ size = 15, className }: IconProps) {
+  return (
+    <svg {...baseProps(size, className)}>
+      <rect x="7.5" y="7.5" width="9" height="9" rx="1.5" />
+      <path d="M5 12.5H4.5C3.9 12.5 3.5 12.1 3.5 11.5V4.5C3.5 3.9 3.9 3.5 4.5 3.5H11.5C12.1 3.5 12.5 3.9 12.5 4.5V5" />
+    </svg>
+  );
+}
+
+export function IconGlobe({ size = 16, className }: IconProps) {
+  return (
+    <svg {...baseProps(size, className)}>
+      <circle cx="10" cy="10" r="6.5" />
+      <ellipse cx="10" cy="10" rx="2.8" ry="6.5" />
+      <path d="M3.8 10H16.2" />
+    </svg>
+  );
+}
+
+export function IconSend({ size = 16, className }: IconProps) {
+  return (
+    <svg {...baseProps(size, className)}>
+      <path d="M16.5 3.5L9.2 10.8" />
+      <path d="M16.5 3.5L11.8 16.5L9.2 10.8L3.5 8.2L16.5 3.5Z" />
+    </svg>
+  );
+}
+
+export function IconFlag({ size = 16, className }: IconProps) {
+  return (
+    <svg {...baseProps(size, className)}>
+      <path d="M4.5 3.5V16.5" />
+      <path d="M4.5 4.2H14.5L12.7 7.6L14.5 11H4.5" />
     </svg>
   );
 }

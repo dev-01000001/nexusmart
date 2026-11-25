@@ -39,6 +39,59 @@ func (q *Queries) CategoryHasAncestor(ctx context.Context, arg CategoryHasAncest
 	return has_ancestor, err
 }
 
+const claimNextProductImportJob = `-- name: ClaimNextProductImportJob :one
+WITH candidate AS (
+    SELECT id
+    FROM product_import_jobs
+    WHERE status IN ('QUEUED', 'VALIDATING', 'CONFIRMING')
+      AND (claimed_until IS NULL OR claimed_until <= NOW())
+    ORDER BY created_at ASC, id ASC
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE product_import_jobs j
+SET status = CASE WHEN j.status = 'QUEUED' THEN 'VALIDATING' ELSE j.status END,
+    claimed_until = NOW() + ($1::bigint * INTERVAL '1 millisecond'),
+    claim_token = $2::text,
+    updated_at = NOW()
+FROM candidate c
+WHERE j.id = c.id
+RETURNING j.id, j.shop_id, j.created_by, j.filename, j.raw_csv, j.status,
+          j.total_rows, j.valid_rows, j.invalid_rows, j.created_rows, j.failed_rows,
+          j.error_message, j.claimed_until, j.claim_token, j.confirmed_at, j.finished_at, j.created_at, j.updated_at
+`
+
+type ClaimNextProductImportJobParams struct {
+	LeaseMs    int64
+	ClaimToken string
+}
+
+func (q *Queries) ClaimNextProductImportJob(ctx context.Context, arg ClaimNextProductImportJobParams) (ProductImportJob, error) {
+	row := q.db.QueryRow(ctx, claimNextProductImportJob, arg.LeaseMs, arg.ClaimToken)
+	var i ProductImportJob
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.CreatedBy,
+		&i.Filename,
+		&i.RawCsv,
+		&i.Status,
+		&i.TotalRows,
+		&i.ValidRows,
+		&i.InvalidRows,
+		&i.CreatedRows,
+		&i.FailedRows,
+		&i.ErrorMessage,
+		&i.ClaimedUntil,
+		&i.ClaimToken,
+		&i.ConfirmedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const claimPendingOutboxEvents = `-- name: ClaimPendingOutboxEvents :many
 WITH locked AS (
     SELECT o.id, o.aggregate_id, o.seq
@@ -155,7 +208,7 @@ SET stock = GREATEST(0, stock - $1),
 WHERE id = $2
   AND version = $3
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
 `
 
 type ConfirmSKUOptimisticParams struct {
@@ -182,6 +235,7 @@ func (q *Queries) ConfirmSKUOptimistic(ctx context.Context, arg ConfirmSKUOptimi
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
 	)
 	return i, err
 }
@@ -245,6 +299,27 @@ WHERE parent_id = $1
 
 func (q *Queries) CountChildCategories(ctx context.Context, parentID pgtype.Text) (int64, error) {
 	row := q.db.QueryRow(ctx, countChildCategories, parentID)
+	var cnt int64
+	err := row.Scan(&cnt)
+	return cnt, err
+}
+
+const countProductImportRows = `-- name: CountProductImportRows :one
+SELECT COUNT(*)::bigint AS cnt
+FROM product_import_rows
+WHERE job_id = $1::text
+  AND (NOT $2::bool OR status IN ('INVALID', 'FAILED'))
+  AND ($3::text = '' OR status = $3::text)
+`
+
+type CountProductImportRowsParams struct {
+	JobID        string
+	ErrorsOnly   bool
+	StatusFilter string
+}
+
+func (q *Queries) CountProductImportRows(ctx context.Context, arg CountProductImportRowsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countProductImportRows, arg.JobID, arg.ErrorsOnly, arg.StatusFilter)
 	var cnt int64
 	err := row.Scan(&cnt)
 	return cnt, err
@@ -349,18 +424,42 @@ SELECT COUNT(*)::bigint AS cnt
 FROM products p
 WHERE p.deleted_at IS NULL
   AND ($1::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
-  AND ($2::text = '' OR p.search_text LIKE '%' || $2::text || '%' ESCAPE '\')
-  AND ($3::text = '' OR p.shop_id = $3::text)
-  AND (NOT $4::bool OR (p.status IN ('APPROVED', 'OUT_OF_STOCK') AND p.shop_suspended = FALSE))
-  AND ($5::text = '' OR p.status = $5::text)
   AND (
-    ($6::bigint <= 0 AND $7::bigint <= 0)
+    ($2::text = '' AND $3::text = '')
+    OR ($2::text <> '' AND p.search_text LIKE '%' || $2::text || '%' ESCAPE '\')
+    OR (
+      $3::text <> ''
+      AND EXISTS (
+        SELECT 1 FROM skus s
+        WHERE s.product_id = p.id
+          AND s.status <> 'INACTIVE'
+          AND LOWER(s.sku_code) LIKE '%' || $3::text || '%' ESCAPE '\'
+      )
+    )
+  )
+  AND ($4::text = '' OR p.shop_id = $4::text)
+  AND (NOT $5::bool OR (p.status IN ('APPROVED', 'OUT_OF_STOCK') AND p.shop_suspended = FALSE))
+  AND ($6::text = '' OR p.status = $6::text)
+  AND (
+    NOT $7::bool
+    OR (
+      p.status IN ('APPROVED', 'OUT_OF_STOCK')
+      AND EXISTS (
+        SELECT 1 FROM skus s
+        WHERE s.product_id = p.id
+          AND s.status <> 'INACTIVE'
+          AND (s.stock - s.reserved_stock - s.flash_sale_reserved_stock) <= 5
+      )
+    )
+  )
+  AND (
+    ($8::bigint <= 0 AND $9::bigint <= 0)
     OR EXISTS (
       SELECT 1 FROM skus s
       WHERE s.product_id = p.id
         AND s.status <> 'INACTIVE'
-        AND ($6::bigint <= 0 OR s.price_vnd >= $6::bigint)
-        AND ($7::bigint <= 0 OR s.price_vnd <= $7::bigint)
+        AND ($8::bigint <= 0 OR s.price_vnd >= $8::bigint)
+        AND ($9::bigint <= 0 OR s.price_vnd <= $9::bigint)
     )
   )
 `
@@ -368,9 +467,11 @@ WHERE p.deleted_at IS NULL
 type CountProductsFilteredParams struct {
 	CategoryID   string
 	Keyword      string
+	SkuKeyword   string
 	ShopID       string
 	PublicOnly   bool
 	StatusFilter string
+	LowStock     bool
 	MinPriceVnd  int64
 	MaxPriceVnd  int64
 }
@@ -379,9 +480,11 @@ func (q *Queries) CountProductsFiltered(ctx context.Context, arg CountProductsFi
 	row := q.db.QueryRow(ctx, countProductsFiltered,
 		arg.CategoryID,
 		arg.Keyword,
+		arg.SkuKeyword,
 		arg.ShopID,
 		arg.PublicOnly,
 		arg.StatusFilter,
+		arg.LowStock,
 		arg.MinPriceVnd,
 		arg.MaxPriceVnd,
 	)
@@ -408,6 +511,46 @@ func (q *Queries) CountProductsInCategory(ctx context.Context, categoryID string
 	var i CountProductsInCategoryRow
 	err := row.Scan(&i.TotalCnt, &i.ActiveCnt)
 	return i, err
+}
+
+const countStockHistory = `-- name: CountStockHistory :one
+SELECT COUNT(*)::bigint AS cnt
+FROM stock_history sh
+JOIN skus s ON s.id = sh.sku_id
+JOIN products p ON p.id = s.product_id
+WHERE ($1::text = '' OR p.shop_id = $1::text)
+  AND ($2::text = '' OR s.product_id = $2::text)
+  AND ($3::text = '' OR sh.sku_id = $3::text)
+  AND ($4::text = '' OR sh.change_type = $4::text)
+  AND (NOT $5::bool OR sh.created_at >= $6::timestamptz)
+  AND (NOT $7::bool OR sh.created_at <= $8::timestamptz)
+`
+
+type CountStockHistoryParams struct {
+	ShopID      string
+	ProductID   string
+	SkuID       string
+	ChangeType  string
+	HasFromTime bool
+	FromTime    time.Time
+	HasToTime   bool
+	ToTime      time.Time
+}
+
+func (q *Queries) CountStockHistory(ctx context.Context, arg CountStockHistoryParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countStockHistory,
+		arg.ShopID,
+		arg.ProductID,
+		arg.SkuID,
+		arg.ChangeType,
+		arg.HasFromTime,
+		arg.FromTime,
+		arg.HasToTime,
+		arg.ToTime,
+	)
+	var cnt int64
+	err := row.Scan(&cnt)
+	return cnt, err
 }
 
 const createBannedKeyword = `-- name: CreateBannedKeyword :one
@@ -583,6 +726,60 @@ func (q *Queries) CreateProduct(ctx context.Context, arg CreateProductParams) (P
 	return i, err
 }
 
+const createProductImportJob = `-- name: CreateProductImportJob :one
+INSERT INTO product_import_jobs (
+    id, shop_id, created_by, filename, raw_csv, status, total_rows, created_at, updated_at
+)
+VALUES ($1, $2, $3, $4, $5, 'QUEUED', $6, $7, $7)
+RETURNING id, shop_id, created_by, filename, raw_csv, status,
+          total_rows, valid_rows, invalid_rows, created_rows, failed_rows,
+          error_message, claimed_until, claim_token, confirmed_at, finished_at, created_at, updated_at
+`
+
+type CreateProductImportJobParams struct {
+	ID        string
+	ShopID    string
+	CreatedBy string
+	Filename  string
+	RawCsv    []byte
+	TotalRows int32
+	CreatedAt time.Time
+}
+
+func (q *Queries) CreateProductImportJob(ctx context.Context, arg CreateProductImportJobParams) (ProductImportJob, error) {
+	row := q.db.QueryRow(ctx, createProductImportJob,
+		arg.ID,
+		arg.ShopID,
+		arg.CreatedBy,
+		arg.Filename,
+		arg.RawCsv,
+		arg.TotalRows,
+		arg.CreatedAt,
+	)
+	var i ProductImportJob
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.CreatedBy,
+		&i.Filename,
+		&i.RawCsv,
+		&i.Status,
+		&i.TotalRows,
+		&i.ValidRows,
+		&i.InvalidRows,
+		&i.CreatedRows,
+		&i.FailedRows,
+		&i.ErrorMessage,
+		&i.ClaimedUntil,
+		&i.ClaimToken,
+		&i.ConfirmedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createProductReview = `-- name: CreateProductReview :one
 
 INSERT INTO product_reviews (
@@ -654,11 +851,11 @@ const createSKU = `-- name: CreateSKU :one
 
 INSERT INTO skus (
     id, product_id, sku_code, name, attributes, price_vnd, stock,
-    reserved_stock, version, weight_grams, image_url, status
+    reserved_stock, flash_sale_reserved_stock, version, weight_grams, image_url, status
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 1, $8, $9, $10)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 0, 1, $8, $9, $10)
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
 `
 
 type CreateSKUParams struct {
@@ -704,14 +901,15 @@ func (q *Queries) CreateSKU(ctx context.Context, arg CreateSKUParams) (Sku, erro
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
 	)
 	return i, err
 }
 
 const createStockReservation = `-- name: CreateStockReservation :one
-INSERT INTO stock_reservations (id, reservation_group_id, order_id, sku_id, quantity, status)
-VALUES ($1, $2, $3, $4, $5, 'RESERVED')
-RETURNING id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at
+INSERT INTO stock_reservations (id, reservation_group_id, order_id, sku_id, quantity, status, flash_sale_item_id)
+VALUES ($1, $2, $3, $4, $5, 'RESERVED', $6)
+RETURNING id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at, flash_sale_item_id
 `
 
 type CreateStockReservationParams struct {
@@ -720,6 +918,7 @@ type CreateStockReservationParams struct {
 	OrderID            string
 	SkuID              string
 	Quantity           int32
+	FlashSaleItemID    string
 }
 
 func (q *Queries) CreateStockReservation(ctx context.Context, arg CreateStockReservationParams) (StockReservation, error) {
@@ -729,6 +928,7 @@ func (q *Queries) CreateStockReservation(ctx context.Context, arg CreateStockRes
 		arg.OrderID,
 		arg.SkuID,
 		arg.Quantity,
+		arg.FlashSaleItemID,
 	)
 	var i StockReservation
 	err := row.Scan(
@@ -740,6 +940,7 @@ func (q *Queries) CreateStockReservation(ctx context.Context, arg CreateStockRes
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FlashSaleItemID,
 	)
 	return i, err
 }
@@ -794,6 +995,16 @@ func (q *Queries) DeleteCategory(ctx context.Context, id string) (int64, error) 
 	return result.RowsAffected(), nil
 }
 
+const deleteProductImportRowsByJob = `-- name: DeleteProductImportRowsByJob :exec
+DELETE FROM product_import_rows
+WHERE job_id = $1
+`
+
+func (q *Queries) DeleteProductImportRowsByJob(ctx context.Context, jobID string) error {
+	_, err := q.db.Exec(ctx, deleteProductImportRowsByJob, jobID)
+	return err
+}
+
 const getBannedKeywordByID = `-- name: GetBannedKeywordByID :one
 SELECT id, term, normalized_term, category, action, is_active, created_by, created_at, updated_at
 FROM banned_keywords
@@ -815,6 +1026,42 @@ func (q *Queries) GetBannedKeywordByID(ctx context.Context, id string) (BannedKe
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const getCategoryAncestors = `-- name: GetCategoryAncestors :many
+WITH RECURSIVE anc AS (
+    SELECT c.id, c.parent_id, 0 AS depth
+    FROM categories c
+    WHERE c.id = $1::text
+    UNION ALL
+    SELECT p.id, p.parent_id, a.depth + 1
+    FROM categories p
+    JOIN anc a ON p.id = a.parent_id
+    WHERE a.depth < 32
+)
+SELECT id::text AS id
+FROM anc
+ORDER BY depth ASC
+`
+
+func (q *Queries) GetCategoryAncestors(ctx context.Context, categoryID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, getCategoryAncestors, categoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getCategoryByID = `-- name: GetCategoryByID :one
@@ -1125,6 +1372,128 @@ func (q *Queries) GetProductBySlug(ctx context.Context, slug string) (Product, e
 	return i, err
 }
 
+const getProductImportJobByID = `-- name: GetProductImportJobByID :one
+SELECT id, shop_id, created_by, filename, raw_csv, status,
+       total_rows, valid_rows, invalid_rows, created_rows, failed_rows,
+       error_message, claimed_until, claim_token, confirmed_at, finished_at, created_at, updated_at
+FROM product_import_jobs
+WHERE id = $1
+`
+
+func (q *Queries) GetProductImportJobByID(ctx context.Context, id string) (ProductImportJob, error) {
+	row := q.db.QueryRow(ctx, getProductImportJobByID, id)
+	var i ProductImportJob
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.CreatedBy,
+		&i.Filename,
+		&i.RawCsv,
+		&i.Status,
+		&i.TotalRows,
+		&i.ValidRows,
+		&i.InvalidRows,
+		&i.CreatedRows,
+		&i.FailedRows,
+		&i.ErrorMessage,
+		&i.ClaimedUntil,
+		&i.ClaimToken,
+		&i.ConfirmedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getProductImportJobByIDForUpdate = `-- name: GetProductImportJobByIDForUpdate :one
+SELECT id, shop_id, created_by, filename, raw_csv, status,
+       total_rows, valid_rows, invalid_rows, created_rows, failed_rows,
+       error_message, claimed_until, claim_token, confirmed_at, finished_at, created_at, updated_at
+FROM product_import_jobs
+WHERE id = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetProductImportJobByIDForUpdate(ctx context.Context, id string) (ProductImportJob, error) {
+	row := q.db.QueryRow(ctx, getProductImportJobByIDForUpdate, id)
+	var i ProductImportJob
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.CreatedBy,
+		&i.Filename,
+		&i.RawCsv,
+		&i.Status,
+		&i.TotalRows,
+		&i.ValidRows,
+		&i.InvalidRows,
+		&i.CreatedRows,
+		&i.FailedRows,
+		&i.ErrorMessage,
+		&i.ClaimedUntil,
+		&i.ClaimToken,
+		&i.ConfirmedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getProductImportRowByIDForUpdate = `-- name: GetProductImportRowByIDForUpdate :one
+SELECT id, job_id, row_number, status, error_code, error_message,
+       product_name, sku_code, category_id, price_vnd, stock, weight_grams,
+       created_product_id, raw_row_json
+FROM product_import_rows
+WHERE id = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetProductImportRowByIDForUpdate(ctx context.Context, id string) (ProductImportRow, error) {
+	row := q.db.QueryRow(ctx, getProductImportRowByIDForUpdate, id)
+	var i ProductImportRow
+	err := row.Scan(
+		&i.ID,
+		&i.JobID,
+		&i.RowNumber,
+		&i.Status,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.ProductName,
+		&i.SkuCode,
+		&i.CategoryID,
+		&i.PriceVnd,
+		&i.Stock,
+		&i.WeightGrams,
+		&i.CreatedProductID,
+		&i.RawRowJson,
+	)
+	return i, err
+}
+
+const getProductImportRowOutcomeCounts = `-- name: GetProductImportRowOutcomeCounts :one
+SELECT
+    COUNT(*) FILTER (WHERE status = 'VALID')::int AS remaining_valid,
+    COUNT(*) FILTER (WHERE status = 'CREATED')::int AS created_cnt,
+    COUNT(*) FILTER (WHERE status = 'FAILED')::int AS failed_cnt
+FROM product_import_rows
+WHERE job_id = $1
+`
+
+type GetProductImportRowOutcomeCountsRow struct {
+	RemainingValid int32
+	CreatedCnt     int32
+	FailedCnt      int32
+}
+
+func (q *Queries) GetProductImportRowOutcomeCounts(ctx context.Context, jobID string) (GetProductImportRowOutcomeCountsRow, error) {
+	row := q.db.QueryRow(ctx, getProductImportRowOutcomeCounts, jobID)
+	var i GetProductImportRowOutcomeCountsRow
+	err := row.Scan(&i.RemainingValid, &i.CreatedCnt, &i.FailedCnt)
+	return i, err
+}
+
 const getProductReviewRatingCounts = `-- name: GetProductReviewRatingCounts :many
 SELECT rating::int AS rating, COUNT(*)::int AS cnt
 FROM product_reviews
@@ -1158,10 +1527,25 @@ func (q *Queries) GetProductReviewRatingCounts(ctx context.Context, productID st
 	return items, nil
 }
 
+const getProductShopIDAny = `-- name: GetProductShopIDAny :one
+
+SELECT shop_id
+FROM products
+WHERE id = $1
+`
+
+// Stock History Query (S03/G8)
+func (q *Queries) GetProductShopIDAny(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRow(ctx, getProductShopIDAny, id)
+	var shop_id string
+	err := row.Scan(&shop_id)
+	return shop_id, err
+}
+
 const getSKUWithContext = `-- name: GetSKUWithContext :one
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
-    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
     s.weight_grams, s.image_url, p.category_id,
     COALESCE(
         (
@@ -1209,26 +1593,27 @@ type GetSKUWithContextParams struct {
 }
 
 type GetSKUWithContextRow struct {
-	ID                   string
-	ProductID            string
-	ShopID               string
-	ProductName          string
-	SkuCode              string
-	Name                 string
-	Attributes           []byte
-	PriceVnd             int64
-	Stock                int32
-	ReservedStock        int32
-	Version              int64
-	WeightGrams          int32
-	ImageURL             string
-	CategoryID           string
-	CommissionRateBps    int32
-	MinPrice30dVnd       int64
-	SkuStatus            string
-	ProductStatus        string
-	ProductDeletedAt     *time.Time
-	ProductShopSuspended bool
+	ID                     string
+	ProductID              string
+	ShopID                 string
+	ProductName            string
+	SkuCode                string
+	Name                   string
+	Attributes             []byte
+	PriceVnd               int64
+	Stock                  int32
+	ReservedStock          int32
+	FlashSaleReservedStock int32
+	Version                int64
+	WeightGrams            int32
+	ImageURL               string
+	CategoryID             string
+	CommissionRateBps      int32
+	MinPrice30dVnd         int64
+	SkuStatus              string
+	ProductStatus          string
+	ProductDeletedAt       *time.Time
+	ProductShopSuspended   bool
 }
 
 func (q *Queries) GetSKUWithContext(ctx context.Context, arg GetSKUWithContextParams) (GetSKUWithContextRow, error) {
@@ -1245,6 +1630,7 @@ func (q *Queries) GetSKUWithContext(ctx context.Context, arg GetSKUWithContextPa
 		&i.PriceVnd,
 		&i.Stock,
 		&i.ReservedStock,
+		&i.FlashSaleReservedStock,
 		&i.Version,
 		&i.WeightGrams,
 		&i.ImageURL,
@@ -1262,7 +1648,7 @@ func (q *Queries) GetSKUWithContext(ctx context.Context, arg GetSKUWithContextPa
 const getSKUWithContextForUpdate = `-- name: GetSKUWithContextForUpdate :one
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
-    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
     s.weight_grams, s.image_url, p.category_id,
     COALESCE(
         (
@@ -1311,26 +1697,27 @@ type GetSKUWithContextForUpdateParams struct {
 }
 
 type GetSKUWithContextForUpdateRow struct {
-	ID                   string
-	ProductID            string
-	ShopID               string
-	ProductName          string
-	SkuCode              string
-	Name                 string
-	Attributes           []byte
-	PriceVnd             int64
-	Stock                int32
-	ReservedStock        int32
-	Version              int64
-	WeightGrams          int32
-	ImageURL             string
-	CategoryID           string
-	CommissionRateBps    int32
-	MinPrice30dVnd       int64
-	SkuStatus            string
-	ProductStatus        string
-	ProductDeletedAt     *time.Time
-	ProductShopSuspended bool
+	ID                     string
+	ProductID              string
+	ShopID                 string
+	ProductName            string
+	SkuCode                string
+	Name                   string
+	Attributes             []byte
+	PriceVnd               int64
+	Stock                  int32
+	ReservedStock          int32
+	FlashSaleReservedStock int32
+	Version                int64
+	WeightGrams            int32
+	ImageURL               string
+	CategoryID             string
+	CommissionRateBps      int32
+	MinPrice30dVnd         int64
+	SkuStatus              string
+	ProductStatus          string
+	ProductDeletedAt       *time.Time
+	ProductShopSuspended   bool
 }
 
 func (q *Queries) GetSKUWithContextForUpdate(ctx context.Context, arg GetSKUWithContextForUpdateParams) (GetSKUWithContextForUpdateRow, error) {
@@ -1347,6 +1734,7 @@ func (q *Queries) GetSKUWithContextForUpdate(ctx context.Context, arg GetSKUWith
 		&i.PriceVnd,
 		&i.Stock,
 		&i.ReservedStock,
+		&i.FlashSaleReservedStock,
 		&i.Version,
 		&i.WeightGrams,
 		&i.ImageURL,
@@ -1364,7 +1752,7 @@ func (q *Queries) GetSKUWithContextForUpdate(ctx context.Context, arg GetSKUWith
 const getSKUsBatch = `-- name: GetSKUsBatch :many
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
-    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
     s.weight_grams, s.image_url, p.category_id,
     COALESCE(
         (
@@ -1413,26 +1801,27 @@ type GetSKUsBatchParams struct {
 }
 
 type GetSKUsBatchRow struct {
-	ID                   string
-	ProductID            string
-	ShopID               string
-	ProductName          string
-	SkuCode              string
-	Name                 string
-	Attributes           []byte
-	PriceVnd             int64
-	Stock                int32
-	ReservedStock        int32
-	Version              int64
-	WeightGrams          int32
-	ImageURL             string
-	CategoryID           string
-	CommissionRateBps    int32
-	MinPrice30dVnd       int64
-	SkuStatus            string
-	ProductStatus        string
-	ProductDeletedAt     *time.Time
-	ProductShopSuspended bool
+	ID                     string
+	ProductID              string
+	ShopID                 string
+	ProductName            string
+	SkuCode                string
+	Name                   string
+	Attributes             []byte
+	PriceVnd               int64
+	Stock                  int32
+	ReservedStock          int32
+	FlashSaleReservedStock int32
+	Version                int64
+	WeightGrams            int32
+	ImageURL               string
+	CategoryID             string
+	CommissionRateBps      int32
+	MinPrice30dVnd         int64
+	SkuStatus              string
+	ProductStatus          string
+	ProductDeletedAt       *time.Time
+	ProductShopSuspended   bool
 }
 
 func (q *Queries) GetSKUsBatch(ctx context.Context, arg GetSKUsBatchParams) ([]GetSKUsBatchRow, error) {
@@ -1455,6 +1844,7 @@ func (q *Queries) GetSKUsBatch(ctx context.Context, arg GetSKUsBatchParams) ([]G
 			&i.PriceVnd,
 			&i.Stock,
 			&i.ReservedStock,
+			&i.FlashSaleReservedStock,
 			&i.Version,
 			&i.WeightGrams,
 			&i.ImageURL,
@@ -1492,6 +1882,28 @@ func (q *Queries) GetShopSuspensionState(ctx context.Context, shopID string) (Sh
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const hasActiveProductImportJob = `-- name: HasActiveProductImportJob :one
+SELECT EXISTS (
+    SELECT 1
+    FROM product_import_jobs
+    WHERE shop_id = $1::text
+      AND status IN ('QUEUED', 'VALIDATING', 'CONFIRMING')
+      AND ($2::text = '' OR id <> $2::text)
+)
+`
+
+type HasActiveProductImportJobParams struct {
+	ShopID       string
+	ExcludeJobID string
+}
+
+func (q *Queries) HasActiveProductImportJob(ctx context.Context, arg HasActiveProductImportJobParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasActiveProductImportJob, arg.ShopID, arg.ExcludeJobID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const hasStockReleaseTombstone = `-- name: HasStockReleaseTombstone :one
@@ -1626,6 +2038,52 @@ func (q *Queries) InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventPa
 		arg.Traceparent,
 		arg.PayloadJson,
 		arg.CreatedAt,
+	)
+	return err
+}
+
+const insertProductImportRow = `-- name: InsertProductImportRow :exec
+INSERT INTO product_import_rows (
+    id, job_id, row_number, status, error_code, error_message,
+    product_name, sku_code, category_id, price_vnd, stock, weight_grams,
+    created_product_id, raw_row_json
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+`
+
+type InsertProductImportRowParams struct {
+	ID               string
+	JobID            string
+	RowNumber        int32
+	Status           string
+	ErrorCode        string
+	ErrorMessage     string
+	ProductName      string
+	SkuCode          string
+	CategoryID       string
+	PriceVnd         int64
+	Stock            int32
+	WeightGrams      int32
+	CreatedProductID string
+	RawRowJson       []byte
+}
+
+func (q *Queries) InsertProductImportRow(ctx context.Context, arg InsertProductImportRowParams) error {
+	_, err := q.db.Exec(ctx, insertProductImportRow,
+		arg.ID,
+		arg.JobID,
+		arg.RowNumber,
+		arg.Status,
+		arg.ErrorCode,
+		arg.ErrorMessage,
+		arg.ProductName,
+		arg.SkuCode,
+		arg.CategoryID,
+		arg.PriceVnd,
+		arg.Stock,
+		arg.WeightGrams,
+		arg.CreatedProductID,
+		arg.RawRowJson,
 	)
 	return err
 }
@@ -1835,7 +2293,7 @@ func (q *Queries) ListAllCategories(ctx context.Context, asOf time.Time) ([]List
 const listAllSKUsByProductID = `-- name: ListAllSKUsByProductID :many
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
-    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
     s.weight_grams, s.image_url, p.category_id,
     COALESCE(
         (
@@ -1884,26 +2342,27 @@ type ListAllSKUsByProductIDParams struct {
 }
 
 type ListAllSKUsByProductIDRow struct {
-	ID                   string
-	ProductID            string
-	ShopID               string
-	ProductName          string
-	SkuCode              string
-	Name                 string
-	Attributes           []byte
-	PriceVnd             int64
-	Stock                int32
-	ReservedStock        int32
-	Version              int64
-	WeightGrams          int32
-	ImageURL             string
-	CategoryID           string
-	CommissionRateBps    int32
-	MinPrice30dVnd       int64
-	SkuStatus            string
-	ProductStatus        string
-	ProductDeletedAt     *time.Time
-	ProductShopSuspended bool
+	ID                     string
+	ProductID              string
+	ShopID                 string
+	ProductName            string
+	SkuCode                string
+	Name                   string
+	Attributes             []byte
+	PriceVnd               int64
+	Stock                  int32
+	ReservedStock          int32
+	FlashSaleReservedStock int32
+	Version                int64
+	WeightGrams            int32
+	ImageURL               string
+	CategoryID             string
+	CommissionRateBps      int32
+	MinPrice30dVnd         int64
+	SkuStatus              string
+	ProductStatus          string
+	ProductDeletedAt       *time.Time
+	ProductShopSuspended   bool
 }
 
 func (q *Queries) ListAllSKUsByProductID(ctx context.Context, arg ListAllSKUsByProductIDParams) ([]ListAllSKUsByProductIDRow, error) {
@@ -1926,6 +2385,7 @@ func (q *Queries) ListAllSKUsByProductID(ctx context.Context, arg ListAllSKUsByP
 			&i.PriceVnd,
 			&i.Stock,
 			&i.ReservedStock,
+			&i.FlashSaleReservedStock,
 			&i.Version,
 			&i.WeightGrams,
 			&i.ImageURL,
@@ -2106,6 +2566,105 @@ func (q *Queries) ListCategoryFeeSchedules(ctx context.Context, arg ListCategory
 			&i.CreatedBy,
 			&i.Note,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExistingShopSKUCodes = `-- name: ListExistingShopSKUCodes :many
+
+SELECT DISTINCT s.sku_code
+FROM skus s
+JOIN products p ON p.id = s.product_id
+WHERE p.shop_id = $1::text
+  AND p.deleted_at IS NULL
+  AND s.status <> 'INACTIVE'
+  AND s.sku_code = ANY($2::text[])
+`
+
+type ListExistingShopSKUCodesParams struct {
+	ShopID   string
+	SkuCodes []string
+}
+
+// Product CSV Import Jobs & Rows (UC-S13/G6)
+func (q *Queries) ListExistingShopSKUCodes(ctx context.Context, arg ListExistingShopSKUCodesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listExistingShopSKUCodes, arg.ShopID, arg.SkuCodes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var sku_code string
+		if err := rows.Scan(&sku_code); err != nil {
+			return nil, err
+		}
+		items = append(items, sku_code)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProductImportRows = `-- name: ListProductImportRows :many
+SELECT id, job_id, row_number, status, error_code, error_message,
+       product_name, sku_code, category_id, price_vnd, stock, weight_grams,
+       created_product_id, raw_row_json
+FROM product_import_rows
+WHERE job_id = $1::text
+  AND (NOT $2::bool OR status IN ('INVALID', 'FAILED'))
+  AND ($3::text = '' OR status = $3::text)
+ORDER BY row_number ASC
+LIMIT $5::int
+OFFSET $4::int
+`
+
+type ListProductImportRowsParams struct {
+	JobID        string
+	ErrorsOnly   bool
+	StatusFilter string
+	OffsetVal    int32
+	LimitVal     int32
+}
+
+func (q *Queries) ListProductImportRows(ctx context.Context, arg ListProductImportRowsParams) ([]ProductImportRow, error) {
+	rows, err := q.db.Query(ctx, listProductImportRows,
+		arg.JobID,
+		arg.ErrorsOnly,
+		arg.StatusFilter,
+		arg.OffsetVal,
+		arg.LimitVal,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProductImportRow{}
+	for rows.Next() {
+		var i ProductImportRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.JobID,
+			&i.RowNumber,
+			&i.Status,
+			&i.ErrorCode,
+			&i.ErrorMessage,
+			&i.ProductName,
+			&i.SkuCode,
+			&i.CategoryID,
+			&i.PriceVnd,
+			&i.Stock,
+			&i.WeightGrams,
+			&i.CreatedProductID,
+			&i.RawRowJson,
 		); err != nil {
 			return nil, err
 		}
@@ -2310,37 +2869,63 @@ SELECT p.id, p.shop_id, p.category_id, p.name, p.description, p.images, p.status
 FROM products p
 WHERE p.deleted_at IS NULL
   AND ($1::text = '' OR p.category_id IN (SELECT id FROM cat_tree))
-  AND ($2::text = '' OR p.search_text LIKE '%' || $2::text || '%' ESCAPE '\')
-  AND ($3::text = '' OR p.shop_id = $3::text)
-  AND (NOT $4::bool OR (p.status IN ('APPROVED', 'OUT_OF_STOCK') AND p.shop_suspended = FALSE))
-  AND ($5::text = '' OR p.status = $5::text)
   AND (
-    ($6::bigint <= 0 AND $7::bigint <= 0)
+    ($2::text = '' AND $3::text = '')
+    OR ($2::text <> '' AND p.search_text LIKE '%' || $2::text || '%' ESCAPE '\')
+    OR (
+      $3::text <> ''
+      AND EXISTS (
+        SELECT 1 FROM skus s
+        WHERE s.product_id = p.id
+          AND s.status <> 'INACTIVE'
+          AND LOWER(s.sku_code) LIKE '%' || $3::text || '%' ESCAPE '\'
+      )
+    )
+  )
+  AND ($4::text = '' OR p.shop_id = $4::text)
+  AND (NOT $5::bool OR (p.status IN ('APPROVED', 'OUT_OF_STOCK') AND p.shop_suspended = FALSE))
+  AND ($6::text = '' OR p.status = $6::text)
+  AND (
+    NOT $7::bool
+    OR (
+      p.status IN ('APPROVED', 'OUT_OF_STOCK')
+      AND EXISTS (
+        SELECT 1 FROM skus s
+        WHERE s.product_id = p.id
+          AND s.status <> 'INACTIVE'
+          AND (s.stock - s.reserved_stock - s.flash_sale_reserved_stock) <= 5
+      )
+    )
+  )
+  AND (
+    ($8::bigint <= 0 AND $9::bigint <= 0)
     OR EXISTS (
       SELECT 1 FROM skus s
       WHERE s.product_id = p.id
         AND s.status <> 'INACTIVE'
-        AND ($6::bigint <= 0 OR s.price_vnd >= $6::bigint)
-        AND ($7::bigint <= 0 OR s.price_vnd <= $7::bigint)
+        AND ($8::bigint <= 0 OR s.price_vnd >= $8::bigint)
+        AND ($9::bigint <= 0 OR s.price_vnd <= $9::bigint)
     )
   )
 ORDER BY
-  CASE WHEN $8::text = 'price_asc' THEN p.min_price_vnd END ASC,
-  CASE WHEN $8::text = 'price_desc' THEN p.max_price_vnd END DESC,
-  CASE WHEN $8::text = 'name_asc' THEN p.name END ASC,
-  CASE WHEN $8::text = 'oldest' THEN p.created_at END ASC,
+  CASE WHEN $10::text = 'price_asc' THEN p.min_price_vnd END ASC,
+  CASE WHEN $10::text = 'price_desc' THEN p.max_price_vnd END DESC,
+  CASE WHEN $10::text = 'name_asc' THEN p.name END ASC,
+  CASE WHEN $10::text = 'oldest' THEN p.created_at END ASC,
   p.created_at DESC,
   p.id DESC
-LIMIT $10::int
-OFFSET $9::int
+LIMIT $12::int
+OFFSET $11::int
 `
 
 type ListProductsFilteredParams struct {
 	CategoryID   string
 	Keyword      string
+	SkuKeyword   string
 	ShopID       string
 	PublicOnly   bool
 	StatusFilter string
+	LowStock     bool
 	MinPriceVnd  int64
 	MaxPriceVnd  int64
 	SortBy       string
@@ -2352,15 +2937,77 @@ func (q *Queries) ListProductsFiltered(ctx context.Context, arg ListProductsFilt
 	rows, err := q.db.Query(ctx, listProductsFiltered,
 		arg.CategoryID,
 		arg.Keyword,
+		arg.SkuKeyword,
 		arg.ShopID,
 		arg.PublicOnly,
 		arg.StatusFilter,
+		arg.LowStock,
 		arg.MinPriceVnd,
 		arg.MaxPriceVnd,
 		arg.SortBy,
 		arg.OffsetVal,
 		arg.LimitVal,
 	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Product{}
+	for rows.Next() {
+		var i Product
+		if err := rows.Scan(
+			&i.ID,
+			&i.ShopID,
+			&i.CategoryID,
+			&i.Name,
+			&i.Description,
+			&i.Images,
+			&i.Status,
+			&i.RejectionReason,
+			&i.MinPriceVnd,
+			&i.MaxPriceVnd,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Slug,
+			&i.SearchText,
+			&i.RatingSum,
+			&i.ReviewCount,
+			&i.FlaggedKeywords,
+			&i.FirstApprovedAt,
+			&i.ShopSuspended,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProductsForIndex = `-- name: ListProductsForIndex :many
+
+SELECT id, shop_id, category_id, name, description, images, status,
+       rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
+       slug, search_text, rating_sum, review_count, flagged_keywords, first_approved_at, shop_suspended
+FROM products
+WHERE deleted_at IS NULL
+  AND status IN ('APPROVED', 'OUT_OF_STOCK')
+  AND ($1::text = '' OR id > $1::text)
+ORDER BY id ASC
+LIMIT $2::int
+`
+
+type ListProductsForIndexParams struct {
+	AfterID  string
+	LimitVal int32
+}
+
+// Search Indexing & Category Ancestors (B1/G9/G11)
+func (q *Queries) ListProductsForIndex(ctx context.Context, arg ListProductsForIndexParams) ([]Product, error) {
+	rows, err := q.db.Query(ctx, listProductsForIndex, arg.AfterID, arg.LimitVal)
 	if err != nil {
 		return nil, err
 	}
@@ -2493,7 +3140,7 @@ func (q *Queries) ListProhibitedCategoryIDs(ctx context.Context) ([]string, erro
 }
 
 const listReservationsByOrderID = `-- name: ListReservationsByOrderID :many
-SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at
+SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at, flash_sale_item_id
 FROM stock_reservations
 WHERE order_id = $1
 ORDER BY sku_id ASC
@@ -2517,6 +3164,7 @@ func (q *Queries) ListReservationsByOrderID(ctx context.Context, orderID string)
 			&i.Status,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.FlashSaleItemID,
 		); err != nil {
 			return nil, err
 		}
@@ -2529,7 +3177,7 @@ func (q *Queries) ListReservationsByOrderID(ctx context.Context, orderID string)
 }
 
 const listReservationsByOrderIDForUpdate = `-- name: ListReservationsByOrderIDForUpdate :many
-SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at
+SELECT id, reservation_group_id, order_id, sku_id, quantity, status, created_at, updated_at, flash_sale_item_id
 FROM stock_reservations
 WHERE order_id = $1
 ORDER BY sku_id ASC
@@ -2554,6 +3202,7 @@ func (q *Queries) ListReservationsByOrderIDForUpdate(ctx context.Context, orderI
 			&i.Status,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.FlashSaleItemID,
 		); err != nil {
 			return nil, err
 		}
@@ -2680,7 +3329,7 @@ func (q *Queries) ListRootCategories(ctx context.Context, asOf time.Time) ([]Lis
 const listSKUsByProductIDs = `-- name: ListSKUsByProductIDs :many
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,
-    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.version,
+    s.attributes, s.price_vnd, s.stock, s.reserved_stock, s.flash_sale_reserved_stock, s.version,
     s.weight_grams, s.image_url, p.category_id,
     COALESCE(
         (
@@ -2730,26 +3379,27 @@ type ListSKUsByProductIDsParams struct {
 }
 
 type ListSKUsByProductIDsRow struct {
-	ID                   string
-	ProductID            string
-	ShopID               string
-	ProductName          string
-	SkuCode              string
-	Name                 string
-	Attributes           []byte
-	PriceVnd             int64
-	Stock                int32
-	ReservedStock        int32
-	Version              int64
-	WeightGrams          int32
-	ImageURL             string
-	CategoryID           string
-	CommissionRateBps    int32
-	MinPrice30dVnd       int64
-	SkuStatus            string
-	ProductStatus        string
-	ProductDeletedAt     *time.Time
-	ProductShopSuspended bool
+	ID                     string
+	ProductID              string
+	ShopID                 string
+	ProductName            string
+	SkuCode                string
+	Name                   string
+	Attributes             []byte
+	PriceVnd               int64
+	Stock                  int32
+	ReservedStock          int32
+	FlashSaleReservedStock int32
+	Version                int64
+	WeightGrams            int32
+	ImageURL               string
+	CategoryID             string
+	CommissionRateBps      int32
+	MinPrice30dVnd         int64
+	SkuStatus              string
+	ProductStatus          string
+	ProductDeletedAt       *time.Time
+	ProductShopSuspended   bool
 }
 
 func (q *Queries) ListSKUsByProductIDs(ctx context.Context, arg ListSKUsByProductIDsParams) ([]ListSKUsByProductIDsRow, error) {
@@ -2772,6 +3422,7 @@ func (q *Queries) ListSKUsByProductIDs(ctx context.Context, arg ListSKUsByProduc
 			&i.PriceVnd,
 			&i.Stock,
 			&i.ReservedStock,
+			&i.FlashSaleReservedStock,
 			&i.Version,
 			&i.WeightGrams,
 			&i.ImageURL,
@@ -2782,6 +3433,155 @@ func (q *Queries) ListSKUsByProductIDs(ctx context.Context, arg ListSKUsByProduc
 			&i.ProductStatus,
 			&i.ProductDeletedAt,
 			&i.ProductShopSuspended,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStockHistory = `-- name: ListStockHistory :many
+SELECT
+    sh.id, sh.sku_id, s.product_id, p.shop_id,
+    p.name AS product_name, s.sku_code, s.name AS sku_name,
+    sh.order_id, sh.change_type, sh.delta,
+    sh.stock_before, sh.stock_after,
+    sh.reserved_before, sh.reserved_after,
+    sh.actor_id, sh.reason, sh.created_at
+FROM stock_history sh
+JOIN skus s ON s.id = sh.sku_id
+JOIN products p ON p.id = s.product_id
+WHERE ($1::text = '' OR p.shop_id = $1::text)
+  AND ($2::text = '' OR s.product_id = $2::text)
+  AND ($3::text = '' OR sh.sku_id = $3::text)
+  AND ($4::text = '' OR sh.change_type = $4::text)
+  AND (NOT $5::bool OR sh.created_at >= $6::timestamptz)
+  AND (NOT $7::bool OR sh.created_at <= $8::timestamptz)
+ORDER BY sh.created_at DESC, sh.id DESC
+LIMIT $10::int
+OFFSET $9::int
+`
+
+type ListStockHistoryParams struct {
+	ShopID      string
+	ProductID   string
+	SkuID       string
+	ChangeType  string
+	HasFromTime bool
+	FromTime    time.Time
+	HasToTime   bool
+	ToTime      time.Time
+	OffsetVal   int32
+	LimitVal    int32
+}
+
+type ListStockHistoryRow struct {
+	ID             string
+	SkuID          string
+	ProductID      string
+	ShopID         string
+	ProductName    string
+	SkuCode        string
+	SkuName        string
+	OrderID        string
+	ChangeType     string
+	Delta          int32
+	StockBefore    int32
+	StockAfter     int32
+	ReservedBefore int32
+	ReservedAfter  int32
+	ActorID        string
+	Reason         string
+	CreatedAt      time.Time
+}
+
+func (q *Queries) ListStockHistory(ctx context.Context, arg ListStockHistoryParams) ([]ListStockHistoryRow, error) {
+	rows, err := q.db.Query(ctx, listStockHistory,
+		arg.ShopID,
+		arg.ProductID,
+		arg.SkuID,
+		arg.ChangeType,
+		arg.HasFromTime,
+		arg.FromTime,
+		arg.HasToTime,
+		arg.ToTime,
+		arg.OffsetVal,
+		arg.LimitVal,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListStockHistoryRow{}
+	for rows.Next() {
+		var i ListStockHistoryRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SkuID,
+			&i.ProductID,
+			&i.ShopID,
+			&i.ProductName,
+			&i.SkuCode,
+			&i.SkuName,
+			&i.OrderID,
+			&i.ChangeType,
+			&i.Delta,
+			&i.StockBefore,
+			&i.StockAfter,
+			&i.ReservedBefore,
+			&i.ReservedAfter,
+			&i.ActorID,
+			&i.Reason,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listValidProductImportRows = `-- name: ListValidProductImportRows :many
+SELECT id, job_id, row_number, status, error_code, error_message,
+       product_name, sku_code, category_id, price_vnd, stock, weight_grams,
+       created_product_id, raw_row_json
+FROM product_import_rows
+WHERE job_id = $1
+  AND status = 'VALID'
+ORDER BY row_number ASC
+`
+
+func (q *Queries) ListValidProductImportRows(ctx context.Context, jobID string) ([]ProductImportRow, error) {
+	rows, err := q.db.Query(ctx, listValidProductImportRows, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProductImportRow{}
+	for rows.Next() {
+		var i ProductImportRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.JobID,
+			&i.RowNumber,
+			&i.Status,
+			&i.ErrorCode,
+			&i.ErrorMessage,
+			&i.ProductName,
+			&i.SkuCode,
+			&i.CategoryID,
+			&i.PriceVnd,
+			&i.Stock,
+			&i.WeightGrams,
+			&i.CreatedProductID,
+			&i.RawRowJson,
 		); err != nil {
 			return nil, err
 		}
@@ -2805,11 +3605,9 @@ func (q *Queries) LockCategoryTree(ctx context.Context) error {
 }
 
 const lockOutboxClaim = `-- name: LockOutboxClaim :exec
-
 SELECT pg_advisory_xact_lock(7956455656534110829)
 `
 
-// Outbox events
 func (q *Queries) LockOutboxClaim(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, lockOutboxClaim)
 	return err
@@ -2897,6 +3695,183 @@ func (q *Queries) MarkOutboxEventPublished(ctx context.Context, arg MarkOutboxEv
 	return result.RowsAffected(), nil
 }
 
+const markProductImportJobCompleted = `-- name: MarkProductImportJobCompleted :one
+UPDATE product_import_jobs
+SET status = 'COMPLETED',
+    created_rows = $3,
+    failed_rows = $4,
+    raw_csv = NULL,
+    claimed_until = NULL,
+    claim_token = '',
+    finished_at = NOW(),
+    updated_at = NOW()
+WHERE id = $1
+  AND claim_token = $2
+  AND status = 'CONFIRMING'
+RETURNING id, shop_id, created_by, filename, raw_csv, status,
+          total_rows, valid_rows, invalid_rows, created_rows, failed_rows,
+          error_message, claimed_until, claim_token, confirmed_at, finished_at, created_at, updated_at
+`
+
+type MarkProductImportJobCompletedParams struct {
+	ID          string
+	ClaimToken  string
+	CreatedRows int32
+	FailedRows  int32
+}
+
+func (q *Queries) MarkProductImportJobCompleted(ctx context.Context, arg MarkProductImportJobCompletedParams) (ProductImportJob, error) {
+	row := q.db.QueryRow(ctx, markProductImportJobCompleted,
+		arg.ID,
+		arg.ClaimToken,
+		arg.CreatedRows,
+		arg.FailedRows,
+	)
+	var i ProductImportJob
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.CreatedBy,
+		&i.Filename,
+		&i.RawCsv,
+		&i.Status,
+		&i.TotalRows,
+		&i.ValidRows,
+		&i.InvalidRows,
+		&i.CreatedRows,
+		&i.FailedRows,
+		&i.ErrorMessage,
+		&i.ClaimedUntil,
+		&i.ClaimToken,
+		&i.ConfirmedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const markProductImportJobFailed = `-- name: MarkProductImportJobFailed :one
+UPDATE product_import_jobs
+SET status = 'FAILED',
+    error_message = $3,
+    raw_csv = NULL,
+    claimed_until = NULL,
+    claim_token = '',
+    finished_at = NOW(),
+    updated_at = NOW()
+WHERE id = $1
+  AND claim_token = $2
+  AND status IN ('VALIDATING', 'CONFIRMING')
+RETURNING id, shop_id, created_by, filename, raw_csv, status,
+          total_rows, valid_rows, invalid_rows, created_rows, failed_rows,
+          error_message, claimed_until, claim_token, confirmed_at, finished_at, created_at, updated_at
+`
+
+type MarkProductImportJobFailedParams struct {
+	ID           string
+	ClaimToken   string
+	ErrorMessage string
+}
+
+func (q *Queries) MarkProductImportJobFailed(ctx context.Context, arg MarkProductImportJobFailedParams) (ProductImportJob, error) {
+	row := q.db.QueryRow(ctx, markProductImportJobFailed, arg.ID, arg.ClaimToken, arg.ErrorMessage)
+	var i ProductImportJob
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.CreatedBy,
+		&i.Filename,
+		&i.RawCsv,
+		&i.Status,
+		&i.TotalRows,
+		&i.ValidRows,
+		&i.InvalidRows,
+		&i.CreatedRows,
+		&i.FailedRows,
+		&i.ErrorMessage,
+		&i.ClaimedUntil,
+		&i.ClaimToken,
+		&i.ConfirmedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const markProductImportJobReady = `-- name: MarkProductImportJobReady :one
+UPDATE product_import_jobs
+SET status = 'READY',
+    total_rows = $3,
+    valid_rows = $4,
+    invalid_rows = $5,
+    raw_csv = NULL,
+    claimed_until = NULL,
+    claim_token = '',
+    error_message = '',
+    updated_at = NOW()
+WHERE id = $1
+  AND claim_token = $2
+  AND status = 'VALIDATING'
+RETURNING id, shop_id, created_by, filename, raw_csv, status,
+          total_rows, valid_rows, invalid_rows, created_rows, failed_rows,
+          error_message, claimed_until, claim_token, confirmed_at, finished_at, created_at, updated_at
+`
+
+type MarkProductImportJobReadyParams struct {
+	ID          string
+	ClaimToken  string
+	TotalRows   int32
+	ValidRows   int32
+	InvalidRows int32
+}
+
+func (q *Queries) MarkProductImportJobReady(ctx context.Context, arg MarkProductImportJobReadyParams) (ProductImportJob, error) {
+	row := q.db.QueryRow(ctx, markProductImportJobReady,
+		arg.ID,
+		arg.ClaimToken,
+		arg.TotalRows,
+		arg.ValidRows,
+		arg.InvalidRows,
+	)
+	var i ProductImportJob
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.CreatedBy,
+		&i.Filename,
+		&i.RawCsv,
+		&i.Status,
+		&i.TotalRows,
+		&i.ValidRows,
+		&i.InvalidRows,
+		&i.CreatedRows,
+		&i.FailedRows,
+		&i.ErrorMessage,
+		&i.ClaimedUntil,
+		&i.ClaimToken,
+		&i.ConfirmedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const nextProductEventVersion = `-- name: NextProductEventVersion :one
+
+SELECT nextval('product_event_version_seq')::bigint AS version
+`
+
+// Outbox events
+func (q *Queries) NextProductEventVersion(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, nextProductEventVersion)
+	var version int64
+	err := row.Scan(&version)
+	return version, err
+}
+
 const reactivateSKUOptimistic = `-- name: ReactivateSKUOptimistic :one
 UPDATE skus
 SET sku_code = $2,
@@ -2915,9 +3890,9 @@ SET sku_code = $2,
 WHERE id = $1
   AND version = $9
   AND status = 'INACTIVE'
-  AND $6 >= reserved_stock
+  AND $6 >= (reserved_stock + flash_sale_reserved_stock)
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
 `
 
 type ReactivateSKUOptimisticParams struct {
@@ -2960,6 +3935,7 @@ func (q *Queries) ReactivateSKUOptimistic(ctx context.Context, arg ReactivateSKU
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
 	)
 	return i, err
 }
@@ -2994,7 +3970,7 @@ SET reserved_stock = GREATEST(0, reserved_stock - $1),
 WHERE id = $2
   AND version = $3
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
 `
 
 type ReleaseSKUOptimisticParams struct {
@@ -3021,6 +3997,7 @@ func (q *Queries) ReleaseSKUOptimistic(ctx context.Context, arg ReleaseSKUOptimi
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
 	)
 	return i, err
 }
@@ -3032,9 +4009,9 @@ SET reserved_stock = reserved_stock + $1,
     updated_at = NOW()
 WHERE id = $2
   AND version = $3
-  AND (stock - reserved_stock) >= $1
+  AND (stock - reserved_stock - flash_sale_reserved_stock) >= $1
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
 `
 
 type ReserveSKUOptimisticParams struct {
@@ -3061,6 +4038,7 @@ func (q *Queries) ReserveSKUOptimistic(ctx context.Context, arg ReserveSKUOptimi
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
 	)
 	return i, err
 }
@@ -3077,7 +4055,7 @@ SET stock = stock + $1,
     updated_at = NOW()
 WHERE id = $2
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
 `
 
 type RestockSKUAtomicParams struct {
@@ -3103,6 +4081,7 @@ func (q *Queries) RestockSKUAtomic(ctx context.Context, arg RestockSKUAtomicPara
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
 	)
 	return i, err
 }
@@ -3132,20 +4111,61 @@ func (q *Queries) SetProductsShopSuspendedByShop(ctx context.Context, arg SetPro
 	return err
 }
 
-const softDeleteProduct = `-- name: SoftDeleteProduct :execrows
+const softDeleteProduct = `-- name: SoftDeleteProduct :one
 UPDATE products
 SET deleted_at = NOW(),
     status = 'HIDDEN',
-    updated_at = NOW()
+    updated_at = GREATEST(clock_timestamp(), updated_at + INTERVAL '1 microsecond')
 WHERE id = $1 AND deleted_at IS NULL
+RETURNING updated_at
 `
 
-func (q *Queries) SoftDeleteProduct(ctx context.Context, id string) (int64, error) {
-	result, err := q.db.Exec(ctx, softDeleteProduct, id)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+func (q *Queries) SoftDeleteProduct(ctx context.Context, id string) (time.Time, error) {
+	row := q.db.QueryRow(ctx, softDeleteProduct, id)
+	var updated_at time.Time
+	err := row.Scan(&updated_at)
+	return updated_at, err
+}
+
+const transitionProductImportJobConfirming = `-- name: TransitionProductImportJobConfirming :one
+UPDATE product_import_jobs
+SET status = 'CONFIRMING',
+    confirmed_at = NOW(),
+    claimed_until = NULL,
+    claim_token = '',
+    updated_at = NOW()
+WHERE id = $1
+  AND status = 'READY'
+  AND valid_rows > 0
+RETURNING id, shop_id, created_by, filename, raw_csv, status,
+          total_rows, valid_rows, invalid_rows, created_rows, failed_rows,
+          error_message, claimed_until, claim_token, confirmed_at, finished_at, created_at, updated_at
+`
+
+func (q *Queries) TransitionProductImportJobConfirming(ctx context.Context, id string) (ProductImportJob, error) {
+	row := q.db.QueryRow(ctx, transitionProductImportJobConfirming, id)
+	var i ProductImportJob
+	err := row.Scan(
+		&i.ID,
+		&i.ShopID,
+		&i.CreatedBy,
+		&i.Filename,
+		&i.RawCsv,
+		&i.Status,
+		&i.TotalRows,
+		&i.ValidRows,
+		&i.InvalidRows,
+		&i.CreatedRows,
+		&i.FailedRows,
+		&i.ErrorMessage,
+		&i.ClaimedUntil,
+		&i.ClaimToken,
+		&i.ConfirmedAt,
+		&i.FinishedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const transitionStockReservation = `-- name: TransitionStockReservation :execrows
@@ -3369,7 +4389,7 @@ SET category_id = $2,
         WHEN $6 IN ('APPROVED', 'OUT_OF_STOCK') AND first_approved_at IS NULL THEN NOW()
         ELSE first_approved_at
     END,
-    updated_at = NOW()
+    updated_at = GREATEST(clock_timestamp(), updated_at + INTERVAL '1 microsecond')
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
           rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
@@ -3432,6 +4452,71 @@ func (q *Queries) UpdateProduct(ctx context.Context, arg UpdateProductParams) (P
 	return i, err
 }
 
+const updateProductImportJobProgress = `-- name: UpdateProductImportJobProgress :execrows
+UPDATE product_import_jobs
+SET created_rows = created_rows + $1::int,
+    failed_rows = failed_rows + $2::int,
+    claimed_until = NOW() + ($3::bigint * INTERVAL '1 millisecond'),
+    updated_at = NOW()
+WHERE id = $4::text
+  AND claim_token = $5::text
+  AND status = 'CONFIRMING'
+`
+
+type UpdateProductImportJobProgressParams struct {
+	CreatedDelta int32
+	FailedDelta  int32
+	LeaseMs      int64
+	ID           string
+	ClaimToken   string
+}
+
+func (q *Queries) UpdateProductImportJobProgress(ctx context.Context, arg UpdateProductImportJobProgressParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateProductImportJobProgress,
+		arg.CreatedDelta,
+		arg.FailedDelta,
+		arg.LeaseMs,
+		arg.ID,
+		arg.ClaimToken,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateProductImportRowOutcome = `-- name: UpdateProductImportRowOutcome :execrows
+UPDATE product_import_rows
+SET status = $2,
+    error_code = $3,
+    error_message = $4,
+    created_product_id = $5
+WHERE id = $1
+  AND status = 'VALID'
+`
+
+type UpdateProductImportRowOutcomeParams struct {
+	ID               string
+	Status           string
+	ErrorCode        string
+	ErrorMessage     string
+	CreatedProductID string
+}
+
+func (q *Queries) UpdateProductImportRowOutcome(ctx context.Context, arg UpdateProductImportRowOutcomeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateProductImportRowOutcome,
+		arg.ID,
+		arg.Status,
+		arg.ErrorCode,
+		arg.ErrorMessage,
+		arg.CreatedProductID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const updateProductReview = `-- name: UpdateProductReview :one
 UPDATE products
 SET status = $2,
@@ -3441,7 +4526,7 @@ SET status = $2,
         WHEN $2 IN ('APPROVED', 'OUT_OF_STOCK') AND first_approved_at IS NULL THEN NOW()
         ELSE first_approved_at
     END,
-    updated_at = NOW()
+    updated_at = GREATEST(clock_timestamp(), updated_at + INTERVAL '1 microsecond')
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, shop_id, category_id, name, description, images, status,
           rejection_reason, min_price_vnd, max_price_vnd, deleted_at, created_at, updated_at,
@@ -3491,7 +4576,7 @@ func (q *Queries) UpdateProductReview(ctx context.Context, arg UpdateProductRevi
 const updateProductStatus = `-- name: UpdateProductStatus :exec
 UPDATE products
 SET status = $2,
-    updated_at = NOW()
+    updated_at = GREATEST(clock_timestamp(), updated_at + INTERVAL '1 microsecond')
 WHERE id = $1 AND deleted_at IS NULL
 `
 
@@ -3516,7 +4601,7 @@ SET sku_code = $2,
     updated_at = NOW()
 WHERE id = $1
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
 `
 
 type UpdateSKUMetadataParams struct {
@@ -3555,6 +4640,7 @@ func (q *Queries) UpdateSKUMetadata(ctx context.Context, arg UpdateSKUMetadataPa
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
 	)
 	return i, err
 }
@@ -3572,9 +4658,9 @@ SET stock = $1,
 WHERE id = $2
   AND version = $3
   AND status <> 'INACTIVE'
-  AND $1 >= reserved_stock
+  AND $1 >= (reserved_stock + flash_sale_reserved_stock)
 RETURNING id, product_id, sku_code, name, attributes, price_vnd, stock,
-          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at
+          reserved_stock, version, weight_grams, image_url, status, created_at, updated_at, flash_sale_reserved_stock
 `
 
 type UpdateSKUStockOptimisticParams struct {
@@ -3602,6 +4688,7 @@ func (q *Queries) UpdateSKUStockOptimistic(ctx context.Context, arg UpdateSKUSto
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FlashSaleReservedStock,
 	)
 	return i, err
 }

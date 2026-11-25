@@ -1,0 +1,6 @@
+apiVersion: v2
+name: notification
+description: NexusMart Notification & Email Delivery service (notification_db)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

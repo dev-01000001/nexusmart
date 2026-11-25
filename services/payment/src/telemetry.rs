@@ -302,19 +302,37 @@ pub fn format_traceparent(trace_id: &str) -> String {
     format!("00-{normalized}-{span_id}-01")
 }
 
-/// Masks secrets/signatures/tokens before logging. Never logs full secrets.
-/// UTF-8 safe (uses Unicode scalar values rather than raw byte offsets).
+/// Returns the active OpenTelemetry trace ID (32 lowercase hex) if a valid span is current,
+/// otherwise returns an empty string.
+pub fn current_trace_id() -> String {
+    let cx = tracing::Span::current().context();
+    let sc = cx.span().span_context().clone();
+    if sc.is_valid() {
+        sc.trace_id().to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Redacts embedded credentials (`scheme://user:pass@host`) from URLs such as `NATS_URL`.
+pub fn redact_url_credentials(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Some(scheme_pos) = trimmed.find("://") {
+        let after_scheme = &trimmed[scheme_pos + 3..];
+        if let Some(at_pos) = after_scheme.find('@') {
+            let host_and_rest = &after_scheme[at_pos + 1..];
+            return format!("{}://[REDACTED]@{host_and_rest}", &trimmed[..scheme_pos]);
+        }
+    }
+    trimmed.to_string()
+}
+
+/// Masks secrets/signatures/tokens before logging. Never logs any characters of a non-empty secret.
 pub fn mask_secret(value: &str) -> String {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
+    if value.trim().is_empty() {
         return "[EMPTY]".to_string();
     }
-    let char_count = trimmed.chars().count();
-    if char_count <= 8 {
-        return "[REDACTED]".to_string();
-    }
-    let prefix: String = trimmed.chars().take(4).collect();
-    format!("{prefix}***[REDACTED]")
+    "[REDACTED]".to_string()
 }
 
 /// Masks phone number (PII) keeping only last 3 digits.
@@ -399,9 +417,18 @@ mod tests {
 
     #[test]
     fn test_masking_pii_and_secrets() {
-        assert_eq!(mask_secret("supersecretvalue123"), "supe***[REDACTED]");
+        assert_eq!(mask_secret(""), "[EMPTY]");
+        assert_eq!(mask_secret("supersecretvalue123"), "[REDACTED]");
         assert_eq!(mask_secret("short"), "[REDACTED]");
-        assert_eq!(mask_secret("MậtKhẩuSiêuBíMật"), "MậtK***[REDACTED]");
+        assert_eq!(mask_secret("MậtKhẩuSiêuBíMật"), "[REDACTED]");
+        assert_eq!(
+            redact_url_credentials("nats://svc:SecretPass@nats:4222"),
+            "nats://[REDACTED]@nats:4222"
+        );
+        assert_eq!(
+            redact_url_credentials("nats://nats:4222"),
+            "nats://nats:4222"
+        );
         assert_eq!(mask_phone("0901234567"), "***567");
         assert_eq!(mask_email("buyer@nexusmart.vn"), "b***@nexusmart.vn");
         assert_eq!(mask_bank_account("19034567890123"), "****0123");
@@ -412,8 +439,8 @@ mod tests {
         hdrs.insert("X-Signature".into(), "abcdef1234567890".into());
         hdrs.insert("Content-Type".into(), "application/json".into());
         let safe = sanitize_headers(&hdrs);
-        assert!(safe["Authorization"].contains("[REDACTED]"));
-        assert!(safe["X-Signature"].contains("[REDACTED]"));
+        assert_eq!(safe["Authorization"], "[REDACTED]");
+        assert_eq!(safe["X-Signature"], "[REDACTED]");
         assert_eq!(safe["Content-Type"], "application/json");
     }
 

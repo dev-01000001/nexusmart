@@ -62,6 +62,7 @@ type flashSaleDTO struct {
 	Name               string              `json:"name"`
 	StartsAt           string              `json:"starts_at,omitempty"`
 	EndsAt             string              `json:"ends_at,omitempty"`
+	Status             string              `json:"status,omitempty"`
 	MinDiscountPercent int32               `json:"min_discount_percent"`
 	CategoryIDs        []string            `json:"category_ids"`
 	Items              []*flashSaleItemDTO `json:"items"`
@@ -223,6 +224,7 @@ func mapFlashSale(fs *promotionv1.FlashSale) *flashSaleDTO {
 		Name:               fs.GetName(),
 		StartsAt:           httpx.FormatTimestamp(fs.GetStartsAt()),
 		EndsAt:             httpx.FormatTimestamp(fs.GetEndsAt()),
+		Status:             fs.GetStatus(),
 		MinDiscountPercent: fs.GetMinDiscountPercent(),
 		CategoryIDs:        catIDs,
 		Items:              items,
@@ -543,14 +545,21 @@ func toProtoShopDiscountProgramItems(in []shopDiscountProgramItemInputBody) []*p
 
 func (h *handler) handleListVouchers(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	salesChannel, storefrontShopID, errMsg := validateSalesChannelInput(q.Get("sales_channel"), q.Get("storefront_shop_id"))
+	if errMsg != "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", errMsg)
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.Promotion.ListAvailableVouchers(ctx, &promotionv1.ListAvailableVouchersRequest{
-		UserId:         auth.UserIDFromContext(r.Context()),
-		ShopId:         q.Get("shop_id"),
-		Scope:          parseVoucherScope(q.Get("scope")),
-		OrderAmountVnd: httpx.ParseInt64Query(r, "order_amount_vnd", 0),
+		UserId:           auth.UserIDFromContext(r.Context()),
+		ShopId:           q.Get("shop_id"),
+		Scope:            parseVoucherScope(q.Get("scope")),
+		OrderAmountVnd:   httpx.ParseInt64Query(r, "order_amount_vnd", 0),
+		SalesChannel:     salesChannel,
+		StorefrontShopId: storefrontShopID,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)
@@ -590,7 +599,10 @@ func (h *handler) handleSaveVoucher(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleSellerListVouchers(w http.ResponseWriter, r *http.Request) {
-	shopID := auth.ShopIDFromContext(r.Context())
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	q := r.URL.Query()
 	rawStatus := strings.TrimSpace(q.Get("status"))
 	st := parseVoucherStatus(rawStatus)
@@ -762,6 +774,10 @@ func (h *handler) handleAdminListVouchers(w http.ResponseWriter, r *http.Request
 }
 
 func (h *handler) handleSellerCreateVoucher(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	var body createVoucherBody
 	if err := httpx.DecodeJSON(r, &body); err != nil {
 		httpx.WriteDecodeError(w, r, err)
@@ -790,7 +806,7 @@ func (h *handler) handleSellerCreateVoucher(w http.ResponseWriter, r *http.Reque
 		Code:            body.Code,
 		Name:            body.Name,
 		Scope:           promotionv1.VoucherScope_VOUCHER_SCOPE_SHOP,
-		ShopId:          auth.ShopIDFromContext(r.Context()),
+		ShopId:          shopID,
 		DiscountType:    dt,
 		ValueVnd:        valueVND,
 		DiscountPercent: discountPct,
@@ -1195,6 +1211,10 @@ func (h *handler) handleSellerEndDiscountProgram(w http.ResponseWriter, r *http.
 }
 
 func (h *handler) handleSellerRegisterFlashSaleItem(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
 	var body struct {
 		SKUID         string `json:"sku_id"`
 		FlashPriceVND *int64 `json:"flash_price_vnd"`
@@ -1227,7 +1247,6 @@ func (h *handler) handleSellerRegisterFlashSaleItem(w http.ResponseWriter, r *ht
 		return
 	}
 
-	shopID := auth.ShopIDFromContext(r.Context())
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
@@ -1296,6 +1315,30 @@ func (h *handler) handleAdminApproveFlashSaleItem(w http.ResponseWriter, r *http
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"item": mapFlashSaleItem(resp.GetItem())})
+}
+
+func (h *handler) handleAdminEndFlashSaleWindow(w http.ResponseWriter, r *http.Request) {
+	windowID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if windowID == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "flash sale id is required")
+		return
+	}
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Promotion.EndFlashSaleWindow(ctx, &promotionv1.EndFlashSaleWindowRequest{
+		WindowId: windowID,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	mapped := mapFlashSale(resp.GetWindow())
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"flash_sale":     mapped,
+		"window":         mapped,
+		"released_items": resp.GetReleasedItems(),
+	})
 }
 
 func (h *handler) handleGetCoinBalance(w http.ResponseWriter, r *http.Request) {
@@ -1381,6 +1424,8 @@ func (h *handler) handlePreviewDiscounts(w http.ResponseWriter, r *http.Request)
 		PlatformVoucherID string            `json:"platform_voucher_id"`
 		FreeshipVoucherID string            `json:"freeship_voucher_id"`
 		CoinsToUse        int64             `json:"coins_to_use"`
+		SalesChannel      string            `json:"sales_channel"`
+		StorefrontShopID  string            `json:"storefront_shop_id"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
 		httpx.WriteDecodeError(w, r, err)
@@ -1396,6 +1441,11 @@ func (h *handler) handlePreviewDiscounts(w http.ResponseWriter, r *http.Request)
 	}
 	if h.clients.Product == nil || h.clients.Shipping == nil {
 		httpx.WriteError(w, r, http.StatusServiceUnavailable, "UNAVAILABLE", "required upstream service unavailable")
+		return
+	}
+	salesChannel, storefrontShopID, errMsg := validateSalesChannelInput(body.SalesChannel, body.StorefrontShopID)
+	if errMsg != "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", errMsg)
 		return
 	}
 
@@ -1534,6 +1584,8 @@ func (h *handler) handlePreviewDiscounts(w http.ResponseWriter, r *http.Request)
 		PlatformVoucherId: body.PlatformVoucherID,
 		FreeshipVoucherId: body.FreeshipVoucherID,
 		CoinsToUse:        body.CoinsToUse,
+		SalesChannel:      salesChannel,
+		StorefrontShopId:  storefrontShopID,
 	})
 	if err != nil {
 		if st, ok := status.FromError(err); ok && st.Code() == codes.FailedPrecondition && strings.Contains(st.Message(), "SKU_INACTIVE") {

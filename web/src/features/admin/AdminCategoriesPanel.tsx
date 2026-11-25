@@ -1,15 +1,17 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
-import type { GatewayCategory } from "@/lib/gateway-types";
-import { api, getErrorMessage } from "@/lib/api";
-import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, StateView } from "@/components";
+import { api, getErrorMessage } from "@/lib/api";
 import { formatInt } from "@/lib/format";
-import { formatCommissionBps } from "./types";
-import { StatusPill } from "./StatusPill";
+import type { GatewayCategory } from "@/lib/gateway-types";
+import { useAdminContext } from "./AdminShell";
+import { AdminConfirmDialog } from "./AdminUi";
 import { useAdminCapability } from "./AdminUserContext";
+import { StatusPill } from "./StatusPill";
+import { formatCommissionBps } from "./types";
 import shared from "./adminShared.module.css";
+import styles from "@/app/(admin)/admin/cau-hinh/page.module.css";
 
 function slugify(raw: string): string {
   return raw
@@ -21,12 +23,22 @@ function slugify(raw: string): string {
     .toLowerCase();
 }
 
-export function AdminCategoriesPanel() {
-  const { showToast } = useMockStore();
+export interface AdminCategoriesPanelProps {
+  initialCategories?: GatewayCategory[];
+  initialError?: string | null;
+}
+
+export function AdminCategoriesPanel({
+  initialCategories,
+  initialError = null,
+}: AdminCategoriesPanelProps = {}) {
+  const { showToast } = useAdminContext();
   const canWriteCategories = useAdminCapability("categories.write");
-  const [categories, setCategories] = useState<GatewayCategory[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const hasInitial = initialCategories !== undefined;
+  const [categories, setCategories] = useState<GatewayCategory[]>(initialCategories ?? []);
+  const [loading, setLoading] = useState(!hasInitial);
+  const [errorMsg, setErrorMsg] = useState<string | null>(initialError);
 
   // Create form
   const [newName, setNewName] = useState("");
@@ -48,13 +60,13 @@ export function AdminCategoriesPanel() {
   const [editIsProhibited, setEditIsProhibited] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmDeleteCat, setConfirmDeleteCat] = useState<GatewayCategory | null>(null);
 
   const loadCategories = useCallback(async () => {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const res = await api<{ categories: GatewayCategory[] }>("admin/categories");
+      const res = await api<{ categories: GatewayCategory[] }>("/api/admin/categories");
       setCategories(res.categories ?? []);
     } catch (err) {
       setErrorMsg(getErrorMessage(err, "Không thể tải danh sách danh mục ngành hàng."));
@@ -64,15 +76,17 @@ export function AdminCategoriesPanel() {
   }, []);
 
   useEffect(() => {
-    void loadCategories();
-  }, [loadCategories]);
+    if (!hasInitial) {
+      void loadCategories();
+    }
+  }, [hasInitial, loadCategories]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanName = newName.trim();
     const cleanSlug = (newSlug.trim() || slugify(cleanName)).trim();
     const bps = Math.max(0, Math.min(5000, Math.trunc(Number(newBps) || 0)));
-    const sortOrder = Math.trunc(Number(newSortOrder) || 0);
+    const sortOrder = Math.max(0, Math.trunc(Number(newSortOrder) || 0));
     if (!cleanName || !cleanSlug) {
       setCreateError("Vui lòng nhập tên và đường dẫn danh mục.");
       return;
@@ -80,7 +94,7 @@ export function AdminCategoriesPanel() {
     setCreateError(null);
     setCreating(true);
     try {
-      await api<{ category: GatewayCategory }>("admin/categories", {
+      await api<{ category: GatewayCategory }>("/api/admin/categories", {
         method: "POST",
         json: {
           name: cleanName,
@@ -122,7 +136,7 @@ export function AdminCategoriesPanel() {
     const cleanName = editName.trim();
     const cleanSlug = editSlug.trim();
     const bps = Math.max(0, Math.min(5000, Math.trunc(Number(editBps) || 0)));
-    const sortOrder = Math.trunc(Number(editSortOrder) || 0);
+    const sortOrder = Math.max(0, Math.trunc(Number(editSortOrder) || 0));
     if (!cleanName || !cleanSlug) {
       setEditError("Tên và đường dẫn danh mục không được bỏ trống.");
       return;
@@ -130,17 +144,20 @@ export function AdminCategoriesPanel() {
     setEditError(null);
     setSavingId(catId);
     try {
-      await api<{ category: GatewayCategory }>(`admin/categories/${catId}`, {
-        method: "PUT",
-        json: {
-          name: cleanName,
-          slug: cleanSlug,
-          parent_id: editParentId || "",
-          commission_rate_bps: bps,
-          sort_order: sortOrder,
-          is_prohibited: editIsProhibited,
-        },
-      });
+      await api<{ category: GatewayCategory }>(
+        `/api/admin/categories/${encodeURIComponent(catId)}`,
+        {
+          method: "PUT",
+          json: {
+            name: cleanName,
+            slug: cleanSlug,
+            parent_id: editParentId || "",
+            commission_rate_bps: bps,
+            sort_order: sortOrder,
+            is_prohibited: editIsProhibited,
+          },
+        }
+      );
       setEditingId(null);
       await loadCategories();
       showToast(`Đã cập nhật danh mục "${cleanName}".`);
@@ -156,8 +173,10 @@ export function AdminCategoriesPanel() {
   const handleDelete = async (cat: GatewayCategory) => {
     setSavingId(cat.id);
     try {
-      await api<{ ok: boolean }>(`admin/categories/${cat.id}`, { method: "DELETE" });
-      setConfirmDeleteId(null);
+      await api<{ ok: boolean }>(`/api/admin/categories/${encodeURIComponent(cat.id)}`, {
+        method: "DELETE",
+      });
+      setConfirmDeleteCat(null);
       await loadCategories();
       showToast(`Đã xóa danh mục "${cat.name}".`);
     } catch (err) {
@@ -196,9 +215,9 @@ export function AdminCategoriesPanel() {
         <section className={shared.panel} aria-labelledby="cat-create-heading">
           <div className={shared.panelHeader}>
             <h2 id="cat-create-heading" className={shared.panelTitle}>
-              Tạo danh mục & tỷ lệ hoa hồng mới
+              Tạo danh mục mới
             </h2>
-            <span className={shared.panelMeta}>100 bps = 1,0% hoa hồng sàn</span>
+            <span className={shared.panelMeta}>100 bps = 1,0% hoa hồng</span>
           </div>
 
           <form onSubmit={(e) => void handleCreate(e)} noValidate className={shared.detailGrid}>
@@ -235,8 +254,7 @@ export function AdminCategoriesPanel() {
               </label>
               <select
                 id="cat-new-parent"
-                className={shared.toolbarSelect}
-                style={{ height: 38 }}
+                className={shared.formSelect}
                 value={newParentId}
                 onChange={(e) => setNewParentId(e.target.value)}
               >
@@ -270,6 +288,8 @@ export function AdminCategoriesPanel() {
               <input
                 id="cat-new-sort"
                 type="number"
+                min={0}
+                step={1}
                 className={shared.textInput}
                 value={newSortOrder}
                 onChange={(e) => setNewSortOrder(e.target.value)}
@@ -277,16 +297,7 @@ export function AdminCategoriesPanel() {
             </div>
             <div className={shared.detailField}>
               <span className={shared.fieldLabel}>Chính sách kinh doanh</span>
-              <label
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 8,
-                  minHeight: 38,
-                  fontSize: 14,
-                  cursor: "pointer",
-                }}
-              >
+              <label className={styles.checkboxLabel}>
                 <input
                   id="cat-new-prohibited"
                   type="checkbox"
@@ -303,10 +314,12 @@ export function AdminCategoriesPanel() {
                 </p>
               </div>
             )}
-            <div className={shared.detailField} style={{ justifyContent: "flex-end" }}>
-              <Button type="submit" variant="primary" size="sm" shape="app" disabled={creating}>
-                {creating ? "Đang tạo..." : "Thêm danh mục"}
-              </Button>
+            <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+              <div className={shared.detailButtons}>
+                <Button type="submit" variant="primary" size="sm" shape="app" loading={creating}>
+                  Thêm danh mục
+                </Button>
+              </div>
             </div>
           </form>
         </section>
@@ -315,7 +328,7 @@ export function AdminCategoriesPanel() {
       <section className={shared.panel} aria-labelledby="cat-list-heading">
         <div className={shared.panelHeader}>
           <h2 id="cat-list-heading" className={shared.panelTitle}>
-            Danh sách danh mục hiện hành ({formatInt(categories.length)})
+            Danh mục hiện hành ({formatInt(categories.length)})
           </h2>
           <Button variant="outline" size="sm" shape="app" onClick={() => void loadCategories()}>
             Làm mới
@@ -332,7 +345,7 @@ export function AdminCategoriesPanel() {
           <table className={shared.dataTable}>
             <thead>
               <tr>
-                <th>Tên danh mục & đường dẫn</th>
+                <th>Tên danh mục &amp; đường dẫn</th>
                 <th>Trạng thái</th>
                 <th className={shared.colNum}>Hoa hồng</th>
                 <th className={shared.colNum}>Thứ tự</th>
@@ -374,15 +387,7 @@ export function AdminCategoriesPanel() {
                     </td>
                     <td>
                       {isEditing ? (
-                        <label
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 6,
-                            fontSize: 13,
-                            cursor: "pointer",
-                          }}
-                        >
+                        <label className={styles.checkboxLabel}>
                           <input
                             type="checkbox"
                             checked={editIsProhibited}
@@ -403,8 +408,7 @@ export function AdminCategoriesPanel() {
                           min={0}
                           max={5000}
                           step={1}
-                          className={shared.textInput}
-                          style={{ width: 92, height: 34, textAlign: "right" }}
+                          className={styles.compactInput}
                           value={editBps}
                           onChange={(e) => setEditBps(e.target.value)}
                           aria-label="Hoa hồng bps"
@@ -420,8 +424,9 @@ export function AdminCategoriesPanel() {
                       {isEditing ? (
                         <input
                           type="number"
-                          className={shared.textInput}
-                          style={{ width: 72, height: 34, textAlign: "right" }}
+                          min={0}
+                          step={1}
+                          className={styles.compactInput}
                           value={editSortOrder}
                           onChange={(e) => setEditSortOrder(e.target.value)}
                           aria-label="Thứ tự"
@@ -432,17 +437,17 @@ export function AdminCategoriesPanel() {
                     </td>
                     <td className={shared.colAction}>
                       {canWriteCategories ? (
-                        <div style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
+                        <div className={styles.actionRow}>
                           {isEditing ? (
                             <>
                               <Button
                                 variant="primary"
                                 size="sm"
                                 shape="app"
-                                disabled={isBusy}
+                                loading={isBusy}
                                 onClick={() => void handleSaveEdit(cat.id)}
                               >
-                                {isBusy ? "Lưu..." : "Lưu"}
+                                Lưu
                               </Button>
                               <Button
                                 variant="outline"
@@ -462,34 +467,13 @@ export function AdminCategoriesPanel() {
                               >
                                 Sửa
                               </button>
-                              {confirmDeleteId === cat.id ? (
-                                <>
-                                  <Button
-                                    variant="danger"
-                                    size="sm"
-                                    shape="app"
-                                    disabled={isBusy}
-                                    onClick={() => void handleDelete(cat)}
-                                  >
-                                    Xác nhận xóa
-                                  </Button>
-                                  <button
-                                    type="button"
-                                    className={shared.rowActionBtn}
-                                    onClick={() => setConfirmDeleteId(null)}
-                                  >
-                                    Giữ lại
-                                  </button>
-                                </>
-                              ) : (
-                                <button
-                                  type="button"
-                                  className={shared.rowActionBtn}
-                                  onClick={() => setConfirmDeleteId(cat.id)}
-                                >
-                                  Xóa
-                                </button>
-                              )}
+                              <button
+                                type="button"
+                                className={`${shared.rowActionBtn} ${shared.rowActionBtnDanger}`}
+                                onClick={() => setConfirmDeleteCat(cat)}
+                              >
+                                Xóa
+                              </button>
                             </>
                           )}
                         </div>
@@ -558,6 +542,7 @@ export function AdminCategoriesPanel() {
                       <input
                         id={`m-cat-order-${cat.id}`}
                         type="number"
+                        min={0}
                         step={1}
                         className={shared.textInput}
                         value={editSortOrder}
@@ -565,16 +550,7 @@ export function AdminCategoriesPanel() {
                       />
                     </div>
                     <div className={shared.detailField}>
-                      <label
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 8,
-                          minHeight: 36,
-                          fontSize: 14,
-                          cursor: "pointer",
-                        }}
-                      >
+                      <label className={styles.checkboxLabel}>
                         <input
                           type="checkbox"
                           checked={editIsProhibited}
@@ -595,10 +571,10 @@ export function AdminCategoriesPanel() {
                         variant="primary"
                         size="sm"
                         shape="app"
-                        disabled={isBusy}
+                        loading={isBusy}
                         onClick={() => void handleSaveEdit(cat.id)}
                       >
-                        {isBusy ? "Lưu..." : "Lưu"}
+                        Lưu
                       </Button>
                       <Button
                         variant="outline"
@@ -631,45 +607,21 @@ export function AdminCategoriesPanel() {
                       )}
                     </div>
                     {canWriteCategories && (
-                      <div className={shared.mobileLine2}>
-                        <span className={shared.mobileMetaText} />
-                        <div className={shared.detailButtons}>
-                          <button
-                            type="button"
-                            className={shared.rowActionBtn}
-                            onClick={() => startEdit(cat)}
-                          >
-                            Sửa
-                          </button>
-                          {confirmDeleteId === cat.id ? (
-                            <>
-                              <Button
-                                variant="danger"
-                                size="sm"
-                                shape="app"
-                                disabled={isBusy}
-                                onClick={() => void handleDelete(cat)}
-                              >
-                                Xác nhận xóa
-                              </Button>
-                              <button
-                                type="button"
-                                className={shared.rowActionBtn}
-                                onClick={() => setConfirmDeleteId(null)}
-                              >
-                                Giữ lại
-                              </button>
-                            </>
-                          ) : (
-                            <button
-                              type="button"
-                              className={shared.rowActionBtn}
-                              onClick={() => setConfirmDeleteId(cat.id)}
-                            >
-                              Xóa
-                            </button>
-                          )}
-                        </div>
+                      <div className={styles.mobileActions}>
+                        <button
+                          type="button"
+                          className={shared.rowActionBtn}
+                          onClick={() => startEdit(cat)}
+                        >
+                          Sửa
+                        </button>
+                        <button
+                          type="button"
+                          className={`${shared.rowActionBtn} ${shared.rowActionBtnDanger}`}
+                          onClick={() => setConfirmDeleteCat(cat)}
+                        >
+                          Xóa
+                        </button>
                       </div>
                     )}
                   </>
@@ -679,6 +631,22 @@ export function AdminCategoriesPanel() {
           })}
         </div>
       </section>
+
+      <AdminConfirmDialog
+        open={Boolean(confirmDeleteCat)}
+        title="Xác nhận xóa danh mục"
+        description={
+          confirmDeleteCat
+            ? `Xóa danh mục "${confirmDeleteCat.name}" (/${confirmDeleteCat.slug})? Thao tác không thể hoàn tác.`
+            : ""
+        }
+        confirmLabel="Xác nhận xóa"
+        busy={Boolean(confirmDeleteCat && savingId === confirmDeleteCat.id)}
+        onCancel={() => setConfirmDeleteCat(null)}
+        onConfirm={() => {
+          if (confirmDeleteCat) void handleDelete(confirmDeleteCat);
+        }}
+      />
     </div>
   );
 }

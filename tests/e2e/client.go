@@ -74,6 +74,19 @@ func (c *Client) DoJSON(
 	return c.DoAbsolute(ctx, method, c.cfg.GatewayURL+path, token, extraHeaders, reqBody)
 }
 
+// DoJSONNoRetry sends a JSON HTTP request to Gateway without retrying on HTTP 429.
+// Use in rate-limit tests that explicitly assert HTTP 429 responses.
+func (c *Client) DoJSONNoRetry(
+	ctx context.Context,
+	method string,
+	path string,
+	token string,
+	extraHeaders map[string]string,
+	reqBody any,
+) (*RawResponse, error) {
+	return c.doAbsolute(ctx, method, c.cfg.GatewayURL+path, token, extraHeaders, reqBody, false)
+}
+
 const (
 	rateLimitDefaultRetryAfter = 5 * time.Second
 	rateLimitMaxWait           = 150 * time.Second
@@ -109,6 +122,30 @@ func (c *Client) DoAbsolute(
 	token string,
 	extraHeaders map[string]string,
 	reqBody any,
+) (*RawResponse, error) {
+	return c.doAbsolute(ctx, method, fullURL, token, extraHeaders, reqBody, true)
+}
+
+// DoAbsoluteNoRetry sends an HTTP request to any full URL without retrying on HTTP 429.
+func (c *Client) DoAbsoluteNoRetry(
+	ctx context.Context,
+	method string,
+	fullURL string,
+	token string,
+	extraHeaders map[string]string,
+	reqBody any,
+) (*RawResponse, error) {
+	return c.doAbsolute(ctx, method, fullURL, token, extraHeaders, reqBody, false)
+}
+
+func (c *Client) doAbsolute(
+	ctx context.Context,
+	method string,
+	fullURL string,
+	token string,
+	extraHeaders map[string]string,
+	reqBody any,
+	retryOn429 bool,
 ) (*RawResponse, error) {
 	var bodyBytes []byte
 	hasBody := reqBody != nil
@@ -164,7 +201,7 @@ func (c *Client) DoAbsolute(
 			Headers:    resp.Header.Clone(),
 			Body:       rawBytes,
 		}
-		if resp.StatusCode != http.StatusTooManyRequests {
+		if !retryOn429 || resp.StatusCode != http.StatusTooManyRequests {
 			return rawResp, nil
 		}
 		retryAfterHeader := strings.TrimSpace(resp.Header.Get("Retry-After"))

@@ -1,31 +1,20 @@
-/* Kiểm duyệt Đánh giá, Hỏi đáp & Media (/admin/kiem-duyet) — Framed sheet queue & inspection */
-
-.kpiSpacer {
-  margin-top: 20px;
-}
-
-.mediaThumbCell {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
+/* Kiểm duyệt sản phẩm & Từ khoá cấm (/admin/kiem-duyet) — Queue-Left + Inspector-Right Split */
 
 .thumbSm {
-  width: 44px;
-  height: 44px;
-  border-radius: 8px;
+  width: 46px;
+  height: 46px;
+  border-radius: var(--radius-control);
   object-fit: cover;
-  background: var(--surface);
+  background: var(--bg-2);
   flex-shrink: 0;
 }
 
 .thumbLg {
-  width: 96px;
-  height: 96px;
-  border-radius: 8px;
+  width: 104px;
+  height: 104px;
+  border-radius: var(--radius-card);
   object-fit: cover;
-  background: var(--surface);
+  background: var(--bg-2);
   flex-shrink: 0;
 }
 
@@ -36,81 +25,158 @@
 }
 
 .previewMeta {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
   flex: 1;
+  min-width: 0;
 }
 
-.checklistRow {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.checkOk {
+.stepperBtns {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 13px;
-  color: var(--positive);
+  gap: 4px;
 }
 
-.checkWarn {
+.stepperBtn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 13px;
-  color: var(--negative);
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border);
+  background: var(--bg-0);
+  color: var(--ink-1);
+  transition:
+    background-color var(--t-hover) var(--ease-out),
+    transform var(--t-press) var(--ease-out);
 }
 
-.excerptCell {
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.stepperBtn:hover:not(:disabled) {
+  background: var(--bg-2);
+}
+
+.stepperBtn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.stepperBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.skuTableWrap {
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  overflow-x: auto;
+  background: var(--bg-0);
+}
+
+.skuTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.skuTable th {
+  padding: 8px 10px;
+  font-size: var(--fs-small);
+  font-weight: 500;
+  color: var(--ink-3);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 
-.bannedSection {
-  margin-top: 24px;
+.skuTable td {
+  padding: 9px 10px;
+  font-size: var(--fs-small);
+  color: var(--ink-1);
+  border-bottom: 1px solid var(--rule);
 }
 
-.bannedForm {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: end;
-  padding: 14px;
-  margin-bottom: 14px;
-  border-radius: var(--radius-control);
-  background: var(--bg);
+.skuTable tbody tr:last-child td {
+  border-bottom: 0;
 }
 
-.fieldGroup {
+.drawerContent {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.flaggedBanner {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-width: 0;
+  padding: 12px 14px;
+  border-radius: var(--radius-control);
+  background: var(--pill-warning-bg);
+  color: var(--pill-warning-ink);
+  font-size: var(--fs-small);
 }
 
-@media (max-width: 960px) {
-  .excerptCell {
-    max-width: 210px;
-  }
+.flaggedChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
 
-  .bannedForm {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+.flaggedChip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--radius-chip);
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-size: var(--fs-small);
+  font-weight: 500;
+}
+
+.flaggedInline {
+  color: var(--pill-warning-ink);
+  font-weight: 500;
+}
+
+.sectionStack {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.helperText {
+  font-size: var(--fs-small);
+  color: var(--ink-3);
+  line-height: 1.45;
+  margin: 0;
+}
+
+.inlineCheck {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-small);
+  color: var(--ink-1);
+  cursor: pointer;
+}
+
+.inlineCheck input {
+  accent-color: var(--accent);
+}
+
+.actionRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.selectControl {
+  height: 38px;
 }
 
 @media (max-width: 720px) {
   .previewRow {
     flex-direction: column;
-  }
-
-  .bannedForm {
-    grid-template-columns: minmax(0, 1fr);
   }
 }

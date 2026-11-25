@@ -60,11 +60,7 @@ func NewWebhookProxy(targetBaseURL string, log *slog.Logger) (http.Handler, erro
 			if ts := pr.In.Header.Get("X-Timestamp"); ts != "" {
 				pr.Out.Header.Set("X-Timestamp", ts)
 			}
-			if tp := pr.In.Header.Get("traceparent"); tp != "" {
-				pr.Out.Header.Set("traceparent", tp)
-			} else {
-				otel.GetTextMapPropagator().Inject(pr.In.Context(), propagation.HeaderCarrier(pr.Out.Header))
-			}
+			otel.GetTextMapPropagator().Inject(pr.In.Context(), propagation.HeaderCarrier(pr.Out.Header))
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			stripSecurityHeaders(resp.Header)
@@ -160,15 +156,23 @@ func NewShippingLabelProxy(shippingHTTPURL string, log *slog.Logger) (http.Handl
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
-			pr.Out.URL.Path = pr.In.URL.Path
-			pr.Out.URL.RawPath = pr.In.URL.RawPath
+			if pr.In.URL.Path == "/api/v1/shipping/labels/batch" {
+				pr.Out.URL.Path = "/labels/batch"
+				pr.Out.URL.RawPath = ""
+			} else {
+				pr.Out.URL.Path = pr.In.URL.Path
+				pr.Out.URL.RawPath = pr.In.URL.RawPath
+			}
 			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
 			pr.Out.Host = target.Host
 			pr.SetXForwarded()
 
-			pr.Out.Header.Del("X-User-Id")
-			pr.Out.Header.Del("X-User-Role")
-			pr.Out.Header.Del("X-Shop-Id")
+			for k := range pr.Out.Header {
+				lk := strings.ToLower(k)
+				if strings.HasPrefix(lk, "x-user-") || lk == "x-shop-id" {
+					pr.Out.Header.Del(k)
+				}
+			}
 			if rawAuth := auth.RawTokenFromContext(pr.In.Context()); rawAuth != "" {
 				pr.Out.Header.Set("Authorization", rawAuth)
 			}
@@ -183,6 +187,11 @@ func NewShippingLabelProxy(shippingHTTPURL string, log *slog.Logger) (http.Handl
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, proxyErr error) {
+			var maxErr *http.MaxBytesError
+			if errors.As(proxyErr, &maxErr) {
+				httpx.WriteError(w, r, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", "request body too large")
+				return
+			}
 			if log != nil {
 				log.ErrorContext(r.Context(), "shipping label proxy error", slog.String("path", r.URL.Path), slog.String("error", proxyErr.Error()))
 			}

@@ -443,6 +443,26 @@ func TestService_W3B2_AdminRBACMatrix(t *testing.T) {
 			})
 			expectRBACCode(t, "ApproveFlashSaleItem", tc.name, approveAllowed, err)
 		}
+
+		// 6. EndFlashSaleWindow: CapFlashSalesWrite (super_admin, admin, ops) ONLY — moderator/cskh/accountant/seller/buyer/service denied.
+		endAllowed := roleSet(auth.RoleSuperAdmin, auth.RoleAdmin, auth.RoleOps)
+		for idx, tc := range allRoleContexts() {
+			fs, err := svc.CreateFlashSale(adminCtx, &promotionv1.CreateFlashSaleRequest{
+				Name:     fmt.Sprintf("EndFS-%d", idx),
+				StartsAt: timestamppb.New(now.Add(time.Duration(140+idx*3) * time.Hour)),
+				EndsAt:   timestamppb.New(now.Add(time.Duration(141+idx*3) * time.Hour)),
+			})
+			if err != nil {
+				t.Fatalf("seed end FS: %v", err)
+			}
+			endResp, err := svc.EndFlashSaleWindow(tc.ctx, &promotionv1.EndFlashSaleWindowRequest{
+				WindowId: fs.FlashSale.Id,
+			})
+			expectRBACCode(t, "EndFlashSaleWindow", tc.name, endAllowed, err)
+			if endAllowed[tc.name] && endResp.GetWindow().GetStatus() != "ENDED" {
+				t.Fatalf("EndFlashSaleWindow as %s: expected ENDED, got %+v", tc.name, endResp)
+			}
+		}
 	})
 
 	t.Run("CreditCoins_F9Bis_AndServiceToken", func(t *testing.T) {
@@ -683,6 +703,10 @@ func TestService_W3B2_GRPCInterceptor_ServiceTokensAndSignedJWTs(t *testing.T) {
 			_, e := client.ApproveFlashSaleItem(c, &promotionv1.ApproveFlashSaleItemRequest{ItemId: "fi-1", Approve: true})
 			return e
 		}},
+		{"EndFlashSaleWindow", func(c context.Context) error {
+			_, e := client.EndFlashSaleWindow(c, &promotionv1.EndFlashSaleWindowRequest{WindowId: "f-1"})
+			return e
+		}},
 		{"ListFlashSaleItems", func(c context.Context) error {
 			_, e := client.ListFlashSaleItems(c, &promotionv1.ListFlashSaleItemsRequest{})
 			return e
@@ -803,5 +827,15 @@ func TestService_W3B2_GRPCInterceptor_ServiceTokensAndSignedJWTs(t *testing.T) {
 		Name: "Mod Denied", StartsAt: timestamppb.New(now.Add(5 * time.Hour)), EndsAt: timestamppb.New(now.Add(6 * time.Hour)),
 	}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("signed moderator CreateFlashSale: want PermissionDenied, got %v", err)
+	}
+	if _, err := client.EndFlashSaleWindow(modCtx, &promotionv1.EndFlashSaleWindowRequest{
+		WindowId: fsResp.FlashSale.Id,
+	}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("signed moderator EndFlashSaleWindow: want PermissionDenied, got %v", err)
+	}
+	if endResp, err := client.EndFlashSaleWindow(opsCtx, &promotionv1.EndFlashSaleWindowRequest{
+		WindowId: fsResp.FlashSale.Id,
+	}); err != nil || endResp.GetWindow().GetStatus() != "ENDED" {
+		t.Fatalf("signed ops EndFlashSaleWindow failed: resp=%+v err=%v", endResp, err)
 	}
 }

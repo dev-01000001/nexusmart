@@ -26,7 +26,7 @@ RUN apk add --no-cache ca-certificates wget \
 
 COPY --from=builder /out/promotion /usr/local/bin/promotion
 
-USER appuser
+USER 10001:10001
 
 EXPOSE 50054 8084
 

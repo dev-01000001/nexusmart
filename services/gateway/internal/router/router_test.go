@@ -249,7 +249,7 @@ func TestGatewayRouterCheckoutRBACOwnershipAndProxies(t *testing.T) {
 	// 3. Fresh checkout -> 201 + forwards Idempotency-Key & auth metadata.
 	orderMock.idempotentReplay = false
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/checkout", strings.NewReader(`{"address_id":"a1","from_cart":true,"payment_method":"VIETQR"}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/checkout", strings.NewReader(`{"address_id":"a1","from_cart":true,"payment_method":"VIETQR","sales_channel":"MARKETPLACE"}`))
 	req.Header.Set("Authorization", "Bearer "+buyerTok)
 	req.Header.Set("Idempotency-Key", "idem-123")
 	h.ServeHTTP(rec, req)
@@ -269,7 +269,7 @@ func TestGatewayRouterCheckoutRBACOwnershipAndProxies(t *testing.T) {
 	// 4. Replay checkout (`idempotent_replay=true`) -> 200.
 	orderMock.idempotentReplay = true
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/checkout", strings.NewReader(`{"address_id":"a1","from_cart":true,"payment_method":"VIETQR"}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/checkout", strings.NewReader(`{"address_id":"a1","from_cart":true,"payment_method":"VIETQR","sales_channel":"MARKETPLACE"}`))
 	req.Header.Set("Authorization", "Bearer "+buyerTok)
 	req.Header.Set("Idempotency-Key", "idem-123")
 	h.ServeHTTP(rec, req)

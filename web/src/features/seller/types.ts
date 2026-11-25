@@ -12,6 +12,15 @@ import {
   formatVnd,
 } from "@/lib/format";
 
+export const EMPTY_DASH = "—";
+
+export type UiStateOverride = "loading" | "empty" | "error" | null;
+
+export function parseUiState(param: string | null | undefined): UiStateOverride {
+  if (param === "loading" || param === "empty" || param === "error") return param;
+  return null;
+}
+
 export type SellerPillTone = "neutral" | "warn" | "pos" | "neg";
 
 export interface StatusMeta {
@@ -112,7 +121,7 @@ export function getAllowedSellerStatuses(
 }
 
 export function resolveOrderShippingDefaults(
-  order?: Pick<GatewayOrder, "carrier_code" | "service_code"> | null
+  order?: { carrier_code?: string; service_code?: string } | null
 ): { carrierCode: string; serviceCode: string } {
   const rawCarrier = (order?.carrier_code ?? "").trim();
   const rawService = (order?.service_code ?? "").trim();
@@ -146,7 +155,7 @@ export function resolveOrderShippingDefaults(
 }
 
 export function buildCarrierSelectOptions(
-  order?: Pick<GatewayOrder, "carrier_code" | "service_code"> | null
+  order?: { carrier_code?: string; service_code?: string } | null
 ): typeof CARRIER_OPTIONS {
   const defaults = resolveOrderShippingDefaults(order);
   const hasCarrier = CARRIER_OPTIONS.some((c) => c.carrierCode === defaults.carrierCode);

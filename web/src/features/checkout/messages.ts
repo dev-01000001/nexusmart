@@ -1,5 +1,5 @@
-import { ApiError, getErrorMessage } from "@/lib/api";
-import { formatVnd, formatVoucherBenefit } from "@/lib/format";
+import { ApiError, getErrorMessage } from "../../lib/api.ts";
+import { formatVnd, formatVoucherBenefit } from "../../lib/format.ts";
 import type { GatewayVoucher } from "@/lib/gateway-types";
 
 export { formatVoucherBenefit };

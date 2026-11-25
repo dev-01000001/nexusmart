@@ -17,6 +17,7 @@ import (
 	paymentv1 "github.com/nexusmart/core/gen/go/nexusmart/payment/v1"
 	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	promotionv1 "github.com/nexusmart/core/gen/go/nexusmart/promotion/v1"
+	searchv1 "github.com/nexusmart/core/gen/go/nexusmart/search/v1"
 	shippingv1 "github.com/nexusmart/core/gen/go/nexusmart/shipping/v1"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
@@ -232,6 +233,26 @@ func (u *w3b2UserClient) GetPlatformUserStats(_ context.Context, in *userv1.GetP
 	return &userv1.GetPlatformUserStatsResponse{FromDate: in.GetFromDate(), ToDate: in.GetToDate()}, nil
 }
 
+func (u *w3b2UserClient) ListSites(_ context.Context, _ *userv1.ListSitesRequest, _ ...grpc.CallOption) (*userv1.ListSitesResponse, error) {
+	return &userv1.ListSitesResponse{Sites: []*userv1.Site{}, Total: 0}, nil
+}
+
+func (u *w3b2UserClient) GetSiteDraft(_ context.Context, in *userv1.GetSiteDraftRequest, _ ...grpc.CallOption) (*userv1.GetSiteDraftResponse, error) {
+	return &userv1.GetSiteDraftResponse{Site: &userv1.Site{Id: "site-1", ShopId: in.GetShopId()}}, nil
+}
+
+func (u *w3b2UserClient) ListSiteDomains(_ context.Context, _ *userv1.ListSiteDomainsRequest, _ ...grpc.CallOption) (*userv1.ListSiteDomainsResponse, error) {
+	return &userv1.ListSiteDomainsResponse{Domains: []*userv1.Domain{}}, nil
+}
+
+func (u *w3b2UserClient) RemoveCustomDomain(_ context.Context, _ *userv1.RemoveCustomDomainRequest, _ ...grpc.CallOption) (*userv1.RemoveCustomDomainResponse, error) {
+	return &userv1.RemoveCustomDomainResponse{}, nil
+}
+
+func (u *w3b2UserClient) SuspendSite(_ context.Context, in *userv1.SuspendSiteRequest, _ ...grpc.CallOption) (*userv1.SuspendSiteResponse, error) {
+	return &userv1.SuspendSiteResponse{Site: &userv1.Site{Id: in.GetSiteId(), Status: userv1.SiteStatus_SITE_STATUS_SUSPENDED}}, nil
+}
+
 type w3b2ProductClient struct {
 	productv1.ProductServiceClient
 }
@@ -313,6 +334,9 @@ func (p *w3b2PromotionClient) ListAllFlashSales(_ context.Context, _ *promotionv
 }
 func (p *w3b2PromotionClient) CreateFlashSale(_ context.Context, in *promotionv1.CreateFlashSaleRequest, _ ...grpc.CallOption) (*promotionv1.CreateFlashSaleResponse, error) {
 	return &promotionv1.CreateFlashSaleResponse{FlashSale: &promotionv1.FlashSale{Id: "fs-1", Name: in.GetName()}}, nil
+}
+func (p *w3b2PromotionClient) EndFlashSaleWindow(_ context.Context, in *promotionv1.EndFlashSaleWindowRequest, _ ...grpc.CallOption) (*promotionv1.EndFlashSaleWindowResponse, error) {
+	return &promotionv1.EndFlashSaleWindowResponse{Window: &promotionv1.FlashSale{Id: in.GetWindowId(), Status: "ENDED"}}, nil
 }
 func (p *w3b2PromotionClient) ListFlashSaleItems(_ context.Context, _ *promotionv1.ListFlashSaleItemsRequest, _ ...grpc.CallOption) (*promotionv1.ListFlashSaleItemsResponse, error) {
 	return &promotionv1.ListFlashSaleItemsResponse{Items: []*promotionv1.FlashSaleItem{}, Total: 0}, nil
@@ -718,6 +742,18 @@ func (s *w3b2ShippingClient) AdminTestCarrier(_ context.Context, _ *shippingv1.A
 	return &shippingv1.AdminTestCarrierResponse{Ok: true}, nil
 }
 
+type w3b2SearchClient struct {
+	searchv1.SearchServiceClient
+}
+
+func (s *w3b2SearchClient) ReindexAll(_ context.Context, _ *searchv1.ReindexAllRequest, _ ...grpc.CallOption) (*searchv1.ReindexAllResponse, error) {
+	return &searchv1.ReindexAllResponse{JobId: "reindex-1", Status: searchv1.ReindexJobStatus_REINDEX_JOB_STATUS_RUNNING}, nil
+}
+
+func (s *w3b2SearchClient) GetReindexStatus(_ context.Context, in *searchv1.GetReindexStatusRequest, _ ...grpc.CallOption) (*searchv1.GetReindexStatusResponse, error) {
+	return &searchv1.GetReindexStatusResponse{JobId: in.GetJobId(), Status: searchv1.ReindexJobStatus_REINDEX_JOB_STATUS_COMPLETED}, nil
+}
+
 type w3b2Harness struct {
 	handler    http.Handler
 	authMgr    *auth.Manager
@@ -727,6 +763,7 @@ type w3b2Harness struct {
 	order      *w3b2OrderClient
 	payment    *w3b2PaymentClient
 	shipping   *w3b2ShippingClient
+	search     *w3b2SearchClient
 	webhookSrv *httptest.Server
 	labelSrv   *httptest.Server
 	lastWHPath string
@@ -833,6 +870,7 @@ func newW3B2Harness(t *testing.T, webhookLimit int) *w3b2Harness {
 			},
 		},
 		shipping: &w3b2ShippingClient{},
+		search:   &w3b2SearchClient{},
 	}
 
 	hw.webhookSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -883,6 +921,7 @@ func newW3B2Harness(t *testing.T, webhookLimit int) *w3b2Harness {
 			Order:     hw.order,
 			Payment:   hw.payment,
 			Shipping:  hw.shipping,
+			Search:    hw.search,
 			Timeout:   5 * time.Second,
 		},
 		AuthManager:            authMgr,
@@ -957,6 +996,11 @@ func TestW3B2_AdminRBACMatrixExhaustiveAllRoutesAndRoles(t *testing.T) {
 		{http.MethodPost, "/api/v1/admin/shops/{id}/unsuspend", "/api/v1/admin/shops/s-1/unsuspend", auth.CapShopsUnsuspend, "", `{"reason":"remediated"}`, nil},
 		{http.MethodGet, "/api/v1/admin/shops/{id}/bank-account", "/api/v1/admin/shops/s-1/bank-account", auth.CapShopsBankRead, "", "", nil},
 		{http.MethodPost, "/api/v1/admin/shops/{id}/bank-account/review", "/api/v1/admin/shops/s-1/bank-account/review", auth.CapShopsBankReview, "", `{"bank_account_id":"ba-1","decision":"APPROVE","reason":"ok"}`, nil},
+		{http.MethodGet, "/api/v1/admin/sites", "/api/v1/admin/sites", auth.CapSitesRead, "", "", nil},
+		{http.MethodGet, "/api/v1/admin/sites/{shop_id}", "/api/v1/admin/sites/s-1", auth.CapSitesRead, "", "", nil},
+		{http.MethodGet, "/api/v1/admin/sites/{shop_id}/domains", "/api/v1/admin/sites/s-1/domains", auth.CapSitesRead, "", "", nil},
+		{http.MethodDelete, "/api/v1/admin/sites/{shop_id}/domains/{id}", "/api/v1/admin/sites/s-1/domains/dom-1", auth.CapSitesDomainsWrite, "", "", nil},
+		{http.MethodPost, "/api/v1/admin/sites/{site_id}/suspend", "/api/v1/admin/sites/site-1/suspend", auth.CapSitesSuspend, "", `{"suspend":true,"reason":"policy"}`, nil},
 		{http.MethodGet, "/api/v1/admin/approvals", "/api/v1/admin/approvals", auth.CapApprovalsRead, "", "", nil},
 		{http.MethodPost, "/api/v1/admin/approvals/shop/{id}/decide", "/api/v1/admin/approvals/shop/appr-1/decide", auth.CapShopsSuspendDecide, "", `{"decision":"APPROVE","note":"verified"}`, nil},
 		{http.MethodPost, "/api/v1/admin/approvals/refund/{id}/decide", "/api/v1/admin/approvals/refund/ref-1/decide", auth.CapRefundsApprove, "", `{"approve":true,"note":"verified"}`, nil},
@@ -987,6 +1031,7 @@ func TestW3B2_AdminRBACMatrixExhaustiveAllRoutesAndRoles(t *testing.T) {
 		{http.MethodDelete, "/api/v1/admin/vouchers/{id}", "/api/v1/admin/vouchers/v-1", auth.CapVouchersWrite, "", "", nil},
 		{http.MethodGet, "/api/v1/admin/flash-sales", "/api/v1/admin/flash-sales", auth.CapFlashSalesRead, "", "", nil},
 		{http.MethodPost, "/api/v1/admin/flash-sales", "/api/v1/admin/flash-sales", auth.CapFlashSalesWrite, "", `{"name":"FS"}`, nil},
+		{http.MethodPost, "/api/v1/admin/flash-sales/{id}/end", "/api/v1/admin/flash-sales/fs-1/end", auth.CapFlashSalesWrite, "", "", nil},
 		{http.MethodGet, "/api/v1/admin/flash-sale-items", "/api/v1/admin/flash-sale-items", auth.CapFlashSalesRead, "", "", nil},
 		{http.MethodPost, "/api/v1/admin/flash-sale-items/{item_id}/approve", "/api/v1/admin/flash-sale-items/fsi-1/approve", auth.CapFlashSalesItemApprove, "", `{"approve":true}`, nil},
 		{http.MethodPost, "/api/v1/admin/coins/credit", "/api/v1/admin/coins/credit", auth.CapCoinsCredit, "", `{"user_id":"u-1","amount":1000,"reason":"bonus"}`, nil},
@@ -1020,6 +1065,10 @@ func TestW3B2_AdminRBACMatrixExhaustiveAllRoutesAndRoles(t *testing.T) {
 		{http.MethodGet, "/api/v1/admin/carriers", "/api/v1/admin/carriers", auth.CapCarriersRead, "", "", nil},
 		{http.MethodPut, "/api/v1/admin/carriers/{code}", "/api/v1/admin/carriers/ghn", auth.CapCarriersWrite, "", `{"enabled":true}`, nil},
 		{http.MethodPost, "/api/v1/admin/carriers/{code}/test", "/api/v1/admin/carriers/ghn/test", auth.CapCarriersWrite, "", "", nil},
+
+		// Section 4.8a Search Reindex (B1 / G11)
+		{http.MethodPost, "/api/v1/admin/search/reindex", "/api/v1/admin/search/reindex", auth.CapSearchReindex, "", `{"batch_size":200}`, nil},
+		{http.MethodGet, "/api/v1/admin/search/reindex/{job_id}", "/api/v1/admin/search/reindex/reindex-1", auth.CapSearchReindex, "", "", nil},
 	}
 
 	// 1. Verify EVERY /api/v1/admin/* route registered in chi router is present in the test matrix.
@@ -1187,7 +1236,7 @@ func TestW3B2_A6_ZaloPayWebhookPaymentMethodsRetryAndFees(t *testing.T) {
 	}
 
 	// 4. POST /api/v1/checkout with ZALOPAY returns pay_url; domain 409 error codes pass through.
-	recCheckout := hw.do(http.MethodPost, "/api/v1/checkout", buyerTok, "", `{"address_id":"addr-1","from_cart":true,"payment_method":"ZALOPAY"}`, map[string]string{"Idempotency-Key": "idem-zp-1"})
+	recCheckout := hw.do(http.MethodPost, "/api/v1/checkout", buyerTok, "", `{"address_id":"addr-1","from_cart":true,"payment_method":"ZALOPAY","sales_channel":"MARKETPLACE"}`, map[string]string{"Idempotency-Key": "idem-zp-1"})
 	if recCheckout.Code != http.StatusCreated ||
 		!strings.Contains(recCheckout.Body.String(), `"payment_method":"ZALOPAY"`) ||
 		!strings.Contains(recCheckout.Body.String(), `"pay_url":"https://sbgateway.zalopay.vn/openinapp?order=mock123"`) {
@@ -1197,7 +1246,7 @@ func TestW3B2_A6_ZaloPayWebhookPaymentMethodsRetryAndFees(t *testing.T) {
 		hw.order.mu.Lock()
 		hw.order.checkoutErr = status.Error(codes.FailedPrecondition, errCode+": blocked")
 		hw.order.mu.Unlock()
-		recErr := hw.do(http.MethodPost, "/api/v1/checkout", buyerTok, "", `{"address_id":"addr-1","payment_method":"ZALOPAY"}`, map[string]string{"Idempotency-Key": "idem-err-" + errCode})
+		recErr := hw.do(http.MethodPost, "/api/v1/checkout", buyerTok, "", `{"address_id":"addr-1","payment_method":"ZALOPAY","sales_channel":"MARKETPLACE"}`, map[string]string{"Idempotency-Key": "idem-err-" + errCode})
 		if recErr.Code != http.StatusConflict || !strings.Contains(recErr.Body.String(), `"code":"`+errCode+`"`) {
 			t.Fatalf("checkout %s: want 409 exact code, got %d (%s)", errCode, recErr.Code, recErr.Body.String())
 		}

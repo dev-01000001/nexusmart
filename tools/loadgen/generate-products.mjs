@@ -76,7 +76,7 @@ const IMAGE_BY_CATEGORY = {
   "ao-polo": "/products/ao-polo-pique-kem.png",
   "quan-short": "/products/quan-short-daily-be.png",
   "quan-jogger": "/products/quan-jogger-terry-xam.png",
-  "do-lot": "/products/do-lot-boxer-modal.png",
+  "do-lot": "/products/do-lot-boxer-modal-3.png",
   "tat-phu-kien": "/products/tat-cotton-co-trung-5.png",
 };
 
@@ -804,13 +804,28 @@ async function runApiMode({
     process.env.ADMIN_BOOTSTRAP_EMAIL || dotEnv.ADMIN_BOOTSTRAP_EMAIL || "admin@nexusmart.local";
   const adminPassword =
     process.env.ADMIN_BOOTSTRAP_PASSWORD || dotEnv.ADMIN_BOOTSTRAP_PASSWORD || "AdminDevPassword123!";
-  const sellerEmails = [
-    "seller.bachdang@nexusmart.local",
-    "seller.saigon@nexusmart.local",
-    "seller.danang@nexusmart.local",
-    "seller.hanoi@nexusmart.local",
+  const sellerCandidates = [
+    {
+      email: process.env.SEED_SELLER_EMAIL || "seller@nexusmart.local",
+      password: process.env.LOADGEN_SELLER_PASSWORD || process.env.SEED_SELLER_PASSWORD || "SellerDemo123!",
+    },
+    {
+      email: process.env.SEED_SELLER_SAIGON_EMAIL || "seller-saigon@nexusmart.local",
+      password: process.env.LOADGEN_SELLER_PASSWORD || process.env.SEED_SELLER_PASSWORD || "SellerDemo123!",
+    },
+    {
+      email: process.env.SEED_SELLER_DANANG_EMAIL || "seller-danang@nexusmart.local",
+      password: process.env.LOADGEN_SELLER_PASSWORD || process.env.SEED_SELLER_PASSWORD || "SellerDemo123!",
+    },
+    {
+      email: process.env.SEED_SELLER_HANOI_EMAIL || "seller-hanoi@nexusmart.local",
+      password: process.env.LOADGEN_SELLER_PASSWORD || process.env.SEED_SELLER_PASSWORD || "SellerDemo123!",
+    },
+    { email: "seller.bachdang@nexusmart.local", password: process.env.LOADGEN_SELLER_PASSWORD || "SellerDevPassword123!" },
+    { email: "seller.saigon@nexusmart.local", password: process.env.LOADGEN_SELLER_PASSWORD || "SellerDevPassword123!" },
+    { email: "seller.danang@nexusmart.local", password: process.env.LOADGEN_SELLER_PASSWORD || "SellerDevPassword123!" },
+    { email: "seller.hanoi@nexusmart.local", password: process.env.LOADGEN_SELLER_PASSWORD || "SellerDevPassword123!" },
   ];
-  const sellerPassword = process.env.LOADGEN_SELLER_PASSWORD || "SellerDevPassword123!";
   const checkpointPath = resolve(__dirname, `.loadgen-${prefix}.checkpoint.json`);
 
   const adminLogin = await gwFetch(gatewayUrl, "POST", "/api/v1/auth/login", {
@@ -819,14 +834,17 @@ async function runApiMode({
   const adminToken = adminLogin.data.access_token;
 
   const sellers = [];
-  for (const email of sellerEmails) {
+  const seenShopIds = new Set();
+  for (const { email, password } of sellerCandidates) {
     const res = await gwFetch(gatewayUrl, "POST", "/api/v1/auth/login", {
-      body: { email, password: sellerPassword },
+      body: { email, password },
       allowStatuses: [401],
     });
-    if (res.ok && res.data?.user?.shop_id) {
+    const shopId = res.data?.user?.shop_id;
+    if (res.ok && shopId && !seenShopIds.has(shopId)) {
+      seenShopIds.add(shopId);
       sellers.push({
-        id: res.data.user.shop_id,
+        id: shopId,
         name: res.data.user.full_name || email,
         token: res.data.access_token,
       });

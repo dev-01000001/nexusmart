@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/logger"
+	"github.com/nexusmart/core/pkg/common/telemetry"
 )
 
 func TestWebhookProxyPreservesRawBodyAndHeaders(t *testing.T) {
@@ -179,5 +181,124 @@ func TestShippingLabelProxyForwardsAuthAndStripsIdentityHeaders(t *testing.T) {
 	}
 	if gotNosniff := rec.Header().Values("X-Content-Type-Options"); len(gotNosniff) != 1 || gotNosniff[0] != "nosniff" {
 		t.Fatalf("X-Content-Type-Options values = %q, want single [nosniff]", gotNosniff)
+	}
+}
+
+func TestShippingLabelProxyBatchPDFRewritesPathAndStripsAllXUserHeaders(t *testing.T) {
+	var gotMethod, gotPath string
+	var gotHeaders http.Header
+	var gotBody []byte
+	pdfBytes := []byte("%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotHeaders = r.Header.Clone()
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", `inline; filename="shipping-labels-batch.pdf"`)
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(pdfBytes)
+	}))
+	defer upstream.Close()
+
+	log := logger.New("proxy-test", logger.WithWriter(io.Discard))
+	lp, err := NewShippingLabelProxy(upstream.URL, log)
+	if err != nil {
+		t.Fatalf("NewShippingLabelProxy failed: %v", err)
+	}
+
+	const expectedAuth = "Bearer test-seller-batch-token"
+	reqBody := []byte(`{"tracking_codes":["GHN-1","GHN-2"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/shipping/labels/batch", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(auth.WithRawToken(req.Context(), expectedAuth))
+	req.Header.Set("X-User-Id", "spoofed-id")
+	req.Header.Set("X-User-Role", "super_admin")
+	req.Header.Set("X-User-Email", "spoofed@example.com")
+	req.Header.Set("X-User-Custom", "spoofed")
+	req.Header.Set("X-Shop-Id", "spoofed-shop")
+
+	rec := httptest.NewRecorder()
+	lp.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if gotMethod != http.MethodPost || gotPath != "/labels/batch" {
+		t.Fatalf("upstream got %s %q, want POST /labels/batch", gotMethod, gotPath)
+	}
+	if !bytes.Equal(gotBody, reqBody) {
+		t.Fatalf("upstream body = %q, want %q", gotBody, reqBody)
+	}
+	for _, hdr := range []string{"X-User-Id", "X-User-Role", "X-User-Email", "X-User-Custom", "X-Shop-Id"} {
+		if vals := gotHeaders.Values(hdr); len(vals) != 0 {
+			t.Fatalf("expected %s to be stripped, got %v", hdr, vals)
+		}
+	}
+	if gotAuth := gotHeaders.Get("Authorization"); gotAuth != expectedAuth {
+		t.Fatalf("Authorization = %q, want %q", gotAuth, expectedAuth)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/pdf" {
+		t.Fatalf("Content-Type = %q, want application/pdf", ct)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), pdfBytes) {
+		t.Fatalf("PDF body mismatch: got %q, want %q", rec.Body.Bytes(), pdfBytes)
+	}
+	if gotNosniff := rec.Header().Values("X-Content-Type-Options"); len(gotNosniff) != 1 || gotNosniff[0] != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %v, want single [nosniff]", gotNosniff)
+	}
+}
+
+func TestWebhookProxyPropagatesChildSpanAndTracestate(t *testing.T) {
+	shutdown, err := telemetry.Init(context.Background(), telemetry.Config{ServiceName: "gateway-proxy-test"})
+	if err != nil {
+		t.Fatalf("telemetry.Init: %v", err)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
+
+	const parentTraceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+	const parentSpanID = "00f067aa0ba902b7"
+	const incomingTP = "00-" + parentTraceID + "-" + parentSpanID + "-01"
+	const incomingTS = "vendor=ghn"
+
+	var gotTP, gotTS string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTP = r.Header.Get("traceparent")
+		gotTS = r.Header.Get("tracestate")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	log := logger.New("proxy-test", logger.WithWriter(io.Discard))
+	wp, err := NewWebhookProxy(upstream.URL, log)
+	if err != nil {
+		t.Fatalf("NewWebhookProxy: %v", err)
+	}
+	h := telemetry.HTTPMiddleware("gateway")(wp)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/shipping/ghn", strings.NewReader(`{"status":"delivered"}`))
+	req.Header.Set("traceparent", incomingTP)
+	req.Header.Set("tracestate", incomingTS)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	parts := strings.Split(gotTP, "-")
+	if len(parts) != 4 {
+		t.Fatalf("invalid upstream traceparent %q", gotTP)
+	}
+	if parts[1] != parentTraceID {
+		t.Fatalf("upstream trace_id = %q, want %q", parts[1], parentTraceID)
+	}
+	if parts[2] == parentSpanID {
+		t.Fatalf("upstream traceparent kept external span ID %q instead of gateway child span", gotTP)
+	}
+	if gotTS != incomingTS {
+		t.Fatalf("upstream tracestate = %q, want %q", gotTS, incomingTS)
 	}
 }

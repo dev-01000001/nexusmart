@@ -37,6 +37,7 @@ func TestE2E_CancelConfirmedCODOrder_RestocksSKU(t *testing.T) {
 	checkoutResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": "cod-cancel-restock-" + uuid.NewString(),
 	}, CheckoutRequest{
+		SalesChannel:  "MARKETPLACE",
 		AddressID:     addr.ID,
 		FromCart:      false,
 		Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: orderQty}},

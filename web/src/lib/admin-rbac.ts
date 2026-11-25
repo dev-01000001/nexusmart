@@ -1,8 +1,8 @@
 /**
  * Admin RBAC capability matrix, RoleRank hierarchy, route access guards, and two-person approval
- * helpers for Wave 3b-2 A7 (F9, F9-bis, F10, F11, F15).
+ * helpers for Wave 3b-2 A7 (F9, F9-bis, F10, F11, F15) and multi-tenant Site management.
  *
- * Mirrors pkg/common/auth/capabilities.json 1:1 (verified by web/scripts/w3b2-web.test.mjs).
+ * Mirrors pkg/common/auth/capabilities.json 1:1.
  */
 
 import type { UserRole } from "./gateway-types";
@@ -34,7 +34,7 @@ export const ALL_USER_ROLES: readonly UserRole[] = [
 ];
 
 /**
- * Roles assignable via PATCH /api/v1/admin/users/{id}/role (mirrors services/user governance.go:554 —
+ * Roles assignable via PATCH /api/v1/admin/users/{id}/role (mirrors services/user governance.go —
  * `super_admin` is explicitly forbidden as a target role).
  */
 export const ASSIGNABLE_USER_ROLES: readonly UserRole[] = [
@@ -86,6 +86,9 @@ export const CAPABILITY_MATRIX = {
   "shops.approvals.read": ["super_admin", "admin", "moderator", "ops"],
   "shops.bank.read": ["super_admin", "admin", "accountant", "ops"],
   "shops.bank.review": ["super_admin", "admin", "accountant"],
+  "sites.read": ["super_admin", "admin", "moderator", "cskh", "ops"],
+  "sites.suspend": ["super_admin", "admin", "moderator", "ops"],
+  "sites.domains.write": ["super_admin", "admin", "ops"],
   "audit_logs.read": ["super_admin", "admin", "moderator", "cskh", "accountant", "ops"],
   "categories.read": ["super_admin", "admin", "moderator", "accountant", "ops"],
   "categories.write": ["super_admin", "admin", "ops"],
@@ -120,6 +123,7 @@ export const CAPABILITY_MATRIX = {
   "payment_methods.read": ["super_admin", "admin", "accountant", "ops"],
   "payment_methods.write": ["super_admin", "admin", "ops"],
   "approvals.read": ["super_admin", "admin", "moderator", "cskh", "accountant", "ops"],
+  "search.reindex": ["super_admin", "admin", "ops"],
 } as const satisfies Record<string, readonly AdminStaffRole[]>;
 
 export type AdminCapability = keyof typeof CAPABILITY_MATRIX;
@@ -189,25 +193,20 @@ export function canAccessAdminPath(
   if (clean === "/admin/gian-hang" || clean.startsWith("/admin/gian-hang/")) {
     return roleHasCapability(normRole, "shops.read");
   }
+  if (clean === "/admin/sites" || clean.startsWith("/admin/sites/")) {
+    return roleHasCapability(normRole, "sites.read");
+  }
   if (clean === "/admin/kiem-duyet" || clean.startsWith("/admin/kiem-duyet/")) {
     return roleHasAnyCapability(normRole, ["products.read", "banned_keywords.read"]);
+  }
+  if (clean === "/admin/flash-sale" || clean.startsWith("/admin/flash-sale/")) {
+    return roleHasAnyCapability(normRole, ["flash_sales.read", "flash_sales.items.approve"]);
   }
   if (clean === "/admin/khieu-nai" || clean.startsWith("/admin/khieu-nai/")) {
     return roleHasCapability(normRole, "returns.read");
   }
   if (clean === "/admin/doi-soat" || clean.startsWith("/admin/doi-soat/")) {
     return roleHasAnyCapability(normRole, ["ledger.read", "orders.read", "refunds.read"]);
-  }
-  if (clean === "/admin/thanh-vien" || clean.startsWith("/admin/thanh-vien/")) {
-    return roleHasAnyCapability(normRole, ["vouchers.read", "flash_sales.read", "coins.credit"]);
-  }
-  if (clean === "/admin/noi-dung" || clean.startsWith("/admin/noi-dung/")) {
-    return (
-      normRole === "super_admin" ||
-      normRole === "admin" ||
-      normRole === "moderator" ||
-      normRole === "ops"
-    );
   }
   if (clean === "/admin/cau-hinh" || clean.startsWith("/admin/cau-hinh/")) {
     return roleHasAnyCapability(normRole, [

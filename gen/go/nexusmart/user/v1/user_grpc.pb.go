@@ -60,6 +60,23 @@ const (
 	UserService_AdminListShopApprovals_FullMethodName      = "/nexusmart.user.v1.UserService/AdminListShopApprovals"
 	UserService_AdminDecideShopSuspension_FullMethodName   = "/nexusmart.user.v1.UserService/AdminDecideShopSuspension"
 	UserService_AdminUnsuspendShop_FullMethodName          = "/nexusmart.user.v1.UserService/AdminUnsuspendShop"
+	UserService_GetSiteByHost_FullMethodName               = "/nexusmart.user.v1.UserService/GetSiteByHost"
+	UserService_GetSiteByShop_FullMethodName               = "/nexusmart.user.v1.UserService/GetSiteByShop"
+	UserService_GetSiteDraft_FullMethodName                = "/nexusmart.user.v1.UserService/GetSiteDraft"
+	UserService_SaveSiteDraft_FullMethodName               = "/nexusmart.user.v1.UserService/SaveSiteDraft"
+	UserService_PublishSite_FullMethodName                 = "/nexusmart.user.v1.UserService/PublishSite"
+	UserService_RollbackSite_FullMethodName                = "/nexusmart.user.v1.UserService/RollbackSite"
+	UserService_ListSiteVersions_FullMethodName            = "/nexusmart.user.v1.UserService/ListSiteVersions"
+	UserService_ListSites_FullMethodName                   = "/nexusmart.user.v1.UserService/ListSites"
+	UserService_SuspendSite_FullMethodName                 = "/nexusmart.user.v1.UserService/SuspendSite"
+	UserService_ListPublishedSites_FullMethodName          = "/nexusmart.user.v1.UserService/ListPublishedSites"
+	UserService_AddCustomDomain_FullMethodName             = "/nexusmart.user.v1.UserService/AddCustomDomain"
+	UserService_CheckCustomDomain_FullMethodName           = "/nexusmart.user.v1.UserService/CheckCustomDomain"
+	UserService_RemoveCustomDomain_FullMethodName          = "/nexusmart.user.v1.UserService/RemoveCustomDomain"
+	UserService_ListSiteDomains_FullMethodName             = "/nexusmart.user.v1.UserService/ListSiteDomains"
+	UserService_ListSiteTemplates_FullMethodName           = "/nexusmart.user.v1.UserService/ListSiteTemplates"
+	UserService_GetSiteTemplate_FullMethodName             = "/nexusmart.user.v1.UserService/GetSiteTemplate"
+	UserService_ApplySiteTemplate_FullMethodName           = "/nexusmart.user.v1.UserService/ApplySiteTemplate"
 )
 
 // UserServiceClient is the client API for UserService service.
@@ -107,6 +124,23 @@ type UserServiceClient interface {
 	AdminListShopApprovals(ctx context.Context, in *AdminListShopApprovalsRequest, opts ...grpc.CallOption) (*AdminListShopApprovalsResponse, error)
 	AdminDecideShopSuspension(ctx context.Context, in *AdminDecideShopSuspensionRequest, opts ...grpc.CallOption) (*AdminDecideShopSuspensionResponse, error)
 	AdminUnsuspendShop(ctx context.Context, in *AdminUnsuspendShopRequest, opts ...grpc.CallOption) (*AdminUnsuspendShopResponse, error)
+	GetSiteByHost(ctx context.Context, in *GetSiteByHostRequest, opts ...grpc.CallOption) (*GetSiteByHostResponse, error)
+	GetSiteByShop(ctx context.Context, in *GetSiteByShopRequest, opts ...grpc.CallOption) (*GetSiteByShopResponse, error)
+	GetSiteDraft(ctx context.Context, in *GetSiteDraftRequest, opts ...grpc.CallOption) (*GetSiteDraftResponse, error)
+	SaveSiteDraft(ctx context.Context, in *SaveSiteDraftRequest, opts ...grpc.CallOption) (*SaveSiteDraftResponse, error)
+	PublishSite(ctx context.Context, in *PublishSiteRequest, opts ...grpc.CallOption) (*PublishSiteResponse, error)
+	RollbackSite(ctx context.Context, in *RollbackSiteRequest, opts ...grpc.CallOption) (*RollbackSiteResponse, error)
+	ListSiteVersions(ctx context.Context, in *ListSiteVersionsRequest, opts ...grpc.CallOption) (*ListSiteVersionsResponse, error)
+	ListSites(ctx context.Context, in *ListSitesRequest, opts ...grpc.CallOption) (*ListSitesResponse, error)
+	SuspendSite(ctx context.Context, in *SuspendSiteRequest, opts ...grpc.CallOption) (*SuspendSiteResponse, error)
+	ListPublishedSites(ctx context.Context, in *ListPublishedSitesRequest, opts ...grpc.CallOption) (*ListPublishedSitesResponse, error)
+	AddCustomDomain(ctx context.Context, in *AddCustomDomainRequest, opts ...grpc.CallOption) (*AddCustomDomainResponse, error)
+	CheckCustomDomain(ctx context.Context, in *CheckCustomDomainRequest, opts ...grpc.CallOption) (*CheckCustomDomainResponse, error)
+	RemoveCustomDomain(ctx context.Context, in *RemoveCustomDomainRequest, opts ...grpc.CallOption) (*RemoveCustomDomainResponse, error)
+	ListSiteDomains(ctx context.Context, in *ListSiteDomainsRequest, opts ...grpc.CallOption) (*ListSiteDomainsResponse, error)
+	ListSiteTemplates(ctx context.Context, in *ListSiteTemplatesRequest, opts ...grpc.CallOption) (*ListSiteTemplatesResponse, error)
+	GetSiteTemplate(ctx context.Context, in *GetSiteTemplateRequest, opts ...grpc.CallOption) (*GetSiteTemplateResponse, error)
+	ApplySiteTemplate(ctx context.Context, in *ApplySiteTemplateRequest, opts ...grpc.CallOption) (*ApplySiteTemplateResponse, error)
 }
 
 type userServiceClient struct {
@@ -527,6 +561,176 @@ func (c *userServiceClient) AdminUnsuspendShop(ctx context.Context, in *AdminUns
 	return out, nil
 }
 
+func (c *userServiceClient) GetSiteByHost(ctx context.Context, in *GetSiteByHostRequest, opts ...grpc.CallOption) (*GetSiteByHostResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSiteByHostResponse)
+	err := c.cc.Invoke(ctx, UserService_GetSiteByHost_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) GetSiteByShop(ctx context.Context, in *GetSiteByShopRequest, opts ...grpc.CallOption) (*GetSiteByShopResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSiteByShopResponse)
+	err := c.cc.Invoke(ctx, UserService_GetSiteByShop_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) GetSiteDraft(ctx context.Context, in *GetSiteDraftRequest, opts ...grpc.CallOption) (*GetSiteDraftResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSiteDraftResponse)
+	err := c.cc.Invoke(ctx, UserService_GetSiteDraft_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) SaveSiteDraft(ctx context.Context, in *SaveSiteDraftRequest, opts ...grpc.CallOption) (*SaveSiteDraftResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SaveSiteDraftResponse)
+	err := c.cc.Invoke(ctx, UserService_SaveSiteDraft_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) PublishSite(ctx context.Context, in *PublishSiteRequest, opts ...grpc.CallOption) (*PublishSiteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PublishSiteResponse)
+	err := c.cc.Invoke(ctx, UserService_PublishSite_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) RollbackSite(ctx context.Context, in *RollbackSiteRequest, opts ...grpc.CallOption) (*RollbackSiteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RollbackSiteResponse)
+	err := c.cc.Invoke(ctx, UserService_RollbackSite_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) ListSiteVersions(ctx context.Context, in *ListSiteVersionsRequest, opts ...grpc.CallOption) (*ListSiteVersionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSiteVersionsResponse)
+	err := c.cc.Invoke(ctx, UserService_ListSiteVersions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) ListSites(ctx context.Context, in *ListSitesRequest, opts ...grpc.CallOption) (*ListSitesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSitesResponse)
+	err := c.cc.Invoke(ctx, UserService_ListSites_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) SuspendSite(ctx context.Context, in *SuspendSiteRequest, opts ...grpc.CallOption) (*SuspendSiteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SuspendSiteResponse)
+	err := c.cc.Invoke(ctx, UserService_SuspendSite_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) ListPublishedSites(ctx context.Context, in *ListPublishedSitesRequest, opts ...grpc.CallOption) (*ListPublishedSitesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPublishedSitesResponse)
+	err := c.cc.Invoke(ctx, UserService_ListPublishedSites_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) AddCustomDomain(ctx context.Context, in *AddCustomDomainRequest, opts ...grpc.CallOption) (*AddCustomDomainResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddCustomDomainResponse)
+	err := c.cc.Invoke(ctx, UserService_AddCustomDomain_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) CheckCustomDomain(ctx context.Context, in *CheckCustomDomainRequest, opts ...grpc.CallOption) (*CheckCustomDomainResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CheckCustomDomainResponse)
+	err := c.cc.Invoke(ctx, UserService_CheckCustomDomain_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) RemoveCustomDomain(ctx context.Context, in *RemoveCustomDomainRequest, opts ...grpc.CallOption) (*RemoveCustomDomainResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveCustomDomainResponse)
+	err := c.cc.Invoke(ctx, UserService_RemoveCustomDomain_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) ListSiteDomains(ctx context.Context, in *ListSiteDomainsRequest, opts ...grpc.CallOption) (*ListSiteDomainsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSiteDomainsResponse)
+	err := c.cc.Invoke(ctx, UserService_ListSiteDomains_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) ListSiteTemplates(ctx context.Context, in *ListSiteTemplatesRequest, opts ...grpc.CallOption) (*ListSiteTemplatesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSiteTemplatesResponse)
+	err := c.cc.Invoke(ctx, UserService_ListSiteTemplates_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) GetSiteTemplate(ctx context.Context, in *GetSiteTemplateRequest, opts ...grpc.CallOption) (*GetSiteTemplateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSiteTemplateResponse)
+	err := c.cc.Invoke(ctx, UserService_GetSiteTemplate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) ApplySiteTemplate(ctx context.Context, in *ApplySiteTemplateRequest, opts ...grpc.CallOption) (*ApplySiteTemplateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApplySiteTemplateResponse)
+	err := c.cc.Invoke(ctx, UserService_ApplySiteTemplate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UserServiceServer is the server API for UserService service.
 // All implementations must embed UnimplementedUserServiceServer
 // for forward compatibility.
@@ -572,6 +776,23 @@ type UserServiceServer interface {
 	AdminListShopApprovals(context.Context, *AdminListShopApprovalsRequest) (*AdminListShopApprovalsResponse, error)
 	AdminDecideShopSuspension(context.Context, *AdminDecideShopSuspensionRequest) (*AdminDecideShopSuspensionResponse, error)
 	AdminUnsuspendShop(context.Context, *AdminUnsuspendShopRequest) (*AdminUnsuspendShopResponse, error)
+	GetSiteByHost(context.Context, *GetSiteByHostRequest) (*GetSiteByHostResponse, error)
+	GetSiteByShop(context.Context, *GetSiteByShopRequest) (*GetSiteByShopResponse, error)
+	GetSiteDraft(context.Context, *GetSiteDraftRequest) (*GetSiteDraftResponse, error)
+	SaveSiteDraft(context.Context, *SaveSiteDraftRequest) (*SaveSiteDraftResponse, error)
+	PublishSite(context.Context, *PublishSiteRequest) (*PublishSiteResponse, error)
+	RollbackSite(context.Context, *RollbackSiteRequest) (*RollbackSiteResponse, error)
+	ListSiteVersions(context.Context, *ListSiteVersionsRequest) (*ListSiteVersionsResponse, error)
+	ListSites(context.Context, *ListSitesRequest) (*ListSitesResponse, error)
+	SuspendSite(context.Context, *SuspendSiteRequest) (*SuspendSiteResponse, error)
+	ListPublishedSites(context.Context, *ListPublishedSitesRequest) (*ListPublishedSitesResponse, error)
+	AddCustomDomain(context.Context, *AddCustomDomainRequest) (*AddCustomDomainResponse, error)
+	CheckCustomDomain(context.Context, *CheckCustomDomainRequest) (*CheckCustomDomainResponse, error)
+	RemoveCustomDomain(context.Context, *RemoveCustomDomainRequest) (*RemoveCustomDomainResponse, error)
+	ListSiteDomains(context.Context, *ListSiteDomainsRequest) (*ListSiteDomainsResponse, error)
+	ListSiteTemplates(context.Context, *ListSiteTemplatesRequest) (*ListSiteTemplatesResponse, error)
+	GetSiteTemplate(context.Context, *GetSiteTemplateRequest) (*GetSiteTemplateResponse, error)
+	ApplySiteTemplate(context.Context, *ApplySiteTemplateRequest) (*ApplySiteTemplateResponse, error)
 	mustEmbedUnimplementedUserServiceServer()
 }
 
@@ -704,6 +925,57 @@ func (UnimplementedUserServiceServer) AdminDecideShopSuspension(context.Context,
 }
 func (UnimplementedUserServiceServer) AdminUnsuspendShop(context.Context, *AdminUnsuspendShopRequest) (*AdminUnsuspendShopResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AdminUnsuspendShop not implemented")
+}
+func (UnimplementedUserServiceServer) GetSiteByHost(context.Context, *GetSiteByHostRequest) (*GetSiteByHostResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSiteByHost not implemented")
+}
+func (UnimplementedUserServiceServer) GetSiteByShop(context.Context, *GetSiteByShopRequest) (*GetSiteByShopResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSiteByShop not implemented")
+}
+func (UnimplementedUserServiceServer) GetSiteDraft(context.Context, *GetSiteDraftRequest) (*GetSiteDraftResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSiteDraft not implemented")
+}
+func (UnimplementedUserServiceServer) SaveSiteDraft(context.Context, *SaveSiteDraftRequest) (*SaveSiteDraftResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SaveSiteDraft not implemented")
+}
+func (UnimplementedUserServiceServer) PublishSite(context.Context, *PublishSiteRequest) (*PublishSiteResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PublishSite not implemented")
+}
+func (UnimplementedUserServiceServer) RollbackSite(context.Context, *RollbackSiteRequest) (*RollbackSiteResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RollbackSite not implemented")
+}
+func (UnimplementedUserServiceServer) ListSiteVersions(context.Context, *ListSiteVersionsRequest) (*ListSiteVersionsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListSiteVersions not implemented")
+}
+func (UnimplementedUserServiceServer) ListSites(context.Context, *ListSitesRequest) (*ListSitesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListSites not implemented")
+}
+func (UnimplementedUserServiceServer) SuspendSite(context.Context, *SuspendSiteRequest) (*SuspendSiteResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SuspendSite not implemented")
+}
+func (UnimplementedUserServiceServer) ListPublishedSites(context.Context, *ListPublishedSitesRequest) (*ListPublishedSitesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListPublishedSites not implemented")
+}
+func (UnimplementedUserServiceServer) AddCustomDomain(context.Context, *AddCustomDomainRequest) (*AddCustomDomainResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AddCustomDomain not implemented")
+}
+func (UnimplementedUserServiceServer) CheckCustomDomain(context.Context, *CheckCustomDomainRequest) (*CheckCustomDomainResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CheckCustomDomain not implemented")
+}
+func (UnimplementedUserServiceServer) RemoveCustomDomain(context.Context, *RemoveCustomDomainRequest) (*RemoveCustomDomainResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RemoveCustomDomain not implemented")
+}
+func (UnimplementedUserServiceServer) ListSiteDomains(context.Context, *ListSiteDomainsRequest) (*ListSiteDomainsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListSiteDomains not implemented")
+}
+func (UnimplementedUserServiceServer) ListSiteTemplates(context.Context, *ListSiteTemplatesRequest) (*ListSiteTemplatesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListSiteTemplates not implemented")
+}
+func (UnimplementedUserServiceServer) GetSiteTemplate(context.Context, *GetSiteTemplateRequest) (*GetSiteTemplateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSiteTemplate not implemented")
+}
+func (UnimplementedUserServiceServer) ApplySiteTemplate(context.Context, *ApplySiteTemplateRequest) (*ApplySiteTemplateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ApplySiteTemplate not implemented")
 }
 func (UnimplementedUserServiceServer) mustEmbedUnimplementedUserServiceServer() {}
 func (UnimplementedUserServiceServer) testEmbeddedByValue()                     {}
@@ -1464,6 +1736,312 @@ func _UserService_AdminUnsuspendShop_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UserService_GetSiteByHost_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSiteByHostRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).GetSiteByHost(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_GetSiteByHost_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).GetSiteByHost(ctx, req.(*GetSiteByHostRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_GetSiteByShop_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSiteByShopRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).GetSiteByShop(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_GetSiteByShop_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).GetSiteByShop(ctx, req.(*GetSiteByShopRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_GetSiteDraft_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSiteDraftRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).GetSiteDraft(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_GetSiteDraft_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).GetSiteDraft(ctx, req.(*GetSiteDraftRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_SaveSiteDraft_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SaveSiteDraftRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).SaveSiteDraft(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_SaveSiteDraft_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).SaveSiteDraft(ctx, req.(*SaveSiteDraftRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_PublishSite_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PublishSiteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).PublishSite(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_PublishSite_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).PublishSite(ctx, req.(*PublishSiteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_RollbackSite_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RollbackSiteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).RollbackSite(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_RollbackSite_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).RollbackSite(ctx, req.(*RollbackSiteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_ListSiteVersions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSiteVersionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).ListSiteVersions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_ListSiteVersions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).ListSiteVersions(ctx, req.(*ListSiteVersionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_ListSites_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSitesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).ListSites(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_ListSites_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).ListSites(ctx, req.(*ListSitesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_SuspendSite_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SuspendSiteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).SuspendSite(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_SuspendSite_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).SuspendSite(ctx, req.(*SuspendSiteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_ListPublishedSites_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPublishedSitesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).ListPublishedSites(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_ListPublishedSites_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).ListPublishedSites(ctx, req.(*ListPublishedSitesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_AddCustomDomain_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddCustomDomainRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).AddCustomDomain(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_AddCustomDomain_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).AddCustomDomain(ctx, req.(*AddCustomDomainRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_CheckCustomDomain_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CheckCustomDomainRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).CheckCustomDomain(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_CheckCustomDomain_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).CheckCustomDomain(ctx, req.(*CheckCustomDomainRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_RemoveCustomDomain_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveCustomDomainRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).RemoveCustomDomain(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_RemoveCustomDomain_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).RemoveCustomDomain(ctx, req.(*RemoveCustomDomainRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_ListSiteDomains_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSiteDomainsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).ListSiteDomains(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_ListSiteDomains_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).ListSiteDomains(ctx, req.(*ListSiteDomainsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_ListSiteTemplates_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSiteTemplatesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).ListSiteTemplates(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_ListSiteTemplates_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).ListSiteTemplates(ctx, req.(*ListSiteTemplatesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_GetSiteTemplate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSiteTemplateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).GetSiteTemplate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_GetSiteTemplate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).GetSiteTemplate(ctx, req.(*GetSiteTemplateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_ApplySiteTemplate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplySiteTemplateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).ApplySiteTemplate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_ApplySiteTemplate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).ApplySiteTemplate(ctx, req.(*ApplySiteTemplateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // UserService_ServiceDesc is the grpc.ServiceDesc for UserService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1634,6 +2212,74 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AdminUnsuspendShop",
 			Handler:    _UserService_AdminUnsuspendShop_Handler,
+		},
+		{
+			MethodName: "GetSiteByHost",
+			Handler:    _UserService_GetSiteByHost_Handler,
+		},
+		{
+			MethodName: "GetSiteByShop",
+			Handler:    _UserService_GetSiteByShop_Handler,
+		},
+		{
+			MethodName: "GetSiteDraft",
+			Handler:    _UserService_GetSiteDraft_Handler,
+		},
+		{
+			MethodName: "SaveSiteDraft",
+			Handler:    _UserService_SaveSiteDraft_Handler,
+		},
+		{
+			MethodName: "PublishSite",
+			Handler:    _UserService_PublishSite_Handler,
+		},
+		{
+			MethodName: "RollbackSite",
+			Handler:    _UserService_RollbackSite_Handler,
+		},
+		{
+			MethodName: "ListSiteVersions",
+			Handler:    _UserService_ListSiteVersions_Handler,
+		},
+		{
+			MethodName: "ListSites",
+			Handler:    _UserService_ListSites_Handler,
+		},
+		{
+			MethodName: "SuspendSite",
+			Handler:    _UserService_SuspendSite_Handler,
+		},
+		{
+			MethodName: "ListPublishedSites",
+			Handler:    _UserService_ListPublishedSites_Handler,
+		},
+		{
+			MethodName: "AddCustomDomain",
+			Handler:    _UserService_AddCustomDomain_Handler,
+		},
+		{
+			MethodName: "CheckCustomDomain",
+			Handler:    _UserService_CheckCustomDomain_Handler,
+		},
+		{
+			MethodName: "RemoveCustomDomain",
+			Handler:    _UserService_RemoveCustomDomain_Handler,
+		},
+		{
+			MethodName: "ListSiteDomains",
+			Handler:    _UserService_ListSiteDomains_Handler,
+		},
+		{
+			MethodName: "ListSiteTemplates",
+			Handler:    _UserService_ListSiteTemplates_Handler,
+		},
+		{
+			MethodName: "GetSiteTemplate",
+			Handler:    _UserService_GetSiteTemplate_Handler,
+		},
+		{
+			MethodName: "ApplySiteTemplate",
+			Handler:    _UserService_ApplySiteTemplate_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

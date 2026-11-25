@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -133,6 +134,51 @@ func (s *OrderService) ListOrders(ctx context.Context, req *orderv1.ListOrdersRe
 	var statusFilter string
 	if req.GetStatus() != orderv1.OrderStatus_ORDER_STATUS_UNSPECIFIED {
 		statusFilter = statemachine.StatusToString(req.GetStatus())
+		if statusFilter == statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_UNSPECIFIED) {
+			return nil, status.Error(codes.InvalidArgument, "status contains an unknown order status")
+		}
+	}
+
+	var statusesFilter []string
+	if rawStatuses := req.GetStatuses(); len(rawStatuses) > 0 {
+		seen := make(map[string]struct{}, len(rawStatuses))
+		statusesFilter = make([]string, 0, len(rawStatuses))
+		for _, st := range rawStatuses {
+			sStr := statemachine.StatusToString(st)
+			if sStr == statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_UNSPECIFIED) {
+				return nil, status.Error(codes.InvalidArgument, "statuses contains an unknown order status")
+			}
+			if _, dup := seen[sStr]; dup {
+				continue
+			}
+			seen[sStr] = struct{}{}
+			statusesFilter = append(statusesFilter, sStr)
+		}
+	}
+
+	var paymentMethodFilter string
+	if req.GetPaymentMethod() != orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_UNSPECIFIED {
+		paymentMethodFilter = statemachine.PaymentMethodToString(req.GetPaymentMethod())
+		if paymentMethodFilter == statemachine.PaymentMethodToString(orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_UNSPECIFIED) {
+			return nil, status.Error(codes.InvalidArgument, "payment_method contains an unknown payment method")
+		}
+	}
+
+	var dueCutoff *time.Time
+	if req.GetDueBefore() != nil {
+		if !req.GetDueBefore().IsValid() {
+			return nil, status.Error(codes.InvalidArgument, "due_before timestamp is invalid")
+		}
+		cutoff := req.GetDueBefore().AsTime().UTC().Add(-s.sellerConfirmTimeout())
+		dueCutoff = &cutoff
+	}
+	salesChannelFilter, err := normalizeSalesChannelFilter(req.GetSalesChannel())
+	if err != nil {
+		return nil, err
+	}
+	storefrontFilter := strings.TrimSpace(req.GetStorefrontShopId())
+	if _, perr := uuid.Parse(storefrontFilter); storefrontFilter != "" && perr != nil {
+		return nil, status.Error(codes.InvalidArgument, "storefront_shop_id must be a UUID")
 	}
 
 	page := req.GetPage()
@@ -146,22 +192,70 @@ func (s *OrderService) ListOrders(ctx context.Context, req *orderv1.ListOrdersRe
 	if pageSize > 100 {
 		pageSize = 100
 	}
-	offset := (page - 1) * pageSize
+	offset64 := int64(page-1) * int64(pageSize)
+	if offset64 > math.MaxInt32 {
+		return nil, status.Error(codes.InvalidArgument, "page offset exceeds supported range")
+	}
+	offset := int32(offset64)
 
-	aggs, total, err := s.store.ListOrdersFiltered(ctx, buyerFilter, shopFilter, statusFilter, pageSize, offset)
+	listRes, err := s.store.ListOrdersWithFilter(ctx, store.OrderListFilter{
+		BuyerID:             buyerFilter,
+		ShopID:              shopFilter,
+		Status:              statusFilter,
+		Statuses:            statusesFilter,
+		SalesChannel:        salesChannelFilter,
+		StorefrontShopID:    storefrontFilter,
+		CarrierCode:         strings.TrimSpace(req.GetCarrierCode()),
+		PaymentMethod:       paymentMethodFilter,
+		Keyword:             strings.TrimSpace(req.GetKeyword()),
+		DueCutoff:           dueCutoff,
+		Limit:               pageSize,
+		Offset:              offset,
+		IncludeStatusCounts: req.GetIncludeStatusCounts(),
+	})
 	if err != nil {
 		return nil, mapStoreError(err)
 	}
 
-	orders := make([]*orderv1.Order, 0, len(aggs))
-	for _, agg := range aggs {
+	orders := make([]*orderv1.Order, 0, len(listRes.Orders))
+	for _, agg := range listRes.Orders {
 		orders = append(orders, aggregateToProtoForCaller(agg, caller))
 	}
 
+	var statusCounts []*orderv1.OrderStatusCount
+	if req.GetIncludeStatusCounts() {
+		statusCounts = buildOrderedStatusCounts(listRes.StatusCounts)
+	}
+
 	return &orderv1.ListOrdersResponse{
-		Orders: orders,
-		Total:  total,
+		Orders:       orders,
+		Total:        listRes.Total,
+		StatusCounts: statusCounts,
 	}, nil
+}
+
+func buildOrderedStatusCounts(counts map[string]int64) []*orderv1.OrderStatusCount {
+	order := []orderv1.OrderStatus{
+		orderv1.OrderStatus_ORDER_STATUS_PENDING,
+		orderv1.OrderStatus_ORDER_STATUS_CONFIRMED,
+		orderv1.OrderStatus_ORDER_STATUS_PREPARING,
+		orderv1.OrderStatus_ORDER_STATUS_SHIPPING,
+		orderv1.OrderStatus_ORDER_STATUS_DELIVERED,
+		orderv1.OrderStatus_ORDER_STATUS_COMPLETED,
+		orderv1.OrderStatus_ORDER_STATUS_CANCELLED,
+		orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED,
+		orderv1.OrderStatus_ORDER_STATUS_RETURNED,
+	}
+	out := make([]*orderv1.OrderStatusCount, 0, len(order))
+	for _, st := range order {
+		if c := counts[statemachine.StatusToString(st)]; c > 0 {
+			out = append(out, &orderv1.OrderStatusCount{
+				Status: st,
+				Count:  c,
+			})
+		}
+	}
+	return out
 }
 
 // CancelOrder cancels an order in PENDING, CONFIRMED, or PREPARING state and compensates downstream services.
@@ -215,6 +309,13 @@ func (s *OrderService) cancelForwardShipment(ctx context.Context, orderID, reaso
 	}
 	svcCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
 	defer cancel()
+	return s.cancelForwardShipmentWithCtx(svcCtx, orderID, reason)
+}
+
+func (s *OrderService) cancelForwardShipmentWithCtx(svcCtx context.Context, orderID, reason string) (cancelledTracking string, notFound bool, err error) {
+	if s.clients.Shipping == nil {
+		return "", false, nil
+	}
 	var respOut *shippingv1.CancelShipmentResponse
 	err = clients.RetryIdempotent(svcCtx, 3, func(c context.Context) error {
 		resp, cErr := s.clients.Shipping.CancelShipment(c, &shippingv1.CancelShipmentRequest{
@@ -324,12 +425,13 @@ func (s *OrderService) cancelOrderInternal(ctx context.Context, agg *store.Order
 					strings.EqualFold(ord.PaymentStatus, "SUCCEEDED") &&
 					ord.TotalPayableVND > 0
 				payload, _ := json.Marshal(events.OrderCancelledPayload{
-					OrderID:   ord.ID,
-					OrderCode: ord.OrderCode,
-					BuyerID:   ord.BuyerID,
-					ShopID:    ord.ShopID,
-					Reason:    reason,
-					WasPaid:   ordPaid,
+					OrderID:          ord.ID,
+					OrderCode:        ord.OrderCode,
+					BuyerID:          ord.BuyerID,
+					ShopID:           ord.ShopID,
+					StorefrontShopID: ord.StorefrontShopID,
+					Reason:           reason,
+					WasPaid:          ordPaid,
 				})
 				return []db.InsertOutboxEventParams{
 					{
@@ -1317,6 +1419,8 @@ func (s *OrderService) retryPaymentByMethod(
 			ShopAllocations:   plan.ShopAllocations,
 			IdempotencyKey:    idemKey,
 			SupersedePrevious: true,
+			SalesChannel:      effectiveSalesChannel(lockedGroup.SalesChannel),
+			StorefrontShopId:  lockedGroup.StorefrontShopID,
 		}
 		if !plan.SwitchedToCOD && plan.ExpiresAt != nil {
 			createPayReq.ExpiresAt = timestamppb.New(*plan.ExpiresAt)

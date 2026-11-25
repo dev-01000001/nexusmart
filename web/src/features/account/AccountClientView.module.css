@@ -1,0 +1,456 @@
+/* Account page — compact left navigation rail (one task per item) + address cards grid + slide-over edit sheet.
+   Zero gradients, zero resting shadows, zero left accent stripes. */
+
+.shellGrid {
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr);
+  gap: clamp(24px, 3.6vw, 48px);
+  align-items: start;
+}
+
+/* Compact sticky left nav rail */
+.leftNav {
+  position: sticky;
+  top: 92px;
+  background: var(--surface-white);
+  border-radius: var(--radius-shop);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.navList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.navItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+  text-align: left;
+  width: 100%;
+  transition:
+    background-color var(--t-hover) var(--ease-out),
+    color var(--t-hover) var(--ease-out);
+}
+
+.navItem:hover {
+  background: var(--surface-subtle);
+}
+
+.navItemActive {
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+  font-weight: 600;
+}
+
+.navItemActive:hover {
+  background: var(--band-dark);
+}
+
+:global([data-site-theme-mode="dark"]) .navItemActive,
+:global([data-site-theme-mode="dark"]) .navItemActive:hover {
+  background: var(--bg-2);
+  color: var(--ink);
+}
+
+.navCount {
+  font-size: var(--step-small);
+  opacity: 0.78;
+}
+
+.navSecondaryStart {
+  margin-top: 12px;
+}
+
+.navDanger {
+  color: var(--negative);
+}
+
+.navDanger:hover {
+  background: var(--pill-negative-bg);
+}
+
+/* Main focused workspace pane */
+.pane {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  min-width: 0;
+}
+
+.card {
+  background: var(--surface-white);
+  border-radius: var(--radius-shop);
+  padding: clamp(20px, 2.6vw, 30px);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Profile definition list */
+.profileGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px 28px;
+}
+
+.profileItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.profileKey {
+  font-size: var(--step-small);
+  color: var(--muted);
+}
+
+.profileVal {
+  font-size: 16px;
+  font-weight: 560;
+  color: var(--ink-strong);
+  overflow-wrap: anywhere;
+}
+
+/* Compact recent orders list */
+.orderList {
+  display: flex;
+  flex-direction: column;
+}
+
+.orderRow {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--surface-subtle); /* taste-skill-ignore: recent orders list row separator */
+  transition: opacity var(--t-hover) var(--ease-out);
+}
+
+.orderRow:first-child {
+  padding-top: 0;
+}
+
+.orderRow:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.orderRow:hover {
+  opacity: 0.8;
+}
+
+.orderThumb {
+  width: 52px;
+  height: 69px;
+  object-fit: cover;
+  background: var(--surface-subtle);
+  border-radius: var(--radius-shop);
+}
+
+.orderInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.orderCode {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink-strong);
+}
+
+.orderSub {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  font-size: var(--step-small);
+  color: var(--muted);
+}
+
+.leadMetaRow {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.orderRight {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.orderTotal {
+  font-family: var(--font-sans);
+  font-stretch: var(--type-tight-wdth);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink-strong);
+}
+
+/* Address cards grid (2 columns desktop, zero left stripe) */
+.addressGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.addressCard {
+  background: var(--surface-white);
+  border: 1.5px solid transparent;
+  border-radius: var(--radius-shop);
+  padding: 20px 22px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+}
+
+.addressCardDefault {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+}
+
+.addressBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.addressHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.addressRecipient {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink-strong);
+}
+
+.addressPhone {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.bodyCopy {
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.metaNote {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  font-size: var(--step-small);
+  color: var(--muted);
+}
+
+.addressActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+
+/* Voucher rows */
+.voucherList {
+  display: flex;
+  flex-direction: column;
+}
+
+.voucherRow {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--surface-subtle); /* taste-skill-ignore: voucher list row separator */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.voucherRow:first-child {
+  padding-top: 0;
+}
+
+.voucherRow:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.voucherInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.voucherHeadLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.voucherCode {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink-strong);
+}
+
+.voucherTitle {
+  font-size: 15px;
+  color: var(--ink);
+}
+
+/* Wishlist grid */
+.wishlistGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.wishlistCard {
+  background: var(--surface-white);
+  border-radius: var(--radius-shop);
+  padding: 16px;
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.wishlistThumbLink {
+  display: block;
+  width: 88px;
+  aspect-ratio: 3 / 4;
+  background: var(--surface-subtle);
+  border-radius: var(--radius-shop);
+  overflow: hidden;
+}
+
+.wishlistImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 18%;
+}
+
+.wishlistBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.productGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: clamp(14px, 2vw, 22px);
+}
+
+.productGrid[data-count="1"] {
+  grid-template-columns: minmax(0, 320px);
+}
+
+.productGrid[data-count="2"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.productGrid[data-count="3"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 1024px) {
+  .addressGrid,
+  .wishlistGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .productGrid,
+  .productGrid[data-count="3"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 860px) {
+  .shellGrid {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+
+  .leftNav {
+    position: static;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    padding: 8px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .leftNav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .navList {
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .navItem {
+    width: auto;
+    white-space: nowrap;
+    flex: none;
+  }
+
+  .navSecondaryStart {
+    margin-top: 0;
+    margin-left: 8px;
+  }
+}
+
+@media (max-width: 640px) {
+  .profileGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .orderRow {
+    grid-template-columns: 48px minmax(0, 1fr);
+  }
+
+  .orderRight {
+    grid-column: 2;
+    align-items: flex-start;
+  }
+}

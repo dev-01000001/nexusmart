@@ -113,21 +113,26 @@ func (s *Server) CalculateFee(ctx context.Context, req *shippingv1.CalculateFeeR
 	return resp, nil
 }
 
+const orderServiceIdentity = "order-service"
+
 func (s *Server) CreateShipment(ctx context.Context, req *shippingv1.CreateShipmentRequest) (*shippingv1.CreateShipmentResponse, error) {
 	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "authentication required")
 	}
 	if claims.Service != "" {
-		return nil, status.Error(codes.PermissionDenied, "service identity not allowed for CreateShipment")
-	}
-	isSeller := auth.HasRole(claims, auth.RoleSeller)
-	if !isSeller && !auth.HasCapability(claims, auth.CapOrdersReviewResolve) {
-		return nil, status.Error(codes.PermissionDenied, "only seller or authorized operations staff may create shipments")
-	}
-	if isSeller {
-		if claims.ShopID == "" || req.GetShopId() == "" || claims.ShopID != req.GetShopId() {
-			return nil, status.Error(codes.PermissionDenied, "seller cannot create shipment for another shop")
+		if claims.Service != orderServiceIdentity {
+			return nil, status.Error(codes.PermissionDenied, "service identity not allowed for CreateShipment")
+		}
+	} else {
+		isSeller := auth.HasRole(claims, auth.RoleSeller)
+		if !isSeller && !auth.HasCapability(claims, auth.CapOrdersReviewResolve) {
+			return nil, status.Error(codes.PermissionDenied, "only seller or authorized operations staff may create shipments")
+		}
+		if isSeller {
+			if claims.ShopID == "" || req.GetShopId() == "" || claims.ShopID != req.GetShopId() {
+				return nil, status.Error(codes.PermissionDenied, "seller cannot create shipment for another shop")
+			}
 		}
 	}
 
@@ -142,6 +147,7 @@ func (s *Server) CreateShipment(ctx context.Context, req *shippingv1.CreateShipm
 		ItemsSummary: req.GetItemsSummary(),
 		FromAddress:  fromProtoAddress(req.GetFromAddress()),
 		ToAddress:    fromProtoAddress(req.GetToAddress()),
+		EnqueueOnly:  req.GetEnqueueOnly(),
 	}
 
 	out, err := s.svc.CreateShipmentWithQueue(ctx, in)

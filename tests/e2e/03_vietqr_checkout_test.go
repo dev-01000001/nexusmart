@@ -40,6 +40,7 @@ func TestE2E_MultiShopCheckout_VietQRMock(t *testing.T) {
 	checkoutResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": idemKey,
 	}, CheckoutRequest{
+		SalesChannel:  "MARKETPLACE",
 		AddressID:     addr.ID,
 		FromCart:      true,
 		PaymentMethod: "VIETQR",
@@ -62,6 +63,12 @@ func TestE2E_MultiShopCheckout_VietQRMock(t *testing.T) {
 	for _, o := range checkout.Orders {
 		if !StatusEquals(o.Status, "PENDING") {
 			t.Fatalf("expected VietQR sub-order %s to start PENDING, got %q", o.ID, o.Status)
+		}
+		if o.SalesChannel != "MARKETPLACE" {
+			t.Fatalf("expected default VietQR sub-order %s sales_channel=MARKETPLACE, got %q", o.ID, o.SalesChannel)
+		}
+		if o.StorefrontShopID != "" {
+			t.Fatalf("expected default VietQR sub-order %s storefront_shop_id empty, got %q", o.ID, o.StorefrontShopID)
 		}
 	}
 	if checkout.PaymentID == "" {

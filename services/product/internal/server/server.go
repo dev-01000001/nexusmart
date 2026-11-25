@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -28,9 +29,14 @@ import (
 const (
 	defaultPageSize       = 20
 	maxPageSize           = 100
+	maxImportRowsPageSize = 1000
 	maxListProductsSKUIDs = 200
-	maxOptimisticRetries  = 8
+	maxOptimisticRetries  = 16
 	retryBaseDelay        = 5 * time.Millisecond
+
+	DefaultProductImportMaxBytes = 1 << 20 // 1 MiB (G6)
+	DefaultProductImportMaxRows  = 1000    // 1,000 rows (G6)
+	DefaultProductImportLease    = 30 * time.Second
 )
 
 // Server implements productv1.ProductServiceServer.
@@ -46,6 +52,15 @@ type Server struct {
 	clockMu         sync.RWMutex
 	nowFn           func() time.Time
 	outboxTrigger   chan struct{}
+	notifierMu      sync.RWMutex
+	outboxNotifier  func()
+
+	importMu               sync.RWMutex
+	importMaxBytes         int
+	importMaxRows          int
+	importLease            time.Duration
+	importTrigger          chan struct{}
+	importBeforeConfirmRow func(jobID string, rowNum int32)
 }
 
 // New constructs a ProductService gRPC server.
@@ -61,6 +76,10 @@ func New(st store.Store, logger *slog.Logger) *Server {
 		upstreamTimeout: defaultUpstreamTimeout,
 		nowFn:           func() time.Time { return time.Now().UTC() },
 		outboxTrigger:   make(chan struct{}, 1),
+		importMaxBytes:  DefaultProductImportMaxBytes,
+		importMaxRows:   DefaultProductImportMaxRows,
+		importLease:     DefaultProductImportLease,
+		importTrigger:   make(chan struct{}, 1),
 	}
 }
 
@@ -90,11 +109,51 @@ func (s *Server) OutboxTrigger() <-chan struct{} {
 	return s.outboxTrigger
 }
 
+// SetOutboxNotifier registers an optional callback invoked after a transaction commits outbox events.
+func (s *Server) SetOutboxNotifier(fn func()) {
+	s.notifierMu.Lock()
+	s.outboxNotifier = fn
+	s.notifierMu.Unlock()
+}
+
 func (s *Server) triggerOutbox() {
 	select {
 	case s.outboxTrigger <- struct{}{}:
 	default:
 	}
+	s.notifierMu.RLock()
+	fn := s.outboxNotifier
+	s.notifierMu.RUnlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+func (s *Server) enqueueProductEvent(ctx context.Context, q store.Queries, eventType, productID, shopID string) error {
+	version, err := q.NextProductEventVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("next product event version: %w", err)
+	}
+	occurredAt := s.now()
+	payloadBytes, err := json.Marshal(events.ProductEventPayload{
+		ProductID:  productID,
+		ShopID:     shopID,
+		Version:    version,
+		OccurredAt: occurredAt.Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal product event payload: %w", err)
+	}
+	traceID, traceparent := traceMetaFromContext(ctx)
+	return q.InsertOutboxEvent(ctx, store.OutboxEvent{
+		ID:          uuid.NewString(),
+		EventType:   eventType,
+		AggregateID: productID,
+		TraceID:     traceID,
+		Traceparent: traceparent,
+		PayloadJSON: payloadBytes,
+		CreatedAt:   occurredAt,
+	})
 }
 
 func traceMetaFromContext(ctx context.Context) (string, string) {
@@ -120,12 +179,9 @@ func (s *Server) CreateCategory(ctx context.Context, req *productv1.CreateCatego
 	}
 
 	rawSlug := strings.TrimSpace(req.GetSlug())
-	var explicitSlug string
-	if rawSlug != "" {
-		explicitSlug = normalizeSlug(rawSlug)
-		if explicitSlug == "" {
-			return nil, status.Error(codes.InvalidArgument, "slug must contain letters or digits")
-		}
+	explicitSlug, err := validateExplicitSlug(rawSlug)
+	if err != nil {
+		return nil, err
 	}
 
 	parentID := strings.TrimSpace(req.GetParentId())
@@ -134,10 +190,10 @@ func (s *Server) CreateCategory(ctx context.Context, req *productv1.CreateCatego
 
 	var created store.Category
 	err = s.store.WithTx(ctx, func(q store.Queries) error {
+		if lockErr := q.LockCategoryTree(ctx); lockErr != nil {
+			return lockErr
+		}
 		if parentID != "" {
-			if lockErr := q.LockCategoryTree(ctx); lockErr != nil {
-				return lockErr
-			}
 			if _, pErr := q.GetCategoryByID(ctx, parentID); pErr != nil {
 				if errors.Is(pErr, store.ErrNotFound) {
 					return status.Error(codes.NotFound, "parent category not found")
@@ -152,7 +208,7 @@ func (s *Server) CreateCategory(ctx context.Context, req *productv1.CreateCatego
 			base := slugify(name, id[:8])
 			slug = base
 			if _, lookupErr := q.GetCategoryBySlug(ctx, slug); lookupErr == nil {
-				slug = base + "-" + id[:8]
+				slug = slugWithSuffix(base, id[:8])
 			} else if !errors.Is(lookupErr, store.ErrNotFound) {
 				return lookupErr
 			}
@@ -183,6 +239,10 @@ func (s *Server) CreateCategory(ctx context.Context, req *productv1.CreateCatego
 			return schedErr
 		}
 
+		if obErr := emitCategoryUpdatedOutbox(ctx, q, cat, "UPSERT", cat.UpdatedAt, now); obErr != nil {
+			return obErr
+		}
+
 		created = cat
 		return nil
 	})
@@ -199,6 +259,7 @@ func (s *Server) CreateCategory(ctx context.Context, req *productv1.CreateCatego
 			return nil, status.Errorf(codes.Internal, "create category: %v", err)
 		}
 	}
+	s.triggerOutbox()
 	return &productv1.CreateCategoryResponse{Category: toProtoCategory(created)}, nil
 }
 
@@ -217,13 +278,9 @@ func (s *Server) UpdateCategory(ctx context.Context, req *productv1.UpdateCatego
 		return nil, status.Error(codes.InvalidArgument, "commission_rate_bps must be between 0 and 10000")
 	}
 
-	var explicitSlug string
-	if rawSlug := strings.TrimSpace(req.GetSlug()); rawSlug != "" {
-		normalized := normalizeSlug(rawSlug)
-		if normalized == "" {
-			return nil, status.Error(codes.InvalidArgument, "slug must contain letters or digits")
-		}
-		explicitSlug = normalized
+	explicitSlug, err := validateExplicitSlug(req.GetSlug())
+	if err != nil {
+		return nil, err
 	}
 
 	now := s.now()
@@ -317,6 +374,10 @@ func (s *Server) UpdateCategory(ctx context.Context, req *productv1.UpdateCatego
 			}
 		}
 
+		if obErr := emitCategoryUpdatedOutbox(ctx, q, cat, "UPSERT", cat.UpdatedAt, now); obErr != nil {
+			return obErr
+		}
+
 		updated = cat
 		return nil
 	})
@@ -337,6 +398,7 @@ func (s *Server) UpdateCategory(ctx context.Context, req *productv1.UpdateCatego
 			return nil, status.Errorf(codes.Internal, "update category: %v", err)
 		}
 	}
+	s.triggerOutbox()
 	return &productv1.UpdateCategoryResponse{Category: toProtoCategory(updated)}, nil
 }
 
@@ -349,12 +411,14 @@ func (s *Server) DeleteCategory(ctx context.Context, req *productv1.DeleteCatego
 		return nil, status.Error(codes.InvalidArgument, "category id is required")
 	}
 
-	ctx = store.WithAsOf(ctx, s.now())
+	now := s.now()
+	ctx = store.WithAsOf(ctx, now)
 	err := s.store.WithTx(ctx, func(q store.Queries) error {
 		if lockErr := q.LockCategoryTree(ctx); lockErr != nil {
 			return lockErr
 		}
-		if _, getErr := q.GetCategoryByID(ctx, id); getErr != nil {
+		existing, getErr := q.GetCategoryByID(ctx, id)
+		if getErr != nil {
 			return getErr
 		}
 
@@ -384,7 +448,7 @@ func (s *Server) DeleteCategory(ctx context.Context, req *productv1.DeleteCatego
 		if !deleted {
 			return store.ErrNotFound
 		}
-		return nil
+		return emitCategoryUpdatedOutbox(ctx, q, existing, "DELETE", now, now)
 	})
 	if err != nil {
 		if _, ok := status.FromError(err); ok {
@@ -399,6 +463,7 @@ func (s *Server) DeleteCategory(ctx context.Context, req *productv1.DeleteCatego
 			return nil, status.Errorf(codes.Internal, "delete category: %v", err)
 		}
 	}
+	s.triggerOutbox()
 	return &productv1.DeleteCategoryResponse{Ok: true}, nil
 }
 
@@ -588,15 +653,15 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 	}
 
 	rawSlug := strings.TrimSpace(req.GetSlug())
-	var explicitSlug string
-	if rawSlug != "" {
-		explicitSlug = normalizeSlug(rawSlug)
-		if explicitSlug == "" {
-			return nil, status.Error(codes.InvalidArgument, "slug must contain letters or digits")
-		}
+	explicitSlug, err := validateExplicitSlug(rawSlug)
+	if err != nil {
+		return nil, err
 	}
 
 	desc := strings.TrimSpace(req.GetDescription())
+	if err := validateProductText(name, desc, req.GetImages()); err != nil {
+		return nil, err
+	}
 	modRes, err := s.checkProductModeration(ctx, s.store, categoryID, name, desc, productModerationSlug{
 		Name:    name,
 		Slug:    explicitSlug,
@@ -636,7 +701,7 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 			base := slugify(name, "prod-"+prodID[:8])
 			prodSlug = base
 			if _, lookupErr := q.GetProductBySlug(ctx, prodSlug); lookupErr == nil {
-				prodSlug = base + "-" + prodID[:8]
+				prodSlug = slugWithSuffix(base, prodID[:8])
 			} else if !errors.Is(lookupErr, store.ErrNotFound) {
 				return lookupErr
 			}
@@ -701,6 +766,9 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 			}
 			createdSKUs = append(createdSKUs, sk)
 		}
+		if evErr := s.enqueueProductEvent(ctx, q, events.SubjectProductCreated, createdProd.ID, createdProd.ShopID); evErr != nil {
+			return evErr
+		}
 		return nil
 	})
 	if err != nil {
@@ -716,6 +784,7 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 			return nil, status.Errorf(codes.Internal, "create product: %v", err)
 		}
 	}
+	s.triggerOutbox()
 
 	return &productv1.CreateProductResponse{
 		Product: toProtoProduct(createdProd, createdSKUs, true),
@@ -734,12 +803,9 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 	}
 
 	rawSlug := strings.TrimSpace(req.GetSlug())
-	var normalizedReqSlug string
-	if rawSlug != "" {
-		normalizedReqSlug = normalizeSlug(rawSlug)
-		if normalizedReqSlug == "" {
-			return nil, status.Error(codes.InvalidArgument, "slug must contain letters or digits")
-		}
+	normalizedReqSlug, err := validateExplicitSlug(rawSlug)
+	if err != nil {
+		return nil, err
 	}
 
 	var (
@@ -753,13 +819,17 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 			return nil, err
 		}
 	}
+	if err := validateProductText(strings.TrimSpace(req.GetName()), strings.TrimSpace(req.GetDescription()), req.GetImages()); err != nil {
+		return nil, err
+	}
 
 	now := s.now()
 	ctx = store.WithAsOf(ctx, now)
 
 	var (
-		updatedProd store.Product
-		resultSKUs  []store.SKU
+		updatedProd   store.Product
+		resultSKUs    []store.SKU
+		emittedOutbox bool
 	)
 
 	// Lock order: shop_suspension (seller) -> products (FOR UPDATE) -> skus -> stock_history / sku_price_history.
@@ -970,7 +1040,7 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 						}
 					}
 				} else if old, ok := inactiveByCode[in.SKUCode]; ok {
-					if in.Stock < old.ReservedStock {
+					if in.Stock < old.TotalReservedStock() {
 						return store.ErrInvalidStock
 					}
 					ver := in.ExpectedVersion
@@ -1109,6 +1179,24 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 			return listErr
 		}
 		resultSKUs = skus
+		wasPublic := isPublicProductStatusStr(existing.Status)
+		isPublic := isPublicProductStatusStr(p.Status)
+		if isPublic {
+			if obErr := emitProductUpsertedOutbox(ctx, q, p, skus, p.UpdatedAt, now); obErr != nil {
+				return obErr
+			}
+			emittedOutbox = true
+		} else if wasPublic {
+			reason := "status_" + strings.ToLower(p.Status)
+			if obErr := emitProductDeletedOutbox(ctx, q, p.ID, p.ShopID, reason, p.UpdatedAt, now); obErr != nil {
+				return obErr
+			}
+			emittedOutbox = true
+		}
+		if evErr := s.enqueueProductEvent(ctx, q, events.SubjectProductUpdated, updatedProd.ID, updatedProd.ShopID); evErr != nil {
+			return evErr
+		}
+		emittedOutbox = true
 		return nil
 	})
 	if err != nil {
@@ -1131,6 +1219,9 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 		default:
 			return nil, status.Errorf(codes.Internal, "update product: %v", err)
 		}
+	}
+	if emittedOutbox {
+		s.triggerOutbox()
 	}
 
 	return &productv1.UpdateProductResponse{
@@ -1173,14 +1264,17 @@ func (s *Server) DeleteProduct(ctx context.Context, req *productv1.DeleteProduct
 		if !isAdmin && existing.ShopID != shopID {
 			return status.Error(codes.PermissionDenied, "cannot delete product belonging to another shop")
 		}
-		deleted, delErr := q.SoftDeleteProduct(ctx, id)
+		deletedAt, deleted, delErr := q.SoftDeleteProduct(ctx, id)
 		if delErr != nil {
 			return delErr
 		}
 		if !deleted {
 			return store.ErrNotFound
 		}
-		return q.DeactivateSKUsByProduct(ctx, id)
+		if deactErr := q.DeactivateSKUsByProduct(ctx, id); deactErr != nil {
+			return deactErr
+		}
+		return emitProductDeletedOutbox(ctx, q, existing.ID, existing.ShopID, "deleted", deletedAt, now)
 	})
 	if err != nil {
 		if _, ok := status.FromError(err); ok {
@@ -1191,6 +1285,7 @@ func (s *Server) DeleteProduct(ctx context.Context, req *productv1.DeleteProduct
 		}
 		return nil, status.Errorf(codes.Internal, "delete product: %v", err)
 	}
+	s.triggerOutbox()
 	return &productv1.DeleteProductResponse{Ok: true}, nil
 }
 
@@ -1304,6 +1399,12 @@ func (s *Server) AdminReviewProduct(ctx context.Context, req *productv1.AdminRev
 			}); obErr != nil {
 				return obErr
 			}
+			if obErr := emitProductUpsertedOutbox(ctx, q, p, refreshedSKUs, p.UpdatedAt, now); obErr != nil {
+				return obErr
+			}
+			if evErr := s.enqueueProductEvent(ctx, q, events.SubjectProductUpdated, p.ID, p.ShopID); evErr != nil {
+				return evErr
+			}
 			updated = p
 			skus = refreshedSKUs
 			emittedOutbox = true
@@ -1347,6 +1448,12 @@ func (s *Server) AdminReviewProduct(ctx context.Context, req *productv1.AdminRev
 			CreatedAt:   now,
 		}); obErr != nil {
 			return obErr
+		}
+		if obErr := emitProductDeletedOutbox(ctx, q, p.ID, p.ShopID, "admin_rejected", p.UpdatedAt, now); obErr != nil {
+			return obErr
+		}
+		if evErr := s.enqueueProductEvent(ctx, q, events.SubjectProductUpdated, p.ID, p.ShopID); evErr != nil {
+			return evErr
 		}
 		loadedSKUs, skuErr := q.ListSKUsByProductIDs(ctx, []string{productID})
 		if skuErr != nil {
@@ -1479,28 +1586,32 @@ func (s *Server) ListProducts(ctx context.Context, req *productv1.ListProductsRe
 	shopID := strings.TrimSpace(req.GetShopId())
 
 	publicOnly := true
+	matchSKUCode := false
 	if len(skuIDs) == 0 {
 		if claims, ok := auth.ClaimsFromContext(ctx); ok {
 			if auth.HasCapability(claims, auth.CapProductsRead) {
 				publicOnly = false
 			} else if auth.HasRole(claims, auth.RoleSeller) && shopID != "" && claims.ShopID == shopID {
 				publicOnly = false
+				matchSKUCode = true
 			}
 		}
 	}
 
 	filter := store.ListProductsFilter{
-		CategoryID:  strings.TrimSpace(req.GetCategoryId()),
-		Keyword:     strings.TrimSpace(req.GetKeyword()),
-		ShopID:      shopID,
-		Status:      statusFilter,
-		PublicOnly:  publicOnly,
-		MinPriceVND: req.GetMinPriceVnd(),
-		MaxPriceVND: req.GetMaxPriceVnd(),
-		SKUIDs:      skuIDs,
-		SortBy:      normalizeSortBy(req.GetSortBy()),
-		Limit:       pageSize,
-		Offset:      (page - 1) * pageSize,
+		CategoryID:   strings.TrimSpace(req.GetCategoryId()),
+		Keyword:      strings.TrimSpace(req.GetKeyword()),
+		MatchSKUCode: matchSKUCode,
+		ShopID:       shopID,
+		Status:       statusFilter,
+		PublicOnly:   publicOnly,
+		LowStock:     req.GetLowStock() && !publicOnly,
+		MinPriceVND:  req.GetMinPriceVnd(),
+		MaxPriceVND:  req.GetMaxPriceVnd(),
+		SKUIDs:       skuIDs,
+		SortBy:       normalizeSortBy(req.GetSortBy()),
+		Limit:        pageSize,
+		Offset:       (page - 1) * pageSize,
 	}
 
 	prods, total, err := s.store.ListProducts(ctx, filter)
@@ -1595,8 +1706,12 @@ func (s *Server) UpdateStock(ctx context.Context, req *productv1.UpdateStockRequ
 		return nil, status.Error(codes.InvalidArgument, "expected_version must be > 0")
 	}
 
-	ctx = store.WithAsOf(ctx, s.now())
-	var updatedSKU store.SKU
+	now := s.now()
+	ctx = store.WithAsOf(ctx, now)
+	var (
+		updatedSKU    store.SKU
+		emittedOutbox bool
+	)
 	// Lock order: shop_suspension (seller) -> products (FOR UPDATE) -> skus -> stock_history, matching UpdateProduct/AdminReview/Rescan.
 	err = s.store.WithTx(ctx, func(q store.Queries) error {
 		if !isAdmin {
@@ -1626,11 +1741,18 @@ func (s *Server) UpdateStock(ctx context.Context, req *productv1.UpdateStockRequ
 		if !isAdmin && prod.ShopID != shopID {
 			return status.Error(codes.PermissionDenied, "cannot update stock of another shop's SKU")
 		}
+		var beforeInStock bool
+		if isPublicProductStatusStr(prod.Status) {
+			beforeCnt, cntErr := q.CountActiveInStockSKUsByProduct(ctx, prod.ID)
+			if cntErr != nil {
+				return cntErr
+			}
+			beforeInStock = beforeCnt > 0
+		}
 		cur, getErr := q.GetSKUWithContext(ctx, skuID)
 		if getErr != nil {
 			return getErr
 		}
-
 		upd, stockErr := applySKUStockChange(ctx, q, cur, req.GetNewStock(), req.GetExpectedVersion(), claims.UserID(), "seller manual stock update")
 		if stockErr != nil {
 			return stockErr
@@ -1639,6 +1761,11 @@ func (s *Server) UpdateStock(ctx context.Context, req *productv1.UpdateStockRequ
 		if syncErr := syncProductStockStatus(ctx, q, prod.ID, prod.Status, upd.Stock); syncErr != nil {
 			return syncErr
 		}
+		if emitted, obErr := emitProductStockSyncUpsertedIfChanged(ctx, q, prod.ID, prod.Status, beforeInStock, now); obErr != nil {
+			return obErr
+		} else if emitted {
+			emittedOutbox = true
+		}
 
 		refreshed, refErr := q.GetSKUWithContext(ctx, skuID)
 		if refErr != nil {
@@ -1646,7 +1773,8 @@ func (s *Server) UpdateStock(ctx context.Context, req *productv1.UpdateStockRequ
 		} else {
 			updatedSKU = refreshed
 		}
-		return nil
+		emittedOutbox = true
+		return s.enqueueProductEvent(ctx, q, events.SubjectProductStockChanged, cur.ProductID, cur.ShopID)
 	})
 	if err != nil {
 		if _, ok := status.FromError(err); ok {
@@ -1665,11 +1793,24 @@ func (s *Server) UpdateStock(ctx context.Context, req *productv1.UpdateStockRequ
 			return nil, status.Errorf(codes.Internal, "update stock: %v", err)
 		}
 	}
+	if emittedOutbox {
+		s.triggerOutbox()
+	}
 
 	return &productv1.UpdateStockResponse{Sku: toProtoSKU(updatedSKU)}, nil
 }
 
 func (s *Server) ReserveStock(ctx context.Context, req *productv1.ReserveStockRequest) (*productv1.ReserveStockResponse, error) {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if strings.TrimSpace(claims.Service) != "" {
+		return nil, status.Error(codes.PermissionDenied, "service token not allowed on ReserveStock")
+	}
+	if strings.TrimSpace(claims.UserID()) == "" {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
 	orderID := strings.TrimSpace(req.GetOrderId())
 	if orderID == "" {
 		return nil, status.Error(codes.InvalidArgument, "order_id is required")
@@ -1678,6 +1819,7 @@ func (s *Server) ReserveStock(ctx context.Context, req *productv1.ReserveStockRe
 	if err != nil {
 		return nil, err
 	}
+	ctx = store.WithAsOf(ctx, s.now())
 
 	for attempt := 0; attempt < maxOptimisticRetries; attempt++ {
 		if attempt > 0 {
@@ -1724,6 +1866,14 @@ func (s *Server) ReserveStock(ctx context.Context, req *productv1.ReserveStockRe
 			}
 
 			groupID := uuid.NewString()
+			affectedProducts := make(map[string]string)
+			affectedOrder := make([]string, 0, len(items))
+			recordAffected := func(productID, shopID string) {
+				if _, seen := affectedProducts[productID]; !seen {
+					affectedProducts[productID] = shopID
+					affectedOrder = append(affectedOrder, productID)
+				}
+			}
 			for _, item := range items {
 				sku, getErr := q.GetSKUWithContext(ctx, item.skuID)
 				if getErr != nil {
@@ -1751,6 +1901,7 @@ func (s *Server) ReserveStock(ctx context.Context, req *productv1.ReserveStockRe
 					SKUID:              item.skuID,
 					Quantity:           item.quantity,
 					Status:             store.ReservationStatusReserved,
+					FlashSaleItemID:    item.flashSaleItemID,
 				}); resErr != nil {
 					return resErr
 				}
@@ -1769,6 +1920,13 @@ func (s *Server) ReserveStock(ctx context.Context, req *productv1.ReserveStockRe
 				}); histErr != nil {
 					return histErr
 				}
+				recordAffected(sku.ProductID, sku.ShopID)
+			}
+
+			for _, prodID := range affectedOrder {
+				if evErr := s.enqueueProductEvent(ctx, q, events.SubjectProductStockChanged, prodID, affectedProducts[prodID]); evErr != nil {
+					return evErr
+				}
 			}
 
 			resp = &productv1.ReserveStockResponse{
@@ -1780,6 +1938,9 @@ func (s *Server) ReserveStock(ctx context.Context, req *productv1.ReserveStockRe
 		})
 
 		if txErr == nil {
+			if !resp.GetAlreadyReserved() {
+				s.triggerOutbox()
+			}
 			return resp, nil
 		}
 		if _, ok := status.FromError(txErr); ok {
@@ -1813,6 +1974,7 @@ func (s *Server) ReleaseStock(ctx context.Context, req *productv1.ReleaseStockRe
 	if orderID == "" {
 		return nil, status.Error(codes.InvalidArgument, "order_id is required")
 	}
+	ctx = store.WithAsOf(ctx, s.now())
 
 	for attempt := 0; attempt < maxOptimisticRetries; attempt++ {
 		if attempt > 0 {
@@ -1864,6 +2026,14 @@ func (s *Server) ReleaseStock(ctx context.Context, req *productv1.ReleaseStockRe
 				return nil
 			}
 
+			affectedProducts := make(map[string]string)
+			affectedOrder := make([]string, 0, len(reservedRows))
+			recordAffected := func(productID, shopID string) {
+				if _, seen := affectedProducts[productID]; !seen {
+					affectedProducts[productID] = shopID
+					affectedOrder = append(affectedOrder, productID)
+				}
+			}
 			for _, r := range reservedRows {
 				changed, trErr := q.TransitionStockReservation(ctx, r.ID, store.ReservationStatusReleased, store.ReservationStatusReserved)
 				if trErr != nil {
@@ -1897,6 +2067,13 @@ func (s *Server) ReleaseStock(ctx context.Context, req *productv1.ReleaseStockRe
 				}); histErr != nil {
 					return histErr
 				}
+				recordAffected(sku.ProductID, sku.ShopID)
+			}
+
+			for _, prodID := range affectedOrder {
+				if evErr := s.enqueueProductEvent(ctx, q, events.SubjectProductStockChanged, prodID, affectedProducts[prodID]); evErr != nil {
+					return evErr
+				}
 			}
 
 			resp = &productv1.ReleaseStockResponse{
@@ -1907,6 +2084,9 @@ func (s *Server) ReleaseStock(ctx context.Context, req *productv1.ReleaseStockRe
 		})
 
 		if txErr == nil {
+			if resp.GetReleased() && !resp.GetAlreadyReleased() {
+				s.triggerOutbox()
+			}
 			return resp, nil
 		}
 		if errors.Is(txErr, store.ErrVersionConflict) {
@@ -1926,6 +2106,8 @@ func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRe
 	if orderID == "" {
 		return nil, status.Error(codes.InvalidArgument, "order_id is required")
 	}
+	now := s.now()
+	ctx = store.WithAsOf(ctx, now)
 
 	for attempt := 0; attempt < maxOptimisticRetries; attempt++ {
 		if attempt > 0 {
@@ -1934,8 +2116,12 @@ func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRe
 			}
 		}
 
-		var resp *productv1.ConfirmStockResponse
+		var (
+			resp          *productv1.ConfirmStockResponse
+			emittedOutbox bool
+		)
 		txErr := s.store.WithTx(ctx, func(q store.Queries) error {
+			emittedOutbox = false
 			if lockErr := q.LockStockOrder(ctx, orderID); lockErr != nil {
 				return lockErr
 			}
@@ -1996,6 +2182,8 @@ func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRe
 				return batchErr
 			}
 			lockedProdStatus := make(map[string]string, len(batchSKUs))
+			lockedProdBeforeInStock := make(map[string]bool, len(batchSKUs))
+			lockedProdLive := make(map[string]bool, len(batchSKUs))
 			prodIDSet := make(map[string]struct{}, len(batchSKUs))
 			for _, sk := range batchSKUs {
 				prodIDSet[sk.ProductID] = struct{}{}
@@ -2008,12 +2196,24 @@ func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRe
 			for _, pid := range sortedProdIDs {
 				if p, lockErr := q.GetProductByIDForUpdateAny(ctx, pid); lockErr == nil {
 					lockedProdStatus[pid] = p.Status
+					if p.DeletedAt == nil && isPublicProductStatusStr(p.Status) {
+						lockedProdLive[pid] = true
+						cnt, cntErr := q.CountActiveInStockSKUsByProduct(ctx, pid)
+						if cntErr != nil {
+							return cntErr
+						}
+						lockedProdBeforeInStock[pid] = cnt > 0
+					}
 				} else if !errors.Is(lockErr, store.ErrNotFound) {
 					return lockErr
 				}
 			}
 
-			touchedProducts := make(map[string]string)
+			type confirmedProduct struct {
+				status string
+				shopID string
+			}
+			touchedProducts := make(map[string]confirmedProduct)
 			for _, r := range reservedRows {
 				changed, trErr := q.TransitionStockReservation(ctx, r.ID, store.ReservationStatusConfirmed, store.ReservationStatusReserved)
 				if trErr != nil {
@@ -2032,10 +2232,13 @@ func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRe
 				if optErr != nil {
 					return optErr
 				}
+				prodSt := sku.ProductStatus
 				if st, ok := lockedProdStatus[sku.ProductID]; ok {
-					touchedProducts[sku.ProductID] = st
-				} else {
-					touchedProducts[sku.ProductID] = sku.ProductStatus
+					prodSt = st
+				}
+				touchedProducts[sku.ProductID] = confirmedProduct{
+					status: prodSt,
+					shopID: sku.ShopID,
 				}
 
 				if histErr := q.InsertStockHistory(ctx, store.StockHistoryEntry{
@@ -2055,10 +2258,21 @@ func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRe
 			}
 
 			for _, prodID := range sortedProdIDs {
-				if prodStatus, ok := touchedProducts[prodID]; ok {
-					if syncErr := syncProductStockStatus(ctx, q, prodID, prodStatus, 0); syncErr != nil {
+				if info, ok := touchedProducts[prodID]; ok {
+					if syncErr := syncProductStockStatus(ctx, q, prodID, info.status, 0); syncErr != nil {
 						return syncErr
 					}
+					if lockedProdLive[prodID] {
+						if emitted, obErr := emitProductStockSyncUpsertedIfChanged(ctx, q, prodID, info.status, lockedProdBeforeInStock[prodID], now); obErr != nil {
+							return obErr
+						} else if emitted {
+							emittedOutbox = true
+						}
+					}
+					if evErr := s.enqueueProductEvent(ctx, q, events.SubjectProductStockChanged, prodID, info.shopID); evErr != nil {
+						return evErr
+					}
+					emittedOutbox = true
 				}
 			}
 
@@ -2070,6 +2284,9 @@ func (s *Server) ConfirmStock(ctx context.Context, req *productv1.ConfirmStockRe
 		})
 
 		if txErr == nil {
+			if emittedOutbox {
+				s.triggerOutbox()
+			}
 			return resp, nil
 		}
 		if _, ok := status.FromError(txErr); ok {
@@ -2098,12 +2315,18 @@ func (s *Server) RestockOrderItems(ctx context.Context, req *productv1.RestockOr
 		return nil, err
 	}
 
+	now := s.now()
+	ctx = store.WithAsOf(ctx, now)
+
 	actorID := strings.TrimSpace(claims.Service)
 	if actorID == "" {
 		actorID = claims.UserID()
 	}
 
-	var restockedCount int
+	var (
+		restockedCount int
+		emittedOutbox  bool
+	)
 	err = s.store.WithTx(ctx, func(q store.Queries) error {
 		// Lock owning products in sorted product_id order BEFORE locking SKUs (products -> skus -> stock_history).
 		skuIDs := make([]string, 0, len(items))
@@ -2115,6 +2338,8 @@ func (s *Server) RestockOrderItems(ctx context.Context, req *productv1.RestockOr
 			return batchErr
 		}
 		lockedProdStatus := make(map[string]string, len(batchSKUs))
+		lockedProdBeforeInStock := make(map[string]bool, len(batchSKUs))
+		lockedProdLive := make(map[string]bool, len(batchSKUs))
 		prodIDSet := make(map[string]struct{}, len(batchSKUs))
 		for _, sk := range batchSKUs {
 			prodIDSet[sk.ProductID] = struct{}{}
@@ -2127,6 +2352,14 @@ func (s *Server) RestockOrderItems(ctx context.Context, req *productv1.RestockOr
 		for _, pid := range sortedProdIDs {
 			if p, lockErr := q.GetProductByIDForUpdateAny(ctx, pid); lockErr == nil {
 				lockedProdStatus[pid] = p.Status
+				if p.DeletedAt == nil && isPublicProductStatusStr(p.Status) {
+					lockedProdLive[pid] = true
+					cnt, cntErr := q.CountActiveInStockSKUsByProduct(ctx, pid)
+					if cntErr != nil {
+						return cntErr
+					}
+					lockedProdBeforeInStock[pid] = cnt > 0
+				}
 			} else if !errors.Is(lockErr, store.ErrNotFound) {
 				return lockErr
 			}
@@ -2137,6 +2370,7 @@ func (s *Server) RestockOrderItems(ctx context.Context, req *productv1.RestockOr
 			latestStock int32
 		}
 		touchedProducts := make(map[string]productSync)
+		restockedProds := make(map[string]string)
 
 		for _, item := range items {
 			sku, getErr := q.GetSKUWithContextForUpdate(ctx, item.skuID)
@@ -2172,6 +2406,7 @@ func (s *Server) RestockOrderItems(ctx context.Context, req *productv1.RestockOr
 				return updErr
 			}
 			restockedCount++
+			restockedProds[sku.ProductID] = sku.ShopID
 
 			if updated.Status != store.SKUStatusInactive {
 				ps := touchedProducts[sku.ProductID]
@@ -2197,6 +2432,25 @@ func (s *Server) RestockOrderItems(ctx context.Context, req *productv1.RestockOr
 			if syncErr := syncProductStockStatus(ctx, q, prodID, ps.status, ps.latestStock); syncErr != nil {
 				return syncErr
 			}
+			if lockedProdLive[prodID] {
+				if emitted, obErr := emitProductStockSyncUpsertedIfChanged(ctx, q, prodID, ps.status, lockedProdBeforeInStock[prodID], now); obErr != nil {
+					return obErr
+				} else if emitted {
+					emittedOutbox = true
+				}
+			}
+		}
+
+		restockedProdIDs := make([]string, 0, len(restockedProds))
+		for prodID := range restockedProds {
+			restockedProdIDs = append(restockedProdIDs, prodID)
+		}
+		sort.Strings(restockedProdIDs)
+		for _, prodID := range restockedProdIDs {
+			if evErr := s.enqueueProductEvent(ctx, q, events.SubjectProductStockChanged, prodID, restockedProds[prodID]); evErr != nil {
+				return evErr
+			}
+			emittedOutbox = true
 		}
 		return nil
 	})
@@ -2208,6 +2462,9 @@ func (s *Server) RestockOrderItems(ctx context.Context, req *productv1.RestockOr
 			return nil, status.Error(codes.NotFound, "sku not found")
 		}
 		return nil, status.Errorf(codes.Internal, "restock order items: %v", err)
+	}
+	if emittedOutbox {
+		s.triggerOutbox()
 	}
 
 	return &productv1.RestockOrderItemsResponse{
@@ -2309,6 +2566,93 @@ func resolveSellerOrAdminShop(ctx context.Context, reqShopID string) (string, *a
 	return claimShopID, claims, false, nil
 }
 
+const (
+	maxProductNameRunes        = 500
+	maxProductSlugRunes        = 200
+	maxProductDescriptionRunes = 20000
+	maxProductImages           = 20
+	maxProductImageURLRunes    = 2048
+	maxSKUCodeRunes            = 100
+	maxSKUNameRunes            = 255
+	maxSKUAttributes           = 30
+	maxSKUAttributeRunes       = 255
+)
+
+// validateExplicitSlug normalizes an explicitly submitted slug and enforces non-empty alphanumeric
+// content and the 200-character cap (shared by CreateProduct, UpdateProduct, and CSV import).
+func validateExplicitSlug(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	if strings.ContainsRune(raw, 0) {
+		return "", status.Error(codes.InvalidArgument, "slug must not contain NUL characters")
+	}
+	slug := normalizeSlug(raw)
+	if slug == "" {
+		return "", status.Error(codes.InvalidArgument, "slug must contain letters or digits")
+	}
+	if len(slug) > maxProductSlugRunes {
+		return "", status.Errorf(codes.InvalidArgument, "slug exceeds %d characters", maxProductSlugRunes)
+	}
+	return slug, nil
+}
+
+// checkText rejects text Postgres cannot store (NUL) and text longer than maxRunes.
+func checkText(field, v string, maxRunes int) error {
+	if strings.ContainsRune(v, 0) {
+		return status.Errorf(codes.InvalidArgument, "%s must not contain NUL characters", field)
+	}
+	if utf8.RuneCountInString(v) > maxRunes {
+		return status.Errorf(codes.InvalidArgument, "%s exceeds %d characters", field, maxRunes)
+	}
+	return nil
+}
+
+// validateProductText is the single product text check shared by CreateProduct, UpdateProduct and CSV import.
+func validateProductText(name, description string, images []string) error {
+	if err := checkText("product name", name, maxProductNameRunes); err != nil {
+		return err
+	}
+	if err := checkText("description", description, maxProductDescriptionRunes); err != nil {
+		return err
+	}
+	if len(images) > maxProductImages {
+		return status.Errorf(codes.InvalidArgument, "a product can have at most %d images", maxProductImages)
+	}
+	for _, u := range images {
+		if err := checkText("image url", u, maxProductImageURLRunes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateSKUText is the single SKU text check shared by CreateProduct, UpdateProduct and CSV import.
+func validateSKUText(code, name, imageURL string, attributes map[string]string) error {
+	if err := checkText("sku_code", code, maxSKUCodeRunes); err != nil {
+		return err
+	}
+	if err := checkText("sku name", name, maxSKUNameRunes); err != nil {
+		return err
+	}
+	if err := checkText("sku image url", imageURL, maxProductImageURLRunes); err != nil {
+		return err
+	}
+	if len(attributes) > maxSKUAttributes {
+		return status.Errorf(codes.InvalidArgument, "a sku can have at most %d attributes", maxSKUAttributes)
+	}
+	for k, v := range attributes {
+		if err := checkText("attribute name", k, maxSKUAttributeRunes); err != nil {
+			return err
+		}
+		if err := checkText("attribute value", v, maxSKUAttributeRunes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type normalizedSKUInput struct {
 	ID              string
 	SKUCode         string
@@ -2363,6 +2707,11 @@ func validateSKUInputs(in []*productv1.SKUInput) ([]normalizedSKUInput, int64, i
 			maxPrice = s.GetPriceVnd()
 		}
 
+		imageURL := strings.TrimSpace(s.GetImageUrl())
+		if err := validateSKUText(code, skuName, imageURL, attrs); err != nil {
+			return nil, 0, 0, err
+		}
+
 		out = append(out, normalizedSKUInput{
 			ID:          strings.TrimSpace(s.GetId()),
 			SKUCode:     code,
@@ -2371,7 +2720,7 @@ func validateSKUInputs(in []*productv1.SKUInput) ([]normalizedSKUInput, int64, i
 			PriceVND:    s.GetPriceVnd(),
 			Stock:       s.GetStock(),
 			WeightGrams: s.GetWeightGrams(),
-			ImageURL:    strings.TrimSpace(s.GetImageUrl()),
+			ImageURL:    imageURL,
 		})
 	}
 	return out, minPrice, maxPrice, nil
@@ -2410,15 +2759,16 @@ func resolveUpdatedProductStatus(current string, requested productv1.ProductStat
 }
 
 type sortedReservationItem struct {
-	skuID    string
-	quantity int32
+	skuID           string
+	quantity        int32
+	flashSaleItemID string
 }
 
 func normalizeAndSortReservationItems(raw []*productv1.StockReservationItem) ([]sortedReservationItem, error) {
 	if len(raw) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "at least one reservation item is required")
 	}
-	merged := make(map[string]int32, len(raw))
+	merged := make(map[string]*sortedReservationItem, len(raw))
 	for i, it := range raw {
 		skuID := strings.TrimSpace(it.GetSkuId())
 		if skuID == "" {
@@ -2427,11 +2777,23 @@ func normalizeAndSortReservationItems(raw []*productv1.StockReservationItem) ([]
 		if it.GetQuantity() <= 0 {
 			return nil, status.Errorf(codes.InvalidArgument, "items[%d].quantity must be > 0", i)
 		}
-		merged[skuID] += it.GetQuantity()
+		fsID := strings.TrimSpace(it.GetFlashSaleItemId())
+		if cur, ok := merged[skuID]; ok {
+			if cur.flashSaleItemID != fsID {
+				return nil, status.Errorf(codes.InvalidArgument, "items[%d] has conflicting flash_sale_item_id for sku %s", i, skuID)
+			}
+			cur.quantity += it.GetQuantity()
+		} else {
+			merged[skuID] = &sortedReservationItem{
+				skuID:           skuID,
+				quantity:        it.GetQuantity(),
+				flashSaleItemID: fsID,
+			}
+		}
 	}
 	out := make([]sortedReservationItem, 0, len(merged))
-	for skuID, qty := range merged {
-		out = append(out, sortedReservationItem{skuID: skuID, quantity: qty})
+	for _, it := range merged {
+		out = append(out, *it)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].skuID < out[j].skuID
@@ -2453,7 +2815,7 @@ func applySKUStockChange(
 	if cur.Status == store.SKUStatusInactive {
 		return store.SKU{}, store.ErrSKUInactive
 	}
-	if newStock < cur.ReservedStock {
+	if newStock < cur.TotalReservedStock() {
 		return store.SKU{}, store.ErrInvalidStock
 	}
 	ver := expectedVersion
@@ -2522,13 +2884,44 @@ func normalizeSortBy(sortBy string) string {
 	}
 }
 
+// truncateSlug cuts a normalized ASCII slug to at most maxLen characters, preferring a dash boundary.
+func truncateSlug(s string, maxLen int) string {
+	if maxLen <= 0 || len(s) <= maxLen {
+		return s
+	}
+	if s[maxLen] == '-' {
+		return strings.TrimRight(s[:maxLen], "-")
+	}
+	cut := s[:maxLen]
+	if idx := strings.LastIndexByte(cut, '-'); idx > 0 {
+		return strings.TrimRight(cut[:idx], "-")
+	}
+	return strings.TrimRight(cut, "-")
+}
+
+// slugWithSuffix appends "-" + suffix to base while keeping the resulting slug <= maxProductSlugRunes.
+func slugWithSuffix(base, suffix string) string {
+	if suffix == "" {
+		return truncateSlug(base, maxProductSlugRunes)
+	}
+	maxBase := maxProductSlugRunes - len(suffix) - 1
+	if maxBase <= 0 {
+		return truncateSlug(suffix, maxProductSlugRunes)
+	}
+	prefix := truncateSlug(base, maxBase)
+	if prefix == "" {
+		return truncateSlug(suffix, maxProductSlugRunes)
+	}
+	return prefix + "-" + suffix
+}
+
 func slugify(name, fallback string) string {
-	s := normalizeSlug(name)
+	s := truncateSlug(normalizeSlug(name), maxProductSlugRunes)
 	if s == "" {
 		if strings.Contains(fallback, "-") {
-			return fallback
+			return truncateSlug(fallback, maxProductSlugRunes)
 		}
-		return "cat-" + fallback
+		return truncateSlug("cat-"+fallback, maxProductSlugRunes)
 	}
 	return s
 }
@@ -2599,24 +2992,25 @@ func toProtoSKU(s store.SKU) *productv1.SKU {
 		minPrice30d = s.PriceVND
 	}
 	return &productv1.SKU{
-		Id:                s.ID,
-		ProductId:         s.ProductID,
-		ShopId:            s.ShopID,
-		ProductName:       s.ProductName,
-		SkuCode:           s.SKUCode,
-		Name:              s.Name,
-		Attributes:        attrs,
-		PriceVnd:          s.PriceVND,
-		MinPrice_30DVnd:   minPrice30d,
-		Stock:             s.Stock,
-		ReservedStock:     s.ReservedStock,
-		AvailableStock:    s.AvailableStock(),
-		Version:           s.Version,
-		WeightGrams:       s.WeightGrams,
-		ImageUrl:          s.ImageURL,
-		CategoryId:        s.CategoryID,
-		CommissionRateBps: s.CommissionRateBps,
-		IsActive:          s.IsPubliclyActive(),
+		Id:                     s.ID,
+		ProductId:              s.ProductID,
+		ShopId:                 s.ShopID,
+		ProductName:            s.ProductName,
+		SkuCode:                s.SKUCode,
+		Name:                   s.Name,
+		Attributes:             attrs,
+		PriceVnd:               s.PriceVND,
+		MinPrice_30DVnd:        minPrice30d,
+		Stock:                  s.Stock,
+		ReservedStock:          s.ReservedStock,
+		AvailableStock:         s.AvailableStock(),
+		Version:                s.Version,
+		WeightGrams:            s.WeightGrams,
+		ImageUrl:               s.ImageURL,
+		CategoryId:             s.CategoryID,
+		CommissionRateBps:      s.CommissionRateBps,
+		IsActive:               s.IsPubliclyActive(),
+		FlashSaleReservedStock: s.FlashSaleReservedStock,
 	}
 }
 

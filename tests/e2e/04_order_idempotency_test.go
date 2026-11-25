@@ -24,6 +24,7 @@ func TestE2E_OrderIdempotency(t *testing.T) {
 		stockBefore := env.getProductSKU(t, prod.ID, sku.ID).AvailableStock
 		idemKey := "idem-seq-" + uuid.NewString()
 		reqBody := CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			FromCart:      false,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 2}},
@@ -75,6 +76,7 @@ func TestE2E_OrderIdempotency(t *testing.T) {
 		stockBefore := env.getProductSKU(t, prod.ID, sku.ID).AvailableStock
 		idemKey := "idem-conc-" + uuid.NewString()
 		reqBody := CheckoutRequest{
+			SalesChannel:  "MARKETPLACE",
 			AddressID:     addr.ID,
 			FromCart:      false,
 			Items:         []CheckoutItemInputDTO{{SKUID: sku.ID, Quantity: 3}},

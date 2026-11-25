@@ -386,9 +386,10 @@ async fn connect_jetstream_result(
     nats_url: &str,
     stream_name: &str,
 ) -> anyhow::Result<jetstream::Context> {
+    let safe_url = crate::telemetry::redact_url_credentials(nats_url);
     let client = async_nats::connect(nats_url)
         .await
-        .map_err(|e| anyhow::anyhow!("connect NATS ({nats_url}): {e}"))?;
+        .map_err(|e| anyhow::anyhow!("connect NATS ({safe_url}): {e}"))?;
     let js = jetstream::new(client);
     ensure_required_streams_result(&js, stream_name).await?;
     Ok(js)
@@ -397,13 +398,14 @@ async fn connect_jetstream_result(
 /// Ensures the primary JetStream stream (`NEXUSMART`) and DLQ stream (`NEXUSMART_DLQ`) exist
 /// per `docs/contracts.md` Section 5.
 pub async fn connect_jetstream(nats_url: &str, stream_name: &str) -> Option<jetstream::Context> {
+    let safe_url = crate::telemetry::redact_url_credentials(nats_url);
     match connect_jetstream_result(nats_url, stream_name).await {
         Ok(js) => {
-            info!(nats_url = %nats_url, stream = %stream_name, "connected to NATS JetStream");
+            info!(nats_url = %safe_url, stream = %stream_name, "connected to NATS JetStream");
             Some(js)
         }
         Err(e) => {
-            warn!(nats_url = %nats_url, error = %e, "NATS unavailable; workers will retry");
+            warn!(nats_url = %safe_url, error = %e, "NATS unavailable; workers will retry");
             None
         }
     }
@@ -484,8 +486,10 @@ pub async fn run_outbox_relay(service: PaymentService, mut shutdown: watch::Rece
             .await
             {
                 Ok(js) => {
+                    let safe_url =
+                        crate::telemetry::redact_url_credentials(&service.config().nats_url);
                     info!(
-                        nats_url = %service.config().nats_url,
+                        nats_url = %safe_url,
                         stream = %service.config().nats_stream,
                         "outbox relay connected to NATS JetStream"
                     );
@@ -1017,7 +1021,7 @@ pub async fn run_reconciliation_scheduler(
             }
             _ = ticker.tick() => {
                 let today = vn_today(Utc::now());
-                if let Err(e) = service.run_reconciliation(today).await {
+                if let Err(e) = service.run_reconciliation(today, None).await {
                     error!(error = %e, "scheduled reconciliation failed");
                 }
             }
@@ -3891,18 +3895,20 @@ mod tests {
             };
             let pool = &db.pool;
 
-            // Apply migrations 0001..0007 ONLY (pre-0008 schema without `seq`).
+            // Apply migrations 0001..0009 ONLY (pre-0010 schema without `seq`).
             let pre_migrations = [
                 include_str!("../migrations/0001_init.sql"),
-                include_str!("../migrations/0002_payment_money_model.sql"),
-                include_str!("../migrations/0003_refund_settlement_and_reconciliation.sql"),
-                include_str!("../migrations/0004_reconciliation_queue_unique_tx.sql"),
-                include_str!("../migrations/0005_reconciliation_fixes.sql"),
-                include_str!("../migrations/0006_trim_provider_tx_ids.sql"),
-                include_str!("../migrations/0007_payment_fee_configs.sql"),
+                include_str!("../migrations/0002_sales_channel.sql"),
+                include_str!("../migrations/0003_zalopay.sql"),
+                include_str!("../migrations/0004_payment_money_model.sql"),
+                include_str!("../migrations/0005_refund_settlement_and_reconciliation.sql"),
+                include_str!("../migrations/0006_reconciliation_queue_unique_tx.sql"),
+                include_str!("../migrations/0007_reconciliation_fixes.sql"),
+                include_str!("../migrations/0008_trim_provider_tx_ids.sql"),
+                include_str!("../migrations/0009_payment_fee_configs.sql"),
             ];
             for sql in pre_migrations {
-                pool.execute(sql).await.expect("apply pre-0008 migration");
+                pool.execute(sql).await.expect("apply pre-0010 migration");
             }
 
             // Insert E1 (older) then E2 (newer) for the same aggregate, plus a sent row.
@@ -3962,10 +3968,10 @@ mod tests {
                 "E1 physical ctid must be AFTER E2 prior to running migration 0008"
             );
 
-            // Apply migration 0008: must backfill `seq` for pending rows strictly by `(created_at, id)`
-            // via nextval on the real sequence despite E1's inverted ctid.
-            let mig_0008 = include_str!("../migrations/0008_outbox_lease_and_fee_config_index.sql");
-            pool.execute(mig_0008).await.expect("apply migration 0008");
+            // Apply migration 0010 (renumbered from 0008): must backfill `seq` for pending rows
+            // strictly by `(created_at, id)` via nextval on the real sequence despite E1's inverted ctid.
+            let mig_0010 = include_str!("../migrations/0010_outbox_lease_and_fee_config_index.sql");
+            pool.execute(mig_0010).await.expect("apply migration 0010");
 
             let seq1: i64 = sqlx::query_scalar("SELECT seq FROM outbox_events WHERE id = $1")
                 .bind(e1)
@@ -4832,5 +4838,35 @@ mod tests {
         }
         assert!(db_retry.rows.lock().unwrap().is_empty());
         assert!(nats_retry.msgs.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_workers_shutdown_cleanly_and_nats_fallback() {
+        use crate::config::Config;
+        use crate::metrics::Metrics;
+        use sqlx::postgres::PgPoolOptions;
+
+        // Unreachable NATS returns None gracefully instead of panicking
+        let res = connect_jetstream("nats://127.0.0.1:1", "NEXUSMART").await;
+        assert!(res.is_none());
+
+        let mut cfg = Config::from_env();
+        cfg.expiration_scan_interval = Duration::from_secs(60);
+        cfg.reconciliation_interval = Duration::from_secs(60);
+        cfg.outbox_poll_interval = Duration::from_secs(60);
+        let pool = PgPoolOptions::new()
+            .connect_lazy(&cfg.database_url)
+            .expect("lazy pool");
+        let svc = PaymentService::new(pool, cfg, Metrics::new());
+
+        let (tx, rx) = watch::channel(false);
+        let h_recon = tokio::spawn(run_reconciliation_scheduler(svc.clone(), rx.clone()));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let _ = tx.send(true);
+        h_recon.await.unwrap();
+
+        let (tx2, rx2) = watch::channel(true);
+        let _ = tx2;
+        run_nats_order_consumer(svc, rx2).await;
     }
 }

@@ -123,6 +123,7 @@ func TestE2E_MultiShopCheckout_COD(t *testing.T) {
 	checkoutResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 		"Idempotency-Key": idemKey,
 	}, CheckoutRequest{
+		SalesChannel:      "MARKETPLACE",
 		AddressID:         addr.ID,
 		FromCart:          true,
 		ShopVoucherIDs:    map[string]string{seller1.ShopID: shopVoucher.ID},
@@ -154,6 +155,12 @@ func TestE2E_MultiShopCheckout_COD(t *testing.T) {
 	for _, o := range checkout.Orders {
 		if !StatusEquals(o.Status, "CONFIRMED") {
 			t.Fatalf("expected COD sub-order %s status CONFIRMED, got %q", o.ID, o.Status)
+		}
+		if o.SalesChannel != "MARKETPLACE" {
+			t.Fatalf("expected default COD sub-order %s sales_channel=MARKETPLACE, got %q", o.ID, o.SalesChannel)
+		}
+		if o.StorefrontShopID != "" {
+			t.Fatalf("expected default COD sub-order %s storefront_shop_id empty, got %q", o.ID, o.StorefrontShopID)
 		}
 		switch o.ShopID {
 		case seller1.ShopID:

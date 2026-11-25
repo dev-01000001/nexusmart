@@ -419,3 +419,86 @@ func TestConsumer_ShipmentCreateFailed_DispatchAndMalformedDLQ(t *testing.T) {
 		t.Fatalf("expected 2 DLQ publishes/records for shipment.create_failed, got pub=%d db=%d", len(pub.msgs), len(dlqStore.records))
 	}
 }
+
+func TestConsumer_AllSubjectsMissingEventIDAndOutboxRun(t *testing.T) {
+	pub := &recordingPublisher{}
+	dlqStore := &fakeDLQStore{}
+	handler := &fakeEventHandler{}
+	consumer := NewConsumer(nil, pub, dlqStore, handler, nil, "")
+
+	// Missing event_id -> DLQ immediately.
+	noIDEnv, _ := json.Marshal(Envelope{EventType: SubjectPaymentExpired, Payload: json.RawMessage(`{}`)})
+	if act, _ := consumer.ProcessRawMessage(context.Background(), SubjectPaymentExpired, noIDEnv, nil, 0); act != ActionDLQ {
+		t.Fatalf("missing event_id: want ActionDLQ, got %v", act)
+	}
+
+	// Dispatch payment.expired, payment.refunded, shipment.updated (including empty EventType fallback and trace headers).
+	cases := []struct {
+		subject string
+		evType  string
+		id      string
+		payload any
+	}{
+		{SubjectPaymentExpired, SubjectPaymentExpired, "ev-exp", PaymentFailedPayload{OrderGroupID: "g1"}},
+		{SubjectPaymentRefunded, SubjectPaymentRefunded, "ev-ref", PaymentRefundedPayload{OrderID: "o1", RefundID: "r1"}},
+		{SubjectShipmentUpdated, "", "ev-ship", ShipmentUpdatedPayload{OrderID: "o1", Status: "returned", Direction: "RETURN", ReturnRequestID: "rr-1"}},
+		{"payment.unknown", "payment.unknown", "ev-unk", map[string]string{"a": "b"}},
+	}
+	for _, tc := range cases {
+		pBytes, _ := json.Marshal(tc.payload)
+		envBytes, _ := json.Marshal(Envelope{EventID: tc.id, EventType: tc.evType, Payload: pBytes})
+		act, err := consumer.ProcessRawMessage(context.Background(), tc.subject, envBytes, map[string]string{
+			"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+		}, 1)
+		if err != nil || act != ActionAck {
+			t.Fatalf("%s: want ActionAck, got act=%v err=%v", tc.subject, act, err)
+		}
+	}
+	if len(handler.expiredEvents) != 1 || len(handler.refundedEvents) != 1 || len(handler.shipmentEvents) != 1 {
+		t.Fatalf("unexpected dispatch counts: exp=%d ref=%d ship=%d",
+			len(handler.expiredEvents), len(handler.refundedEvents), len(handler.shipmentEvents))
+	}
+
+	// Malformed payload for each known subject returns ActionNak on attempt 1.
+	for _, subj := range []string{SubjectPaymentSucceeded, SubjectPaymentFailed, SubjectPaymentExpired, SubjectPaymentRefunded, SubjectShipmentUpdated} {
+		envBytes, _ := json.Marshal(Envelope{EventID: "bad-" + subj, EventType: subj, Payload: json.RawMessage(`"not-an-object"`)})
+		if act, _ := consumer.ProcessRawMessage(context.Background(), subj, envBytes, nil, 1); act != ActionNak {
+			t.Fatalf("bad payload for %s: want ActionNak, got %v", subj, act)
+		}
+	}
+
+	// Stop on empty consumer is safe no-op.
+	if err := consumer.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// OutboxRelay.Run drains via trigger and exits cleanly on context cancellation.
+	trigger := make(chan struct{}, 1)
+	st := &fakeOutboxStore{
+		events: []db.OutboxEvent{
+			{ID: "ob-run-1", EventType: SubjectOrderReturned, PayloadJSON: []byte(`{"order_id":"o1"}`), CreatedAt: time.Now().UTC()},
+		},
+	}
+	relayPub := &recordingPublisher{}
+	relay := NewOutboxRelay(st, relayPub, nil, 0, trigger)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		relay.Run(ctx)
+	}()
+	trigger <- struct{}{}
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	<-done
+	if len(relayPub.msgs) != 1 || relayPub.msgs[0].Subject != SubjectOrderReturned {
+		t.Fatalf("OutboxRelay.Run expected 1 published order.returned event, got %+v", relayPub.msgs)
+	}
+
+	// FlushOnce handles publish errors gracefully.
+	relayPub.err = errors.New("nats down")
+	st.events = append(st.events, db.OutboxEvent{ID: "ob-fail", EventType: SubjectOrderReturnUpdated, PayloadJSON: []byte(`{}`), CreatedAt: time.Now().UTC()})
+	if n := relay.FlushOnce(context.Background()); n != 0 {
+		t.Fatalf("expected 0 published on error, got %d", n)
+	}
+}

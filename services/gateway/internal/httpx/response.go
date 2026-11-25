@@ -44,9 +44,18 @@ type ErrorBody struct {
 	TraceID string `json:"trace_id"`
 }
 
-// ErrorEnvelope matches docs/contracts.md Section 3 error schema.
+// AddressFeeQuote carries the refreshed shipping quote returned alongside HTTP 409 ADDRESS_FEE_CHANGED (G2).
+type AddressFeeQuote struct {
+	OldShippingFeeVND  int64 `json:"old_shipping_fee_vnd"`
+	NewShippingFeeVND  int64 `json:"new_shipping_fee_vnd"`
+	FeeDeltaVND        int64 `json:"fee_delta_vnd"`
+	NewTotalPayableVND int64 `json:"new_total_payable_vnd"`
+}
+
+// ErrorEnvelope matches docs/contracts.md Section 3 error schema (with optional quote for ADDRESS_FEE_CHANGED).
 type ErrorEnvelope struct {
-	Error ErrorBody `json:"error"`
+	Error ErrorBody        `json:"error"`
+	Quote *AddressFeeQuote `json:"quote,omitempty"`
 }
 
 // WriteJSON encodes payload as JSON with statusCode.
@@ -98,7 +107,14 @@ func MapGRPCError(err error) (int, string, string) {
 	msg := st.Message()
 	switch st.Code() {
 	case codes.InvalidArgument:
-		if code := extractDomainCode(msg, "BANNED_CONTENT", "PROHIBITED_CATEGORY"); code != "" {
+		if code := extractDomainCode(msg,
+			"BANNED_CONTENT",
+			"PROHIBITED_CATEGORY",
+			"IMPORT_INVALID_HEADER",
+			"IMPORT_TOO_MANY_ROWS",
+			"IMPORT_FILE_TOO_LARGE",
+			"IMPORT_INVALID_UTF8",
+		); code != "" {
 			return http.StatusBadRequest, code, msg
 		}
 		return http.StatusBadRequest, "INVALID_ARGUMENT", msg
@@ -110,6 +126,9 @@ func MapGRPCError(err error) (int, string, string) {
 		}
 		return http.StatusForbidden, "PERMISSION_DENIED", msg
 	case codes.NotFound:
+		if code := extractDomainCode(msg, "ORDER_LOOKUP_NOT_FOUND"); code != "" {
+			return http.StatusNotFound, code, msg
+		}
 		return http.StatusNotFound, "NOT_FOUND", msg
 	case codes.AlreadyExists:
 		return http.StatusConflict, "ALREADY_EXISTS", msg
@@ -126,6 +145,16 @@ func MapGRPCError(err error) (int, string, string) {
 			"PAYMENT_METHOD_DISABLED",
 			"ORDER_AMOUNT_OUT_OF_RANGE",
 			"VERSION_CONFLICT",
+			"ADDRESS_UPDATE_NOT_ALLOWED",
+			"ADDRESS_UPDATE_SHIPMENT_IN_PROGRESS",
+			"ADDRESS_UPDATE_CARRIER_PICKED_UP",
+			"ADDRESS_FEE_INCREASE_PREPAID",
+			"ADDRESS_FEE_CONFIRMATION_REQUIRED",
+			"ADDRESS_FEE_CHANGED",
+			"COD_ALREADY_COLLECTED",
+			"IMPORT_JOB_NOT_READY",
+			"IMPORT_JOB_IN_PROGRESS",
+			"REINDEX_ALREADY_RUNNING",
 		); code != "" {
 			return http.StatusConflict, code, msg
 		}
@@ -145,10 +174,72 @@ func MapGRPCError(err error) (int, string, string) {
 	}
 }
 
+const addressFeeChangedClientMessage = "shipping fee changed, please confirm the updated quote"
+
+// extractAddressFeeQuote parses the single canonical JSON payload emitted by order service
+// on ADDRESS_FEE_CHANGED: `ADDRESS_FEE_CHANGED: {json}` (G2).
+func extractAddressFeeQuote(msg string) *AddressFeeQuote {
+	trimmed := strings.TrimSpace(msg)
+	const prefix = "ADDRESS_FEE_CHANGED:"
+	if !strings.HasPrefix(trimmed, prefix) {
+		return nil
+	}
+	rawJSON := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+	if !strings.HasPrefix(rawJSON, "{") || !strings.HasSuffix(rawJSON, "}") {
+		return nil
+	}
+	var parsed struct {
+		OldShippingFeeVND  *int64 `json:"old_shipping_fee_vnd"`
+		NewShippingFeeVND  *int64 `json:"new_shipping_fee_vnd"`
+		FeeDeltaVND        *int64 `json:"fee_delta_vnd"`
+		NewTotalPayableVND *int64 `json:"new_total_payable_vnd"`
+	}
+	if err := json.Unmarshal([]byte(rawJSON), &parsed); err != nil {
+		return nil
+	}
+	if parsed.OldShippingFeeVND == nil && parsed.NewShippingFeeVND == nil &&
+		parsed.FeeDeltaVND == nil && parsed.NewTotalPayableVND == nil {
+		return nil
+	}
+	q := &AddressFeeQuote{}
+	if parsed.OldShippingFeeVND != nil {
+		q.OldShippingFeeVND = *parsed.OldShippingFeeVND
+	}
+	if parsed.NewShippingFeeVND != nil {
+		q.NewShippingFeeVND = *parsed.NewShippingFeeVND
+	}
+	if parsed.FeeDeltaVND != nil {
+		q.FeeDeltaVND = *parsed.FeeDeltaVND
+	} else if parsed.OldShippingFeeVND != nil && parsed.NewShippingFeeVND != nil {
+		q.FeeDeltaVND = *parsed.NewShippingFeeVND - *parsed.OldShippingFeeVND
+	}
+	if parsed.NewTotalPayableVND != nil {
+		q.NewTotalPayableVND = *parsed.NewTotalPayableVND
+	}
+	return q
+}
+
 // WriteGRPCError maps a gRPC error to the standard REST error envelope.
 // Internal/Unknown/DataLoss/Unavailable/DeadlineExceeded details are logged server-side with trace_id and never leaked to clients.
 func WriteGRPCError(w http.ResponseWriter, r *http.Request, err error) {
 	httpStatus, code, msg := MapGRPCError(err)
+	if httpStatus == http.StatusConflict && code == "ADDRESS_FEE_CHANGED" {
+		if quote := extractAddressFeeQuote(msg); quote != nil {
+			traceID := ""
+			if r != nil {
+				traceID = telemetry.TraceIDFromContext(r.Context())
+			}
+			WriteJSON(w, httpStatus, ErrorEnvelope{
+				Error: ErrorBody{
+					Code:    code,
+					Message: addressFeeChangedClientMessage,
+					TraceID: traceID,
+				},
+				Quote: quote,
+			})
+			return
+		}
+	}
 	if httpStatus >= http.StatusInternalServerError && err != nil {
 		ctx := context.Background()
 		method := ""

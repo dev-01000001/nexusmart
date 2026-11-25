@@ -861,7 +861,16 @@ func (s *OrderService) reconcileIncompleteCheckoutGroup(ctx context.Context, gro
 			return fmt.Errorf("payment client unavailable for forward recovery of %s", groupID)
 		}
 		buyerID := liveAggs[0].Order.BuyerID
-		payReq, rErr := buildCreatePaymentRequest(groupID, buyerID, liveTotalPayableVND, liveAggs[0].Order.PaymentMethod, paymentExpiresAt, liveAggs)
+		payReq, rErr := buildCreatePaymentRequest(
+			groupID,
+			buyerID,
+			liveTotalPayableVND,
+			liveAggs[0].Order.PaymentMethod,
+			paymentExpiresAt,
+			liveAggs,
+			effectiveSalesChannel(liveAggs[0].Order.SalesChannel),
+			liveAggs[0].Order.StorefrontShopID,
+		)
 		if rErr != nil {
 			return fmt.Errorf("build forward-recover CreatePayment for %s: %w", groupID, rErr)
 		}
@@ -1457,6 +1466,7 @@ func (s *OrderService) RunExpiryWatchdog(ctx context.Context) {
 			runSweep("pending stock confirms", s.ScanPendingStockConfirms)
 			runSweep("pending cancel compensations", s.ScanPendingCancelCompensations)
 			runSweep("pending return compensations", s.ScanPendingReturnCompensations)
+			runSweep("pending address changes", s.ScanPendingAddressChanges)
 		}
 	}
 }

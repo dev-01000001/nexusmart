@@ -1,308 +1,255 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { formatInt } from "@/lib/format";
+import React, { useId, useMemo, useState } from "react";
+import { formatInt, formatVnd } from "@/lib/format";
 import styles from "./SellerTrendChart.module.css";
 
-function computeRoundTicks(maxVal: number, count = 4): number[] {
-  const hiBound = maxVal <= 0 ? 10 : maxVal;
-  const rawStep = hiBound / count;
-  const mag = 10 ** Math.floor(Math.log10(rawStep));
-  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= rawStep) ?? 10 * mag;
-  let hi = Math.ceil(hiBound / step) * step;
-  if (hi <= hiBound) hi += step;
-  const ticks: number[] = [];
-  for (let v = 0; v <= hi + step * 0.01; v += step) {
-    ticks.push(Number(v.toFixed(6)));
+export interface TrendPoint {
+  label: string;
+  current: number;
+  prior?: number;
+}
+
+interface SellerTrendChartProps {
+  ariaLabel: string;
+  points: TrendPoint[];
+  valueKind: "vnd" | "int";
+  currentLegend: string;
+  priorLegend?: string;
+}
+
+function formatAxisTick(value: number, kind: "vnd" | "int"): string {
+  if (kind === "int") return formatInt(Math.round(value));
+  if (value >= 1_000_000) {
+    const m = value / 1_000_000;
+    return `${m % 1 === 0 ? m.toFixed(0) : m.toFixed(1).replace(".", ",")}tr`;
   }
-  return ticks;
+  if (value >= 1_000) {
+    return `${Math.round(value / 1_000)}k`;
+  }
+  return `${Math.round(value)}₫`;
 }
 
-function useMeasureWidth(fallback = 680) {
-  const ref = useRef<HTMLDivElement | null>(null);
-  const [width, setWidth] = useState(fallback);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const sync = () => setWidth(Math.max(240, Math.round(el.clientWidth || fallback)));
-    sync();
-    if (typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver(sync);
-      ro.observe(el);
-      return () => ro.disconnect();
-    }
-    window.addEventListener("resize", sync);
-    return () => window.removeEventListener("resize", sync);
-  }, [fallback]);
-
-  return { ref, width };
+function niceCeiling(rawMax: number, kind: "vnd" | "int"): number {
+  if (rawMax <= 0) return kind === "vnd" ? 1_000_000 : 10;
+  const step =
+    kind === "vnd"
+      ? rawMax >= 10_000_000
+        ? 5_000_000
+        : rawMax >= 1_000_000
+          ? 500_000
+          : 100_000
+      : rawMax >= 100
+        ? 50
+        : rawMax >= 20
+          ? 10
+          : 5;
+  return Math.ceil((rawMax * 1.12) / step) * step;
 }
 
-export interface SellerTrendChartProps {
-  labels: string[];
-  values: number[];
-  metricName: string;
-  formatValue?: (v: number) => string;
-  formatTick?: (v: number) => string;
-  annotation?: { index: number; label: string } | null;
-  desktopHeight?: number;
-  mobileHeight?: number;
-}
-
-/**
- * Achromatic Ledger trend line chart (seller-sheet.md §5):
- * - Single data hue (#0d7480 / var(--chart-1)) on the active segment
- * - Straight segments, 2.25px stroke, no fill, 3-4 solid 1px horizontal gridlines, round y-ticks
- * - Interactive 8px hover dot + 1px dashed guide + muted pale-grey segment after the hovered point
- * - Responsive phone height (180px) with 4 evenly spaced x-axis labels
- */
 export function SellerTrendChart({
-  labels,
-  values,
-  metricName,
-  formatValue = formatInt,
-  formatTick,
-  annotation = null,
-  desktopHeight = 204,
-  mobileHeight = 180,
+  ariaLabel,
+  points,
+  valueKind,
+  currentLegend,
+  priorLegend,
 }: SellerTrendChartProps) {
-  const { ref, width } = useMeasureWidth(720);
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
-  const isCompact = width < 480;
-  const height = isCompact ? mobileHeight : desktopHeight;
-  const tickFormatter = formatTick ?? formatValue;
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+  const gradId = useId().replace(/:/g, "");
 
-  const { yt, padL, padT, padB, padR, xScale, yScale, xIndices } = useMemo(() => {
-    const maxV = values.length ? Math.max(...values, 0) : 0;
-    const ticks = computeRoundTicks(maxV, 3);
-    const maxTickChars = Math.max(...ticks.map((t) => tickFormatter(t).length), 3);
-    const leftPad = Math.max(48, Math.round(maxTickChars * 7.1 + 14));
-    const topPad = annotation ? 26 : 12;
-    const bottomPad = 26;
-    const rightPad = 14;
-    const plotW = Math.max(80, width - leftPad - rightPad);
-    const plotH = Math.max(60, height - topPad - bottomPad);
-    const yHi = ticks[ticks.length - 1] || 1;
+  const width = 680;
+  const height = 224;
+  const pad = { top: 14, right: 16, bottom: 28, left: 48 };
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
 
-    const xFn = (i: number) =>
-      labels.length <= 1 ? leftPad : leftPad + (i / (labels.length - 1)) * plotW;
-    const yFn = (v: number) => topPad + plotH * (1 - v / yHi);
+  const hasPrior = useMemo(
+    () => Boolean(priorLegend) && points.some((p) => typeof p.prior === "number"),
+    [points, priorLegend]
+  );
 
-    // Even step on x-labels (up to 4 on phone, up to 7 on desktop)
-    const maxLabels = isCompact ? 4 : 7;
-    const n = labels.length;
-    const picks: number[] = [];
-    if (n <= maxLabels) {
-      for (let i = 0; i < n; i++) picks.push(i);
-    } else {
-      const step = Math.max(1, Math.ceil((n - 1) / (maxLabels - 1)));
-      for (let i = 0; i < n; i += step) {
-        picks.push(i);
-      }
-      const last = picks[picks.length - 1];
-      if (last !== n - 1) {
-        if (n - 1 - last < Math.ceil(step * 0.5) && picks.length > 1) {
-          picks[picks.length - 1] = n - 1;
-        } else {
-          picks.push(n - 1);
-        }
-      }
+  const { yMax, yTicks, currentCoords, priorCoords, xLabelIndices } = useMemo(() => {
+    const allVals = points.flatMap((p) =>
+      typeof p.prior === "number" ? [p.current, p.prior] : [p.current]
+    );
+    const maxVal = Math.max(0, ...allVals);
+    const ceiling = niceCeiling(maxVal, valueKind);
+    const ticks = [0, 0.25, 0.5, 0.75, 1].map((r) => ceiling * r);
+
+    const n = Math.max(1, points.length);
+    const xFor = (i: number) => (n === 1 ? pad.left + plotW / 2 : pad.left + (i / (n - 1)) * plotW);
+    const yFor = (v: number) => pad.top + plotH - (v / ceiling) * plotH;
+
+    const cCoords = points.map((p, i) => ({ x: xFor(i), y: yFor(p.current), v: p.current }));
+    const pCoords = points.map((p, i) => ({
+      x: xFor(i),
+      y: yFor(p.prior ?? 0),
+      v: p.prior ?? 0,
+    }));
+
+    const maxLabels = points.length <= 10 ? points.length : 7;
+    const step = Math.max(1, Math.ceil((points.length - 1) / Math.max(1, maxLabels - 1)));
+    const labelIdx = new Set<number>();
+    for (let i = 0; i < points.length; i += step) {
+      labelIdx.add(i);
+    }
+    if (points.length > 0) {
+      labelIdx.add(points.length - 1);
     }
 
     return {
-      yt: ticks,
-      padL: leftPad,
-      padT: topPad,
-      padB: bottomPad,
-      padR: rightPad,
-      xScale: xFn,
-      yScale: yFn,
-      xIndices: picks,
+      yMax: ceiling,
+      yTicks: ticks,
+      currentCoords: cCoords,
+      priorCoords: pCoords,
+      xLabelIndices: labelIdx,
     };
-  }, [values, labels.length, tickFormatter, annotation, width, height, isCompact]);
+  }, [points, valueKind, pad.left, pad.top, plotW, plotH]);
 
-  const points = useMemo(
-    () => values.map((v, i) => [xScale(i), yScale(v)] as const),
-    [values, xScale, yScale]
-  );
+  const toPolyline = (coords: Array<{ x: number; y: number }>) =>
+    coords.map((c) => `${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(" ");
 
-  const splitAt = hoverIdx ?? points.length - 1;
-  const activePath = useMemo(() => {
-    const slice = points.slice(0, splitAt + 1);
-    return slice
-      .map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)} ${p[1].toFixed(1)}`)
-      .join("");
-  }, [points, splitAt]);
+  const areaPath = useMemo(() => {
+    if (currentCoords.length < 2) return "";
+    const baseY = (pad.top + plotH).toFixed(1);
+    const first = currentCoords[0];
+    const last = currentCoords[currentCoords.length - 1];
+    const lineSegs = currentCoords
+      .map((c, idx) => `${idx === 0 ? "M" : "L"}${c.x.toFixed(1)},${c.y.toFixed(1)}`)
+      .join(" ");
+    return `${lineSegs} L${last.x.toFixed(1)},${baseY} L${first.x.toFixed(1)},${baseY} Z`;
+  }, [currentCoords, pad.top, plotH]);
 
-  const mutedTailPath = useMemo(() => {
-    if (hoverIdx == null || hoverIdx >= points.length - 1) return "";
-    const slice = points.slice(hoverIdx);
-    return slice
-      .map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)} ${p[1].toFixed(1)}`)
-      .join("");
-  }, [points, hoverIdx]);
+  const activeIndex = hoveredIdx !== null && hoveredIdx < points.length ? hoveredIdx : null;
+  const activePoint = activeIndex !== null ? points[activeIndex] : null;
+  const activeCoord = activeIndex !== null ? currentCoords[activeIndex] : null;
 
-  const handlePointerMove = (e: React.PointerEvent<SVGRectElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const relX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
-    const ratio = rect.width > 0 ? relX / rect.width : 0;
-    const idx = Math.round(ratio * Math.max(0, labels.length - 1));
-    setHoverIdx(Math.max(0, Math.min(labels.length - 1, idx)));
-  };
-
-  const latestVal = values.at(-1) ?? 0;
+  const formatVal = (v: number) => (valueKind === "vnd" ? formatVnd(v) : formatInt(v));
 
   return (
-    <div className={styles.chartBox} ref={ref}>
+    <div className={styles.wrap} onMouseLeave={() => setHoveredIdx(null)}>
+      <div className={styles.legendRow}>
+        <span className={styles.legendItem}>
+          <span className={styles.swatchCurrent} />
+          <span>{currentLegend}</span>
+        </span>
+        {hasPrior && priorLegend && (
+          <span className={styles.legendItem}>
+            <span className={styles.swatchPrior} />
+            <span>{priorLegend}</span>
+          </span>
+        )}
+        {activePoint ? (
+          <span className={styles.readout}>
+            <strong>{activePoint.label}</strong>: {formatVal(activePoint.current)}
+            {hasPrior && typeof activePoint.prior === "number"
+              ? ` · Trước: ${formatVal(activePoint.prior)}`
+              : ""}
+          </span>
+        ) : (
+          <span className={styles.readoutHint}>Di chuột vào biểu đồ để xem chi tiết từng ngày</span>
+        )}
+      </div>
+
       <svg
-        className={styles.svg}
         viewBox={`0 0 ${width} ${height}`}
-        height={height}
+        className={styles.svg}
         role="img"
-        aria-label={`${metricName} từ ${labels[0] ?? ""} đến ${labels.at(-1) ?? ""}, ngày gần nhất ${formatValue(latestVal)}`}
+        aria-label={ariaLabel}
       >
-        {/* Solid 1px horizontal gridlines + round y-axis ticks (no y-axis line) */}
-        {yt.map((tick) => {
-          const yy = yScale(tick);
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.14" />
+            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+
+        {yTicks.map((tick) => {
+          const y = pad.top + plotH - (tick / yMax) * plotH;
           return (
             <g key={tick}>
               <line
-                x1={padL}
-                x2={width - padR}
-                y1={yy}
-                y2={yy}
-                stroke="var(--grid)"
-                strokeWidth={1}
-                shapeRendering="crispEdges"
+                x1={pad.left}
+                x2={width - pad.right}
+                y1={y}
+                y2={y}
+                className={styles.gridLine}
               />
-              <text x={padL - 8} y={yy + 4} textAnchor="end" fontSize={12} fill="var(--axis-ink)">
-                {tickFormatter(tick)}
+              <text x={pad.left - 8} y={y + 4} textAnchor="end" className={styles.axisLabel}>
+                {formatAxisTick(tick, valueKind)}
               </text>
             </g>
           );
         })}
 
-        {/* X-axis labels */}
-        {xIndices.map((idx) => {
-          const xx = xScale(idx);
-          const anchor = idx === 0 ? "start" : idx === labels.length - 1 ? "end" : "middle";
+        {areaPath && <path d={areaPath} fill={`url(#${gradId})`} />}
+
+        {hasPrior && priorCoords.length > 1 && (
+          <polyline
+            fill="none"
+            points={toPolyline(priorCoords)}
+            className={styles.priorLine}
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
+
+        {currentCoords.length > 1 && (
+          <polyline
+            fill="none"
+            points={toPolyline(currentCoords)}
+            className={styles.currentLine}
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
+
+        {activeCoord && (
+          <g>
+            <line
+              x1={activeCoord.x}
+              x2={activeCoord.x}
+              y1={pad.top}
+              y2={pad.top + plotH}
+              className={styles.crosshair}
+            />
+            <circle cx={activeCoord.x} cy={activeCoord.y} r={4.5} className={styles.activeDot} />
+          </g>
+        )}
+
+        {currentCoords.map((c, i) => {
+          if (!xLabelIndices.has(i)) return null;
           return (
             <text
-              key={idx}
-              x={xx}
-              y={height - 6}
-              textAnchor={anchor}
-              fontSize={12}
-              fill="var(--axis-ink)"
+              key={`x-${points[i]?.label ?? i}`}
+              x={c.x}
+              y={height - 8}
+              textAnchor={i === 0 ? "start" : i === points.length - 1 ? "end" : "middle"}
+              className={styles.axisLabel}
             >
-              {labels[idx]}
+              {points[i]?.label ?? ""}
             </text>
           );
         })}
 
-        {/* Event annotation above plot (e.g. Flash sale 12:00 spike) */}
-        {annotation && annotation.index >= 0 && annotation.index < labels.length && (
-          <g>
-            <line
-              x1={xScale(annotation.index)}
-              x2={xScale(annotation.index)}
-              y1={padT - 5}
-              y2={height - padB}
-              stroke="var(--axis-ink)"
-              strokeWidth={1}
-              opacity={0.35}
-              shapeRendering="crispEdges"
+        {currentCoords.map((c, i) => {
+          const sliceW = points.length > 1 ? plotW / (points.length - 1) : plotW;
+          const x = Math.max(pad.left, c.x - sliceW / 2);
+          const rectW = Math.min(width - pad.right - x, sliceW);
+          return (
+            <rect
+              key={`hit-${i}`}
+              x={x}
+              y={pad.top}
+              width={Math.max(4, rectW)}
+              height={plotH}
+              fill="transparent"
+              onMouseEnter={() => setHoveredIdx(i)}
+              onFocus={() => setHoveredIdx(i)}
+              tabIndex={0}
+              aria-label={`${points[i]?.label ?? ""}: ${formatVal(points[i]?.current ?? 0)}`}
             />
-            <text
-              x={
-                xScale(annotation.index) > width * 0.68
-                  ? xScale(annotation.index) - 5
-                  : xScale(annotation.index) + 5
-              }
-              y={padT - 9}
-              textAnchor={xScale(annotation.index) > width * 0.68 ? "end" : "start"}
-              fontSize={12}
-              fill="var(--axis-ink)"
-            >
-              {annotation.label}
-            </text>
-          </g>
-        )}
-
-        {/* Muted segment after hovered cursor */}
-        {mutedTailPath && (
-          <path
-            d={mutedTailPath}
-            fill="none"
-            stroke="var(--chart-muted)"
-            strokeWidth={2.25}
-            strokeLinejoin="round"
-            strokeLinecap="round"
-          />
-        )}
-
-        {/* Active data series in the one brand data hue (#0d7480) */}
-        {activePath && (
-          <path
-            d={activePath}
-            fill="none"
-            stroke="var(--chart-1)"
-            strokeWidth={2.25}
-            strokeLinejoin="round"
-            strokeLinecap="round"
-          />
-        )}
-
-        {/* Hover vertical dashed guide + 8px hover ring dot */}
-        {hoverIdx != null && points[hoverIdx] && (
-          <g>
-            <line
-              x1={points[hoverIdx][0]}
-              x2={points[hoverIdx][0]}
-              y1={padT}
-              y2={height - padB}
-              stroke="var(--axis-ink)"
-              strokeWidth={1}
-              strokeDasharray="3 3"
-              opacity={0.6}
-            />
-            <circle
-              cx={points[hoverIdx][0]}
-              cy={points[hoverIdx][1]}
-              r={4}
-              fill="var(--card)"
-              stroke="var(--chart-1)"
-              strokeWidth={2.25}
-            />
-          </g>
-        )}
-
-        {/* Pointer capture surface */}
-        <rect
-          x={padL}
-          y={padT}
-          width={Math.max(1, width - padL - padR)}
-          height={Math.max(1, height - padT - padB)}
-          fill="transparent"
-          onPointerMove={handlePointerMove}
-          onPointerLeave={() => setHoverIdx(null)}
-        />
+          );
+        })}
       </svg>
-
-      {hoverIdx != null && (
-        <div
-          className={styles.tooltip}
-          style={{
-            left: `${Math.min(Math.max(padL, xScale(hoverIdx) + 10), Math.max(padL, width - 176))}px`,
-          }}
-        >
-          <div className={styles.tooltipRow}>
-            <span className={styles.tooltipLabel}>{labels[hoverIdx]}</span>
-            <span className={styles.tooltipValue}>{formatValue(values[hoverIdx] ?? 0)}</span>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { formatInt } from "@/lib/format";
 import styles from "./SvgChart.module.css";
 
@@ -23,28 +23,72 @@ function computeRoundTicks(minVal: number, maxVal: number, count = 4): number[] 
   return ticks;
 }
 
-function useContainerWidth(defaultWidth = 560) {
+function useChartLifecycle(defaultWidth = 560) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState<number>(defaultWidth);
+  const [entered, setEntered] = useState<boolean>(false);
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+
     const update = () => {
       const next = Math.max(240, Math.round(el.clientWidth || defaultWidth));
       setWidth(next);
     };
     update();
+
+    let ro: ResizeObserver | null = null;
     if (typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver(update);
+      ro = new ResizeObserver(update);
       ro.observe(el);
-      return () => ro.disconnect();
+    } else {
+      window.addEventListener("resize", update);
     }
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
+
+    const reduced =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    if (reduced || typeof IntersectionObserver === "undefined") {
+      setEntered(true);
+      return () => {
+        ro?.disconnect();
+        window.removeEventListener("resize", update);
+      };
+    }
+
+    const rect = el.getBoundingClientRect();
+    if (rect.top < (window.innerHeight || 900) * 0.96) {
+      setEntered(true);
+      return () => {
+        ro?.disconnect();
+        window.removeEventListener("resize", update);
+      };
+    }
+
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setEntered(true);
+            io.disconnect();
+            break;
+          }
+        }
+      },
+      { rootMargin: "0px 0px -4% 0px", threshold: 0.08 }
+    );
+    io.observe(el);
+
+    return () => {
+      io.disconnect();
+      ro?.disconnect();
+      window.removeEventListener("resize", update);
+    };
   }, [defaultWidth]);
 
-  return { ref, width };
+  return { ref, width, entered };
 }
 
 export interface LineSeries {
@@ -74,7 +118,7 @@ export interface LineChartProps {
 export function LineChart({
   labels,
   series,
-  height = 220,
+  height = 228,
   formatValue = formatInt,
   formatTick,
   showArea = false,
@@ -82,8 +126,10 @@ export function LineChart({
   referenceLine,
   ariaLabel,
 }: LineChartProps) {
-  const { ref, width } = useContainerWidth(640);
+  const { ref, width, entered } = useChartLifecycle(640);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const clipUid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  const plotClipId = `nm-line-clip-${clipUid}`;
 
   const tickFormatter = formatTick ?? formatValue;
 
@@ -95,12 +141,12 @@ export function LineChart({
     const minV = allNums.length ? Math.min(0, ...allNums) : 0;
     const ticks = computeRoundTicks(minV, maxV, 4);
     const maxTickChars = Math.max(...ticks.map((v) => tickFormatter(v).length), 3);
-    const leftPad = Math.max(44, maxTickChars * 7.2 + 14);
-    const topPad = annotations && annotations.length > 0 ? 26 : 12;
-    const bottomPad = 26;
-    const rightPad = 12;
+    const leftPad = Math.max(48, maxTickChars * 7.8 + 16);
+    const topPad = annotations && annotations.length > 0 ? 28 : 14;
+    const bottomPad = 28;
+    const rightPad = 14;
     const plotW = Math.max(80, width - leftPad - rightPad);
-    const plotH = Math.max(60, height - topPad - bottomPad);
+    const plotH = Math.max(64, height - topPad - bottomPad);
     const yLo = ticks[0];
     const yHi = ticks[ticks.length - 1];
 
@@ -108,7 +154,7 @@ export function LineChart({
       labels.length <= 1 ? leftPad : leftPad + (i / (labels.length - 1)) * plotW;
     const yFn = (v: number) => topPad + plotH * (1 - (v - yLo) / Math.max(1e-6, yHi - yLo));
 
-    const maxLabels = Math.max(2, Math.min(7, Math.floor(plotW / 68)));
+    const maxLabels = Math.max(2, Math.min(7, Math.floor(plotW / 76)));
     const step = Math.max(1, Math.ceil(labels.length / maxLabels));
     const picks: number[] = [];
     for (let i = 0; i < labels.length; i += step) picks.push(i);
@@ -138,13 +184,18 @@ export function LineChart({
   };
 
   const primarySeries = series[0];
+  const primaryHoverVal = hoverIdx != null ? primarySeries?.values[hoverIdx] : null;
   const lastVal = primarySeries?.values.filter((v): v is number => v != null).at(-1);
   const computedAria =
     ariaLabel ??
     `${series.map((s) => s.name).join(", ")} từ ${labels[0] ?? ""} đến ${labels.at(-1) ?? ""}, giá trị gần nhất ${lastVal != null ? formatValue(lastVal) : "trống"}`;
 
+  const baselineY = yScale(yt[0]);
+  const plotW = Math.max(80, width - padL - padR);
+  const plotH = Math.max(64, height - padT - padB);
+
   return (
-    <div className={styles.chartBox} ref={ref}>
+    <div className={`${styles.chartBox} ${entered ? styles.entered : ""}`} ref={ref}>
       {series.length > 1 && (
         <ul className={styles.legend}>
           {series.map((sr, idx) => (
@@ -166,9 +217,22 @@ export function LineChart({
         role="img"
         aria-label={computedAria}
       >
-        {/* Horizontal gridlines and y ticks (no y-axis line) */}
-        {yt.map((val) => {
+        <defs>
+          <clipPath id={plotClipId}>
+            <rect
+              x={padL - 2}
+              y={padT - 6}
+              width={plotW + 4}
+              height={plotH + 10}
+              className={styles.plotRevealRect}
+              style={{ transformOrigin: `${padL - 2}px 0px` }}
+            />
+          </clipPath>
+        </defs>
+        {/* Horizontal gridlines, baseline axis rule, and y ticks (>= 13px) */}
+        {yt.map((val, idx) => {
           const yy = yScale(val);
+          const isBaseline = idx === 0;
           return (
             <g key={val}>
               <line
@@ -176,32 +240,36 @@ export function LineChart({
                 x2={width - padR}
                 y1={yy}
                 y2={yy}
-                stroke="var(--grid)"
+                stroke={isBaseline ? "var(--control)" : "var(--grid)"}
                 strokeWidth={1}
                 shapeRendering="crispEdges"
               />
-              <text x={padL - 8} y={yy + 4} textAnchor="end" fontSize={12} fill="var(--axis-ink)">
+              <text x={padL - 8} y={yy + 4} textAnchor="end" fontSize={13} fill="var(--axis-ink)">
                 {tickFormatter(val)}
               </text>
             </g>
           );
         })}
 
-        {/* X axis labels */}
+        {/* X axis ticks and labels (>= 13px) */}
         {xIndices.map((idx) => {
           const xx = xScale(idx);
           const anchor = idx === 0 ? "start" : idx === labels.length - 1 ? "end" : "middle";
           return (
-            <text
-              key={idx}
-              x={xx}
-              y={height - 6}
-              textAnchor={anchor}
-              fontSize={12}
-              fill="var(--axis-ink)"
-            >
-              {labels[idx]}
-            </text>
+            <g key={idx}>
+              <line
+                x1={xx}
+                x2={xx}
+                y1={baselineY}
+                y2={baselineY + 4}
+                stroke="var(--control)"
+                strokeWidth={1}
+                shapeRendering="crispEdges"
+              />
+              <text x={xx} y={height - 6} textAnchor={anchor} fontSize={13} fill="var(--axis-ink)">
+                {labels[idx]}
+              </text>
+            </g>
           );
         })}
 
@@ -216,14 +284,14 @@ export function LineChart({
               stroke="var(--axis-ink)"
               strokeWidth={1}
               strokeDasharray="4 4"
-              opacity={0.7}
+              opacity={0.75}
             />
             {referenceLine.label && (
               <text
                 x={width - padR}
-                y={yScale(referenceLine.value) - 5}
+                y={yScale(referenceLine.value) - 6}
                 textAnchor="end"
-                fontSize={11}
+                fontSize={13}
                 fill="var(--axis-ink)"
               >
                 {referenceLine.label}
@@ -246,14 +314,14 @@ export function LineChart({
                 y2={height - padB}
                 stroke="var(--axis-ink)"
                 strokeWidth={1}
-                opacity={0.4}
+                opacity={0.45}
                 shapeRendering="crispEdges"
               />
               <text
                 x={alignEnd ? ax - 4 : ax + 4}
                 y={padT - 10}
                 textAnchor={alignEnd ? "end" : "start"}
-                fontSize={11}
+                fontSize={13}
                 fill="var(--axis-ink)"
               >
                 {ann.label}
@@ -262,54 +330,68 @@ export function LineChart({
           );
         })}
 
-        {/* Series paths (straight segments, 2px stroke, no point markers at rest) */}
-        {series.map((sr, k) => {
-          const color = seriesColor(sr, k);
-          const pts: Array<[number, number] | null> = sr.values.map((v, i) =>
-            v == null ? null : [xScale(i), yScale(v)]
-          );
-          let d = "";
-          for (let i = 0; i < pts.length; i++) {
-            const p = pts[i];
-            if (!p) continue;
-            const prev = i > 0 ? pts[i - 1] : null;
-            d += `${prev ? "L" : "M"}${p[0].toFixed(1)} ${p[1].toFixed(1)}`;
-          }
-          const validPts = pts.filter((p): p is [number, number] => p != null);
-          const areaD =
-            showArea && k === 0 && validPts.length > 1
-              ? `${d}L${validPts[validPts.length - 1][0].toFixed(1)} ${yScale(yt[0]).toFixed(1)}L${validPts[0][0].toFixed(1)} ${yScale(yt[0]).toFixed(1)}Z`
-              : null;
+        {/* Series paths + optional area share one synchronized horizontal reveal clipPath */}
+        <g clipPath={`url(#${plotClipId})`}>
+          {series.map((sr, k) => {
+            const color = seriesColor(sr, k);
+            const pts: Array<[number, number] | null> = sr.values.map((v, i) =>
+              v == null ? null : [xScale(i), yScale(v)]
+            );
+            let d = "";
+            for (let i = 0; i < pts.length; i++) {
+              const p = pts[i];
+              if (!p) continue;
+              const prev = i > 0 ? pts[i - 1] : null;
+              d += `${prev ? "L" : "M"}${p[0].toFixed(1)} ${p[1].toFixed(1)}`;
+            }
+            const validPts = pts.filter((p): p is [number, number] => p != null);
+            const areaD =
+              showArea && k === 0 && validPts.length > 1
+                ? `${d}L${validPts[validPts.length - 1][0].toFixed(1)} ${baselineY.toFixed(1)}L${validPts[0][0].toFixed(1)} ${baselineY.toFixed(1)}Z`
+                : null;
 
-          return (
-            <g key={sr.name}>
-              {areaD && <path d={areaD} fill={color} opacity={0.1} />}
-              <path
-                d={d}
-                fill="none"
-                stroke={color}
-                strokeWidth={2}
-                strokeLinejoin="round"
-                strokeLinecap="round"
-                strokeDasharray={sr.dashed ? "5 4" : undefined}
-              />
-            </g>
-          );
-        })}
+            return (
+              <g key={sr.name}>
+                {areaD && <path d={areaD} fill={color} className={styles.areaPath} />}
+                <path
+                  d={d}
+                  fill="none"
+                  stroke={color}
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  strokeDasharray={sr.dashed ? "5 4" : undefined}
+                />
+              </g>
+            );
+          })}
+        </g>
 
-        {/* Hover guide and dot */}
+        {/* Hover vertical + horizontal alignment crosshairs and active markers */}
         {hoverIdx != null && (
-          <g>
+          <g className={styles.guideGroup}>
             <line
               x1={xScale(hoverIdx)}
               x2={xScale(hoverIdx)}
               y1={padT}
-              y2={height - padB}
-              stroke="var(--axis-ink)"
+              y2={baselineY}
+              stroke="var(--ink-3)"
               strokeWidth={1}
               strokeDasharray="3 3"
-              opacity={0.55}
+              opacity={0.7}
             />
+            {primaryHoverVal != null && (
+              <line
+                x1={padL}
+                x2={xScale(hoverIdx)}
+                y1={yScale(primaryHoverVal)}
+                y2={yScale(primaryHoverVal)}
+                stroke="var(--ink-3)"
+                strokeWidth={1}
+                strokeDasharray="3 3"
+                opacity={0.45}
+              />
+            )}
             {series.map((sr, k) => {
               const val = sr.values[hoverIdx];
               if (val == null) return null;
@@ -318,7 +400,7 @@ export function LineChart({
                   key={sr.name}
                   cx={xScale(hoverIdx)}
                   cy={yScale(val)}
-                  r={4}
+                  r={4.5}
                   fill="var(--card)"
                   stroke={seriesColor(sr, k)}
                   strokeWidth={2}
@@ -344,7 +426,7 @@ export function LineChart({
         <div
           className={styles.tooltip}
           style={{
-            left: `${Math.min(Math.max(8, xScale(hoverIdx) + 12), Math.max(8, width - 170))}px`,
+            left: `${Math.min(Math.max(8, xScale(hoverIdx) + 12), Math.max(8, width - 180))}px`,
           }}
         >
           <div className={styles.tooltipLabel}>{labels[hoverIdx]}</div>
@@ -376,13 +458,13 @@ export interface BarChartProps {
 export function BarChart({
   labels,
   values,
-  height = 200,
+  height = 208,
   highlightIndex = null,
   formatValue = formatInt,
   formatTick,
   ariaLabel,
 }: BarChartProps) {
-  const { ref, width } = useContainerWidth(560);
+  const { ref, width, entered } = useChartLifecycle(560);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const tickFormatter = formatTick ?? formatValue;
 
@@ -395,15 +477,15 @@ export function BarChart({
     const maxV = values.length ? Math.max(...values, 1) : 10;
     const ticks = computeRoundTicks(0, maxV, 4);
     const maxTickChars = Math.max(...ticks.map((v) => tickFormatter(v).length), 3);
-    const leftPad = Math.max(44, maxTickChars * 7.2 + 14);
-    const topPad = 12;
-    const bottomPad = 26;
-    const rightPad = 8;
+    const leftPad = Math.max(48, maxTickChars * 7.8 + 16);
+    const topPad = 14;
+    const bottomPad = 28;
+    const rightPad = 10;
     const plotW = Math.max(80, width - leftPad - rightPad);
-    const plotH = Math.max(60, height - topPad - bottomPad);
+    const plotH = Math.max(64, height - topPad - bottomPad);
     const yHi = ticks[ticks.length - 1];
     const bwBand = plotW / Math.max(1, values.length);
-    const bw = Math.max(8, Math.min(44, bwBand * 0.58));
+    const bw = Math.max(10, Math.min(44, bwBand * 0.56));
 
     return {
       yt: ticks,
@@ -419,9 +501,11 @@ export function BarChart({
   }, [values, tickFormatter, width, height]);
 
   const zeroY = yScale(0);
+  const activeHoverIdx =
+    hoverIdx != null && hoverIdx >= 0 && hoverIdx < values.length ? hoverIdx : null;
 
   return (
-    <div className={styles.chartBox} ref={ref}>
+    <div className={`${styles.chartBox} ${entered ? styles.entered : ""}`} ref={ref}>
       <svg
         className={styles.svg}
         viewBox={`0 0 ${width} ${height}`}
@@ -429,7 +513,7 @@ export function BarChart({
         role="img"
         aria-label={ariaLabel ?? `Biểu đồ cột gồm ${labels.length} kỳ`}
       >
-        {yt.map((val) => {
+        {yt.map((val, idx) => {
           const yy = yScale(val);
           return (
             <g key={val}>
@@ -438,16 +522,30 @@ export function BarChart({
                 x2={width - padR}
                 y1={yy}
                 y2={yy}
-                stroke="var(--grid)"
+                stroke={idx === 0 ? "var(--control)" : "var(--grid)"}
                 strokeWidth={1}
                 shapeRendering="crispEdges"
               />
-              <text x={padL - 8} y={yy + 4} textAnchor="end" fontSize={12} fill="var(--axis-ink)">
+              <text x={padL - 8} y={yy + 4} textAnchor="end" fontSize={13} fill="var(--axis-ink)">
                 {tickFormatter(val)}
               </text>
             </g>
           );
         })}
+
+        {/* Hover alignment guide */}
+        {activeHoverIdx != null && (
+          <line
+            x1={padL}
+            x2={width - padR}
+            y1={yScale(values[activeHoverIdx])}
+            y2={yScale(values[activeHoverIdx])}
+            stroke="var(--ink-3)"
+            strokeWidth={1}
+            strokeDasharray="3 3"
+            opacity={0.5}
+          />
+        )}
 
         {values.map((v, i) => {
           const cx = barX(i);
@@ -473,14 +571,19 @@ export function BarChart({
                 width={barWidth}
                 height={h}
                 fill={active ? "var(--chart-1)" : "var(--chart-muted)"}
-                opacity={hoverIdx != null && hoverIdx !== i ? 0.65 : 1}
+                opacity={activeHoverIdx != null && activeHoverIdx !== i ? 0.55 : 1}
                 shapeRendering="crispEdges"
+                className={styles.barRect}
+                style={
+                  {
+                    "--bar-idx": i,
+                    transformOrigin: `${cx}px ${zeroY}px`,
+                  } as React.CSSProperties
+                }
               >
-                <title>
-                  {labels[i]}: {formatValue(v)}
-                </title>
+                <title>{`${labels[i]}: ${formatValue(v)}`}</title>
               </rect>
-              <text x={cx} y={height - 6} textAnchor="middle" fontSize={12} fill="var(--axis-ink)">
+              <text x={cx} y={height - 6} textAnchor="middle" fontSize={13} fill="var(--axis-ink)">
                 {labels[i]}
               </text>
             </g>
@@ -488,15 +591,15 @@ export function BarChart({
         })}
       </svg>
 
-      {hoverIdx != null && (
+      {activeHoverIdx != null && (
         <div
           className={styles.tooltip}
           style={{
-            left: `${Math.min(Math.max(8, barX(hoverIdx) + 12), Math.max(8, width - 160))}px`,
+            left: `${Math.min(Math.max(8, barX(activeHoverIdx) + 12), Math.max(8, width - 170))}px`,
           }}
         >
-          <div className={styles.tooltipLabel}>{labels[hoverIdx]}</div>
-          <div className={styles.tooltipValue}>{formatValue(values[hoverIdx])}</div>
+          <div className={styles.tooltipLabel}>{labels[activeHoverIdx]}</div>
+          <div className={styles.tooltipValue}>{formatValue(values[activeHoverIdx])}</div>
         </div>
       )}
     </div>
@@ -516,31 +619,39 @@ export interface BarListProps {
 }
 
 export function BarList({ rows, formatValue = formatInt, accentTop = true }: BarListProps) {
+  const { ref, entered } = useChartLifecycle(420);
   const maxVal = Math.max(...rows.map((r) => r.value), 1);
+
   return (
-    <ol className={styles.barList}>
-      {rows.map((row, idx) => {
-        const pct = Math.max(0, Math.min(100, (row.value / maxVal) * 100));
-        return (
-          <li key={row.label} className={styles.barListItem}>
-            <span className={styles.barListLabel}>
-              {row.label}
-              {row.subLabel && <span className={styles.barListSub}>{row.subLabel}</span>}
-            </span>
-            <span className={styles.barListValue}>{formatValue(row.value)}</span>
-            <span className={styles.barListTrack} aria-hidden="true">
-              <span
-                className={styles.barListFill}
-                style={{
-                  width: `${pct}%`,
-                  backgroundColor: idx === 0 && accentTop ? "var(--chart-1)" : "var(--chart-muted)",
-                }}
-              />
-            </span>
-          </li>
-        );
-      })}
-    </ol>
+    <div ref={ref} className={entered ? styles.entered : ""}>
+      <ol className={styles.barList}>
+        {rows.map((row, idx) => {
+          const ratio = Math.max(0, Math.min(1, row.value / maxVal));
+          return (
+            <li key={row.label} className={styles.barListItem}>
+              <span className={styles.barListLabel}>
+                {row.label}
+                {row.subLabel && <span className={styles.barListSub}>{row.subLabel}</span>}
+              </span>
+              <span className={styles.barListValue}>{formatValue(row.value)}</span>
+              <span className={styles.barListTrack} aria-hidden="true">
+                <span
+                  className={styles.barListFill}
+                  style={
+                    {
+                      "--ratio": ratio,
+                      "--bar-idx": idx,
+                      backgroundColor:
+                        idx === 0 && accentTop ? "var(--chart-1)" : "var(--chart-muted)",
+                    } as React.CSSProperties
+                  }
+                />
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
   );
 }
 
@@ -581,7 +692,10 @@ export function ProgressBar({
         {ratio > 0 && (
           <div
             className={styles.progressFill}
-            style={{ width: `${(ratio * 100).toFixed(2)}%`, backgroundColor: fillCol }}
+            style={{
+              transform: `scaleX(${ratio.toFixed(4)})`,
+              backgroundColor: fillCol,
+            }}
           />
         )}
       </div>
@@ -602,16 +716,21 @@ export function RingChart({
   ratio,
   label,
   subLabel,
-  size = 112,
+  size = 116,
   strokeWidth = 6,
   color = "var(--chart-1)",
 }: RingChartProps) {
+  const { ref, entered } = useChartLifecycle(size);
   const clamped = Math.max(0, Math.min(1, ratio));
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
 
   return (
-    <div className={styles.ringWrap} style={{ width: size, height: size }}>
+    <div
+      ref={ref}
+      className={`${styles.ringWrap} ${entered ? styles.entered : ""}`}
+      style={{ width: size, height: size }}
+    >
       <svg
         width={size}
         height={size}
@@ -634,12 +753,19 @@ export function RingChart({
           fill="none"
           stroke={color}
           strokeWidth={strokeWidth}
-          strokeDasharray={`${circumference * clamped} ${circumference}`}
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference * (1 - clamped)}
           transform={`rotate(-90 ${size / 2} ${size / 2})`}
+          className={styles.ringArc}
+          style={{ "--ring-c": circumference } as React.CSSProperties}
         />
       </svg>
       <div className={styles.ringCenter}>
-        <span className={styles.ringValue} style={{ fontSize: `${Math.round(size / 5.2)}px` }}>
+        <span
+          className={styles.ringValue}
+          style={{ fontSize: `${Math.max(15, Math.round(size / 5.2))}px` }}
+        >
           {label}
         </span>
         {subLabel && <span className={styles.ringSub}>{subLabel}</span>}

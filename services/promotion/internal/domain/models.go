@@ -22,12 +22,18 @@ const (
 	ShopProgramStatusActive    = "ACTIVE"
 	ShopProgramStatusEnded     = "ENDED"
 
+	FlashWindowStatusActive = "ACTIVE"
+	FlashWindowStatusEnded  = "ENDED"
+
 	ReservationStatusReserved = "RESERVED"
 	ReservationStatusReleased = "RELEASED"
 
 	UsageKindVoucher     = "VOUCHER"
 	UsageKindFlash       = "FLASH"
 	UsageKindShopProgram = "SHOP_PROGRAM"
+
+	SalesChannelMarketplace = "MARKETPLACE"
+	SalesChannelStorefront  = "STOREFRONT"
 )
 
 // Voucher represents a persisted promotion voucher.
@@ -86,6 +92,7 @@ type FlashSale struct {
 	Name               string
 	StartsAt           time.Time
 	EndsAt             time.Time
+	Status             string
 	MinDiscountPercent int32
 	CategoryIDs        []string
 	CreatedBy          string
@@ -108,6 +115,8 @@ type FlashSaleItem struct {
 	Status           string
 	RejectionReason  string
 	ApprovedBy       string
+	WindowStatus     string
+	StockReleasedAt  *time.Time
 	StartsAt         time.Time
 	EndsAt           time.Time
 	CreatedAt        time.Time

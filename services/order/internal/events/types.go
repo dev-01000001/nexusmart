@@ -7,14 +7,15 @@ import (
 
 // Event subject constants matching docs/contracts.md Section 5.
 const (
-	SubjectOrderCreated       = "order.created"
-	SubjectOrderConfirmed     = "order.confirmed"
-	SubjectOrderCancelled     = "order.cancelled"
-	SubjectOrderShipped       = "order.shipped"
-	SubjectOrderDelivered     = "order.delivered"
-	SubjectOrderReturned      = "order.returned"
-	SubjectOrderReturnUpdated = "order.return_updated"
-	SubjectOrderCompleted     = "order.completed"
+	SubjectOrderCreated        = "order.created"
+	SubjectOrderConfirmed      = "order.confirmed"
+	SubjectOrderAddressUpdated = "order.address_updated"
+	SubjectOrderCancelled      = "order.cancelled"
+	SubjectOrderShipped        = "order.shipped"
+	SubjectOrderDelivered      = "order.delivered"
+	SubjectOrderReturned       = "order.returned"
+	SubjectOrderReturnUpdated  = "order.return_updated"
+	SubjectOrderCompleted      = "order.completed"
 
 	SubjectPaymentSucceeded      = "payment.succeeded"
 	SubjectPaymentFailed         = "payment.failed"
@@ -39,67 +40,90 @@ type Envelope struct {
 
 // OrderCreatedPayload matches docs/contracts.md Section 5.
 type OrderCreatedPayload struct {
-	CheckoutGroupID string `json:"checkout_group_id"`
-	OrderID         string `json:"order_id"`
-	OrderCode       string `json:"order_code"`
-	BuyerID         string `json:"buyer_id"`
-	ShopID          string `json:"shop_id"`
-	PaymentMethod   string `json:"payment_method"`
-	TotalPayableVND int64  `json:"total_payable_vnd"`
+	CheckoutGroupID  string `json:"checkout_group_id"`
+	OrderID          string `json:"order_id"`
+	OrderCode        string `json:"order_code"`
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	StorefrontShopID string `json:"storefront_shop_id,omitempty"`
+	PaymentMethod    string `json:"payment_method"`
+	TotalPayableVND  int64  `json:"total_payable_vnd"`
 }
 
 // OrderConfirmedPayload matches docs/contracts.md Section 5.
 type OrderConfirmedPayload struct {
-	OrderID         string `json:"order_id"`
-	OrderCode       string `json:"order_code"`
-	BuyerID         string `json:"buyer_id"`
-	ShopID          string `json:"shop_id"`
-	PaymentMethod   string `json:"payment_method"`
-	TotalPayableVND int64  `json:"total_payable_vnd"`
+	OrderID          string `json:"order_id"`
+	OrderCode        string `json:"order_code"`
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	StorefrontShopID string `json:"storefront_shop_id,omitempty"`
+	PaymentMethod    string `json:"payment_method"`
+	TotalPayableVND  int64  `json:"total_payable_vnd"`
+}
+
+// OrderAddressUpdatedPayload matches docs/contracts.md Section 5 (G3).
+// PII-safe: strictly omits street_address, phone, and full recipient name.
+type OrderAddressUpdatedPayload struct {
+	OrderID           string `json:"order_id"`
+	OrderCode         string `json:"order_code"`
+	BuyerID           string `json:"buyer_id"`
+	ShopID            string `json:"shop_id"`
+	StorefrontShopID  string `json:"storefront_shop_id,omitempty"`
+	OldFeeVND         int64  `json:"old_fee_vnd"`
+	NewFeeVND         int64  `json:"new_fee_vnd"`
+	TrackingCode      string `json:"tracking_code"`
+	ShipmentRecreated bool   `json:"shipment_recreated"`
+	ShipmentQueued    bool   `json:"shipment_queued"`
+	ProvinceName      string `json:"province_name"`
+	WardName          string `json:"ward_name"`
 }
 
 // OrderCancelledPayload matches docs/contracts.md Section 5.
 type OrderCancelledPayload struct {
-	OrderID   string `json:"order_id"`
-	OrderCode string `json:"order_code"`
-	BuyerID   string `json:"buyer_id"`
-	ShopID    string `json:"shop_id"`
-	Reason    string `json:"reason"`
-	WasPaid   bool   `json:"was_paid"`
+	OrderID          string `json:"order_id"`
+	OrderCode        string `json:"order_code"`
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	StorefrontShopID string `json:"storefront_shop_id,omitempty"`
+	Reason           string `json:"reason"`
+	WasPaid          bool   `json:"was_paid"`
 }
 
 // OrderShippedPayload matches docs/contracts.md Section 5.
 type OrderShippedPayload struct {
-	OrderID      string `json:"order_id"`
-	OrderCode    string `json:"order_code"`
-	BuyerID      string `json:"buyer_id"`
-	ShopID       string `json:"shop_id"`
-	CarrierCode  string `json:"carrier_code"`
-	TrackingCode string `json:"tracking_code"`
+	OrderID          string `json:"order_id"`
+	OrderCode        string `json:"order_code"`
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	StorefrontShopID string `json:"storefront_shop_id,omitempty"`
+	CarrierCode      string `json:"carrier_code"`
+	TrackingCode     string `json:"tracking_code"`
 }
 
 // OrderDeliveredPayload matches docs/contracts.md Section 5 (E20).
 type OrderDeliveredPayload struct {
-	OrderID      string `json:"order_id"`
-	OrderCode    string `json:"order_code"`
-	BuyerID      string `json:"buyer_id"`
-	ShopID       string `json:"shop_id"`
-	CarrierCode  string `json:"carrier_code"`
-	TrackingCode string `json:"tracking_code"`
+	OrderID          string `json:"order_id"`
+	OrderCode        string `json:"order_code"`
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	StorefrontShopID string `json:"storefront_shop_id,omitempty"`
+	CarrierCode      string `json:"carrier_code"`
+	TrackingCode     string `json:"tracking_code"`
 }
 
 // OrderReturnedPayload is emitted via outbox when an order transitions to RETURNED.
 type OrderReturnedPayload struct {
-	OrderID         string `json:"order_id"`
-	OrderCode       string `json:"order_code"`
-	CheckoutGroupID string `json:"checkout_group_id"`
-	BuyerID         string `json:"buyer_id"`
-	ShopID          string `json:"shop_id"`
-	PaymentMethod   string `json:"payment_method"`
-	FromStatus      string `json:"from_status"`
-	TotalPayableVND int64  `json:"total_payable_vnd"`
-	Reason          string `json:"reason"`
-	WasPaid         bool   `json:"was_paid"`
+	OrderID          string `json:"order_id"`
+	OrderCode        string `json:"order_code"`
+	CheckoutGroupID  string `json:"checkout_group_id"`
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	StorefrontShopID string `json:"storefront_shop_id,omitempty"`
+	PaymentMethod    string `json:"payment_method"`
+	FromStatus       string `json:"from_status"`
+	TotalPayableVND  int64  `json:"total_payable_vnd"`
+	Reason           string `json:"reason"`
+	WasPaid          bool   `json:"was_paid"`
 }
 
 // OrderReturnUpdatedPayload matches docs/contracts.md Section 5.
@@ -110,6 +134,7 @@ type OrderReturnUpdatedPayload struct {
 	CheckoutGroupID      string `json:"checkout_group_id"`
 	BuyerID              string `json:"buyer_id"`
 	ShopID               string `json:"shop_id"`
+	StorefrontShopID     string `json:"storefront_shop_id,omitempty"`
 	Status               string `json:"status"`
 	PreviousStatus       string `json:"previous_status"`
 	Reason               string `json:"reason"`
@@ -121,15 +146,16 @@ type OrderReturnUpdatedPayload struct {
 
 // OrderCompletedPayload matches docs/contracts.md Section 5.
 type OrderCompletedPayload struct {
-	OrderID         string `json:"order_id"`
-	OrderCode       string `json:"order_code"`
-	BuyerID         string `json:"buyer_id"`
-	ShopID          string `json:"shop_id"`
-	SubtotalVND     int64  `json:"subtotal_vnd"`
-	CommissionVND   int64  `json:"commission_vnd"`
-	PaymentFeeVND   int64  `json:"payment_fee_vnd"`
-	TotalPayableVND int64  `json:"total_payable_vnd"`
-	CoinsReward     int64  `json:"coins_reward"`
+	OrderID          string `json:"order_id"`
+	OrderCode        string `json:"order_code"`
+	BuyerID          string `json:"buyer_id"`
+	ShopID           string `json:"shop_id"`
+	StorefrontShopID string `json:"storefront_shop_id,omitempty"`
+	SubtotalVND      int64  `json:"subtotal_vnd"`
+	CommissionVND    int64  `json:"commission_vnd"`
+	PaymentFeeVND    int64  `json:"payment_fee_vnd"`
+	TotalPayableVND  int64  `json:"total_payable_vnd"`
+	CoinsReward      int64  `json:"coins_reward"`
 }
 
 // PaymentSucceededPayload matches docs/contracts.md Section 5.

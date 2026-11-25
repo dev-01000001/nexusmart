@@ -766,7 +766,7 @@ async fn test_sandbox_http_timeout_retries_and_trips_circuit_breaker() {
             let counter = attempts_srv.clone();
             async move {
                 counter.fetch_add(1, Ordering::SeqCst);
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                tokio::time::sleep(Duration::from_secs(5)).await;
                 (
                     StatusCode::OK,
                     Json(serde_json::json!({"return_code": 1, "return_message": "late"})),
@@ -791,7 +791,7 @@ async fn test_sandbox_http_timeout_retries_and_trips_circuit_breaker() {
         _ => None,
     })
     .unwrap();
-    cfg.http_timeout = Duration::from_millis(60);
+    cfg.http_timeout = Duration::from_secs(1);
 
     let cb = CircuitBreaker::new(2, Duration::from_secs(30));
     let adapter = ZaloPayAdapter::try_from_zalopay_config(&cfg)
@@ -809,4 +809,117 @@ async fn test_sandbox_http_timeout_retries_and_trips_circuit_breaker() {
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
 
     server.abort();
+}
+
+#[test]
+fn test_production_rejects_mock_key_callback_while_dev_accepts() {
+    use crate::config::{AppEnv, DEFAULT_ZALOPAY_MOCK_KEY1, DEFAULT_ZALOPAY_MOCK_KEY2};
+
+    let now = Utc::now();
+    let payload = ZaloPayCallbackData {
+        app_id: 2554,
+        app_trans_id: "261124_NMFORGED0001".to_string(),
+        app_time: now.timestamp_millis(),
+        app_user: "buyer-1".to_string(),
+        amount: 500_000,
+        embed_data: "{}".to_string(),
+        item: "[]".to_string(),
+        zp_trans_id: 261_124_000_001,
+        server_time: now.timestamp_millis(),
+        channel: 38,
+        merchant_user_id: "mu-1".to_string(),
+        user_fee_amount: 0,
+        discount_amount: 0,
+    };
+
+    // Dev default config (APP_ENV=development, empty keys -> DEV_ONLY_ZALOPAY_MOCK_KEY2).
+    let mut dev_cfg = Config::from_env();
+    dev_cfg.app_env = AppEnv::Development;
+    dev_cfg.zalopay = ZaloPayConfig::mock_default();
+    let dev_adapter = ZaloPayAdapter::from_config(&dev_cfg).unwrap();
+
+    let forged_dev_req =
+        MockZaloPay::build_signed_callback(DEV_ONLY_ZALOPAY_MOCK_KEY2, &payload).unwrap();
+    assert!(dev_adapter
+        .verify_callback_request(&forged_dev_req, now, ZALOPAY_CALLBACK_REPLAY_WINDOW_SECS)
+        .is_ok());
+
+    let forged_p0b_req =
+        MockZaloPay::build_signed_callback(DEFAULT_ZALOPAY_MOCK_KEY2, &payload).unwrap();
+
+    // Production with valid Sandbox keys rejects mock-signed callbacks (401 Unauthorized).
+    let mut prod_valid_cfg = dev_cfg.clone();
+    prod_valid_cfg.app_env = AppEnv::Production;
+    prod_valid_cfg.zalopay = ZaloPayConfig::mock_default();
+    prod_valid_cfg.zalopay.mode = ZaloPayMode::Sandbox;
+    prod_valid_cfg.zalopay.app_id = Some(2554);
+    prod_valid_cfg.zalopay.key1 = "prod-real-key1-987654321".to_string();
+    prod_valid_cfg.zalopay.key2 = "prod-real-key2-abcdef123".to_string();
+    let prod_valid_adapter = ZaloPayAdapter::from_config(&prod_valid_cfg).unwrap();
+    assert_eq!(prod_valid_adapter.mode(), ZaloPayMode::Sandbox);
+    for forged in [&forged_dev_req, &forged_p0b_req] {
+        assert!(matches!(
+            prod_valid_adapter.verify_callback_request(
+                forged,
+                now,
+                ZALOPAY_CALLBACK_REPLAY_WINDOW_SECS
+            ),
+            Err(PaymentError::Unauthorized(_))
+        ));
+    }
+
+    // Real production key2 succeeds.
+    let real_req =
+        MockZaloPay::build_signed_callback("prod-real-key2-abcdef123", &payload).unwrap();
+    assert!(prod_valid_adapter
+        .verify_callback_request(&real_req, now, ZALOPAY_CALLBACK_REPLAY_WINDOW_SECS)
+        .is_ok());
+
+    // Production with mock mode or placeholder key2 -> 503 ServiceUnavailable.
+    for (mode, key1, key2) in [
+        (ZaloPayMode::Mock, "", ""),
+        (
+            ZaloPayMode::Sandbox,
+            DEV_ONLY_ZALOPAY_MOCK_KEY1,
+            DEV_ONLY_ZALOPAY_MOCK_KEY2,
+        ),
+        (
+            ZaloPayMode::Sandbox,
+            DEFAULT_ZALOPAY_MOCK_KEY1,
+            DEFAULT_ZALOPAY_MOCK_KEY2,
+        ),
+        (
+            ZaloPayMode::Sandbox,
+            "sandbox-zalopay-key1-placeholder",
+            "sandbox-zalopay-key2-placeholder",
+        ),
+    ] {
+        let mut bad_prod = dev_cfg.clone();
+        bad_prod.app_env = AppEnv::Production;
+        bad_prod.zalopay = ZaloPayConfig::mock_default();
+        bad_prod.zalopay.mode = mode;
+        bad_prod.zalopay.app_id = Some(2554);
+        bad_prod.zalopay.key1 = key1.to_string();
+        bad_prod.zalopay.key2 = key2.to_string();
+        let bad_adapter = ZaloPayAdapter::from_config(&bad_prod).unwrap();
+        assert!(
+            matches!(
+                bad_adapter.verify_callback_request(
+                    &forged_dev_req,
+                    now,
+                    ZALOPAY_CALLBACK_REPLAY_WINDOW_SECS
+                ),
+                Err(PaymentError::ServiceUnavailable(_))
+            ),
+            "production must reject mode={mode:?} key2={key2:?} with ServiceUnavailable"
+        );
+    }
+
+    // Production with Sandbox mode and empty key2 fails fast at adapter construction.
+    let mut empty_sandbox = dev_cfg;
+    empty_sandbox.app_env = AppEnv::Production;
+    empty_sandbox.zalopay = ZaloPayConfig::mock_default();
+    empty_sandbox.zalopay.mode = ZaloPayMode::Sandbox;
+    empty_sandbox.zalopay.app_id = Some(2554);
+    assert!(ZaloPayAdapter::from_config(&empty_sandbox).is_err());
 }

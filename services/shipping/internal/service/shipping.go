@@ -592,6 +592,29 @@ func (s *ShippingService) CalculateFeeWithEstimate(ctx context.Context, req carr
 		}
 	}
 
+	// Enrich Vietnamese display names and legacy 3-level fallback fields for carriers like GHTK.
+	fromEnriched := s.enrichAddress(ctx, carrier.Address{
+		ProvinceCode:  req.FromProvinceCode,
+		WardCode:      req.FromWardCode,
+		GHNDistrictID: req.FromDistrictID,
+		GHNWardCode:   req.FromGHNWardCode,
+	})
+	req.FromProvinceName = fromEnriched.ProvinceName
+	req.FromWardName = fromEnriched.WardName
+	req.FromLegacyProvince = fromEnriched.LegacyProvince
+	req.FromLegacyDistrict = fromEnriched.LegacyDistrict
+
+	toEnriched := s.enrichAddress(ctx, carrier.Address{
+		ProvinceCode:  req.ToProvinceCode,
+		WardCode:      req.ToWardCode,
+		GHNDistrictID: req.ToDistrictID,
+		GHNWardCode:   req.ToGHNWardCode,
+	})
+	req.ToProvinceName = toEnriched.ProvinceName
+	req.ToWardName = toEnriched.WardName
+	req.ToLegacyProvince = toEnriched.LegacyProvince
+	req.ToLegacyDistrict = toEnriched.LegacyDistrict
+
 	fallbackRates := s.selectFallbackRates(ctx, eligible)
 	quotes, isFallback, err := s.aggregator.CalculateFeeForCarriers(ctx, req, eligible, fallbackRates)
 	if err != nil {
@@ -655,6 +678,7 @@ type CreateShipmentInput struct {
 	FromAddress  carrier.Address
 	ToAddress    carrier.Address
 	ItemsSummary string
+	EnqueueOnly  bool `json:"-"`
 }
 
 // CreateShipment creates a FORWARD carrier shipment idempotently keyed by active (order_id, FORWARD) (UC-SHIP03).
@@ -759,18 +783,26 @@ func (s *ShippingService) CreateReturnShipment(ctx context.Context, in CreateRet
 	}
 
 	feeReq := carrier.FeeRequest{
-		ShopID:           in.ShopID,
-		FromProvinceCode: in.FromAddress.ProvinceCode,
-		FromWardCode:     in.FromAddress.WardCode,
-		FromDistrictID:   in.FromAddress.GHNDistrictID,
-		FromGHNWardCode:  in.FromAddress.GHNWardCode,
-		ToProvinceCode:   in.ToAddress.ProvinceCode,
-		ToWardCode:       in.ToAddress.WardCode,
-		ToDistrictID:     in.ToAddress.GHNDistrictID,
-		ToGHNWardCode:    in.ToAddress.GHNWardCode,
-		WeightGrams:      in.WeightGrams,
-		CODAmountVND:     0,
-		AllowedCarriers:  quoteCarriers,
+		ShopID:             in.ShopID,
+		FromProvinceCode:   in.FromAddress.ProvinceCode,
+		FromProvinceName:   in.FromAddress.ProvinceName,
+		FromWardCode:       in.FromAddress.WardCode,
+		FromWardName:       in.FromAddress.WardName,
+		FromLegacyProvince: in.FromAddress.LegacyProvince,
+		FromLegacyDistrict: in.FromAddress.LegacyDistrict,
+		FromDistrictID:     in.FromAddress.GHNDistrictID,
+		FromGHNWardCode:    in.FromAddress.GHNWardCode,
+		ToProvinceCode:     in.ToAddress.ProvinceCode,
+		ToProvinceName:     in.ToAddress.ProvinceName,
+		ToWardCode:         in.ToAddress.WardCode,
+		ToWardName:         in.ToAddress.WardName,
+		ToLegacyProvince:   in.ToAddress.LegacyProvince,
+		ToLegacyDistrict:   in.ToAddress.LegacyDistrict,
+		ToDistrictID:       in.ToAddress.GHNDistrictID,
+		ToGHNWardCode:      in.ToAddress.GHNWardCode,
+		WeightGrams:        in.WeightGrams,
+		CODAmountVND:       0,
+		AllowedCarriers:    quoteCarriers,
 	}
 	fallbackRates := s.selectFallbackRates(ctx, quoteCarriers)
 	quotes, _, quoteErr := s.aggregator.CalculateFeeForCarriers(ctx, feeReq, quoteCarriers, fallbackRates)
@@ -873,6 +905,8 @@ func (s *ShippingService) CreateReturnShipment(ctx context.Context, in CreateRet
 			OrderID:         in.OrderID,
 			ClientOrderCode: clientOrderCode,
 			ShopID:          in.ShopID,
+			Direction:       store.DirectionReturn,
+			ReturnRequestID: in.ReturnRequestID,
 			ServiceCode:     cand.serviceCode,
 			CODAmountVND:    0,
 			WeightGrams:     in.WeightGrams,
@@ -901,26 +935,32 @@ func (s *ShippingService) CreateReturnShipment(ctx context.Context, in CreateRet
 	}
 	now := s.nowFn()
 	sh := &store.Shipment{
-		ID:               uuid.NewString(),
-		OrderID:          in.OrderID,
-		ShopID:           in.ShopID,
-		BuyerID:          in.BuyerID,
-		Direction:        store.DirectionReturn,
-		ReturnRequestID:  in.ReturnRequestID,
-		CarrierCode:      res.CarrierCode,
-		ServiceCode:      res.ServiceCode,
-		TrackingCode:     res.TrackingCode,
-		LabelURL:         res.LabelURL,
-		Status:           carrier.StatusCreated,
-		FeeVND:           feeVND,
-		CODAmountVND:     0,
-		WeightGrams:      in.WeightGrams,
-		FromProvinceCode: in.FromAddress.ProvinceCode,
-		FromWardCode:     in.FromAddress.WardCode,
-		ToProvinceCode:   in.ToAddress.ProvinceCode,
-		ToWardCode:       in.ToAddress.WardCode,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                uuid.NewString(),
+		OrderID:           in.OrderID,
+		ShopID:            in.ShopID,
+		BuyerID:           in.BuyerID,
+		Direction:         store.DirectionReturn,
+		ReturnRequestID:   in.ReturnRequestID,
+		CarrierCode:       res.CarrierCode,
+		ServiceCode:       res.ServiceCode,
+		TrackingCode:      res.TrackingCode,
+		LabelURL:          res.LabelURL,
+		Status:            carrier.StatusCreated,
+		FeeVND:            feeVND,
+		CODAmountVND:      0,
+		WeightGrams:       in.WeightGrams,
+		FromName:          strings.TrimSpace(in.FromAddress.Name),
+		FromPhone:         strings.TrimSpace(in.FromAddress.Phone),
+		FromStreetAddress: strings.TrimSpace(in.FromAddress.StreetAddress),
+		FromProvinceCode:  in.FromAddress.ProvinceCode,
+		FromWardCode:      in.FromAddress.WardCode,
+		ToName:            strings.TrimSpace(in.ToAddress.Name),
+		ToPhone:           strings.TrimSpace(in.ToAddress.Phone),
+		ToStreetAddress:   strings.TrimSpace(in.ToAddress.StreetAddress),
+		ToProvinceCode:    in.ToAddress.ProvinceCode,
+		ToWardCode:        in.ToAddress.WardCode,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 	initEv := &store.ShipmentEvent{
 		ID:          uuid.NewString(),
@@ -953,12 +993,25 @@ func (s *ShippingService) CancelShipment(ctx context.Context, orderID, direction
 		return nil, err
 	}
 
-	// E18: For FORWARD cancellations (including order compensation RPC when order.cancelled raced
-	// ahead of job enqueue), cancel any active shipment_create_jobs FIRST before looking up the shipment,
-	// preserving all existing return codes (no shipment still returns store.ErrNotFound).
+	// E18/G4: For FORWARD cancellations (including order compensation RPC when order.cancelled raced
+	// ahead of job enqueue), cancel any active shipment_create_jobs FIRST without locking so an in-flight
+	// worker holding the advisory lock is immediately marked cancelled; if 0 jobs were cancelled, acquire
+	// the advisory lock to serialize against a concurrent CreateShipment(enqueue_only=true) insert and
+	// re-cancel before looking up the shipment, preserving store.ErrNotFound when no shipment exists yet.
 	if dir == store.DirectionForward {
-		if _, cancelJobErr := s.repo.CancelActiveShipmentCreateJobs(ctx, orderID, store.DirectionForward, reason); cancelJobErr != nil {
+		cancelledJobs, cancelJobErr := s.repo.CancelActiveShipmentCreateJobs(ctx, orderID, store.DirectionForward, reason)
+		if cancelJobErr != nil {
 			return nil, fmt.Errorf("cancel active shipment create jobs: %w", cancelJobErr)
+		}
+		if cancelledJobs == 0 {
+			unlock, lockErr := s.repo.AcquireOrderDirectionLock(ctx, orderID, store.DirectionForward)
+			if lockErr != nil {
+				return nil, fmt.Errorf("%w: lock forward shipment cancel: %w", ErrCarrierUnavailable, lockErr)
+			}
+			defer unlock()
+			if _, reCancelErr := s.repo.CancelActiveShipmentCreateJobs(ctx, orderID, store.DirectionForward, reason); reCancelErr != nil {
+				return nil, fmt.Errorf("recheck cancel active shipment create jobs: %w", reCancelErr)
+			}
 		}
 	}
 
@@ -1089,16 +1142,29 @@ func (s *ShippingService) GetShipment(ctx context.Context, orderID, trackingCode
 		return nil, nil, fmt.Errorf("%w: order_id or tracking_code is required", ErrInvalidArgument)
 	}
 
+	rawDir := strings.TrimSpace(direction)
+	var dirFilter string
+	if rawDir != "" {
+		parsed, dirErr := parseDirection(rawDir)
+		if dirErr != nil {
+			return nil, nil, dirErr
+		}
+		dirFilter = parsed
+	}
+
 	var (
 		sh  *store.Shipment
 		err error
 	)
 	if trackingCode != "" {
 		sh, err = s.repo.GetShipmentByTrackingCode(ctx, trackingCode)
+		if err == nil && sh != nil && dirFilter != "" && store.NormalizeDirection(sh.Direction) != dirFilter {
+			return nil, nil, store.ErrNotFound
+		}
 	} else {
-		dir, dirErr := parseDirection(direction)
-		if dirErr != nil {
-			return nil, nil, dirErr
+		dir := store.DirectionForward
+		if dirFilter != "" {
+			dir = dirFilter
 		}
 		sh, err = s.repo.GetShipmentByOrderID(ctx, orderID, dir)
 	}
@@ -1111,6 +1177,42 @@ func (s *ShippingService) GetShipment(ctx context.Context, orderID, trackingCode
 		return nil, nil, fmt.Errorf("list shipment events: %w", err)
 	}
 	return sh, evList, nil
+}
+
+// GetShipmentsByTrackingCodes fetches shipments matching trackingCodes in a single repository lookup (G5).
+func (s *ShippingService) GetShipmentsByTrackingCodes(ctx context.Context, trackingCodes []string) ([]store.Shipment, error) {
+	if len(trackingCodes) == 0 {
+		return nil, nil
+	}
+	return s.repo.GetShipmentsByTrackingCodes(ctx, trackingCodes)
+}
+
+// ResolveLocationNames resolves Vietnamese province and ward display names from DB, falling back
+// to the embedded official catalog and then to raw codes when unknown (G5).
+func (s *ShippingService) ResolveLocationNames(ctx context.Context, provinceCode, wardCode string) (string, string) {
+	pCode := strings.TrimSpace(provinceCode)
+	wCode := strings.TrimSpace(wardCode)
+
+	var pName, wName string
+	if pCode != "" {
+		if p, err := s.repo.GetProvince(ctx, pCode); err == nil && p != nil && p.Name != "" {
+			pName = p.Name
+		} else if name := address.LookupProvinceName(pCode); name != "" {
+			pName = name
+		} else {
+			pName = pCode
+		}
+	}
+	if wCode != "" {
+		if w, err := s.repo.GetWard(ctx, wCode); err == nil && w != nil && w.Name != "" {
+			wName = w.Name
+		} else if name := address.LookupWardName(wCode); name != "" {
+			wName = name
+		} else {
+			wName = wCode
+		}
+	}
+	return pName, wName
 }
 
 // GetShopShippingSettings returns a shop's persisted shipping settings or platform defaults when unconfigured (UC-SHIP06).
@@ -1534,12 +1636,25 @@ func (s *ShippingService) HandleWebhook(ctx context.Context, in WebhookInput) (*
 }
 
 // HandleOrderCancelled handles an async order.cancelled NATS event idempotently for the active FORWARD shipment
-// and cancels any pending/processing async shipment creation retry job (UC-SHIP07, E18).
+// and cancels any pending/processing async shipment creation retry job (UC-SHIP07, E18, G4).
 func (s *ShippingService) HandleOrderCancelled(ctx context.Context, eventID, orderID, reason string) error {
 	// Cancel active shipment_create_jobs FIRST so any concurrent retry worker finishing a carrier call
 	// observes status='cancelled' inside CompleteShipmentCreateJob and runs compensating CancelShipment.
-	if _, err := s.repo.CancelActiveShipmentCreateJobs(ctx, orderID, store.DirectionForward, reason); err != nil {
+	// If 0 jobs were cancelled, serialize under the order advisory lock against a concurrent
+	// CreateShipment(enqueue_only=true) insert and re-cancel before checking shipments.
+	cancelledJobs, err := s.repo.CancelActiveShipmentCreateJobs(ctx, orderID, store.DirectionForward, reason)
+	if err != nil {
 		return fmt.Errorf("cancel active shipment create jobs: %w", err)
+	}
+	if cancelledJobs == 0 {
+		unlock, lockErr := s.repo.AcquireOrderDirectionLock(ctx, orderID, store.DirectionForward)
+		if lockErr != nil {
+			return fmt.Errorf("lock order cancel for %s: %w", orderID, lockErr)
+		}
+		defer unlock()
+		if _, reCancelErr := s.repo.CancelActiveShipmentCreateJobs(ctx, orderID, store.DirectionForward, reason); reCancelErr != nil {
+			return fmt.Errorf("recheck cancel active shipment create jobs: %w", reCancelErr)
+		}
 	}
 
 	sh, err := s.repo.GetActiveShipmentByOrderID(ctx, orderID, store.DirectionForward)
@@ -1574,7 +1689,8 @@ func (s *ShippingService) HandleOrderCancelled(ctx context.Context, eventID, ord
 	return err
 }
 
-// PollActiveShipments paginates through all active non-terminal shipments (FORWARD and RETURN) for live carriers (UC-SHIP04).
+// PollActiveShipments paginates through all active non-terminal shipments (FORWARD and RETURN)
+// for live/sandbox or pollable carriers (UC-SHIP04).
 func (s *ShippingService) PollActiveShipments(ctx context.Context) error {
 	_, _, _ = s.loadCachedConfigs(ctx)
 	const batchSize = 100
@@ -1592,7 +1708,14 @@ func (s *ShippingService) PollActiveShipments(ctx context.Context) error {
 		}
 		for _, sh := range active {
 			provider, ok := s.aggregator.Get(sh.CarrierCode)
-			if !ok || provider.IsMock() {
+			if !ok {
+				continue
+			}
+			shouldPoll := !provider.IsMock()
+			if p, ok := provider.(interface{ CanPoll() bool }); ok {
+				shouldPoll = p.CanPoll()
+			}
+			if !shouldPoll {
 				continue
 			}
 			st, pollErr := provider.GetStatus(ctx, sh.TrackingCode)
@@ -1607,15 +1730,23 @@ func (s *ShippingService) PollActiveShipments(ctx context.Context) error {
 			if st == nil || !st.Changed || st.Status == "" || st.Status == sh.Status {
 				continue
 			}
-			eventID := fmt.Sprintf("poll:%s:%s:%d", sh.TrackingCode, st.Status, st.OccurredAt.UTC().Unix())
+			occurredAt := st.OccurredAt.UTC()
+			if occurredAt.IsZero() {
+				occurredAt = s.nowFn()
+			}
+			rawStatus := strings.TrimSpace(st.RawStatus)
+			if rawStatus == "" {
+				rawStatus = st.Status
+			}
+			eventID := fmt.Sprintf("poll:%s:%s:%d", sh.TrackingCode, st.Status, occurredAt.Unix())
 			if _, _, err := s.HandleWebhook(ctx, WebhookInput{
 				EventID:      eventID,
 				CarrierCode:  sh.CarrierCode,
 				TrackingCode: sh.TrackingCode,
 				OrderID:      sh.OrderID,
-				RawStatus:    st.RawStatus,
+				RawStatus:    rawStatus,
 				Description:  st.Description,
-				OccurredAt:   st.OccurredAt,
+				OccurredAt:   occurredAt,
 			}); err != nil {
 				s.logger.WarnContext(ctx, "apply polled shipment status failed",
 					slog.String("tracking_code", sh.TrackingCode),
@@ -1683,13 +1814,50 @@ func (s *ShippingService) resolveDefaultWeight(ctx context.Context, shopID strin
 }
 
 func (s *ShippingService) enrichGHNAddress(ctx context.Context, addr *carrier.Address) {
-	if addr == nil || strings.TrimSpace(addr.WardCode) == "" {
+	if addr == nil {
 		return
 	}
-	if w, err := s.repo.GetWard(ctx, addr.WardCode); err == nil && w != nil {
-		addr.GHNDistrictID = w.GHNDistrictID
-		addr.GHNWardCode = w.GHNWardCode
+	*addr = s.enrichAddress(ctx, *addr)
+}
+
+func (s *ShippingService) enrichAddress(ctx context.Context, addr carrier.Address) carrier.Address {
+	if strings.TrimSpace(addr.WardCode) != "" {
+		if w, err := s.repo.GetWard(ctx, addr.WardCode); err == nil && w != nil {
+			if addr.GHNDistrictID == 0 {
+				addr.GHNDistrictID = w.GHNDistrictID
+			}
+			if addr.GHNWardCode == "" {
+				addr.GHNWardCode = w.GHNWardCode
+			}
+			if addr.WardName == "" {
+				addr.WardName = w.Name
+			}
+			if addr.ProvinceCode == "" {
+				addr.ProvinceCode = w.ProvinceCode
+			}
+		}
+		if fb := address.LookupLegacyFallback(addr.WardCode); fb.Found {
+			if addr.ProvinceCode == "" {
+				addr.ProvinceCode = fb.ProvinceCode
+			}
+			if addr.ProvinceName == "" {
+				addr.ProvinceName = fb.ProvinceName
+			}
+			if addr.WardName == "" {
+				addr.WardName = fb.WardName
+			}
+			if addr.LegacyProvince == "" {
+				addr.LegacyProvince = fb.LegacyProvince
+			}
+			if addr.LegacyDistrict == "" {
+				addr.LegacyDistrict = fb.LegacyDistrict
+			}
+		}
 	}
+	if addr.ProvinceName == "" && addr.ProvinceCode != "" {
+		addr.ProvinceName = address.ProvinceName(addr.ProvinceCode)
+	}
+	return addr
 }
 
 func parseDirection(raw string) (string, error) {

@@ -1,4 +1,4 @@
-import type { GatewayOrderStatus, GatewayPaymentMethod, GatewayVoucher } from "@/lib/gateway-types";
+import type { GatewayOrderStatus, GatewayPaymentMethod, GatewayVoucher } from "./gateway-types";
 
 // NexusMart Vietnamese currency, number, date, and shared gateway label utilities.
 // All monetary amounts are strictly integer VND.
@@ -21,6 +21,7 @@ function formatGroupedInteger(absInt: number): string {
  * Formats an integer VND amount as `199.000₫` (zero as `0₫`, negative as `-50.000₫`).
  */
 export function formatVnd(amount: number): string {
+  if (!Number.isFinite(amount)) return "0₫";
   const intAmount = Math.trunc(amount);
   const grouped = formatGroupedInteger(intAmount);
   if (intAmount < 0) {
@@ -33,6 +34,7 @@ export function formatVnd(amount: number): string {
  * Formats a signed VND delta with explicit + or true minus (`+1.250.000₫`, `−420.000₫`, `0₫`).
  */
 export function formatSignedVnd(delta: number): string {
+  if (!Number.isFinite(delta)) return "0₫";
   const intDelta = Math.trunc(delta);
   if (intDelta === 0) return "0₫";
   const prefix = intDelta > 0 ? "+" : TRUE_MINUS;
@@ -43,15 +45,16 @@ export function formatSignedVnd(delta: number): string {
  * Compact VND string for chart y-axis ticks (`12,5 tr₫`, `450k₫`, `0₫`).
  */
 export function formatCompactVnd(amount: number): string {
+  if (!Number.isFinite(amount)) return "0₫";
   const intAmount = Math.trunc(amount);
   const abs = Math.abs(intAmount);
   const sign = intAmount < 0 ? TRUE_MINUS : "";
   if (abs === 0) return "0₫";
-  if (abs >= 1_000_000_000) {
+  if (abs >= 999_950_000) {
     const val = (abs / 1_000_000_000).toFixed(1).replace(".", ",").replace(/,0$/, "");
     return `${sign}${val} tỷ₫`;
   }
-  if (abs >= 1_000_000) {
+  if (abs >= 999_500) {
     const val = (abs / 1_000_000).toFixed(1).replace(".", ",").replace(/,0$/, "");
     return `${sign}${val} tr₫`;
   }
@@ -66,6 +69,7 @@ export function formatCompactVnd(amount: number): string {
  * Formats an integer count with Vietnamese dot thousands separators (`1.240`).
  */
 export function formatInt(value: number): string {
+  if (!Number.isFinite(value)) return "0";
   const intVal = Math.trunc(value);
   const grouped = formatGroupedInteger(intVal);
   return intVal < 0 ? `${TRUE_MINUS}${grouped}` : grouped;
@@ -75,6 +79,7 @@ export function formatInt(value: number): string {
  * Formats a signed integer delta (`+14`, `−3`, `0`).
  */
 export function formatSignedInt(delta: number): string {
+  if (!Number.isFinite(delta)) return "0";
   const intVal = Math.trunc(delta);
   if (intVal === 0) return "0";
   return `${intVal > 0 ? "+" : TRUE_MINUS}${formatGroupedInteger(intVal)}`;
@@ -84,8 +89,12 @@ export function formatSignedInt(delta: number): string {
  * Formats a percentage ratio (`0.124` -> `12,4%`) or already-percentage number if `isRatio = false`.
  */
 export function formatPercent(value: number, digits = 1, isRatio = true): string {
+  const safeDigits = Number.isFinite(digits) ? Math.max(0, Math.trunc(digits)) : 1;
+  if (!Number.isFinite(value)) {
+    return `${(0).toFixed(safeDigits).replace(".", ",")}%`;
+  }
   const pct = isRatio ? value * 100 : value;
-  return `${pct.toFixed(digits).replace(".", ",")}%`;
+  return `${pct.toFixed(safeDigits).replace(".", ",")}%`;
 }
 
 /**
@@ -125,6 +134,20 @@ export function formatVnDateOffset(deltaDays: number, baseMs = Date.now()): stri
   return formatVnDayKey(baseMs + Math.trunc(deltaDays) * 24 * 60 * 60 * 1000);
 }
 
+function parseIsoCalendarDateUtcMs(raw: string): number | null {
+  if (!ISO_DATE_RE.test(raw)) return null;
+  const [yStr, mStr, dStr] = raw.split("-");
+  const y = Number(yStr);
+  const m = Number(mStr);
+  const d = Number(dStr);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) {
+    return null;
+  }
+  return dt.getTime();
+}
+
 /**
  * Validates report date range matching gateway/order rules: `YYYY-MM-DD`, `from <= to`, inclusive span <= 366 days.
  */
@@ -137,9 +160,9 @@ export function validateReportDateRange(
   if (!ISO_DATE_RE.test(f) || !ISO_DATE_RE.test(t)) {
     return { ok: false, message: "Ngày báo cáo phải đúng định dạng YYYY-MM-DD." };
   }
-  const fMs = Date.parse(`${f}T00:00:00Z`);
-  const tMs = Date.parse(`${t}T00:00:00Z`);
-  if (!Number.isFinite(fMs) || !Number.isFinite(tMs)) {
+  const fMs = parseIsoCalendarDateUtcMs(f);
+  const tMs = parseIsoCalendarDateUtcMs(t);
+  if (fMs === null || tMs === null) {
     return { ok: false, message: "Ngày báo cáo không hợp lệ." };
   }
   if (fMs > tMs) {
@@ -159,53 +182,100 @@ export function validateReportDateRange(
  * Formats discount percentage between originalPrice and salePrice (`-22%`).
  */
 export function formatDiscountPercent(originalPrice: number, salePrice: number): string {
-  if (originalPrice <= 0 || salePrice >= originalPrice) return "0%";
-  const pct = Math.round(((originalPrice - salePrice) / originalPrice) * 100);
+  if (
+    !Number.isFinite(originalPrice) ||
+    !Number.isFinite(salePrice) ||
+    originalPrice <= 0 ||
+    salePrice >= originalPrice
+  ) {
+    return "0%";
+  }
+  const pct = Math.min(100, Math.round(((originalPrice - salePrice) / originalPrice) * 100));
+  if (pct <= 0) return "0%";
   return `-${pct}%`;
 }
 
-const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
+export const VN_UTC_OFFSET_MS = 7 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function twoDigit(n: number): string {
   return n < 10 ? `0${n}` : `${n}`;
 }
 
+export interface VnDateParts {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+  /** Calendar date key `YYYY-MM-DD` in Asia/Ho_Chi_Minh (fixed UTC+7). */
+  dateKey: string;
+  /** UTC midnight timestamp (ms) representing this VN calendar day. */
+  dayStartUtcMs: number;
+}
+
 /**
- * Shifts a timestamp into Vietnam time (`Asia/Ho_Chi_Minh`, fixed UTC+7, no DST)
- * so UTC getters produce identical results on UTC servers and client browsers.
+ * Extracts calendar and clock components in Vietnam time (Asia/Ho_Chi_Minh, fixed UTC+7, no DST).
+ * Independent of the host machine's TZ so SSR (TZ=UTC) and browser (+07) always agree.
  */
-function toVietnamDate(input: string | number | Date): Date | null {
+export function getVnDateParts(input: string | number | Date): VnDateParts | null {
   const ms =
     typeof input === "number" ? input : input instanceof Date ? input.getTime() : Date.parse(input);
   if (!Number.isFinite(ms)) return null;
-  return new Date(ms + VN_OFFSET_MS);
+  const d = new Date(ms + VN_UTC_OFFSET_MS);
+  const year = d.getUTCFullYear();
+  const month = d.getUTCMonth() + 1;
+  const day = d.getUTCDate();
+  const hour = d.getUTCHours();
+  const minute = d.getUTCMinutes();
+  const second = d.getUTCSeconds();
+  return {
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second,
+    dateKey: `${year}-${twoDigit(month)}-${twoDigit(day)}`,
+    dayStartUtcMs: Date.UTC(year, month - 1, day),
+  };
 }
 
 /**
  * Formats an ISO timestamp string to Vietnamese short date `dd/mm/yyyy` in Asia/Ho_Chi_Minh (UTC+7).
  */
 export function formatDateVi(iso: string): string {
-  const vn = toVietnamDate(iso);
-  if (!vn) return iso;
-  return `${twoDigit(vn.getUTCDate())}/${twoDigit(vn.getUTCMonth() + 1)}/${vn.getUTCFullYear()}`;
+  const p = getVnDateParts(iso);
+  if (!p) return iso;
+  return `${twoDigit(p.day)}/${twoDigit(p.month)}/${p.year}`;
 }
 
 /**
- * Formats an ISO timestamp string to Vietnamese date & time `HH:mm · dd/mm/yyyy` in Asia/Ho_Chi_Minh (UTC+7).
+ * Formats an ISO timestamp string to Vietnamese date & time `HH:mm, dd/mm/yyyy` in Asia/Ho_Chi_Minh (UTC+7).
  */
 export function formatDateTimeVi(iso: string): string {
-  const vn = toVietnamDate(iso);
-  if (!vn) return iso;
-  return `${twoDigit(vn.getUTCHours())}:${twoDigit(vn.getUTCMinutes())} · ${twoDigit(vn.getUTCDate())}/${twoDigit(vn.getUTCMonth() + 1)}/${vn.getUTCFullYear()}`;
+  const p = getVnDateParts(iso);
+  if (!p) return iso;
+  return `${twoDigit(p.hour)}:${twoDigit(p.minute)}, ${twoDigit(p.day)}/${twoDigit(p.month)}/${p.year}`;
 }
 
 /**
  * Formats `dd/mm` in Asia/Ho_Chi_Minh (UTC+7) for compact chart axis labels or short timelines.
  */
 export function formatDayMonthVi(iso: string): string {
-  const vn = toVietnamDate(iso);
-  if (!vn) return iso;
-  return `${twoDigit(vn.getUTCDate())}/${twoDigit(vn.getUTCMonth() + 1)}`;
+  const p = getVnDateParts(iso);
+  if (!p) return iso;
+  return `${twoDigit(p.day)}/${twoDigit(p.month)}`;
+}
+
+/**
+ * Formats `HH:mm` in Asia/Ho_Chi_Minh (UTC+7).
+ */
+export function formatTimeVi(input: string | number | Date): string {
+  const p = getVnDateParts(input);
+  if (!p) return typeof input === "string" ? input : "";
+  return `${twoDigit(p.hour)}:${twoDigit(p.minute)}`;
 }
 
 /**
@@ -213,27 +283,64 @@ export function formatDayMonthVi(iso: string): string {
  */
 export function formatTimeHmVn(iso: string | undefined): string {
   if (!iso) return "--:--";
-  const vn = toVietnamDate(iso);
-  if (!vn) return "--:--";
-  return `${twoDigit(vn.getUTCHours())}:${twoDigit(vn.getUTCMinutes())}`;
+  const p = getVnDateParts(iso);
+  if (!p) return "--:--";
+  return `${twoDigit(p.hour)}:${twoDigit(p.minute)}`;
 }
 
 /**
- * Formats `HH:mm · dd/mm` in Asia/Ho_Chi_Minh (UTC+7) for compact operational tables.
+ * Formats `HH:mm dd/mm` in Asia/Ho_Chi_Minh (UTC+7) for dense operational tables.
  */
 export function formatShortTimeDateVi(iso: string): string {
-  const vn = toVietnamDate(iso);
-  if (!vn) return iso;
-  return `${twoDigit(vn.getUTCHours())}:${twoDigit(vn.getUTCMinutes())} · ${twoDigit(vn.getUTCDate())}/${twoDigit(vn.getUTCMonth() + 1)}`;
+  const p = getVnDateParts(iso);
+  if (!p) return iso;
+  return `${twoDigit(p.hour)}:${twoDigit(p.minute)} ${twoDigit(p.day)}/${twoDigit(p.month)}`;
+}
+
+/**
+ * Formats `YYYY-MM-DD` in Asia/Ho_Chi_Minh (UTC+7) for date inputs and daily bucketing.
+ */
+export function formatVnIsoDate(input: string | number | Date): string {
+  const p = getVnDateParts(input);
+  if (!p) return typeof input === "string" ? input : "";
+  return p.dateKey;
 }
 
 /**
  * Formats `YYYY-MM-DD` calendar date key in Asia/Ho_Chi_Minh (UTC+7).
  */
 export function formatVnDayKey(input: string | number | Date): string {
-  const vn = toVietnamDate(input);
-  if (!vn) return typeof input === "string" ? input : "";
-  return `${vn.getUTCFullYear()}-${twoDigit(vn.getUTCMonth() + 1)}-${twoDigit(vn.getUTCDate())}`;
+  return formatVnIsoDate(input);
+}
+
+export interface VnDayBucketMeta {
+  key: string;
+  label: string;
+  dayStartUtcMs: number;
+}
+
+/**
+ * Builds an ordered list of the past `count` Vietnam calendar days ending on the VN day of `nowMs`.
+ */
+export function buildVnPastDays(count: number, nowMs: number): VnDayBucketMeta[] {
+  if (!Number.isFinite(count)) return [];
+  const n = Math.floor(count);
+  const today = getVnDateParts(nowMs);
+  if (!today || n <= 0) return [];
+  const days: VnDayBucketMeta[] = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const dayStartUtcMs = today.dayStartUtcMs - i * DAY_MS;
+    const d = new Date(dayStartUtcMs);
+    const year = d.getUTCFullYear();
+    const month = d.getUTCMonth() + 1;
+    const day = d.getUTCDate();
+    days.push({
+      key: `${year}-${twoDigit(month)}-${twoDigit(day)}`,
+      label: `${twoDigit(day)}/${twoDigit(month)}`,
+      dayStartUtcMs,
+    });
+  }
+  return days;
 }
 
 /**
