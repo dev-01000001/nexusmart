@@ -1,10 +1,10 @@
 // Shared DTO types and pure display helpers for Admin Portal backend integration.
-import type { PillTone } from "./adminMeta";
+import type { PillTone } from "./adminMeta.ts";
 import {
   normalizeSalesChannel,
   normalizeStorefrontShopId,
   type SalesChannel,
-} from "../../lib/salesChannel";
+} from "../../lib/salesChannel.ts";
 
 export interface GwAdminShop {
   id: string;
@@ -97,14 +97,24 @@ export function normalizeAdminOrder(order: GwAdminOrder): GwAdminOrder {
 }
 
 export function getAdminOrderStatusMeta(status: string): { label: string; tone: PillTone } {
-  switch (status.toUpperCase()) {
+  const normalized = status
+    .trim()
+    .toUpperCase()
+    .replace(/^ORDER_STATUS_/, "");
+  switch (normalized) {
     case "PENDING":
+    case "PENDING_PAYMENT":
       return { label: "Chờ thanh toán", tone: "warning" };
+    case "PAID":
+      return { label: "Đã thanh toán", tone: "positive" };
     case "CONFIRMED":
       return { label: "Chờ xác nhận", tone: "warning" };
     case "PREPARING":
+    case "PROCESSING":
+    case "PACKING":
       return { label: "Đang chuẩn bị", tone: "neutral" };
     case "SHIPPING":
+    case "SHIPPED":
       return { label: "Đang giao", tone: "neutral" };
     case "DELIVERED":
       return { label: "Đã giao", tone: "positive" };
@@ -112,12 +122,24 @@ export function getAdminOrderStatusMeta(status: string): { label: string; tone: 
       return { label: "Hoàn tất", tone: "positive" };
     case "RETURN_REQUESTED":
       return { label: "Yêu cầu trả hàng", tone: "warning" };
+    case "RETURN_APPROVED":
+      return { label: "Đã duyệt trả hàng", tone: "warning" };
+    case "RETURN_REJECTED":
+      return { label: "Từ chối trả hàng", tone: "negative" };
+    case "RETURNING":
+      return { label: "Đang hoàn hàng", tone: "warning" };
     case "RETURNED":
       return { label: "Đã trả hàng", tone: "negative" };
+    case "REFUNDED":
+      return { label: "Đã hoàn tiền", tone: "positive" };
     case "CANCELLED":
+    case "CANCELED":
       return { label: "Đã hủy", tone: "negative" };
+    case "UNSPECIFIED":
+    case "":
+      return { label: "Đang xử lý", tone: "neutral" };
     default:
-      return { label: status || "Đang xử lý", tone: "neutral" };
+      return { label: status.trim() || "Đang xử lý", tone: "neutral" };
   }
 }
 

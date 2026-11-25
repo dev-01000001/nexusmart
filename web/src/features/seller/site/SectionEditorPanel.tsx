@@ -627,10 +627,7 @@ export function SectionEditorPanel({
   return (
     <div className={common.card}>
       <div className={common.cardHeader}>
-        <div>
-          <h2 className={common.cardTitle}>{meta.label}</h2>
-          <p className={common.cardMeta}>{meta.description}</p>
-        </div>
+        <h2 className={common.cardTitle}>{meta.label}</h2>
         <label className={styles.visLabel}>
           <input
             type="checkbox"
@@ -638,7 +635,7 @@ export function SectionEditorPanel({
             checked={section.visible}
             onChange={(e) => onChange({ ...section, visible: e.target.checked })}
           />
-          <span>{section.visible ? "Đang hiển thị" : "Đang ẩn"}</span>
+          <span>{section.visible ? "Hiển thị" : "Đang ẩn"}</span>
         </label>
       </div>
 
@@ -727,7 +724,7 @@ export function SectionEditorPanel({
 
             <div className={common.field}>
               <label htmlFor="sec-columns" className={common.fieldLabel}>
-                Số cột (0 = mặc định, 1–5)
+                Số cột (0 = mặc định, 1-5)
               </label>
               <input
                 id="sec-columns"
@@ -746,7 +743,7 @@ export function SectionEditorPanel({
 
             <div className={common.field}>
               <label htmlFor="sec-max-items" className={common.fieldLabel}>
-                Giới hạn mục (0 = mặc định, 1–24)
+                Giới hạn mục (0 = mặc định, 1-24)
               </label>
               <input
                 id="sec-max-items"
@@ -1711,15 +1708,9 @@ export function SectionEditorPanel({
         {/* Full Block Editor (9 typed block types, max 12 blocks per section) */}
         <div className={styles.blocksEditorBox}>
           <div className={styles.blocksEditorHead}>
-            <div>
-              <h3 className={styles.blocksEditorTitle}>
-                Block con bên trong khối ({blocks.length}/{MAX_BLOCKS_PER_SECTION})
-              </h3>
-              <p className={common.cardMeta}>
-                Chèn nhãn, chỉ số, ảnh minh họa, trích dẫn hoặc nút CTA bổ sung theo cấu trúc an
-                toàn.
-              </p>
-            </div>
+            <h3 className={styles.blocksEditorTitle}>
+              Block con ({blocks.length}/{MAX_BLOCKS_PER_SECTION})
+            </h3>
           </div>
 
           <div className={styles.addBlockBar}>
@@ -1731,7 +1722,7 @@ export function SectionEditorPanel({
             >
               {BLOCK_TYPE_ORDER.map((bt) => (
                 <option key={bt} value={bt}>
-                  {BLOCK_TYPE_META[bt].label} — {BLOCK_TYPE_META[bt].description}
+                  {BLOCK_TYPE_META[bt].label}: {BLOCK_TYPE_META[bt].description}
                 </option>
               ))}
             </select>
@@ -1761,7 +1752,7 @@ export function SectionEditorPanel({
                         {BLOCK_TYPE_META[blk.type].label}
                       </span>
                       <span className={styles.blockIdMeta}>
-                        #{idx + 1} · {blk.id}
+                        #{idx + 1} ({blk.id})
                       </span>
                     </div>
                     <div className={styles.sectionMoveGroup}>

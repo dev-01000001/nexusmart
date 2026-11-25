@@ -4,6 +4,7 @@ import type { Product } from "@/data/products";
 import type { Shop } from "@/data/shops";
 import type { Voucher } from "@/data/vouchers";
 import type { PolicyItem, SitePublicShopDTO } from "@/lib/site/types";
+import { CollapsibleProse } from "./CollapsibleProse";
 import { SiteProductCard } from "./SiteProductCard";
 import { SiteRenderer } from "./SiteRenderer";
 import type { InfoPageConfig, SiteCardStyle, SiteTemplateConfig } from "./templateTypes";
@@ -52,24 +53,21 @@ export function SiteInfoView({
       heading: "Đổi size và đổi trả",
       detail:
         shopProfile?.returnPolicy ||
-        "Hỗ trợ đổi size hoặc đổi trả trong vòng 45 ngày đối với sản phẩm còn nguyên tem mác.",
+        "Đổi size hoặc đổi trả trong 45 ngày với sản phẩm còn nguyên tem mác.",
     },
     {
       heading: "Giao hàng và đồng kiểm",
       detail:
         shopProfile?.fastDeliveryNote ||
-        "Giao hàng toàn quốc qua đối tác vận chuyển của NexusMart, cho phép kiểm tra sản phẩm khi nhận.",
+        "Giao hàng toàn quốc qua đối tác vận chuyển NexusMart, đồng kiểm khi nhận.",
     },
     {
-      heading: "Thanh toán an toàn",
-      detail:
-        "Đơn hàng hỗ trợ thanh toán khi nhận hàng (COD) hoặc chuyển khoản VietQR xác nhận tự động.",
+      heading: "Thanh toán",
+      detail: "Hỗ trợ thanh toán khi nhận hàng (COD) hoặc chuyển khoản VietQR.",
     },
     {
       heading: "Kho xuất hàng",
-      detail:
-        shopProfile?.warehouseAddress ||
-        `Sản phẩm được đóng gói và xuất trực tiếp từ kho chính hãng của ${brandName}.`,
+      detail: shopProfile?.warehouseAddress || `Xuất trực tiếp từ kho chính hãng ${brandName}.`,
     },
   ];
 
@@ -85,44 +83,49 @@ export function SiteInfoView({
       ? templateConfig.theme.tagline?.trim() ||
         shop.description ||
         shopProfile?.story ||
-        `${brandName} cung cấp sản phẩm chính hãng trực tiếp từ xưởng, minh bạch chất liệu và tồn kho.`
-      : `Quy định giao nhận, đổi size và bảo vệ đơn hàng áp dụng khi mua sắm trực tiếp tại cửa hàng ${brandName}.`;
+        `${brandName} cung cấp sản phẩm trực tiếp từ xưởng.`
+      : `Giao nhận, đổi size và bảo vệ đơn hàng tại ${brandName}.`;
 
-  const titleCopy = mode === "about" ? `Về ${brandName}` : `Chính sách của ${brandName}`;
+  const titleCopy = mode === "about" ? `Về ${brandName}` : `Chính sách ${brandName}`;
 
   const factoryEntries = shopProfile
     ? [
         shopProfile.city
           ? {
-              heading: "Khu vực xuất hàng",
+              heading: "Kho xuất hàng",
               detail: shopProfile.warehouseAddress || shopProfile.city,
             }
           : null,
-        shopProfile.specialty
-          ? { heading: "Thế mạnh sản phẩm", detail: shopProfile.specialty }
-          : null,
+        shopProfile.specialty ? { heading: "Thế mạnh", detail: shopProfile.specialty } : null,
         shopProfile.factoryProfile?.fiberOrigin
-          ? { heading: "Nguồn nguyên liệu", detail: shopProfile.factoryProfile.fiberOrigin }
+          ? { heading: "Nguồn sợi", detail: shopProfile.factoryProfile.fiberOrigin }
           : null,
-        shopProfile.returnPolicy
-          ? { heading: "Cam kết hậu mãi", detail: shopProfile.returnPolicy }
-          : null,
+        shopProfile.returnPolicy ? { heading: "Hậu mãi", detail: shopProfile.returnPolicy } : null,
       ].filter((x): x is { heading: string; detail: string } => x !== null)
     : [];
 
   const tocEntries = [
-    { id: "info-overview", label: mode === "about" ? "Tổng quan thương hiệu" : "Quy định chung" },
+    { id: "info-overview", label: mode === "about" ? "Tổng quan" : "Quy định chung" },
     ...(mode === "about" && textSections.length > 0
-      ? [{ id: "info-story", label: "Câu chuyện chất liệu" }]
+      ? [{ id: "info-story", label: "Câu chuyện" }]
       : []),
-    ...(mode === "policies" ? [{ id: "info-policies", label: "Chính sách chi tiết" }] : []),
+    ...(mode === "policies" ? [{ id: "info-policies", label: "Chi tiết" }] : []),
     ...(infoConfig.show_factory_profile && factoryEntries.length > 0
-      ? [{ id: "info-factory", label: "Hồ sơ xưởng sản xuất" }]
+      ? [{ id: "info-factory", label: "Hồ sơ xưởng" }]
       : []),
     ...(infoConfig.show_showcase && showcaseProducts.length > 0
-      ? [{ id: "info-showcase", label: "Sản phẩm tiêu biểu" }]
+      ? [{ id: "info-showcase", label: "Tiêu biểu" }]
       : []),
   ];
+
+  const showcaseGridClass =
+    showcaseProducts.length <= 1
+      ? tplStyles.gridSingle
+      : showcaseProducts.length === 2
+        ? tplStyles.gridCols2
+        : showcaseProducts.length === 3
+          ? tplStyles.gridCols3
+          : tplStyles.gridCols4;
 
   const renderHeaderHero = () => {
     if (layout === "athletic-manifesto") {
@@ -130,14 +133,26 @@ export function SiteInfoView({
         <section id="info-overview" className={styles.siteSection} style={{ paddingBottom: 16 }}>
           <div className={tplStyles.container}>
             <div className={tplStyles.infoManifestoHero}>
-              <h1 className={tplStyles.heroFullbleedTitle}>{titleCopy}</h1>
-              <p className={tplStyles.heroFullbleedSub}>{leadCopy}</p>
+              <h1
+                className={tplStyles.infoBigStatement}
+                data-rise=""
+                style={{ "--i": 0 } as React.CSSProperties}
+              >
+                {titleCopy}
+              </h1>
+              <p
+                className={tplStyles.heroFullbleedSub}
+                data-rise=""
+                style={{ "--i": 1 } as React.CSSProperties}
+              >
+                {leadCopy}
+              </p>
               <div className={styles.heroActions}>
                 {previewMode ? (
                   <span className={styles.btnOnBand}>Xem sản phẩm</span>
                 ) : (
                   <Link href="/san-pham" className={styles.btnOnBand}>
-                    Xem sản phẩm của {brandName}
+                    Xem sản phẩm
                   </Link>
                 )}
               </div>
@@ -152,20 +167,30 @@ export function SiteInfoView({
         <section id="info-overview" className={styles.siteSection}>
           <div className={tplStyles.container}>
             <div className={tplStyles.infoMaisonHero}>
-              <h1 className={styles.heroTitle}>{titleCopy}</h1>
-              <p className={styles.heroSubtitle}>{leadCopy}</p>
+              <h1
+                className={tplStyles.heroLuxuryTitle}
+                data-rise=""
+                style={{ "--i": 0 } as React.CSSProperties}
+              >
+                {titleCopy}
+              </h1>
+              <p
+                className={tplStyles.heroLuxurySub}
+                data-rise=""
+                style={{ "--i": 1 } as React.CSSProperties}
+              >
+                {leadCopy}
+              </p>
               {mode === "about" && (
-                <div className={tplStyles.heroLuxuryOuterFrame}>
-                  <div className={tplStyles.heroLuxuryInnerFrame}>
-                    <img
-                      src={bannerImg}
-                      alt={`Không gian thương hiệu ${brandName}`}
-                      width={1365}
-                      height={768}
-                      className={styles.heroMediaImg}
-                    />
-                  </div>
-                </div>
+                <figure className={tplStyles.heroLuxurySmallFrame} data-reveal="scale">
+                  <img
+                    src={bannerImg}
+                    alt={`Không gian ${brandName}`}
+                    width={1365}
+                    height={768}
+                    className={styles.heroMediaImg}
+                  />
+                </figure>
               )}
             </div>
           </div>
@@ -173,7 +198,7 @@ export function SiteInfoView({
       );
     }
 
-    if (layout === "compact-faq" || layout === "b2b-catalog-sheet" || mode === "policies") {
+    if (mode === "policies" || layout === "compact-faq" || layout === "b2b-catalog-sheet") {
       return (
         <section id="info-overview" className={styles.pageHeadBand}>
           <div className={tplStyles.container}>
@@ -192,21 +217,21 @@ export function SiteInfoView({
       );
     }
 
-    // split-hero, editorial-essay, craft-timeline
+    // Large statement + single clean photograph
     return (
-      <section id="info-overview" className={styles.heroSection}>
+      <section id="info-overview" className={styles.siteSection}>
         <div className={tplStyles.container}>
-          <div className={styles.heroGrid}>
-            <div className={styles.heroCopyCol}>
+          <div className={tplStyles.infoStatementHero}>
+            <div className={tplStyles.infoStatementCopy}>
               <h1
-                className={styles.heroTitle}
+                className={tplStyles.infoBigStatement}
                 data-rise=""
                 style={{ "--i": 0 } as React.CSSProperties}
               >
                 {titleCopy}
               </h1>
               <p
-                className={styles.heroSubtitle}
+                className={styles.pageLead}
                 data-rise=""
                 style={{ "--i": 1 } as React.CSSProperties}
               >
@@ -218,43 +243,29 @@ export function SiteInfoView({
                 style={{ "--i": 2 } as React.CSSProperties}
               >
                 {previewMode ? (
-                  <>
-                    <span className={styles.btnPrimary}>Xem sản phẩm của {brandName}</span>
-                    <span className={styles.btnSecondary}>
-                      {mode === "about" ? "Xem chính sách" : "Về cửa hàng"}
-                    </span>
-                  </>
+                  <span className={styles.btnPrimary}>Xem sản phẩm</span>
                 ) : (
                   <>
                     <Link href="/san-pham" className={styles.btnPrimary}>
-                      Xem sản phẩm của {brandName}
+                      Xem sản phẩm
                     </Link>
-                    <Link
-                      href={mode === "about" ? "/chinh-sach" : "/gioi-thieu"}
-                      className={styles.btnSecondary}
-                    >
-                      {mode === "about" ? "Xem chính sách" : "Về cửa hàng"}
+                    <Link href="/chinh-sach" className={styles.btnSecondary}>
+                      Chính sách
                     </Link>
                   </>
                 )}
               </div>
             </div>
 
-            <div
-              className={styles.heroVisualCol}
-              data-rise=""
-              style={{ "--i": 2 } as React.CSSProperties}
-            >
-              <div className={styles.heroMediaFrame}>
-                <img
-                  src={bannerImg}
-                  alt={`Không gian thương hiệu ${brandName}`}
-                  width={1365}
-                  height={768}
-                  className={styles.heroMediaImg}
-                />
-              </div>
-            </div>
+            <figure className={tplStyles.infoStatementMedia} data-reveal="clip">
+              <img
+                src={bannerImg}
+                alt={`Không gian ${brandName}`}
+                width={1365}
+                height={768}
+                className={styles.heroMediaImg}
+              />
+            </figure>
           </div>
         </div>
       </section>
@@ -264,62 +275,32 @@ export function SiteInfoView({
   const renderBodyBlocks = () => (
     <div className={tplStyles.infoContentStack}>
       {mode === "policies" && (
-        <div id="info-policies">
-          {layout === "compact-faq" ? (
-            <div className={tplStyles.infoFaqList}>
-              {policyItems.map((item, idx) => (
-                <article key={idx} className={tplStyles.infoFaqItem} data-reveal="">
-                  <h2 className={styles.policyHeading}>{item.heading}</h2>
-                  <p className={styles.policyDetail}>{item.detail}</p>
-                </article>
-              ))}
-            </div>
-          ) : layout === "craft-timeline" ? (
-            <div className={tplStyles.policyTimeline}>
-              {policyItems.map((item, idx) => (
-                <article key={idx} className={tplStyles.policyTimelineStep} data-reveal="">
-                  <h2 className={styles.policyHeading}>{item.heading}</h2>
-                  <p className={styles.policyDetail}>{item.detail}</p>
-                </article>
-              ))}
-            </div>
-          ) : layout === "b2b-catalog-sheet" ? (
-            <div className={tplStyles.infoB2bSpecGrid}>
-              {policyItems.map((item, idx) => (
-                <article key={idx} className={tplStyles.infoB2bSpecCell} data-reveal="">
-                  <h2 className={styles.policyHeading}>{item.heading}</h2>
-                  <p className={styles.policyDetail}>{item.detail}</p>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <div className={styles.policyGrid}>
-              {policyItems.map((item, idx) => (
-                <article key={idx} className={styles.policyItem} data-reveal="">
-                  <h2 className={styles.policyHeading}>{item.heading}</h2>
-                  <p className={styles.policyDetail}>{item.detail}</p>
-                </article>
-              ))}
-            </div>
-          )}
+        <div id="info-policies" className={tplStyles.infoAccordionList} data-reveal="rows">
+          {policyItems.map((item, idx) => (
+            <details key={idx} className={tplStyles.infoAccordion} open={idx === 0}>
+              <summary className={tplStyles.infoAccordionSummary}>
+                <span>{item.heading}</span>
+                <span className={tplStyles.accordionPlus} aria-hidden="true" />
+              </summary>
+              <div className={tplStyles.infoAccordionBody}>
+                <CollapsibleProse paragraphs={[item.detail]} previewChars={220} />
+              </div>
+            </details>
+          ))}
         </div>
       )}
 
       {mode === "about" && textSections.length > 0 && (
-        <div id="info-story" className={tplStyles.infoContentStack}>
+        <div id="info-story" className={tplStyles.infoContentStack} data-reveal="rows">
           {textSections.map((sec) => {
             const paragraphs = sec.props.body
               .split(/\n{2,}/)
               .map((p) => p.trim())
               .filter(Boolean);
             return (
-              <article key={sec.id} className={styles.emptyPanel} data-reveal="">
+              <article key={sec.id} className={tplStyles.infoEssayCard}>
                 <h2 className={styles.sectionTitle}>{sec.props.title}</h2>
-                {paragraphs.map((para, idx) => (
-                  <p key={idx} className={styles.prosePara}>
-                    {para}
-                  </p>
-                ))}
+                <CollapsibleProse paragraphs={paragraphs} previewChars={200} />
               </article>
             );
           })}
@@ -328,40 +309,30 @@ export function SiteInfoView({
 
       {infoConfig.show_factory_profile && factoryEntries.length > 0 && (
         <div id="info-factory">
-          <div className={styles.sectionHead} data-reveal="">
+          <div className={styles.sectionHead}>
             <div className={styles.sectionHeadCopy}>
-              <h2 className={styles.sectionTitle}>Hồ sơ xưởng sản xuất</h2>
+              <h2 className={styles.sectionTitle}>Hồ sơ xưởng</h2>
             </div>
           </div>
 
-          {layout === "craft-timeline" ? (
-            <div className={tplStyles.policyTimeline}>
-              {factoryEntries.map((item, idx) => (
-                <article key={idx} className={tplStyles.policyTimelineStep} data-reveal="">
-                  <h3 className={styles.policyHeading}>{item.heading}</h3>
-                  <p className={styles.policyDetail}>{item.detail}</p>
-                </article>
-              ))}
-            </div>
-          ) : layout === "b2b-catalog-sheet" ? (
-            <div className={tplStyles.infoB2bSpecGrid}>
-              {factoryEntries.map((item, idx) => (
-                <article key={idx} className={tplStyles.infoB2bSpecCell} data-reveal="">
-                  <h3 className={styles.policyHeading}>{item.heading}</h3>
-                  <p className={styles.policyDetail}>{item.detail}</p>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <div className={styles.policyGrid}>
-              {factoryEntries.map((item, idx) => (
-                <article key={idx} className={styles.policyItem} data-reveal="">
-                  <h3 className={styles.policyHeading}>{item.heading}</h3>
-                  <p className={styles.policyDetail}>{item.detail}</p>
-                </article>
-              ))}
-            </div>
-          )}
+          <div
+            className={
+              layout === "b2b-catalog-sheet" ? tplStyles.infoB2bSpecGrid : styles.policyGrid
+            }
+            data-reveal="rows"
+          >
+            {factoryEntries.map((item, idx) => (
+              <article
+                key={idx}
+                className={
+                  layout === "b2b-catalog-sheet" ? tplStyles.infoB2bSpecCell : styles.policyItem
+                }
+              >
+                <h3 className={styles.policyHeading}>{item.heading}</h3>
+                <CollapsibleProse paragraphs={[item.detail]} previewChars={160} />
+              </article>
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -375,7 +346,7 @@ export function SiteInfoView({
         <div className={tplStyles.container}>
           {infoConfig.show_toc && tocEntries.length > 1 ? (
             <div className={tplStyles.infoTocShell}>
-              <nav className={tplStyles.infoTocNav} aria-label="Mục lục trang thông tin">
+              <nav className={tplStyles.infoTocNav} aria-label="Mục lục">
                 <span className={tplStyles.catalogSidebarTitle}>Mục lục</span>
                 {tocEntries.map((entry) =>
                   previewMode ? (
@@ -414,9 +385,9 @@ export function SiteInfoView({
           className={`${styles.siteSection} ${styles.siteSectionSurface}`}
         >
           <div className={tplStyles.container}>
-            <div className={styles.sectionHead} data-reveal="">
+            <div className={styles.sectionHead}>
               <div className={styles.sectionHeadCopy}>
-                <h2 className={styles.sectionTitle}>Sản phẩm tiêu biểu của {brandName}</h2>
+                <h2 className={styles.sectionTitle}>Sản phẩm tiêu biểu</h2>
               </div>
               {previewMode ? (
                 <span className={styles.sectionLink}>Xem tất cả</span>
@@ -426,7 +397,7 @@ export function SiteInfoView({
                 </Link>
               )}
             </div>
-            <div className={tplStyles.gridCols4}>
+            <div className={showcaseGridClass} data-reveal="rows">
               {showcaseProducts.map((product, idx) => (
                 <SiteProductCard
                   key={product.id}
@@ -434,6 +405,7 @@ export function SiteInfoView({
                   index={idx}
                   previewMode={previewMode}
                   cardStyle={cardStyle}
+                  layoutMode={showcaseProducts.length === 1 ? "single-wide" : "default"}
                 />
               ))}
             </div>

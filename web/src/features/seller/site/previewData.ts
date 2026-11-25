@@ -145,10 +145,10 @@ function mapSellerProductToStorefront(
       prod.description?.trim() ||
       "Sản phẩm sản xuất và kiểm định trực tiếp tại xưởng gian hàng, minh bạch chất liệu và kích cỡ.",
     sizeChart: [
-      { size: "S", heightCm: "158–166", weightKg: "50–58", chestOrWaistCm: "94", lengthCm: "66" },
-      { size: "M", heightCm: "165–173", weightKg: "58–66", chestOrWaistCm: "100", lengthCm: "69" },
-      { size: "L", heightCm: "172–179", weightKg: "66–75", chestOrWaistCm: "106", lengthCm: "72" },
-      { size: "XL", heightCm: "177–185", weightKg: "75–85", chestOrWaistCm: "112", lengthCm: "74" },
+      { size: "S", heightCm: "158-166", weightKg: "50-58", chestOrWaistCm: "94", lengthCm: "66" },
+      { size: "M", heightCm: "165-173", weightKg: "58-66", chestOrWaistCm: "100", lengthCm: "69" },
+      { size: "L", heightCm: "172-179", weightKg: "66-75", chestOrWaistCm: "106", lengthCm: "72" },
+      { size: "XL", heightCm: "177-185", weightKg: "75-85", chestOrWaistCm: "112", lengthCm: "74" },
     ],
     collectionSlugs: ["co-ban-hang-ngay"],
   };
@@ -175,7 +175,7 @@ export function buildPreviewStorefrontDataset(opts: {
     name: shopName,
     description:
       opts.shopDescription?.trim() ||
-      "Cửa hàng chính thức trên NexusMart — sản phẩm trực tiếp từ xưởng, minh bạch chất liệu và tồn kho.",
+      "Cửa hàng chính thức trên NexusMart, sản phẩm trực tiếp từ xưởng, minh bạch chất liệu và tồn kho.",
     status: "ACTIVE",
   };
 

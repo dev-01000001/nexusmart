@@ -1,8 +1,13 @@
+/* Storefront Vouchers — Full-row horizontal ticket layout (zero 2-col orphans).
+   Inherits shop theme via --site-* tokens with Frost & Slate fallbacks. */
+
 .page {
-  padding: 24px var(--margin) clamp(64px, 7vw, 96px);
+  padding: clamp(24px, 3vw, 36px) var(--margin) clamp(64px, 7vw, 96px);
   display: flex;
   flex-direction: column;
-  gap: clamp(32px, 4vw, 52px);
+  gap: clamp(28px, 3.6vw, 44px);
+  background: var(--site-bg, var(--bg));
+  color: var(--site-ink, var(--ink));
 }
 
 .breadcrumb {
@@ -11,26 +16,32 @@
   flex-wrap: wrap;
   gap: 8px;
   font-size: 14px;
-  color: var(--ink-secondary);
+  color: var(--site-muted, var(--ink-secondary));
 }
 
 .crumbLink {
-  color: var(--ink-secondary);
-  transition: color var(--t-hover) ease;
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding-block: 2px;
+  color: var(--site-muted, var(--ink-secondary));
+  text-decoration: none;
+  transition: color var(--t-hover, 180ms) ease;
 }
 
 .crumbLink:hover {
-  color: var(--accent);
+  color: var(--site-accent, var(--accent));
 }
 
 .crumbCurrent {
-  color: var(--ink);
+  color: var(--site-ink, var(--ink));
   font-weight: 500;
 }
 
 .heroBand {
-  background: var(--band-dark);
-  color: var(--band-dark-ink);
+  background: var(--site-band-bg, var(--band-dark));
+  color: var(--site-band-ink, var(--band-dark-ink));
+  border-radius: var(--site-radius, var(--radius-card, 0px));
   padding: clamp(28px, 4vw, 44px);
   display: flex;
   flex-wrap: wrap;
@@ -40,206 +51,198 @@
 }
 
 .heroText {
-  max-width: 62ch;
+  max-width: 58ch;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .title {
-  font-size: clamp(34px, 4.4vw, 56px);
-  font-weight: 500;
+  margin: 0;
+  font-size: clamp(32px, 4.2vw, 54px);
+  font-weight: 700;
+  font-stretch: 92%;
   letter-spacing: -0.025em;
-  line-height: 1.06;
-  color: var(--band-dark-ink);
+  line-height: 1.05;
+  color: var(--site-band-ink, var(--band-dark-ink));
 }
 
 .lead {
+  margin: 0;
   font-size: 16px;
-  line-height: 1.55;
-  color: var(--band-dark-muted);
+  line-height: 1.5;
+  color: var(--site-band-ink, var(--band-dark-ink));
+  opacity: 0.84;
 }
 
 .heroActions {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 10px;
 }
 
 .listSection {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 20px;
 }
 
 .toolbar {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
-  align-items: center;
+  align-items: baseline;
   gap: 16px;
 }
 
 .sectionTitle {
-  font-size: clamp(22px, 2.4vw, 28px);
-  font-weight: 500;
-  letter-spacing: -0.02em;
-  color: var(--ink);
-}
-
-.tabs {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 4px;
-  background: var(--surface);
-}
-
-.tabBtn {
-  min-height: 40px;
-  padding: 0 14px;
-  background: transparent;
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 500;
-  transition:
-    background-color var(--t-hover) ease,
-    color var(--t-hover) ease;
-}
-
-.tabBtn:hover {
-  background: var(--surface-white);
-}
-
-.tabBtnActive {
-  background: var(--accent);
-  color: var(--accent-ink);
+  margin: 0;
+  font-size: clamp(20px, 2.2vw, 26px);
   font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--site-ink, var(--ink));
 }
 
-.tabBtnActive:hover {
-  background: var(--accent);
-  color: var(--accent-ink);
-}
-
-.voucherGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px;
-}
-
-.voucherCard {
-  background: var(--surface-white);
-  padding: clamp(20px, 2.4vw, 28px);
+/* Single-column stack of large horizontal tickets (never creates 2-col orphan) */
+.voucherList {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
 }
 
-.voucherHeader {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
-  flex-wrap: wrap;
+.voucherTicket {
+  display: grid;
+  grid-template-columns: minmax(210px, 270px) minmax(0, 1fr) minmax(200px, 230px);
+  background: var(--site-surface, var(--surface-white));
+  border-radius: var(--site-radius, var(--radius-card, 0px));
+  overflow: hidden;
 }
 
-.codeGroup {
+.ticketStub {
+  background: var(--site-accent-soft, var(--accent-tint));
+  color: var(--site-accent-soft-ink, var(--site-ink));
+  padding: clamp(20px, 2.6vw, 28px);
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
+  flex-direction: column;
+  justify-content: center;
   gap: 10px;
 }
 
-.codeBadge {
-  padding: 4px 10px;
-  background: var(--accent-tint);
-  color: var(--accent-tint-ink);
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
+.discountValue {
+  font-family: var(--font-sans);
+  font-stretch: 66%;
+  font-weight: 800;
+  font-size: clamp(32px, 3.8vw, 46px);
+  line-height: 0.96;
+  letter-spacing: -0.02em;
+  color: var(--site-accent, var(--accent));
+}
+
+.codeDisplay {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  line-height: 1.2;
+  color: var(--site-ink, var(--ink));
+  word-break: break-word;
 }
 
 .scopeLabel {
-  font-size: 14px;
-  color: var(--ink-secondary);
+  font-size: 13px;
+  color: var(--site-muted, var(--ink-secondary));
 }
 
-.discountSummary {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--ink-strong);
+.ticketBody {
+  padding: clamp(20px, 2.6vw, 28px);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  min-width: 0;
 }
 
 .voucherTitle {
+  margin: 0;
   font-size: 18px;
-  font-weight: 500;
-  color: var(--ink);
-  line-height: 1.35;
+  font-weight: 600;
+  color: var(--site-ink, var(--ink));
+  line-height: 1.3;
 }
 
 .voucherDesc {
-  font-size: 16px;
+  margin: 0;
+  font-size: 14px;
   line-height: 1.5;
-  color: var(--ink-secondary);
+  color: var(--site-muted, var(--ink-secondary));
+  max-width: 58ch;
 }
 
 .metaRow {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 16px;
-  font-size: 14px;
-  color: var(--ink-secondary);
+  gap: 6px 16px;
+  font-size: 13px;
+  color: var(--site-muted, var(--ink-secondary));
+  font-variant-numeric: tabular-nums;
 }
 
 .quotaWrap {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  max-width: 420px;
+  margin-top: 2px;
 }
 
 .quotaTop {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  font-size: 14px;
-  color: var(--ink-secondary);
+  font-size: 13px;
+  color: var(--site-muted, var(--ink-secondary));
 }
 
 .quotaTrack {
-  height: 6px;
-  background: var(--surface-muted);
+  height: 5px;
+  border-radius: var(--site-radius, 0px);
+  background: var(--site-surface-alt, var(--surface-muted));
   overflow: hidden;
 }
 
 .quotaFill {
   height: 100%;
-  background: var(--accent);
+  background: var(--site-accent, var(--accent));
 }
 
-.actions {
-  margin-top: 4px;
+.ticketActions {
+  padding: clamp(20px, 2.6vw, 28px);
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+}
+
+.secondaryActionRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
-.shopLink {
-  margin-left: auto;
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--accent);
-  text-decoration: underline;
-  text-underline-offset: 3px;
+@media (max-width: 960px) {
+  .voucherTicket {
+    grid-template-columns: 1fr;
+  }
+
+  .ticketStub {
+    flex-direction: row;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
 }
 
-.shopLink:hover {
-  color: var(--accent-hover);
-}
-
-@media (max-width: 900px) {
-  .voucherGrid {
-    grid-template-columns: minmax(0, 1fr);
+@media (max-width: 640px) {
+  .page {
+    padding-inline: 18px;
   }
 }

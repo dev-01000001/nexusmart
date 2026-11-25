@@ -16,6 +16,7 @@ import {
   createDefaultTemplateConfig,
   createSectionTemplate,
   createSectionV2Template,
+  stripPreviewJsClass,
   validateSafeUrlClient,
   validateSiteDraftClient,
   validateSiteTemplateJson,
@@ -268,4 +269,15 @@ test("buildCleanTemplateConfigPayload preserves layout, slots, blocks, and 4 sub
   assert.equal(cleaned.pages.cart.trust_note, "Kiểm hàng trước thanh toán");
   assert.equal(cleaned.pages.info.layout, "craft-timeline");
   assert.equal(cleaned.pages.info.sections?.length, 1);
+});
+
+test("stripPreviewJsClass removes only standalone js token while keeping font and other classes", () => {
+  assert.equal(stripPreviewJsClass("js __font_archivo_123"), "__font_archivo_123");
+  assert.equal(
+    stripPreviewJsClass("  __font_archivo   js   theme-dark  "),
+    "__font_archivo theme-dark"
+  );
+  assert.equal(stripPreviewJsClass("js"), "");
+  assert.equal(stripPreviewJsClass("jsx my-js js-ready js"), "jsx my-js js-ready");
+  assert.equal(stripPreviewJsClass(""), "");
 });

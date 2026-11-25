@@ -54,6 +54,7 @@ export default async function SiteCartPage({ params }: PageProps) {
       templateConfig={bundle.templateConfig}
       shop={bundle.payload.shop}
       vouchers={bundle.vouchers}
+      serverNowMs={Date.now()}
     />
   );
 }

@@ -101,8 +101,8 @@
   border-radius: var(--radius-control);
   border: 1px solid var(--control); /* taste-skill-ignore: inline copy control */
   background: var(--card);
-  color: var(--ink);
-  font-size: 12px;
+  color: var(--ink-1);
+  font-size: 13px;
   font-weight: 500;
   line-height: 1;
   white-space: nowrap;
@@ -281,7 +281,7 @@
 }
 
 .statusBannerMeta {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--pill-positive-ink);
   opacity: 0.85;
 }
@@ -357,12 +357,12 @@
 .dnsTypePill {
   display: inline-flex;
   align-items: center;
-  height: 22px;
-  padding: 0 7px;
+  height: 24px;
+  padding: 0 8px;
   border-radius: var(--radius-chip);
-  background: var(--surface);
-  color: var(--ink);
-  font-size: 12px;
+  background: var(--bg-2);
+  color: var(--ink-1);
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.02em;
   white-space: nowrap;
@@ -377,9 +377,7 @@
 }
 
 .dnsCode {
-  font-family:
-    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
-    monospace;
+  font-family: var(--font-sans);
   font-size: 13px;
   line-height: 19px;
   color: var(--ink);
@@ -403,15 +401,12 @@
   color: var(--muted);
 }
 
-/* Summary strip subtle action row inside SellerSiteEditorClient */
-.summaryActionRow {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
+/* Summary strip subtle action inside SellerSiteEditorClient */
 .summaryManageBtn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding-block: 2px;
   font-size: 13px;
   line-height: 18px;
   font-weight: 500;
@@ -435,8 +430,15 @@
     align-items: stretch;
   }
 
+  .addInputRow input {
+    flex: none;
+    width: 100%;
+    min-height: 40px;
+  }
+
   .addSubmitBtn {
     width: 100%;
+    min-height: 40px;
   }
 
   .dnsMobileList {
@@ -463,9 +465,9 @@
   }
 
   .dnsMobileLabel {
-    font-size: 12px;
-    line-height: 16px;
-    color: var(--muted);
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--ink-3);
   }
 
   .dnsMobileValueRow {

@@ -2,9 +2,8 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { ApiError, api } from "@/lib/api";
-import { normalizeVietnamese } from "@/lib/search";
 import { useStore } from "@/context/StoreContext";
-import { Button } from "@/components/Button";
+import { AddressFieldsForm, type AddressFieldValues } from "./AddressFieldsForm";
 import type { GwAddress, GwProvince, GwWard } from "./types";
 import styles from "./commerce.module.css";
 
@@ -28,6 +27,14 @@ export interface AddressFormProps {
   submitLabel?: string;
 }
 
+const CHECKOUT_FIELD_NAMES = {
+  recipient: "recipient_name",
+  phone: "recipient_phone",
+  province: "province_code",
+  ward: "ward_code",
+  street: "street_address",
+} as const;
+
 export function AddressForm({
   defaultName = "",
   defaultPhone = "",
@@ -37,21 +44,15 @@ export function AddressForm({
   submitLabel = "Lưu địa chỉ nhận hàng",
 }: AddressFormProps) {
   const { showToast } = useStore();
-  const [recipientName, setRecipientName] = useState(defaultName);
-  const [phone, setPhone] = useState(defaultPhone);
   const [provinces, setProvinces] = useState<GwProvince[]>([]);
   const [wards, setWards] = useState<GwWard[]>([]);
   const [provinceCode, setProvinceCode] = useState("");
   const [wardCode, setWardCode] = useState("");
-  const [streetAddress, setStreetAddress] = useState("");
-  const [isDefault, setIsDefault] = useState(true);
   const [loadingProvinces, setLoadingProvinces] = useState(true);
   const [loadingWards, setLoadingWards] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const [provinceQuery, setProvinceQuery] = useState("");
-  const [wardQuery, setWardQuery] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
+  const [errorSignal, setErrorSignal] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -71,8 +72,8 @@ export function AddressForm({
       })
       .catch((err) => {
         if (!active) return;
-        setError(
-          err instanceof ApiError ? err.message : "Không tải được danh sách Tỉnh/Thành phố lúc này."
+        setFormError(
+          err instanceof ApiError ? err.message : "Không tải được danh sách tỉnh thành."
         );
       })
       .finally(() => {
@@ -90,6 +91,8 @@ export function AddressForm({
       return;
     }
     let active = true;
+    setWards([]);
+    setWardCode("");
     setLoadingWards(true);
     api<{ wards: GwWard[] }>(
       `/api/checkout/locations?province_code=${encodeURIComponent(provinceCode)}`
@@ -102,9 +105,9 @@ export function AddressForm({
       })
       .catch((err) => {
         if (!active) return;
-        setError(
-          err instanceof ApiError ? err.message : "Không tải được danh sách Phường/Xã lúc này."
-        );
+        setWards([]);
+        setWardCode("");
+        setFormError(err instanceof ApiError ? err.message : "Không tải được danh sách phường xã.");
       })
       .finally(() => {
         if (active) setLoadingWards(false);
@@ -118,64 +121,22 @@ export function AddressForm({
     () => provinces.find((p) => p.code === provinceCode),
     [provinces, provinceCode]
   );
-
   const selectedWard = useMemo(() => wards.find((w) => w.code === wardCode), [wards, wardCode]);
 
-  const provinceSuggestions = useMemo(() => {
-    const q = normalizeVietnamese(provinceQuery);
-    if (!q) return [];
-    return provinces
-      .filter((p) => normalizeVietnamese(`${p.name} ${p.code}`).includes(q))
-      .slice(0, 6);
-  }, [provinceQuery, provinces]);
-
-  const wardSuggestions = useMemo(() => {
-    const q = normalizeVietnamese(wardQuery);
-    if (!q) return [];
-    return wards.filter((w) => normalizeVietnamese(w.name).includes(q)).slice(0, 6);
-  }, [wardQuery, wards]);
-
-  const handleProvinceChange = (nextCode: string) => {
-    setProvinceCode(nextCode);
-    setWardQuery("");
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (submitting) return;
-    const cleanName = recipientName.trim();
-    const cleanPhone = phone.replace(/\s+/g, "").trim();
-    const cleanStreet = streetAddress.trim();
-
-    if (cleanName.length < 2) {
-      setError("Vui lòng nhập họ và tên người nhận đầy đủ.");
-      return;
-    }
-    if (!/^0\d{9,10}$/.test(cleanPhone)) {
-      setError("Số điện thoại cần gồm 10 hoặc 11 chữ số và bắt đầu bằng số 0.");
-      return;
-    }
-    if (!selectedProvince || !selectedWard) {
-      setError("Vui lòng chọn đầy đủ Tỉnh/Thành phố và Phường/Xã.");
-      return;
-    }
-    if (cleanStreet.length < 4) {
-      setError("Vui lòng nhập số nhà, tên đường hoặc ngõ cụ thể để giao hàng chính xác.");
-      return;
-    }
-
+  const handleValidSubmit = async (values: AddressFieldValues) => {
+    if (!selectedProvince || !selectedWard) return;
     const payload: AddressSubmitPayload = {
-      recipient_name: cleanName,
-      recipient_phone: cleanPhone,
+      recipient_name: values.recipientName,
+      recipient_phone: values.phone,
       province_code: selectedProvince.code,
       province_name: selectedProvince.name,
       ward_code: selectedWard.code,
       ward_name: selectedWard.name,
-      street_address: cleanStreet,
-      is_default: isDefault,
+      street_address: values.streetAddress,
+      is_default: values.isDefault,
     };
 
-    setError(null);
+    setFormError(null);
     setSubmitting(true);
     try {
       const created = onSubmitAddress
@@ -189,198 +150,44 @@ export function AddressForm({
       showToast(`Đã lưu địa chỉ tại ${selectedWard.name}, ${selectedProvince.name}.`);
       onSaved?.(created);
     } catch (err) {
-      setError(
-        err instanceof ApiError
-          ? err.message
-          : "Chưa thể lưu địa chỉ lúc này. Bạn vui lòng thử lại."
+      setFormError(
+        err instanceof ApiError ? err.message : "Chưa thể lưu địa chỉ lúc này. Thử lại sau."
       );
+      setErrorSignal((n) => n + 1);
     } finally {
       setSubmitting(false);
     }
   };
 
   return (
-    <form className={styles.whitePanel} onSubmit={handleSubmit} noValidate>
-      <div className={styles.formGrid}>
-        <div className={styles.field}>
-          <label htmlFor="addr-recipient" className={styles.fieldLabel}>
-            Họ và tên người nhận
-          </label>
-          <input
-            id="addr-recipient"
-            type="text"
-            className={styles.input}
-            value={recipientName}
-            onChange={(e) => setRecipientName(e.target.value)}
-            placeholder="Nguyễn Minh Quân"
-            required
-          />
-        </div>
-
-        <div className={styles.field}>
-          <label htmlFor="addr-phone" className={styles.fieldLabel}>
-            Số điện thoại nhận hàng
-          </label>
-          <input
-            id="addr-phone"
-            type="tel"
-            className={styles.input}
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            placeholder="0912 486 305"
-            required
-          />
-        </div>
-
-        <div className={styles.field}>
-          <label htmlFor="addr-province-search" className={styles.fieldLabel}>
-            Tỉnh / Thành phố
-          </label>
-          <input
-            id="addr-province-search"
-            type="search"
-            className={styles.input}
-            value={provinceQuery}
-            onChange={(e) => setProvinceQuery(e.target.value)}
-            placeholder="Tìm nhanh: Hà Nội, Đà Nẵng, TP. Hồ Chí Minh..."
-            disabled={loadingProvinces}
-          />
-          {provinceSuggestions.length > 0 && (
-            <div className={styles.quickSuggestList} role="list" aria-label="Gợi ý tỉnh thành">
-              {provinceSuggestions.map((p) => (
-                <button
-                  key={p.code}
-                  type="button"
-                  className={`${styles.quickSuggestChip} ${
-                    p.code === provinceCode ? styles.quickSuggestChipActive : ""
-                  }`}
-                  onClick={() => {
-                    handleProvinceChange(p.code);
-                    setProvinceQuery("");
-                  }}
-                >
-                  {p.name}
-                </button>
-              ))}
-            </div>
-          )}
-          <select
-            id="addr-province"
-            aria-label="Chọn Tỉnh hoặc Thành phố"
-            className={styles.select}
-            value={provinceCode}
-            onChange={(e) => handleProvinceChange(e.target.value)}
-            disabled={loadingProvinces || provinces.length === 0}
-          >
-            {loadingProvinces && <option value="">Đang tải danh sách tỉnh thành...</option>}
-            {provinces.map((p) => (
-              <option key={p.code} value={p.code}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className={styles.field}>
-          <label htmlFor="addr-ward-search" className={styles.fieldLabel}>
-            Phường / Xã
-          </label>
-          <input
-            id="addr-ward-search"
-            type="search"
-            className={styles.input}
-            value={wardQuery}
-            onChange={(e) => setWardQuery(e.target.value)}
-            placeholder={
-              selectedProvince
-                ? `Tìm nhanh trong ${selectedProvince.name}...`
-                : "Tìm Phường / Xã..."
-            }
-            disabled={loadingWards || wards.length === 0}
-          />
-          {wardSuggestions.length > 0 && (
-            <div className={styles.quickSuggestList} role="list" aria-label="Gợi ý phường xã">
-              {wardSuggestions.map((w) => (
-                <button
-                  key={w.code}
-                  type="button"
-                  className={`${styles.quickSuggestChip} ${
-                    w.code === wardCode ? styles.quickSuggestChipActive : ""
-                  }`}
-                  onClick={() => {
-                    setWardCode(w.code);
-                    setWardQuery("");
-                  }}
-                >
-                  {w.name}
-                </button>
-              ))}
-            </div>
-          )}
-          <select
-            id="addr-ward"
-            aria-label="Chọn Phường hoặc Xã"
-            className={styles.select}
-            value={wardCode}
-            onChange={(e) => setWardCode(e.target.value)}
-            disabled={loadingWards || wards.length === 0}
-          >
-            {loadingWards && <option value="">Đang tải Phường / Xã...</option>}
-            {wards.map((w) => (
-              <option key={w.code} value={w.code}>
-                {w.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className={`${styles.field} ${styles.formFull}`}>
-          <label htmlFor="addr-street" className={styles.fieldLabel}>
-            Số nhà, tên đường / ngõ
-          </label>
-          <input
-            id="addr-street"
-            type="text"
-            className={styles.input}
-            value={streetAddress}
-            onChange={(e) => setStreetAddress(e.target.value)}
-            placeholder="Ví dụ: Số 248 đường Võ Văn Tần"
-            required
-          />
-          <span className={styles.fieldHint}>
-            Chọn trực tiếp Tỉnh/Thành phố và Phường/Xã nhận hàng để tính đúng phí vận chuyển.
-          </span>
-        </div>
-
-        <div className={styles.formFull}>
-          <label className={styles.checkboxRow}>
-            <input
-              type="checkbox"
-              className={styles.checkbox}
-              checked={isDefault}
-              onChange={(e) => setIsDefault(e.target.checked)}
-            />
-            <span>Đặt làm địa chỉ giao hàng mặc định</span>
-          </label>
-        </div>
-
-        {error && (
-          <p className={`${styles.fieldError} ${styles.formFull}`} role="alert">
-            {error}
-          </p>
-        )}
-
-        <div className={`${styles.formActions} ${styles.formFull}`}>
-          <Button type="submit" variant="ink" size="md" disabled={submitting || loadingProvinces}>
-            {submitting ? "Đang lưu địa chỉ..." : submitLabel}
-          </Button>
-          {onCancel && (
-            <Button type="button" variant="secondary" size="md" onClick={onCancel}>
-              Hủy bỏ
-            </Button>
-          )}
-        </div>
-      </div>
-    </form>
+    <AddressFieldsForm
+      idPrefix="addr"
+      fieldNames={CHECKOUT_FIELD_NAMES}
+      initialValues={{
+        recipientName: defaultName,
+        phone: defaultPhone,
+        streetAddress: "",
+        isDefault: true,
+      }}
+      provinces={provinces}
+      wards={wards}
+      provinceCode={provinceCode}
+      wardCode={wardCode}
+      loadingProvinces={loadingProvinces}
+      loadingWards={loadingWards}
+      onProvinceChange={setProvinceCode}
+      onWardChange={setWardCode}
+      minStreetLength={4}
+      formClassName={styles.surfacePanel}
+      submitVariant="ink"
+      submitLabel={submitLabel}
+      loadingLabel="Đang lưu địa chỉ"
+      submitDisabled={loadingProvinces || loadingWards}
+      submitting={submitting}
+      externalError={formError}
+      errorSignal={errorSignal}
+      onCancel={onCancel}
+      onValidSubmit={handleValidSubmit}
+    />
   );
 }

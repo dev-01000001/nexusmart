@@ -60,7 +60,6 @@ export default async function SiteAccountPage({ params }: PageProps) {
         initialWards={data.initialWards}
         initialProvinceCode={data.initialProvinceCode}
         catalogProducts={data.catalogProducts}
-        suggestedProducts={data.suggestedProducts}
       />
     );
   } catch (err) {
@@ -91,7 +90,6 @@ export default async function SiteAccountPage({ params }: PageProps) {
         initialWards={[]}
         initialProvinceCode="79"
         catalogProducts={bundle.products}
-        suggestedProducts={bundle.products.slice(0, 4)}
         initialError={msg}
       />
     );

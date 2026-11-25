@@ -11,7 +11,6 @@ import type {
   SiteConfig,
   SiteContainerWidth,
   SiteDensity,
-  SiteFontFamily,
   SiteFooterStyle,
   SiteHeaderStyle,
   SiteInfoLayout,
@@ -69,22 +68,6 @@ export {
 
 export const MAX_SECTIONS = 20;
 export const MIN_WCAG_CONTRAST = 4.5;
-
-export const ALLOWED_FONTS: ReadonlyArray<{
-  value: SiteFontFamily;
-  label: string;
-  hint: string;
-}> = [
-  { value: "work-sans", label: "Work Sans", hint: "Gọn nét, đồng bộ NexusMart" },
-  { value: "be-vietnam-pro", label: "Be Vietnam Pro", hint: "Hỗ trợ dấu tiếng Việt sắc nét" },
-  { value: "inter", label: "Inter", hint: "Hiện đại, dễ đọc cho mô tả sản phẩm" },
-  { value: "ibm-plex-sans", label: "IBM Plex Sans", hint: "Chính xác, phong cách xưởng kỹ thuật" },
-  {
-    value: "plus-jakarta-sans",
-    label: "Plus Jakarta Sans",
-    hint: "Mềm mại cho thương hiệu thời trang",
-  },
-];
 
 export interface ThemePalettePreset {
   id: string;
@@ -316,7 +299,7 @@ export const FOOTER_STYLE_OPTIONS: ReadonlyArray<{ value: SiteFooterStyle; label
 
 export const CONTAINER_WIDTH_OPTIONS: ReadonlyArray<{ value: SiteContainerWidth; label: string }> =
   [
-    { value: "narrow", label: "Hẹp (Boutique · 1080px)" },
+    { value: "narrow", label: "Hẹp (Boutique, 1080px)" },
     { value: "standard", label: "Tiêu chuẩn (1240px)" },
     { value: "wide", label: "Rộng (1400px)" },
     { value: "full", label: "Toàn chiều ngang (Kho/Lưới dày)" },
@@ -1743,4 +1726,12 @@ export function validateSiteDraftClient(subdomain: string, config: SiteConfig): 
     }
   }
   return null;
+}
+
+/** Strips the parent `js` class token so iframe previews never activate scroll-reveal hiding without an observer. */
+export function stripPreviewJsClass(className: string): string {
+  return className
+    .split(/\s+/)
+    .filter((token) => token && token !== "js")
+    .join(" ");
 }

@@ -20,6 +20,7 @@ import {
 import { EMPTY_DASH } from "@/features/admin/adminMeta";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { useAdminContext } from "@/features/admin/AdminShell";
+import { AdminConfirmDialog, AdminDrawer, SlidingTabBar } from "@/features/admin/AdminUi";
 import { StatusPill } from "@/features/admin/StatusPill";
 import shared from "@/features/admin/adminShared.module.css";
 import type { AdminSitesListResponse, GwSite } from "@/features/seller/site/siteEditorTypes";
@@ -64,16 +65,18 @@ function AdminSitesContent({
   const [sites, setSites] = useState<GwSite[]>(initialSites);
   const [activeTab, setActiveTab] = useState<SiteFilterTab>("all");
   const [query, setQuery] = useState(initialQuery);
-  const [selectedId, setSelectedId] = useState<string | null>(
-    initialSelected ?? initialSites[0]?.id ?? null
-  );
-  const [mobileOpenId, setMobileOpenId] = useState<string | null>(initialSelected);
+  const [selectedId, setSelectedId] = useState<string | null>(initialSelected);
+  const [drawerOpen, setDrawerOpen] = useState(Boolean(initialSelected));
   const [reasonDrafts, setReasonDrafts] = useState<Record<string, string>>({});
   const [reasonErrorId, setReasonErrorId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [domainsByShopId, setDomainsByShopId] = useState<Record<string, ShopDomainsCacheEntry>>({});
-  const [confirmRemoveDomainKey, setConfirmRemoveDomainKey] = useState<string | null>(null);
+  const [confirmRemoveDomain, setConfirmRemoveDomain] = useState<{
+    site: GwSite;
+    domain: SiteDomainDTO;
+  } | null>(null);
+  const [confirmSuspendSite, setConfirmSuspendSite] = useState<GwSite | null>(null);
   const [removingDomainKey, setRemovingDomainKey] = useState<string | null>(null);
   const fetchedShopIdsRef = useRef<Set<string>>(new Set());
   const inflightShopIdsRef = useRef<Set<string>>(new Set());
@@ -82,6 +85,12 @@ function AdminSitesContent({
     (site: GwSite) =>
       site.shop_name || shopNameById[site.shop_id] || `Gian hàng ${site.shop_id.slice(0, 8)}`,
     [shopNameById]
+  );
+
+  const resolveSiteHost = useCallback(
+    (site: GwSite) =>
+      site.primary_host || (site.subdomain ? `${site.subdomain}.${rootDomain}` : site.id),
+    [rootDomain]
   );
 
   const counts = useMemo(() => {
@@ -113,19 +122,10 @@ function AdminSitesContent({
     });
   }, [sites, activeTab, query, resolveShopName]);
 
-  const activeDesktopSite = useMemo(() => {
-    if (filtered.length === 0) return null;
-    if (selectedId) {
-      const exact = filtered.find((s) => s.id === selectedId);
-      if (exact) return exact;
-    }
-    return filtered[0];
-  }, [filtered, selectedId]);
-
-  const activeMobileSite = useMemo(() => {
-    if (!mobileOpenId) return null;
-    return filtered.find((s) => s.id === mobileOpenId) ?? null;
-  }, [filtered, mobileOpenId]);
+  const activeSite = useMemo(() => {
+    if (!selectedId) return null;
+    return sites.find((s) => s.id === selectedId) ?? null;
+  }, [sites, selectedId]);
 
   const loadShopDomains = useCallback(async (shopId: string, force = false) => {
     if (!shopId) return;
@@ -179,16 +179,16 @@ function AdminSitesContent({
   }, []);
 
   useEffect(() => {
-    if (activeDesktopSite?.shop_id) {
-      void loadShopDomains(activeDesktopSite.shop_id);
+    if (drawerOpen && activeSite?.shop_id) {
+      void loadShopDomains(activeSite.shop_id);
     }
-  }, [activeDesktopSite?.shop_id, loadShopDomains]);
+  }, [drawerOpen, activeSite?.shop_id, loadShopDomains]);
 
-  useEffect(() => {
-    if (activeMobileSite?.shop_id) {
-      void loadShopDomains(activeMobileSite.shop_id);
-    }
-  }, [activeMobileSite?.shop_id, loadShopDomains]);
+  const openSiteDrawer = (site: GwSite) => {
+    setReasonErrorId(null);
+    setSelectedId(site.id);
+    setDrawerOpen(true);
+  };
 
   const handleRemoveAdminDomain = async (site: GwSite, domain: SiteDomainDTO) => {
     if (domain.kind !== "CUSTOM") return;
@@ -217,7 +217,7 @@ function AdminSitesContent({
       setSites((prev) =>
         prev.map((item) => (item.id === site.id ? { ...item, primary_host: fallbackHost } : item))
       );
-      setConfirmRemoveDomainKey((prev) => (prev === domainKey ? null : prev));
+      setConfirmRemoveDomain(null);
       showToast(`Đã gỡ tên miền riêng "${domain.host}" khỏi ${resolveShopName(site)}.`);
       router.refresh();
     } catch (err) {
@@ -239,13 +239,10 @@ function AdminSitesContent({
       }));
       setSites(next);
       fetchedShopIdsRef.current.clear();
-      const activeShopIds = new Set<string>();
-      if (activeDesktopSite?.shop_id) activeShopIds.add(activeDesktopSite.shop_id);
-      if (activeMobileSite?.shop_id) activeShopIds.add(activeMobileSite.shop_id);
-      for (const shopId of activeShopIds) {
-        void loadShopDomains(shopId, true);
+      if (drawerOpen && activeSite?.shop_id) {
+        void loadShopDomains(activeSite.shop_id, true);
       }
-      showToast("Đã đồng bộ danh sách site gian hàng mới nhất.");
+      showToast("Đã đồng bộ danh sách site gian hàng.");
     } catch (err) {
       showToast(err instanceof ApiError ? err.message : "Không thể tải lại danh sách site.");
     } finally {
@@ -253,10 +250,21 @@ function AdminSitesContent({
     }
   };
 
+  const handleRequestSuspend = (site: GwSite) => {
+    const reason = (reasonDrafts[site.id] ?? "").trim();
+    if (!reason) {
+      setReasonErrorId(site.id);
+      return;
+    }
+    setReasonErrorId(null);
+    setConfirmSuspendSite(site);
+  };
+
   const handleToggleSuspend = async (site: GwSite, suspend: boolean) => {
     const reason = (reasonDrafts[site.id] ?? "").trim();
     if (suspend && !reason) {
       setReasonErrorId(site.id);
+      setConfirmSuspendSite(null);
       return;
     }
     setReasonErrorId(null);
@@ -277,11 +285,13 @@ function AdminSitesContent({
         setSites((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
       }
       setReasonDrafts((prev) => ({ ...prev, [site.id]: "" }));
+      setConfirmSuspendSite(null);
       const shopLabel = resolveShopName(site);
+      const siteHost = resolveSiteHost(site);
       showToast(
         suspend
-          ? `Đã tạm khóa site "${site.primary_host}" của ${shopLabel}.`
-          : `Đã mở khóa lại site "${site.primary_host}" của ${shopLabel}.`
+          ? `Đã tạm khóa site "${siteHost}" của ${shopLabel}.`
+          : `Đã mở khóa site "${siteHost}" của ${shopLabel}.`
       );
       router.refresh();
     } catch (err) {
@@ -303,15 +313,21 @@ function AdminSitesContent({
           surface="app"
           title="Không thể tải danh sách site gian hàng"
           message={loadError}
-          actionLabel="Thử tải lại"
+          actionLabel="Thử lại"
           onAction={() => router.refresh()}
         />
       </div>
     );
   }
 
-  const renderDetailPanel = (site: GwSite, showHeading = false) => {
-    const statusMeta = getSiteStatusMeta(site.status);
+  const tabs: Array<{ id: SiteFilterTab; label: string; count: number }> = [
+    { id: "all", label: "Tất cả", count: counts.all },
+    { id: "PUBLISHED", label: "Đang hoạt động", count: counts.PUBLISHED },
+    { id: "DRAFT", label: "Bản nháp", count: counts.DRAFT },
+    { id: "SUSPENDED", label: "Tạm khóa", count: counts.SUSPENDED },
+  ];
+
+  const renderDrawerBody = (site: GwSite) => {
     const isSuspended = site.status.toUpperCase() === "SUSPENDED";
     const isPublished = site.status.toUpperCase() === "PUBLISHED";
     const draftReason = reasonDrafts[site.id] ?? "";
@@ -328,69 +344,62 @@ function AdminSitesContent({
     const domainsLoading = !domainState || domainState.loading;
 
     return (
-      <div className={shared.detailWell}>
-        {showHeading && (
-          <div className={shared.detailHeader}>
-            <h2 className={shared.detailHeading}>Chi tiết site: {shopName}</h2>
-            <div className={shared.detailHeaderMeta}>
-              <StatusPill label={statusMeta.label} tone={statusMeta.adminTone} />
+      <>
+        <div className={shared.detailWell}>
+          <div className={shared.detailGrid}>
+            <div className={shared.detailField}>
+              <span className={shared.detailKey}>Gian hàng</span>
+              <span className={shared.detailVal}>{shopName}</span>
             </div>
-          </div>
-        )}
-
-        <div className={shared.detailGrid}>
-          <div className={shared.detailField}>
-            <span className={shared.detailKey}>Gian hàng</span>
-            <span className={shared.detailVal}>{shopName}</span>
-          </div>
-          <div className={shared.detailField}>
-            <span className={shared.detailKey}>Tên miền phụ</span>
-            <span className={shared.detailVal}>{site.subdomain || EMPTY_DASH}</span>
-          </div>
-          <div className={shared.detailField}>
-            <span className={shared.detailKey}>Địa chỉ đầy đủ</span>
-            {isPublished ? (
-              <a
-                href={buildPublicSiteUrl(fullHost, requestHost, requestProto) || "#"}
-                target="_blank"
-                rel="noopener noreferrer"
-                className={styles.hostLink}
-              >
-                <span>{fullHost}</span>
-                <IconArrowUpRight size={13} />
-              </a>
-            ) : (
-              <span className={styles.hostPlain}>{fullHost}</span>
+            <div className={shared.detailField}>
+              <span className={shared.detailKey}>Tên miền phụ</span>
+              <span className={shared.detailVal}>{site.subdomain || EMPTY_DASH}</span>
+            </div>
+            <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+              <span className={shared.detailKey}>Địa chỉ đầy đủ</span>
+              {isPublished ? (
+                <a
+                  href={buildPublicSiteUrl(fullHost, requestHost, requestProto) || "#"}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={styles.hostLink}
+                >
+                  <span>{fullHost}</span>
+                  <IconArrowUpRight size={14} />
+                </a>
+              ) : (
+                <span className={styles.hostPlain}>{fullHost}</span>
+              )}
+            </div>
+            <div className={shared.detailField}>
+              <span className={shared.detailKey}>Phiên bản xuất bản</span>
+              <span className={`${shared.detailValPlain} num`}>{versionText}</span>
+            </div>
+            <div className={shared.detailField}>
+              <span className={shared.detailKey}>Xuất bản gần nhất</span>
+              <span className={`${shared.detailValPlain} num`}>
+                {site.published_at ? formatDateTimeVi(site.published_at) : EMPTY_DASH}
+              </span>
+            </div>
+            <div className={shared.detailField}>
+              <span className={shared.detailKey}>Cập nhật gần nhất</span>
+              <span className={`${shared.detailValPlain} num`}>
+                {site.updated_at ? formatDateTimeVi(site.updated_at) : EMPTY_DASH}
+              </span>
+            </div>
+            {site.suspended_reason && (
+              <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+                <span className={shared.detailKey}>Lý do tạm khóa hiện tại</span>
+                <span className={styles.reasonText}>{site.suspended_reason}</span>
+              </div>
             )}
           </div>
-          <div className={shared.detailField}>
-            <span className={shared.detailKey}>Phiên bản xuất bản</span>
-            <span className={`${shared.detailValPlain} num`}>{versionText}</span>
-          </div>
-          <div className={shared.detailField}>
-            <span className={shared.detailKey}>Xuất bản gần nhất</span>
-            <span className={`${shared.detailValPlain} num`}>
-              {site.published_at ? formatDateTimeVi(site.published_at) : EMPTY_DASH}
-            </span>
-          </div>
-          <div className={shared.detailField}>
-            <span className={shared.detailKey}>Cập nhật gần nhất</span>
-            <span className={`${shared.detailValPlain} num`}>
-              {site.updated_at ? formatDateTimeVi(site.updated_at) : EMPTY_DASH}
-            </span>
-          </div>
-          {site.suspended_reason && (
-            <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-              <span className={shared.detailKey}>Lý do tạm khóa hiện tại</span>
-              <span className={styles.reasonText}>{site.suspended_reason}</span>
-            </div>
-          )}
         </div>
 
         <div className={styles.domainsSection} aria-label="Tên miền của site">
           <div className={styles.domainsHeader}>
             <h3 className={styles.domainsTitle}>
-              <IconGlobe size={14} />
+              <IconGlobe size={15} />
               <span>Tên miền của site</span>
             </h3>
             <button
@@ -399,7 +408,7 @@ function AdminSitesContent({
               disabled={domainsLoading}
               onClick={() => void loadShopDomains(site.shop_id, true)}
             >
-              <IconRefresh size={12} />
+              <IconRefresh size={13} />
               <span>{domainsLoading ? "Đang tải..." : "Tải lại"}</span>
             </button>
           </div>
@@ -424,10 +433,7 @@ function AdminSitesContent({
             <div className={styles.domainsList}>
               {domainState.domains.map((domain) => {
                 const domainMeta = getDomainStatusMeta(domain.status);
-                const domainKey = `${site.shop_id}:${domain.id}`;
                 const isCustom = domain.kind === "CUSTOM";
-                const isConfirming = confirmRemoveDomainKey === domainKey;
-                const isRemoving = removingDomainKey === domainKey;
                 const errorText =
                   domain.status !== "ACTIVE" &&
                   (domain.status === "FAILED" || Boolean(domain.last_error))
@@ -462,53 +468,18 @@ function AdminSitesContent({
 
                       <div className={styles.domainRight}>
                         <StatusPill label={domainMeta.label} tone={domainMeta.adminTone} />
-                        {isCustom && !isConfirming && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            shape="app"
-                            className={styles.domainRemoveBtn}
+                        {isCustom && (
+                          <button
+                            type="button"
+                            className={`${shared.rowActionBtn} ${shared.rowActionBtnDanger}`}
                             disabled={Boolean(removingDomainKey)}
-                            onClick={() => setConfirmRemoveDomainKey(domainKey)}
+                            onClick={() => setConfirmRemoveDomain({ site, domain })}
                           >
                             Gỡ tên miền
-                          </Button>
+                          </button>
                         )}
                       </div>
                     </div>
-
-                    {isCustom && isConfirming && (
-                      <div
-                        className={styles.domainConfirmBar}
-                        role="region"
-                        aria-label={`Xác nhận gỡ tên miền ${domain.host}`}
-                      >
-                        <span className={styles.domainConfirmText}>
-                          Xác nhận gỡ tên miền{" "}
-                          <span className={styles.domainConfirmHost}>{domain.host}</span>?
-                        </span>
-                        <div className={styles.domainConfirmActions}>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            shape="app"
-                            disabled={isRemoving}
-                            onClick={() => setConfirmRemoveDomainKey(null)}
-                          >
-                            Hủy
-                          </Button>
-                          <Button
-                            variant="danger"
-                            size="sm"
-                            shape="app"
-                            disabled={isRemoving}
-                            onClick={() => void handleRemoveAdminDomain(site, domain)}
-                          >
-                            {isRemoving ? "Đang gỡ..." : "Xác nhận gỡ"}
-                          </Button>
-                        </div>
-                      </div>
-                    )}
                   </div>
                 );
               })}
@@ -519,7 +490,7 @@ function AdminSitesContent({
         <div className={shared.detailActionBar}>
           <div className={shared.detailNoteGroup}>
             <label htmlFor={`site-reason-${site.id}`} className={shared.fieldLabel}>
-              {isSuspended ? "Ghi chú mở khóa site (tùy chọn)" : "Lý do tạm khóa site"}
+              {isSuspended ? "Ghi chú mở khóa site (tùy chọn)" : "Lý do tạm khóa site (bắt buộc)"}
             </label>
             <input
               id={`site-reason-${site.id}`}
@@ -532,12 +503,12 @@ function AdminSitesContent({
               }}
               placeholder={
                 isSuspended
-                  ? "Nhập ghi chú mở khóa lại cho nhật ký quản trị..."
-                  : "Nhập lý do cụ thể khi tạm khóa site gian hàng (bắt buộc)..."
+                  ? "Nhập ghi chú mở khóa cho nhật ký quản trị..."
+                  : "Nhập lý do cụ thể trước khi tạm khóa..."
               }
             />
             {showReasonError && (
-              <span className={styles.validationError}>
+              <span className={shared.validationError}>
                 Vui lòng nhập lý do cụ thể trước khi tạm khóa site.
               </span>
             )}
@@ -549,10 +520,10 @@ function AdminSitesContent({
                 variant="primary"
                 size="sm"
                 shape="app"
-                disabled={isBusy}
+                loading={isBusy}
                 onClick={() => void handleToggleSuspend(site, false)}
               >
-                {isBusy ? "Đang xử lý..." : "Mở khóa"}
+                Mở khóa
               </Button>
             ) : (
               <Button
@@ -560,67 +531,44 @@ function AdminSitesContent({
                 size="sm"
                 shape="app"
                 disabled={isBusy}
-                onClick={() => void handleToggleSuspend(site, true)}
+                onClick={() => handleRequestSuspend(site)}
               >
-                {isBusy ? "Đang xử lý..." : "Tạm khóa"}
+                Tạm khóa
               </Button>
             )}
           </div>
         </div>
-      </div>
+      </>
     );
   };
-
-  const tabs: Array<{ id: SiteFilterTab; label: string }> = [
-    { id: "all", label: "Tất cả" },
-    { id: "PUBLISHED", label: "Đang hoạt động" },
-    { id: "DRAFT", label: "Bản nháp" },
-    { id: "SUSPENDED", label: "Tạm khóa" },
-  ];
-
-  const subtitle = `${formatInt(counts.PUBLISHED)} site đang hoạt động công khai, ${formatInt(counts.DRAFT)} bản nháp và ${formatInt(counts.SUSPENDED)} site đang tạm khóa trên tên miền *.${rootDomain}.`;
 
   return (
     <div className={shared.page}>
       <header className={shared.titleRow}>
         <div className={shared.titleBlock}>
           <h1 className={shared.pageTitle}>Site gian hàng</h1>
-          <p className={shared.pageSubtitle}>{subtitle}</p>
         </div>
         <div className={shared.titleActions}>
           <Button
             variant="outline"
             size="sm"
             shape="app"
-            disabled={refreshing}
+            loading={refreshing}
             onClick={() => void handleRefresh()}
           >
             <IconRefresh size={14} />
-            <span>{refreshing ? "Đang đồng bộ..." : "Làm mới"}</span>
+            <span>Làm mới</span>
           </Button>
         </div>
       </header>
 
-      <div className={shared.tabsBar}>
-        <div className={shared.tabList} role="tablist" aria-label="Lọc trạng thái site gian hàng">
-          {tabs.map((tab) => {
-            const active = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                className={`${shared.tabBtn} ${active ? shared.tabBtnActive : ""}`}
-                onClick={() => setActiveTab(tab.id)}
-              >
-                <span>{tab.label}</span>
-                <span className={shared.tabCount}>{counts[tab.id]}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <SlidingTabBar
+        tabs={tabs}
+        activeId={activeTab}
+        onChange={setActiveTab}
+        ariaLabel="Lọc trạng thái site gian hàng"
+        rightSlot={<span className={shared.resultCount}>*.{rootDomain}</span>}
+      />
 
       <div className={shared.toolbar}>
         <div className={shared.toolbarLeft}>
@@ -644,9 +592,7 @@ function AdminSitesContent({
       </div>
 
       {filtered.length === 0 ? (
-        <p className={shared.emptyRow}>
-          Không tìm thấy site gian hàng nào khớp với điều kiện lọc hiện tại.
-        </p>
+        <p className={shared.emptyRow}>Không tìm thấy site gian hàng phù hợp.</p>
       ) : (
         <>
           <div className={shared.tableWrap}>
@@ -654,7 +600,7 @@ function AdminSitesContent({
               <thead>
                 <tr>
                   <th>Gian hàng</th>
-                  <th>Tên miền phụ & Địa chỉ</th>
+                  <th>Tên miền phụ &amp; Địa chỉ</th>
                   <th>Trạng thái</th>
                   <th className={shared.colNum}>Phiên bản</th>
                   <th>Cập nhật</th>
@@ -664,7 +610,7 @@ function AdminSitesContent({
               <tbody>
                 {filtered.map((site) => {
                   const statusMeta = getSiteStatusMeta(site.status);
-                  const isSelected = activeDesktopSite?.id === site.id;
+                  const isSelected = drawerOpen && activeSite?.id === site.id;
                   const shopName = resolveShopName(site);
                   const fullHost = site.primary_host || `${site.subdomain}.${rootDomain}`;
                   const isSuspended = site.status.toUpperCase() === "SUSPENDED";
@@ -678,10 +624,7 @@ function AdminSitesContent({
                     <tr
                       key={site.id}
                       className={`${shared.rowInteractive} ${isSelected ? shared.rowSelected : ""}`}
-                      onClick={() => {
-                        setReasonErrorId(null);
-                        setSelectedId(site.id);
-                      }}
+                      onClick={() => openSiteDrawer(site)}
                     >
                       <td>
                         <div className={shared.cellPrimary}>{shopName}</div>
@@ -705,19 +648,16 @@ function AdminSitesContent({
                       </td>
                       <td>{site.updated_at ? formatDateTimeVi(site.updated_at) : EMPTY_DASH}</td>
                       <td className={shared.colAction}>
-                        <div className={styles.inlineActionRow}>
-                          <button
-                            type="button"
-                            className={shared.rowActionBtn}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setReasonErrorId(null);
-                              setSelectedId(site.id);
-                            }}
-                          >
-                            {isSelected ? "Đang xem" : isSuspended ? "Mở khóa" : "Quản lý / Khóa"}
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          className={shared.rowActionBtn}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openSiteDrawer(site);
+                          }}
+                        >
+                          {isSuspended ? "Mở khóa" : "Quản lý / Khóa"}
+                        </button>
                       </td>
                     </tr>
                   );
@@ -726,19 +666,9 @@ function AdminSitesContent({
             </table>
           </div>
 
-          {activeDesktopSite && (
-            <section
-              className={shared.desktopDetailSection}
-              aria-label="Chi tiết và kiểm soát trạng thái site gian hàng"
-            >
-              {renderDetailPanel(activeDesktopSite, true)}
-            </section>
-          )}
-
           <div className={shared.mobileList}>
             {filtered.map((site) => {
               const statusMeta = getSiteStatusMeta(site.status);
-              const isSelected = mobileOpenId === site.id;
               const shopName = resolveShopName(site);
               const fullHost = site.primary_host || `${site.subdomain}.${rootDomain}`;
               return (
@@ -746,31 +676,82 @@ function AdminSitesContent({
                   <button
                     type="button"
                     className={shared.mobileItemBtn}
-                    onClick={() => {
-                      setReasonErrorId(null);
-                      setMobileOpenId((prev) => (prev === site.id ? null : site.id));
-                    }}
-                    aria-expanded={isSelected}
+                    onClick={() => openSiteDrawer(site)}
                   >
-                    <div className={shared.mobileLine1}>
+                    <span className={shared.mobileLine1}>
                       <span className={shared.mobileIdentity}>{shopName}</span>
-                      <span className={styles.mobilePillRow}>
-                        <StatusPill label={statusMeta.label} tone={statusMeta.adminTone} />
-                      </span>
-                    </div>
-                    <div className={shared.mobileLine2}>
+                      <StatusPill label={statusMeta.label} tone={statusMeta.adminTone} />
+                    </span>
+                    <span className={shared.mobileLine2}>
                       <span className={shared.mobileMetaText}>{fullHost}</span>
-                    </div>
+                    </span>
                   </button>
-                  {isSelected && (
-                    <div className={shared.mobileDetailWrap}>{renderDetailPanel(site)}</div>
-                  )}
                 </div>
               );
             })}
           </div>
         </>
       )}
+
+      {activeSite && (
+        <AdminDrawer
+          open={drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          title={resolveShopName(activeSite)}
+          subtitle={activeSite.primary_host || `${activeSite.subdomain}.${rootDomain}`}
+          headerBadge={
+            <StatusPill
+              label={getSiteStatusMeta(activeSite.status).label}
+              tone={getSiteStatusMeta(activeSite.status).adminTone}
+            />
+          }
+          width="lg"
+        >
+          {renderDrawerBody(activeSite)}
+        </AdminDrawer>
+      )}
+
+      <AdminConfirmDialog
+        open={Boolean(confirmRemoveDomain)}
+        title="Xác nhận gỡ tên miền riêng"
+        description={
+          confirmRemoveDomain
+            ? `Gỡ tên miền "${confirmRemoveDomain.domain.host}" khỏi ${resolveShopName(confirmRemoveDomain.site)}? Lưu lượng sẽ quay về tên miền phụ mặc định.`
+            : ""
+        }
+        confirmLabel="Xác nhận gỡ"
+        busy={Boolean(removingDomainKey)}
+        onCancel={() => setConfirmRemoveDomain(null)}
+        onConfirm={() => {
+          if (confirmRemoveDomain) {
+            void handleRemoveAdminDomain(confirmRemoveDomain.site, confirmRemoveDomain.domain);
+          }
+        }}
+      />
+
+      <AdminConfirmDialog
+        open={Boolean(confirmSuspendSite)}
+        title="Xác nhận tạm khóa site"
+        description={
+          confirmSuspendSite
+            ? `Tạm khóa site "${resolveSiteHost(confirmSuspendSite)}" của ${resolveShopName(confirmSuspendSite)}? Khách mua sẽ không thể truy cập cho tới khi mở khóa lại.`
+            : ""
+        }
+        confirmLabel="Xác nhận tạm khóa"
+        busy={Boolean(confirmSuspendSite && busyId === confirmSuspendSite.id)}
+        onCancel={() => setConfirmSuspendSite(null)}
+        onConfirm={() => {
+          if (confirmSuspendSite) {
+            void handleToggleSuspend(confirmSuspendSite, true);
+          }
+        }}
+      >
+        {confirmSuspendSite && (
+          <div className={styles.confirmReasonBox}>
+            Lý do: {reasonDrafts[confirmSuspendSite.id]}
+          </div>
+        )}
+      </AdminConfirmDialog>
     </div>
   );
 }
@@ -780,11 +761,10 @@ export function AdminSitesClient(props: AdminSitesClientProps) {
     <Suspense fallback={<AdminSuspenseFallback title="Site gian hàng" />}>
       <AdminStateGate
         title="Site gian hàng"
-        subtitle="Theo dõi danh sách tên miền phụ và tạm khóa các site vi phạm chính sách nền tảng."
         emptyTitle="Chưa có site gian hàng nào"
-        emptyMessage="Khi các gian hàng tạo và lưu cấu hình site riêng, danh sách sẽ hiển thị tại đây."
-        errorTitle="Không thể tải danh sách site gian hàng"
-        errorMessage="Không thể kết nối tới dịch vụ quản lý site lúc này. Vui lòng thử tải lại."
+        emptyMessage="Khi các gian hàng tạo site riêng, danh sách sẽ hiển thị tại đây."
+        errorTitle="Không thể tải danh sách site"
+        errorMessage="Dịch vụ quản lý site tạm gián đoạn. Vui lòng thử lại."
         loadingRows={5}
       >
         {({ initialQuery, initialSelected }) => (

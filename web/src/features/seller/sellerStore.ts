@@ -2,7 +2,7 @@
 // All mock seller screens (/seller/chat, /seller/ho-so, /seller/tuong-tac) have been replaced
 // with real backend-backed BFF routes and server loaders.
 
-export const EMPTY_DASH = "\u2014";
+export const EMPTY_DASH = "-";
 const TRUE_MINUS = "\u2212";
 
 export type UiStateMode = "loading" | "empty" | "error" | null;

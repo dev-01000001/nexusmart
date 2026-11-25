@@ -11,6 +11,7 @@ import {
   IconRefresh,
   IconSend,
 } from "@/components/Icons";
+import { getFocusableElements, hasOpenModal } from "@/components/modalFocus";
 import { useSession } from "@/components/SessionProvider";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTimeVi, formatVnd } from "@/lib/format";
@@ -49,6 +50,15 @@ interface SendMessageApiResponse {
   auto_reply?: unknown;
 }
 
+export interface SiteChatWidgetComponentProps extends SiteChatWidgetProps {
+  /** Render directly inside SiteSupportDock without a standalone fixed launcher. */
+  embedded?: boolean;
+  /** Whether the embedded panel is currently visible (preserves draft/history when hidden). */
+  active?: boolean;
+  /** Invoked when user closes the panel in embedded mode. */
+  onClose?: () => void;
+}
+
 function createClientMsgId(): string {
   return `cli-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -63,7 +73,7 @@ function connectionStatusMeta(status: ChatConnectionStatus): {
     case "connecting":
       return { label: "Đang kết nối", tone: "sync" };
     case "reconnecting":
-      return { label: "Đang đồng bộ lại", tone: "sync" };
+      return { label: "Đang đồng bộ", tone: "sync" };
     default:
       return { label: "Sẵn sàng", tone: "idle" };
   }
@@ -78,11 +88,14 @@ export function SiteChatWidget({
   defaultOpen = false,
   offsetBottomPx = 20,
   className,
-}: SiteChatWidgetProps) {
+  embedded = false,
+  active = true,
+  onClose,
+}: SiteChatWidgetComponentProps) {
   const { user, isAuthenticated } = useSession();
   const pathname = usePathname();
 
-  const [isOpen, setIsOpen] = useState(defaultOpen);
+  const [isOpen, setIsOpen] = useState(embedded ? true : defaultOpen);
   const [conversationId, setConversationId] = useState<string>(externalConversationId ?? "");
   const [messages, setMessages] = useState<ChatMessageDTO[]>([]);
   const [loading, setLoading] = useState(false);
@@ -99,8 +112,20 @@ export function SiteChatWidget({
   const lastServerMsgIdRef = useRef<string>("");
   const listEndRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const wasOpenRef = useRef(false);
 
   conversationIdRef.current = conversationId;
+  const effectiveOpen = embedded ? active : isOpen;
+
+  const handleClose = useCallback(() => {
+    if (onClose) {
+      onClose();
+    } else {
+      setIsOpen(false);
+    }
+  }, [onClose]);
 
   useEffect(() => {
     const serverMsgs = messages.filter((m) => !m.id.startsWith("cli-"));
@@ -115,8 +140,8 @@ export function SiteChatWidget({
     const nextId = (externalConversationId ?? "").trim();
     if (!nextId) return;
     setConversationId(nextId);
-    setIsOpen(true);
-  }, [externalConversationId]);
+    if (!embedded) setIsOpen(true);
+  }, [embedded, externalConversationId]);
 
   // Listen for custom handoff event from SiteAssistantWidget.
   useEffect(() => {
@@ -127,29 +152,52 @@ export function SiteChatWidget({
       if (targetId) {
         setConversationId(targetId);
       }
-      setIsOpen(true);
+      if (!embedded) setIsOpen(true);
     };
     window.addEventListener(OPEN_SITE_CHAT_EVENT, handleOpenEvent);
     return () => window.removeEventListener(OPEN_SITE_CHAT_EVENT, handleOpenEvent);
-  }, []);
+  }, [embedded]);
 
-  // Close on Escape key while open.
+  // Close on Escape key while open (standalone mode; embedded mode lets dock handle Escape).
   useEffect(() => {
-    if (!isOpen) return;
+    if (!effectiveOpen || embedded) return;
     const onKeyDown = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") {
-        setIsOpen(false);
+      if (ev.key === "Escape" && !hasOpenModal()) {
+        ev.preventDefault();
+        handleClose();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isOpen]);
+  }, [effectiveOpen, embedded, handleClose]);
+
+  // Focus inside panel on open; restore focus to standalone launcher on close.
+  useEffect(() => {
+    if (effectiveOpen) {
+      wasOpenRef.current = true;
+      const input = inputRef.current;
+      if (input && !input.disabled) {
+        input.focus({ preventScroll: true });
+      } else if (panelRef.current) {
+        (getFocusableElements(panelRef.current)[0] ?? panelRef.current).focus({
+          preventScroll: true,
+        });
+      }
+      return;
+    }
+    if (wasOpenRef.current) {
+      wasOpenRef.current = false;
+      if (!embedded && triggerRef.current?.isConnected) {
+        triggerRef.current.focus({ preventScroll: true });
+      }
+    }
+  }, [effectiveOpen, embedded]);
 
   // Scroll to bottom when new messages arrive.
   useEffect(() => {
-    if (!isOpen) return;
+    if (!effectiveOpen) return;
     listEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [isOpen, messages.length]);
+  }, [effectiveOpen, messages.length]);
 
   const fetchMessages = useCallback(async (convId: string, afterId?: string) => {
     const query = afterId ? `?after=${encodeURIComponent(afterId)}` : "?limit=50";
@@ -194,7 +242,7 @@ export function SiteChatWidget({
         setLoadError(
           err instanceof ApiError
             ? err.message
-            : "Kênh nhắn tin tạm gián đoạn. Bạn vui lòng thử lại sau."
+            : "Kênh nhắn tin tạm gián đoạn. Vui lòng thử lại sau."
         );
       } finally {
         setLoading(false);
@@ -205,13 +253,13 @@ export function SiteChatWidget({
 
   // Load conversation & history when widget opens for a signed-in buyer.
   useEffect(() => {
-    if (!isOpen || !isAuthenticated) return;
+    if (!effectiveOpen || !isAuthenticated) return;
     void bootstrapConversation();
-  }, [isOpen, isAuthenticated, conversationId, shopId, bootstrapConversation]);
+  }, [effectiveOpen, isAuthenticated, conversationId, shopId, bootstrapConversation]);
 
   // Connect live messaging channel while widget is open and authenticated.
   useEffect(() => {
-    if (!isOpen || !isAuthenticated || !conversationId) {
+    if (!effectiveOpen || !isAuthenticated || !conversationId) {
       socketRef.current?.dispose();
       socketRef.current = null;
       setConnStatus("idle");
@@ -267,7 +315,7 @@ export function SiteChatWidget({
         socketRef.current = null;
       }
     };
-  }, [isOpen, isAuthenticated, conversationId, fetchMessages, user]);
+  }, [effectiveOpen, isAuthenticated, conversationId, fetchMessages, user]);
 
   const offPlatformCheck = useMemo(() => detectOffPlatformContact(draft), [draft]);
 
@@ -342,7 +390,7 @@ export function SiteChatWidget({
         setSendError(
           err instanceof ApiError
             ? err.message
-            : "Không thể gửi tin nhắn lúc này. Bạn vui lòng thử lại."
+            : "Không thể gửi tin nhắn lúc này. Vui lòng thử lại."
         );
         return false;
       } finally {
@@ -414,11 +462,12 @@ export function SiteChatWidget({
     <div
       data-ui="site-chat"
       data-shop-id={shopId}
-      className={`${styles.root} ${className ?? ""}`}
-      style={{ bottom: `${offsetBottomPx}px` }}
+      className={`${styles.root} ${embedded ? styles.rootEmbedded : ""} ${className ?? ""}`}
+      style={embedded ? undefined : { bottom: `${offsetBottomPx}px` }}
     >
-      {!isOpen ? (
+      {!embedded && !effectiveOpen ? (
         <button
+          ref={triggerRef}
           type="button"
           className={styles.triggerBtn}
           onClick={() => setIsOpen(true)}
@@ -429,7 +478,13 @@ export function SiteChatWidget({
           <span>Nhắn tin</span>
         </button>
       ) : (
-        <section className={styles.panel} role="dialog" aria-label={`Trò chuyện cùng ${brandName}`}>
+        <section
+          ref={panelRef}
+          tabIndex={-1}
+          className={styles.panel}
+          role="dialog"
+          aria-label={`Trò chuyện cùng ${brandName}`}
+        >
           <header className={styles.header}>
             <div className={styles.headerMeta}>
               <h2 className={styles.headerTitle}>{brandName}</h2>
@@ -452,7 +507,7 @@ export function SiteChatWidget({
             <button
               type="button"
               className={styles.closeBtn}
-              onClick={() => setIsOpen(false)}
+              onClick={handleClose}
               aria-label="Đóng khung trò chuyện"
             >
               <IconClose size={16} />
@@ -464,9 +519,9 @@ export function SiteChatWidget({
               <div className={styles.guestIcon}>
                 <IconChat size={22} />
               </div>
-              <p className={styles.guestTitle}>Trò chuyện trực tiếp cùng {brandName}</p>
+              <p className={styles.guestTitle}>Nhắn trực tiếp cho {brandName}</p>
               <p className={styles.guestDesc}>
-                Đăng nhập để hỏi tư vấn kích cỡ, chất liệu, hoặc kiểm tra nhanh đơn hàng của bạn.
+                Đăng nhập để hỏi size, chất liệu hoặc kiểm tra nhanh đơn hàng.
               </p>
               <Link href={loginHref} className={styles.loginBtn}>
                 Đăng nhập để nhắn tin
@@ -501,7 +556,7 @@ export function SiteChatWidget({
                         onClick={handleSendProductContext}
                         disabled={sending || !conversationId}
                       >
-                        Gửi sản phẩm
+                        Gửi mẫu
                       </button>
                     </div>
                   )}
@@ -514,7 +569,7 @@ export function SiteChatWidget({
                         </span>
                         <div className={styles.contextText}>
                           <span className={styles.contextName}>Đơn {orderContext.orderCode}</span>
-                          <span className={styles.contextSub}>Đính kèm vào cuộc trò chuyện</span>
+                          <span className={styles.contextSub}>Đính kèm vào trò chuyện</span>
                         </div>
                       </div>
                       <button
@@ -532,7 +587,7 @@ export function SiteChatWidget({
 
               <div className={styles.messages} role="log" aria-live="polite">
                 {loading && messages.length === 0 ? (
-                  <p className={styles.emptyNotice}>Đang mở cuộc trò chuyện với {brandName}...</p>
+                  <p className={styles.emptyNotice}>Đang kết nối với {brandName}...</p>
                 ) : loadError && messages.length === 0 ? (
                   <div className={styles.errorBox} role="alert">
                     <p className={styles.errorText}>{loadError}</p>
@@ -547,8 +602,7 @@ export function SiteChatWidget({
                   </div>
                 ) : messages.length === 0 ? (
                   <p className={styles.emptyNotice}>
-                    Chào bạn, hãy nhắn cho {brandName} nếu bạn cần tư vấn sản phẩm, kích cỡ hoặc đơn
-                    hàng.
+                    Nhắn cho {brandName} khi bạn cần tư vấn mẫu, kích cỡ hoặc đơn hàng.
                   </p>
                 ) : (
                   messages.map((msg) => {
@@ -635,7 +689,7 @@ export function SiteChatWidget({
                           )}
                         </div>
                         <span className={styles.msgTime}>
-                          {msg.is_auto_reply ? "Tin nhắn tự động · " : ""}
+                          {msg.is_auto_reply ? "Tự động, " : ""}
                           {formatDateTimeVi(msg.created_at)}
                         </span>
                       </div>
@@ -647,10 +701,10 @@ export function SiteChatWidget({
 
               {offPlatformCheck.flagged && (
                 <div className={styles.safetyBanner} role="note">
-                  <IconAlert size={14} className={styles.safetyIcon} />
+                  <IconAlert size={15} className={styles.safetyIcon} />
                   <span>
-                    Lưu ý an toàn: Không chia sẻ số điện thoại hoặc giao dịch qua liên kết ngoài
-                    NexusMart để được bảo vệ quyền lợi đổi trả và hoàn tiền.
+                    Không chia sẻ số điện thoại hoặc giao dịch ngoài NexusMart để giữ quyền đổi trả
+                    và hoàn tiền.
                   </span>
                 </div>
               )}
@@ -676,7 +730,7 @@ export function SiteChatWidget({
                     className={styles.imageSubmitBtn}
                     disabled={sending || !imageUrl.trim()}
                   >
-                    Gửi ảnh
+                    Gửi
                   </button>
                   <button
                     type="button"

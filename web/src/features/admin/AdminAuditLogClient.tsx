@@ -6,6 +6,7 @@ import { IconSearch, StateView } from "@/components";
 import { formatDateTimeVi, formatInt } from "@/lib/format";
 import { EMPTY_DASH, formatShortTimeDateVi } from "./adminMeta";
 import { AdminStateGate, AdminSuspenseFallback } from "./AdminStateGate";
+import { AdminDrawer, SlidingTabBar } from "./AdminUi";
 import { StatusPill } from "./StatusPill";
 import {
   getActorRoleLabelVi,
@@ -26,6 +27,20 @@ function bucketTarget(targetType: string): AuditTargetTab {
   return "other";
 }
 
+function parseJsonEntries(raw: string): Array<[string, string]> | null {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === "{}" || trimmed === "null") return null;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const entries = Object.entries(parsed as Record<string, unknown>);
+    if (entries.length === 0) return null;
+    return entries.map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)]);
+  } catch {
+    return null;
+  }
+}
+
 export interface AdminAuditLogClientProps {
   initialLogs: GwAuditLog[];
   loadError: string | null;
@@ -44,6 +59,7 @@ function AuditLogContent({
   const [activeTab, setActiveTab] = useState<AuditTargetTab>("all");
   const [roleFilter, setRoleFilter] = useState<string>("all");
   const [query, setQuery] = useState(initialQuery);
+  const [selectedLog, setSelectedLog] = useState<GwAuditLog | null>(null);
 
   const counts = useMemo(() => {
     const map: Record<AuditTargetTab, number> = {
@@ -84,53 +100,38 @@ function AuditLogContent({
           surface="app"
           title="Không thể tải nhật ký kiểm toán"
           message={loadError}
-          actionLabel="Thử tải lại"
+          actionLabel="Thử lại"
           onAction={() => router.refresh()}
         />
       </div>
     );
   }
 
-  const tabs: Array<{ id: AuditTargetTab; label: string }> = [
-    { id: "all", label: "Tất cả" },
-    { id: "shop", label: "Gian hàng" },
-    { id: "site", label: "Site gian hàng" },
-    { id: "user", label: "Tài khoản" },
-    { id: "other", label: "Khác" },
+  const tabs: Array<{ id: AuditTargetTab; label: string; count: number }> = [
+    { id: "all", label: "Tất cả", count: counts.all },
+    { id: "shop", label: "Gian hàng", count: counts.shop },
+    { id: "site", label: "Site gian hàng", count: counts.site },
+    { id: "user", label: "Tài khoản", count: counts.user },
+    { id: "other", label: "Khác", count: counts.other },
   ];
+
+  const beforePairs = selectedLog ? parseJsonEntries(selectedLog.before_json) : null;
+  const afterPairs = selectedLog ? parseJsonEntries(selectedLog.after_json) : null;
 
   return (
     <div className={shared.page}>
       <header className={shared.titleRow}>
         <div className={shared.titleBlock}>
           <h1 className={shared.pageTitle}>Nhật ký kiểm toán</h1>
-          <p className={shared.pageSubtitle}>
-            Ghi nhận {formatInt(initialLogs.length)} thao tác quản trị thật trực tiếp từ cơ sở dữ
-            liệu kiểm toán hệ thống.
-          </p>
         </div>
       </header>
 
-      <div className={shared.tabsBar}>
-        <div className={shared.tabList} role="tablist" aria-label="Lọc nhật ký theo đối tượng">
-          {tabs.map((tab) => {
-            const active = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                className={`${shared.tabBtn} ${active ? shared.tabBtnActive : ""}`}
-                onClick={() => setActiveTab(tab.id)}
-              >
-                <span>{tab.label}</span>
-                <span className={shared.tabCount}>{counts[tab.id]}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <SlidingTabBar
+        tabs={tabs}
+        activeId={activeTab}
+        onChange={setActiveTab}
+        ariaLabel="Lọc nhật ký theo đối tượng"
+      />
 
       <div className={shared.toolbar}>
         <div className={shared.toolbarLeft}>
@@ -147,10 +148,6 @@ function AuditLogContent({
               aria-label="Tìm kiếm trong nhật ký kiểm toán"
             />
           </div>
-        </div>
-
-        <div className={shared.toolbarRight}>
-          <span className={shared.resultCount}>{formatInt(filtered.length)} bản ghi</span>
           <select
             className={shared.toolbarSelect}
             value={roleFilter}
@@ -162,10 +159,14 @@ function AuditLogContent({
             <option value="admin">Quản trị viên</option>
           </select>
         </div>
+
+        <div className={shared.toolbarRight}>
+          <span className={shared.resultCount}>{formatInt(filtered.length)} bản ghi</span>
+        </div>
       </div>
 
       {filtered.length === 0 ? (
-        <p className={shared.emptyRow}>Không tìm thấy bản ghi kiểm toán nào phù hợp với bộ lọc.</p>
+        <p className={shared.emptyRow}>Không tìm thấy bản ghi kiểm toán phù hợp.</p>
       ) : (
         <>
           <div className={shared.tableWrap}>
@@ -175,35 +176,53 @@ function AuditLogContent({
                   <th>Thời gian</th>
                   <th>Người thực hiện</th>
                   <th>Phân hệ</th>
-                  <th>Hành động & lý do</th>
+                  <th>Hành động &amp; lý do</th>
                   <th className={shared.colNum}>Đối tượng</th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((log) => (
-                  <tr key={log.id}>
-                    <td className={styles.timeCol}>
-                      {log.created_at ? formatDateTimeVi(log.created_at) : EMPTY_DASH}
-                    </td>
-                    <td>
-                      <div className={shared.cellPrimary}>
-                        {getActorRoleLabelVi(log.actor_role)}
-                      </div>
-                      <div className={shared.cellSub}>{log.actor_id.slice(0, 12)}</div>
-                    </td>
-                    <td>
-                      <StatusPill label={getAuditTargetLabelVi(log.target_type)} tone="neutral" />
-                    </td>
-                    <td className={styles.summaryCol}>
-                      <div className={shared.cellPrimary}>{getAuditActionLabelVi(log.action)}</div>
-                      <div className={shared.cellSub}>{log.reason || log.action}</div>
-                    </td>
-                    <td className={styles.targetCol}>
-                      <div className={shared.cellPrimary}>{log.target_id.slice(0, 12)}</div>
-                      <div className={shared.cellSub}>{log.ip_address || EMPTY_DASH}</div>
-                    </td>
-                  </tr>
-                ))}
+                {filtered.map((log) => {
+                  const selected = selectedLog?.id === log.id;
+                  return (
+                    <tr
+                      key={log.id}
+                      className={`${shared.rowInteractive} ${selected ? shared.rowSelected : ""}`}
+                      onClick={() => setSelectedLog(log)}
+                    >
+                      <td className={styles.timeCol}>
+                        {log.created_at ? formatDateTimeVi(log.created_at) : EMPTY_DASH}
+                      </td>
+                      <td>
+                        <div className={shared.cellPrimary}>
+                          {getActorRoleLabelVi(log.actor_role)}
+                        </div>
+                        <div className={shared.cellSub}>{log.actor_id.slice(0, 12)}</div>
+                      </td>
+                      <td>
+                        <StatusPill label={getAuditTargetLabelVi(log.target_type)} tone="neutral" />
+                      </td>
+                      <td className={styles.summaryCol}>
+                        <button
+                          type="button"
+                          className={shared.rowTriggerBtn}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedLog(log);
+                          }}
+                        >
+                          <span className={shared.cellPrimary}>
+                            {getAuditActionLabelVi(log.action)}
+                          </span>
+                          <span className={shared.cellSub}>{log.reason || log.action}</span>
+                        </button>
+                      </td>
+                      <td className={styles.targetCol}>
+                        <div className={shared.cellPrimary}>{log.target_id.slice(0, 12)}</div>
+                        <div className={shared.cellSub}>{log.ip_address || EMPTY_DASH}</div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -211,24 +230,115 @@ function AuditLogContent({
           <div className={shared.mobileList}>
             {filtered.map((log) => (
               <article key={log.id} className={shared.mobileItem}>
-                <div className={shared.mobileLine1}>
-                  <span className={shared.mobileIdentity}>{getAuditActionLabelVi(log.action)}</span>
-                  <span className={shared.mobileMetric}>
-                    {log.created_at ? formatShortTimeDateVi(log.created_at) : EMPTY_DASH}
+                <button
+                  type="button"
+                  className={shared.mobileItemBtn}
+                  onClick={() => setSelectedLog(log)}
+                >
+                  <span className={shared.mobileLine1}>
+                    <span className={shared.mobileIdentity}>
+                      {getAuditActionLabelVi(log.action)}
+                    </span>
+                    <span className={shared.mobileMetric}>
+                      {log.created_at ? formatShortTimeDateVi(log.created_at) : EMPTY_DASH}
+                    </span>
                   </span>
-                </div>
-                <div className={shared.mobileLine2}>
-                  <span className={shared.mobileMetaText}>
-                    {getActorRoleLabelVi(log.actor_role)} · {log.target_id.slice(0, 10)}
+                  <span className={shared.mobileLine2}>
+                    <span className={shared.mobileMetaText}>
+                      {[getActorRoleLabelVi(log.actor_role), log.target_id.slice(0, 10)]
+                        .filter(Boolean)
+                        .join(", ")}
+                    </span>
+                    <StatusPill label={getAuditTargetLabelVi(log.target_type)} tone="neutral" />
                   </span>
-                  <StatusPill label={getAuditTargetLabelVi(log.target_type)} tone="neutral" />
-                </div>
-                {log.reason && <p className={styles.mobileAuditSummary}>{log.reason}</p>}
+                  {log.reason && <span className={styles.mobileAuditSummary}>{log.reason}</span>}
+                </button>
               </article>
             ))}
           </div>
         </>
       )}
+
+      <AdminDrawer
+        open={Boolean(selectedLog)}
+        onClose={() => setSelectedLog(null)}
+        title={selectedLog ? getAuditActionLabelVi(selectedLog.action) : ""}
+        subtitle={selectedLog?.created_at ? formatDateTimeVi(selectedLog.created_at) : undefined}
+        headerBadge={
+          selectedLog ? (
+            <StatusPill label={getAuditTargetLabelVi(selectedLog.target_type)} tone="neutral" />
+          ) : undefined
+        }
+      >
+        {selectedLog && (
+          <>
+            <div className={shared.detailWell}>
+              <div className={shared.detailGrid}>
+                <div className={shared.detailField}>
+                  <span className={shared.detailKey}>Mã hành động</span>
+                  <span className={`${shared.detailVal} num`}>{selectedLog.action}</span>
+                </div>
+                <div className={shared.detailField}>
+                  <span className={shared.detailKey}>Vai trò thực hiện</span>
+                  <span className={shared.detailVal}>
+                    {getActorRoleLabelVi(selectedLog.actor_role)}
+                  </span>
+                </div>
+                <div className={shared.detailField}>
+                  <span className={shared.detailKey}>Mã người thực hiện</span>
+                  <span className={`${shared.detailValPlain} num`}>{selectedLog.actor_id}</span>
+                </div>
+                <div className={shared.detailField}>
+                  <span className={shared.detailKey}>Mã đối tượng</span>
+                  <span className={`${shared.detailValPlain} num`}>{selectedLog.target_id}</span>
+                </div>
+                <div className={shared.detailField}>
+                  <span className={shared.detailKey}>Địa chỉ IP</span>
+                  <span className={`${shared.detailValPlain} num`}>
+                    {selectedLog.ip_address || EMPTY_DASH}
+                  </span>
+                </div>
+                <div className={shared.detailField}>
+                  <span className={shared.detailKey}>Mã bản ghi</span>
+                  <span className={`${shared.detailValPlain} num`}>{selectedLog.id}</span>
+                </div>
+                <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+                  <span className={shared.detailKey}>Lý do ghi nhận</span>
+                  <span className={shared.detailValPlain}>{selectedLog.reason || EMPTY_DASH}</span>
+                </div>
+              </div>
+            </div>
+
+            {beforePairs && (
+              <div className={styles.diffBox}>
+                <span className={shared.fieldLabel}>Trạng thái trước thay đổi</span>
+                <dl className={styles.diffList}>
+                  {beforePairs.map(([k, v]) => (
+                    <div key={k} className={styles.diffRow}>
+                      <dt className={styles.diffKey}>{k}</dt>
+                      <dd className={`${styles.diffVal} num`}>{v}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
+            )}
+
+            {afterPairs && (
+              <div className={styles.diffBox}>
+                <span className={shared.fieldLabel}>Trạng thái sau thay đổi</span>
+                <dl className={styles.diffList}>
+                  {afterPairs.map(([k, v]) => (
+                    <div key={k} className={styles.diffRow}>
+                      <dt className={styles.diffKey}>{k}</dt>
+                      <dd className={`${styles.diffVal} num`}>{v}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
+            )}
+          </>
+        )}
+      </AdminDrawer>
     </div>
   );
 }
@@ -238,11 +348,10 @@ export function AdminAuditLogClient(props: AdminAuditLogClientProps) {
     <Suspense fallback={<AdminSuspenseFallback title="Nhật ký kiểm toán" />}>
       <AdminStateGate
         title="Nhật ký kiểm toán"
-        subtitle="Theo dõi đầy đủ lịch sử duyệt gian hàng và cập nhật phân quyền trên hệ thống."
-        emptyTitle="Chưa có bản ghi kiểm toán nào"
-        emptyMessage="Các sự kiện quản trị sẽ được ghi lại tự động ngay khi có thao tác thẩm định."
+        emptyTitle="Chưa có bản ghi kiểm toán"
+        emptyMessage="Các thao tác quản trị sẽ tự động ghi nhận tại đây."
         errorTitle="Không thể tải nhật ký kiểm toán"
-        errorMessage="Kho lưu trữ sự kiện kiểm toán tạm thời không phản hồi. Vui lòng thử tải lại."
+        errorMessage="Kho lưu trữ kiểm toán tạm gián đoạn. Vui lòng thử lại."
         loadingRows={6}
       >
         {({ initialQuery }) => (

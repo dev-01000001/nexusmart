@@ -18,14 +18,18 @@ import {
 import { validateCustomHostname } from "./domains.ts";
 import { createSiteHostCache } from "./cache.ts";
 import {
+  SITE_FONT_STACK,
   buildSiteThemeVars,
   checkThemeContrast,
   contrastRatio,
+  resolveSiteFontStack,
   sanitizeSafeHref,
   sanitizeSafeUrl,
 } from "./theme.ts";
 import {
+  ALLOWED_SITE_FONTS,
   MAX_SITE_SECTIONS,
+  SITE_FONT_LABELS,
   SITE_THEME_PRESETS,
   createDefaultSiteConfig,
   parseSiteConfig,
@@ -794,8 +798,31 @@ test("WCAG contrast, safe URL sanitization, and CSS theme vars enforce security 
     brand_name: "Kho Basic Sài Gòn",
   });
   assert.equal(darkVars["--site-bg"], "#14181C");
+  assert.equal(darkVars["--site-font"], SITE_FONT_STACK);
   assert.ok(contrastRatio(darkVars["--site-muted"], darkVars["--site-bg"]) >= 4.5);
   assert.ok(contrastRatio(darkVars["--site-muted"], darkVars["--site-surface"]) >= 4.5);
+
+  // resolveSiteFontStack always resolves to Archivo regardless of enum value, undefined, or garbage
+  assert.equal(SITE_FONT_STACK, "var(--font-archivo), system-ui, sans-serif");
+  for (const fontEnum of ALLOWED_SITE_FONTS) {
+    assert.equal(
+      resolveSiteFontStack(fontEnum),
+      SITE_FONT_STACK,
+      `expected Archivo stack for enum ${fontEnum}`
+    );
+    assert.equal(
+      SITE_FONT_LABELS[fontEnum],
+      "Archivo",
+      `expected Archivo label for enum ${fontEnum}`
+    );
+  }
+  for (const weird of [undefined, "", "Comic Sans MS", "Times New Roman", "work_sans", "12345"]) {
+    assert.equal(
+      resolveSiteFontStack(weird),
+      SITE_FONT_STACK,
+      `expected Archivo stack for input ${String(weird)}`
+    );
+  }
 
   // Malformed hex falls back safely
   const fallbackVars = buildSiteThemeVars({

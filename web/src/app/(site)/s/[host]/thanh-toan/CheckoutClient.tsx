@@ -8,17 +8,18 @@ import { ApiError, api } from "@/lib/api";
 import { formatInt, formatSignedVnd, formatVnd } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";
 import { useSession } from "@/components/SessionProvider";
-import { Button, IconShield, IconTruck, StateView } from "@/components";
+import { Button, IconCheck, StateView } from "@/components";
 import { AddressForm } from "@/features/commerce/AddressForm";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
-import { useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import {
+  buildCheckoutPreviewKey,
   enrichCartGroups,
   formatAddressLine,
   formatCarrierLabel,
   formatServiceLabel,
   formatVoucherHeadline,
   formatVoucherIneligibleReason,
+  splitVariantParts,
 } from "@/features/commerce/cartEnrich";
 import type {
   GwAddress,
@@ -33,6 +34,7 @@ import styles from "./page.module.css";
 const COD_MAX_VND = 5_000_000;
 
 type BackendPaymentMethod = "COD" | "VIETQR";
+type CheckoutStage = "address" | "shipping" | "payment";
 
 export interface CheckoutClientProps {
   brandName: string;
@@ -42,6 +44,7 @@ export interface CheckoutClientProps {
   initialAddresses: GwAddress[];
   initialVouchers: GwVoucher[];
   initialError: string | null;
+  serverNowMs?: number;
 }
 
 function generateClientAttemptKey(): string {
@@ -59,8 +62,10 @@ export function CheckoutClient({
   initialAddresses,
   initialVouchers,
   initialError,
+  serverNowMs,
 }: CheckoutClientProps) {
   const router = useRouter();
+  const [anchorNowMs] = useState<number>(() => serverNowMs ?? Date.now());
   const { user, isAuthenticated, loading: sessionLoading } = useSession();
   const {
     cart,
@@ -82,19 +87,28 @@ export function CheckoutClient({
   const [showNewAddressForm, setShowNewAddressForm] = useState<boolean>(
     initialAddresses.length === 0
   );
+  const [openStage, setOpenStage] = useState<CheckoutStage>(
+    initialAddresses.length > 0 ? "payment" : "address"
+  );
 
   const [vouchers, setVouchers] = useState<GwVoucher[]>(initialVouchers);
-  const [quotes, setQuotes] = useState<GwCarrierQuote[]>([]);
+  const [quoteState, setQuoteState] = useState<{
+    key: string;
+    status: "ok" | "error";
+    quotes: GwCarrierQuote[];
+  } | null>(null);
   const [selectedCarrier, setSelectedCarrier] = useState<{
     carrier_code: string;
     service_code: string;
   } | null>(null);
-  const [quotesLoading, setQuotesLoading] = useState<boolean>(false);
 
   const [paymentMethod, setPaymentMethod] = useState<BackendPaymentMethod>("VIETQR");
-  const [breakdown, setBreakdown] = useState<GwDiscountBreakdown | null>(null);
-  const [previewLoading, setPreviewLoading] = useState<boolean>(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewState, setPreviewState] = useState<{
+    key: string;
+    status: "ok" | "error";
+    breakdown: GwDiscountBreakdown | null;
+    error: string | null;
+  } | null>(null);
 
   const [promoCodeInput, setPromoCodeInput] = useState<string>("");
   const [promoValidating, setPromoValidating] = useState<boolean>(false);
@@ -106,8 +120,12 @@ export function CheckoutClient({
 
   const [idempotencyKey, setIdempotencyKey] = useState<string>(initialIdempotencyKey);
   const lastSignatureRef = useRef<string | null>(null);
+  const didInitialMetaFetchRef = useRef<boolean>(false);
+  const hasAddressesRef = useRef<boolean>(initialAddresses.length > 0);
+  hasAddressesRef.current = addresses.length > 0;
+  const previewStateRef = useRef(previewState);
+  previewStateRef.current = previewState;
 
-  // Cart returned by BFF /api/cart is strictly scoped to this site's shop.
   const enrichedGroups = useMemo(
     () => enrichCartGroups(cart?.shop_groups ?? [], catalogProducts, catalogShops),
     [cart?.shop_groups, catalogProducts, catalogShops]
@@ -128,11 +146,6 @@ export function CheckoutClient({
     return (filtered.length >= 4 ? filtered : catalogProducts).slice(0, 4);
   }, [cartItems, catalogProducts]);
 
-  useRevealOnScroll(
-    `checkout-${isAuthenticated ? "auth" : "guest"}-${cartItems.length}-${paymentMethod}-${addresses.length}`
-  );
-
-  // Refresh addresses & shop vouchers client-side if server didn't have them (e.g. after client login).
   const loadCheckoutMeta = useCallback(async () => {
     if (!isAuthenticated) return;
     setAddressesLoading(true);
@@ -143,12 +156,20 @@ export function CheckoutClient({
       ]);
       if (addrRes.status === "fulfilled") {
         const list = addrRes.value.addresses ?? [];
+        const hadAddresses = hasAddressesRef.current;
+        hasAddressesRef.current = list.length > 0;
         setAddresses(list);
         setSelectedAddressId((prev) => {
           if (prev && list.some((a) => a.id === prev)) return prev;
           return list.find((a) => a.is_default)?.id ?? list[0]?.id ?? "";
         });
-        if (list.length === 0) setShowNewAddressForm(true);
+        if (list.length === 0) {
+          setShowNewAddressForm(true);
+          setOpenStage("address");
+        } else if (!hadAddresses) {
+          setShowNewAddressForm(false);
+          setOpenStage((prev) => (prev === "address" ? "payment" : prev));
+        }
       }
       if (vRes.status === "fulfilled" && Array.isArray(vRes.value.vouchers)) {
         setVouchers(
@@ -161,32 +182,57 @@ export function CheckoutClient({
   }, [isAuthenticated]);
 
   useEffect(() => {
-    if (isAuthenticated && (addresses.length === 0 || vouchers.length === 0)) {
+    if (!isAuthenticated) {
+      didInitialMetaFetchRef.current = false;
+      return;
+    }
+    if (didInitialMetaFetchRef.current) return;
+    didInitialMetaFetchRef.current = true;
+    if (initialAddresses.length === 0 || initialVouchers.length === 0) {
       void loadCheckoutMeta();
     }
-  }, [isAuthenticated, addresses.length, vouchers.length, loadCheckoutMeta]);
+  }, [isAuthenticated, initialAddresses.length, initialVouchers.length, loadCheckoutMeta]);
 
   const totalWeightGrams = Math.max(100, activeGroup?.raw.total_weight_grams || 500);
   const rawSubtotal = activeGroup?.raw.subtotal_vnd ?? 0;
+  const activeShopId = activeGroup?.raw.shop_id ?? "";
+  const cartItemsSignature = useMemo(
+    () => cartItems.map((it) => `${it.raw.sku_id}:${it.raw.quantity}`).join(","),
+    [cartItems]
+  );
 
-  // Fetch real shipping quotes for THIS host's shop without sending shop_id.
+  const selectedAddressKey = selectedAddress?.id ?? "";
+  const selectedProvinceCode = selectedAddress?.province_code ?? "";
+  const selectedWardCode = selectedAddress?.ward_code ?? "";
+  const codAmountForQuote = paymentMethod === "COD" ? rawSubtotal : 0;
+
+  const quoteRequestKey =
+    isAuthenticated && selectedAddressKey && activeShopId && cartItems.length > 0
+      ? `${selectedAddressKey}:${selectedProvinceCode}:${selectedWardCode}:${totalWeightGrams}:${codAmountForQuote}`
+      : null;
+
+  const quotesPending = Boolean(quoteRequestKey && quoteState?.key !== quoteRequestKey);
+  const quotesFailed = Boolean(
+    quoteRequestKey && quoteState?.key === quoteRequestKey && quoteState.status === "error"
+  );
+  const quotes = useMemo<GwCarrierQuote[]>(
+    () => (quoteRequestKey && quoteState?.key === quoteRequestKey ? quoteState.quotes : []),
+    [quoteRequestKey, quoteState]
+  );
+
   useEffect(() => {
-    if (!isAuthenticated || !selectedAddress || !activeGroup || cartItems.length === 0) {
-      setQuotes([]);
-      return;
-    }
+    if (!quoteRequestKey) return;
 
     let cancelled = false;
-    setQuotesLoading(true);
     api<{ quotes?: GwCarrierQuote[]; quotes_by_shop?: Record<string, GwCarrierQuote[]> }>(
       "/api/checkout/shipping-quote",
       {
         method: "POST",
         body: {
-          to_province_code: selectedAddress.province_code,
-          to_ward_code: selectedAddress.ward_code,
+          to_province_code: selectedProvinceCode,
+          to_ward_code: selectedWardCode,
           weight_grams: totalWeightGrams,
-          cod_amount_vnd: paymentMethod === "COD" ? rawSubtotal : 0,
+          cod_amount_vnd: codAmountForQuote,
         },
       }
     )
@@ -196,7 +242,7 @@ export function CheckoutClient({
           res.quotes ??
           (res.quotes_by_shop ? Object.values(res.quotes_by_shop)[0] : undefined) ??
           [];
-        setQuotes(list);
+        setQuoteState({ key: quoteRequestKey, status: "ok", quotes: list });
         setSelectedCarrier((prev) => {
           const stillValid =
             prev &&
@@ -210,85 +256,112 @@ export function CheckoutClient({
         });
       })
       .catch(() => {
-        // Non-blocking: backend computes authoritative shipping fee during checkout
-      })
-      .finally(() => {
-        if (!cancelled) setQuotesLoading(false);
+        if (cancelled) return;
+        // Backend computes authoritative shipping fee during checkout; unlock submit on error
+        setQuoteState({ key: quoteRequestKey, status: "error", quotes: [] });
+        setSelectedCarrier(null);
       });
 
     return () => {
       cancelled = true;
     };
   }, [
-    isAuthenticated,
-    selectedAddress,
-    activeGroup,
-    cartItems.length,
+    quoteRequestKey,
+    selectedProvinceCode,
+    selectedWardCode,
     totalWeightGrams,
-    rawSubtotal,
-    paymentMethod,
+    codAmountForQuote,
   ]);
 
-  const selectedShippingFee = useMemo<number>(() => {
-    const match =
+  const activeQuote = useMemo<GwCarrierQuote | null>(() => {
+    if (quotes.length === 0) return null;
+    return (
       (selectedCarrier &&
         quotes.find(
           (q) =>
             q.carrier_code === selectedCarrier.carrier_code &&
             q.service_code === selectedCarrier.service_code
         )) ||
-      quotes[0];
-    return match ? match.fee_vnd : 0;
+      quotes[0] ||
+      null
+    );
   }, [quotes, selectedCarrier]);
 
+  const quotedShippingFee: number | null = activeQuote ? activeQuote.fee_vnd : null;
   const flashKey = JSON.stringify(flashSaleItemBySku);
 
-  // Authoritative promotion preview for THIS site's shop only (flat shop-agnostic body).
+  const previewRequestKey =
+    isAuthenticated && activeShopId && cartItems.length > 0 && !quotesPending
+      ? buildCheckoutPreviewKey({
+          shopId: activeShopId,
+          rawSubtotal,
+          cartItemsSignature,
+          quotedShippingFee,
+          voucherId: selectedVoucherId,
+          flashKey,
+        })
+      : null;
+
+  const previewPending = Boolean(
+    isAuthenticated &&
+    activeShopId &&
+    cartItems.length > 0 &&
+    (quotesPending || (previewRequestKey && previewState?.key !== previewRequestKey))
+  );
+  const breakdown =
+    previewRequestKey && previewState?.key === previewRequestKey && previewState.status === "ok"
+      ? previewState.breakdown
+      : null;
+  const previewError =
+    previewRequestKey && previewState?.key === previewRequestKey && previewState.status === "error"
+      ? previewState.error
+      : null;
+
   useEffect(() => {
-    if (!isAuthenticated || !activeGroup || cartItems.length === 0) {
-      setBreakdown(null);
+    if (!previewRequestKey) return;
+    if (
+      previewStateRef.current?.key === previewRequestKey &&
+      previewStateRef.current.status === "ok"
+    ) {
       return;
     }
     let cancelled = false;
-    setPreviewLoading(true);
-    setPreviewError(null);
 
     api<{ breakdown: GwDiscountBreakdown }>("/api/vouchers/preview", {
       method: "POST",
       body: {
-        shipping_fee_vnd: selectedShippingFee,
+        shipping_fee_vnd: quotedShippingFee ?? 0,
         shop_voucher_id: selectedVoucherId || "",
         flash_sale_item_by_sku: flashSaleItemBySku,
       },
     })
       .then((res) => {
-        if (!cancelled) setBreakdown(res.breakdown);
+        if (!cancelled) {
+          setPreviewState({
+            key: previewRequestKey,
+            status: "ok",
+            breakdown: res.breakdown,
+            error: null,
+          });
+        }
       })
       .catch((err) => {
         if (!cancelled) {
-          setPreviewError(
-            err instanceof ApiError ? err.message : "Chưa thể cập nhật bảng tính ưu đãi lúc này."
-          );
+          setPreviewState({
+            key: previewRequestKey,
+            status: "error",
+            breakdown: null,
+            error: err instanceof ApiError ? err.message : "Chưa cập nhật được ưu đãi.",
+          });
         }
-      })
-      .finally(() => {
-        if (!cancelled) setPreviewLoading(false);
       });
 
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    isAuthenticated,
-    activeGroup,
-    cartItems.length,
-    selectedShippingFee,
-    selectedVoucherId,
-    flashKey,
-  ]);
+  }, [previewRequestKey]);
 
-  // Preserve server-generated Idempotency-Key across retries of the same inputs; rotate on change.
   const orderAttemptSignature = useMemo(
     () =>
       JSON.stringify({
@@ -320,7 +393,9 @@ export function CheckoutClient({
   const subtotal = breakdown?.total_subtotal_vnd ?? rawSubtotal;
   const flashDiscount = breakdown?.total_flash_sale_discount_vnd ?? 0;
   const shopVoucherTotal = breakdown?.total_shop_voucher_discount_vnd ?? 0;
-  const shippingFeeTotal = breakdown?.total_shipping_fee_vnd ?? selectedShippingFee;
+  const hasAuthoritativeShipping = quotedShippingFee !== null;
+  const shippingFeeTotal =
+    quotedShippingFee !== null ? (breakdown?.total_shipping_fee_vnd ?? quotedShippingFee) : 0;
   const finalPayable = breakdown?.final_payable_vnd ?? subtotal + shippingFeeTotal;
   const totalQty = cart?.total_items ?? cartItems.reduce((sum, it) => sum + it.raw.quantity, 0);
   const codOverLimit = finalPayable > COD_MAX_VND;
@@ -333,7 +408,7 @@ export function CheckoutClient({
     e.preventDefault();
     const clean = promoCodeInput.trim().toUpperCase();
     if (!clean) {
-      setPromoFeedback({ ok: false, message: "Vui lòng nhập mã ưu đãi cần kiểm tra." });
+      setPromoFeedback({ ok: false, message: "Nhập mã giảm giá trước khi áp dụng." });
       return;
     }
     if (promoValidating) return;
@@ -351,7 +426,7 @@ export function CheckoutClient({
         method: "POST",
         body: {
           code: clean,
-          shipping_fee_vnd: selectedShippingFee,
+          shipping_fee_vnd: quotedShippingFee ?? 0,
           shop_voucher_id: selectedVoucherId || "",
           flash_sale_item_by_sku: flashSaleItemBySku,
         },
@@ -359,24 +434,47 @@ export function CheckoutClient({
       if (!res.valid || !res.voucher) {
         setPromoFeedback({
           ok: false,
-          message: res.reason || `Mã ${clean} chưa đủ điều kiện áp dụng tại ${brandName}.`,
+          message: res.reason || `Mã ${clean} chưa đủ điều kiện áp dụng.`,
         });
         return;
       }
       setSelectedVoucher(res.voucher.id);
-      if (res.breakdown) setBreakdown(res.breakdown);
+      if (
+        res.breakdown &&
+        isAuthenticated &&
+        activeShopId &&
+        cartItems.length > 0 &&
+        !quotesPending
+      ) {
+        const nextKey = buildCheckoutPreviewKey({
+          shopId: activeShopId,
+          rawSubtotal,
+          cartItemsSignature,
+          quotedShippingFee,
+          voucherId: res.voucher.id,
+          flashKey,
+        });
+        const nextState = {
+          key: nextKey,
+          status: "ok" as const,
+          breakdown: res.breakdown,
+          error: null,
+        };
+        previewStateRef.current = nextState;
+        setPreviewState(nextState);
+      }
       setPromoFeedback({
         ok: true,
         message:
           res.discount_vnd > 0
-            ? `Áp dụng thành công mã ${res.voucher.code} (-${formatVnd(res.discount_vnd)}).`
+            ? `Đã áp mã ${res.voucher.code} (-${formatVnd(res.discount_vnd)}).`
             : `Đã chọn mã ${res.voucher.code}.`,
       });
       setPromoCodeInput("");
     } catch (err) {
       setPromoFeedback({
         ok: false,
-        message: err instanceof ApiError ? err.message : "Không thể kiểm tra mã ưu đãi lúc này.",
+        message: err instanceof ApiError ? err.message : "Chưa kiểm tra được mã giảm giá.",
       });
     } finally {
       setPromoValidating(false);
@@ -386,23 +484,21 @@ export function CheckoutClient({
   const handlePlaceOrder = async () => {
     if (isSubmitting) return;
     if (!selectedAddress) {
-      setFormError("Vui lòng chọn hoặc thêm địa chỉ nhận hàng trước khi đặt hàng.");
+      setOpenStage("address");
+      setFormError("Chọn hoặc thêm địa chỉ nhận hàng trước khi đặt.");
       return;
     }
     if (!activeGroup || cartItems.length === 0) {
-      setFormError("Giỏ hàng đang trống. Vui lòng chọn sản phẩm trước khi đặt hàng.");
+      setFormError("Giỏ hàng đang trống.");
       return;
     }
     if (hasStockIssue) {
-      setFormError(
-        "Có sản phẩm hết hàng hoặc vượt số lượng tồn kho. Vui lòng kiểm tra lại giỏ hàng."
-      );
+      setFormError("Có sản phẩm hết hàng hoặc vượt tồn kho.");
       return;
     }
     if (paymentMethod === "COD" && codOverLimit) {
-      setFormError(
-        "Tổng đơn vượt hạn mức 5.000.000₫ cho thanh toán COD. Vui lòng chọn chuyển khoản VietQR."
-      );
+      setOpenStage("payment");
+      setFormError("Đơn vượt 5.000.000₫ cho COD. Chọn chuyển khoản VietQR.");
       return;
     }
 
@@ -418,7 +514,6 @@ export function CheckoutClient({
         flash_sale_item_id: flashSaleItemBySku[it.raw.sku_id],
       }));
 
-    // Strictly shop-agnostic body: server derives shop & STOREFRONT channel from Host.
     const checkoutRequestBody: Record<string, unknown> = {
       address_id: selectedAddress.id,
       from_cart: true,
@@ -449,20 +544,20 @@ export function CheckoutClient({
         res.payment_id &&
         res.payment_status.toUpperCase() !== "SUCCEEDED"
       ) {
-        showToast("Đã tạo đơn hàng. Mời bạn quét mã VietQR để hoàn tất thanh toán.");
+        showToast("Đã tạo đơn. Quét mã VietQR để thanh toán.");
         const q = firstOrderId ? `?order=${encodeURIComponent(firstOrderId)}` : "";
         router.push(`/thanh-toan/cho/${encodeURIComponent(res.payment_id)}${q}`);
         return;
       }
 
-      showToast("Đặt hàng thành công!");
+      showToast("Đặt hàng thành công.");
       router.push(firstOrderId ? `/don-hang/${encodeURIComponent(firstOrderId)}` : "/don-hang");
     } catch (err) {
       setIsSubmitting(false);
       if (err instanceof ApiError) {
         if (err.status === 401) {
           setSessionExpired(true);
-          setFormError("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại để hoàn tất đặt hàng.");
+          setFormError("Phiên đăng nhập đã hết hạn.");
           return;
         }
         setFormError(err.message);
@@ -477,30 +572,28 @@ export function CheckoutClient({
           void loadCheckoutMeta();
         }
       } else {
-        setFormError(
-          "Hệ thống đang tạm gián đoạn. Bạn có thể bấm thử lại an toàn, đơn hàng sẽ không bị tạo trùng."
-        );
+        setFormError("Hệ thống tạm gián đoạn. Bấm thử lại an toàn, không tạo trùng đơn.");
       }
     }
   };
 
-  const renderHeader = (subtitle: string) => (
+  const renderHeader = () => (
     <section className={shared.pageHeader}>
       <div className={shared.headerLeadGroup}>
         <h1 className={`${shared.pageTitle} lines`}>
           <span className="line">
             <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
-              Thanh toán · {brandName}
+              Thanh toán
             </span>
           </span>
         </h1>
         <p className={shared.pageLead} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
-          {subtitle}
+          {brandName}
         </p>
       </div>
       <div className={shared.headerAside} data-rise="" style={{ "--i": 2 } as React.CSSProperties}>
         <Button variant="secondary" size="md" href="/gio-hang">
-          Quay lại giỏ hàng
+          Giỏ hàng
         </Button>
       </div>
     </section>
@@ -509,18 +602,15 @@ export function CheckoutClient({
   if (sessionLoading || (isAuthenticated && cartLoading && !cart)) {
     return (
       <div className={shared.page}>
-        {renderHeader("Đang cập nhật tồn kho, địa chỉ giao hàng và cước vận chuyển.")}
+        {renderHeader()}
         <section className={shared.section}>
-          <h2 className={shared.sectionTitle}>Chuẩn bị đơn thanh toán</h2>
           <StateView
             kind="loading"
-            title="Đang tải địa chỉ giao hàng và phương thức thanh toán..."
+            skeletonVariant="detail"
+            title="Đang tải thanh toán..."
             rows={4}
           />
         </section>
-        {addonProducts.length > 0 && (
-          <ProductAddonStrip title={`Sản phẩm của ${brandName}`} products={addonProducts} />
-        )}
       </div>
     );
   }
@@ -528,29 +618,15 @@ export function CheckoutClient({
   if (!isAuthenticated) {
     return (
       <div className={shared.page}>
-        {renderHeader("Đăng nhập tài khoản để chọn địa chỉ nhận hàng và xác nhận đơn.")}
-        <section
-          className={shared.section}
-          data-rise=""
-          style={{ "--i": 2 } as React.CSSProperties}
-        >
-          <h2 className={shared.sectionTitle}>Đăng nhập để thanh toán</h2>
+        {renderHeader()}
+        <section className={shared.section}>
           <StateView
             kind="empty"
-            title="Vui lòng đăng nhập để đặt hàng"
-            message={`Đăng nhập tài khoản tại ${brandName} để sử dụng sổ địa chỉ, áp mã ưu đãi và theo dõi đơn hàng.`}
-            actionLabel="Đăng nhập ngay"
+            title="Đăng nhập để hoàn tất đơn hàng."
+            actionLabel="Đăng nhập"
             actionHref="/dang-nhap?next=%2Fthanh-toan"
           />
-          <div className={shared.formActions} style={{ marginTop: 16 }}>
-            <Button variant="secondary" size="md" href="/dang-ky?next=%2Fthanh-toan">
-              Tạo tài khoản mới
-            </Button>
-          </div>
         </section>
-        {addonProducts.length > 0 && (
-          <ProductAddonStrip title={`Sản phẩm nổi bật của ${brandName}`} products={addonProducts} />
-        )}
       </div>
     );
   }
@@ -558,12 +634,11 @@ export function CheckoutClient({
   if (cartError && !cart) {
     return (
       <div className={shared.page}>
-        {renderHeader("Không thể kết nối trang thanh toán lúc này. Chưa có khoản tiền nào bị trừ.")}
+        {renderHeader()}
         <section className={shared.section}>
-          <h2 className={shared.sectionTitle}>Trạng thái thanh toán</h2>
           <StateView
             kind="error"
-            title="Thanh toán tạm gián đoạn"
+            title="Chưa kết nối được trang thanh toán."
             message={cartError}
             actionLabel="Thử lại"
             onAction={() => void refreshCart()}
@@ -576,334 +651,539 @@ export function CheckoutClient({
   if (!activeGroup || cartItems.length === 0) {
     return (
       <div className={shared.page}>
-        {renderHeader("Chưa có sản phẩm nào trong giỏ hàng để tiến hành thanh toán.")}
-        <section
-          className={shared.section}
-          data-rise=""
-          style={{ "--i": 3 } as React.CSSProperties}
-        >
-          <h2 className={shared.sectionTitle}>Danh sách chờ thanh toán</h2>
+        {renderHeader()}
+        <section className={shared.section}>
           <StateView
             kind="empty"
-            title="Chưa có sản phẩm cần thanh toán"
-            message={`Quay lại giỏ hàng hoặc danh mục sản phẩm của ${brandName} để chọn đồ trước khi đặt đơn.`}
-            actionLabel="Xem sản phẩm cửa hàng"
+            title="Chưa có sản phẩm nào để thanh toán."
+            actionLabel="Xem sản phẩm"
             actionHref="/san-pham"
           />
         </section>
         {addonProducts.length > 0 && (
-          <ProductAddonStrip title={`Sản phẩm từ ${brandName}`} products={addonProducts} />
+          <ProductAddonStrip title={`Gợi ý từ ${brandName}`} products={addonProducts} />
         )}
       </div>
     );
   }
 
-  const payLabel = paymentMethod === "COD" ? "COD đồng kiểm" : "VietQR";
-  const ctaLabel = isSubmitting
-    ? "Đang tạo đơn hàng..."
-    : `Đặt hàng · ${formatVnd(finalPayable)} (${payLabel})`;
+  const addressDone = Boolean(selectedAddress);
+  const shippingDone = Boolean(selectedAddress && activeQuote);
+  const addressOpen = openStage === "address" || !addressDone;
+  const shippingOpen = openStage === "shipping" && addressDone;
+  const paymentOpen = openStage === "payment" && addressDone;
+  const isCalculating = Boolean(selectedAddress) && (quotesPending || previewPending);
+
+  const payLabel = paymentMethod === "COD" ? "COD" : "VietQR";
+  const ctaLabel = `Đặt hàng ${formatVnd(finalPayable)} (${payLabel})`;
+  const mobileCtaLabel = `Đặt ${formatVnd(finalPayable)}`;
+  const canPlaceOrder =
+    !isSubmitting &&
+    !isCalculating &&
+    !hasStockIssue &&
+    Boolean(selectedAddress) &&
+    !(paymentMethod === "COD" && codOverLimit);
 
   return (
     <div className={`${shared.page} ${styles.mobileSpacer}`}>
-      {renderHeader("Chọn địa chỉ giao hàng, đơn vị vận chuyển và phương thức thanh toán.")}
+      {renderHeader()}
 
       <section className={shared.section}>
         <div className={styles.checkoutGrid}>
-          <div className={styles.checkoutSheet}>
-            {/* Step 1: Real Saved Addresses */}
-            <div
-              className={styles.stepBlock}
-              data-rise=""
-              style={{ "--i": 2 } as React.CSSProperties}
-            >
-              <div className={styles.blockHead}>
-                <h2 className={styles.blockTitle}>Địa chỉ nhận hàng</h2>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setShowNewAddressForm((v) => !v)}
-                >
-                  {showNewAddressForm ? "Đóng biểu mẫu" : "Thêm địa chỉ mới"}
-                </Button>
+          <div className={styles.stageStack}>
+            {/* Stage 1: Địa chỉ nhận hàng */}
+            <section className={styles.stageCard} aria-labelledby="stage-address-title">
+              <div className={styles.stageHeader}>
+                <div className={styles.stageHeaderLeft}>
+                  <span
+                    className={`${styles.stageMarker} ${
+                      addressDone && !addressOpen
+                        ? styles.stageMarkerDone
+                        : addressOpen
+                          ? styles.stageMarkerActive
+                          : ""
+                    }`}
+                    aria-hidden="true"
+                  >
+                    {addressDone && !addressOpen ? (
+                      <IconCheck size={14} />
+                    ) : addressOpen ? (
+                      <span className={styles.stageMarkerActiveDot} />
+                    ) : null}
+                  </span>
+
+                  <div className={styles.stageTitleGroup}>
+                    <h2 id="stage-address-title" className={styles.stageTitle}>
+                      Địa chỉ nhận hàng
+                    </h2>
+
+                    {!addressOpen && selectedAddress && (
+                      <div
+                        className={styles.stageCompactSummary}
+                        role="radiogroup"
+                        aria-label="Chọn địa chỉ nhận hàng"
+                      >
+                        <button
+                          type="button"
+                          role="radio"
+                          aria-checked="true"
+                          className={styles.stageSummaryRadio}
+                          onClick={() => setOpenStage("address")}
+                        >
+                          <span className={styles.stageSummaryMetaRow}>
+                            <strong>{selectedAddress.recipient_name}</strong>
+                            <span className="num">{selectedAddress.recipient_phone}</span>
+                          </span>
+                          <span className={styles.stageSummarySub}>
+                            {formatAddressLine(
+                              selectedAddress.street_address,
+                              selectedAddress.ward_name,
+                              selectedAddress.province_name
+                            )}
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {!addressOpen && selectedAddress && (
+                  <button
+                    type="button"
+                    className={styles.editBtn}
+                    onClick={() => setOpenStage("address")}
+                  >
+                    Sửa
+                  </button>
+                )}
               </div>
 
-              {addressesLoading && addresses.length === 0 ? (
-                <StateView kind="loading" title="Đang tải sổ địa chỉ..." rows={2} />
-              ) : addresses.length > 0 ? (
-                <div
-                  className={styles.addressList}
-                  role="radiogroup"
-                  aria-label="Chọn địa chỉ nhận hàng"
-                >
-                  {addresses.map((addr, idx) => {
-                    const isSelected = selectedAddress?.id === addr.id;
-                    return (
-                      <button
-                        key={addr.id}
-                        type="button"
-                        role="radio"
-                        aria-checked={isSelected}
-                        data-rise=""
-                        style={{ "--i": Math.min(idx + 2, 5) } as React.CSSProperties}
-                        className={`${styles.addressOption} ${
-                          isSelected ? styles.addressOptionSelected : ""
-                        }`}
-                        onClick={() => setSelectedAddressId(addr.id)}
-                      >
-                        <div className={styles.addressTopRow}>
-                          <span className={styles.addressName}>
-                            {addr.recipient_name} · {addr.recipient_phone}
-                          </span>
-                          <div className={shared.formActions}>
-                            {addr.is_default && (
-                              <span className={`${shared.statusTag} ${shared.toneNeutral}`}>
-                                Mặc định
-                              </span>
-                            )}
-                            {isSelected && (
-                              <span className={`${shared.statusTag} ${shared.tonePos}`}>
-                                Đang chọn
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <p className={styles.addressLine}>
-                          {formatAddressLine(
-                            addr.street_address,
-                            addr.ward_name,
-                            addr.province_name
-                          )}
-                        </p>
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : (
-                <p className={styles.addressShipLine}>
-                  Bạn chưa có địa chỉ giao hàng nào. Hãy thêm địa chỉ bên dưới để tiếp tục đặt hàng.
-                </p>
-              )}
-
-              {showNewAddressForm && (
-                <AddressForm
-                  defaultName={user?.fullName ?? ""}
-                  defaultPhone={user?.phone ?? ""}
-                  submitLabel="Lưu và giao tới địa chỉ này"
-                  onSaved={(created) => {
-                    setAddresses((prev) => [
-                      created,
-                      ...prev.map((a) => (created.is_default ? { ...a, is_default: false } : a)),
-                    ]);
-                    setSelectedAddressId(created.id);
-                    setShowNewAddressForm(false);
-                    setFormError(null);
-                  }}
-                  onCancel={addresses.length > 0 ? () => setShowNewAddressForm(false) : undefined}
-                />
-              )}
-            </div>
-
-            {/* Step 2: Shipping Quotes for this shop */}
-            <div
-              className={styles.stepBlock}
-              data-rise=""
-              style={{ "--i": 3 } as React.CSSProperties}
-            >
-              <h2 className={styles.blockTitle}>Vận chuyển</h2>
-              <div className={styles.shippingStack}>
-                {quotesLoading && quotes.length === 0 ? (
-                  <p className={styles.addressShipLine}>
-                    Đang tính cước vận chuyển thực tế theo địa chỉ nhận hàng...
-                  </p>
-                ) : (
-                  <div className={styles.shopDeliveryRow}>
-                    <div className={styles.shippingRow}>
-                      <div className={styles.shippingInfo}>
-                        <IconTruck size={17} className={styles.shippingIcon} />
-                        <div>
-                          <p className={styles.addressName}>Giao từ {brandName}</p>
-                          <p className={styles.addressShipLine}>
-                            {selectedAddress
-                              ? `Giao tới ${selectedAddress.ward_name}, ${selectedAddress.province_name}`
-                              : "Chọn địa chỉ nhận hàng để xem phí vận chuyển"}
-                          </p>
-                        </div>
-                      </div>
-                      <span className={`${shared.statusTag} ${shared.toneNeutral} num`}>
-                        {selectedShippingFee > 0 ? formatVnd(selectedShippingFee) : "Đang cập nhật"}
-                      </span>
-                    </div>
-
-                    {quotes.length > 0 && (
+              {addressOpen && (
+                <div className={styles.stageBody}>
+                  {addressesLoading && addresses.length === 0 ? (
+                    <StateView
+                      kind="loading"
+                      skeletonVariant="detail"
+                      title="Đang tải địa chỉ..."
+                      rows={2}
+                    />
+                  ) : addresses.length > 0 ? (
+                    <>
                       <div
-                        className={styles.deliveryOptions}
-                        style={{ marginTop: 12 }}
+                        className={styles.addressList}
                         role="radiogroup"
-                        aria-label={`Chọn đơn vị vận chuyển cho ${brandName}`}
+                        aria-label="Chọn địa chỉ nhận hàng"
                       >
-                        {quotes.map((q) => {
-                          const active =
-                            selectedCarrier?.carrier_code === q.carrier_code &&
-                            selectedCarrier?.service_code === q.service_code;
+                        {addresses.map((addr) => {
+                          const isSelected = selectedAddress?.id === addr.id;
                           return (
                             <button
-                              key={`${q.carrier_code}-${q.service_code}`}
+                              key={addr.id}
                               type="button"
                               role="radio"
-                              aria-checked={active}
-                              className={`${styles.deliveryOptionBtn} ${
-                                active ? styles.deliveryOptionActive : ""
+                              aria-checked={isSelected}
+                              className={`${styles.addressOption} ${
+                                isSelected ? styles.addressOptionSelected : ""
                               }`}
-                              onClick={() =>
-                                setSelectedCarrier({
-                                  carrier_code: q.carrier_code,
-                                  service_code: q.service_code,
-                                })
-                              }
+                              onClick={() => {
+                                setSelectedAddressId(addr.id);
+                                setShowNewAddressForm(false);
+                                setOpenStage("shipping");
+                              }}
                             >
-                              <span className={styles.paymentTitle}>
-                                {formatCarrierLabel(q.carrier_code, q.carrier_name)} ·{" "}
-                                <span className="num">{formatVnd(q.fee_vnd)}</span>
+                              <span className={styles.addressTopRow}>
+                                <span className={styles.addressName}>
+                                  <span>{addr.recipient_name}</span>
+                                  <span className={`${styles.addressPhone} num`}>
+                                    {addr.recipient_phone}
+                                  </span>
+                                </span>
+                                <span className={shared.formActions}>
+                                  {addr.is_default && (
+                                    <span className={`${shared.statusTag} ${shared.toneNeutral}`}>
+                                      Mặc định
+                                    </span>
+                                  )}
+                                  {isSelected && (
+                                    <span className={`${shared.statusTag} ${shared.tonePos}`}>
+                                      Đang chọn
+                                    </span>
+                                  )}
+                                </span>
                               </span>
-                              <span className={styles.addressShipLine}>
-                                {formatServiceLabel(q.service_code, q.service_name)} · Dự kiến{" "}
-                                {q.estimated_days} ngày
+                              <span className={styles.addressLine}>
+                                {formatAddressLine(
+                                  addr.street_address,
+                                  addr.ward_name,
+                                  addr.province_name
+                                )}
                               </span>
                             </button>
                           );
                         })}
                       </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
 
-            {/* Step 3: Payment methods (COD & VietQR) */}
-            <div
-              className={styles.stepBlock}
-              data-rise=""
-              style={{ "--i": 4 } as React.CSSProperties}
-            >
-              <h2 className={styles.blockTitle}>Phương thức thanh toán</h2>
-
-              <div
-                className={styles.paymentList}
-                role="radiogroup"
-                aria-label="Chọn phương thức thanh toán"
-              >
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={paymentMethod === "COD"}
-                  data-reveal=""
-                  className={`${styles.paymentOption} ${
-                    paymentMethod === "COD" ? styles.paymentOptionSelected : ""
-                  }`}
-                  onClick={() => setPaymentMethod("COD")}
-                >
-                  <div className={styles.paymentHead}>
-                    <span className={styles.paymentTitle}>Thanh toán khi nhận hàng (COD)</span>
-                    {paymentMethod === "COD" && (
-                      <span className={`${shared.statusTag} ${shared.tonePos}`}>Đang chọn</span>
-                    )}
-                  </div>
-                  <p className={styles.paymentDesc}>
-                    Thanh toán trực tiếp cho bưu tá sau khi mở kiểm tra đúng mẫu và đúng size. Áp
-                    dụng cho đơn hàng tối đa 5.000.000₫.
-                  </p>
-                  {codOverLimit && (
-                    <p className={shared.fieldError}>
-                      Đơn hiện vượt 5.000.000₫. Vui lòng chọn chuyển khoản VietQR.
-                    </p>
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={paymentMethod === "VIETQR"}
-                  data-reveal=""
-                  className={`${styles.paymentOption} ${
-                    paymentMethod === "VIETQR" ? styles.paymentOptionSelected : ""
-                  }`}
-                  onClick={() => setPaymentMethod("VIETQR")}
-                >
-                  <div className={styles.paymentHead}>
-                    <span className={styles.paymentTitle}>Chuyển khoản nhanh VietQR</span>
-                    {paymentMethod === "VIETQR" && (
-                      <span className={`${shared.statusTag} ${shared.tonePos}`}>Đang chọn</span>
-                    )}
-                  </div>
-                  <p className={styles.paymentDesc}>
-                    Sau khi bấm Đặt hàng, hệ thống tạo mã VietQR riêng cho đơn của bạn để quét bằng
-                    ứng dụng ngân hàng và xác nhận tự động, không cần nhập số thẻ.
-                  </p>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <aside
-            className={styles.reviewCol}
-            aria-label="Chi tiết thanh toán"
-            data-rise=""
-            style={{ "--i": 3 } as React.CSSProperties}
-          >
-            <div className={styles.reviewInner}>
-              <h2 className={styles.blockTitle}>Chi tiết đơn thanh toán</h2>
-
-              <div className={styles.reviewItemsGroup}>
-                <div className={styles.shopSlice} data-reveal="">
-                  <div className={styles.shopSliceHead}>
-                    <span>{brandName}</span>
-                    <span className="num">{formatVnd(rawSubtotal)}</span>
-                  </div>
-                  <div className={styles.shopSliceItems}>
-                    {cartItems.map((it) => (
-                      <div key={it.raw.sku_id} className={styles.miniItem}>
-                        <img
-                          src={it.image}
-                          alt={it.productName}
-                          width={896}
-                          height={1200}
-                          className={styles.miniThumb}
-                        />
-                        <div className={styles.miniInfo}>
-                          <span className={styles.miniName}>{it.productName}</span>
-                          <span className={styles.miniMeta}>
-                            {it.variantLabel} · SL <span className="num">{it.raw.quantity}</span>
-                          </span>
-                        </div>
-                        <span className={`${styles.miniPrice} num`}>
-                          {formatVnd(it.raw.price_vnd * it.raw.quantity)}
-                        </span>
+                      <div className={styles.stageFooterRow}>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => setShowNewAddressForm((v) => !v)}
+                        >
+                          {showNewAddressForm ? "Đóng biểu mẫu" : "Thêm địa chỉ mới"}
+                        </Button>
+                        {!showNewAddressForm && selectedAddress && (
+                          <Button variant="ink" size="sm" onClick={() => setOpenStage("shipping")}>
+                            Tiếp tục giao hàng
+                          </Button>
+                        )}
                       </div>
-                    ))}
+                    </>
+                  ) : null}
+
+                  {showNewAddressForm && (
+                    <AddressForm
+                      defaultName={user?.fullName ?? ""}
+                      defaultPhone={user?.phone ?? ""}
+                      submitLabel="Lưu và giao tới địa chỉ này"
+                      onSaved={(created) => {
+                        setAddresses((prev) => [
+                          created,
+                          ...prev.map((a) =>
+                            created.is_default ? { ...a, is_default: false } : a
+                          ),
+                        ]);
+                        setSelectedAddressId(created.id);
+                        setShowNewAddressForm(false);
+                        setFormError(null);
+                        setOpenStage("payment");
+                      }}
+                      onCancel={
+                        addresses.length > 0 ? () => setShowNewAddressForm(false) : undefined
+                      }
+                    />
+                  )}
+                </div>
+              )}
+            </section>
+
+            {/* Stage 2: Giao hàng */}
+            <section
+              className={`${styles.stageCard} ${!addressDone ? styles.stageCardMuted : ""}`}
+              aria-labelledby="stage-shipping-title"
+            >
+              <div className={styles.stageHeader}>
+                <div className={styles.stageHeaderLeft}>
+                  <span
+                    className={`${styles.stageMarker} ${
+                      shippingDone && !shippingOpen
+                        ? styles.stageMarkerDone
+                        : shippingOpen
+                          ? styles.stageMarkerActive
+                          : ""
+                    }`}
+                    aria-hidden="true"
+                  >
+                    {shippingDone && !shippingOpen ? (
+                      <IconCheck size={14} />
+                    ) : shippingOpen ? (
+                      <span className={styles.stageMarkerActiveDot} />
+                    ) : null}
+                  </span>
+
+                  <div className={styles.stageTitleGroup}>
+                    <h2 id="stage-shipping-title" className={styles.stageTitle}>
+                      Giao hàng
+                    </h2>
+
+                    {!addressDone ? (
+                      <p className={styles.stageSummaryLine}>Chọn địa chỉ để tính cước.</p>
+                    ) : !shippingOpen ? (
+                      quotesPending ? (
+                        <p className={styles.stageSummaryLine}>Đang tính phí vận chuyển…</p>
+                      ) : activeQuote ? (
+                        <div
+                          className={styles.stageCompactSummary}
+                          role="radiogroup"
+                          aria-label={`Chọn đơn vị vận chuyển cho ${brandName}`}
+                        >
+                          <button
+                            type="button"
+                            role="radio"
+                            aria-checked="true"
+                            className={styles.stageSummaryRadio}
+                            onClick={() => setOpenStage("shipping")}
+                          >
+                            <span className={styles.stageSummaryMetaRow}>
+                              <strong>
+                                {formatCarrierLabel(
+                                  activeQuote.carrier_code,
+                                  activeQuote.carrier_name
+                                )}
+                              </strong>
+                              <span>
+                                {formatServiceLabel(
+                                  activeQuote.service_code,
+                                  activeQuote.service_name
+                                )}
+                              </span>
+                              <span className={`${styles.stageSummaryFee} num`}>
+                                {formatVnd(activeQuote.fee_vnd)}
+                              </span>
+                            </span>
+                          </button>
+                        </div>
+                      ) : (
+                        <p className={styles.stageSummaryLine}>
+                          {quotesFailed ? "Phí tính khi đặt." : "Tính phí theo địa chỉ nhận hàng."}
+                        </p>
+                      )
+                    ) : null}
                   </div>
                 </div>
+
+                {addressDone && !shippingOpen && (
+                  <button
+                    type="button"
+                    className={styles.editBtn}
+                    onClick={() => setOpenStage("shipping")}
+                  >
+                    Sửa
+                  </button>
+                )}
               </div>
 
-              {/* Shop voucher selector & code entry */}
+              {shippingOpen && (
+                <div className={styles.stageBody}>
+                  {quotesPending ? (
+                    <p className={styles.addressShipLine}>Đang tính cước vận chuyển…</p>
+                  ) : quotes.length > 0 ? (
+                    <div
+                      className={styles.deliveryOptions}
+                      role="radiogroup"
+                      aria-label={`Chọn đơn vị vận chuyển cho ${brandName}`}
+                    >
+                      {quotes.map((q) => {
+                        const active =
+                          activeQuote?.carrier_code === q.carrier_code &&
+                          activeQuote?.service_code === q.service_code;
+                        return (
+                          <button
+                            key={`${q.carrier_code}-${q.service_code}`}
+                            type="button"
+                            role="radio"
+                            aria-checked={active}
+                            className={`${styles.deliveryOptionBtn} ${
+                              active ? styles.deliveryOptionActive : ""
+                            }`}
+                            onClick={() => {
+                              setSelectedCarrier({
+                                carrier_code: q.carrier_code,
+                                service_code: q.service_code,
+                              });
+                              setOpenStage("payment");
+                            }}
+                          >
+                            <span className={styles.deliveryOptionHead}>
+                              <span className={styles.paymentTitle}>
+                                {formatCarrierLabel(q.carrier_code, q.carrier_name)}
+                              </span>
+                              <span className={`${styles.deliveryFee} num`}>
+                                {formatVnd(q.fee_vnd)}
+                              </span>
+                            </span>
+                            <span className={styles.addressShipLine}>
+                              <span>{formatServiceLabel(q.service_code, q.service_name)}</span>
+                              <span>
+                                Dự kiến <span className="num">{q.estimated_days}</span> ngày
+                              </span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className={styles.addressShipLine}>
+                      Phí vận chuyển được xác nhận tự động khi đặt đơn.
+                    </p>
+                  )}
+
+                  <div className={styles.stageFooterRow}>
+                    <Button variant="ink" size="sm" onClick={() => setOpenStage("payment")}>
+                      Tiếp tục thanh toán
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </section>
+
+            {/* Stage 3: Phương thức thanh toán */}
+            <section
+              className={`${styles.stageCard} ${!addressDone ? styles.stageCardMuted : ""}`}
+              aria-labelledby="stage-payment-title"
+            >
+              <div className={styles.stageHeader}>
+                <div className={styles.stageHeaderLeft}>
+                  <span
+                    className={`${styles.stageMarker} ${
+                      addressDone && !paymentOpen
+                        ? styles.stageMarkerDone
+                        : paymentOpen
+                          ? styles.stageMarkerActive
+                          : ""
+                    }`}
+                    aria-hidden="true"
+                  >
+                    {addressDone && !paymentOpen ? (
+                      <IconCheck size={14} />
+                    ) : paymentOpen ? (
+                      <span className={styles.stageMarkerActiveDot} />
+                    ) : null}
+                  </span>
+
+                  <div className={styles.stageTitleGroup}>
+                    <h2 id="stage-payment-title" className={styles.stageTitle}>
+                      Thanh toán
+                    </h2>
+                    {!addressDone ? (
+                      <p className={styles.stageSummaryLine}>Chọn sau khi nhập địa chỉ.</p>
+                    ) : !paymentOpen ? (
+                      <p className={styles.stageSummaryLine}>
+                        {paymentMethod === "COD"
+                          ? "Thanh toán khi nhận hàng (COD)"
+                          : "Chuyển khoản nhanh VietQR"}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+
+                {addressDone && !paymentOpen && (
+                  <button
+                    type="button"
+                    className={styles.editBtn}
+                    onClick={() => setOpenStage("payment")}
+                  >
+                    Sửa
+                  </button>
+                )}
+              </div>
+
+              {paymentOpen && (
+                <div className={styles.stageBody}>
+                  <div
+                    className={styles.paymentGrid}
+                    role="radiogroup"
+                    aria-label="Chọn phương thức thanh toán"
+                  >
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={paymentMethod === "VIETQR"}
+                      className={`${styles.paymentTile} ${
+                        paymentMethod === "VIETQR" ? styles.paymentTileSelected : ""
+                      }`}
+                      onClick={() => setPaymentMethod("VIETQR")}
+                    >
+                      <span className={styles.paymentHead}>
+                        <span className={styles.paymentTitle}>Chuyển khoản nhanh VietQR</span>
+                        <span className={styles.paymentCheck} aria-hidden="true">
+                          <IconCheck size={13} />
+                        </span>
+                      </span>
+                      <span className={styles.paymentDesc}>
+                        Quét mã bằng ứng dụng ngân hàng, xác nhận tự động.
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={paymentMethod === "COD"}
+                      className={`${styles.paymentTile} ${
+                        paymentMethod === "COD" ? styles.paymentTileSelected : ""
+                      }`}
+                      onClick={() => setPaymentMethod("COD")}
+                    >
+                      <span className={styles.paymentHead}>
+                        <span className={styles.paymentTitle}>Thanh toán khi nhận hàng (COD)</span>
+                        <span className={styles.paymentCheck} aria-hidden="true">
+                          <IconCheck size={13} />
+                        </span>
+                      </span>
+                      <span className={styles.paymentDesc}>
+                        Trả tiền khi nhận hàng. Tối đa <span className="num">5.000.000₫</span>.
+                      </span>
+                      {codOverLimit && (
+                        <span className={shared.fieldError}>
+                          Đơn vượt 5.000.000₫. Vui lòng chọn VietQR.
+                        </span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </section>
+          </div>
+
+          {/* Sticky order summary column */}
+          <aside className={styles.reviewCol} aria-label="Chi tiết thanh toán">
+            <div className={styles.reviewInner}>
+              <h2 className={styles.reviewTitle}>
+                Đơn hàng (<span className="num">{totalQty}</span>)
+              </h2>
+
+              <div className={styles.shopSliceItems}>
+                {cartItems.map((it) => (
+                  <div key={it.raw.sku_id} className={styles.miniItem}>
+                    <img
+                      src={it.image}
+                      alt={it.productName}
+                      width={896}
+                      height={1200}
+                      className={styles.miniThumb}
+                    />
+                    <div className={styles.miniInfo}>
+                      <span className={styles.miniName}>{it.productName}</span>
+                      <span className={styles.miniMeta}>
+                        {splitVariantParts(it.variantLabel).map((part) => (
+                          <span key={part}>{part}</span>
+                        ))}
+                        <span className="num">×{it.raw.quantity}</span>
+                      </span>
+                    </div>
+                    <span className={`${styles.miniPrice} num`}>
+                      {formatVnd(it.raw.price_vnd * it.raw.quantity)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
               <form className={styles.promoSection} onSubmit={handleApplyCode} noValidate>
                 <label htmlFor="co-code-input" className={shared.fieldLabel}>
-                  Mã giảm giá của {brandName}
+                  Mã giảm giá
                 </label>
                 <div className={shared.codeInputRow}>
                   <input
                     id="co-code-input"
                     type="text"
                     className={shared.input}
+                    aria-describedby={promoFeedback ? "co-code-feedback" : undefined}
                     value={promoCodeInput}
                     onChange={(e) => setPromoCodeInput(e.target.value)}
-                    placeholder="Nhập mã giảm giá của cửa hàng"
+                    placeholder="Nhập mã"
                   />
-                  <Button type="submit" variant="ink" size="md" disabled={promoValidating}>
-                    {promoValidating ? "Đang kiểm..." : "Áp dụng"}
+                  <Button
+                    type="submit"
+                    variant="ink"
+                    size="md"
+                    loading={promoValidating}
+                    loadingLabel="Đang kiểm tra"
+                  >
+                    Áp dụng
                   </Button>
                 </div>
                 {promoFeedback && (
                   <p
+                    id="co-code-feedback"
                     className={`${shared.feedbackBox} ${
                       promoFeedback.ok ? shared.feedbackSuccess : shared.feedbackError
                     }`}
@@ -914,9 +1194,9 @@ export function CheckoutClient({
                 )}
 
                 {shopVouchers.length > 0 && (
-                  <div className={styles.freeshipRow}>
+                  <div className={styles.voucherChips}>
                     {shopVouchers.map((v) => {
-                      const reason = formatVoucherIneligibleReason(v, subtotal);
+                      const reason = formatVoucherIneligibleReason(v, subtotal, anchorNowMs);
                       const eligible = reason === null;
                       const active =
                         (selectedVoucherId === v.id || selectedVoucherId === v.code) && eligible;
@@ -925,7 +1205,9 @@ export function CheckoutClient({
                           key={v.id}
                           type="button"
                           disabled={!eligible}
-                          className={`${styles.freeshipBtn} ${active ? styles.freeshipBtnActive : ""}`}
+                          className={`${styles.voucherChip} ${
+                            active ? styles.voucherChipActive : ""
+                          }`}
                           onClick={() => setSelectedVoucher(active ? null : v.id)}
                           title={
                             eligible
@@ -933,7 +1215,8 @@ export function CheckoutClient({
                               : (reason ?? undefined)
                           }
                         >
-                          {v.code} ({formatVoucherHeadline(v)})
+                          <span className={styles.voucherChipCode}>{v.code}</span>
+                          <span className={styles.voucherChipVal}>{formatVoucherHeadline(v)}</span>
                         </button>
                       );
                     })}
@@ -950,44 +1233,49 @@ export function CheckoutClient({
               <dl className={styles.ledgerList}>
                 <div className={styles.ledgerRow}>
                   <dt className={styles.ledgerLabel}>
-                    Tạm tính (<span className="num">{totalQty}</span> sản phẩm)
+                    Tạm tính (<span className="num">{totalQty}</span>)
                   </dt>
                   <dd className="num">{formatVnd(subtotal)}</dd>
                 </div>
                 {flashDiscount > 0 && (
                   <div className={styles.ledgerRow}>
-                    <dt className={styles.ledgerLabel}>Ưu đãi Flash sale</dt>
+                    <dt className={styles.ledgerLabel}>Flash sale</dt>
                     <dd className={`${styles.ledgerDiscount} num`}>
                       {formatSignedVnd(-flashDiscount)}
                     </dd>
                   </div>
                 )}
                 <div className={styles.ledgerRow}>
-                  <dt className={styles.ledgerLabel}>Mã giảm giá cửa hàng</dt>
+                  <dt className={styles.ledgerLabel}>Mã giảm giá</dt>
                   <dd className={`${styles.ledgerDiscount} num`}>
                     {shopVoucherTotal > 0 ? formatSignedVnd(-shopVoucherTotal) : "0₫"}
                   </dd>
                 </div>
                 <div className={styles.ledgerRow}>
                   <dt className={styles.ledgerLabel}>Phí vận chuyển</dt>
-                  <dd className="num">{formatVnd(shippingFeeTotal)}</dd>
+                  {!selectedAddress ? (
+                    <dd className={styles.ledgerPendingNote}>Tính theo địa chỉ</dd>
+                  ) : quotesPending ? (
+                    <dd>
+                      <span className={styles.feeSkeleton} aria-label="Đang tính phí vận chuyển" />
+                    </dd>
+                  ) : hasAuthoritativeShipping ? (
+                    <dd className="num">{formatVnd(shippingFeeTotal)}</dd>
+                  ) : (
+                    <dd className={styles.ledgerPendingNote}>Phí tính khi đặt</dd>
+                  )}
                 </div>
               </dl>
             </div>
 
             <div className={styles.ctaBand}>
               <div className={styles.grandBand}>
-                <span className={styles.grandLabel}>
-                  {previewLoading ? "Đang cập nhật..." : "Tổng thanh toán"}
-                </span>
-                <span className={`${styles.grandVal} num`}>{formatVnd(finalPayable)}</span>
-              </div>
-
-              <div className={styles.assuranceBox}>
-                <IconShield size={17} className={styles.assuranceIcon} />
-                <span>
-                  Xác nhận đơn an toàn. Sản phẩm đúng màu và size được giữ ngay khi bấm đặt hàng.
-                </span>
+                <span className={styles.grandLabel}>Tổng thanh toán</span>
+                {isCalculating ? (
+                  <span className={styles.grandSkeleton} aria-label="Đang tính tổng thanh toán" />
+                ) : (
+                  <span className={`${styles.grandVal} num`}>{formatVnd(finalPayable)}</span>
+                )}
               </div>
 
               {formError && (
@@ -1008,46 +1296,56 @@ export function CheckoutClient({
                 size="lg"
                 fullWidth
                 className={shared.wrapBtn}
-                disabled={
-                  isSubmitting ||
-                  hasStockIssue ||
-                  !selectedAddress ||
-                  (paymentMethod === "COD" && codOverLimit)
-                }
+                loading={isSubmitting}
+                loadingLabel="Đang tạo đơn hàng"
+                disabled={!canPlaceOrder}
                 onClick={handlePlaceOrder}
               >
-                {ctaLabel}
+                <span className={styles.stableBtnLabel}>
+                  <span className={styles.stableBtnSizer} aria-hidden="true">
+                    {ctaLabel}
+                  </span>
+                  <span className={styles.stableBtnSizer} aria-hidden="true">
+                    Đang tính…
+                  </span>
+                  <span className={styles.stableBtnLive}>
+                    {isCalculating ? "Đang tính…" : ctaLabel}
+                  </span>
+                </span>
               </Button>
             </div>
           </aside>
         </div>
       </section>
 
-      {addonProducts.length > 0 && (
-        <ProductAddonStrip
-          title={`Sản phẩm khác từ ${brandName}`}
-          subtitle="Thêm sản phẩm giao cùng đơn từ cửa hàng"
-          products={addonProducts}
-        />
-      )}
-
       <div className={styles.mobileCheckoutBar} aria-label="Xác nhận đặt hàng nhanh">
         <div>
           <p className={styles.miniMeta}>{payLabel}</p>
-          <p className={`${styles.addressName} num`}>{formatVnd(finalPayable)}</p>
+          {isCalculating ? (
+            <span className={styles.feeSkeleton} aria-label="Đang tính tổng thanh toán" />
+          ) : (
+            <p className={`${styles.addressName} num`}>{formatVnd(finalPayable)}</p>
+          )}
         </div>
         <Button
           variant="primary"
           size="md"
-          disabled={
-            isSubmitting ||
-            hasStockIssue ||
-            !selectedAddress ||
-            (paymentMethod === "COD" && codOverLimit)
-          }
+          loading={isSubmitting}
+          loadingLabel="Đang đặt"
+          disabled={!canPlaceOrder}
           onClick={handlePlaceOrder}
         >
-          {isSubmitting ? "Đang tạo..." : `Đặt · ${formatVnd(finalPayable)}`}
+          <span className={styles.stableBtnLabel}>
+            <span className={styles.stableBtnSizer} aria-hidden="true">
+              {mobileCtaLabel}
+            </span>
+            <span className={styles.stableBtnSizer} aria-hidden="true">
+              Đang tính…
+            </span>
+            <span className={styles.stableBtnLive}>
+              {isCalculating ? "Đang tính…" : mobileCtaLabel}
+            </span>
+          </span>
         </Button>
       </div>
     </div>

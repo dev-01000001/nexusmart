@@ -6,8 +6,8 @@ import styles from "./layout.module.css";
 
 export const metadata: Metadata = {
   title: {
-    default: "NexusMart · Nền tảng mở cửa hàng trực tuyến độc lập",
-    template: "%s · NexusMart",
+    default: "Nền tảng cửa hàng độc lập",
+    template: "%s | NexusMart",
   },
   description:
     "Nền tảng thương mại điện tử giúp mỗi thương hiệu và xưởng sản xuất tự vận hành cửa hàng trực tuyến trên tên miền phụ riêng, tích hợp thanh toán COD, VietQR và đối soát minh bạch.",

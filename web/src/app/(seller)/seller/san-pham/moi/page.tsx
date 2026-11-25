@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic";
 export default async function SellerNewProductPage() {
   await requireSellerPage();
   const categoriesRes = await loadCategories();
+  const defaultSkuStamp = String(Date.now()).slice(-4);
 
   return (
     <SellerSuspense>
@@ -15,6 +16,7 @@ export default async function SellerNewProductPage() {
         mode="create"
         categories={categoriesRes.data ?? []}
         loadError={categoriesRes.error}
+        defaultSkuStamp={defaultSkuStamp}
       />
     </SellerSuspense>
   );

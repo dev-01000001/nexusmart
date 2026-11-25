@@ -4,25 +4,28 @@ import React, { Suspense, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button, IconSearch, StateView } from "@/components";
 import { api, ApiError } from "@/lib/api";
-import { formatInt, formatSignedVnd, formatVnd } from "@/lib/format";
+import { formatInt, formatSignedVnd, formatVnIsoDate, formatVnd } from "@/lib/format";
 import { getSalesChannelMeta, type SalesChannelFilter } from "@/lib/salesChannel";
 import { EMPTY_DASH } from "./adminMeta";
 import { AdminStateGate, AdminSuspenseFallback } from "./AdminStateGate";
 import { useAdminContext } from "./AdminShell";
+import { AdminDrawer, SlidingTabBar } from "./AdminUi";
 import { StatusPill } from "./StatusPill";
 import {
   getAccountTypeLabelVi,
   getReconItemStatusMeta,
+  type GwAccountBalance,
   type GwLedgerSummary,
+  type GwReconciliationItem,
   type GwReconciliationReport,
 } from "./adminApiTypes";
 import shared from "./adminShared.module.css";
 import styles from "@/app/(admin)/admin/doi-soat/page.module.css";
 
-const CHANNEL_TABS: Array<{ id: SalesChannelFilter; label: string }> = [
-  { id: "", label: "Tất cả kênh" },
-  { id: "MARKETPLACE", label: "Sàn NexusMart" },
-  { id: "STOREFRONT", label: "Site riêng" },
+const CHANNEL_TABS: Array<{ id: SalesChannelFilter; label: string; dataChannelTab: string }> = [
+  { id: "", label: "Tất cả kênh", dataChannelTab: "ALL" },
+  { id: "MARKETPLACE", label: "Sàn NexusMart", dataChannelTab: "MARKETPLACE" },
+  { id: "STOREFRONT", label: "Site riêng", dataChannelTab: "STOREFRONT" },
 ];
 
 function channelScopeLabel(channel: SalesChannelFilter): string {
@@ -37,23 +40,25 @@ function ledgerUrlFor(channel: SalesChannelFilter): string {
     : "/api/admin/ledger";
 }
 
-function todayDateString(): string {
-  const vnNow = new Date(Date.now() + 7 * 3600_000);
-  return vnNow.toISOString().slice(0, 10);
-}
+type DrawerTarget =
+  | { kind: "account"; account: GwAccountBalance }
+  | { kind: "recon"; item: GwReconciliationItem; runId: string };
 
 export interface AdminReconciliationClientProps {
   initialLedger: GwLedgerSummary | null;
   loadError: string | null;
+  serverNowMs?: number;
 }
 
 function ReconciliationContent({
   initialLedger,
   loadError,
+  serverNowMs,
   initialQuery,
 }: {
   initialLedger: GwLedgerSummary | null;
   loadError: string | null;
+  serverNowMs?: number;
   initialQuery: string;
 }) {
   const router = useRouter();
@@ -66,10 +71,12 @@ function ReconciliationContent({
   const channelReqSeq = useRef(0);
   const [query, setQuery] = useState(initialQuery);
   const [accountTypeFilter, setAccountTypeFilter] = useState<string>("all");
-  const [runDate, setRunDate] = useState<string>(todayDateString);
+  const [runDate, setRunDate] = useState<string>(() => formatVnIsoDate(serverNowMs ?? Date.now()));
+  const [reportDate, setReportDate] = useState<string>("");
   const [running, setRunning] = useState(false);
   const [report, setReport] = useState<GwReconciliationReport | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  const [drawerTarget, setDrawerTarget] = useState<DrawerTarget | null>(null);
 
   const handleSelectChannel = async (nextChannel: SalesChannelFilter) => {
     if (nextChannel === channelFilter && !channelError) return;
@@ -77,6 +84,8 @@ function ReconciliationContent({
     setChannelError(null);
     setRunError(null);
     setReport(null);
+    setReportDate("");
+    setRunning(false);
     setLoadingChannel(true);
     const reqId = ++channelReqSeq.current;
     try {
@@ -116,9 +125,9 @@ function ReconciliationContent({
         <StateView
           kind="error"
           surface="app"
-          title="Không thể tải sổ cái đối soát thanh toán"
+          title="Không thể tải sổ cái đối soát"
           message={loadError}
-          actionLabel="Thử tải lại"
+          actionLabel="Thử lại"
           onAction={() => router.refresh()}
         />
       </div>
@@ -133,18 +142,25 @@ function ReconciliationContent({
   const handleRunReconcile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (running) return;
+    const targetDate = runDate;
+    const activeChannel = channelFilter;
+    const reqId = ++channelReqSeq.current;
+    setLoadingChannel(false);
     setRunning(true);
     setRunError(null);
-    const activeChannel = channelFilter;
     try {
       const [reconRes, freshLedger] = await Promise.all([
         api<GwReconciliationReport>("/api/admin/reconcile", {
           method: "POST",
-          body: activeChannel ? { date: runDate, sales_channel: activeChannel } : { date: runDate },
+          body: activeChannel
+            ? { date: targetDate, sales_channel: activeChannel }
+            : { date: targetDate },
         }),
         api<GwLedgerSummary>(ledgerUrlFor(activeChannel)),
       ]);
+      if (channelReqSeq.current !== reqId) return;
       setReport(reconRes);
+      setReportDate(targetDate);
       setLedger(freshLedger);
       const issues =
         reconRes.missing_local_count +
@@ -153,155 +169,113 @@ function ReconciliationContent({
       const scopeSuffix = activeChannel ? ` (${channelScopeLabel(activeChannel)})` : "";
       showToast(
         issues === 0
-          ? `Đối soát ngày ${runDate}${scopeSuffix} hoàn tất: ${formatInt(reconRes.matched_count)} giao dịch khớp tuyệt đối.`
-          : `Đối soát ngày ${runDate}${scopeSuffix} phát hiện ${formatInt(issues)} mục cần kiểm tra.`
+          ? `Đối soát ${targetDate}${scopeSuffix}: ${formatInt(reconRes.matched_count)} giao dịch khớp.`
+          : `Đối soát ${targetDate}${scopeSuffix}: phát hiện ${formatInt(issues)} mục lệch.`
       );
     } catch (err) {
+      if (channelReqSeq.current !== reqId) return;
       const msg = err instanceof ApiError ? err.message : "Không thể chạy phiên đối soát lúc này.";
       setRunError(msg);
       showToast(msg);
     } finally {
-      setRunning(false);
+      if (channelReqSeq.current === reqId) {
+        setRunning(false);
+      }
     }
   };
 
   const activeScopeLabel = channelScopeLabel(channelFilter);
-  const subtitle = isBalanced
-    ? `Sổ cái ghi kép (${activeScopeLabel}) cân đối tuyệt đối (Tổng Nợ = Tổng Có = ${formatVnd(totalCredits)}) trên ${formatInt(ledger?.accounts.length ?? 0)} tài khoản.`
-    : `Phát hiện chênh lệch sổ cái (${activeScopeLabel}) ${formatSignedVnd(diff)}: chạy đối soát theo ngày để kiểm tra giao dịch lệch.`;
+  const reportIssuesCount = report
+    ? report.amount_mismatch_count + report.missing_local_count + report.missing_provider_count
+    : 0;
 
   return (
     <div className={shared.page}>
       <header className={shared.titleRow}>
         <div className={shared.titleBlock}>
-          <h1 className={shared.pageTitle}>Đối soát thanh toán & sổ cái</h1>
-          <p className={shared.pageSubtitle}>{subtitle}</p>
+          <h1 className={shared.pageTitle}>Đối soát &amp; sổ cái</h1>
         </div>
+        <form className={styles.runFormInline} onSubmit={handleRunReconcile}>
+          <label htmlFor="recon-date" className="sr-only">
+            Ngày đối soát
+          </label>
+          <input
+            id="recon-date"
+            type="date"
+            className={shared.toolbarDate}
+            value={runDate}
+            onChange={(e) => setRunDate(e.target.value)}
+            aria-label="Chọn ngày đối soát"
+          />
+          <Button type="submit" variant="primary" size="sm" shape="app" loading={running}>
+            Chạy đối soát ngay
+          </Button>
+        </form>
       </header>
 
-      <div className={shared.tabsBar}>
-        <div
-          className={shared.tabList}
-          role="tablist"
-          aria-label="Lọc sổ cái và đối soát theo kênh bán"
-        >
-          {CHANNEL_TABS.map((tab) => {
-            const active = channelFilter === tab.id;
-            return (
-              <button
-                key={tab.id || "ALL"}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                data-channel-tab={tab.id || "ALL"}
-                className={`${shared.tabBtn} ${active ? shared.tabBtnActive : ""}`}
-                onClick={() => void handleSelectChannel(tab.id)}
-              >
-                {tab.label}
-              </button>
-            );
-          })}
-        </div>
-        <div className={shared.tabsMeta}>
+      <SlidingTabBar
+        tabs={CHANNEL_TABS}
+        activeId={channelFilter}
+        onChange={(id) => void handleSelectChannel(id)}
+        ariaLabel="Lọc sổ cái và đối soát theo kênh bán"
+        rightSlot={
           <span className={shared.resultCount}>
-            {loadingChannel ? "Đang tải sổ cái..." : `Phạm vi: ${activeScopeLabel}`}
+            {loadingChannel ? "Đang tải..." : `Phạm vi: ${activeScopeLabel}`}
           </span>
-        </div>
-      </div>
+        }
+      />
 
-      {channelError && (
-        <p className={shared.validationError} style={{ marginTop: 10 }}>
-          {channelError}
-        </p>
-      )}
+      {channelError && <p className={shared.validationError}>{channelError}</p>}
+      {runError && <p className={shared.validationError}>{runError}</p>}
 
-      <section
-        className={`${shared.kpiStrip} ${styles.kpiSpacer}`}
-        aria-label="Tổng hợp sổ cái ghi kép"
-      >
+      <section className={shared.kpiStrip} aria-label="Tổng hợp sổ cái ghi kép">
         <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Tổng Ghi có sổ cái</span>
+          <span className={shared.kpiLabel}>Tổng Ghi có</span>
           <span className={shared.kpiValue}>{formatVnd(totalCredits)}</span>
-          <span className={shared.kpiCaption}>Đơn vị số nguyên VND</span>
+          <span className={shared.kpiCaption}>Số nguyên VND</span>
         </div>
 
         <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Tổng Ghi nợ sổ cái</span>
+          <span className={shared.kpiLabel}>Tổng Ghi nợ</span>
           <span className={shared.kpiValue}>{formatVnd(totalDebits)}</span>
-          <span className={shared.kpiCaption}>Đối ứng bút toán ghi kép</span>
+          <span className={shared.kpiCaption}>Đối ứng ghi kép</span>
         </div>
 
         <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Chênh lệch Nợ - Có</span>
+          <span className={shared.kpiLabel}>Chênh lệch Nợ và Có</span>
           <span
             className={`${shared.kpiValue} ${!isBalanced ? shared.kpiValueNegative : shared.kpiValuePositive}`}
           >
             {isBalanced ? "0₫" : formatSignedVnd(diff)}
           </span>
           <span className={shared.kpiCaption}>
-            {isBalanced ? "Cân đối tuyệt đối" : "Cần kiểm tra lệch bút toán"}
+            {isBalanced ? "Cân đối tuyệt đối" : "Cần kiểm tra lệch"}
           </span>
         </div>
 
         <div className={shared.kpiCell}>
           <span className={shared.kpiLabel}>Tài khoản sổ cái</span>
           <span className={shared.kpiValue}>{formatInt(ledger?.accounts.length ?? 0)}</span>
-          <span className={shared.kpiCaption}>Escrow, gian hàng & doanh thu sàn</span>
+          <span className={shared.kpiCaption}>Escrow, gian hàng &amp; sàn</span>
         </div>
       </section>
 
-      <section className={shared.panel} aria-labelledby="run-recon-heading">
-        <div className={shared.panelHeader}>
-          <h2 id="run-recon-heading" className={shared.panelTitle}>
-            Chạy đối soát phiên giao dịch theo ngày
-          </h2>
-          <span className={shared.panelMeta}>
-            Đối chiếu bản ghi thanh toán nội bộ với sao kê cổng thanh toán
-          </span>
-        </div>
-
-        <form className={shared.toolbar} style={{ marginTop: 8 }} onSubmit={handleRunReconcile}>
-          <div className={shared.toolbarLeft}>
-            <label htmlFor="recon-date" className={shared.fieldLabel}>
-              Ngày đối soát
-            </label>
-            <input
-              id="recon-date"
-              type="date"
-              className={shared.toolbarSelect}
-              value={runDate}
-              onChange={(e) => setRunDate(e.target.value)}
-              aria-label="Chọn ngày đối soát"
-            />
-            <Button type="submit" variant="primary" size="sm" shape="app" disabled={running}>
-              {running ? "Đang đối soát..." : "Chạy đối soát ngay"}
-            </Button>
-          </div>
-          {report && (
-            <span className={shared.resultCount}>
-              Mã phiên: {report.run_id.slice(0, 12)} · Khớp {formatInt(report.matched_count)} · Lệch{" "}
-              {formatInt(
-                report.amount_mismatch_count +
-                  report.missing_local_count +
-                  report.missing_provider_count
-              )}
+      {report && (
+        <section className={shared.panel} aria-labelledby="recon-result-heading">
+          <div className={shared.panelHeader}>
+            <h2 id="recon-result-heading" className={shared.panelTitle}>
+              Kết quả đối soát {reportDate}
+            </h2>
+            <span className={shared.panelMeta}>
+              Phiên {report.run_id.slice(0, 12)}, khớp {formatInt(report.matched_count)}, lệch{" "}
+              {formatInt(reportIssuesCount)}
             </span>
-          )}
-        </form>
+          </div>
 
-        {runError && (
-          <p className={shared.validationError} style={{ marginTop: 8 }}>
-            {runError}
-          </p>
-        )}
-
-        {report && (
-          <div style={{ marginTop: 14 }}>
-            {report.items.length === 0 ? (
-              <p className={shared.emptyRow}>
-                Không có giao dịch nào phát sinh trong ngày {runDate} để đối soát.
-              </p>
-            ) : (
+          {report.items.length === 0 ? (
+            <p className={shared.emptyRow}>Không có giao dịch phát sinh ngày {reportDate}.</p>
+          ) : (
+            <>
               <div className={shared.tableWrap}>
                 <table className={shared.dataTable}>
                   <thead>
@@ -309,8 +283,8 @@ function ReconciliationContent({
                       <th>Mã giao dịch nội bộ</th>
                       <th>Mã tham chiếu cổng</th>
                       <th>Kênh bán</th>
-                      <th className={shared.colNum}>Số tiền nội bộ</th>
-                      <th className={shared.colNum}>Số tiền sao kê</th>
+                      <th className={shared.colNum}>Nội bộ</th>
+                      <th className={shared.colNum}>Sao kê</th>
                       <th>Trạng thái</th>
                       <th>Ghi chú</th>
                     </tr>
@@ -320,8 +294,25 @@ function ReconciliationContent({
                       const meta = getReconItemStatusMeta(item.status);
                       const channelMeta = getSalesChannelMeta(item.sales_channel);
                       return (
-                        <tr key={`${item.payment_id}-${item.provider_tx_id}-${idx}`}>
-                          <td className={shared.cellPrimary}>{item.payment_id || EMPTY_DASH}</td>
+                        <tr
+                          key={`${item.payment_id}-${item.provider_tx_id}-${idx}`}
+                          className={shared.rowInteractive}
+                          onClick={() =>
+                            setDrawerTarget({ kind: "recon", item, runId: report.run_id })
+                          }
+                        >
+                          <td className={shared.cellPrimary}>
+                            <button
+                              type="button"
+                              className={shared.rowTriggerBtn}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDrawerTarget({ kind: "recon", item, runId: report.run_id });
+                              }}
+                            >
+                              {item.payment_id || EMPTY_DASH}
+                            </button>
+                          </td>
                           <td>{item.provider_tx_id || EMPTY_DASH}</td>
                           <td>
                             <span
@@ -343,10 +334,50 @@ function ReconciliationContent({
                   </tbody>
                 </table>
               </div>
-            )}
-          </div>
-        )}
-      </section>
+
+              <div className={shared.mobileList}>
+                {report.items.map((item, idx) => {
+                  const meta = getReconItemStatusMeta(item.status);
+                  const channelMeta = getSalesChannelMeta(item.sales_channel);
+                  const itemDiff = item.local_amount_vnd - item.provider_amount_vnd;
+                  return (
+                    <div
+                      key={`${item.payment_id}-${item.provider_tx_id}-${idx}`}
+                      className={shared.mobileItem}
+                    >
+                      <button
+                        type="button"
+                        className={shared.mobileItemBtn}
+                        onClick={() =>
+                          setDrawerTarget({ kind: "recon", item, runId: report.run_id })
+                        }
+                      >
+                        <span className={shared.mobileLine1}>
+                          <span className={shared.mobileIdentity}>
+                            {item.payment_id || item.provider_tx_id || EMPTY_DASH}
+                          </span>
+                          <span
+                            className={`${shared.mobileMetric} ${itemDiff !== 0 ? shared.numNegative : ""}`}
+                          >
+                            {formatVnd(item.local_amount_vnd)}
+                          </span>
+                        </span>
+                        <span className={shared.mobileLine2}>
+                          <span className={shared.mobileMetaText}>
+                            {channelMeta.label}, sao kê {formatVnd(item.provider_amount_vnd)}
+                            {itemDiff !== 0 ? ` (${formatSignedVnd(itemDiff)})` : ""}
+                          </span>
+                          <StatusPill label={meta.label} tone={meta.tone} />
+                        </span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </section>
+      )}
 
       <div className={shared.toolbar}>
         <div className={shared.toolbarLeft}>
@@ -384,14 +415,14 @@ function ReconciliationContent({
       </div>
 
       {filteredAccounts.length === 0 ? (
-        <p className={shared.emptyRow}>Chưa có tài khoản sổ cái nào khớp với bộ lọc hiện tại.</p>
+        <p className={shared.emptyRow}>Chưa có tài khoản sổ cái khớp bộ lọc.</p>
       ) : (
         <>
           <div className={shared.tableWrap}>
             <table className={shared.dataTable}>
               <thead>
                 <tr>
-                  <th>Mã tài khoản sổ cái</th>
+                  <th>Mã tài khoản</th>
                   <th>Nhóm tài khoản</th>
                   <th className={shared.colNum}>Tổng Ghi nợ</th>
                   <th className={shared.colNum}>Tổng Ghi có</th>
@@ -399,17 +430,37 @@ function ReconciliationContent({
                 </tr>
               </thead>
               <tbody>
-                {filteredAccounts.map((acc) => (
-                  <tr key={acc.account_code}>
-                    <td className={shared.cellPrimary}>{acc.account_code}</td>
-                    <td>{getAccountTypeLabelVi(acc.account_type)}</td>
-                    <td className={shared.colNum}>{formatVnd(acc.debit_total_vnd)}</td>
-                    <td className={shared.colNum}>{formatVnd(acc.credit_total_vnd)}</td>
-                    <td className={shared.colNum}>
-                      <strong>{formatVnd(acc.balance_vnd)}</strong>
-                    </td>
-                  </tr>
-                ))}
+                {filteredAccounts.map((acc) => {
+                  const selected =
+                    drawerTarget?.kind === "account" &&
+                    drawerTarget.account.account_code === acc.account_code;
+                  return (
+                    <tr
+                      key={acc.account_code}
+                      className={`${shared.rowInteractive} ${selected ? shared.rowSelected : ""}`}
+                      onClick={() => setDrawerTarget({ kind: "account", account: acc })}
+                    >
+                      <td className={shared.cellPrimary}>
+                        <button
+                          type="button"
+                          className={shared.rowTriggerBtn}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDrawerTarget({ kind: "account", account: acc });
+                          }}
+                        >
+                          {acc.account_code}
+                        </button>
+                      </td>
+                      <td>{getAccountTypeLabelVi(acc.account_type)}</td>
+                      <td className={shared.colNum}>{formatVnd(acc.debit_total_vnd)}</td>
+                      <td className={shared.colNum}>{formatVnd(acc.credit_total_vnd)}</td>
+                      <td className={shared.colNum}>
+                        <strong>{formatVnd(acc.balance_vnd)}</strong>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -417,41 +468,177 @@ function ReconciliationContent({
           <div className={shared.mobileList}>
             {filteredAccounts.map((acc) => (
               <div key={acc.account_code} className={shared.mobileItem}>
-                <div className={shared.mobileLine1}>
-                  <span className={shared.mobileIdentity}>{acc.account_code}</span>
-                  <span className={shared.mobileMetric}>{formatVnd(acc.balance_vnd)}</span>
-                </div>
-                <div className={shared.mobileLine2}>
-                  <span className={shared.mobileMetaText}>
-                    {getAccountTypeLabelVi(acc.account_type)} · Nợ {formatVnd(acc.debit_total_vnd)}{" "}
-                    · Có {formatVnd(acc.credit_total_vnd)}
+                <button
+                  type="button"
+                  className={shared.mobileItemBtn}
+                  onClick={() => setDrawerTarget({ kind: "account", account: acc })}
+                >
+                  <span className={shared.mobileLine1}>
+                    <span className={shared.mobileIdentity}>{acc.account_code}</span>
+                    <span className={shared.mobileMetric}>{formatVnd(acc.balance_vnd)}</span>
                   </span>
-                </div>
+                  <span className={shared.mobileLine2}>
+                    <span className={shared.mobileMetaText}>
+                      {getAccountTypeLabelVi(acc.account_type)}, Nợ {formatVnd(acc.debit_total_vnd)}
+                      , Có {formatVnd(acc.credit_total_vnd)}
+                    </span>
+                  </span>
+                </button>
               </div>
             ))}
           </div>
         </>
       )}
+
+      <AdminDrawer
+        open={Boolean(drawerTarget)}
+        onClose={() => setDrawerTarget(null)}
+        title={
+          drawerTarget?.kind === "account"
+            ? drawerTarget.account.account_code
+            : drawerTarget?.kind === "recon"
+              ? drawerTarget.item.payment_id || "Chi tiết đối soát"
+              : ""
+        }
+        subtitle={
+          drawerTarget?.kind === "account"
+            ? getAccountTypeLabelVi(drawerTarget.account.account_type)
+            : drawerTarget?.kind === "recon"
+              ? `Phiên ${drawerTarget.runId.slice(0, 12)}`
+              : undefined
+        }
+        headerBadge={
+          drawerTarget?.kind === "recon" ? (
+            <StatusPill
+              label={getReconItemStatusMeta(drawerTarget.item.status).label}
+              tone={getReconItemStatusMeta(drawerTarget.item.status).tone}
+            />
+          ) : drawerTarget?.kind === "account" ? (
+            <StatusPill
+              label={isBalanced ? "Cân đối" : "Có chênh lệch"}
+              tone={isBalanced ? "positive" : "negative"}
+            />
+          ) : undefined
+        }
+      >
+        {drawerTarget?.kind === "account" && (
+          <div className={shared.detailWell}>
+            <div className={shared.detailGrid}>
+              <div className={shared.detailField}>
+                <span className={shared.detailKey}>Mã tài khoản</span>
+                <span className={`${shared.detailVal} num`}>
+                  {drawerTarget.account.account_code}
+                </span>
+              </div>
+              <div className={shared.detailField}>
+                <span className={shared.detailKey}>Nhóm tài khoản</span>
+                <span className={shared.detailVal}>
+                  {getAccountTypeLabelVi(drawerTarget.account.account_type)}
+                </span>
+              </div>
+              <div className={shared.detailField}>
+                <span className={shared.detailKey}>Tổng Ghi nợ</span>
+                <span className={`${shared.detailVal} num`}>
+                  {formatVnd(drawerTarget.account.debit_total_vnd)}
+                </span>
+              </div>
+              <div className={shared.detailField}>
+                <span className={shared.detailKey}>Tổng Ghi có</span>
+                <span className={`${shared.detailVal} num`}>
+                  {formatVnd(drawerTarget.account.credit_total_vnd)}
+                </span>
+              </div>
+              <div className={shared.detailField}>
+                <span className={shared.detailKey}>Số dư ròng</span>
+                <span className={`${shared.detailVal} num`}>
+                  {formatVnd(drawerTarget.account.balance_vnd)}
+                </span>
+              </div>
+              <div className={shared.detailField}>
+                <span className={shared.detailKey}>Phạm vi lọc</span>
+                <span className={shared.detailValPlain}>{activeScopeLabel}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {drawerTarget?.kind === "recon" && (
+          <div className={shared.detailWell}>
+            <div className={shared.detailGrid}>
+              <div className={shared.detailField}>
+                <span className={shared.detailKey}>Mã giao dịch nội bộ</span>
+                <span className={`${shared.detailVal} num`}>
+                  {drawerTarget.item.payment_id || EMPTY_DASH}
+                </span>
+              </div>
+              <div className={shared.detailField}>
+                <span className={shared.detailKey}>Mã tham chiếu cổng</span>
+                <span className={`${shared.detailVal} num`}>
+                  {drawerTarget.item.provider_tx_id || EMPTY_DASH}
+                </span>
+              </div>
+              <div className={shared.detailField}>
+                <span className={shared.detailKey}>Số tiền nội bộ</span>
+                <span className={`${shared.detailVal} num`}>
+                  {formatVnd(drawerTarget.item.local_amount_vnd)}
+                </span>
+              </div>
+              <div className={shared.detailField}>
+                <span className={shared.detailKey}>Số tiền sao kê</span>
+                <span className={`${shared.detailVal} num`}>
+                  {formatVnd(drawerTarget.item.provider_amount_vnd)}
+                </span>
+              </div>
+              <div className={shared.detailField}>
+                <span className={shared.detailKey}>Chênh lệch</span>
+                <span
+                  className={`${shared.detailVal} num ${
+                    drawerTarget.item.local_amount_vnd !== drawerTarget.item.provider_amount_vnd
+                      ? shared.numNegative
+                      : shared.numPositive
+                  }`}
+                >
+                  {formatSignedVnd(
+                    drawerTarget.item.local_amount_vnd - drawerTarget.item.provider_amount_vnd
+                  )}
+                </span>
+              </div>
+              <div className={shared.detailField}>
+                <span className={shared.detailKey}>Kênh bán</span>
+                <span className={shared.detailValPlain}>
+                  {getSalesChannelMeta(drawerTarget.item.sales_channel).label}
+                </span>
+              </div>
+              <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
+                <span className={shared.detailKey}>Ghi chú</span>
+                <span className={shared.detailValPlain}>
+                  {drawerTarget.item.note || EMPTY_DASH}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+      </AdminDrawer>
     </div>
   );
 }
 
 export function AdminReconciliationClient(props: AdminReconciliationClientProps) {
   return (
-    <Suspense fallback={<AdminSuspenseFallback title="Đối soát thanh toán" />}>
+    <Suspense fallback={<AdminSuspenseFallback title="Đối soát & sổ cái" />}>
       <AdminStateGate
-        title="Đối soát thanh toán"
-        subtitle="Đối chiếu số thu giữa các cổng thanh toán với sổ cái ghi kép nội bộ."
+        title="Đối soát & sổ cái"
         emptyTitle="Chưa có dữ liệu đối soát"
-        emptyMessage="Sổ cái sẽ hiển thị số liệu ngay khi hệ thống phát sinh giao dịch thanh toán."
-        errorTitle="Không thể tải sổ đối soát thanh toán"
-        errorMessage="Kết nối tới dịch vụ sổ cái thanh toán tạm gián đoạn. Vui lòng thử tải lại."
+        emptyMessage="Sổ cái sẽ hiển thị ngay khi phát sinh giao dịch."
+        errorTitle="Không thể tải sổ đối soát"
+        errorMessage="Dịch vụ sổ cái thanh toán tạm gián đoạn. Vui lòng thử lại."
         loadingRows={5}
       >
         {({ initialQuery }) => (
           <ReconciliationContent
             initialLedger={props.initialLedger}
             loadError={props.loadError}
+            serverNowMs={props.serverNowMs}
             initialQuery={initialQuery}
           />
         )}

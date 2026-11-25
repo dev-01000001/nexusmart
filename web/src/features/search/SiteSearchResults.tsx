@@ -3,7 +3,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { StateView } from "@/components";
+import { IconClose, IconFilter, StateView } from "@/components";
+import { useModalFocusTrap } from "@/components/modalFocus";
 import { formatDiscountPercent, formatInt, formatVnd } from "@/lib/format";
 import { searchProducts, suggestSpelling } from "@/lib/search";
 import { SiteSearchBar } from "./SiteSearchBar";
@@ -80,6 +81,10 @@ export function SiteSearchResults({
   const [priceInputError, setPriceInputError] = useState<string | null>(null);
   const [page, setPage] = useState(() => Math.max(1, Math.trunc(initialPage || 1)));
   const [retryTick, setRetryTick] = useState(0);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [sheetClosing, setSheetClosing] = useState(false);
+  const filterSheetRef = useRef<HTMLElement | null>(null);
+  const sheetCloseTimerRef = useRef<number | null>(null);
 
   const [result, setResult] = useState<NormalizedSearchResponse>(() => {
     if (Array.isArray(fallbackProducts)) {
@@ -109,13 +114,12 @@ export function SiteSearchResults({
   const [hasLoadedOnce, setHasLoadedOnce] = useState(Array.isArray(fallbackProducts));
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Sync incoming query prop changes (for example when header SiteSearchBar navigates).
   useEffect(() => {
     setQuery(initialQuery);
     setPage(1);
   }, [initialQuery]);
 
-  // Keep browser URL synchronized with active filters without jumping scroll position.
+  // Preserve scroll position on every filter/page change
   useEffect(() => {
     if (!hasMountedRef.current) {
       hasMountedRef.current = true;
@@ -132,7 +136,39 @@ export function SiteSearchResults({
     router.replace(nextUrl, { scroll: false });
   }, [query, category, minPrice, maxPrice, sort, page, router]);
 
-  // Fetch from BFF GET /api/search with seamless client-side fallback when fallbackProducts exists.
+  const openSheet = useCallback(() => {
+    if (sheetCloseTimerRef.current !== null) {
+      window.clearTimeout(sheetCloseTimerRef.current);
+      sheetCloseTimerRef.current = null;
+    }
+    setSheetClosing(false);
+    setSheetOpen(true);
+  }, []);
+
+  const closeSheet = useCallback(() => {
+    if (!sheetOpen || sheetClosing) return;
+    setSheetClosing(true);
+    sheetCloseTimerRef.current = window.setTimeout(() => {
+      sheetCloseTimerRef.current = null;
+      setSheetOpen(false);
+      setSheetClosing(false);
+    }, 180);
+  }, [sheetOpen, sheetClosing]);
+
+  useEffect(() => {
+    return () => {
+      if (sheetCloseTimerRef.current !== null) {
+        window.clearTimeout(sheetCloseTimerRef.current);
+      }
+    };
+  }, []);
+
+  useModalFocusTrap({
+    open: sheetOpen && !sheetClosing,
+    containerRef: filterSheetRef,
+    onEscape: closeSheet,
+  });
+
   useEffect(() => {
     const controller = new AbortController();
     const params = {
@@ -186,7 +222,7 @@ export function SiteSearchResults({
           setErrorMessage(null);
           setHasLoadedOnce(true);
         } else {
-          setErrorMessage("Không thể kết nối dịch vụ tìm kiếm lúc này. Bạn vui lòng thử tải lại.");
+          setErrorMessage("Không thể kết nối tìm kiếm lúc này.");
           setHasLoadedOnce(true);
         }
       } finally {
@@ -231,13 +267,11 @@ export function SiteSearchResults({
   const safePage = Math.min(page, totalPages);
   const pageNumbers = useMemo(() => buildPageNumbers(safePage, totalPages), [safePage, totalPages]);
 
-  const hasActiveFilters = Boolean(
-    query.trim() ||
-    category ||
-    minPrice !== undefined ||
-    maxPrice !== undefined ||
-    sort !== "relevance"
-  );
+  const sheetFilterCount =
+    (category ? 1 : 0) + (minPrice !== undefined || maxPrice !== undefined ? 1 : 0);
+  const activeFilterCount = sheetFilterCount + (sort !== "relevance" ? 1 : 0);
+
+  const hasActiveFilters = Boolean(query.trim() || activeFilterCount > 0);
 
   const handleSearchNavigate = useCallback((nextQ: string) => {
     setQuery(nextQ);
@@ -250,18 +284,18 @@ export function SiteSearchResults({
     const rawMax = maxPriceInput.replace(/[.\s,]/g, "").trim();
 
     if (rawMin && !/^\d+$/.test(rawMin)) {
-      setPriceInputError("Giá tối thiểu phải là số nguyên không âm (VND).");
+      setPriceInputError("Giá tối thiểu phải là số nguyên VND.");
       return;
     }
     if (rawMax && !/^\d+$/.test(rawMax)) {
-      setPriceInputError("Giá tối đa phải là số nguyên không âm (VND).");
+      setPriceInputError("Giá tối đa phải là số nguyên VND.");
       return;
     }
 
     const nextMin = parseNonNegativeInt(rawMin);
     const nextMax = parseNonNegativeInt(rawMax);
     if (nextMin !== undefined && nextMax !== undefined && nextMin > nextMax) {
-      setPriceInputError("Giá tối thiểu cần nhỏ hơn hoặc bằng giá tối đa.");
+      setPriceInputError("Giá tối thiểu phải nhỏ hơn hoặc bằng giá tối đa.");
       return;
     }
 
@@ -277,6 +311,16 @@ export function SiteSearchResults({
     setMaxPrice(presetMax);
     setMinPriceInput(presetMin !== undefined ? String(presetMin) : "");
     setMaxPriceInput(presetMax !== undefined ? String(presetMax) : "");
+    setPage(1);
+  };
+
+  const handleResetSheetFilters = () => {
+    setCategory("");
+    setMinPrice(undefined);
+    setMaxPrice(undefined);
+    setMinPriceInput("");
+    setMaxPriceInput("");
+    setPriceInputError(null);
     setPage(1);
   };
 
@@ -299,20 +343,22 @@ export function SiteSearchResults({
     return found?.id ?? "";
   }, [minPrice, maxPrice]);
 
+  const gridClass =
+    result.items.length === 1
+      ? styles.productGridSingle
+      : result.items.length === 2
+        ? styles.productGridTwo
+        : result.items.length === 3
+          ? styles.productGridThree
+          : styles.productGrid;
+
   return (
     <div className={styles.page}>
       <section className={styles.headerBand}>
         <div className={styles.headerCopy}>
           <h1 className={styles.pageTitle}>
-            {query.trim() ? `Kết quả cho "${query.trim()}"` : `Tìm kiếm tại ${brandName}`}
+            {query.trim() ? `Kết quả cho “${query.trim()}”` : `Tìm kiếm tại ${brandName}`}
           </h1>
-          <p className={styles.pageLead}>
-            {loading && !hasLoadedOnce
-              ? `Đang tìm kiếm sản phẩm phù hợp tại ${brandName}.`
-              : query.trim()
-                ? `Tìm thấy ${formatInt(result.total)} sản phẩm đang bán tại ${brandName}.`
-                : `Khám phá ${formatInt(result.total)} sản phẩm chính hãng tại ${brandName}. Lọc nhanh theo danh mục và mức giá.`}
-          </p>
         </div>
 
         <div className={styles.searchBarWrap}>
@@ -320,150 +366,117 @@ export function SiteSearchResults({
             brandName={brandName}
             shopId={shopId}
             initialQuery={query}
-            placeholder={`Tìm tên sản phẩm, chất liệu hoặc kiểu dáng tại ${brandName}...`}
+            placeholder={`Tìm tên mẫu, chất liệu tại ${brandName}...`}
             onNavigate={handleSearchNavigate}
           />
         </div>
       </section>
 
-      <section className={styles.controlsBand} aria-label="Bộ lọc và sắp xếp kết quả">
-        {categoryFacets.length > 0 && (
-          <div className={styles.filterSection}>
-            <span className={styles.filterGroupLabel}>Danh mục</span>
-            <div className={styles.chipRow} role="group" aria-label="Lọc theo danh mục">
-              <button
-                type="button"
-                className={`${styles.chip} ${category === "" ? styles.chipActive : ""}`}
-                onClick={() => {
-                  setCategory("");
-                  setPage(1);
-                }}
-              >
-                Tất cả danh mục
-              </button>
-              {categoryFacets.map((facet) => (
-                <button
-                  key={facet.value}
-                  type="button"
-                  className={`${styles.chip} ${category === facet.value ? styles.chipActive : ""}`}
-                  onClick={() => {
-                    setCategory(facet.value);
-                    setPage(1);
-                  }}
-                >
-                  <span>{facet.label}</span>
-                  {facet.count > 0 && (
-                    <span className={`${styles.chipCount} num`}>({formatInt(facet.count)})</span>
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className={styles.controlsBottomRow}>
-          <div className={styles.priceBlock}>
-            <span className={styles.filterGroupLabel}>Khoảng giá</span>
-            <div className={styles.priceControlsWrap}>
-              <div className={styles.chipRow} role="group" aria-label="Chọn nhanh khoảng giá">
-                {SEARCH_PRICE_PRESETS.map((preset) => (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    className={`${styles.chip} ${activePresetId === preset.id ? styles.chipActive : ""}`}
-                    onClick={() => handleSelectPricePreset(preset.minPrice, preset.maxPrice)}
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-
-              <form className={styles.priceForm} onSubmit={handleApplyPrice} noValidate>
-                <label htmlFor="search-min-price" className="sr-only">
-                  Giá từ (VND)
-                </label>
-                <input
-                  id="search-min-price"
-                  type="text"
-                  inputMode="numeric"
-                  className={`${styles.priceInput} num`}
-                  placeholder="Từ (VND)"
-                  value={minPriceInput}
-                  onChange={(e) => setMinPriceInput(e.target.value)}
-                />
-                <span className={styles.priceRangeSep} aria-hidden="true">
-                  -
-                </span>
-                <label htmlFor="search-max-price" className="sr-only">
-                  Giá đến (VND)
-                </label>
-                <input
-                  id="search-max-price"
-                  type="text"
-                  inputMode="numeric"
-                  className={`${styles.priceInput} num`}
-                  placeholder="Đến (VND)"
-                  value={maxPriceInput}
-                  onChange={(e) => setMaxPriceInput(e.target.value)}
-                />
-                <button type="submit" className={styles.applyPriceBtn}>
-                  Áp dụng
-                </button>
-              </form>
-            </div>
-            {priceInputError && (
-              <p className={styles.priceError} role="alert">
-                {priceInputError}
-              </p>
+      <section className={styles.toolbarBand} aria-label="Bộ lọc và sắp xếp">
+        <div className={styles.toolbarLeft}>
+          <button
+            type="button"
+            className={styles.filterSheetBtn}
+            aria-expanded={sheetOpen}
+            onClick={openSheet}
+          >
+            <IconFilter size={15} />
+            <span>Bộ lọc</span>
+            {activeFilterCount > 0 && (
+              <span className={`${styles.filterBadge} num`}>{activeFilterCount}</span>
             )}
-          </div>
+          </button>
 
-          <div className={styles.sortBlock}>
-            <label htmlFor="site-search-sort" className={styles.filterGroupLabel}>
-              Sắp xếp
-            </label>
-            <select
-              id="site-search-sort"
-              className={styles.sortSelect}
-              value={sort}
-              onChange={(e) => {
-                setSort(normalizeSearchSort(e.target.value));
+          <span className={`${styles.resultCount} num`} aria-live="polite">
+            {loading && !hasLoadedOnce ? "Đang tìm..." : `${formatInt(result.total)} kết quả`}
+          </span>
+        </div>
+
+        <div className={styles.toolbarRight}>
+          <label htmlFor="site-search-sort" className="sr-only">
+            Sắp xếp
+          </label>
+          <select
+            id="site-search-sort"
+            className={styles.sortSelect}
+            value={sort}
+            onChange={(e) => {
+              setSort(normalizeSearchSort(e.target.value));
+              setPage(1);
+            }}
+          >
+            {VALID_SEARCH_SORTS.map((key) => (
+              <option key={key} value={key}>
+                {SEARCH_SORT_LABELS[key]}
+              </option>
+            ))}
+          </select>
+        </div>
+      </section>
+
+      {hasActiveFilters && (
+        <div className={styles.activeChipRow}>
+          {query.trim() && (
+            <button
+              type="button"
+              className={styles.activeChip}
+              aria-label={`Bỏ lọc từ khóa ${query.trim()}`}
+              onClick={() => {
+                setQuery("");
                 setPage(1);
               }}
             >
-              {VALID_SEARCH_SORTS.map((key) => (
-                <option key={key} value={key}>
-                  {SEARCH_SORT_LABELS[key]}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {hasActiveFilters && (
-          <div className={styles.activeSummaryRow}>
-            <div className={styles.activeTagList}>
-              {category && (
-                <span className={styles.activeTag}>
-                  Danh mục: {categoryLabelBySlug.get(category) ?? category}
-                </span>
-              )}
-              {minPrice !== undefined && (
-                <span className={`${styles.activeTag} num`}>Từ {formatVnd(minPrice)}</span>
-              )}
-              {maxPrice !== undefined && (
-                <span className={`${styles.activeTag} num`}>Đến {formatVnd(maxPrice)}</span>
-              )}
-              {sort !== "relevance" && (
-                <span className={styles.activeTag}>{SEARCH_SORT_LABELS[sort]}</span>
-              )}
-            </div>
-            <button type="button" className={styles.resetFiltersBtn} onClick={handleResetAll}>
-              Xóa bộ lọc
+              <span>“{query.trim()}”</span>
+              <IconClose size={13} />
             </button>
-          </div>
-        )}
-      </section>
+          )}
+          {category && (
+            <button
+              type="button"
+              className={styles.activeChip}
+              aria-label={`Bỏ lọc danh mục ${categoryLabelBySlug.get(category) ?? category}`}
+              onClick={() => {
+                setCategory("");
+                setPage(1);
+              }}
+            >
+              <span>{categoryLabelBySlug.get(category) ?? category}</span>
+              <IconClose size={13} />
+            </button>
+          )}
+          {(minPrice !== undefined || maxPrice !== undefined) && (
+            <button
+              type="button"
+              className={`${styles.activeChip} num`}
+              aria-label={`Bỏ lọc khoảng giá ${minPrice !== undefined ? formatVnd(minPrice) : "0₫"} đến ${maxPrice !== undefined ? formatVnd(maxPrice) : "không giới hạn"}`}
+              onClick={() => handleSelectPricePreset(undefined, undefined)}
+            >
+              <span>
+                {minPrice !== undefined ? formatVnd(minPrice) : "0₫"} đến{" "}
+                {maxPrice !== undefined ? formatVnd(maxPrice) : "∞"}
+              </span>
+              <IconClose size={13} />
+            </button>
+          )}
+          {sort !== "relevance" && (
+            <button
+              type="button"
+              className={styles.activeChip}
+              aria-label={`Bỏ lọc sắp xếp ${SEARCH_SORT_LABELS[sort]}`}
+              onClick={() => {
+                setSort("relevance");
+                setPage(1);
+              }}
+            >
+              <span>{SEARCH_SORT_LABELS[sort]}</span>
+              <IconClose size={13} />
+            </button>
+          )}
+          <button type="button" className={styles.resetFiltersBtn} onClick={handleResetAll}>
+            Xóa tất cả
+          </button>
+        </div>
+      )}
 
       {spellingSuggestion && (
         <p className={styles.spellingBanner} role="status">
@@ -481,88 +494,118 @@ export function SiteSearchResults({
 
       <section className={styles.resultsSection} aria-busy={loading}>
         {loading && !hasLoadedOnce ? (
-          <StateView kind="loading" title="Đang tải kết quả tìm kiếm..." rows={4} />
+          <StateView
+            kind="loading"
+            surface="shop"
+            skeletonVariant="cards"
+            title="Đang tải kết quả..."
+            rows={4}
+          />
         ) : errorMessage ? (
           <StateView
             kind="error"
-            title="Chưa thể tải kết quả tìm kiếm"
+            title="Chưa tải được kết quả"
             message={errorMessage}
             actionLabel="Thử lại"
             onAction={() => setRetryTick((t) => t + 1)}
           />
         ) : result.items.length === 0 ? (
           <div className={styles.emptyPanel}>
-            <h2 className={styles.emptyTitle}>Chưa tìm thấy sản phẩm phù hợp</h2>
-            <p className={styles.emptyBody}>
-              Hãy thử từ khóa ngắn gọn hơn hoặc điều chỉnh lại khoảng giá và danh mục để xem thêm
-              sản phẩm từ {brandName}.
-            </p>
+            <h2 className={styles.emptyTitle}>Không có sản phẩm khớp yêu cầu</h2>
+            <p className={styles.emptyBody}>Thử đổi từ khóa ngắn hơn hoặc bỏ bớt bộ lọc.</p>
             <div className={styles.emptyActions}>
               {hasActiveFilters && (
                 <button type="button" className={styles.btnPrimary} onClick={handleResetAll}>
-                  Xóa bộ lọc tìm kiếm
+                  Xóa bộ lọc
                 </button>
               )}
               <Link href="/san-pham" className={styles.btnSecondary}>
-                Xem tất cả sản phẩm
+                Tất cả sản phẩm
               </Link>
             </div>
           </div>
         ) : (
           <>
-            <div className={`${styles.productGrid} ${loading ? styles.productGridLoading : ""}`}>
+            <div className={`${gridClass} ${loading ? styles.productGridLoading : ""}`}>
               {result.items.map((item, idx) => {
                 const href = `/san-pham/${encodeURIComponent(item.slug || item.id)}`;
-                const imgSrc = sanitizeSearchImageUrl(item.image) || FALLBACK_IMAGE;
+                const primaryImg = sanitizeSearchImageUrl(item.image) || FALLBACK_IMAGE;
+                const secondaryImg =
+                  item.images.map(sanitizeSearchImageUrl).find((u) => u && u !== primaryImg) ||
+                  null;
                 const hasDiscount =
                   typeof item.originalPriceVnd === "number" &&
                   item.originalPriceVnd > item.priceVnd;
-                const metaLine = [item.categoryName, item.fabric, item.gsm ? `${item.gsm}gsm` : ""]
-                  .filter(Boolean)
-                  .slice(0, 2)
-                  .join(" · ");
+                const stockNotice = !item.inStock
+                  ? "Tạm hết hàng"
+                  : item.totalStock > 0 && item.totalStock <= 5
+                    ? `Còn ${formatInt(item.totalStock)}`
+                    : "";
 
                 return (
-                  <article key={item.id} className={styles.productCard}>
-                    <Link href={href} className={styles.cardMediaLink}>
+                  <article
+                    key={item.id}
+                    className={`${styles.productCard} ${
+                      result.items.length === 1 ? styles.productCardWide : ""
+                    }`}
+                    data-has-hover={secondaryImg ? "true" : "false"}
+                  >
+                    <Link
+                      href={href}
+                      className={styles.cardMediaLink}
+                      tabIndex={-1}
+                      aria-hidden="true"
+                    >
                       <img
-                        src={imgSrc}
+                        src={primaryImg}
                         alt={item.name}
                         width={896}
                         height={1200}
-                        className={styles.cardImg}
+                        className={styles.cardImgPrimary}
                         loading={idx < 4 ? "eager" : "lazy"}
                       />
-                      {item.isFlashSale ? (
-                        <span className={styles.cardBadge}>Flash sale</span>
-                      ) : hasDiscount && item.originalPriceVnd ? (
-                        <span className={styles.cardBadge}>
-                          {formatDiscountPercent(item.originalPriceVnd, item.priceVnd)}
-                        </span>
-                      ) : null}
+                      {secondaryImg && (
+                        <img
+                          src={secondaryImg}
+                          alt=""
+                          aria-hidden="true"
+                          width={896}
+                          height={1200}
+                          className={styles.cardImgSecondary}
+                          loading="lazy"
+                        />
+                      )}
                     </Link>
 
                     <div className={styles.cardBody}>
-                      <Link href={href} className={styles.cardName}>
-                        {item.name}
-                      </Link>
-
-                      {metaLine && <p className={styles.cardSpec}>{metaLine}</p>}
+                      <div className={styles.cardTopMeta}>
+                        {item.isFlashSale ? (
+                          <span className={styles.cardTagText}>Flash sale</span>
+                        ) : hasDiscount && item.originalPriceVnd ? (
+                          <span className={`${styles.cardTagText} num`}>
+                            {formatDiscountPercent(item.originalPriceVnd, item.priceVnd)}
+                          </span>
+                        ) : null}
+                      </div>
 
                       <div className={styles.cardPriceRow}>
                         <span className={`${styles.cardPrice} num`}>
                           {formatVnd(item.priceVnd)}
                         </span>
-                        {hasDiscount && item.originalPriceVnd ? (
+                        {hasDiscount && item.originalPriceVnd && (
                           <span className={`${styles.cardOriginalPrice} num`}>
                             {formatVnd(item.originalPriceVnd)}
                           </span>
-                        ) : (
-                          <span className={styles.cardStock}>
-                            {item.inStock ? "Sẵn hàng" : "Tạm hết hàng"}
-                          </span>
+                        )}
+                        {stockNotice && (
+                          <span className={`${styles.cardStock} num`}>{stockNotice}</span>
                         )}
                       </div>
+
+                      {/* Keep title link as the LAST a[href^="/san-pham/"] inside article */}
+                      <Link href={href} className={styles.cardName}>
+                        {item.name}
+                      </Link>
                     </div>
                   </article>
                 );
@@ -572,7 +615,7 @@ export function SiteSearchResults({
             {totalPages > 1 && (
               <nav className={styles.paginationBar} aria-label="Phân trang kết quả tìm kiếm">
                 <span className={`${styles.paginationInfo} num`}>
-                  Trang {safePage} / {totalPages} ({formatInt(result.total)} sản phẩm)
+                  Trang {safePage} / {totalPages}
                 </span>
                 <div className={styles.paginationControls}>
                   <button
@@ -581,13 +624,13 @@ export function SiteSearchResults({
                     disabled={safePage <= 1}
                     onClick={() => setPage((p) => Math.max(1, p - 1))}
                   >
-                    Trang trước
+                    Trước
                   </button>
 
                   {pageNumbers.map((entry, idx) =>
                     entry === "ellipsis" ? (
                       <span key={`e-${idx}`} className={styles.pageEllipsis} aria-hidden="true">
-                        ...
+                        …
                       </span>
                     ) : (
                       <button
@@ -610,7 +653,7 @@ export function SiteSearchResults({
                     disabled={safePage >= totalPages}
                     onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                   >
-                    Trang sau
+                    Sau
                   </button>
                 </div>
               </nav>
@@ -618,6 +661,150 @@ export function SiteSearchResults({
           </>
         )}
       </section>
+
+      {/* Filter Sheet */}
+      {sheetOpen && (
+        <div
+          className={`${styles.sheetBackdrop} ${sheetClosing ? styles.sheetBackdropClosing : ""}`}
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeSheet();
+          }}
+        >
+          <aside
+            ref={filterSheetRef}
+            tabIndex={-1}
+            className={`${styles.sheetPanel} ${sheetClosing ? styles.sheetPanelClosing : ""}`}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Bộ lọc kết quả tìm kiếm"
+          >
+            <header className={styles.sheetHead}>
+              <span className={styles.sheetTitle}>Bộ lọc</span>
+              <button
+                type="button"
+                className={styles.sheetClose}
+                onClick={closeSheet}
+                aria-label="Đóng bộ lọc"
+              >
+                <IconClose size={18} />
+              </button>
+            </header>
+
+            <div className={styles.sheetBody}>
+              {categoryFacets.length > 0 && (
+                <div className={styles.filterSection}>
+                  <span className={styles.filterGroupLabel}>Danh mục</span>
+                  <div className={styles.chipRow} role="group" aria-label="Lọc theo danh mục">
+                    <button
+                      type="button"
+                      className={`${styles.chip} ${category === "" ? styles.chipActive : ""}`}
+                      onClick={() => {
+                        setCategory("");
+                        setPage(1);
+                      }}
+                    >
+                      Tất cả
+                    </button>
+                    {categoryFacets.map((facet) => (
+                      <button
+                        key={facet.value}
+                        type="button"
+                        className={`${styles.chip} ${category === facet.value ? styles.chipActive : ""}`}
+                        onClick={() => {
+                          setCategory(facet.value);
+                          setPage(1);
+                        }}
+                      >
+                        <span>{facet.label}</span>
+                        {facet.count > 0 && (
+                          <span className={`${styles.chipCount} num`}>
+                            ({formatInt(facet.count)})
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className={styles.filterSection}>
+                <span className={styles.filterGroupLabel}>Khoảng giá</span>
+                <div className={styles.chipRow} role="group" aria-label="Chọn nhanh khoảng giá">
+                  {SEARCH_PRICE_PRESETS.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      className={`${styles.chip} ${
+                        activePresetId === preset.id ? styles.chipActive : ""
+                      }`}
+                      onClick={() => handleSelectPricePreset(preset.minPrice, preset.maxPrice)}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+
+                <form className={styles.priceForm} onSubmit={handleApplyPrice} noValidate>
+                  <label htmlFor="search-min-price" className="sr-only">
+                    Giá từ (VND)
+                  </label>
+                  <input
+                    id="search-min-price"
+                    type="text"
+                    inputMode="numeric"
+                    className={`${styles.priceInput} num`}
+                    placeholder="Từ (VND)"
+                    value={minPriceInput}
+                    onChange={(e) => setMinPriceInput(e.target.value)}
+                  />
+                  <span className={styles.priceRangeSep} aria-hidden="true">
+                    đến
+                  </span>
+                  <label htmlFor="search-max-price" className="sr-only">
+                    Giá đến (VND)
+                  </label>
+                  <input
+                    id="search-max-price"
+                    type="text"
+                    inputMode="numeric"
+                    className={`${styles.priceInput} num`}
+                    placeholder="Đến (VND)"
+                    value={maxPriceInput}
+                    onChange={(e) => setMaxPriceInput(e.target.value)}
+                  />
+                  <button type="submit" className={styles.applyPriceBtn}>
+                    Áp dụng
+                  </button>
+                </form>
+                {priceInputError && (
+                  <p className={styles.priceError} role="alert">
+                    {priceInputError}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <footer className={styles.sheetFoot}>
+              {sheetFilterCount > 0 && (
+                <button
+                  type="button"
+                  className={styles.btnSecondary}
+                  onClick={() => {
+                    handleResetSheetFilters();
+                    closeSheet();
+                  }}
+                >
+                  Xóa lọc
+                </button>
+              )}
+              <button type="button" className={styles.btnPrimary} onClick={closeSheet}>
+                Xem {formatInt(result.total)} kết quả
+              </button>
+            </footer>
+          </aside>
+        </div>
+      )}
     </div>
   );
 }

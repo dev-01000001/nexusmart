@@ -1,9 +1,128 @@
-/* Overview (/seller) — KPIs as the chart's tabs (seller-sheet.md §5) */
+/* Seller Overview (/seller) — Today's Action Queue + KPI-Tabbed Chart + Recent Orders */
 
+.todaySection {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sectionHeadRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.balancePillLink {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--ink-2);
+  transition: border-color var(--t-hover) var(--ease-out);
+}
+
+.balancePillLink:hover {
+  border-color: var(--accent);
+}
+
+.balancePendingSub {
+  color: var(--ink-3);
+}
+
+/* 4 clickable action tiles answering "Hôm nay cần làm gì?" */
+.taskGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.taskTile {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 88px;
+  padding: 14px 16px;
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  transition:
+    border-color var(--t-hover) var(--ease-out),
+    background-color var(--t-hover) var(--ease-out),
+    transform var(--t-press) var(--ease-out);
+}
+
+.taskTile:hover {
+  border-color: var(--accent);
+  background: var(--bg-0);
+  transform: translateY(-1px);
+}
+
+.taskTile:active {
+  transform: translateY(0);
+}
+
+.taskTileActive {
+  background: var(--bg-0);
+  border-color: var(--control);
+}
+
+.taskTileTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.taskLabel {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-3);
+}
+
+.taskTileActive .taskLabel {
+  color: var(--ink-1);
+}
+
+.taskArrow {
+  color: var(--ink-3);
+  transition: transform var(--t-hover) var(--ease-expo);
+}
+
+.taskTile:hover .taskArrow {
+  color: var(--accent);
+  transform: translateX(2px);
+}
+
+.taskCount {
+  font-size: var(--fs-kpi);
+  line-height: 1.1;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--ink-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.taskTileActive .taskCount {
+  color: var(--accent);
+}
+
+.taskCountZero {
+  color: var(--ink-3);
+  font-weight: 400;
+}
+
+/* KPI tabs driving the single main chart */
 .kpiTabs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  border-bottom: 1px solid var(--border); /* taste-skill-ignore: KPI tab strip bottom divider per seller-sheet.md */
+  border-bottom: 1px solid var(--border);
 }
 
 .kpiTab {
@@ -17,15 +136,15 @@
   background: transparent;
   cursor: pointer;
   min-width: 0;
-  transition: background-color var(--t-hover) ease;
+  transition: background-color var(--t-hover) var(--ease-out);
 }
 
 .kpiTab + .kpiTab {
-  border-left: 1px solid var(--border); /* taste-skill-ignore: KPI tab vertical divider */
+  border-left: 1px solid var(--border);
 }
 
 .kpiTab:hover {
-  background: var(--bg);
+  background: var(--bg-1);
 }
 
 .kpiTabActive::after {
@@ -35,18 +154,18 @@
   right: 0;
   bottom: -1px;
   height: 2px;
-  background: var(--ink);
+  background: var(--accent);
 }
 
 .kpiTabLabel {
   font-size: 13px;
   line-height: 18px;
-  color: var(--muted);
+  color: var(--ink-3);
 }
 
 .kpiTabActive .kpiTabLabel {
-  color: var(--ink);
-  font-weight: 500;
+  color: var(--ink-1);
+  font-weight: 600;
 }
 
 .kpiTabRow {
@@ -60,8 +179,8 @@
   font-size: var(--fs-kpi);
   line-height: 1.15;
   font-weight: 400;
-  letter-spacing: -0.015em;
-  color: var(--ink);
+  letter-spacing: -0.02em;
+  color: var(--ink-1);
   font-variant-numeric: tabular-nums;
 }
 
@@ -76,35 +195,16 @@
 }
 
 .chartBody {
-  padding: 16px var(--card-pad) 18px;
+  padding: 18px var(--card-pad);
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
-.chartCaption {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.chartHeading {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--ink);
-}
-
-.chartPeriod {
-  font-size: 13px;
-  color: var(--muted);
-}
-
-/* Comparison table inside main card (36px row pitch per seller-sheet.md §5) */
+/* Comparison table inside chart card (36px row pitch) */
 .compareWrap {
-  padding-top: 8px;
-  border-top: 1px solid var(--rule); /* taste-skill-ignore: comparison table top rule inside chart card */
+  padding-top: 10px;
+  border-top: 1px solid var(--rule);
 }
 
 table.compareTable {
@@ -117,8 +217,8 @@ table.compareTable th {
   height: 32px;
   padding: 0 8px;
   font-size: 13px;
-  font-weight: 400;
-  color: var(--muted);
+  font-weight: 500;
+  color: var(--ink-3);
   text-align: left;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
@@ -144,7 +244,7 @@ table.compareTable td {
   height: 36px;
   padding: 0 8px;
   font-size: 14px;
-  color: var(--ink);
+  color: var(--ink-2);
   border-bottom: 1px solid var(--rule);
   vertical-align: middle;
 }
@@ -154,35 +254,56 @@ table.compareTable tbody tr:last-child td {
 }
 
 .comparePrior {
-  color: var(--muted);
+  color: var(--ink-3);
 }
 
 .compareMobile {
   display: none;
 }
 
-/* Paired 2-column operational cards — matched 4 rows each so bottoms align with zero ragged-row */
-.pairedGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--gap);
-  align-items: stretch;
+/* Order & low-stock row pieces */
+.orderLeadCell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 
-.opCard {
-  display: flex;
-  flex-direction: column;
-  background: var(--card);
-  border: 1px solid var(--border); /* taste-skill-ignore: operational panel 1px border */
-  border-radius: var(--radius-card);
-  padding: var(--card-pad);
-  min-width: 0;
+.orderThumb {
+  width: 32px;
+  height: 40px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--bg-2);
+  flex: none;
+}
+
+.buyerCell {
+  max-width: 150px;
+}
+
+.buyerName {
+  display: block;
+  color: var(--ink-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.buyerSub {
+  display: block;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ink-3);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .opRows {
   display: flex;
   flex-direction: column;
-  flex: 1;
 }
 
 .opRow {
@@ -190,12 +311,18 @@ table.compareTable tbody tr:last-child td {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 64px;
-  padding: 10px 0;
+  min-height: 56px;
+  padding: 8px 4px;
+  border-radius: var(--radius-control);
+  transition: background-color var(--t-hover) var(--ease-out);
+}
+
+.opRow:hover {
+  background: var(--bg-1);
 }
 
 .opRow + .opRow {
-  border-top: 1px solid var(--rule); /* taste-skill-ignore: operational list row divider */
+  border-top: 1px solid var(--rule);
 }
 
 .opRowMain {
@@ -208,32 +335,35 @@ table.compareTable tbody tr:last-child td {
 
 .opThumb {
   width: 34px;
-  height: 45px;
+  height: 44px;
   border-radius: 4px;
   object-fit: cover;
-  background: var(--surface);
+  background: var(--bg-2);
   flex: none;
 }
 
 .opInfo {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
   flex: 1;
 }
 
 .opPrimary {
+  display: block;
   font-size: 14px;
-  line-height: 20px;
+  line-height: 24px;
+  min-height: 24px;
   font-weight: 500;
-  color: var(--ink);
+  color: var(--ink-1);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .opPrimary:hover {
+  color: var(--accent);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -241,10 +371,11 @@ table.compareTable tbody tr:last-child td {
 .opSecondary {
   font-size: 13px;
   line-height: 18px;
-  color: var(--muted);
+  color: var(--ink-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 280px;
 }
 
 .opRight {
@@ -254,30 +385,36 @@ table.compareTable tbody tr:last-child td {
   flex: none;
 }
 
-.opFigure {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
 .opMoney {
-  display: block;
   font-size: 14px;
   line-height: 20px;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--ink-1);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .opStockCrit {
   color: var(--negative);
 }
 
-.opSubFigure {
-  display: block;
+.inlinePrimaryBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  background: var(--ink-1);
+  color: var(--bg-0);
   font-size: 13px;
-  line-height: 18px;
-  color: var(--muted);
+  font-weight: 500;
   white-space: nowrap;
+  transition: background-color var(--t-hover) var(--ease-out);
+}
+
+.inlinePrimaryBtn:hover:not(:disabled) {
+  background: var(--accent);
 }
 
 .inlineActionBtn {
@@ -287,28 +424,29 @@ table.compareTable tbody tr:last-child td {
   height: 30px;
   padding: 0 10px;
   border-radius: var(--radius-control);
-  border: 1px solid var(--control); /* taste-skill-ignore: compact row action button */
-  background: var(--card);
-  color: var(--ink);
+  border: 1px solid var(--control);
+  background: var(--bg-0);
+  color: var(--ink-1);
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
-  transition: background-color var(--t-hover) ease;
+  transition: background-color var(--t-hover) var(--ease-out);
 }
 
 .inlineActionBtn:hover {
-  background: var(--surface);
+  background: var(--bg-2);
 }
 
-/* Site status band: whether buyers can reach the shop's site (the only place orders come from) */
+/* Compact 1-row Site Status Band */
 .siteBand {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  padding: 16px var(--card-pad);
-  background: var(--card);
-  border: 1px solid var(--border); /* taste-skill-ignore: app panel 1px border per seller-sheet.md */
+  gap: 12px 16px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
   border-radius: var(--radius-card);
 }
 
@@ -317,32 +455,31 @@ table.compareTable tbody tr:last-child td {
   border-color: transparent;
 }
 
-.siteBandText {
+.siteBandDanger {
+  background: var(--pill-negative-bg);
+  border-color: transparent;
+}
+
+.siteBandInline {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
   min-width: 0;
 }
 
-.siteBandHost,
-.siteBandHeadline {
-  font-size: var(--fs-section);
-  line-height: 22px;
+.siteBandHost {
+  font-size: 14px;
+  line-height: 20px;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--ink-1);
   overflow-wrap: anywhere;
 }
 
 .siteBandNote {
-  max-width: 68ch;
-  font-size: 14px;
-  line-height: 20px;
-  color: var(--muted);
-}
-
-.siteBandAlert .siteBandNote {
-  color: var(--ink);
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ink-2);
 }
 
 .siteBandActions {
@@ -357,101 +494,109 @@ table.compareTable tbody tr:last-child td {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  min-height: 32px;
+  gap: 5px;
+  height: 32px;
   padding: 0 12px;
   border-radius: var(--radius-control);
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
-  transition: background-color var(--t-hover) ease;
+  transition: background-color var(--t-hover) var(--ease-out);
 }
 
 .siteBandPrimary {
-  background: var(--primary-ink-bg);
-  color: var(--primary-ink-fg);
+  background: var(--ink-1);
+  color: var(--bg-0);
 }
 
 .siteBandPrimary:hover {
-  background: #142026;
+  background: var(--accent);
 }
 
 .siteBandSecondary {
-  background: var(--card);
-  color: var(--ink);
-  border: 1px solid var(--control); /* taste-skill-ignore: app outlined button */
+  background: var(--bg-0);
+  color: var(--ink-1);
+  border: 1px solid var(--control);
 }
 
 .siteBandSecondary:hover {
-  background: var(--bg);
+  background: var(--bg-2);
 }
 
-.siteBandPrimary:focus-visible,
-.siteBandSecondary:focus-visible {
-  outline: 2px solid var(--ink);
-  outline-offset: 2px;
-}
+@media (max-width: 1200px) {
+  .opSecondary {
+    max-width: 190px;
+  }
 
-@media (max-width: 1040px) {
-  .pairedGrid {
-    grid-template-columns: minmax(0, 1fr);
+  .buyerCell {
+    max-width: 112px;
   }
 }
 
 @media (max-width: 860px) {
-  /* Phone/tablet KPI tabs: 2-up filled grid with odd 3rd spanning full width, zero floating underline */
-  .kpiTabs {
+  .taskGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .kpiTab {
-    padding: 13px 16px;
+    padding: 13px 14px;
+  }
+
+  .chartBody {
+    padding: 14px 16px 16px;
+  }
+}
+
+@media (max-width: 640px) {
+  .kpiTabs {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .kpiTab {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 16px;
   }
 
   .kpiTab + .kpiTab {
     border-left: 0;
+    border-top: 1px solid var(--border);
   }
 
-  .kpiTab:nth-child(2n) {
-    border-left: 1px solid var(--border); /* taste-skill-ignore: mobile 2-up KPI tab divider */
+  .kpiTabRow {
+    justify-content: flex-end;
+    flex-wrap: nowrap;
+    gap: 6px;
+    flex: none;
   }
 
-  .kpiTab:nth-child(n + 3) {
-    border-top: 1px solid var(--border); /* taste-skill-ignore: mobile 2-up KPI tab top divider */
-  }
-
-  .kpiTab:last-child:nth-child(odd) {
-    grid-column: 1 / -1;
-    border-left: 0;
+  .kpiTabValue {
+    font-size: 18px;
+    line-height: 1.2;
   }
 
   .kpiTabActive {
-    background: var(--active);
+    background: var(--accent-tint);
+  }
+
+  .kpiTabActive .kpiTabValue {
+    color: var(--accent-tint-ink);
   }
 
   .kpiTabActive::after {
     content: none;
   }
 
-  .chartBody {
-    padding: 14px 16px 16px;
-  }
-
-  .opCard {
-    padding: 16px;
-  }
-}
-
-@media (max-width: 640px) {
   .siteBand {
     flex-direction: column;
     align-items: stretch;
-    gap: 14px;
-    padding: 16px;
   }
 
   .siteBandActions > * {
     flex: 1 1 0;
+    min-height: 40px;
   }
 
   table.compareTable {
@@ -465,9 +610,9 @@ table.compareTable tbody tr:last-child td {
 
   .compareMobileHead {
     font-size: 13px;
-    color: var(--muted);
+    color: var(--ink-3);
     padding: 4px 0 8px;
-    border-bottom: 1px solid var(--border); /* taste-skill-ignore: mobile comparison header divider */
+    border-bottom: 1px solid var(--border);
   }
 
   .compareMobileRow {
@@ -478,12 +623,12 @@ table.compareTable tbody tr:last-child td {
   }
 
   .compareMobileRow + .compareMobileRow {
-    border-top: 1px solid var(--rule); /* taste-skill-ignore: mobile comparison row divider */
+    border-top: 1px solid var(--rule);
   }
 
   .compareMobileLabel {
     font-size: 14px;
-    color: var(--ink);
+    color: var(--ink-1);
   }
 
   .compareMobileFigs {
@@ -497,40 +642,23 @@ table.compareTable tbody tr:last-child td {
 
   .compareMobileVal {
     font-weight: 600;
-    color: var(--ink);
+    color: var(--ink-1);
   }
 
   .opRow {
     flex-direction: column;
     align-items: stretch;
     gap: 8px;
+    padding: 10px 0;
   }
 
-  .opRowMain {
-    width: 100%;
-    max-width: 100%;
-  }
-
-  .opInfo {
-    width: 100%;
-    min-width: 0;
-    max-width: 100%;
-  }
-
-  .opPrimary,
   .opSecondary {
+    max-width: none;
     white-space: normal;
-    overflow: visible;
-    text-overflow: unset;
-    overflow-wrap: anywhere;
   }
 
   .opRight {
     width: 100%;
     justify-content: space-between;
-  }
-
-  .opFigure {
-    text-align: left;
   }
 }

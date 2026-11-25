@@ -1,11 +1,13 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { FlashSaleItem } from "@/data/flash-sale";
 import type { Product, SizeCode } from "@/data/products";
 import type { Voucher } from "@/data/vouchers";
+import { IconBag, IconCheck, IconClose } from "@/components/Icons";
+import { useModalFocusTrap } from "@/components/modalFocus";
 import { useStore } from "@/context/StoreContext";
 import { formatDiscountPercent, formatInt, formatVnd } from "@/lib/format";
 import type { SitePublicShopDTO } from "@/lib/site/types";
@@ -47,7 +49,9 @@ export function SitePdpView({
 
   const layout = pageConfig?.layout ?? templateConfig?.pages.pdp.layout ?? "classic-split";
   const galleryStyle =
-    pageConfig?.gallery_style ?? templateConfig?.pages.pdp.gallery_style ?? "thumbnails";
+    pageConfig?.gallery_style ??
+    templateConfig?.pages.pdp.gallery_style ??
+    (layout === "editorial-tall" ? "stacked" : "thumbnails");
   const showVouchers = pageConfig?.show_vouchers ?? templateConfig?.pages.pdp.show_vouchers ?? true;
   const showSkuTable =
     pageConfig?.show_sku_table ??
@@ -92,7 +96,13 @@ export function SitePdpView({
   const [activeImage, setActiveImage] = useState<string>(gallery[0]);
   const [qty, setQty] = useState<number>(1);
   const [busyAction, setBusyAction] = useState<"add" | "buy" | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerClosing, setDrawerClosing] = useState(false);
   const [addedNotice, setAddedNotice] = useState<string | null>(null);
+  const cartDrawerRef = useRef<HTMLElement | null>(null);
+  const cartTriggerRef = useRef<HTMLElement | null>(null);
+  const drawerRestoreFocusRef = useRef(true);
+  const drawerCloseTimerRef = useRef<number | null>(null);
 
   const selectedSku = useMemo(() => {
     return (
@@ -116,7 +126,6 @@ export function SitePdpView({
   const comparePrice = flashPrice ? skuPrice : product.originalPrice;
   const hasDiscount = typeof comparePrice === "number" && comparePrice > displayPrice;
 
-  // Strict defense in depth: only SHOP vouchers render on a shop's subdomain PDP.
   const validShopVouchers = useMemo(
     () => shopVouchers.filter((v) => v.scope === "shop"),
     [shopVouchers]
@@ -127,16 +136,61 @@ export function SitePdpView({
     [product.colors]
   );
 
-  const handleCartAction = async (mode: "add" | "buy") => {
+  const closeDrawer = useCallback(
+    (restoreFocus = true) => {
+      if (!drawerOpen || drawerClosing) return;
+      drawerRestoreFocusRef.current = restoreFocus;
+      setDrawerClosing(true);
+      drawerCloseTimerRef.current = window.setTimeout(() => {
+        drawerCloseTimerRef.current = null;
+        setDrawerOpen(false);
+        setDrawerClosing(false);
+      }, 180);
+    },
+    [drawerOpen, drawerClosing]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (drawerCloseTimerRef.current !== null) {
+        window.clearTimeout(drawerCloseTimerRef.current);
+      }
+    };
+  }, []);
+
+  useModalFocusTrap({
+    open: !previewMode && drawerOpen && !drawerClosing,
+    containerRef: cartDrawerRef,
+    onEscape: () => closeDrawer(true),
+    shouldRestoreFocusRef: drawerRestoreFocusRef,
+    returnFocusToRef: cartTriggerRef,
+  });
+
+  const handleSelectColor = (colorCode: string, colorImgRaw?: string) => {
+    setSelectedColor(colorCode);
+    const colorImg = sanitizeSafeImageUrl(colorImgRaw);
+    if (colorImg) {
+      setActiveImage(colorImg);
+    }
+    setQty(1);
+    setAddedNotice(null);
+  };
+
+  const handleCartAction = async (mode: "add" | "buy", triggerEl?: HTMLElement | null) => {
     if (previewMode) {
       setAddedNotice(
         mode === "buy"
-          ? "Chế độ xem trước: nút Mua ngay sẽ đưa khách tới thanh toán khi xuất bản."
-          : "Chế độ xem trước: sản phẩm sẽ được thêm vào giỏ hàng khi xuất bản."
+          ? "Xem trước: nút Mua ngay sẽ đưa tới thanh toán khi xuất bản."
+          : "Xem trước: sản phẩm sẽ được thêm vào giỏ khi xuất bản."
       );
       return;
     }
     if (!skuId || maxStock <= 0 || busyAction) return;
+    if (mode === "add") {
+      cartTriggerRef.current =
+        triggerEl ??
+        (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    }
     setBusyAction(mode);
     setAddedNotice(null);
     try {
@@ -156,82 +210,125 @@ export function SitePdpView({
           router.push("/thanh-toan");
           return;
         }
-        setAddedNotice(res.message || "Đã thêm sản phẩm vào giỏ hàng.");
+        setAddedNotice(res.message || "Đã thêm vào giỏ hàng.");
+        if (drawerCloseTimerRef.current !== null) {
+          window.clearTimeout(drawerCloseTimerRef.current);
+          drawerCloseTimerRef.current = null;
+        }
+        drawerRestoreFocusRef.current = true;
+        setDrawerClosing(false);
+        setDrawerOpen(true);
       }
     } finally {
       setBusyAction(null);
     }
   };
 
+  // Crossfade stage ensures switching colors smoothly transitions without flash
+  const crossfadeGallery = useMemo(() => {
+    if (gallery.includes(activeImage)) return gallery;
+    return [activeImage, ...gallery];
+  }, [gallery, activeImage]);
+
+  const secondaryGallery = useMemo(
+    () => gallery.filter((src) => src !== activeImage).slice(0, 3),
+    [gallery, activeImage]
+  );
+
+  const renderCrossfadeFrame = (frameClass: string) => (
+    <div className={`${frameClass} ${tplStyles.pdpCrossfadeFrame}`}>
+      {crossfadeGallery.map((src, idx) => {
+        const isCurrent = src === activeImage;
+        return (
+          <img
+            key={src}
+            src={src}
+            alt={isCurrent ? product.name : ""}
+            aria-hidden={!isCurrent}
+            width={896}
+            height={1200}
+            className={`${tplStyles.pdpCrossfadeImg} ${
+              isCurrent ? tplStyles.pdpCrossfadeImgActive : ""
+            }`}
+            loading={idx === 0 ? "eager" : "lazy"}
+          />
+        );
+      })}
+    </div>
+  );
+
+  const renderThumbStrip = (rowClass: string) =>
+    gallery.length > 1 ? (
+      <div className={rowClass}>
+        {gallery.slice(0, 4).map((src, idx) => (
+          <button
+            key={src}
+            type="button"
+            className={`${styles.pdpThumbBtn} ${activeImage === src ? styles.pdpThumbActive : ""}`}
+            onClick={() => setActiveImage(src)}
+            aria-label={`Xem ảnh ${idx + 1}`}
+            aria-pressed={activeImage === src}
+          >
+            <img src={src} alt="" width={240} height={320} className={styles.pdpMainImg} />
+          </button>
+        ))}
+      </div>
+    ) : null;
+
   const renderGallery = () => {
-    if (galleryStyle === "stacked" || layout === "editorial-tall") {
+    const isDense =
+      layout === "dense-spec" || layout === "sku-order-matrix" || galleryStyle === "compact";
+    const isLuxury = layout === "luxury-framed" || galleryStyle === "framed";
+    const isThumbnails = galleryStyle === "thumbnails" && layout !== "editorial-tall";
+
+    if (isDense) {
       return (
-        <div
-          className={tplStyles.pdpStackedGallery}
-          data-rise=""
-          style={{ "--i": 1 } as React.CSSProperties}
-        >
-          {gallery.slice(0, 4).map((src, idx) => (
-            <div key={src} className={styles.pdpMainFrame}>
-              <img
-                src={src}
-                alt={`${product.name} ảnh ${idx + 1}`}
-                width={896}
-                height={1200}
-                className={styles.pdpMainImg}
-              />
-            </div>
-          ))}
+        <div className={styles.pdpMediaCol}>
+          {renderCrossfadeFrame(tplStyles.pdpCompactMainFrame)}
+          {renderThumbStrip(styles.pdpThumbRow)}
         </div>
       );
     }
 
-    const frameClass =
-      galleryStyle === "compact" || layout === "dense-spec" || layout === "sku-order-matrix"
-        ? tplStyles.pdpCompactMainFrame
-        : styles.pdpMainFrame;
-
-    const mainImageEl = (
-      <div className={frameClass}>
-        <img
-          src={activeImage}
-          alt={product.name}
-          width={896}
-          height={1200}
-          className={styles.pdpMainImg}
-        />
-      </div>
-    );
-
-    return (
-      <div className={styles.pdpMediaCol} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
-        {galleryStyle === "framed" || layout === "luxury-framed" ? (
-          <div className={tplStyles.pdpLuxuryFrame}>{mainImageEl}</div>
-        ) : (
-          mainImageEl
-        )}
-
-        {gallery.length > 1 && (
-          <div className={styles.pdpThumbRow}>
-            {gallery.slice(0, 4).map((src, idx) => (
-              <button
-                key={src}
-                type="button"
-                className={`${styles.pdpThumbBtn} ${activeImage === src ? styles.pdpThumbActive : ""}`}
-                onClick={() => setActiveImage(src)}
-                aria-label={`Xem ảnh ${idx + 1} của ${product.name}`}
-              >
-                <img
-                  src={src}
-                  alt={`${product.name} ảnh ${idx + 1}`}
-                  width={240}
-                  height={320}
-                  className={styles.pdpMainImg}
-                />
-              </button>
-            ))}
+    if (isLuxury) {
+      return (
+        <div className={styles.pdpMediaCol}>
+          <div className={tplStyles.pdpLuxuryFrame}>
+            {renderCrossfadeFrame(styles.pdpMainFrame)}
           </div>
-        )}
+          {renderThumbStrip(styles.pdpThumbRow)}
+        </div>
+      );
+    }
+
+    if (isThumbnails) {
+      return (
+        <div className={styles.pdpMediaCol}>
+          {renderCrossfadeFrame(styles.pdpMainFrame)}
+          {renderThumbStrip(styles.pdpThumbRow)}
+        </div>
+      );
+    }
+
+    // Stacked vertical scrolling photography gallery (lead crossfade frame + tall stacked secondary frames)
+    return (
+      <div className={tplStyles.pdpStackedGallery}>
+        {renderCrossfadeFrame(styles.pdpMainFrame)}
+        {renderThumbStrip(tplStyles.pdpMobileThumbRow)}
+
+        {/* Desktop vertical scroll continuation frames */}
+        {secondaryGallery.map((src, idx) => (
+          <figure key={src} className={tplStyles.pdpScrollPhoto} data-reveal="clip">
+            <img
+              src={src}
+              alt={`${product.name} góc ${idx + 2}`}
+              width={896}
+              height={1200}
+              className={styles.pdpMainImg}
+              loading="lazy"
+            />
+          </figure>
+        ))}
       </div>
     );
   };
@@ -240,24 +337,18 @@ export function SitePdpView({
     if (!showSkuTable && layout !== "sku-order-matrix") return null;
     if (product.skus.length === 0) return null;
     return (
-      <div className={tplStyles.pdpSkuMatrixWrap} data-reveal="">
-        <div className={styles.sectionHead} style={{ marginBottom: 4 }}>
-          <div className={styles.sectionHeadCopy}>
-            <h2 className={styles.pdpOptionLabel}>
-              Bảng biến thể SKU sẵn kho (bấm dòng để chọn nhanh)
-            </h2>
-          </div>
-        </div>
+      <div className={tplStyles.pdpSkuMatrixWrap}>
+        <h2 className={styles.pdpOptionLabel}>Bảng biến thể SKU</h2>
         <div className={tplStyles.tableScrollWrap}>
           <table className={tplStyles.skuTable}>
             <thead>
               <tr>
                 <th>Mã SKU</th>
-                <th>Màu sắc</th>
-                <th>Kích cỡ</th>
-                <th>Đơn giá</th>
-                <th>Tồn kho</th>
-                <th>Trạng thái</th>
+                <th>Màu</th>
+                <th>Size</th>
+                <th>Giá</th>
+                <th>Tồn</th>
+                <th>Chọn</th>
               </tr>
             </thead>
             <tbody>
@@ -273,15 +364,11 @@ export function SitePdpView({
                     }`}
                     onClick={() => {
                       if (!available) return;
-                      setSelectedColor(sku.colorCode);
+                      handleSelectColor(sku.colorCode, color?.image);
                       setSelectedSize(sku.size);
-                      const colorImg = sanitizeSafeImageUrl(color?.image);
-                      if (colorImg) setActiveImage(colorImg);
-                      setQty(1);
-                      setAddedNotice(null);
                     }}
                   >
-                    <td className={tplStyles.skuCodeMono}>{sku.skuCode}</td>
+                    <td className={`${tplStyles.skuCodeMono} num`}>{sku.skuCode}</td>
                     <td>
                       <span className={tplStyles.colorSwatchInline}>
                         <span
@@ -299,7 +386,7 @@ export function SitePdpView({
                       <span
                         className={`${tplStyles.stockBadge} ${!available ? tplStyles.stockBadgeOut : ""}`}
                       >
-                        {isSelected ? "Đang chọn" : available ? "Chọn phân loại" : "Hết hàng"}
+                        {isSelected ? "Đang chọn" : available ? "Chọn" : "Hết"}
                       </span>
                     </td>
                   </tr>
@@ -312,8 +399,152 @@ export function SitePdpView({
     );
   };
 
-  const renderVariantSelectors = () => (
+  const isSportTelemetry = layout === "sport-telemetry";
+  const realSpecs = useMemo(() => {
+    const items: Array<{
+      key: "fabric" | "gsm" | "fit" | "origin";
+      label: string;
+      value: string;
+      isNum?: boolean;
+    }> = [];
+    const fabric = product.fabric?.trim();
+    if (fabric) items.push({ key: "fabric", label: "Chất liệu", value: fabric });
+    if (product.gsm > 0) {
+      items.push({ key: "gsm", label: "Định lượng", value: `${product.gsm}gsm`, isNum: true });
+    }
+    const fit = product.fit?.trim();
+    if (fit) items.push({ key: "fit", label: "Phom dáng", value: fit });
+    const origin = product.origin?.trim();
+    if (origin) items.push({ key: "origin", label: "Xuất xứ", value: origin });
+    return items;
+  }, [product.fabric, product.gsm, product.fit, product.origin]);
+
+  const remainingSpecs = useMemo(
+    () =>
+      isSportTelemetry
+        ? realSpecs.filter((item) => item.key !== "gsm" && item.key !== "fit")
+        : realSpecs,
+    [isSportTelemetry, realSpecs]
+  );
+
+  const storySpecs = showStoryBand ? remainingSpecs : [];
+  const accordionSpecs = showStoryBand ? [] : remainingSpecs;
+  const descriptionText = product.description?.trim() ?? "";
+  const highlights = useMemo(
+    () => (product.highlights ?? []).map((item) => item.trim()).filter(Boolean),
+    [product.highlights]
+  );
+  const showSpecAccordion =
+    Boolean(descriptionText) || accordionSpecs.length > 0 || highlights.length > 0;
+
+  const renderAccordions = () => (
+    <div className={tplStyles.pdpAccordions}>
+      {showSpecAccordion && (
+        <details className={tplStyles.pdpDetails} open={layout !== "one-page-drawer"}>
+          <summary className={tplStyles.pdpSummary}>
+            <span>Thông số & chất liệu</span>
+            <span className={tplStyles.accordionPlus} aria-hidden="true" />
+          </summary>
+          <div className={tplStyles.pdpDetailsBody}>
+            {descriptionText && <p className={styles.prosePara}>{descriptionText}</p>}
+            {accordionSpecs.length > 0 && (
+              <dl className={tplStyles.pdpSpecGrid}>
+                {accordionSpecs.map((item) => (
+                  <div key={item.key} className={tplStyles.pdpSpecItem}>
+                    <dt>{item.label}</dt>
+                    <dd className={item.isNum ? "num" : undefined}>{item.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+            {highlights.length > 0 && (
+              <ul className={styles.pdpDetailList}>
+                {highlights.map((item, idx) => (
+                  <li key={idx}>{item}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </details>
+      )}
+
+      <details className={tplStyles.pdpDetails}>
+        <summary className={tplStyles.pdpSummary}>
+          <span>Đổi trả & giao hàng</span>
+          <span className={tplStyles.accordionPlus} aria-hidden="true" />
+        </summary>
+        <div className={tplStyles.pdpDetailsBody}>
+          <p className={styles.prosePara}>
+            Đổi size tận nhà trong 45 ngày. Hỗ trợ COD đồng kiểm hoặc chuyển khoản VietQR trực tiếp
+            tại {brandName}.
+          </p>
+          {!previewMode && (
+            <Link href="/chinh-sach" className={styles.sectionLink}>
+              Xem chính sách đầy đủ
+            </Link>
+          )}
+        </div>
+      </details>
+
+      {!previewMode && (
+        <details className={tplStyles.pdpDetails}>
+          <summary className={tplStyles.pdpSummary}>
+            <span>Đánh giá khách hàng</span>
+            <span className={tplStyles.accordionPlus} aria-hidden="true" />
+          </summary>
+          <div className={tplStyles.pdpDetailsBody}>
+            <ProductReviewSummary
+              productId={product.backendId || product.id}
+              productName={product.name}
+            />
+            <p className={tplStyles.pdpMutedNote}>
+              Tóm tắt đánh giá hiển thị tự động khi sản phẩm có đủ nhận xét đã xác thực.
+            </p>
+          </div>
+        </details>
+      )}
+    </div>
+  );
+
+  const renderBuyboxContent = () => (
     <>
+      <div className={tplStyles.pdpTitleBlock}>
+        <h1 className={styles.pdpTitle}>{product.name}</h1>
+
+        <div className={styles.pdpPriceWrap}>
+          <span className={`${styles.pdpPrice} num`}>{formatVnd(displayPrice)}</span>
+          {hasDiscount && comparePrice ? (
+            <>
+              <span className={`${styles.productOriginalPrice} num`}>
+                {formatVnd(comparePrice)}
+              </span>
+              <span className={`${tplStyles.pdpDiscountText} num`}>
+                {formatDiscountPercent(comparePrice, displayPrice)}
+              </span>
+            </>
+          ) : null}
+        </div>
+      </div>
+
+      {layout === "sport-telemetry" && (
+        <div className={tplStyles.pdpTelemetryStrip}>
+          <div className={tplStyles.pdpTelemetryBadge}>
+            <span className={tplStyles.pdpStoryLabel}>Định lượng</span>
+            <span className={`${tplStyles.pdpStoryVal} num`}>
+              {product.gsm > 0 ? `${product.gsm}gsm` : "Siêu nhẹ"}
+            </span>
+          </div>
+          <div className={tplStyles.pdpTelemetryBadge}>
+            <span className={tplStyles.pdpStoryLabel}>Phom dáng</span>
+            <span className={tplStyles.pdpStoryVal}>{product.fit || "Athletic"}</span>
+          </div>
+          <div className={tplStyles.pdpTelemetryBadge}>
+            <span className={tplStyles.pdpStoryLabel}>Sẵn kho</span>
+            <span className={`${tplStyles.pdpStoryVal} num`}>{formatInt(maxStock)}</span>
+          </div>
+        </div>
+      )}
+
       {product.colors.length > 0 && (
         <div className={styles.pdpOptionGroup}>
           <span className={styles.pdpOptionLabel}>
@@ -326,16 +557,18 @@ export function SitePdpView({
                 <button
                   key={color.code}
                   type="button"
-                  className={`${styles.pdpOptionBtn} ${active ? styles.pdpOptionBtnActive : ""}`}
-                  onClick={() => {
-                    setSelectedColor(color.code);
-                    const colorImg = sanitizeSafeImageUrl(color.image);
-                    if (colorImg) setActiveImage(colorImg);
-                    setQty(1);
-                    setAddedNotice(null);
-                  }}
+                  className={`${tplStyles.pdpColorBtn} ${
+                    active ? tplStyles.pdpColorBtnActive : ""
+                  }`}
+                  aria-pressed={active}
+                  onClick={() => handleSelectColor(color.code, color.image)}
                 >
-                  {color.name}
+                  <span
+                    className={tplStyles.pdpColorSwatch}
+                    style={{ backgroundColor: color.hex }}
+                    aria-hidden="true"
+                  />
+                  <span>{color.name}</span>
                 </button>
               );
             })}
@@ -343,10 +576,11 @@ export function SitePdpView({
         </div>
       )}
 
+      {/* CRITICAL E2E INVARIANT: span "Kích cỡ: ..." and size buttons MUST share the same parent container */}
       {product.sizes.length > 0 && (
         <div className={styles.pdpOptionGroup}>
           <span className={styles.pdpOptionLabel}>Kích cỡ: {selectedSize}</span>
-          <div className={styles.pdpOptionList}>
+          <div className={tplStyles.pdpSizeGrid}>
             {product.sizes.map((size) => {
               const skuMatch = product.skus.find(
                 (s) => s.colorCode === selectedColor && s.size === size
@@ -358,7 +592,10 @@ export function SitePdpView({
                   key={size}
                   type="button"
                   disabled={!available}
-                  className={`${styles.pdpOptionBtn} ${active ? styles.pdpOptionBtnActive : ""}`}
+                  aria-pressed={active}
+                  className={`${tplStyles.pdpSizeTile} ${
+                    active ? tplStyles.pdpSizeTileActive : ""
+                  }`}
                   onClick={() => {
                     setSelectedSize(size);
                     setQty(1);
@@ -398,84 +635,31 @@ export function SitePdpView({
         <span className={`${styles.productStockTag} num`}>
           {maxStock > 0
             ? `Còn ${formatInt(maxStock)} sản phẩm sẵn giao`
-            : "Phân loại này hiện tạm hết hàng"}
+            : "Phân loại này tạm hết hàng"}
         </span>
       </div>
-    </>
-  );
-
-  const renderBuyboxContent = () => (
-    <>
-      <h1 className={styles.pdpTitle}>{product.name}</h1>
-
-      <div className={styles.pdpPriceWrap}>
-        <span className={`${styles.pdpPrice} num`}>{formatVnd(displayPrice)}</span>
-        {hasDiscount && comparePrice ? (
-          <>
-            <span className={`${styles.productOriginalPrice} num`}>{formatVnd(comparePrice)}</span>
-            <span className={styles.filterChipActive} style={{ padding: "4px 10px" }}>
-              {formatDiscountPercent(comparePrice, displayPrice)}
-            </span>
-          </>
-        ) : null}
-      </div>
-
-      {layout === "sport-telemetry" && (
-        <div className={tplStyles.pdpTelemetryStrip}>
-          <div className={tplStyles.pdpTelemetryBadge}>
-            <span className={tplStyles.pdpStoryLabel}>Định lượng</span>
-            <span className={`${tplStyles.pdpStoryVal} num`}>
-              {product.gsm > 0 ? `${product.gsm}gsm` : "Siêu nhẹ"}
-            </span>
-          </div>
-          <div className={tplStyles.pdpTelemetryBadge}>
-            <span className={tplStyles.pdpStoryLabel}>Phom dáng</span>
-            <span className={tplStyles.pdpStoryVal}>{product.fit || "Athletic"}</span>
-          </div>
-          <div className={tplStyles.pdpTelemetryBadge}>
-            <span className={tplStyles.pdpStoryLabel}>Sẵn kho</span>
-            <span className={`${tplStyles.pdpStoryVal} num`}>{formatInt(maxStock)}</span>
-          </div>
-        </div>
-      )}
-
-      <p className={styles.prosePara}>{product.description}</p>
-
-      {(product.fabric || product.fit || product.origin) && (
-        <p className={styles.productSpec}>
-          {[product.fabric, product.gsm > 0 ? `${product.gsm}gsm` : "", product.fit, product.origin]
-            .filter(Boolean)
-            .join(" · ")}
-        </p>
-      )}
-
-      {layout === "one-page-drawer" ? (
-        <div className={tplStyles.pdpOnePageStep}>{renderVariantSelectors()}</div>
-      ) : (
-        renderVariantSelectors()
-      )}
 
       {showVouchers && validShopVouchers.length > 0 && (
-        <div className={styles.pdpShopVoucherBox} data-reveal="">
-          <div className={styles.voucherFoot} style={{ paddingTop: 0 }}>
-            <p className={styles.pdpOptionLabel}>Ưu đãi riêng của {brandName}</p>
-            {previewMode ? (
-              <span className={styles.sectionLink}>Xem kho mã</span>
-            ) : (
+        <div className={styles.pdpShopVoucherBox}>
+          <div className={tplStyles.pdpVoucherHead}>
+            <span className={styles.pdpOptionLabel}>Mã ưu đãi {brandName}</span>
+            {!previewMode && (
               <Link href="/voucher" className={styles.sectionLink}>
-                Xem kho mã
+                Lưu mã
               </Link>
             )}
           </div>
-          {validShopVouchers.slice(0, 3).map((v) => (
-            <p key={v.id || v.code} className={styles.pdpHandoffNote} style={{ color: "inherit" }}>
-              <strong>{v.code}</strong> ·{" "}
-              {v.discountType === "percent"
-                ? `Giảm ${v.discountValue}%`
-                : `Giảm ${formatVnd(v.discountValue)}`}
-              {v.minOrderValue > 0 ? ` cho đơn từ ${formatVnd(v.minOrderValue)}` : ""}
-            </p>
-          ))}
+          <div className={tplStyles.pdpVoucherPills}>
+            {validShopVouchers.slice(0, 3).map((v) => (
+              <span key={v.id || v.code} className={tplStyles.pdpVoucherChip}>
+                <strong>{v.code}</strong>,{" "}
+                {v.discountType === "percent"
+                  ? `giảm ${v.discountValue}%`
+                  : `giảm ${formatVnd(v.discountValue)}`}
+                {v.minOrderValue > 0 ? ` (đơn từ ${formatVnd(v.minOrderValue)})` : ""}
+              </span>
+            ))}
+          </div>
         </div>
       )}
 
@@ -486,30 +670,30 @@ export function SitePdpView({
               type="button"
               className={styles.btnPrimary}
               disabled={busyAction !== null}
-              onClick={() => void handleCartAction("buy")}
+              onClick={(e) => void handleCartAction("add", e.currentTarget)}
             >
-              {busyAction === "buy"
-                ? "Đang chuyển tới thanh toán..."
-                : `Mua ngay · ${formatVnd(displayPrice * clampedQty)}`}
+              {busyAction === "add" ? "Đang thêm..." : "Thêm vào giỏ"}
             </button>
             <button
               type="button"
               className={styles.btnSecondary}
               disabled={busyAction !== null}
-              onClick={() => void handleCartAction("add")}
+              onClick={() => void handleCartAction("buy")}
             >
-              {busyAction === "add" ? "Đang thêm vào giỏ..." : "Thêm vào giỏ hàng"}
+              {busyAction === "buy"
+                ? "Đang chuyển..."
+                : `Mua ngay (${formatVnd(displayPrice * clampedQty)})`}
             </button>
           </>
         ) : (
           <button type="button" className={styles.btnPrimary} disabled>
-            Phân loại tạm hết hàng
+            Tạm hết hàng
           </button>
         )}
 
-        {addedNotice && (
+        {addedNotice && !drawerOpen && (
           <p className={styles.pdpAddedNotice} role="status">
-            <span>{addedNotice}</span>{" "}
+            <span>{addedNotice}</span>
             {!previewMode && (
               <Link href="/gio-hang" className={styles.sectionLink}>
                 Mở giỏ hàng
@@ -517,33 +701,36 @@ export function SitePdpView({
             )}
           </p>
         )}
-
-        <p className={styles.pdpHandoffNote}>
-          Đặt hàng trực tiếp tại {brandName}, hỗ trợ thanh toán khi nhận hàng (COD) đồng kiểm hoặc
-          chuyển khoản VietQR.
-        </p>
       </div>
 
-      {product.highlights.length > 0 && (
-        <div className={styles.pdpOptionGroup} data-reveal="">
-          <h2 className={styles.pdpOptionLabel}>Điểm nổi bật</h2>
-          <ul className={styles.pdpDetailList}>
-            {product.highlights.map((item, idx) => (
-              <li key={idx}>{item}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {renderAccordions()}
     </>
   );
 
-  const useEditorialTwoCol = layout === "editorial-tall" || galleryStyle === "stacked";
-  const useDenseTwoCol = layout === "dense-spec" || layout === "sku-order-matrix";
-  const relatedGridClass = relatedProducts.length === 3 ? tplStyles.gridCols3 : tplStyles.gridCols4;
+  const useDenseTwoCol =
+    layout === "dense-spec" || layout === "sku-order-matrix" || layout === "one-page-drawer";
+  const relatedGridClass =
+    relatedProducts.length <= 1
+      ? tplStyles.gridSingle
+      : relatedProducts.length === 2
+        ? tplStyles.gridCols2
+        : relatedProducts.length === 3
+          ? tplStyles.gridCols3
+          : tplStyles.gridCols4;
+
+  const activeColorName = colorNameMap.get(selectedColor)?.name ?? selectedColor;
+  const mobileVariantLabel = [activeColorName, selectedSize].filter(Boolean).join(", ");
+  const drawerVariantLabel = [
+    activeColorName,
+    selectedSize ? `Size ${selectedSize}` : "",
+    `SL ${clampedQty}`,
+  ]
+    .filter(Boolean)
+    .join(", ");
 
   return (
-    <div data-pdp-layout={layout} data-pdp-gallery={galleryStyle}>
-      <section className={styles.siteSection} style={{ paddingTop: 24 }}>
+    <div data-pdp-layout={layout} data-pdp-gallery={galleryStyle} className={tplStyles.pdpRoot}>
+      <section className={styles.siteSection} style={{ paddingTop: 20 }}>
         <div className={tplStyles.container}>
           <nav className={styles.breadcrumb} aria-label="Đường dẫn trang">
             {previewMode ? (
@@ -561,212 +748,33 @@ export function SitePdpView({
                 Sản phẩm
               </Link>
             )}
-            <span aria-hidden="true">/</span>
-            <span>{product.name}</span>
+            <span className={styles.breadcrumbTailSep} aria-hidden="true">
+              /
+            </span>
+            <span className={styles.breadcrumbCurrent}>{product.name}</span>
           </nav>
 
-          {useEditorialTwoCol ? (
-            <div className={tplStyles.pdpEditorialGrid}>
-              {renderGallery()}
-              <div className={tplStyles.pdpStickyBuybox}>{renderBuyboxContent()}</div>
-            </div>
-          ) : useDenseTwoCol ? (
-            <div className={tplStyles.pdpDenseGrid}>
-              {renderGallery()}
-              <div className={tplStyles.pdpStickyBuybox} style={{ position: "static" }}>
-                {renderBuyboxContent()}
-              </div>
-            </div>
-          ) : (
-            <div className={styles.pdpGrid}>
-              <div
-                className={styles.pdpHeadBlock}
-                data-rise=""
-                style={{ "--i": 0 } as React.CSSProperties}
-              >
-                <h1 className={styles.pdpTitle}>{product.name}</h1>
-
-                <div className={styles.pdpPriceWrap}>
-                  <span className={`${styles.pdpPrice} num`}>{formatVnd(displayPrice)}</span>
-                  {hasDiscount && comparePrice ? (
-                    <>
-                      <span className={`${styles.productOriginalPrice} num`}>
-                        {formatVnd(comparePrice)}
-                      </span>
-                      <span className={styles.filterChipActive} style={{ padding: "4px 10px" }}>
-                        {formatDiscountPercent(comparePrice, displayPrice)}
-                      </span>
-                    </>
-                  ) : null}
-                </div>
-              </div>
-
-              {renderGallery()}
-
-              <div
-                className={styles.pdpInfoCol}
-                data-rise=""
-                style={{ "--i": 2 } as React.CSSProperties}
-              >
-                {layout === "sport-telemetry" && (
-                  <div className={tplStyles.pdpTelemetryStrip}>
-                    <div className={tplStyles.pdpTelemetryBadge}>
-                      <span className={tplStyles.pdpStoryLabel}>Định lượng</span>
-                      <span className={`${tplStyles.pdpStoryVal} num`}>
-                        {product.gsm > 0 ? `${product.gsm}gsm` : "Siêu nhẹ"}
-                      </span>
-                    </div>
-                    <div className={tplStyles.pdpTelemetryBadge}>
-                      <span className={tplStyles.pdpStoryLabel}>Phom dáng</span>
-                      <span className={tplStyles.pdpStoryVal}>{product.fit || "Athletic"}</span>
-                    </div>
-                    <div className={tplStyles.pdpTelemetryBadge}>
-                      <span className={tplStyles.pdpStoryLabel}>Sẵn kho</span>
-                      <span className={`${tplStyles.pdpStoryVal} num`}>{formatInt(maxStock)}</span>
-                    </div>
-                  </div>
-                )}
-
-                <p className={styles.prosePara}>{product.description}</p>
-
-                {(product.fabric || product.fit || product.origin) && (
-                  <p className={styles.productSpec}>
-                    {[
-                      product.fabric,
-                      product.gsm > 0 ? `${product.gsm}gsm` : "",
-                      product.fit,
-                      product.origin,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </p>
-                )}
-
-                {layout === "one-page-drawer" ? (
-                  <div className={tplStyles.pdpOnePageStep}>{renderVariantSelectors()}</div>
-                ) : (
-                  renderVariantSelectors()
-                )}
-
-                {showVouchers && validShopVouchers.length > 0 && (
-                  <div className={styles.pdpShopVoucherBox} data-reveal="">
-                    <div className={styles.voucherFoot} style={{ paddingTop: 0 }}>
-                      <p className={styles.pdpOptionLabel}>Ưu đãi riêng của {brandName}</p>
-                      {previewMode ? (
-                        <span className={styles.sectionLink}>Xem kho mã</span>
-                      ) : (
-                        <Link href="/voucher" className={styles.sectionLink}>
-                          Xem kho mã
-                        </Link>
-                      )}
-                    </div>
-                    {validShopVouchers.slice(0, 3).map((v) => (
-                      <p
-                        key={v.id || v.code}
-                        className={styles.pdpHandoffNote}
-                        style={{ color: "inherit" }}
-                      >
-                        <strong>{v.code}</strong> ·{" "}
-                        {v.discountType === "percent"
-                          ? `Giảm ${v.discountValue}%`
-                          : `Giảm ${formatVnd(v.discountValue)}`}
-                        {v.minOrderValue > 0 ? ` cho đơn từ ${formatVnd(v.minOrderValue)}` : ""}
-                      </p>
-                    ))}
-                  </div>
-                )}
-
-                <div className={styles.pdpCtaStack}>
-                  {maxStock > 0 && (skuId || previewMode) ? (
-                    <>
-                      <button
-                        type="button"
-                        className={styles.btnPrimary}
-                        disabled={busyAction !== null}
-                        onClick={() => void handleCartAction("buy")}
-                      >
-                        {busyAction === "buy"
-                          ? "Đang chuyển tới thanh toán..."
-                          : `Mua ngay · ${formatVnd(displayPrice * clampedQty)}`}
-                      </button>
-                      <button
-                        type="button"
-                        className={styles.btnSecondary}
-                        disabled={busyAction !== null}
-                        onClick={() => void handleCartAction("add")}
-                      >
-                        {busyAction === "add" ? "Đang thêm vào giỏ..." : "Thêm vào giỏ hàng"}
-                      </button>
-                    </>
-                  ) : (
-                    <button type="button" className={styles.btnPrimary} disabled>
-                      Phân loại tạm hết hàng
-                    </button>
-                  )}
-
-                  {addedNotice && (
-                    <p className={styles.pdpAddedNotice} role="status">
-                      <span>{addedNotice}</span>{" "}
-                      {!previewMode && (
-                        <Link href="/gio-hang" className={styles.sectionLink}>
-                          Mở giỏ hàng
-                        </Link>
-                      )}
-                    </p>
-                  )}
-
-                  <p className={styles.pdpHandoffNote}>
-                    Đặt hàng trực tiếp tại {brandName}, hỗ trợ thanh toán khi nhận hàng (COD) đồng
-                    kiểm hoặc chuyển khoản VietQR.
-                  </p>
-                </div>
-
-                {product.highlights.length > 0 && (
-                  <div className={styles.pdpOptionGroup} data-reveal="">
-                    <h2 className={styles.pdpOptionLabel}>Điểm nổi bật</h2>
-                    <ul className={styles.pdpDetailList}>
-                      {product.highlights.map((item, idx) => (
-                        <li key={idx}>{item}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+          <div className={useDenseTwoCol ? tplStyles.pdpDenseGrid : tplStyles.pdpEditorialGrid}>
+            {renderGallery()}
+            <div className={tplStyles.pdpStickyBuybox}>{renderBuyboxContent()}</div>
+          </div>
 
           {renderSkuMatrixTable()}
 
-          {showStoryBand &&
-            (product.fabric || product.fit || product.origin || product.gsm > 0) && (
-              <div className={tplStyles.pdpStoryBand} data-reveal="">
-                <div className={tplStyles.pdpStoryCell}>
-                  <span className={tplStyles.pdpStoryLabel}>Chất liệu</span>
-                  <span className={tplStyles.pdpStoryVal}>{product.fabric || "Sợi chọn lọc"}</span>
-                </div>
-                <div className={tplStyles.pdpStoryCell}>
-                  <span className={tplStyles.pdpStoryLabel}>Định lượng vải</span>
-                  <span className={`${tplStyles.pdpStoryVal} num`}>
-                    {product.gsm > 0 ? `${product.gsm}gsm` : "Tiêu chuẩn xưởng"}
+          {storySpecs.length > 0 && (
+            <div
+              className={tplStyles.pdpStoryBand}
+              data-cols={storySpecs.length}
+              data-reveal="rows"
+            >
+              {storySpecs.map((item) => (
+                <div key={item.key} className={tplStyles.pdpStoryCell}>
+                  <span className={tplStyles.pdpStoryLabel}>{item.label}</span>
+                  <span className={`${tplStyles.pdpStoryVal}${item.isNum ? " num" : ""}`}>
+                    {item.value}
                   </span>
                 </div>
-                <div className={tplStyles.pdpStoryCell}>
-                  <span className={tplStyles.pdpStoryLabel}>Phom mặc</span>
-                  <span className={tplStyles.pdpStoryVal}>{product.fit || "Regular"}</span>
-                </div>
-                <div className={tplStyles.pdpStoryCell}>
-                  <span className={tplStyles.pdpStoryLabel}>Xuất xứ hoàn thiện</span>
-                  <span className={tplStyles.pdpStoryVal}>{product.origin || brandName}</span>
-                </div>
-              </div>
-            )}
-
-          {!previewMode && (
-            <div className={tplStyles.pdpReviewSummaryWrap}>
-              <ProductReviewSummary
-                productId={product.backendId || product.id}
-                productName={product.name}
-              />
+              ))}
             </div>
           )}
         </div>
@@ -786,9 +794,9 @@ export function SitePdpView({
       {showRelated && relatedProducts.length > 0 && (
         <section className={`${styles.siteSection} ${styles.siteSectionSurface}`}>
           <div className={tplStyles.container}>
-            <div className={styles.sectionHead} data-reveal="">
+            <div className={styles.sectionHead}>
               <div className={styles.sectionHeadCopy}>
-                <h2 className={styles.sectionTitle}>Sản phẩm khác của {brandName}</h2>
+                <h2 className={styles.sectionTitle}>Sản phẩm cùng cửa hàng</h2>
               </div>
               {previewMode ? (
                 <span className={styles.sectionLink}>Xem tất cả</span>
@@ -798,19 +806,130 @@ export function SitePdpView({
                 </Link>
               )}
             </div>
-            <div className={relatedGridClass}>
-              {relatedProducts.map((item, idx) => (
+            <div className={relatedGridClass} data-reveal="rows">
+              {relatedProducts.slice(0, 4).map((rel, idx) => (
                 <SiteProductCard
-                  key={item.id}
-                  product={item}
+                  key={rel.id}
+                  product={rel}
                   index={idx}
                   previewMode={previewMode}
                   cardStyle={cardStyle}
+                  layoutMode={relatedProducts.length === 1 ? "single-wide" : "default"}
                 />
               ))}
             </div>
           </div>
         </section>
+      )}
+
+      {/* Mobile sticky buy bar (hidden on desktop; unified support dock lifts above it via :has) */}
+      {!previewMode && (
+        <div className={tplStyles.pdpMobileBuyBar} data-mobile-buybar="">
+          <div className={tplStyles.pdpMobileBuyPrice}>
+            <span className={`${tplStyles.pdpMobilePriceVal} num`}>{formatVnd(displayPrice)}</span>
+            {mobileVariantLabel && (
+              <span className={tplStyles.pdpMobileVariantVal}>{mobileVariantLabel}</span>
+            )}
+          </div>
+          <div className={tplStyles.pdpMobileBuyActions}>
+            <button
+              type="button"
+              className={tplStyles.pdpMobileBagBtn}
+              disabled={maxStock <= 0 || !skuId || busyAction !== null}
+              onClick={(e) => void handleCartAction("add", e.currentTarget)}
+              aria-label="Cho vào giỏ"
+            >
+              <IconBag size={18} />
+            </button>
+            <button
+              type="button"
+              className={tplStyles.pdpMobilePrimaryBtn}
+              disabled={maxStock <= 0 || !skuId || busyAction !== null}
+              onClick={() => void handleCartAction("buy")}
+            >
+              {maxStock <= 0 ? "Hết hàng" : busyAction === "buy" ? "Đang chuyển..." : "Mua ngay"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Slide-right Add-to-Cart confirmation drawer */}
+      {drawerOpen && (
+        <div
+          className={`${styles.siteDrawerBackdrop} ${
+            drawerClosing ? styles.siteDrawerBackdropClosing : ""
+          }`}
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeDrawer(true);
+          }}
+        >
+          <aside
+            ref={cartDrawerRef}
+            tabIndex={-1}
+            className={`${tplStyles.cartConfirmDrawer} ${
+              drawerClosing ? styles.siteDrawerPanelClosing : ""
+            }`}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Đã thêm vào giỏ hàng"
+          >
+            <header className={tplStyles.cartConfirmHead}>
+              <span className={tplStyles.cartConfirmStatus}>
+                <IconCheck size={16} />
+                <span>Đã thêm vào giỏ</span>
+              </span>
+              <button
+                type="button"
+                className={styles.siteDrawerClose}
+                onClick={() => closeDrawer(true)}
+                aria-label="Đóng thông báo giỏ hàng"
+              >
+                <IconClose size={18} />
+              </button>
+            </header>
+
+            <div className={tplStyles.cartConfirmItem}>
+              <img
+                src={activeImage}
+                alt={product.name}
+                width={84}
+                height={112}
+                className={tplStyles.cartConfirmThumb}
+              />
+              <div className={tplStyles.cartConfirmMeta}>
+                <p className={tplStyles.cartConfirmName}>{product.name}</p>
+                <p className={tplStyles.cartConfirmVariant}>{drawerVariantLabel}</p>
+                <p className={`${tplStyles.cartConfirmPrice} num`}>
+                  {formatVnd(displayPrice * clampedQty)}
+                </p>
+              </div>
+            </div>
+
+            {addedNotice && (
+              <p className={tplStyles.pdpMutedNote} role="status">
+                {addedNotice}
+              </p>
+            )}
+
+            <div className={tplStyles.cartConfirmActions}>
+              <Link
+                href="/gio-hang"
+                className={styles.btnPrimary}
+                onClick={() => closeDrawer(false)}
+              >
+                Mở giỏ hàng
+              </Link>
+              <button
+                type="button"
+                className={styles.btnSecondary}
+                onClick={() => closeDrawer(true)}
+              >
+                Tiếp tục xem
+              </button>
+            </div>
+          </aside>
+        </div>
       )}
     </div>
   );

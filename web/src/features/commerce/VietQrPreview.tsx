@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { formatDateTimeVi, formatVnd } from "@/lib/format";
-import { Button } from "@/components/Button";
+import { IconCheck, IconCopy } from "@/components/Icons";
 import { useStore } from "@/context/StoreContext";
 import styles from "./commerce.module.css";
 
@@ -16,19 +16,29 @@ export interface VietQrPreviewProps {
   expiresAt?: string;
 }
 
+type CopyKey = "amount" | "account" | "reference";
+
 /**
- * Crisp deterministic flat SVG VietQR display in Frost & Slate palette (no card form).
+ * Centered high-contrast flat SVG VietQR stage with one-click copy for amount, account, and transfer ref.
  */
 export function VietQrPreview({
   amount,
   reference,
   qrCode,
-  bankName = "ACB · Chi nhánh TP. Hồ Chí Minh",
+  bankName = "ACB, TP. Hồ Chí Minh",
   accountNo = "2026 8841 9001",
   accountName = "Công ty TNHH NexusMart Việt Nam",
   expiresAt,
 }: VietQrPreviewProps) {
   const { showToast } = useStore();
+  const [copiedKey, setCopiedKey] = useState<CopyKey | null>(null);
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    };
+  }, []);
 
   const modules = useMemo(() => {
     const size = 21;
@@ -74,22 +84,26 @@ export function VietQrPreview({
     return grid;
   }, [amount, qrCode, reference]);
 
-  const handleCopy = async () => {
+  const handleCopy = async (key: CopyKey, rawValue: string, label: string) => {
     try {
-      await navigator.clipboard.writeText(reference);
-      showToast(`Đã sao chép nội dung chuyển khoản ${reference}.`);
+      await navigator.clipboard.writeText(rawValue);
+      setCopiedKey(key);
+      showToast(`Đã sao chép ${label}.`);
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(() => setCopiedKey(null), 2200);
     } catch {
-      showToast(`Nội dung chuyển khoản: ${reference}`);
+      showToast(`${label}: ${rawValue}`);
     }
   };
 
   return (
-    <div className={styles.qrWrap}>
-      <div className={styles.qrBox}>
+    <div className={styles.qrStage}>
+      <div className={styles.qrFrame} data-reveal="scale">
         <svg
           viewBox="0 0 21 21"
-          width="148"
-          height="148"
+          width="232"
+          height="232"
+          className={styles.qrSvg}
           role="img"
           aria-label={`Mã VietQR thanh toán ${formatVnd(amount)}`}
         >
@@ -103,7 +117,7 @@ export function VietQrPreview({
                   y={y}
                   width="1"
                   height="1"
-                  fill={x >= 8 && x <= 12 && y >= 8 && y <= 12 ? "#0d7480" : "#1f3038"}
+                  fill={x >= 8 && x <= 12 && y >= 8 && y <= 12 ? "#0d7480" : "#152229"}
                 />
               ) : null
             )
@@ -111,42 +125,63 @@ export function VietQrPreview({
         </svg>
       </div>
 
-      <div className={styles.qrInfo}>
+      <div className={styles.qrDetails}>
         <div className={styles.qrRow}>
-          <span className={styles.qrLabel}>Ngân hàng thụ hưởng</span>
-          <span className={styles.qrVal}>{bankName}</span>
+          <div className={styles.qrRowMain}>
+            <span className={styles.qrLabel}>Số tiền</span>
+            <span className={`${styles.qrAmount} num`}>{formatVnd(amount)}</span>
+          </div>
+          <button
+            type="button"
+            className={`${styles.copyBtn} ${copiedKey === "amount" ? styles.copyBtnDone : ""}`}
+            onClick={() => void handleCopy("amount", String(amount), "số tiền")}
+          >
+            {copiedKey === "amount" ? <IconCheck size={14} /> : <IconCopy size={14} />}
+            <span>{copiedKey === "amount" ? "Đã chép" : "Chép số tiền"}</span>
+          </button>
         </div>
+
         <div className={styles.qrRow}>
-          <span className={styles.qrLabel}>Số tài khoản</span>
-          <span className={`${styles.qrVal} num`}>{accountNo}</span>
+          <div className={styles.qrRowMain}>
+            <span className={styles.qrLabel}>Nội dung chuyển khoản</span>
+            <span className={`${styles.qrVal} num`}>{reference}</span>
+          </div>
+          <button
+            type="button"
+            className={`${styles.copyBtn} ${copiedKey === "reference" ? styles.copyBtnDone : ""}`}
+            onClick={() => void handleCopy("reference", reference, "nội dung chuyển khoản")}
+          >
+            {copiedKey === "reference" ? <IconCheck size={14} /> : <IconCopy size={14} />}
+            <span>{copiedKey === "reference" ? "Đã chép" : "Chép nội dung"}</span>
+          </button>
         </div>
+
         <div className={styles.qrRow}>
-          <span className={styles.qrLabel}>Chủ tài khoản</span>
-          <span className={styles.qrVal}>{accountName}</span>
+          <div className={styles.qrRowMain}>
+            <span className={styles.qrLabel}>{bankName}</span>
+            <span className={`${styles.qrVal} num`}>{accountNo}</span>
+            <span className={styles.qrLabel}>{accountName}</span>
+          </div>
+          <button
+            type="button"
+            className={`${styles.copyBtn} ${copiedKey === "account" ? styles.copyBtnDone : ""}`}
+            onClick={() =>
+              void handleCopy("account", accountNo.replace(/\s+/g, ""), "số tài khoản")
+            }
+          >
+            {copiedKey === "account" ? <IconCheck size={14} /> : <IconCopy size={14} />}
+            <span>{copiedKey === "account" ? "Đã chép" : "Chép STK"}</span>
+          </button>
         </div>
-        <div className={styles.qrRow}>
-          <span className={styles.qrLabel}>Số tiền chuyển khoản</span>
-          <span className={`${styles.qrAmount} num`}>{formatVnd(amount)}</span>
-        </div>
-        <div className={styles.qrRow}>
-          <span className={styles.qrLabel}>Nội dung bắt buộc</span>
-          <span className={`${styles.qrVal} num`}>{reference}</span>
-        </div>
+
         {expiresAt && (
           <div className={styles.qrRow}>
-            <span className={styles.qrLabel}>Hạn thanh toán</span>
-            <span className={`${styles.qrVal} num`}>{formatDateTimeVi(expiresAt)}</span>
+            <div className={styles.qrRowMain}>
+              <span className={styles.qrLabel}>Hạn chuyển khoản</span>
+              <span className={`${styles.qrVal} num`}>{formatDateTimeVi(expiresAt)}</span>
+            </div>
           </div>
         )}
-        <div className={styles.formActions}>
-          <Button variant="secondary" size="sm" onClick={handleCopy}>
-            Sao chép nội dung
-          </Button>
-        </div>
-        <p className={styles.qrNote}>
-          Mở ứng dụng ngân hàng để quét mã và chuyển khoản đúng số tiền cùng nội dung ở trên. Đơn
-          hàng sẽ tự động xác nhận ngay khi nhận được thanh toán.
-        </p>
       </div>
     </div>
   );

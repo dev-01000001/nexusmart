@@ -65,26 +65,34 @@ export function mapGatewayAddress(a: GwAddress): AddressView {
   };
 }
 
+const UNSAFE_PATH_CHAR_RE = /[\u0000-\u001F\u007F\\]/;
+
+/**
+ * Validates that a redirect target is a same-origin relative path starting with a single `/`.
+ * Rejects protocol-relative `//`, any backslash `\`, and all ASCII control characters
+ * (`\x00-\x1f`, `\x7f`, including `\t`/`\r`/`\n` that browsers strip when parsing URLs).
+ */
+export function safeInternalPath(raw: string | null | undefined, fallback = "/"): string {
+  if (!raw || UNSAFE_PATH_CHAR_RE.test(raw)) return fallback;
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("/") || trimmed.startsWith("//")) {
+    return fallback;
+  }
+  return trimmed;
+}
+
 /**
  * Validates a `?next=` query parameter to prevent open redirects and auth-page loops.
  * Only accepts same-origin relative paths starting with a single `/`.
  */
 export function safeNextPath(raw: string | null | undefined, fallback = "/tai-khoan"): string {
-  if (!raw) return fallback;
-  const trimmed = raw.trim();
-  if (
-    !trimmed.startsWith("/") ||
-    trimmed.startsWith("//") ||
-    trimmed.startsWith("/\\") ||
-    /[\r\n\0]/.test(trimmed)
-  ) {
-    return fallback;
-  }
-  const pathname = trimmed.split(/[?#]/)[0] ?? "";
+  const safe = safeInternalPath(raw, "");
+  if (!safe) return fallback;
+  const pathname = safe.split(/[?#]/)[0] ?? "";
   if (pathname === "/dang-nhap" || pathname === "/dang-ky") {
     return fallback;
   }
-  return trimmed;
+  return safe;
 }
 
 /** Map backend numeric province codes to the storefront ETA/shipping preview table codes. */

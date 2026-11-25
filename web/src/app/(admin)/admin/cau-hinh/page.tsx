@@ -52,6 +52,7 @@ export default async function AdminConfigPage() {
       initialUsers={usersResult.data}
       usersTotal={usersResult.total}
       usersError={usersResult.error}
+      serverNowMs={Date.now()}
     />
   );
 }

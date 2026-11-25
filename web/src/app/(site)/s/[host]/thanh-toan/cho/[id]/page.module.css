@@ -1,128 +1,266 @@
-/* VietQR payment waiting sheet — Frost & Slate, dark status header + crisp white body */
+/* VietQR Payment Waiting — centered large QR stage, circular SVG countdown ring, celebratory success transition.
+   Zero gradients, zero resting shadows, zero left accent stripes. */
 
-.sheet {
-  background: var(--surface-white);
-  max-width: 880px;
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-.banner {
-  background: var(--band-dark);
-  color: var(--band-dark-ink);
-  padding: clamp(22px, 2.8vw, 32px);
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 20px;
-  flex-wrap: wrap;
-}
-
-.bannerLeft {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-}
-
-.bannerTitle {
-  font-size: var(--step-lead);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  line-height: 1.2;
-  color: var(--band-dark-ink);
-}
-
-.bannerMeta {
-  font-size: 16px;
-  color: var(--band-dark-muted);
-  line-height: 1.45;
-}
-
-.bannerAmountCol {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
-}
-
-.bannerAmount {
-  font-size: var(--step-lead);
-  font-weight: 600;
-  color: var(--band-dark-ink);
-  font-variant-numeric: tabular-nums;
-}
-
-.body {
-  padding: clamp(22px, 2.8vw, 32px);
+.stageWrap {
+  max-width: 600px;
+  margin-inline: auto;
   display: flex;
   flex-direction: column;
   gap: 24px;
 }
 
-.statusBar {
-  background: var(--accent-tint);
-  border-left: 4px solid var(--accent);
-  padding: 16px 18px;
+.stageHead {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+}
+
+.sheet {
+  background: var(--surface-white);
+  border-radius: var(--radius-shop);
+  padding: clamp(24px, 3.2vw, 38px);
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  width: 100%;
+}
+
+/* Circular countdown ring header */
+.timerRow {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  flex-wrap: wrap;
+  gap: 18px;
+  padding-bottom: 4px;
 }
 
-.statusBarSuccess {
-  border-left-color: var(--positive);
-}
-
-.statusBarFailed {
-  border-left-color: var(--negative);
-}
-
-.statusTextGroup {
+.timerCopy {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
 }
 
-.statusTitle {
-  font-size: 16px;
+.timerTitle {
+  font-size: 18px;
   font-weight: 600;
   color: var(--ink-strong);
+  line-height: 1.25;
 }
 
-.statusSub {
+.timerSub {
+  font-size: var(--step-small);
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.ringWrap {
+  position: relative;
+  width: 82px;
+  height: 82px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ringSvg {
+  width: 82px;
+  height: 82px;
+  transform: rotate(-90deg);
+}
+
+.ringTrack {
+  fill: none;
+  stroke: var(--surface-muted);
+  stroke-width: 5;
+}
+
+.ringProgress {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 5;
+  stroke-linecap: round;
+  transition:
+    stroke-dashoffset 900ms linear,
+    stroke var(--t-ui) var(--ease-out);
+}
+
+.ringWarn {
+  stroke: var(--amber);
+}
+
+.ringUrgent {
+  stroke: var(--negative);
+}
+
+.ringText {
+  position: absolute;
+  font-family: var(--font-sans);
+  font-stretch: var(--type-tight-wdth);
   font-size: 16px;
-  color: var(--ink);
-  line-height: 1.5;
-}
-
-.countdown {
-  font-size: var(--step-lead);
-  font-weight: 600;
+  font-weight: 700;
   color: var(--ink-strong);
   font-variant-numeric: tabular-nums;
 }
 
-.allocSection {
-  padding-top: 20px;
-  border-top: 2px solid var(--surface-subtle);
+/* Success celebratory state transition */
+.successStage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 16px;
+  padding: clamp(20px, 3vw, 36px) 12px;
+  animation: nm-success-in var(--t-reveal) var(--ease-expo);
+}
+
+@keyframes nm-success-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.successCircle {
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  background: var(--pill-positive-bg);
+  color: var(--positive);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.successCheckPath {
+  stroke-dasharray: 48;
+  stroke-dashoffset: 0;
+  animation: nm-check-draw 520ms var(--ease-expo) 120ms backwards;
+}
+
+@keyframes nm-check-draw {
+  from {
+    stroke-dashoffset: 48;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.successTitle {
+  font-family: var(--font-sans);
+  font-stretch: var(--type-wide-wdth);
+  font-size: clamp(1.5rem, 1.2rem + 1vw, 2rem);
+  font-weight: 650;
+  color: var(--ink-strong);
+  line-height: 1.15;
+}
+
+.successAmount {
+  font-family: var(--font-sans);
+  font-stretch: var(--type-tight-wdth);
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--positive);
+}
+
+.successSub {
+  font-size: 16px;
+  color: var(--muted);
+  max-width: 40ch;
+}
+
+.redirectTrack {
+  width: min(260px, 100%);
+  height: 4px;
+  background: var(--surface-muted);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+
+.redirectFill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--positive);
+  transform-origin: left center;
+  animation: nm-redirect-fill 1800ms linear forwards;
+}
+
+@keyframes nm-redirect-fill {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* Terminal failure panel */
+.failedStage {
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+  border-radius: var(--radius-shop);
+  padding: 20px;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.allocHeading {
-  font-size: 16px;
+.failedTitle {
+  font-size: 18px;
   font-weight: 600;
+}
+
+.failedSub {
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.statusSummary {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 14px;
+  padding: 12px 0;
+}
+
+.statusAmount {
+  font-family: var(--font-sans);
+  font-stretch: var(--type-tight-wdth);
+  font-size: 24px;
+  font-weight: 700;
   color: var(--ink-strong);
 }
 
-.allocList {
+.actionsCenter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.allocSection {
+  padding-top: 18px;
+  border-top: 1px solid var(--surface-muted); /* taste-skill-ignore: payment allocation summary divider */
   display: flex;
   flex-direction: column;
+  gap: 10px;
+}
+
+.allocHeading {
+  font-size: var(--step-small);
+  font-weight: 600;
+  color: var(--muted);
 }
 
 .allocRow {
@@ -130,15 +268,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  flex-wrap: wrap;
-  padding: 12px 0;
-  border-bottom: 2px solid var(--surface-subtle);
-  font-size: 16px;
+  font-size: 15px;
   color: var(--ink);
-}
-
-.allocRow:last-child {
-  border-bottom: 0;
 }
 
 .orderLink {
@@ -150,8 +281,21 @@
   text-decoration: underline;
 }
 
-@media (max-width: 768px) {
-  .bannerAmountCol {
-    align-items: flex-start;
+@media (max-width: 600px) {
+  .timerRow {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .timerCopy {
+    align-items: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .successStage,
+  .successCheckPath,
+  .redirectFill {
+    animation: none;
   }
 }

@@ -1,13 +1,15 @@
 "use client";
 
-import React, { Suspense, useMemo, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Button, IconSearch, StateView } from "@/components";
+import { Button, IconChevronLeft, IconChevronRight, IconSearch, StateView } from "@/components";
+import { hasOpenModal } from "@/components/modalFocus";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import { getProductReviewStatusMeta, type GwAdminProduct } from "@/features/admin/adminApiTypes";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { useAdminContext } from "@/features/admin/AdminShell";
+import { AdminDrawer, SlidingTabBar, isEditableElement } from "@/features/admin/AdminUi";
 import { StatusPill } from "@/features/admin/StatusPill";
 import shared from "@/features/admin/adminShared.module.css";
 import styles from "./page.module.css";
@@ -23,10 +25,12 @@ function ModerationContent({
   initialProducts,
   loadError,
   initialQuery,
+  initialSelected,
 }: {
   initialProducts: GwAdminProduct[];
   loadError: string | null;
   initialQuery: string;
+  initialSelected: string | null;
 }) {
   const router = useRouter();
   const { showToast } = useAdminContext();
@@ -34,31 +38,37 @@ function ModerationContent({
   const [products, setProducts] = useState<GwAdminProduct[]>(initialProducts);
   const [productStatusFilter, setProductStatusFilter] = useState<ProductStatusFilter>("all");
   const [query, setQuery] = useState(initialQuery);
-
   const [selectedProductId, setSelectedProductId] = useState<string | null>(
-    initialProducts[0]?.id ?? null
+    initialSelected ?? initialProducts[0]?.id ?? null
   );
-  const [mobileOpenId, setMobileOpenId] = useState<string | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
   const [productErrorId, setProductErrorId] = useState<string | null>(null);
   const [busyProductId, setBusyProductId] = useState<string | null>(null);
+  const [busyDecision, setBusyDecision] = useState<"APPROVE" | "REJECT" | null>(null);
 
-  const productPending = useMemo(
-    () => products.filter((p) => p.status.toUpperCase() === "PENDING").length,
-    [products]
-  );
-  const productApproved = useMemo(
-    () => products.filter((p) => p.status.toUpperCase() === "APPROVED").length,
-    [products]
-  );
-  const productRejected = useMemo(
-    () => products.filter((p) => p.status.toUpperCase() === "REJECTED").length,
-    [products]
-  );
+  const rowRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const deepLinkHandledRef = useRef(false);
+
+  const counts = useMemo(() => {
+    const map: Record<ProductStatusFilter, number> = {
+      all: products.length,
+      PENDING: 0,
+      APPROVED: 0,
+      REJECTED: 0,
+      OUT_OF_STOCK: 0,
+      HIDDEN: 0,
+    };
+    for (const p of products) {
+      const st = p.status.toUpperCase() as ProductStatusFilter;
+      if (st in map) map[st] += 1;
+    }
+    return map;
+  }, [products]);
 
   const filteredProducts = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return products.filter((item) => {
+    const list = products.filter((item) => {
       if (productStatusFilter !== "all" && item.status.toUpperCase() !== productStatusFilter) {
         return false;
       }
@@ -72,12 +82,107 @@ function ModerationContent({
         )
       );
     });
+
+    const rank = (status: string) => {
+      const st = status.toUpperCase();
+      if (st === "PENDING") return 0;
+      if (st === "REJECTED") return 1;
+      if (st === "APPROVED") return 2;
+      return 3;
+    };
+    return [...list].sort((a, b) => rank(a.status) - rank(b.status));
   }, [products, productStatusFilter, query]);
 
-  const activeProduct = useMemo(() => {
-    if (filteredProducts.length === 0) return null;
-    return filteredProducts.find((p) => p.id === selectedProductId) ?? filteredProducts[0];
+  const activeIndex = useMemo(() => {
+    if (filteredProducts.length === 0) return -1;
+    if (selectedProductId) {
+      const idx = filteredProducts.findIndex((p) => p.id === selectedProductId);
+      if (idx >= 0) return idx;
+    }
+    return 0;
   }, [filteredProducts, selectedProductId]);
+
+  const activeProduct = activeIndex >= 0 ? filteredProducts[activeIndex] : null;
+
+  useEffect(() => {
+    if (deepLinkHandledRef.current) return;
+    deepLinkHandledRef.current = true;
+    if (
+      initialSelected &&
+      typeof window !== "undefined" &&
+      window.innerWidth <= 960 &&
+      initialProducts.some((p) => p.id === initialSelected)
+    ) {
+      setDrawerOpen(true);
+    }
+  }, [initialSelected, initialProducts]);
+
+  useEffect(() => {
+    if (!activeProduct && drawerOpen) {
+      setDrawerOpen(false);
+    }
+  }, [activeProduct, drawerOpen]);
+
+  const stepSelection = useCallback(
+    (delta: 1 | -1) => {
+      if (filteredProducts.length === 0) return;
+      const cur = activeIndex >= 0 ? activeIndex : 0;
+      const nextIdx = Math.max(0, Math.min(filteredProducts.length - 1, cur + delta));
+      const nextItem = filteredProducts[nextIdx];
+      if (!nextItem) return;
+      setProductErrorId(null);
+      setSelectedProductId(nextItem.id);
+      rowRefs.current.get(nextItem.id)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    },
+    [filteredProducts, activeIndex]
+  );
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || isEditableElement(e.target) || hasOpenModal()) {
+        return;
+      }
+      const key = e.key.toLowerCase();
+      if (key === "j") {
+        e.preventDefault();
+        stepSelection(1);
+      } else if (key === "k") {
+        e.preventDefault();
+        stepSelection(-1);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [stepSelection]);
+
+  const pickNextAfterDecision = (
+    currentId: string,
+    updatedProduct?: GwAdminProduct
+  ): string | null => {
+    const currentIdx = filteredProducts.findIndex((p) => p.id === currentId);
+    const resolveItem = (p: GwAdminProduct) =>
+      updatedProduct && p.id === updatedProduct.id ? updatedProduct : p;
+    const remaining = filteredProducts
+      .map(resolveItem)
+      .filter(
+        (p) => productStatusFilter === "all" || p.status.toUpperCase() === productStatusFilter
+      );
+
+    if (remaining.length === 0) return null;
+
+    for (let i = Math.max(0, currentIdx + 1); i < filteredProducts.length; i++) {
+      const cand = resolveItem(filteredProducts[i]);
+      if (cand.id !== currentId && cand.status.toUpperCase() === "PENDING") {
+        return cand.id;
+      }
+    }
+    const afterSame = filteredProducts[currentIdx + 1];
+    if (afterSame && remaining.some((p) => p.id === afterSame.id)) {
+      return afterSame.id;
+    }
+    const other = remaining.find((p) => p.id !== currentId);
+    return other?.id ?? remaining[0].id;
+  };
 
   const handleProductDecision = async (item: GwAdminProduct, decision: "APPROVE" | "REJECT") => {
     if (busyProductId) return;
@@ -88,6 +193,7 @@ function ModerationContent({
     }
     setProductErrorId(null);
     setBusyProductId(item.id);
+    setBusyDecision(decision);
     try {
       const res = await api<{ product: GwAdminProduct }>(
         `/api/admin/products/${encodeURIComponent(item.id)}/review`,
@@ -96,11 +202,19 @@ function ModerationContent({
           body: { decision, reason },
         }
       );
+      const mergedItem = { ...item, ...res.product };
       setProducts((prev) => prev.map((p) => (p.id === item.id ? { ...p, ...res.product } : p)));
       setNoteDrafts((prev) => ({ ...prev, [item.id]: "" }));
+      const nextId = pickNextAfterDecision(item.id, mergedItem);
+      if (nextId) {
+        setSelectedProductId(nextId);
+        window.requestAnimationFrame(() => {
+          rowRefs.current.get(nextId)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        });
+      }
       showToast(
         decision === "APPROVE"
-          ? `Đã duyệt đăng bán sản phẩm "${item.name}".`
+          ? `Đã duyệt đăng bán "${item.name}".`
           : `Đã từ chối sản phẩm "${item.name}".`
       );
       router.refresh();
@@ -110,92 +224,142 @@ function ModerationContent({
       showToast(msg);
     } finally {
       setBusyProductId(null);
+      setBusyDecision(null);
     }
   };
 
-  const renderProductDetail = (item: GwAdminProduct, showHeading = false) => {
+  const renderProductDetail = (item: GwAdminProduct, inDrawer = false) => {
     const meta = getProductReviewStatusMeta(item.status);
-    const isBusy = busyProductId === item.id;
+    const anyBusy = Boolean(busyProductId);
+    const isThisBusy = busyProductId === item.id;
+    const noteInputId = `prod-note-${inDrawer ? "drawer" : "pane"}-${item.id}`;
     const totalStock = item.skus.reduce((sum, sku) => sum + sku.available_stock, 0);
     const thumb = item.images[0] || "/products/ao-thun-cotton-trang.png";
 
     return (
-      <div className={shared.detailWell}>
-        {showHeading && (
+      <div
+        key={item.id}
+        className={`${inDrawer ? styles.drawerContent : shared.detailWellCard} ${shared.inspectorSlide}`}
+      >
+        {!inDrawer && (
           <div className={shared.detailHeader}>
-            <h2 className={shared.detailHeading}>Kiểm duyệt sản phẩm: {item.name}</h2>
+            <div>
+              <h2 className={shared.detailHeading}>{item.name}</h2>
+              <span className={shared.cellSub}>
+                Mã {item.id.slice(0, 8)}, Gian hàng {item.shop_id.slice(0, 8)}
+              </span>
+            </div>
             <div className={shared.detailHeaderMeta}>
               <StatusPill label={meta.label} tone={meta.tone} />
+              <div className={styles.stepperBtns}>
+                <button
+                  type="button"
+                  className={styles.stepperBtn}
+                  disabled={activeIndex <= 0}
+                  onClick={() => stepSelection(-1)}
+                  aria-label="Sản phẩm trước (K)"
+                  title="Sản phẩm trước (K)"
+                >
+                  <IconChevronLeft size={14} />
+                </button>
+                <button
+                  type="button"
+                  className={styles.stepperBtn}
+                  disabled={activeIndex >= filteredProducts.length - 1}
+                  onClick={() => stepSelection(1)}
+                  aria-label="Sản phẩm tiếp theo (J)"
+                  title="Sản phẩm tiếp theo (J)"
+                >
+                  <IconChevronRight size={14} />
+                </button>
+              </div>
             </div>
           </div>
         )}
 
         <div className={styles.previewRow}>
-          <img src={thumb} alt={item.name} className={styles.thumbLg} width={96} height={96} />
+          <img src={thumb} alt={item.name} className={styles.thumbLg} width={104} height={104} />
           <div className={styles.previewMeta}>
             <div className={shared.detailGrid}>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Mã sản phẩm & gian hàng</span>
-                <span className={shared.detailVal}>
-                  {item.id.slice(0, 8)} · Shop {item.shop_id.slice(0, 8)}
-                </span>
-              </div>
               <div className={shared.detailField}>
                 <span className={shared.detailKey}>Khoảng giá bán</span>
                 <span className={`${shared.detailVal} num`}>
                   {item.min_price_vnd === item.max_price_vnd
                     ? formatVnd(item.min_price_vnd)
-                    : `${formatVnd(item.min_price_vnd)} - ${formatVnd(item.max_price_vnd)}`}
+                    : `${formatVnd(item.min_price_vnd)} đến ${formatVnd(item.max_price_vnd)}`}
                 </span>
               </div>
               <div className={shared.detailField}>
-                <span className={shared.detailKey}>Biến thể & tồn kho khả dụng</span>
+                <span className={shared.detailKey}>Biến thể &amp; tồn khả dụng</span>
                 <span className={`${shared.detailVal} num`}>
-                  {formatInt(item.skus.length)} biến thể · {formatInt(totalStock)} sản phẩm
+                  {formatInt(item.skus.length)} SKU, tồn {formatInt(totalStock)} sản phẩm
                 </span>
+              </div>
+              <div className={shared.detailField}>
+                <span className={shared.detailKey}>Mã gian hàng</span>
+                <span className={`${shared.detailValPlain} num`}>{item.shop_id}</span>
               </div>
               <div className={shared.detailField}>
                 <span className={shared.detailKey}>Ngày tạo</span>
-                <span className={shared.detailValPlain}>
+                <span className={`${shared.detailValPlain} num`}>
                   {item.created_at ? formatDateTimeVi(item.created_at) : "Mới cập nhật"}
                 </span>
               </div>
-              <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                <span className={shared.detailKey}>Mô tả sản phẩm</span>
-                <span className={shared.detailValPlain}>
-                  {item.description || "Gian hàng chưa nhập mô tả chi tiết."}
-                </span>
-              </div>
-              {item.skus.length > 0 && (
-                <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                  <span className={shared.detailKey}>Danh sách phân loại (SKU)</span>
-                  <span className={shared.detailValPlain}>
-                    {item.skus
-                      .map(
-                        (sku) =>
-                          `${sku.sku_code} (${sku.name}: ${formatVnd(sku.price_vnd)}, tồn ${formatInt(sku.available_stock)})`
-                      )
-                      .join(" · ")}
-                  </span>
-                </div>
-              )}
-              {item.rejection_reason && (
-                <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                  <span className={shared.detailKey}>Lý do từ chối gần nhất</span>
-                  <span className={shared.priorityText}>{item.rejection_reason}</span>
-                </div>
-              )}
             </div>
           </div>
         </div>
 
+        <div className={shared.detailField}>
+          <span className={shared.detailKey}>Mô tả sản phẩm</span>
+          <span className={shared.detailValPlain}>
+            {item.description || "Gian hàng chưa nhập mô tả."}
+          </span>
+        </div>
+
+        {item.skus.length > 0 && (
+          <div className={shared.detailField}>
+            <span className={shared.detailKey}>
+              Danh sách phân loại ({formatInt(item.skus.length)} SKU)
+            </span>
+            <div className={styles.skuTableWrap}>
+              <table className={styles.skuTable}>
+                <thead>
+                  <tr>
+                    <th>Mã SKU</th>
+                    <th>Phân loại</th>
+                    <th className={shared.colNum}>Giá bán</th>
+                    <th className={shared.colNum}>Tồn khả dụng</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {item.skus.map((sku) => (
+                    <tr key={sku.id}>
+                      <td className="num">{sku.sku_code}</td>
+                      <td>{sku.name}</td>
+                      <td className={shared.colNum}>{formatVnd(sku.price_vnd)}</td>
+                      <td className={shared.colNum}>{formatInt(sku.available_stock)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {item.rejection_reason && (
+          <div className={shared.detailField}>
+            <span className={shared.detailKey}>Lý do từ chối gần nhất</span>
+            <span className={shared.priorityText}>{item.rejection_reason}</span>
+          </div>
+        )}
+
         <div className={shared.detailActionBar}>
           <div className={shared.detailNoteGroup}>
-            <label htmlFor={`prod-note-${item.id}`} className={shared.fieldLabel}>
+            <label htmlFor={noteInputId} className={shared.fieldLabel}>
               Lý do kiểm duyệt (bắt buộc khi Từ chối)
             </label>
             <input
-              id={`prod-note-${item.id}`}
+              id={noteInputId}
               type="text"
               className={shared.textInput}
               value={noteDrafts[item.id] ?? ""}
@@ -203,7 +367,7 @@ function ModerationContent({
                 setNoteDrafts((prev) => ({ ...prev, [item.id]: e.target.value }));
                 if (productErrorId === item.id) setProductErrorId(null);
               }}
-              placeholder="Nhập ghi chú duyệt hoặc lý do từ chối gửi tới gian hàng..."
+              placeholder="Nhập ghi chú duyệt hoặc lý do từ chối gửi gian hàng..."
             />
             {productErrorId === item.id && (
               <span className={shared.validationError}>
@@ -216,16 +380,18 @@ function ModerationContent({
               variant="primary"
               size="sm"
               shape="app"
-              disabled={isBusy || item.status.toUpperCase() === "APPROVED"}
+              loading={isThisBusy && busyDecision === "APPROVE"}
+              disabled={anyBusy || item.status.toUpperCase() === "APPROVED"}
               onClick={() => void handleProductDecision(item, "APPROVE")}
             >
-              {isBusy ? "Đang xử lý..." : "Duyệt đăng bán"}
+              Duyệt đăng bán
             </Button>
             <Button
               variant="danger"
               size="sm"
               shape="app"
-              disabled={isBusy || item.status.toUpperCase() === "REJECTED"}
+              loading={isThisBusy && busyDecision === "REJECT"}
+              disabled={anyBusy || item.status.toUpperCase() === "REJECTED"}
               onClick={() => void handleProductDecision(item, "REJECT")}
             >
               Từ chối
@@ -236,40 +402,36 @@ function ModerationContent({
     );
   };
 
+  const tabs: Array<{ id: ProductStatusFilter; label: string; count: number }> = [
+    { id: "all", label: "Tất cả", count: counts.all },
+    { id: "PENDING", label: "Chờ duyệt", count: counts.PENDING },
+    { id: "APPROVED", label: "Đã duyệt bán", count: counts.APPROVED },
+    { id: "REJECTED", label: "Đã từ chối", count: counts.REJECTED },
+    { id: "OUT_OF_STOCK", label: "Hết hàng", count: counts.OUT_OF_STOCK },
+    { id: "HIDDEN", label: "Đang ẩn", count: counts.HIDDEN },
+  ];
+
   return (
     <div className={shared.page}>
       <header className={shared.titleRow}>
         <div className={shared.titleBlock}>
           <h1 className={shared.pageTitle}>Duyệt sản phẩm</h1>
-          <p className={shared.pageSubtitle}>
-            Có {formatInt(productPending)} sản phẩm chờ duyệt. Sản phẩm được duyệt sẽ bán trên site
-            riêng của gian hàng.
-          </p>
+        </div>
+        <div className={shared.titleActions}>
+          <span className={shared.kbdHint} aria-label="Phím tắt chuyển sản phẩm">
+            <kbd className={shared.kbdKey}>J</kbd>
+            <kbd className={shared.kbdKey}>K</kbd>
+            <span>chuyển sản phẩm</span>
+          </span>
         </div>
       </header>
 
-      <section
-        className={`${shared.kpiStrip} ${styles.kpiSpacer}`}
-        aria-label="Tổng hợp hàng đợi duyệt sản phẩm"
-      >
-        <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Chờ duyệt</span>
-          <span className={shared.kpiValue}>{formatInt(productPending)}</span>
-          <span className={shared.kpiCaption}>
-            Trong {formatInt(products.length)} sản phẩm của các gian hàng
-          </span>
-        </div>
-        <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Đã duyệt bán</span>
-          <span className={shared.kpiValue}>{formatInt(productApproved)}</span>
-          <span className={shared.kpiCaption}>Đang hiển thị trên site gian hàng</span>
-        </div>
-        <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Đã từ chối</span>
-          <span className={shared.kpiValue}>{formatInt(productRejected)}</span>
-          <span className={shared.kpiCaption}>Gian hàng cần sửa và gửi lại</span>
-        </div>
-      </section>
+      <SlidingTabBar
+        tabs={tabs}
+        activeId={productStatusFilter}
+        onChange={setProductStatusFilter}
+        ariaLabel="Lọc trạng thái kiểm duyệt sản phẩm"
+      />
 
       <div className={shared.toolbar}>
         <div className={shared.toolbarLeft}>
@@ -289,20 +451,7 @@ function ModerationContent({
         </div>
 
         <div className={shared.toolbarRight}>
-          <span className={shared.resultCount}>{formatInt(filteredProducts.length)} mục</span>
-          <select
-            className={shared.toolbarSelect}
-            value={productStatusFilter}
-            onChange={(e) => setProductStatusFilter(e.target.value as ProductStatusFilter)}
-            aria-label="Lọc trạng thái kiểm duyệt sản phẩm"
-          >
-            <option value="all">Tất cả trạng thái</option>
-            <option value="PENDING">Chờ kiểm duyệt</option>
-            <option value="APPROVED">Đã duyệt bán</option>
-            <option value="REJECTED">Đã từ chối</option>
-            <option value="OUT_OF_STOCK">Hết hàng</option>
-            <option value="HIDDEN">Đang ẩn</option>
-          </select>
+          <span className={shared.resultCount}>{formatInt(filteredProducts.length)} sản phẩm</span>
         </div>
       </div>
 
@@ -310,127 +459,94 @@ function ModerationContent({
         <StateView
           kind="error"
           surface="app"
-          title="Không thể tải danh sách sản phẩm kiểm duyệt"
+          title="Không thể tải danh sách sản phẩm"
           message={loadError}
-          actionLabel="Thử tải lại"
+          actionLabel="Thử lại"
           onAction={() => router.refresh()}
         />
       ) : filteredProducts.length === 0 ? (
-        <p className={shared.emptyRow}>Không có sản phẩm nào khớp với bộ lọc hiện tại.</p>
+        <p className={shared.emptyRow}>Không có sản phẩm nào khớp với bộ lọc.</p>
       ) : (
-        <>
-          <div className={shared.tableWrap}>
-            <table className={shared.dataTable}>
-              <thead>
-                <tr>
-                  <th>Sản phẩm & gian hàng</th>
-                  <th className={shared.colNum}>Giá niêm yết</th>
-                  <th className={shared.colNum}>Biến thể / Tồn kho</th>
-                  <th>Trạng thái</th>
-                  <th className={shared.colAction}>Thao tác</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredProducts.map((item) => {
-                  const meta = getProductReviewStatusMeta(item.status);
-                  const isSelected = activeProduct?.id === item.id;
-                  const totalStock = item.skus.reduce((sum, s) => sum + s.available_stock, 0);
-                  const thumb = item.images[0] || "/products/ao-thun-cotton-trang.png";
-                  return (
-                    <tr
-                      key={item.id}
-                      className={`${shared.rowInteractive} ${isSelected ? shared.rowSelected : ""}`}
-                      onClick={() => setSelectedProductId(item.id)}
+        <div className={shared.reviewSplit}>
+          <div className={shared.queueColumn}>
+            <div className={shared.queueHead}>
+              <span>Hàng đợi kiểm duyệt</span>
+              <span>
+                {activeIndex + 1} / {formatInt(filteredProducts.length)}
+              </span>
+            </div>
+            <ul className={shared.queueList} aria-label="Danh sách sản phẩm kiểm duyệt">
+              {filteredProducts.map((item) => {
+                const meta = getProductReviewStatusMeta(item.status);
+                const isSelected = activeProduct?.id === item.id;
+                const totalStock = item.skus.reduce((sum, s) => sum + s.available_stock, 0);
+                const thumb = item.images[0] || "/products/ao-thun-cotton-trang.png";
+                return (
+                  <li key={item.id} className={shared.queueItem}>
+                    <button
+                      ref={(node) => {
+                        if (node) rowRefs.current.set(item.id, node);
+                        else rowRefs.current.delete(item.id);
+                      }}
+                      type="button"
+                      className={`${shared.queueItemBtn} ${isSelected ? shared.queueItemActive : ""}`}
+                      aria-current={isSelected ? "true" : undefined}
+                      onClick={() => {
+                        setProductErrorId(null);
+                        setSelectedProductId(item.id);
+                        if (typeof window !== "undefined" && window.innerWidth <= 960) {
+                          setDrawerOpen(true);
+                        }
+                      }}
                     >
-                      <td>
-                        <div className={styles.mediaThumbCell}>
-                          <img
-                            src={thumb}
-                            alt={item.name}
-                            className={styles.thumbSm}
-                            width={44}
-                            height={44}
-                          />
-                          <div>
-                            <div className={shared.cellPrimary}>{item.name}</div>
-                            <div className={shared.cellSub}>
-                              ID {item.id.slice(0, 8)} · Shop {item.shop_id.slice(0, 8)}
-                            </div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className={shared.colNum}>
-                        {item.min_price_vnd === item.max_price_vnd
-                          ? formatVnd(item.min_price_vnd)
-                          : `${formatVnd(item.min_price_vnd)} - ${formatVnd(item.max_price_vnd)}`}
-                      </td>
-                      <td className={shared.colNum}>
-                        <div>{formatInt(item.skus.length)} SKU</div>
-                        <div className={shared.cellSub}>Tồn {formatInt(totalStock)}</div>
-                      </td>
-                      <td>
-                        <StatusPill label={meta.label} tone={meta.tone} />
-                      </td>
-                      <td className={shared.colAction}>
-                        <button
-                          type="button"
-                          className={shared.rowActionBtn}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedProductId(item.id);
-                          }}
-                        >
-                          {isSelected ? "Đang xem" : "Kiểm duyệt"}
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                      <img src={thumb} alt="" className={styles.thumbSm} width={46} height={46} />
+                      <span className={shared.queueItemBody}>
+                        <span className={shared.queueItemTop}>
+                          <span className={shared.queueItemTitle}>{item.name}</span>
+                          <StatusPill label={meta.label} tone={meta.tone} />
+                        </span>
+                        <span className={shared.queueItemMeta}>
+                          {item.min_price_vnd === item.max_price_vnd
+                            ? formatVnd(item.min_price_vnd)
+                            : `${formatVnd(item.min_price_vnd)} đến ${formatVnd(item.max_price_vnd)}`}
+                          , {formatInt(item.skus.length)} SKU, tồn {formatInt(totalStock)}
+                        </span>
+                        <span className={shared.queueItemMeta}>
+                          Shop {item.shop_id.slice(0, 8)}
+                        </span>
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
           </div>
 
           {activeProduct && (
-            <section
-              className={shared.desktopDetailSection}
-              aria-label="Chi tiết kiểm duyệt sản phẩm"
-            >
-              {renderProductDetail(activeProduct, true)}
+            <section className={shared.inspectorPane} aria-label="Chi tiết kiểm duyệt sản phẩm">
+              {renderProductDetail(activeProduct, false)}
             </section>
           )}
-
-          <div className={shared.mobileList}>
-            {filteredProducts.map((item) => {
-              const meta = getProductReviewStatusMeta(item.status);
-              const isOpen = mobileOpenId === item.id;
-              return (
-                <div key={item.id} className={shared.mobileItem}>
-                  <button
-                    type="button"
-                    className={shared.mobileItemBtn}
-                    onClick={() => setMobileOpenId((p) => (p === item.id ? null : item.id))}
-                    aria-expanded={isOpen}
-                  >
-                    <div className={shared.mobileLine1}>
-                      <span className={shared.mobileIdentity}>{item.name}</span>
-                      <span className={shared.mobileMetric}>{formatVnd(item.min_price_vnd)}</span>
-                    </div>
-                    <div className={shared.mobileLine2}>
-                      <span className={shared.mobileMetaText}>
-                        Shop {item.shop_id.slice(0, 8)} · {formatInt(item.skus.length)} SKU
-                      </span>
-                      <StatusPill label={meta.label} tone={meta.tone} />
-                    </div>
-                  </button>
-                  {isOpen && (
-                    <div className={shared.mobileDetailWrap}>{renderProductDetail(item)}</div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </>
+        </div>
       )}
+
+      <AdminDrawer
+        open={drawerOpen && Boolean(activeProduct)}
+        onClose={() => setDrawerOpen(false)}
+        title={activeProduct?.name ?? ""}
+        subtitle={activeProduct ? `Shop ${activeProduct.shop_id.slice(0, 8)}` : undefined}
+        headerBadge={
+          activeProduct ? (
+            <StatusPill
+              label={getProductReviewStatusMeta(activeProduct.status).label}
+              tone={getProductReviewStatusMeta(activeProduct.status).tone}
+            />
+          ) : undefined
+        }
+        width="lg"
+      >
+        {activeProduct && renderProductDetail(activeProduct, true)}
+      </AdminDrawer>
     </div>
   );
 }
@@ -439,18 +555,18 @@ function AdminModerationRoute({ initialProducts, loadError }: AdminModerationCli
   return (
     <AdminStateGate
       title="Duyệt sản phẩm"
-      subtitle="Duyệt sản phẩm gian hàng gửi lên trước khi bán trên site riêng của gian hàng."
       emptyTitle="Hàng đợi duyệt sản phẩm đang trống"
-      emptyMessage="Tất cả sản phẩm gian hàng gửi lên đã được duyệt."
+      emptyMessage="Tất cả sản phẩm gửi lên đã được xử lý."
       errorTitle="Không thể tải hàng đợi duyệt sản phẩm"
-      errorMessage="Dịch vụ duyệt sản phẩm tạm gián đoạn. Vui lòng thử tải lại."
+      errorMessage="Dịch vụ duyệt sản phẩm tạm gián đoạn. Vui lòng thử lại."
       loadingRows={5}
     >
-      {({ initialQuery }) => (
+      {({ initialQuery, initialSelected }) => (
         <ModerationContent
           initialProducts={initialProducts}
           loadError={loadError}
           initialQuery={initialQuery}
+          initialSelected={initialSelected}
         />
       )}
     </AdminStateGate>

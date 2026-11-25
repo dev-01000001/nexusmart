@@ -3,7 +3,15 @@
 import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Button, IconCheck, IconPlus, IconSpark, StateView } from "@/components";
+import {
+  Button,
+  IconArrowLeft,
+  IconCheck,
+  IconChevronDown,
+  IconPlus,
+  IconSpark,
+  StateView,
+} from "@/components";
 import { api, ApiError } from "@/lib/api";
 import { formatInt, formatVnd } from "@/lib/format";
 import {
@@ -11,6 +19,7 @@ import {
   type DescribeProductResult,
 } from "@/features/assistant/assistantTypes";
 import { useSellerContext } from "./SellerShell";
+import { statusPillClass } from "./SellerUiPrimitives";
 import {
   getSellerProductStatusMeta,
   type GwCategory,
@@ -54,6 +63,17 @@ function buildDraftCopy(draft: DescribeProductResult): string {
   return parts.join("\n\n");
 }
 
+const DEFAULT_WEIGHT_GRAMS = 250;
+const MIN_WEIGHT_GRAMS = 10;
+
+function clampWeightGrams(raw: string | number): number {
+  const trimmed = typeof raw === "number" ? String(raw) : raw.trim();
+  if (!trimmed) return DEFAULT_WEIGHT_GRAMS;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) return DEFAULT_WEIGHT_GRAMS;
+  return Math.max(MIN_WEIGHT_GRAMS, Math.trunc(parsed));
+}
+
 interface EditableSkuRow {
   localKey: string;
   id?: string;
@@ -67,11 +87,14 @@ interface EditableSkuRow {
   size: string;
   priceVnd: number;
   stock: number;
-  weightGrams: number;
+  weightGrams: string;
   imageUrl: string;
 }
 
-function toEditableRows(product?: GwSellerProduct | null): EditableSkuRow[] {
+function toEditableRows(
+  product?: GwSellerProduct | null,
+  defaultSkuStamp?: string
+): EditableSkuRow[] {
   if (product && product.skus?.length > 0) {
     return product.skus
       .filter((s) => s.is_active)
@@ -88,12 +111,14 @@ function toEditableRows(product?: GwSellerProduct | null): EditableSkuRow[] {
         size: s.attributes?.size ?? "L",
         priceVnd: s.price_vnd,
         stock: s.stock,
-        weightGrams: s.weight_grams || 250,
+        weightGrams: String(
+          s.weight_grams > 0 ? clampWeightGrams(s.weight_grams) : DEFAULT_WEIGHT_GRAMS
+        ),
         imageUrl: s.image_url || product.images?.[0] || GALLERY_CHOICES[0].path,
       }));
   }
   const sizes = ["S", "M", "L", "XL"];
-  const stamp = String(Date.now()).slice(-4);
+  const stamp = defaultSkuStamp?.trim() || "1001";
   return sizes.map((sz) => ({
     localKey: `new-trang-${sz}`,
     reservedStock: 0,
@@ -105,7 +130,7 @@ function toEditableRows(product?: GwSellerProduct | null): EditableSkuRow[] {
     size: sz,
     priceVnd: 189000,
     stock: 20,
-    weightGrams: 250,
+    weightGrams: String(DEFAULT_WEIGHT_GRAMS),
     imageUrl: GALLERY_CHOICES[0].path,
   }));
 }
@@ -115,6 +140,7 @@ export interface ProductFormViewProps {
   initialProduct?: GwSellerProduct | null;
   categories: GwCategory[];
   loadError?: string | null;
+  defaultSkuStamp?: string;
 }
 
 export function ProductFormView({
@@ -122,6 +148,7 @@ export function ProductFormView({
   initialProduct,
   categories,
   loadError,
+  defaultSkuStamp,
 }: ProductFormViewProps) {
   const router = useRouter();
   const { shop, showToast } = useSellerContext();
@@ -138,7 +165,9 @@ export function ProductFormView({
   const [selectedImage, setSelectedImage] = useState(
     initialProduct?.images?.[0] ?? GALLERY_CHOICES[0].path
   );
-  const [skuRows, setSkuRows] = useState<EditableSkuRow[]>(() => toEditableRows(initialProduct));
+  const [skuRows, setSkuRows] = useState<EditableSkuRow[]>(() =>
+    toEditableRows(initialProduct, defaultSkuStamp)
+  );
   const [bulkStockStr, setBulkStockStr] = useState("20");
   const [newSkuSize, setNewSkuSize] = useState("2XL");
   const [newSkuColorName, setNewSkuColorName] = useState("Xám đá");
@@ -163,8 +192,34 @@ export function ProductFormView({
     if (skuRows.length === 0) return EMPTY_DASH;
     const minP = Math.min(...skuRows.map((r) => r.priceVnd));
     const maxP = Math.max(...skuRows.map((r) => r.priceVnd));
-    return minP === maxP ? formatVnd(minP) : `${formatVnd(minP)} - ${formatVnd(maxP)}`;
+    return minP === maxP ? formatVnd(minP) : `${formatVnd(minP)} đến ${formatVnd(maxP)}`;
   }, [skuRows]);
+
+  const activeCategoryName = useMemo(
+    () => categories.find((c) => c.id === categoryId)?.name ?? "Chưa chọn ngành hàng",
+    [categories, categoryId]
+  );
+
+  const activeImageLabel = useMemo(
+    () => GALLERY_CHOICES.find((g) => g.path === selectedImage)?.label ?? "Ảnh sản phẩm",
+    [selectedImage]
+  );
+
+  const previewColors = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const row of skuRows) {
+      const label = row.colorName.trim();
+      if (label && !map.has(label)) {
+        map.set(label, row.colorHex || "#9aa5ac");
+      }
+    }
+    return Array.from(map.entries()).map(([label, hex]) => ({ label, hex }));
+  }, [skuRows]);
+
+  const previewSizes = useMemo(
+    () => Array.from(new Set(skuRows.map((r) => r.size.trim()).filter(Boolean))),
+    [skuRows]
+  );
 
   if (loadError) {
     return (
@@ -187,7 +242,8 @@ export function ProductFormView({
         <div className={common.pageHeader}>
           <div className={common.headerText}>
             <Link href="/seller/san-pham" className={styles.backLink}>
-              Quay lại danh sách sản phẩm
+              <IconArrowLeft size={14} />
+              <span>Sản phẩm</span>
             </Link>
             <h1 className={common.title}>Không tìm thấy sản phẩm</h1>
           </div>
@@ -234,7 +290,7 @@ export function ProductFormView({
         size: sizeClean,
         priceVnd: basePrice,
         stock: 15,
-        weightGrams: 250,
+        weightGrams: String(DEFAULT_WEIGHT_GRAMS),
         imageUrl: selectedImage,
       },
     ]);
@@ -293,7 +349,6 @@ export function ProductFormView({
     setAiError(null);
     setAiLoading(true);
     try {
-      const categoryName = categories.find((c) => c.id === categoryId)?.name ?? "";
       const colors = Array.from(new Set(skuRows.map((r) => r.colorName.trim()).filter(Boolean)));
       const sizes = Array.from(new Set(skuRows.map((r) => r.size.trim()).filter(Boolean)));
       const prices = skuRows.map((r) => Math.trunc(r.priceVnd)).filter((p) => p > 0);
@@ -303,7 +358,7 @@ export function ProductFormView({
         method: "POST",
         body: {
           name: cleanName,
-          category_name: categoryName,
+          category_name: categories.find((c) => c.id === categoryId)?.name ?? "",
           attributes: {
             sku_count: String(skuRows.length),
           },
@@ -345,16 +400,24 @@ export function ProductFormView({
     if (!text) return;
     if (applyMode === "replace") {
       setDescription(text);
-      showToast("Đã áp dụng bản nháp AI vào mô tả. Bạn hãy kiểm tra và chỉnh sửa trước khi lưu.");
+      showToast("Đã áp dụng bản nháp AI vào mô tả.");
     } else {
       setDescription((prev) => (prev.trim() ? `${prev.trim()}\n\n${text}` : text));
-      showToast("Đã chèn thêm bản nháp AI vào cuối mô tả sản phẩm.");
+      showToast("Đã chèn thêm bản nháp AI vào cuối mô tả.");
     }
     setAiDraft(null);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const normalizedRows = skuRows.map((r) => ({
+      ...r,
+      weightGrams: String(clampWeightGrams(r.weightGrams)),
+    }));
+    if (normalizedRows.some((r, idx) => r.weightGrams !== skuRows[idx].weightGrams)) {
+      setSkuRows(normalizedRows);
+    }
+
     const cleanName = name.trim();
     if (!cleanName) {
       setErrorMsg("Vui lòng nhập tên sản phẩm.");
@@ -364,11 +427,11 @@ export function ProductFormView({
       setErrorMsg("Vui lòng chọn danh mục sản phẩm.");
       return;
     }
-    if (skuRows.length === 0) {
+    if (normalizedRows.length === 0) {
       setErrorMsg("Cần ít nhất 1 biến thể SKU để lưu sản phẩm.");
       return;
     }
-    for (const r of skuRows) {
+    for (const r of normalizedRows) {
       if (!r.skuCode.trim()) {
         setErrorMsg("Mỗi biến thể cần có mã SKU không rỗng.");
         return;
@@ -393,10 +456,10 @@ export function ProductFormView({
         name: cleanName,
         description: description.trim() || cleanName,
         images: Array.from(
-          new Set([selectedImage, ...skuRows.map((r) => r.imageUrl).filter(Boolean)])
+          new Set([selectedImage, ...normalizedRows.map((r) => r.imageUrl).filter(Boolean)])
         ),
         status: mode === "edit" ? productStatus : undefined,
-        skus: skuRows.map((r) => ({
+        skus: normalizedRows.map((r) => ({
           id: r.id,
           sku_code: r.skuCode.trim(),
           name: r.name.trim() || `${r.colorName} / ${r.size}`,
@@ -408,7 +471,7 @@ export function ProductFormView({
           },
           price_vnd: Math.trunc(r.priceVnd),
           stock: Math.max(0, Math.trunc(r.stock)),
-          weight_grams: Math.max(10, Math.trunc(r.weightGrams || 250)),
+          weight_grams: clampWeightGrams(r.weightGrams),
           image_url: r.imageUrl || selectedImage,
         })),
       };
@@ -418,7 +481,7 @@ export function ProductFormView({
           method: "POST",
           body: payload,
         });
-        const msg = `Đã tạo sản phẩm "${res.product.name}" (${res.product.skus.length} SKU). Sản phẩm đang chờ quản trị duyệt hiển thị.`;
+        const msg = `Đã tạo sản phẩm "${res.product.name}" (${res.product.skus.length} SKU). Đang chờ quản trị duyệt hiển thị.`;
         showToast(msg);
         setSavedNotice(msg);
         router.push(`/seller/san-pham/${res.product.id}`);
@@ -449,21 +512,701 @@ export function ProductFormView({
   const statusMeta = getSellerProductStatusMeta(productStatus);
 
   return (
-    <form className={common.page} onSubmit={handleSubmit}>
-      <div className={common.pageHeader}>
+    <form className={common.page} onSubmit={handleSubmit} noValidate>
+      <header className={common.pageHeader}>
         <div className={common.headerText}>
           <Link href="/seller/san-pham" className={styles.backLink}>
-            Quay lại danh sách sản phẩm
+            <IconArrowLeft size={14} />
+            <span>Sản phẩm</span>
           </Link>
-          <h1 className={common.title}>
-            {mode === "create" ? "Thêm sản phẩm mới" : initialProduct?.name}
-          </h1>
-          <p className={common.finding}>
-            {shop?.name ?? "Gian hàng"} · {formatInt(skuRows.length)} biến thể SKU · Tổng tồn{" "}
-            {formatInt(totalStock)} chiếc · {statusMeta.label}
-          </p>
+          <div className={styles.titleRow}>
+            <h1 className={common.title}>
+              {mode === "create" ? "Thêm sản phẩm mới" : initialProduct?.name}
+            </h1>
+            <span className={statusPillClass(statusMeta.tone)}>{statusMeta.label}</span>
+          </div>
         </div>
-        <div className={common.headerActions}>
+      </header>
+
+      {savedNotice && (
+        <div className={styles.noticeBar} role="status">
+          <span>{savedNotice}</span>
+          <Link href="/seller/san-pham" className={styles.noticeLink}>
+            Xem trong danh sách
+          </Link>
+        </div>
+      )}
+
+      {errorMsg && (
+        <div className={styles.errorBar} role="alert">
+          {errorMsg}
+        </div>
+      )}
+
+      <div className={styles.workspace}>
+        {/* Left Column: Collapsible Form Groups */}
+        <div className={styles.formCol}>
+          <details className={common.accordion} open>
+            <summary className={common.accordionSummary}>
+              <span className={styles.accordionTitleGroup}>
+                <span>Thông tin &amp; Mô tả</span>
+                <span className={common.accordionMeta}>{activeCategoryName}</span>
+              </span>
+              <span className={common.accordionChevron} aria-hidden="true">
+                <IconChevronDown size={16} />
+              </span>
+            </summary>
+
+            <div className={common.accordionBody}>
+              <div className={common.field}>
+                <label htmlFor="prod-name" className={common.fieldLabel}>
+                  Tên sản phẩm
+                </label>
+                <input
+                  id="prod-name"
+                  type="text"
+                  className={common.textInput}
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Ví dụ: Áo thun Cotton Compact 220gsm Xanh đá"
+                />
+              </div>
+
+              <div className={styles.fields2}>
+                <div className={common.field}>
+                  <label htmlFor="prod-category" className={common.fieldLabel}>
+                    Ngành hàng
+                  </label>
+                  <select
+                    id="prod-category"
+                    className={common.textInput}
+                    value={categoryId}
+                    onChange={(e) => setCategoryId(e.target.value)}
+                  >
+                    {categories.map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {cat.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {mode === "edit" && (
+                  <div className={common.field}>
+                    <label htmlFor="prod-status" className={common.fieldLabel}>
+                      Trạng thái hiển thị
+                    </label>
+                    <select
+                      id="prod-status"
+                      className={common.textInput}
+                      value={productStatus}
+                      onChange={(e) => setProductStatus(e.target.value)}
+                    >
+                      <option value={productStatus}>{statusMeta.label}</option>
+                      {productStatus === "APPROVED" && <option value="HIDDEN">Đang ẩn</option>}
+                      {productStatus === "HIDDEN" && <option value="APPROVED">Đang bán</option>}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              <div className={common.field}>
+                <label htmlFor="prod-desc" className={common.fieldLabel}>
+                  Mô tả chất liệu &amp; hoàn thiện
+                </label>
+
+                <div data-ui="ai-desc-bar" className={styles.fieldStack}>
+                  <div className={styles.aiDescBar}>
+                    <span className={styles.aiDescLead}>
+                      <IconSpark size={14} />
+                      <span>Gợi ý mô tả AI</span>
+                    </span>
+                    <div className={styles.aiDescControls}>
+                      <select
+                        className={styles.aiToneSelect}
+                        value={aiTone}
+                        onChange={(e) => setAiTone(e.target.value)}
+                        disabled={aiLoading}
+                        aria-label="Chọn văn phong mô tả AI"
+                      >
+                        {AI_TONE_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        shape="app"
+                        disabled={aiLoading}
+                        onClick={() => void handleGenerateDescription()}
+                      >
+                        <IconSpark size={14} />
+                        <span>{aiLoading ? "Đang tạo..." : "Tạo mô tả bằng AI"}</span>
+                      </Button>
+                    </div>
+                  </div>
+
+                  {aiError && (
+                    <p className={styles.aiError} role="alert">
+                      {aiError}
+                    </p>
+                  )}
+
+                  {aiDraft && (
+                    <div
+                      className={styles.aiPreviewCard}
+                      role="region"
+                      aria-label="Bản nháp mô tả từ AI"
+                    >
+                      <div className={styles.aiPreviewHead}>
+                        <span className={styles.aiPreviewTitle}>Bản nháp mô tả từ AI</span>
+                        <span className={styles.aiPreviewNote}>Kiểm tra lại trước khi lưu</span>
+                      </div>
+                      {aiDraft.titleSuggestion && (
+                        <p className={styles.aiPreviewSuggestionTitle}>
+                          Gợi ý tiêu đề: {aiDraft.titleSuggestion}
+                        </p>
+                      )}
+                      {aiDraft.description && (
+                        <p className={styles.aiPreviewText}>{aiDraft.description}</p>
+                      )}
+                      {aiDraft.highlights.length > 0 && (
+                        <ul className={styles.aiHighlightList}>
+                          {aiDraft.highlights.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      )}
+                      <div className={styles.aiPreviewActions}>
+                        <Button
+                          variant="ink"
+                          size="sm"
+                          shape="app"
+                          onClick={() => handleApplyAiDraft("replace")}
+                        >
+                          Áp dụng vào mô tả
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          shape="app"
+                          onClick={() => handleApplyAiDraft("append")}
+                        >
+                          Chèn thêm
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          shape="app"
+                          onClick={() => setAiDraft(null)}
+                        >
+                          Đóng
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <textarea
+                  id="prod-desc"
+                  className={common.textArea}
+                  rows={4}
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                />
+              </div>
+            </div>
+          </details>
+
+          <details className={common.accordion} open>
+            <summary className={common.accordionSummary}>
+              <span className={styles.accordionTitleGroup}>
+                <span>Hình ảnh sản phẩm</span>
+                <span className={common.accordionMeta}>{activeImageLabel}</span>
+              </span>
+              <span className={common.accordionChevron} aria-hidden="true">
+                <IconChevronDown size={16} />
+              </span>
+            </summary>
+
+            <div className={common.accordionBody}>
+              <div className={styles.galleryGrid} role="radiogroup" aria-label="Chọn ảnh đại diện">
+                {GALLERY_CHOICES.map((img) => {
+                  const active = selectedImage === img.path;
+                  return (
+                    <button
+                      key={img.path}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      className={`${styles.thumbBtn} ${active ? styles.thumbBtnActive : ""}`}
+                      onClick={() => setSelectedImage(img.path)}
+                      title={img.label}
+                      aria-label={`Chọn ảnh ${img.label}`}
+                    >
+                      <img
+                        src={img.path}
+                        alt={img.label}
+                        className={styles.thumbImg}
+                        width={96}
+                        height={128}
+                      />
+                      {active && (
+                        <span className={styles.thumbCheck} aria-hidden="true">
+                          <IconCheck size={12} />
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </details>
+
+          <details className={common.accordion} open>
+            <summary className={common.accordionSummary}>
+              <span className={styles.accordionTitleGroup}>
+                <span>Ma trận biến thể SKU</span>
+                <span className={common.accordionMeta}>
+                  {formatInt(skuRows.length)} SKU, {formatInt(totalStock)} tồn
+                </span>
+              </span>
+              <span className={common.accordionChevron} aria-hidden="true">
+                <IconChevronDown size={16} />
+              </span>
+            </summary>
+
+            <div className={common.accordionBody}>
+              <div className={styles.bulkBarRow}>
+                <span className={styles.bulkHint}>Đặt nhanh tồn kho đồng loạt</span>
+                <div className={styles.bulkControls}>
+                  <input
+                    type="number"
+                    min={0}
+                    className={styles.bulkInput}
+                    value={bulkStockStr}
+                    onChange={(e) => setBulkStockStr(e.target.value)}
+                    aria-label="Số lượng áp dụng hàng loạt"
+                  />
+                  <Button variant="outline" size="sm" shape="app" onClick={handleBulkStock}>
+                    Đặt tồn đồng loạt
+                  </Button>
+                </div>
+              </div>
+
+              <div className={`${common.tableWrap} ${styles.skuTableDesktop}`}>
+                <table className={common.dataTable}>
+                  <thead>
+                    <tr>
+                      <th>Mã SKU</th>
+                      <th>Màu sắc</th>
+                      <th>Cỡ</th>
+                      <th className={common.numCol}>Giá (VND)</th>
+                      <th className={common.numCol}>Tổng tồn</th>
+                      <th className={common.numCol}>Giữ</th>
+                      <th className={common.numCol}>Gram</th>
+                      <th className={common.numCol}>Thao tác</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {skuRows.map((row) => {
+                      const lowAvail = Math.max(0, row.stock - row.reservedStock) <= 5;
+                      return (
+                        <tr key={row.localKey}>
+                          <td>
+                            <input
+                              type="text"
+                              className={styles.skuCodeInput}
+                              value={row.skuCode}
+                              onChange={(e) => updateRow(row.localKey, { skuCode: e.target.value })}
+                              aria-label={`Mã SKU ${row.name}`}
+                            />
+                          </td>
+                          <td>
+                            <div className={styles.colorCellWrap}>
+                              <span
+                                className={styles.swatchDot}
+                                style={{ backgroundColor: row.colorHex }}
+                                aria-hidden="true"
+                              />
+                              <input
+                                type="text"
+                                className={styles.colorCellInput}
+                                value={row.colorName}
+                                onChange={(e) =>
+                                  updateRow(row.localKey, {
+                                    colorName: e.target.value,
+                                    name: `${e.target.value} / ${row.size}`,
+                                  })
+                                }
+                                aria-label={`Màu sắc ${row.skuCode}`}
+                              />
+                            </div>
+                          </td>
+                          <td>
+                            <input
+                              type="text"
+                              className={styles.sizeCellInput}
+                              value={row.size}
+                              onChange={(e) =>
+                                updateRow(row.localKey, {
+                                  size: e.target.value.toUpperCase(),
+                                  name: `${row.colorName} / ${e.target.value.toUpperCase()}`,
+                                })
+                              }
+                              aria-label={`Kích cỡ ${row.skuCode}`}
+                            />
+                          </td>
+                          <td className={common.numCol}>
+                            <input
+                              type="number"
+                              min={1000}
+                              step={1000}
+                              className={styles.priceCellInput}
+                              value={row.priceVnd}
+                              onChange={(e) =>
+                                updateRow(row.localKey, {
+                                  priceVnd: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                                })
+                              }
+                              aria-label={`Đơn giá ${row.skuCode}`}
+                            />
+                          </td>
+                          <td className={common.numCol}>
+                            <input
+                              type="number"
+                              min={row.reservedStock}
+                              className={`${styles.stockCellInput} ${lowAvail ? styles.stockLow : ""}`}
+                              value={row.stock}
+                              onChange={(e) =>
+                                updateRow(row.localKey, {
+                                  stock: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                                })
+                              }
+                              aria-label={`Tồn kho ${row.skuCode}`}
+                            />
+                          </td>
+                          <td className={common.numCol}>{formatInt(row.reservedStock)}</td>
+                          <td className={common.numCol}>
+                            <input
+                              type="number"
+                              min={10}
+                              step={10}
+                              className={styles.weightCellInput}
+                              value={row.weightGrams}
+                              onChange={(e) =>
+                                updateRow(row.localKey, {
+                                  weightGrams: e.target.value,
+                                })
+                              }
+                              onBlur={(e) =>
+                                updateRow(row.localKey, {
+                                  weightGrams: String(clampWeightGrams(e.currentTarget.value)),
+                                })
+                              }
+                              aria-label={`Khối lượng ${row.skuCode}`}
+                            />
+                          </td>
+                          <td className={common.numCol}>
+                            <div className={styles.rowBtns}>
+                              {mode === "edit" && row.id && row.version ? (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  shape="app"
+                                  disabled={busyStockId === row.id}
+                                  onClick={() => void handleQuickSaveSkuStock(row)}
+                                >
+                                  {busyStockId === row.id ? "Lưu..." : "Lưu tồn"}
+                                </Button>
+                              ) : null}
+                              {skuRows.length > 1 && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  shape="app"
+                                  onClick={() => handleRemoveRow(row.localKey)}
+                                >
+                                  Xóa
+                                </Button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Mobile SKU Editor Cards */}
+              <div className={styles.mobileSkuList}>
+                {skuRows.map((row) => {
+                  const lowAvail = Math.max(0, row.stock - row.reservedStock) <= 5;
+                  return (
+                    <div key={row.localKey} className={styles.mobileSkuCard}>
+                      <div className={styles.mobileSkuHead}>
+                        <span className={styles.colorCellWrap}>
+                          <span
+                            className={styles.swatchDot}
+                            style={{ backgroundColor: row.colorHex }}
+                            aria-hidden="true"
+                          />
+                          <strong>
+                            {row.colorName} / {row.size}
+                          </strong>
+                        </span>
+                        <div className={styles.rowBtns}>
+                          {mode === "edit" && row.id && row.version ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              shape="app"
+                              disabled={busyStockId === row.id}
+                              onClick={() => void handleQuickSaveSkuStock(row)}
+                            >
+                              {busyStockId === row.id ? "Lưu..." : "Lưu tồn"}
+                            </Button>
+                          ) : null}
+                          {skuRows.length > 1 && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              shape="app"
+                              onClick={() => handleRemoveRow(row.localKey)}
+                            >
+                              Xóa
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                      <div className={styles.mobileSkuGrid}>
+                        <label className={common.field}>
+                          <span className={common.fieldLabel}>Mã SKU</span>
+                          <input
+                            type="text"
+                            className={common.textInput}
+                            value={row.skuCode}
+                            onChange={(e) => updateRow(row.localKey, { skuCode: e.target.value })}
+                          />
+                        </label>
+                        <div className={common.field}>
+                          <span className={common.fieldLabel}>Màu / Cỡ</span>
+                          <div className={styles.mobileSplit2}>
+                            <input
+                              type="text"
+                              className={common.textInput}
+                              value={row.colorName}
+                              onChange={(e) =>
+                                updateRow(row.localKey, {
+                                  colorName: e.target.value,
+                                  name: `${e.target.value} / ${row.size}`,
+                                })
+                              }
+                              aria-label={`Màu sắc ${row.skuCode}`}
+                            />
+                            <input
+                              type="text"
+                              className={common.textInput}
+                              value={row.size}
+                              onChange={(e) =>
+                                updateRow(row.localKey, {
+                                  size: e.target.value.toUpperCase(),
+                                  name: `${row.colorName} / ${e.target.value.toUpperCase()}`,
+                                })
+                              }
+                              aria-label={`Kích cỡ ${row.skuCode}`}
+                            />
+                          </div>
+                        </div>
+                        <label className={common.field}>
+                          <span className={common.fieldLabel}>Giá (VND)</span>
+                          <input
+                            type="number"
+                            min={1000}
+                            step={1000}
+                            className={common.textInput}
+                            value={row.priceVnd}
+                            onChange={(e) =>
+                              updateRow(row.localKey, {
+                                priceVnd: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                              })
+                            }
+                          />
+                        </label>
+                        <label className={common.field}>
+                          <span className={common.fieldLabel}>
+                            Tồn kho (giữ: {formatInt(row.reservedStock)})
+                          </span>
+                          <input
+                            type="number"
+                            min={row.reservedStock}
+                            className={`${common.textInput} ${lowAvail ? styles.stockLow : ""}`}
+                            value={row.stock}
+                            onChange={(e) =>
+                              updateRow(row.localKey, {
+                                stock: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                              })
+                            }
+                          />
+                        </label>
+                        <label className={common.field}>
+                          <span className={common.fieldLabel}>Khối lượng (g)</span>
+                          <input
+                            type="number"
+                            min={10}
+                            step={10}
+                            className={common.textInput}
+                            value={row.weightGrams}
+                            onChange={(e) =>
+                              updateRow(row.localKey, {
+                                weightGrams: e.target.value,
+                              })
+                            }
+                            onBlur={(e) =>
+                              updateRow(row.localKey, {
+                                weightGrams: String(clampWeightGrams(e.currentTarget.value)),
+                              })
+                            }
+                            aria-label={`Khối lượng ${row.skuCode}`}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className={styles.addSkuRow}>
+                <input
+                  type="text"
+                  className={styles.addSkuInput}
+                  value={newSkuColorName}
+                  onChange={(e) => setNewSkuColorName(e.target.value)}
+                  placeholder="Tên màu mới"
+                  aria-label="Tên màu cho SKU mới"
+                />
+                <select
+                  className={common.filterSelect}
+                  value={newSkuSize}
+                  onChange={(e) => setNewSkuSize(e.target.value)}
+                  aria-label="Chọn kích cỡ cho SKU mới"
+                >
+                  {["S", "M", "L", "XL", "2XL"].map((sz) => (
+                    <option key={sz} value={sz}>
+                      Size {sz}
+                    </option>
+                  ))}
+                </select>
+                <Button variant="outline" size="sm" shape="app" onClick={handleAddSkuRow}>
+                  <IconPlus size={14} />
+                  <span>Thêm biến thể SKU</span>
+                </Button>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        {/* Right Column: Sticky Storefront Product Card Preview + Compact Stock Ledger */}
+        <aside className={styles.previewCol} aria-label="Xem trước thẻ sản phẩm">
+          <div className={styles.previewSticky}>
+            <div className={styles.previewHeading}>Xem trước thẻ sản phẩm</div>
+
+            <article className={styles.storeCard}>
+              <div className={styles.storeCardMedia}>
+                <img
+                  src={selectedImage}
+                  alt={name.trim() || "Ảnh sản phẩm"}
+                  className={styles.storeCardImg}
+                  width={320}
+                  height={426}
+                />
+                {totalStock === 0 ? (
+                  <span className={`${styles.storeStockBadge} ${styles.storeStockOut}`}>
+                    Hết hàng
+                  </span>
+                ) : totalStock <= 10 ? (
+                  <span className={styles.storeStockBadge}>Còn {formatInt(totalStock)}</span>
+                ) : null}
+              </div>
+
+              <div className={styles.storeCardBody}>
+                <span className={styles.storeCardCat}>{activeCategoryName}</span>
+                <h2 className={styles.storeCardTitle}>
+                  {name.trim() || "Tên sản phẩm hiển thị tại gian hàng"}
+                </h2>
+                <div className={`${styles.storeCardPrice} num`}>{priceRangeLabel}</div>
+
+                {previewColors.length > 0 && (
+                  <div className={styles.storeSwatches} aria-label="Màu sắc hiển thị">
+                    {previewColors.slice(0, 6).map((c) => (
+                      <span
+                        key={c.label}
+                        className={styles.storeSwatchItem}
+                        title={c.label}
+                        style={{ backgroundColor: c.hex }}
+                      />
+                    ))}
+                    <span className={styles.storeSwatchCount}>
+                      {formatInt(previewColors.length)} màu
+                    </span>
+                  </div>
+                )}
+
+                {previewSizes.length > 0 && (
+                  <div className={styles.storeSizePills}>
+                    {previewSizes.slice(0, 6).map((sz) => (
+                      <span key={sz} className={styles.storeSizePill}>
+                        {sz}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <div className={styles.storeShopFoot}>{shop?.name ?? "Gian hàng NexusMart"}</div>
+              </div>
+            </article>
+
+            <div className={styles.summaryCard}>
+              <div className={styles.summaryRow}>
+                <span className={styles.summaryKey}>Biến thể SKU</span>
+                <span className={styles.summaryVal}>{formatInt(skuRows.length)}</span>
+              </div>
+              <div className={styles.summaryRow}>
+                <span className={styles.summaryKey}>Tổng tồn kho</span>
+                <span className={styles.summaryVal}>{formatInt(totalStock)} chiếc</span>
+              </div>
+              <div className={styles.summaryRow}>
+                <span className={styles.summaryKey}>Khoảng giá</span>
+                <span className={styles.summaryVal}>{priceRangeLabel}</span>
+              </div>
+              <div className={styles.summaryRow}>
+                <span className={styles.summaryKey}>SKU dưới ngưỡng 5</span>
+                <span
+                  className={`${styles.summaryVal} ${lowSkuCount > 0 ? styles.summaryValWarn : ""}`}
+                >
+                  {formatInt(lowSkuCount)}
+                </span>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
+
+      {/* Sticky Bottom Save Bar */}
+      <div className={styles.stickyBar} role="region" aria-label="Thanh lưu sản phẩm">
+        <div className={styles.stickySummary}>
+          <span className="num">
+            {formatInt(skuRows.length)} SKU, {formatInt(totalStock)} tồn
+          </span>
+          <span className="num">{priceRangeLabel}</span>
+          {lowSkuCount > 0 && (
+            <span className={styles.stickyWarn}>{formatInt(lowSkuCount)} SKU sắp hết</span>
+          )}
+        </div>
+        <div className={styles.stickyActions}>
           <Button
             variant="outline"
             size="sm"
@@ -480,450 +1223,6 @@ export function ProductFormView({
           </Button>
         </div>
       </div>
-
-      {savedNotice && (
-        <div className={styles.noticeBar} role="status">
-          <span>{savedNotice}</span>
-          <Link href="/seller/san-pham" className={styles.noticeLink}>
-            Xem trong danh sách
-          </Link>
-        </div>
-      )}
-
-      {errorMsg && (
-        <div className={common.card} role="alert">
-          <p className={common.fieldError}>{errorMsg}</p>
-        </div>
-      )}
-
-      <div className={styles.topRow}>
-        <section className={common.card} aria-labelledby="basic-info-heading">
-          <div className={common.cardHeader}>
-            <h2 id="basic-info-heading" className={common.cardTitle}>
-              Thông tin sản phẩm & danh mục
-            </h2>
-            <span className={common.cardMeta}>Phân loại sản phẩm trên site gian hàng</span>
-          </div>
-
-          <div className={styles.fieldStack}>
-            <div className={common.field}>
-              <label htmlFor="prod-name" className={common.fieldLabel}>
-                Tên sản phẩm đầy đủ
-              </label>
-              <input
-                id="prod-name"
-                type="text"
-                className={common.textInput}
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Ví dụ: Áo thun Cotton Compact 220gsm Xanh đá"
-              />
-            </div>
-
-            <div className={styles.fields2}>
-              <div className={common.field}>
-                <label htmlFor="prod-category" className={common.fieldLabel}>
-                  Ngành hàng chính
-                </label>
-                <select
-                  id="prod-category"
-                  className={common.textInput}
-                  value={categoryId}
-                  onChange={(e) => setCategoryId(e.target.value)}
-                >
-                  {categories.map((cat) => (
-                    <option key={cat.id} value={cat.id}>
-                      {cat.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {mode === "edit" && (
-                <div className={common.field}>
-                  <label htmlFor="prod-status" className={common.fieldLabel}>
-                    Trạng thái hiển thị
-                  </label>
-                  <select
-                    id="prod-status"
-                    className={common.textInput}
-                    value={productStatus}
-                    onChange={(e) => setProductStatus(e.target.value)}
-                  >
-                    <option value={productStatus}>{statusMeta.label}</option>
-                    {productStatus === "APPROVED" && <option value="HIDDEN">Đang ẩn</option>}
-                    {productStatus === "HIDDEN" && <option value="APPROVED">Đang bán</option>}
-                  </select>
-                </div>
-              )}
-            </div>
-
-            <div className={common.field}>
-              <label htmlFor="prod-desc" className={common.fieldLabel}>
-                Mô tả chất liệu & hoàn thiện
-              </label>
-
-              <div data-ui="ai-desc-bar" className={styles.fieldStack}>
-                <div className={styles.aiDescBar}>
-                  <span className={styles.aiDescLead}>
-                    <IconSpark size={14} />
-                    <span>Trợ lý gợi ý mô tả</span>
-                  </span>
-                  <div className={styles.aiDescControls}>
-                    <select
-                      className={styles.aiToneSelect}
-                      value={aiTone}
-                      onChange={(e) => setAiTone(e.target.value)}
-                      disabled={aiLoading}
-                      aria-label="Chọn văn phong mô tả AI"
-                    >
-                      {AI_TONE_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      shape="app"
-                      disabled={aiLoading}
-                      onClick={() => void handleGenerateDescription()}
-                    >
-                      <IconSpark size={14} />
-                      <span>{aiLoading ? "Đang tạo mô tả..." : "Tạo mô tả bằng AI"}</span>
-                    </Button>
-                  </div>
-                </div>
-
-                {aiError && (
-                  <p className={styles.aiError} role="alert">
-                    {aiError}
-                  </p>
-                )}
-
-                {aiDraft && (
-                  <div
-                    className={styles.aiPreviewCard}
-                    role="region"
-                    aria-label="Bản nháp mô tả từ AI"
-                  >
-                    <div className={styles.aiPreviewHead}>
-                      <span className={styles.aiPreviewTitle}>Bản nháp mô tả từ AI</span>
-                      <span className={styles.aiPreviewNote}>
-                        Kiểm tra và chỉnh sửa lại nội dung trước khi lưu sản phẩm
-                      </span>
-                    </div>
-                    {aiDraft.titleSuggestion && (
-                      <p className={styles.aiPreviewSuggestionTitle}>
-                        Gợi ý tiêu đề: {aiDraft.titleSuggestion}
-                      </p>
-                    )}
-                    {aiDraft.description && (
-                      <p className={styles.aiPreviewText}>{aiDraft.description}</p>
-                    )}
-                    {aiDraft.highlights.length > 0 && (
-                      <ul className={styles.aiHighlightList}>
-                        {aiDraft.highlights.map((item) => (
-                          <li key={item}>{item}</li>
-                        ))}
-                      </ul>
-                    )}
-                    <div className={styles.aiPreviewActions}>
-                      <Button
-                        variant="ink"
-                        size="sm"
-                        shape="app"
-                        onClick={() => handleApplyAiDraft("replace")}
-                      >
-                        Áp dụng vào mô tả
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        shape="app"
-                        onClick={() => handleApplyAiDraft("append")}
-                      >
-                        Chèn thêm
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        shape="app"
-                        onClick={() => setAiDraft(null)}
-                      >
-                        Đóng
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <textarea
-                id="prod-desc"
-                className={common.textArea}
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-              />
-            </div>
-          </div>
-        </section>
-
-        <section className={common.card} aria-label="Ảnh đại diện và tổng hợp kho">
-          <div className={common.cardHeader}>
-            <h2 className={common.cardTitle}>Ảnh đại diện và tổng hợp kho</h2>
-          </div>
-
-          <div className={styles.mediaPickerRow}>
-            <div className={styles.previewMedia}>
-              <img
-                src={selectedImage}
-                alt={name || "Ảnh sản phẩm"}
-                className={styles.previewImg}
-                width={144}
-                height={192}
-              />
-            </div>
-
-            <div className={styles.thumbGrid}>
-              {GALLERY_CHOICES.slice(0, 6).map((img) => (
-                <button
-                  key={img.path}
-                  type="button"
-                  className={`${styles.thumbBtn} ${selectedImage === img.path ? styles.thumbBtnActive : ""}`}
-                  onClick={() => setSelectedImage(img.path)}
-                  title={img.label}
-                  aria-label={`Chọn ảnh ${img.label}`}
-                >
-                  <img
-                    src={img.path}
-                    alt={img.label}
-                    className={styles.thumbImg}
-                    width={64}
-                    height={85}
-                  />
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className={styles.summaryList}>
-            <div className={styles.summaryRow}>
-              <span className={styles.summaryKey}>Tổng biến thể SKU</span>
-              <span className={styles.summaryVal}>{formatInt(skuRows.length)}</span>
-            </div>
-            <div className={styles.summaryRow}>
-              <span className={styles.summaryKey}>Tổng tồn kho</span>
-              <span className={styles.summaryVal}>{formatInt(totalStock)} chiếc</span>
-            </div>
-            <div className={styles.summaryRow}>
-              <span className={styles.summaryKey}>Khoảng giá bán</span>
-              <span className={styles.summaryVal}>{priceRangeLabel}</span>
-            </div>
-            <div className={styles.summaryRow}>
-              <span className={styles.summaryKey}>SKU dưới ngưỡng 5</span>
-              <span className={styles.summaryVal}>{formatInt(lowSkuCount)}</span>
-            </div>
-          </div>
-        </section>
-      </div>
-
-      <section className={common.card} aria-labelledby="sku-matrix-heading">
-        <div className={common.cardHeader}>
-          <div>
-            <h2 id="sku-matrix-heading" className={common.cardTitle}>
-              Bảng biến thể SKU, giá nguyên VND và tồn kho
-            </h2>
-            <span className={common.cardMeta}>
-              Cập nhật từng dòng hoặc lưu toàn bộ sản phẩm; tồn kho mới không nhỏ hơn số lượng đang
-              giữ cho đơn hàng
-            </span>
-          </div>
-          <div className={common.headerActions}>
-            <input
-              type="number"
-              min={0}
-              className={common.textInput}
-              style={{ width: 92, height: 34 }}
-              value={bulkStockStr}
-              onChange={(e) => setBulkStockStr(e.target.value)}
-              aria-label="Số lượng áp dụng hàng loạt"
-            />
-            <Button variant="outline" size="sm" shape="app" onClick={handleBulkStock}>
-              Đặt tồn đồng loạt
-            </Button>
-          </div>
-        </div>
-
-        <div className={common.tableWrap}>
-          <table className={common.dataTable}>
-            <thead>
-              <tr>
-                <th>Mã SKU</th>
-                <th>Màu sắc</th>
-                <th>Kích cỡ</th>
-                <th className={common.numCol}>Đơn giá (VND)</th>
-                <th className={common.numCol}>Tổng tồn</th>
-                <th className={common.numCol}>Đang giữ</th>
-                <th className={common.numCol}>Khối lượng (g)</th>
-                <th className={common.numCol}>Thao tác</th>
-              </tr>
-            </thead>
-            <tbody>
-              {skuRows.map((row) => (
-                <tr key={row.localKey}>
-                  <td>
-                    <input
-                      type="text"
-                      className={common.textInput}
-                      style={{ minWidth: 150, height: 34 }}
-                      value={row.skuCode}
-                      onChange={(e) => updateRow(row.localKey, { skuCode: e.target.value })}
-                      aria-label={`Mã SKU ${row.name}`}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="text"
-                      className={common.textInput}
-                      style={{ minWidth: 110, height: 34 }}
-                      value={row.colorName}
-                      onChange={(e) =>
-                        updateRow(row.localKey, {
-                          colorName: e.target.value,
-                          name: `${e.target.value} / ${row.size}`,
-                        })
-                      }
-                      aria-label={`Màu sắc ${row.skuCode}`}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="text"
-                      className={common.textInput}
-                      style={{ width: 72, height: 34 }}
-                      value={row.size}
-                      onChange={(e) =>
-                        updateRow(row.localKey, {
-                          size: e.target.value.toUpperCase(),
-                          name: `${row.colorName} / ${e.target.value.toUpperCase()}`,
-                        })
-                      }
-                      aria-label={`Kích cỡ ${row.skuCode}`}
-                    />
-                  </td>
-                  <td className={common.numCol}>
-                    <input
-                      type="number"
-                      min={1000}
-                      step={1000}
-                      className={common.textInput}
-                      style={{ width: 112, height: 34, textAlign: "right" }}
-                      value={row.priceVnd}
-                      onChange={(e) =>
-                        updateRow(row.localKey, {
-                          priceVnd: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
-                        })
-                      }
-                      aria-label={`Đơn giá ${row.skuCode}`}
-                    />
-                  </td>
-                  <td className={common.numCol}>
-                    <input
-                      type="number"
-                      min={row.reservedStock}
-                      className={common.textInput}
-                      style={{ width: 84, height: 34, textAlign: "right" }}
-                      value={row.stock}
-                      onChange={(e) =>
-                        updateRow(row.localKey, {
-                          stock: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
-                        })
-                      }
-                      aria-label={`Tồn kho ${row.skuCode}`}
-                    />
-                  </td>
-                  <td className={common.numCol}>{formatInt(row.reservedStock)}</td>
-                  <td className={common.numCol}>
-                    <input
-                      type="number"
-                      min={10}
-                      step={10}
-                      className={common.textInput}
-                      style={{ width: 80, height: 34, textAlign: "right" }}
-                      value={row.weightGrams}
-                      onChange={(e) =>
-                        updateRow(row.localKey, {
-                          weightGrams: Math.max(10, Math.trunc(Number(e.target.value) || 250)),
-                        })
-                      }
-                      aria-label={`Khối lượng ${row.skuCode}`}
-                    />
-                  </td>
-                  <td className={common.numCol}>
-                    <div className={common.headerActions} style={{ justifyContent: "flex-end" }}>
-                      {mode === "edit" && row.id && row.version ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          shape="app"
-                          disabled={busyStockId === row.id}
-                          onClick={() => void handleQuickSaveSkuStock(row)}
-                        >
-                          {busyStockId === row.id ? "Đang lưu..." : "Lưu tồn"}
-                        </Button>
-                      ) : null}
-                      {skuRows.length > 1 && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          shape="app"
-                          onClick={() => handleRemoveRow(row.localKey)}
-                        >
-                          Xóa
-                        </Button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div
-          className={common.toolbar}
-          style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)" }}
-        >
-          <div className={common.toolbarLeft}>
-            <input
-              type="text"
-              className={common.textInput}
-              style={{ width: 160, height: 34 }}
-              value={newSkuColorName}
-              onChange={(e) => setNewSkuColorName(e.target.value)}
-              placeholder="Tên màu mới"
-              aria-label="Tên màu cho SKU mới"
-            />
-            <select
-              className={common.filterSelect}
-              value={newSkuSize}
-              onChange={(e) => setNewSkuSize(e.target.value)}
-              aria-label="Chọn kích cỡ cho SKU mới"
-            >
-              {["S", "M", "L", "XL", "2XL"].map((sz) => (
-                <option key={sz} value={sz}>
-                  Size {sz}
-                </option>
-              ))}
-            </select>
-            <Button variant="outline" size="sm" shape="app" onClick={handleAddSkuRow}>
-              <IconPlus size={14} />
-              <span>Thêm biến thể SKU</span>
-            </Button>
-          </div>
-        </div>
-      </section>
     </form>
   );
 }

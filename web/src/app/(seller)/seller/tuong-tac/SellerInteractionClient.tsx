@@ -18,6 +18,11 @@ import { sanitizeSafeUrl } from "@/lib/site/theme";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { useSellerContext } from "@/features/seller/SellerShell";
 import {
+  SellerDrawer,
+  SellerSlidingTabs,
+  statusPillClass,
+} from "@/features/seller/SellerUiPrimitives";
+import {
   getSellerOrderStatusMeta,
   getSellerProductStatusMeta,
   summarizeOrderItems,
@@ -66,13 +71,6 @@ export interface SellerInteractionClientProps {
   notificationsError: string | null;
 }
 
-function pillCls(tone: "pos" | "warn" | "neg" | "neutral"): string {
-  if (tone === "pos") return `${common.pill} ${common.pillPos}`;
-  if (tone === "warn") return `${common.pill} ${common.pillWarn}`;
-  if (tone === "neg") return `${common.pill} ${common.pillNeg}`;
-  return common.pill;
-}
-
 function SellerInteractionContent({
   initialOrders,
   ordersError,
@@ -85,8 +83,7 @@ function SellerInteractionContent({
   const searchParams = useSearchParams();
   const uiState = parseUiStateParam(searchParams.get("state"));
   const initialTabParam = searchParams.get("tab") as InteractionTab | null;
-  const { shop, showToast } = useSellerContext();
-  const shopDisplayName = shop?.name ?? "Gian hàng của bạn";
+  const { showToast } = useSellerContext();
 
   const [tab, setTab] = useState<InteractionTab>(
     initialTabParam && ["returns", "reviews", "notifications"].includes(initialTabParam)
@@ -94,25 +91,33 @@ function SellerInteractionContent({
       : "returns"
   );
 
-  // Tab 1: Returns & Refunds state
+  // Tab 1: Returns & Refunds state with slide-over drawer
   const [orders, setOrders] = useState<GwSellerOrder[]>(initialOrders);
   const [returnFilter, setReturnFilter] = useState<ReturnFilter>("all");
-  const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
+  const [drawerOrderId, setDrawerOrderId] = useState<string | null>(null);
   const [orderReturnsMap, setOrderReturnsMap] = useState<Record<string, OrderReturnsState>>({});
   const [returnBusyId, setReturnBusyId] = useState<string | null>(null);
   const [rejectOpenId, setRejectOpenId] = useState<string | null>(null);
   const [rejectDrafts, setRejectDrafts] = useState<Record<string, string>>({});
   const [rejectErrors, setRejectErrors] = useState<Record<string, string>>({});
 
-  // Tab 2: AI Review Summaries state
+  // Tab 2: AI Review Summaries
   const [productQuery, setProductQuery] = useState("");
   const [summaryMap, setSummaryMap] = useState<Record<string, ProductSummaryState>>({});
 
-  // Tab 3: Operational Notifications state
+  // Tab 3: Notifications
   const [notifications, setNotifications] = useState<SellerNotification[]>(initialNotifications);
   const [notifError, setNotifError] = useState<string | null>(notificationsError);
   const [notifFilter, setNotifFilter] = useState<NotifFilter>("all");
   const [notifBusy, setNotifBusy] = useState(false);
+
+  const productImageById = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const p of products) {
+      if (p.images?.[0]) map[p.id] = p.images[0];
+    }
+    return map;
+  }, [products]);
 
   const returnOrders = useMemo(
     () =>
@@ -137,6 +142,11 @@ function SellerInteractionContent({
       return true;
     });
   }, [returnOrders, returnFilter]);
+
+  const drawerOrder = useMemo(
+    () => (drawerOrderId ? (returnOrders.find((o) => o.id === drawerOrderId) ?? null) : null),
+    [drawerOrderId, returnOrders]
+  );
 
   const filteredProducts = useMemo(() => {
     const q = productQuery.trim().toLowerCase();
@@ -179,12 +189,8 @@ function SellerInteractionContent({
     }
   };
 
-  const handleToggleOrderReturns = (orderId: string) => {
-    if (expandedOrderId === orderId) {
-      setExpandedOrderId(null);
-      return;
-    }
-    setExpandedOrderId(orderId);
+  const handleOpenReturnDrawer = (orderId: string) => {
+    setDrawerOrderId(orderId);
     if (!orderReturnsMap[orderId]) {
       void loadOrderReturns(orderId);
     }
@@ -293,7 +299,7 @@ function SellerInteractionContent({
     } catch (err) {
       const msg =
         err instanceof ApiError && (err.status === 404 || err.status === 503 || err.status === 0)
-          ? "Chưa có dữ liệu tóm tắt AI cho sản phẩm này hoặc dịch vụ đánh giá AI tạm thời chưa hoạt động."
+          ? "Chưa có dữ liệu tóm tắt AI cho sản phẩm này."
           : err instanceof ApiError
             ? err.message
             : "Không thể tải tóm tắt đánh giá AI lúc này.";
@@ -312,11 +318,9 @@ function SellerInteractionContent({
       const raw = await api<unknown>("/api/seller/notifications?page=1&page_size=50");
       const normalized = normalizeSellerNotifications(raw);
       setNotifications(normalized.items);
-      showToast("Đã làm mới danh sách thông báo vận hành.");
+      showToast("Đã làm mới thông báo.");
     } catch (err) {
-      setNotifError(
-        err instanceof ApiError ? err.message : "Không thể tải thông báo vận hành lúc này."
-      );
+      setNotifError(err instanceof ApiError ? err.message : "Không thể tải thông báo lúc này.");
     } finally {
       setNotifBusy(false);
     }
@@ -334,9 +338,7 @@ function SellerInteractionContent({
       setNotifications((prev) =>
         prev.map((n) => (markAll || idSet.has(n.id) ? { ...n, is_read: true } : n))
       );
-      showToast(
-        markAll ? "Đã đánh dấu tất cả thông báo là đã đọc." : "Đã đánh dấu thông báo là đã đọc."
-      );
+      showToast(markAll ? "Đã đánh dấu tất cả là đã đọc." : "Đã đánh dấu đã đọc.");
     } catch (err) {
       showToast(err instanceof ApiError ? err.message : "Không thể cập nhật trạng thái thông báo.");
     } finally {
@@ -344,21 +346,30 @@ function SellerInteractionContent({
     }
   };
 
+  const interactionTabs: ReadonlyArray<{ key: InteractionTab; label: string; count?: number }> = [
+    { key: "returns", label: "Đổi trả", count: returnOrders.length },
+    { key: "reviews", label: "Đánh giá AI", count: products.length },
+    { key: "notifications", label: "Thông báo", count: notifSummary.unread },
+  ];
+
+  const returnFilterCards: ReadonlyArray<{ key: ReturnFilter; label: string; count: number }> = [
+    { key: "all", label: "Tất cả đổi trả", count: returnOrders.length },
+    { key: "pending", label: "Chờ gian hàng duyệt", count: pendingReturnsCount },
+    { key: "returned", label: "Đã hoàn trả", count: returnedOrdersCount },
+  ];
+
+  const drawerReturnsState = drawerOrder ? orderReturnsMap[drawerOrder.id] : undefined;
+
   return (
     <div className={common.page}>
       <header className={common.pageHeader}>
         <div className={common.headerText}>
-          <h1 className={common.title}>Tương tác &amp; Xử lý sau bán</h1>
-          <p className={common.finding}>
-            {shopDisplayName} · {formatInt(pendingReturnsCount)} yêu cầu đổi trả chờ duyệt ·{" "}
-            {formatInt(products.length)} sản phẩm · {formatInt(notifSummary.unread)} thông báo chưa
-            đọc
-          </p>
+          <h1 className={common.title}>Tương tác</h1>
         </div>
         <div className={common.headerActions}>
           {tab === "returns" && (
             <Button variant="outline" size="sm" shape="app" href="/seller/don-hang">
-              <span>Xem tất cả đơn hàng</span>
+              <span>Tất cả đơn hàng</span>
               <IconArrowUpRight size={14} />
             </Button>
           )}
@@ -382,7 +393,7 @@ function SellerInteractionContent({
                 onClick={() => void handleMarkNotificationRead([], true)}
               >
                 <IconCheck size={14} />
-                <span>Đánh dấu tất cả đã đọc</span>
+                <span>Đọc tất cả</span>
               </Button>
             </>
           )}
@@ -393,7 +404,8 @@ function SellerInteractionContent({
         <StateView
           kind="loading"
           surface="app"
-          title="Đang tải yêu cầu đổi trả, đánh giá sản phẩm và thông báo..."
+          skeletonVariant="table"
+          title="Đang tải dữ liệu tương tác..."
           rows={5}
         />
       )}
@@ -402,8 +414,8 @@ function SellerInteractionContent({
         <StateView
           kind="error"
           surface="app"
-          title="Không thể tải dữ liệu tương tác gian hàng"
-          message="Hệ thống tương tác tạm thời chưa phản hồi. Vui lòng thử tải lại."
+          title="Không thể tải dữ liệu tương tác"
+          message="Hệ thống tương tác tạm thời chưa phản hồi. Vui lòng thử lại."
           actionLabel="Thử lại"
           onAction={() => router.refresh()}
         />
@@ -413,8 +425,8 @@ function SellerInteractionContent({
         <StateView
           kind="empty"
           surface="app"
-          title="Chưa có mục tương tác nào cần xử lý"
-          message="Khi phát sinh yêu cầu đổi trả hoặc thông báo mới, nội dung sẽ hiển thị tại đây."
+          title="Chưa có mục tương tác cần xử lý"
+          message="Yêu cầu đổi trả và thông báo mới sẽ hiển thị tại đây."
           actionLabel="Về tổng quan"
           actionHref="/seller"
         />
@@ -422,419 +434,222 @@ function SellerInteractionContent({
 
       {!uiState && (
         <>
-          <div className={common.underlineTabs} role="tablist" aria-label="Phân mục tương tác">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "returns"}
-              className={`${common.underlineTab} ${tab === "returns" ? common.underlineTabActive : ""}`}
-              onClick={() => setTab("returns")}
-            >
-              Đổi trả &amp; Hoàn tiền ({formatInt(returnOrders.length)})
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "reviews"}
-              className={`${common.underlineTab} ${tab === "reviews" ? common.underlineTabActive : ""}`}
-              onClick={() => setTab("reviews")}
-            >
-              Tóm tắt đánh giá AI ({formatInt(products.length)})
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "notifications"}
-              className={`${common.underlineTab} ${tab === "notifications" ? common.underlineTabActive : ""}`}
-              onClick={() => setTab("notifications")}
-            >
-              Thông báo vận hành ({formatInt(notifSummary.unread)})
-            </button>
-          </div>
+          <SellerSlidingTabs
+            tabs={interactionTabs}
+            value={tab}
+            onChange={setTab}
+            ariaLabel="Phân mục tương tác"
+          />
 
+          {/* TAB 1: Returns & Refunds */}
           {tab === "returns" && (
             <>
-              <section className={common.balanceStrip3} aria-label="Thống kê yêu cầu đổi trả">
-                <div className={common.balanceCell}>
-                  <span className={common.balanceLabel}>Chờ gian hàng duyệt</span>
-                  <span
-                    className={`${common.balanceValue} ${pendingReturnsCount === 0 ? common.balanceValueZero : ""}`}
-                  >
-                    {formatInt(pendingReturnsCount)}
-                  </span>
-                  <span className={common.balanceCaption}>
-                    Ưu tiên phản hồi sớm để tránh phát sinh khiếu nại
-                  </span>
-                </div>
-                <div className={common.balanceCell}>
-                  <span className={common.balanceLabel}>Đã xử lý / hoàn trả</span>
-                  <span
-                    className={`${common.balanceValue} ${returnedOrdersCount === 0 ? common.balanceValueZero : ""}`}
-                  >
-                    {formatInt(returnedOrdersCount)}
-                  </span>
-                  <span className={common.balanceCaption}>
-                    Đơn đã hoàn tất quy trình đổi trả về gian hàng
-                  </span>
-                </div>
-                <div className={common.balanceCell}>
-                  <span className={common.balanceLabel}>Tổng đơn có yêu cầu đổi trả</span>
-                  <span
-                    className={`${common.balanceValue} ${returnOrders.length === 0 ? common.balanceValueZero : ""}`}
-                  >
-                    {formatInt(returnOrders.length)}
-                  </span>
-                  <span className={common.balanceCaption}>
-                    Tính trên {formatInt(orders.length)} đơn hàng gần nhất của shop
-                  </span>
-                </div>
-              </section>
+              <div
+                className={common.countCards3}
+                role="tablist"
+                aria-label="Lọc trạng thái đổi trả"
+              >
+                {returnFilterCards.map((c) => {
+                  const selected = returnFilter === c.key;
+                  return (
+                    <button
+                      key={c.key}
+                      type="button"
+                      role="tab"
+                      aria-selected={selected}
+                      className={`${common.countCard} ${selected ? common.countCardSelected : ""}`}
+                      onClick={() => setReturnFilter(c.key)}
+                    >
+                      <span className={common.countCardLabel}>{c.label}</span>
+                      <span className={common.countCardValue}>{formatInt(c.count)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className={common.chipScroller} role="tablist" aria-label="Lọc đổi trả di động">
+                {returnFilterCards.map((c) => {
+                  const selected = returnFilter === c.key;
+                  return (
+                    <button
+                      key={`m-${c.key}`}
+                      type="button"
+                      role="tab"
+                      aria-selected={selected}
+                      className={`${common.chipBtn} ${selected ? common.chipBtnActive : ""}`}
+                      onClick={() => setReturnFilter(c.key)}
+                    >
+                      <span>{c.label}</span>
+                      <span className={common.chipCount}>{formatInt(c.count)}</span>
+                    </button>
+                  );
+                })}
+              </div>
 
               <section className={common.card} aria-labelledby="returns-list-heading">
                 <div className={common.cardHeader}>
-                  <div>
-                    <h2 id="returns-list-heading" className={common.cardTitle}>
-                      Danh sách đơn hàng đổi trả &amp; hoàn tiền
-                    </h2>
-                    <span className={common.cardMeta}>
-                      Mở từng đơn để xem minh chứng khách gửi và duyệt hoặc từ chối trực tiếp
-                    </span>
-                  </div>
-                  <div
-                    className={common.segmented}
-                    role="tablist"
-                    aria-label="Lọc trạng thái đổi trả"
-                  >
-                    {(
-                      [
-                        ["all", `Tất cả (${formatInt(returnOrders.length)})`],
-                        ["pending", `Chờ duyệt (${formatInt(pendingReturnsCount)})`],
-                        ["returned", `Đã hoàn trả (${formatInt(returnedOrdersCount)})`],
-                      ] as const
-                    ).map(([k, lbl]) => (
-                      <button
-                        key={k}
-                        type="button"
-                        role="tab"
-                        aria-selected={returnFilter === k}
-                        className={`${common.segmentedBtn} ${returnFilter === k ? common.segmentedBtnActive : ""}`}
-                        onClick={() => setReturnFilter(k)}
-                      >
-                        {lbl}
-                      </button>
-                    ))}
-                  </div>
+                  <h2 id="returns-list-heading" className={common.cardTitle}>
+                    Đơn đổi trả ({formatInt(filteredReturnOrders.length)})
+                  </h2>
                 </div>
 
                 {ordersError ? (
                   <StateView
                     kind="error"
                     surface="app"
-                    title="Không thể tải danh sách đơn đổi trả"
+                    title="Không thể tải danh sách đổi trả"
                     message={ordersError}
                     actionLabel="Tải lại"
                     onAction={() => router.refresh()}
                   />
                 ) : filteredReturnOrders.length === 0 ? (
                   <div className={common.inlineEmpty}>
-                    Không có đơn hàng nào có yêu cầu đổi trả trong nhóm bộ lọc hiện tại.
+                    Không có đơn đổi trả trong nhóm bộ lọc hiện tại.
                   </div>
                 ) : (
-                  <div className={styles.itemList}>
-                    {filteredReturnOrders.map((order) => {
-                      const stMeta = getSellerOrderStatusMeta(order.status);
-                      const isOpen = expandedOrderId === order.id;
-                      const detailState = orderReturnsMap[order.id];
+                  <>
+                    <div className={`${common.tableWrap} ${common.tableWrapDesktop}`}>
+                      <table className={common.dataTable}>
+                        <thead>
+                          <tr>
+                            <th>Đơn hàng</th>
+                            <th>Sản phẩm</th>
+                            <th className={common.numCol}>Giá trị</th>
+                            <th>Trạng thái</th>
+                            <th className={common.numCol}>Thao tác</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredReturnOrders.map((order) => {
+                            const stMeta = getSellerOrderStatusMeta(order.status);
+                            const firstPid = order.items?.[0]?.product_id;
+                            const thumb = firstPid ? productImageById[firstPid] : undefined;
+                            return (
+                              <tr key={order.id}>
+                                <td style={{ whiteSpace: "nowrap" }}>
+                                  <button
+                                    type="button"
+                                    className={common.rowTriggerBtn}
+                                    onClick={() => handleOpenReturnDrawer(order.id)}
+                                  >
+                                    {order.order_code}
+                                  </button>
+                                  {order.created_at && (
+                                    <span className={common.cellSub}>
+                                      {formatDateTimeVi(order.created_at)}
+                                    </span>
+                                  )}
+                                </td>
+                                <td>
+                                  <div className={styles.thumbCell}>
+                                    {thumb && (
+                                      <img
+                                        src={thumb}
+                                        alt=""
+                                        className={styles.rowThumb}
+                                        width={34}
+                                        height={42}
+                                      />
+                                    )}
+                                    <span className={styles.itemSummaryText}>
+                                      {summarizeOrderItems(order.items)}
+                                    </span>
+                                  </div>
+                                </td>
+                                <td className={common.numCol}>
+                                  <strong>{formatVnd(order.total_payable_vnd)}</strong>
+                                </td>
+                                <td>
+                                  <span className={statusPillClass(stMeta.tone)}>
+                                    {stMeta.label}
+                                  </span>
+                                </td>
+                                <td className={common.numCol}>
+                                  <div className={common.rowHoverActions}>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      shape="app"
+                                      onClick={() => handleOpenReturnDrawer(order.id)}
+                                    >
+                                      Xem yêu cầu
+                                    </Button>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      shape="app"
+                                      href={`/seller/don-hang/${order.id}`}
+                                    >
+                                      <span>Mở đơn</span>
+                                      <IconArrowUpRight size={13} />
+                                    </Button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
 
-                      return (
-                        <article key={order.id} className={styles.itemRow}>
-                          <div className={styles.itemTop}>
-                            <div className={styles.itemMain}>
-                              <div className={styles.itemTitleRow}>
-                                <Link
-                                  href={`/seller/don-hang/${order.id}`}
-                                  className={common.cellLink}
+                    <div className={common.mobileList}>
+                      {filteredReturnOrders.map((order) => {
+                        const stMeta = getSellerOrderStatusMeta(order.status);
+                        return (
+                          <div key={order.id} className={common.mobileRow}>
+                            <div className={common.mobileRowTop}>
+                              <div>
+                                <button
+                                  type="button"
+                                  className={common.rowTriggerBtn}
+                                  onClick={() => handleOpenReturnDrawer(order.id)}
                                 >
                                   {order.order_code}
-                                </Link>
-                                <span className={pillCls(stMeta.tone)}>{stMeta.label}</span>
+                                </button>
+                                <span className={common.cellSub}>
+                                  {summarizeOrderItems(order.items)}
+                                </span>
                               </div>
-                              <p className={styles.itemSub}>{summarizeOrderItems(order.items)}</p>
-                              <p className={styles.itemMeta}>
-                                Giá trị đơn {formatVnd(order.total_payable_vnd)}
-                                {order.created_at
-                                  ? ` · Đặt lúc ${formatDateTimeVi(order.created_at)}`
-                                  : ""}
-                              </p>
+                              <span className={statusPillClass(stMeta.tone)}>{stMeta.label}</span>
                             </div>
-
-                            <div className={styles.rowActions}>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                shape="app"
-                                onClick={() => handleToggleOrderReturns(order.id)}
-                              >
-                                {isOpen ? "Thu gọn yêu cầu" : "Xem yêu cầu đổi trả"}
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                shape="app"
-                                href={`/seller/don-hang/${order.id}`}
-                              >
-                                <span>Mở đơn</span>
-                                <IconArrowUpRight size={14} />
-                              </Button>
+                            <div className={common.mobileRowMeta}>
+                              <strong className="num">{formatVnd(order.total_payable_vnd)}</strong>
+                              <div className={styles.rowActions}>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  shape="app"
+                                  onClick={() => handleOpenReturnDrawer(order.id)}
+                                >
+                                  Xem yêu cầu
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  shape="app"
+                                  href={`/seller/don-hang/${order.id}`}
+                                >
+                                  Mở đơn
+                                </Button>
+                              </div>
                             </div>
                           </div>
-
-                          {isOpen && (
-                            <div className={styles.detailPanel}>
-                              {detailState?.loading ? (
-                                <p className={styles.mutedLine}>
-                                  Đang tải chi tiết yêu cầu đổi trả...
-                                </p>
-                              ) : detailState?.error ? (
-                                <div className={styles.errorRow}>
-                                  <span>{detailState.error}</span>
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    shape="app"
-                                    onClick={() => void loadOrderReturns(order.id)}
-                                  >
-                                    Thử lại
-                                  </Button>
-                                </div>
-                              ) : !detailState || detailState.items.length === 0 ? (
-                                <p className={styles.mutedLine}>
-                                  Chưa có hồ sơ đổi trả chi tiết từ dịch vụ đổi trả cho đơn{" "}
-                                  {order.order_code}. Bạn có thể kiểm tra thêm tại trang chi tiết
-                                  đơn.
-                                </p>
-                              ) : (
-                                <div className={styles.returnDetailList}>
-                                  {detailState.items.map((ret) => {
-                                    const retMeta = getReturnStatusMeta(ret.status);
-                                    const isRejectOpen = rejectOpenId === ret.id;
-                                    const isProcessing = returnBusyId === ret.id;
-                                    const safePhotos = ret.photos
-                                      .map((p) => sanitizeSafeUrl(p))
-                                      .filter(Boolean);
-
-                                    return (
-                                      <div key={ret.id} className={styles.returnCard}>
-                                        <div className={styles.returnHead}>
-                                          <div>
-                                            <strong className={styles.returnCode}>
-                                              Yêu cầu {ret.id}
-                                            </strong>
-                                            {ret.created_at && (
-                                              <span className={common.cellSub}>
-                                                Gửi lúc {formatDateTimeVi(ret.created_at)}
-                                              </span>
-                                            )}
-                                          </div>
-                                          <span className={pillCls(retMeta.tone)}>
-                                            {retMeta.label}
-                                          </span>
-                                        </div>
-
-                                        <div className={styles.returnGrid}>
-                                          <div>
-                                            <span className={styles.returnLabel}>
-                                              Lý do khách gửi
-                                            </span>
-                                            <p className={styles.returnValue}>
-                                              {ret.reason || "Không có ghi chú"}
-                                            </p>
-                                          </div>
-                                          {ret.refund_amount_vnd > 0 && (
-                                            <div>
-                                              <span className={styles.returnLabel}>
-                                                Số tiền hoàn dự kiến
-                                              </span>
-                                              <p className={styles.returnValue}>
-                                                {formatVnd(ret.refund_amount_vnd)}
-                                              </p>
-                                            </div>
-                                          )}
-                                          {ret.items.length > 0 && (
-                                            <div>
-                                              <span className={styles.returnLabel}>
-                                                Sản phẩm hoàn
-                                              </span>
-                                              <p className={styles.returnValue}>
-                                                {ret.items
-                                                  .map((it) => {
-                                                    const name =
-                                                      it.product_name || it.sku_name || it.sku_id;
-                                                    return `${name} x${formatInt(it.quantity)}`;
-                                                  })
-                                                  .join(", ")}
-                                              </p>
-                                            </div>
-                                          )}
-                                          {safePhotos.length > 0 && (
-                                            <div>
-                                              <span className={styles.returnLabel}>
-                                                Ảnh minh chứng
-                                              </span>
-                                              <div className={styles.photoLinks}>
-                                                {safePhotos.map((photoUrl, idx) => (
-                                                  <a
-                                                    key={`${ret.id}-p-${idx}`}
-                                                    href={photoUrl}
-                                                    target="_blank"
-                                                    rel="noopener noreferrer"
-                                                    className={common.cellLink}
-                                                  >
-                                                    Ảnh {idx + 1}
-                                                  </a>
-                                                ))}
-                                              </div>
-                                            </div>
-                                          )}
-                                        </div>
-
-                                        {ret.reject_reason && (
-                                          <p className={styles.mutedLine}>
-                                            Lý do từ chối đã gửi: {ret.reject_reason}
-                                          </p>
-                                        )}
-
-                                        {retMeta.canDecide && (
-                                          <div className={styles.decisionArea}>
-                                            {isRejectOpen && (
-                                              <div className={common.field}>
-                                                <label
-                                                  htmlFor={`tuong-tac-reject-${ret.id}`}
-                                                  className={common.fieldLabel}
-                                                >
-                                                  Lý do từ chối (tối thiểu 5 ký tự)
-                                                </label>
-                                                <textarea
-                                                  id={`tuong-tac-reject-${ret.id}`}
-                                                  className={common.textArea}
-                                                  value={rejectDrafts[ret.id] ?? ""}
-                                                  onChange={(e) => {
-                                                    const v = e.target.value;
-                                                    setRejectDrafts((prev) => ({
-                                                      ...prev,
-                                                      [ret.id]: v,
-                                                    }));
-                                                    if (rejectErrors[ret.id]) {
-                                                      setRejectErrors((prev) => ({
-                                                        ...prev,
-                                                        [ret.id]: "",
-                                                      }));
-                                                    }
-                                                  }}
-                                                  placeholder="Nhập lý do từ chối rõ ràng cho người mua..."
-                                                />
-                                                {rejectErrors[ret.id] && (
-                                                  <span className={common.fieldError}>
-                                                    {rejectErrors[ret.id]}
-                                                  </span>
-                                                )}
-                                              </div>
-                                            )}
-
-                                            <div className={styles.formActions}>
-                                              {isRejectOpen ? (
-                                                <>
-                                                  <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    shape="app"
-                                                    disabled={isProcessing}
-                                                    onClick={() => setRejectOpenId(null)}
-                                                  >
-                                                    Đóng
-                                                  </Button>
-                                                  <Button
-                                                    variant="danger"
-                                                    size="sm"
-                                                    shape="app"
-                                                    disabled={isProcessing}
-                                                    onClick={() =>
-                                                      void handleRejectReturn(
-                                                        order.id,
-                                                        order.order_code,
-                                                        ret
-                                                      )
-                                                    }
-                                                  >
-                                                    {isProcessing
-                                                      ? "Đang gửi..."
-                                                      : "Xác nhận từ chối"}
-                                                  </Button>
-                                                </>
-                                              ) : (
-                                                <>
-                                                  <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    shape="app"
-                                                    disabled={isProcessing}
-                                                    onClick={() => setRejectOpenId(ret.id)}
-                                                  >
-                                                    Từ chối đổi trả
-                                                  </Button>
-                                                  <Button
-                                                    variant="ink"
-                                                    size="sm"
-                                                    shape="app"
-                                                    disabled={isProcessing}
-                                                    onClick={() =>
-                                                      void handleApproveReturn(
-                                                        order.id,
-                                                        order.order_code,
-                                                        ret
-                                                      )
-                                                    }
-                                                  >
-                                                    <IconCheck size={14} />
-                                                    <span>
-                                                      {isProcessing
-                                                        ? "Đang xử lý..."
-                                                        : "Duyệt đổi trả"}
-                                                    </span>
-                                                  </Button>
-                                                </>
-                                              )}
-                                            </div>
-                                          </div>
-                                        )}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </article>
-                      );
-                    })}
-                  </div>
+                        );
+                      })}
+                    </div>
+                  </>
                 )}
               </section>
             </>
           )}
 
+          {/* TAB 2: AI Review Summaries */}
           {tab === "reviews" && (
             <section className={common.card} aria-labelledby="ai-reviews-heading">
               <div className={common.cardHeader}>
-                <div>
-                  <h2 id="ai-reviews-heading" className={common.cardTitle}>
-                    Tóm tắt đánh giá sản phẩm do AI tổng hợp
-                  </h2>
-                  <span className={common.cardMeta}>
-                    Chọn sản phẩm để xem tổng hợp ưu điểm và nhược điểm từ đánh giá thực tế của
-                    người mua
-                  </span>
-                </div>
+                <h2 id="ai-reviews-heading" className={common.cardTitle}>
+                  Đánh giá sản phẩm ({formatInt(filteredProducts.length)})
+                </h2>
                 <div className={common.searchWrap}>
                   <span className={common.searchIcon}>
                     <IconSearch size={14} />
@@ -844,7 +659,7 @@ function SellerInteractionContent({
                     className={common.searchInput}
                     value={productQuery}
                     onChange={(e) => setProductQuery(e.target.value)}
-                    placeholder="Tìm theo tên sản phẩm..."
+                    placeholder="Tìm tên sản phẩm..."
                     aria-label="Tìm sản phẩm để xem tóm tắt đánh giá AI"
                   />
                 </div>
@@ -862,8 +677,8 @@ function SellerInteractionContent({
               ) : filteredProducts.length === 0 ? (
                 <div className={common.inlineEmpty}>
                   {products.length === 0
-                    ? "Gian hàng chưa có sản phẩm nào. Tạo sản phẩm đầu tiên để nhận đánh giá từ khách."
-                    : "Không tìm thấy sản phẩm khớp với từ khóa tìm kiếm."}
+                    ? "Gian hàng chưa có sản phẩm nào."
+                    : "Không tìm thấy sản phẩm khớp từ khóa."}
                 </div>
               ) : (
                 <div className={styles.itemList}>
@@ -872,26 +687,37 @@ function SellerInteractionContent({
                     const sumState = summaryMap[product.id];
                     const priceText =
                       product.max_price_vnd > product.min_price_vnd
-                        ? `${formatVnd(product.min_price_vnd)} - ${formatVnd(product.max_price_vnd)}`
+                        ? `${formatVnd(product.min_price_vnd)} đến ${formatVnd(product.max_price_vnd)}`
                         : formatVnd(product.min_price_vnd);
+                    const thumb = product.images?.[0];
 
                     return (
                       <article key={product.id} className={styles.itemRow}>
                         <div className={styles.itemTop}>
-                          <div className={styles.itemMain}>
-                            <div className={styles.itemTitleRow}>
-                              <Link
-                                href={`/seller/san-pham/${product.id}`}
-                                className={common.cellLink}
-                              >
-                                {product.name}
-                              </Link>
-                              <span className={pillCls(pMeta.tone)}>{pMeta.label}</span>
+                          <div className={styles.thumbCell}>
+                            {thumb && (
+                              <img
+                                src={thumb}
+                                alt=""
+                                className={styles.rowThumb}
+                                width={38}
+                                height={48}
+                              />
+                            )}
+                            <div className={styles.itemMain}>
+                              <div className={styles.itemTitleRow}>
+                                <Link
+                                  href={`/seller/san-pham/${product.id}`}
+                                  className={common.cellLink}
+                                >
+                                  {product.name}
+                                </Link>
+                                <span className={statusPillClass(pMeta.tone)}>{pMeta.label}</span>
+                              </div>
+                              <p className={styles.itemMeta}>
+                                {priceText}, {formatInt(product.skus?.length ?? 0)} SKU
+                              </p>
                             </div>
-                            <p className={styles.itemMeta}>
-                              Giá bán {priceText} · {formatInt(product.skus?.length ?? 0)} biến thể
-                              SKU
-                            </p>
                           </div>
 
                           <div className={styles.rowActions}>
@@ -907,8 +733,8 @@ function SellerInteractionContent({
                                 {sumState?.loading
                                   ? "Đang tổng hợp..."
                                   : sumState?.data
-                                    ? "Làm mới tóm tắt AI"
-                                    : "Xem tóm tắt AI"}
+                                    ? "Làm mới AI"
+                                    : "Tóm tắt AI"}
                               </span>
                             </Button>
                           </div>
@@ -930,7 +756,7 @@ function SellerInteractionContent({
                               </div>
                             ) : sumState.data && !sumState.data.ready ? (
                               <p className={styles.mutedLine}>
-                                Chưa đủ 10 đánh giá để tổng hợp tóm tắt AI
+                                Chưa đủ 10 đánh giá để tổng hợp AI
                                 {sumState.data.review_count > 0
                                   ? ` (hiện có ${formatInt(sumState.data.review_count)} đánh giá).`
                                   : "."}
@@ -939,14 +765,14 @@ function SellerInteractionContent({
                               <div className={styles.aiSummaryBox}>
                                 <div className={styles.returnHead}>
                                   <strong className={styles.returnCode}>
-                                    Tổng hợp từ {formatInt(sumState.data.review_count)} đánh giá
+                                    {formatInt(sumState.data.review_count)} đánh giá
                                     {sumState.data.average_rating > 0
-                                      ? ` · Điểm trung bình ${sumState.data.average_rating.toFixed(1).replace(".", ",")}/5`
+                                      ? ` (${sumState.data.average_rating.toFixed(1).replace(".", ",")}/5)`
                                       : ""}
                                   </strong>
                                   {sumState.data.updated_at && (
                                     <span className={common.cardMeta}>
-                                      Cập nhật {formatDateTimeVi(sumState.data.updated_at)}
+                                      {formatDateTimeVi(sumState.data.updated_at)}
                                     </span>
                                   )}
                                 </div>
@@ -959,7 +785,7 @@ function SellerInteractionContent({
                                   <div className={styles.prosBox}>
                                     <span className={styles.prosTitle}>Ưu điểm nổi bật</span>
                                     {sumState.data.pros.length === 0 ? (
-                                      <p className={styles.mutedLine}>Chưa có ghi nhận nổi bật.</p>
+                                      <p className={styles.mutedLine}>Chưa có ghi nhận.</p>
                                     ) : (
                                       <ul className={styles.bulletList}>
                                         {sumState.data.pros.map((item, idx) => (
@@ -969,9 +795,9 @@ function SellerInteractionContent({
                                     )}
                                   </div>
                                   <div className={styles.consBox}>
-                                    <span className={styles.consTitle}>Nhược điểm cần lưu ý</span>
+                                    <span className={styles.consTitle}>Nhược điểm lưu ý</span>
                                     {sumState.data.cons.length === 0 ? (
-                                      <p className={styles.mutedLine}>Chưa ghi nhận điểm trừ.</p>
+                                      <p className={styles.mutedLine}>Chưa ghi nhận.</p>
                                     ) : (
                                       <ul className={styles.bulletList}>
                                         {sumState.data.cons.map((item, idx) => (
@@ -993,29 +819,24 @@ function SellerInteractionContent({
             </section>
           )}
 
+          {/* TAB 3: Operational Notifications */}
           {tab === "notifications" && (
             <>
-              <section className={common.balanceStrip3} aria-label="Tổng hợp thông báo vận hành">
+              <section className={common.balanceStrip3} aria-label="Tổng hợp thông báo">
                 <div className={common.balanceCell}>
-                  <span className={common.balanceLabel}>Thông báo chưa đọc</span>
+                  <span className={common.balanceLabel}>Chưa đọc</span>
                   <span
                     className={`${common.balanceValue} ${notifSummary.unread === 0 ? common.balanceValueZero : ""}`}
                   >
                     {formatInt(notifSummary.unread)}
                   </span>
-                  <span className={common.balanceCaption}>
-                    Trên tổng {formatInt(notifSummary.total)} thông báo gần nhất
-                  </span>
                 </div>
                 <div className={common.balanceCell}>
-                  <span className={common.balanceLabel}>Liên quan đến đơn hàng</span>
+                  <span className={common.balanceLabel}>Đơn hàng</span>
                   <span
                     className={`${common.balanceValue} ${notifSummary.byCategory.order === 0 ? common.balanceValueZero : ""}`}
                   >
                     {formatInt(notifSummary.byCategory.order)}
-                  </span>
-                  <span className={common.balanceCaption}>
-                    Đơn mới, vận chuyển và yêu cầu đổi trả
                   </span>
                 </div>
                 <div className={common.balanceCell}>
@@ -1025,22 +846,14 @@ function SellerInteractionContent({
                   >
                     {formatInt(notifSummary.byCategory.promotion + notifSummary.byCategory.system)}
                   </span>
-                  <span className={common.balanceCaption}>
-                    Flash sale, phê duyệt và thông báo nền tảng
-                  </span>
                 </div>
               </section>
 
               <section className={common.card} aria-labelledby="notifications-heading">
                 <div className={common.cardHeader}>
-                  <div>
-                    <h2 id="notifications-heading" className={common.cardTitle}>
-                      Hộp thông báo vận hành gian hàng
-                    </h2>
-                    <span className={common.cardMeta}>
-                      Cập nhật trực tiếp từ hệ thống thông báo NexusMart
-                    </span>
-                  </div>
+                  <h2 id="notifications-heading" className={common.cardTitle}>
+                    Thông báo ({formatInt(filteredNotifications.length)})
+                  </h2>
                   <div className={common.segmented} role="tablist" aria-label="Lọc thông báo">
                     <button
                       type="button"
@@ -1067,7 +880,7 @@ function SellerInteractionContent({
                   <StateView
                     kind="error"
                     surface="app"
-                    title="Không thể tải thông báo vận hành"
+                    title="Không thể tải thông báo"
                     message={notifError}
                     actionLabel="Thử lại"
                     onAction={() => void handleRefreshNotifications()}
@@ -1075,8 +888,8 @@ function SellerInteractionContent({
                 ) : filteredNotifications.length === 0 ? (
                   <div className={common.inlineEmpty}>
                     {notifFilter === "unread"
-                      ? "Tất cả thông báo vận hành đã được đọc."
-                      : "Chưa có thông báo vận hành nào."}
+                      ? "Tất cả thông báo đã được đọc."
+                      : "Chưa có thông báo vận hành."}
                   </div>
                 ) : (
                   <div className={styles.itemList}>
@@ -1086,7 +899,7 @@ function SellerInteractionContent({
                       return (
                         <article
                           key={item.id}
-                          className={`${styles.itemRow} ${!item.is_read ? styles.notifUnread : ""}`}
+                          className={`${styles.itemRow} ${common.rowHoverParent} ${!item.is_read ? styles.notifUnread : ""}`}
                         >
                           <div className={styles.itemTop}>
                             <div className={styles.itemMain}>
@@ -1110,7 +923,7 @@ function SellerInteractionContent({
                               </p>
                             </div>
 
-                            <div className={styles.rowActions}>
+                            <div className={`${styles.rowActions} ${common.rowHoverActions}`}>
                               {safeLink &&
                                 (isExternal ? (
                                   <a
@@ -1119,11 +932,11 @@ function SellerInteractionContent({
                                     rel="noopener noreferrer"
                                     className={common.cardLink}
                                   >
-                                    Xem chi tiết
+                                    Mở
                                   </a>
                                 ) : (
                                   <Link href={safeLink} className={common.cardLink}>
-                                    Xem chi tiết
+                                    Mở
                                   </Link>
                                 ))}
                               {!item.is_read && (
@@ -1134,7 +947,7 @@ function SellerInteractionContent({
                                   disabled={notifBusy}
                                   onClick={() => void handleMarkNotificationRead([item.id], false)}
                                 >
-                                  Đánh dấu đã đọc
+                                  Đã đọc
                                 </Button>
                               )}
                             </div>
@@ -1149,6 +962,249 @@ function SellerInteractionContent({
           )}
         </>
       )}
+
+      {/* Slide-Over Return Request Drawer */}
+      <SellerDrawer
+        open={Boolean(drawerOrder)}
+        title={drawerOrder ? `Đổi trả ${drawerOrder.order_code}` : "Yêu cầu đổi trả"}
+        subtitle={
+          drawerOrder
+            ? `${formatVnd(drawerOrder.total_payable_vnd)}${drawerOrder.created_at ? `, ${formatDateTimeVi(drawerOrder.created_at)}` : ""}`
+            : undefined
+        }
+        badge={
+          drawerOrder ? (
+            <span className={statusPillClass(getSellerOrderStatusMeta(drawerOrder.status).tone)}>
+              {getSellerOrderStatusMeta(drawerOrder.status).label}
+            </span>
+          ) : undefined
+        }
+        onClose={() => {
+          setDrawerOrderId(null);
+          setRejectOpenId(null);
+        }}
+        footer={
+          drawerOrder ? (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                shape="app"
+                onClick={() => void loadOrderReturns(drawerOrder.id)}
+              >
+                <IconRefresh size={14} />
+                <span>Tải lại</span>
+              </Button>
+              <Button
+                variant="ink"
+                size="sm"
+                shape="app"
+                href={`/seller/don-hang/${drawerOrder.id}`}
+              >
+                <span>Mở chi tiết đơn</span>
+                <IconArrowUpRight size={14} />
+              </Button>
+            </>
+          ) : undefined
+        }
+      >
+        {drawerOrder && (
+          <>
+            <div className={common.drawerSection}>
+              <h3 className={common.drawerSectionTitle}>Sản phẩm trong đơn</h3>
+              <p className={styles.itemSub}>{summarizeOrderItems(drawerOrder.items)}</p>
+            </div>
+
+            <div className={common.drawerSection}>
+              <h3 className={common.drawerSectionTitle}>Hồ sơ yêu cầu đổi trả</h3>
+              {drawerReturnsState?.loading ? (
+                <p className={styles.mutedLine}>Đang tải yêu cầu đổi trả...</p>
+              ) : drawerReturnsState?.error ? (
+                <div className={styles.errorRow}>
+                  <span>{drawerReturnsState.error}</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    shape="app"
+                    onClick={() => void loadOrderReturns(drawerOrder.id)}
+                  >
+                    Thử lại
+                  </Button>
+                </div>
+              ) : !drawerReturnsState || drawerReturnsState.items.length === 0 ? (
+                <p className={styles.mutedLine}>
+                  Chưa có hồ sơ đổi trả chi tiết cho đơn {drawerOrder.order_code}.
+                </p>
+              ) : (
+                <div className={styles.returnDetailList}>
+                  {drawerReturnsState.items.map((ret) => {
+                    const retMeta = getReturnStatusMeta(ret.status);
+                    const isRejectOpen = rejectOpenId === ret.id;
+                    const isProcessing = returnBusyId === ret.id;
+                    const safePhotos = ret.photos.map((p) => sanitizeSafeUrl(p)).filter(Boolean);
+
+                    return (
+                      <div key={ret.id} className={styles.returnCard}>
+                        <div className={styles.returnHead}>
+                          <div>
+                            <strong className={styles.returnCode}>Yêu cầu {ret.id}</strong>
+                            {ret.created_at && (
+                              <span className={common.cellSub}>
+                                {formatDateTimeVi(ret.created_at)}
+                              </span>
+                            )}
+                          </div>
+                          <span className={statusPillClass(retMeta.tone)}>{retMeta.label}</span>
+                        </div>
+
+                        <div className={styles.returnGrid}>
+                          <div>
+                            <span className={styles.returnLabel}>Lý do khách gửi</span>
+                            <p className={styles.returnValue}>{ret.reason || "Không có ghi chú"}</p>
+                          </div>
+                          {ret.refund_amount_vnd > 0 && (
+                            <div>
+                              <span className={styles.returnLabel}>Hoàn dự kiến</span>
+                              <p className={`${styles.returnValue} num`}>
+                                {formatVnd(ret.refund_amount_vnd)}
+                              </p>
+                            </div>
+                          )}
+                          {ret.items.length > 0 && (
+                            <div>
+                              <span className={styles.returnLabel}>Sản phẩm hoàn</span>
+                              <p className={styles.returnValue}>
+                                {ret.items
+                                  .map((it) => {
+                                    const name = it.product_name || it.sku_name || it.sku_id;
+                                    return `${name} ×${formatInt(it.quantity)}`;
+                                  })
+                                  .join(", ")}
+                              </p>
+                            </div>
+                          )}
+                          {safePhotos.length > 0 && (
+                            <div>
+                              <span className={styles.returnLabel}>Minh chứng</span>
+                              <div className={styles.photoLinks}>
+                                {safePhotos.map((photoUrl, idx) => (
+                                  <a
+                                    key={`${ret.id}-p-${idx}`}
+                                    href={photoUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className={common.cellLink}
+                                  >
+                                    Ảnh {idx + 1}
+                                  </a>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {ret.reject_reason && (
+                          <p className={styles.mutedLine}>Lý do từ chối: {ret.reject_reason}</p>
+                        )}
+
+                        {retMeta.canDecide && (
+                          <div className={styles.decisionArea}>
+                            {isRejectOpen && (
+                              <div className={common.field}>
+                                <label
+                                  htmlFor={`tuong-tac-reject-${ret.id}`}
+                                  className={common.fieldLabel}
+                                >
+                                  Lý do từ chối (tối thiểu 5 ký tự)
+                                </label>
+                                <textarea
+                                  id={`tuong-tac-reject-${ret.id}`}
+                                  className={common.textArea}
+                                  value={rejectDrafts[ret.id] ?? ""}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    setRejectDrafts((prev) => ({ ...prev, [ret.id]: v }));
+                                    if (rejectErrors[ret.id]) {
+                                      setRejectErrors((prev) => ({ ...prev, [ret.id]: "" }));
+                                    }
+                                  }}
+                                  placeholder="Nhập lý do từ chối rõ ràng cho người mua..."
+                                />
+                                {rejectErrors[ret.id] && (
+                                  <span className={common.fieldError}>{rejectErrors[ret.id]}</span>
+                                )}
+                              </div>
+                            )}
+
+                            <div className={styles.formActions}>
+                              {isRejectOpen ? (
+                                <>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    shape="app"
+                                    disabled={isProcessing}
+                                    onClick={() => setRejectOpenId(null)}
+                                  >
+                                    Đóng
+                                  </Button>
+                                  <Button
+                                    variant="danger"
+                                    size="sm"
+                                    shape="app"
+                                    disabled={isProcessing}
+                                    onClick={() =>
+                                      void handleRejectReturn(
+                                        drawerOrder.id,
+                                        drawerOrder.order_code,
+                                        ret
+                                      )
+                                    }
+                                  >
+                                    {isProcessing ? "Đang gửi..." : "Xác nhận từ chối"}
+                                  </Button>
+                                </>
+                              ) : (
+                                <>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    shape="app"
+                                    disabled={isProcessing}
+                                    onClick={() => setRejectOpenId(ret.id)}
+                                  >
+                                    Từ chối đổi trả
+                                  </Button>
+                                  <Button
+                                    variant="ink"
+                                    size="sm"
+                                    shape="app"
+                                    disabled={isProcessing}
+                                    onClick={() =>
+                                      void handleApproveReturn(
+                                        drawerOrder.id,
+                                        drawerOrder.order_code,
+                                        ret
+                                      )
+                                    }
+                                  >
+                                    <IconCheck size={14} />
+                                    <span>{isProcessing ? "Đang xử lý..." : "Duyệt đổi trả"}</span>
+                                  </Button>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </SellerDrawer>
     </div>
   );
 }

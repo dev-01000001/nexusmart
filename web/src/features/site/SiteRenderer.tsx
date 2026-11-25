@@ -5,9 +5,15 @@ import type { Voucher } from "@/data/vouchers";
 import { formatInt, formatVnd } from "@/lib/format";
 import { sanitizeSafeHref } from "@/lib/site/theme";
 import type { SiteConfig, SitePublicShopDTO } from "@/lib/site/types";
+import { DenseGridHeroSearch } from "./DenseGridHeroSearch";
+import { MultiSkuDirectory } from "./MultiSkuDirectory";
+import { OnePageLaunchHero } from "./OnePageLaunchHero";
+import { SafeActionLink } from "./SafeActionLink";
+import { parseNumericStat } from "./siteMetrics";
 import { SiteProductCard } from "./SiteProductCard";
 import type {
   SectionSurface,
+  SiteArchetype,
   SiteCardStyle,
   SiteSectionBlock,
   SiteSectionV2,
@@ -33,35 +39,12 @@ export interface SiteRendererProps {
   sectionsOverride?: SiteSectionV2[];
 }
 
-function SafeActionLink({
-  href,
-  label,
-  className,
-  previewMode,
-}: {
-  href: string;
-  label: string;
-  className: string;
-  previewMode: boolean;
-}) {
-  const cleanHref = sanitizeSafeHref(href);
-  if (!label.trim() || !cleanHref) return null;
-  if (previewMode) {
-    return <span className={className}>{label}</span>;
-  }
-  if (cleanHref.startsWith("/")) {
-    return (
-      <Link href={cleanHref} className={className}>
-        {label}
-      </Link>
-    );
-  }
-  return (
-    <a href={cleanHref} className={className} rel="noopener noreferrer">
-      {label}
-    </a>
-  );
-}
+const CRAFT_FILMSTRIP_IMAGES: readonly string[] = [
+  "/atmosphere/cotton-boll-harvest.jpg",
+  "/atmosphere/cotton-jersey-weave.webp",
+  "/atmosphere/cotton-jersey-drape.webp",
+  "/banners/vietnam-workshop.jpg",
+];
 
 function formatVoucherBenefit(voucher: Voucher): string {
   if (voucher.discountType === "percent") {
@@ -69,6 +52,36 @@ function formatVoucherBenefit(voucher: Voucher): string {
     return `Giảm ${voucher.discountValue}%${cap}`;
   }
   return `Giảm ${formatVnd(voucher.discountValue)}`;
+}
+
+/** Splits a Vietnamese headline cleanly into two balanced halves for flanking minimal-fashion portrait. */
+function splitHeadlineHalves(text: string): [string, string] {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length <= 1) return [text.trim(), ""];
+  const mid = Math.ceil(words.length / 2);
+  return [words.slice(0, mid).join(" "), words.slice(mid).join(" ")];
+}
+
+function renderStatCard(
+  block: Extract<SiteSectionBlock, { type: "stat" }>,
+  itemClass: string
+): React.ReactNode {
+  const parsed = parseNumericStat(block.props.value);
+  return (
+    <div key={block.id} className={itemClass}>
+      <span
+        className={`${tplStyles.metricValue} num`}
+        data-reveal={parsed ? "count" : undefined}
+        data-count-to={parsed ? String(parsed.to) : undefined}
+        data-count-prefix={parsed?.prefix || undefined}
+        data-count-suffix={parsed?.suffix || undefined}
+      >
+        {block.props.value}
+      </span>
+      <span className={tplStyles.metricLabel}>{block.props.label}</span>
+      {block.props.note?.trim() && <span className={tplStyles.metricNote}>{block.props.note}</span>}
+    </div>
+  );
 }
 
 function selectFeaturedProducts(
@@ -126,18 +139,107 @@ function selectCollectionProducts(
   return filtered.slice(0, cap);
 }
 
-function resolveGridClass(
+/**
+ * Orphan-free grid resolver:
+ * - 1 item -> full-row horizontal showcase
+ * - 2 items -> 2 half-width cards
+ * - 3 items -> 3 columns (staggered on minimal-fashion)
+ * - Respects archetype signature grids even on legacy v1 converted sites.
+ */
+function resolveProductGridClass(
+  archetype: SiteArchetype,
   variant: string | undefined,
   columns: number | undefined,
   count: number
 ): string {
-  if (variant === "editorial-asym") return tplStyles.gridEditorialAsym;
+  if (count <= 1) return tplStyles.gridSingle;
+  if (count === 2) return tplStyles.gridCols2;
   if (variant === "list-sku") return tplStyles.gridListSku;
-  if (variant === "dense-5" || columns === 5) return tplStyles.gridCols5;
-  if (variant === "grid-2" || columns === 2) return tplStyles.gridCols2;
-  if (variant === "grid-3" || columns === 3) return tplStyles.gridCols3;
-  if (variant === "grid-4" || columns === 4) return tplStyles.gridCols4;
-  return count === 3 ? tplStyles.gridCols3 : tplStyles.gridCols4;
+  if (
+    variant === "editorial-asym" ||
+    (archetype === "editorial" && (!variant || variant === "grid-4"))
+  ) {
+    return tplStyles.gridEditorialAsym;
+  }
+  if (
+    archetype === "minimal-fashion" &&
+    (!variant || variant === "grid-3" || variant === "grid-4")
+  ) {
+    return tplStyles.gridStagger3;
+  }
+  if (variant === "dense-5" || columns === 5 || archetype === "dense-grid") {
+    if (count >= 5) return tplStyles.gridCols5;
+    if (count === 3) return tplStyles.gridCols3;
+    return tplStyles.gridCols4;
+  }
+  if (variant === "grid-2" || columns === 2 || archetype === "luxury-maison") {
+    return tplStyles.gridCols2;
+  }
+  if (variant === "grid-3" || columns === 3 || count === 3) {
+    return tplStyles.gridCols3;
+  }
+  if (count === 5) return tplStyles.gridCols5;
+  return tplStyles.gridCols4;
+}
+
+/**
+ * Resolves the effective hero mode so every archetype (including legacy v1 seeded sites
+ * converted with default `variant: "split"`) displays its unmistakable signature hero.
+ */
+function resolveEffectiveHeroMode(archetype: SiteArchetype, variant: string | undefined): string {
+  const explicit = (variant || "").trim();
+  if (
+    archetype === "one-page-launch" &&
+    (!explicit || explicit === "fullbleed" || explicit === "split")
+  ) {
+    return "one-page-launch";
+  }
+  if (
+    archetype === "multi-sku-catalog" &&
+    (!explicit || explicit === "compact-bar" || explicit === "split")
+  ) {
+    return "multi-sku-catalog";
+  }
+  if (
+    archetype === "dense-grid" &&
+    (!explicit || explicit === "compact-bar" || explicit === "split")
+  ) {
+    return "dense-grid";
+  }
+  if (!explicit || explicit === "split") {
+    switch (archetype) {
+      case "minimal-fashion":
+        return "centered";
+      case "editorial":
+        return "editorial";
+      case "craft-atelier":
+        return "atelier";
+      case "sport-active":
+        return "sport-diagonal";
+      case "luxury-maison":
+        return "luxury-framed";
+      case "classic":
+        return "fullbleed";
+      default:
+        return "fullbleed";
+    }
+  }
+  return explicit;
+}
+
+function renderMaskedHeading(Tag: "h1" | "h2", text: string, className: string, immediate = false) {
+  return (
+    <Tag
+      className={`${className} ${immediate ? "lines" : ""}`}
+      data-reveal={immediate ? undefined : "lines"}
+    >
+      <span className="line">
+        <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
+          {text}
+        </span>
+      </span>
+    </Tag>
+  );
 }
 
 function renderSingleBlock(block: SiteSectionBlock, previewMode: boolean): React.ReactNode {
@@ -189,11 +291,15 @@ function renderSingleBlock(block: SiteSectionBlock, previewMode: boolean): React
       const imgUrl = sanitizeSafeImageUrl(block.props.image_url);
       if (!imgUrl) return null;
       return (
-        <figure key={block.id} className={tplStyles.blockFigure} data-reveal="">
-          <div className={tplStyles.blockImageFrame} data-aspect={block.props.aspect || "4:3"}>
+        <figure key={block.id} className={tplStyles.blockFigure}>
+          <div
+            className={tplStyles.blockImageFrame}
+            data-aspect={block.props.aspect || "4:3"}
+            data-reveal="clip"
+          >
             <img
               src={imgUrl}
-              alt={block.props.alt || block.props.caption || "Ảnh minh họa cửa hàng"}
+              alt={block.props.alt || block.props.caption || "Ảnh cửa hàng"}
               width={1200}
               height={900}
               className={tplStyles.blockImg}
@@ -206,35 +312,27 @@ function renderSingleBlock(block: SiteSectionBlock, previewMode: boolean): React
       );
     }
     case "stat":
-      return (
-        <div key={block.id} className={tplStyles.metricsCard} data-reveal="">
-          <span className={`${tplStyles.metricValue} num`}>{block.props.value}</span>
-          <span className={tplStyles.metricLabel}>{block.props.label}</span>
-          {block.props.note?.trim() && (
-            <span className={tplStyles.metricNote}>{block.props.note}</span>
-          )}
-        </div>
-      );
+      return renderStatCard(block, tplStyles.metricsCard);
     case "policy":
       return (
-        <article key={block.id} className={styles.policyItem} data-reveal="">
+        <article key={block.id} className={styles.policyItem}>
           <h3 className={styles.policyHeading}>{block.props.heading}</h3>
           <p className={styles.policyDetail}>{block.props.detail}</p>
         </article>
       );
     case "quote":
       return (
-        <blockquote key={block.id} className={tplStyles.blockQuote} data-reveal="">
+        <blockquote key={block.id} className={tplStyles.blockQuote}>
           <p className={tplStyles.blockQuoteBody}>“{block.props.body}”</p>
           <cite className={tplStyles.blockQuoteCite}>
             {block.props.author}
-            {block.props.role?.trim() ? ` · ${block.props.role}` : ""}
+            {block.props.role?.trim() ? `, ${block.props.role}` : ""}
           </cite>
         </blockquote>
       );
     case "feature":
       return (
-        <div key={block.id} className={tplStyles.blockFeatureCard} data-reveal="">
+        <div key={block.id} className={tplStyles.blockFeatureCard}>
           {block.props.tag?.trim() && (
             <span className={tplStyles.blockFeatureTag}>{block.props.tag}</span>
           )}
@@ -276,156 +374,445 @@ function sectionPaddingAttr(section: SiteSectionV2): string | undefined {
 function renderHeroSection(
   section: Extract<SiteSectionV2, { type: "hero" }>,
   tpl: SiteTemplateConfig,
+  shop: SitePublicShopDTO,
   products: Product[],
+  categories: CategoryInfo[],
   isFirstHeading: boolean,
   previewMode: boolean
 ) {
   const { props, variant, blocks } = section;
+  const archetype = tpl.layout.archetype;
+  const mode = resolveEffectiveHeroMode(archetype, variant);
+  const brandName = tpl.theme.brand_name?.trim() || shop.name;
+
+  const primaryProductImg =
+    sanitizeSafeImageUrl(products[0]?.onModelImage) || sanitizeSafeImageUrl(products[0]?.image);
+  const secondaryProductImg =
+    sanitizeSafeImageUrl(products[1]?.onModelImage) ||
+    sanitizeSafeImageUrl(products[1]?.image) ||
+    "/banners/fabric-closeup.jpg";
+
   const heroImg =
     sanitizeSafeImageUrl(props.image_url) ||
     sanitizeSafeImageUrl(tpl.theme.banner_url) ||
-    sanitizeSafeImageUrl(products[0]?.onModelImage) ||
-    sanitizeSafeImageUrl(products[0]?.image) ||
+    primaryProductImg ||
     "/banners/vietnam-workshop.jpg";
+
   const ctaLabel = props.cta_label?.trim() || "Xem sản phẩm";
   const ctaHref = sanitizeSafeHref(props.cta_href, "/san-pham");
-  const titleText = props.title.trim() || tpl.theme.brand_name;
-  const surface = sectionSurfaceAttr(
-    section,
-    variant === "fullbleed" ? "band" : variant === "compact-bar" ? "surface" : "bg"
-  );
-
+  const titleText = props.title.trim() || brandName;
+  const subtitleText = props.subtitle?.trim() || "";
   const HeadingTag = isFirstHeading ? "h1" : "h2";
-  const titleClass = variant === "fullbleed" ? tplStyles.heroFullbleedTitle : styles.heroTitle;
-  const subtitleClass = variant === "fullbleed" ? tplStyles.heroFullbleedSub : styles.heroSubtitle;
 
-  const actions = (
-    <div className={styles.heroActions} data-rise="" style={{ "--i": 3 } as React.CSSProperties}>
-      <SafeActionLink
-        href={ctaHref}
-        label={ctaLabel}
-        className={surface === "band" ? styles.btnOnBand : styles.btnPrimary}
-        previewMode={previewMode}
-      />
-      {ctaHref !== "/san-pham" && (
-        <SafeActionLink
-          href="/san-pham"
-          label="Danh mục cửa hàng"
-          className={styles.btnSecondary}
-          previewMode={previewMode}
-        />
-      )}
-    </div>
-  );
-
-  const copyContent = (
-    <>
-      {props.eyebrow?.trim() && (
-        <p className={styles.heroSubNote} data-rise="" style={{ "--i": 0 } as React.CSSProperties}>
-          {props.eyebrow}
-        </p>
-      )}
-      <HeadingTag className={titleClass} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
-        {titleText}
-      </HeadingTag>
-      {props.subtitle?.trim() && (
-        <p className={subtitleClass} data-rise="" style={{ "--i": 2 } as React.CSSProperties}>
-          {props.subtitle}
-        </p>
-      )}
-      {actions}
-      {renderInlineBlocks(blocks, previewMode)}
-    </>
-  );
-
-  const imgEl = (
-    <img src={heroImg} alt={titleText} width={1365} height={768} className={styles.heroMediaImg} />
-  );
-
-  let body: React.ReactNode;
-  if (variant === "centered") {
-    body = (
-      <div className={tplStyles.heroCentered}>
-        <div className={tplStyles.heroCenteredCopy}>{copyContent}</div>
-        <div className={tplStyles.heroCenteredMedia}>{imgEl}</div>
-      </div>
-    );
-  } else if (variant === "editorial") {
-    body = (
-      <div className={tplStyles.heroEditorial}>
-        <div className={tplStyles.heroEditorialCopy}>{copyContent}</div>
-        <div className={tplStyles.heroEditorialMedia}>{imgEl}</div>
-      </div>
-    );
-  } else if (variant === "compact-bar") {
-    body = (
-      <div className={tplStyles.heroCompactBar}>
-        <div className={styles.heroCopyCol}>{copyContent}</div>
-        <div className={tplStyles.heroCompactMedia}>{imgEl}</div>
-      </div>
-    );
-  } else if (variant === "atelier") {
-    body = (
-      <div className={tplStyles.heroAtelier}>
-        <div className={tplStyles.heroAtelierCopy}>{copyContent}</div>
-        <div className={styles.heroVisualCol}>
-          <div className={styles.heroMediaFrame}>{imgEl}</div>
+  // 1) ONE-PAGE LAUNCH: sticky center product spotlight with 3 color/angle stages + persistent buy bar
+  if (mode === "one-page-launch") {
+    const rawLaunchHref = props.cta_href?.trim() ? sanitizeSafeHref(props.cta_href, "") : "";
+    return (
+      <section
+        key={section.id}
+        id={section.id}
+        className={`${tplStyles.sectionWrap} ${tplStyles.heroWrapFlush}`}
+        data-section-type="hero"
+        data-section-variant={variant || "fullbleed"}
+        data-surface={sectionSurfaceAttr(section, "bg")}
+      >
+        <div className={tplStyles.sectionInner}>
+          <OnePageLaunchHero
+            title={titleText}
+            subtitle={subtitleText}
+            ctaLabel={ctaLabel}
+            ctaHref={rawLaunchHref}
+            fallbackImage={heroImg}
+            product={products[0]}
+            isFirstHeading={isFirstHeading}
+            previewMode={previewMode}
+          />
+          {renderInlineBlocks(blocks, previewMode)}
         </div>
-      </div>
-    );
-  } else if (variant === "sport-diagonal") {
-    body = (
-      <div className={tplStyles.heroSport}>
-        <div className={tplStyles.heroSportCopy}>{copyContent}</div>
-        <div className={tplStyles.heroSportFrame}>
-          <div className={tplStyles.heroSportMedia}>{imgEl}</div>
-        </div>
-      </div>
-    );
-  } else if (variant === "luxury-framed") {
-    body = (
-      <div className={tplStyles.heroLuxury}>
-        <div className={tplStyles.heroLuxuryCopy}>{copyContent}</div>
-        <div className={tplStyles.heroLuxuryOuterFrame}>
-          <div className={tplStyles.heroLuxuryInnerFrame}>{imgEl}</div>
-        </div>
-      </div>
-    );
-  } else if (variant === "fullbleed") {
-    body = (
-      <div className={tplStyles.heroFullbleed}>
-        <div className={styles.heroCopyCol}>{copyContent}</div>
-        <div className={styles.heroMediaFrame}>{imgEl}</div>
-      </div>
-    );
-  } else {
-    body = (
-      <div className={styles.heroGrid}>
-        <div className={styles.heroCopyCol}>{copyContent}</div>
-        <div className={styles.heroVisualCol}>
-          <div className={styles.heroMediaFrame}>{imgEl}</div>
-        </div>
-      </div>
+      </section>
     );
   }
 
+  // 2) MULTI-SKU CATALOG: typographic row-by-row directory with anchored hover image
+  if (mode === "multi-sku-catalog") {
+    return (
+      <section
+        key={section.id}
+        id={section.id}
+        className={tplStyles.sectionWrap}
+        data-section-type="hero"
+        data-section-variant={variant || "compact-bar"}
+        data-surface={sectionSurfaceAttr(section, "bg")}
+        data-padding="compact"
+      >
+        <div className={tplStyles.sectionInner}>
+          <MultiSkuDirectory
+            title={titleText}
+            subtitle={subtitleText}
+            ctaLabel={ctaLabel}
+            ctaHref={ctaHref}
+            products={products}
+            fallbackImage={heroImg}
+            isFirstHeading={isFirstHeading}
+            previewMode={previewMode}
+          />
+          {renderInlineBlocks(blocks, previewMode)}
+        </div>
+      </section>
+    );
+  }
+
+  // 3) DENSE GRID: zero hero image, straight into prominent search bar + category rail
+  if (mode === "dense-grid" || mode === "compact-bar") {
+    return (
+      <section
+        key={section.id}
+        id={section.id}
+        className={tplStyles.sectionWrap}
+        data-section-type="hero"
+        data-section-variant={variant || "compact-bar"}
+        data-surface={sectionSurfaceAttr(section, "surface")}
+        data-padding="compact"
+      >
+        <div className={tplStyles.sectionInner}>
+          <DenseGridHeroSearch
+            title={titleText}
+            subtitle={subtitleText}
+            brandName={brandName}
+            shopId={shop.id}
+            categories={categories}
+            productCount={products.length}
+            isFirstHeading={isFirstHeading}
+            previewMode={previewMode}
+          />
+          {renderInlineBlocks(blocks, previewMode)}
+        </div>
+      </section>
+    );
+  }
+
+  // 4) MINIMAL FASHION: centered 3:4 portrait with headline split left & right
+  if (mode === "centered") {
+    const portraitImg = primaryProductImg || heroImg;
+    const [leftHalf, rightHalf] = splitHeadlineHalves(titleText);
+    return (
+      <section
+        key={section.id}
+        id={section.id}
+        className={tplStyles.sectionWrap}
+        data-section-type="hero"
+        data-section-variant={variant || "centered"}
+        data-surface={sectionSurfaceAttr(section, "bg")}
+        data-padding="generous"
+      >
+        <div className={tplStyles.sectionInner}>
+          <div className={tplStyles.heroMinimalStage}>
+            <HeadingTag
+              className={tplStyles.heroMinimalSplitTitle}
+              data-rise=""
+              style={{ "--i": 0 } as React.CSSProperties}
+            >
+              <span className={tplStyles.heroMinimalHalfLeft}>{leftHalf}</span>
+              {rightHalf && <span className={tplStyles.heroMinimalHalfRight}> {rightHalf}</span>}
+            </HeadingTag>
+
+            <figure className={tplStyles.heroMinimalPortrait} data-reveal="clip">
+              <img
+                src={portraitImg}
+                alt={titleText}
+                width={896}
+                height={1200}
+                className={styles.heroMediaImg}
+              />
+            </figure>
+
+            <div
+              className={tplStyles.heroMinimalFoot}
+              data-rise=""
+              style={{ "--i": 2 } as React.CSSProperties}
+            >
+              {subtitleText && <p className={tplStyles.heroMinimalSub}>{subtitleText}</p>}
+              <SafeActionLink
+                href={ctaHref}
+                label={ctaLabel}
+                className={styles.btnPrimary}
+                previewMode={previewMode}
+              />
+              {renderInlineBlocks(blocks, previewMode)}
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  // 5) EDITORIAL: colossal tight headline overlaid across two vertically staggered photos
+  if (mode === "editorial") {
+    const photoA = heroImg;
+    const photoB =
+      secondaryProductImg !== photoA ? secondaryProductImg : "/banners/fabric-closeup.jpg";
+    return (
+      <section
+        key={section.id}
+        id={section.id}
+        className={tplStyles.sectionWrap}
+        data-section-type="hero"
+        data-section-variant={variant || "editorial"}
+        data-surface={sectionSurfaceAttr(section, "bg")}
+        data-padding="normal"
+      >
+        <div className={tplStyles.sectionInner}>
+          <div className={tplStyles.heroEditorialCanvas}>
+            <div className={tplStyles.heroEditorialTypeLayer}>
+              {renderMaskedHeading(HeadingTag, titleText, tplStyles.heroEditorialGiantTitle, true)}
+              <div
+                className={tplStyles.heroEditorialMeta}
+                data-rise=""
+                style={{ "--i": 2 } as React.CSSProperties}
+              >
+                {subtitleText && <p className={tplStyles.heroEditorialSub}>{subtitleText}</p>}
+                <SafeActionLink
+                  href={ctaHref}
+                  label={ctaLabel}
+                  className={styles.btnPrimary}
+                  previewMode={previewMode}
+                />
+              </div>
+            </div>
+
+            <figure className={tplStyles.heroEditorialPhotoA} data-reveal="clip">
+              <img
+                src={photoA}
+                alt={titleText}
+                width={1000}
+                height={1333}
+                className={styles.heroMediaImg}
+              />
+            </figure>
+
+            <figure className={tplStyles.heroEditorialPhotoB} data-reveal="clip">
+              <img
+                src={photoB}
+                alt={`Chi tiết chất liệu ${brandName}`}
+                width={900}
+                height={900}
+                className={styles.heroMediaImg}
+              />
+            </figure>
+          </div>
+          {renderInlineBlocks(blocks, previewMode)}
+        </div>
+      </section>
+    );
+  }
+
+  // 6) CRAFT ATELIER: full-bleed fabric photograph with wide headline anchored bottom-left
+  if (mode === "atelier") {
+    const craftHeroImg =
+      sanitizeSafeImageUrl(props.image_url) ||
+      sanitizeSafeImageUrl(tpl.theme.banner_url) ||
+      primaryProductImg ||
+      "/banners/fabric-closeup.jpg";
+    return (
+      <section
+        key={section.id}
+        id={section.id}
+        className={`${tplStyles.sectionWrap} ${tplStyles.heroFullbleedBleed}`}
+        data-section-type="hero"
+        data-section-variant={variant || "atelier"}
+        data-surface="bg"
+      >
+        <div className={tplStyles.heroAtelierFull}>
+          <figure className={tplStyles.heroAtelierBackdrop} data-reveal="clip">
+            <img
+              src={craftHeroImg}
+              alt={titleText}
+              width={1600}
+              height={1000}
+              className={styles.heroMediaImg}
+            />
+          </figure>
+          <div className={tplStyles.heroAtelierCornerPlate}>
+            {renderMaskedHeading(HeadingTag, titleText, tplStyles.heroAtelierTitle, true)}
+            {subtitleText && (
+              <p
+                className={tplStyles.heroAtelierSub}
+                data-rise=""
+                style={{ "--i": 1 } as React.CSSProperties}
+              >
+                {subtitleText}
+              </p>
+            )}
+            <div
+              className={styles.heroActions}
+              data-rise=""
+              style={{ "--i": 2 } as React.CSSProperties}
+            >
+              <SafeActionLink
+                href={ctaHref}
+                label={ctaLabel}
+                className={styles.btnPrimary}
+                previewMode={previewMode}
+              />
+            </div>
+            {renderInlineBlocks(blocks, previewMode)}
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  // 7) SPORT ACTIVE: dark ground, 16-20vw condensed poster headline + diagonal clip-path action photo
+  if (mode === "sport-diagonal") {
+    return (
+      <section
+        key={section.id}
+        id={section.id}
+        className={tplStyles.sectionWrap}
+        data-section-type="hero"
+        data-section-variant={variant || "sport-diagonal"}
+        data-surface={sectionSurfaceAttr(section, "bg")}
+        data-padding="normal"
+      >
+        <div className={tplStyles.sectionInner}>
+          <div className={tplStyles.heroSportStage}>
+            <HeadingTag
+              className={tplStyles.heroSportPosterTitle}
+              data-rise=""
+              style={{ "--i": 0 } as React.CSSProperties}
+            >
+              {titleText}
+            </HeadingTag>
+
+            <div className={tplStyles.heroSportBottom}>
+              <figure className={tplStyles.heroSportSlashFrame} data-reveal="clip">
+                <img
+                  src={heroImg}
+                  alt={titleText}
+                  width={1365}
+                  height={768}
+                  className={styles.heroMediaImg}
+                />
+              </figure>
+
+              <div
+                className={tplStyles.heroSportCtaCol}
+                data-rise=""
+                style={{ "--i": 2 } as React.CSSProperties}
+              >
+                {subtitleText && <p className={tplStyles.heroSportSub}>{subtitleText}</p>}
+                <SafeActionLink
+                  href={ctaHref}
+                  label={ctaLabel}
+                  className={styles.btnPrimary}
+                  previewMode={previewMode}
+                />
+                {renderInlineBlocks(blocks, previewMode)}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  // 8) LUXURY MAISON: deliberately small framed photo centered in expansive quiet field, 1200ms slow open
+  if (mode === "luxury-framed") {
+    return (
+      <section
+        key={section.id}
+        id={section.id}
+        className={tplStyles.sectionWrap}
+        data-section-type="hero"
+        data-section-variant={variant || "luxury-framed"}
+        data-surface={sectionSurfaceAttr(section, "bg")}
+        data-padding="normal"
+      >
+        <div className={tplStyles.sectionInner}>
+          <div className={tplStyles.heroLuxurySanctuary}>
+            <HeadingTag
+              className={tplStyles.heroLuxuryTitle}
+              data-rise=""
+              style={{ "--i": 0 } as React.CSSProperties}
+            >
+              {titleText}
+            </HeadingTag>
+
+            <figure className={tplStyles.heroLuxurySmallFrame} data-reveal="scale">
+              <img
+                src={heroImg}
+                alt={titleText}
+                width={900}
+                height={1125}
+                className={styles.heroMediaImg}
+              />
+            </figure>
+
+            <div
+              className={tplStyles.heroLuxuryFoot}
+              data-rise=""
+              style={{ "--i": 2 } as React.CSSProperties}
+            >
+              {subtitleText && <p className={tplStyles.heroLuxurySub}>{subtitleText}</p>}
+              <SafeActionLink
+                href={ctaHref}
+                label={ctaLabel}
+                className={tplStyles.heroLuxuryLink}
+                previewMode={previewMode}
+              />
+              {renderInlineBlocks(blocks, previewMode)}
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  // 9) CLASSIC / FULLBLEED: full-bleed photograph with clean bottom-anchored headline bar
   return (
     <section
       key={section.id}
       id={section.id}
-      className={tplStyles.sectionWrap}
+      className={`${tplStyles.sectionWrap} ${tplStyles.heroFullbleedBleed}`}
       data-section-type="hero"
-      data-section-variant={variant || "split"}
-      data-surface={surface}
-      data-padding={sectionPaddingAttr(section)}
+      data-section-variant={variant || "fullbleed"}
+      data-surface="bg"
     >
-      <div className={tplStyles.sectionInner}>{body}</div>
+      <div className={tplStyles.heroClassicFull}>
+        <figure className={tplStyles.heroClassicBackdrop} data-reveal="clip">
+          <img
+            src={heroImg}
+            alt={titleText}
+            width={1600}
+            height={1000}
+            className={styles.heroMediaImg}
+          />
+        </figure>
+        <div className={tplStyles.heroClassicBottomBar}>
+          <div className={tplStyles.heroClassicBottomInner}>
+            <div className={tplStyles.heroClassicCopy}>
+              {renderMaskedHeading(HeadingTag, titleText, tplStyles.heroClassicTitle, true)}
+              {subtitleText && <p className={tplStyles.heroClassicSub}>{subtitleText}</p>}
+            </div>
+            <SafeActionLink
+              href={ctaHref}
+              label={ctaLabel}
+              className={styles.btnPrimary}
+              previewMode={previewMode}
+            />
+          </div>
+          {blocks && blocks.length > 0 && (
+            <div className={tplStyles.sectionInner}>{renderInlineBlocks(blocks, previewMode)}</div>
+          )}
+        </div>
+      </div>
     </section>
   );
 }
 
 function renderFeaturedProductsSection(
   section: Extract<SiteSectionV2, { type: "featured_products" }>,
+  archetype: SiteArchetype,
   products: Product[],
   cardStyle: SiteCardStyle,
   previewMode: boolean
@@ -434,9 +821,9 @@ function renderFeaturedProductsSection(
   const maxItems =
     settings?.max_items && settings.max_items > 0 ? settings.max_items : (props.limit ?? 8);
   const items = selectFeaturedProducts(products, props.product_ids, maxItems);
-  const gridClass = resolveGridClass(variant, settings?.columns, items.length);
+  const gridClass = resolveProductGridClass(archetype, variant, settings?.columns, items.length);
   const effectiveCardStyle: SiteCardStyle = variant === "list-sku" ? "compact-row" : cardStyle;
-  const isCentered = settings?.align === "center";
+  const isCentered = settings?.align === "center" || archetype === "luxury-maison";
 
   return (
     <section
@@ -449,12 +836,9 @@ function renderFeaturedProductsSection(
       data-padding={sectionPaddingAttr(section)}
     >
       <div className={tplStyles.sectionInner}>
-        <div
-          className={isCentered ? tplStyles.sectionHeadCentered : styles.sectionHead}
-          data-reveal=""
-        >
+        <div className={isCentered ? tplStyles.sectionHeadCentered : styles.sectionHead}>
           <div className={styles.sectionHeadCopy}>
-            <h2 className={styles.sectionTitle}>{props.title || "Sản phẩm nổi bật"}</h2>
+            {renderMaskedHeading("h2", props.title || "Sản phẩm nổi bật", styles.sectionTitle)}
             {props.subtitle?.trim() && (
               <p className={`${styles.sectionSubtitle} ${tplStyles.mutedOnSurface}`}>
                 {props.subtitle}
@@ -463,13 +847,13 @@ function renderFeaturedProductsSection(
           </div>
           {!previewMode && (
             <Link href="/san-pham" className={styles.sectionLink}>
-              Xem tất cả sản phẩm
+              Xem tất cả
             </Link>
           )}
         </div>
 
         {items.length > 0 ? (
-          <div className={gridClass}>
+          <div className={gridClass} data-reveal="rows">
             {items.map((product, idx) => (
               <SiteProductCard
                 key={product.id}
@@ -477,15 +861,14 @@ function renderFeaturedProductsSection(
                 previewMode={previewMode}
                 index={idx}
                 cardStyle={effectiveCardStyle}
+                layoutMode={items.length === 1 ? "single-wide" : "default"}
                 showExcerpt={variant === "editorial-asym" && idx === 0}
               />
             ))}
           </div>
         ) : (
-          <div className={styles.emptyPanel} data-reveal="">
-            <p className={styles.prosePara}>
-              Cửa hàng đang cập nhật thêm sản phẩm mới trong danh mục này.
-            </p>
+          <div className={styles.emptyPanel}>
+            <p className={styles.prosePara}>Cửa hàng đang cập nhật sản phẩm mới.</p>
           </div>
         )}
 
@@ -519,7 +902,12 @@ function renderCollectionSection(
   const viewHref = props.category_slug
     ? `/san-pham?cat=${encodeURIComponent(props.category_slug)}`
     : "/san-pham";
-  const gridClass = resolveGridClass(undefined, settings?.columns, items.length);
+  const gridClass = resolveProductGridClass(
+    tpl.layout.archetype,
+    undefined,
+    settings?.columns,
+    items.length
+  );
 
   return (
     <section
@@ -533,9 +921,9 @@ function renderCollectionSection(
     >
       <div className={tplStyles.sectionInner}>
         {variant === "compact" ? (
-          <div className={styles.sectionHead} data-reveal="">
+          <div className={styles.sectionHead}>
             <div className={styles.sectionHeadCopy}>
-              <h2 className={styles.sectionTitle}>{props.title || "Bộ sưu tập tuyển chọn"}</h2>
+              {renderMaskedHeading("h2", props.title || "Bộ sưu tập", styles.sectionTitle)}
               {props.subtitle?.trim() && (
                 <p className={`${styles.sectionSubtitle} ${tplStyles.mutedOnSurface}`}>
                   {props.subtitle}
@@ -544,14 +932,14 @@ function renderCollectionSection(
             </div>
             <SafeActionLink
               href={viewHref}
-              label="Xem bộ sưu tập"
+              label="Xem tất cả"
               className={styles.sectionLink}
               previewMode={previewMode}
             />
           </div>
         ) : (
           <div className={styles.collectionSplit}>
-            <div className={styles.collectionBanner} data-reveal="">
+            <div className={styles.collectionBanner} data-reveal="clip">
               <img
                 src={bannerImg}
                 alt={props.title || "Bộ sưu tập"}
@@ -560,13 +948,13 @@ function renderCollectionSection(
                 className={styles.collectionBannerImg}
               />
             </div>
-            <div className={styles.collectionIntro} data-reveal="">
-              <h2 className={styles.sectionTitle}>{props.title || "Bộ sưu tập tuyển chọn"}</h2>
+            <div className={styles.collectionIntro}>
+              {renderMaskedHeading("h2", props.title || "Bộ sưu tập", styles.sectionTitle)}
               {props.subtitle?.trim() && <p className={styles.sectionSubtitle}>{props.subtitle}</p>}
               <div className={styles.heroActions}>
                 <SafeActionLink
                   href={viewHref}
-                  label="Khám phá bộ sưu tập"
+                  label="Khám phá"
                   className={styles.btnPrimary}
                   previewMode={previewMode}
                 />
@@ -576,7 +964,7 @@ function renderCollectionSection(
         )}
 
         {items.length > 0 && (
-          <div className={gridClass}>
+          <div className={gridClass} data-reveal="rows">
             {items.map((product, idx) => (
               <SiteProductCard
                 key={product.id}
@@ -584,6 +972,7 @@ function renderCollectionSection(
                 previewMode={previewMode}
                 index={idx}
                 cardStyle={cardStyle}
+                layoutMode={items.length === 1 ? "single-wide" : "default"}
               />
             ))}
           </div>
@@ -619,8 +1008,8 @@ function renderTextSection(
     >
       <div className={tplStyles.sectionInner}>
         {variant === "monograph" ? (
-          <div className={tplStyles.textMonograph} data-reveal="">
-            <h2 className={styles.sectionTitle}>{props.title}</h2>
+          <div className={tplStyles.textMonograph}>
+            {renderMaskedHeading("h2", props.title, styles.sectionTitle)}
             {paragraphs.map((para, idx) => (
               <p key={idx} className={styles.prosePara}>
                 {para}
@@ -629,7 +1018,7 @@ function renderTextSection(
             {renderInlineBlocks(blocks, previewMode)}
           </div>
         ) : variant === "pullquote" ? (
-          <div className={tplStyles.textPullquote} data-reveal="">
+          <div className={tplStyles.textPullquote}>
             <h2 className={tplStyles.textPullquoteLead}>{props.title}</h2>
             <div className={styles.textSectionBodyCol}>
               {paragraphs.map((para, idx) => (
@@ -641,8 +1030,8 @@ function renderTextSection(
             </div>
           </div>
         ) : isCentered ? (
-          <div className={styles.textSectionCenter} data-reveal="">
-            <h2 className={styles.sectionTitle}>{props.title}</h2>
+          <div className={styles.textSectionCenter}>
+            {renderMaskedHeading("h2", props.title, styles.sectionTitle)}
             {paragraphs.map((para, idx) => (
               <p key={idx} className={styles.prosePara}>
                 {para}
@@ -652,10 +1041,10 @@ function renderTextSection(
           </div>
         ) : (
           <div className={styles.textSectionGrid}>
-            <div className={styles.textSectionTitleCol} data-reveal="">
-              <h2 className={styles.sectionTitle}>{props.title}</h2>
+            <div className={styles.textSectionTitleCol}>
+              {renderMaskedHeading("h2", props.title, styles.sectionTitle)}
             </div>
-            <div className={styles.textSectionBodyCol} data-reveal="">
+            <div className={styles.textSectionBodyCol}>
               {paragraphs.map((para, idx) => (
                 <p key={idx} className={styles.prosePara}>
                   {para}
@@ -682,7 +1071,7 @@ function renderBannerSection(
     "/banners/campaign-everyday.jpg";
   const surface = sectionSurfaceAttr(
     section,
-    variant === "framed" ? "bg" : variant === "compact" ? "accent-soft" : "band"
+    variant === "framed" ? "surface" : variant === "compact" ? "accent-soft" : "band"
   );
 
   return (
@@ -697,7 +1086,7 @@ function renderBannerSection(
     >
       <div className={tplStyles.sectionInner}>
         {variant === "compact" ? (
-          <div className={tplStyles.bannerCompact} data-reveal="">
+          <div className={tplStyles.bannerCompact}>
             <div className={styles.sectionHeadCopy}>
               <h2 className={styles.sectionTitle}>{props.title}</h2>
               {props.subtitle?.trim() && (
@@ -714,7 +1103,7 @@ function renderBannerSection(
             )}
           </div>
         ) : variant === "framed" ? (
-          <div className={tplStyles.bannerFramed} data-reveal="">
+          <div className={tplStyles.bannerFramed}>
             <h2 className={styles.sectionTitle}>{props.title}</h2>
             {props.subtitle?.trim() && <p className={styles.prosePara}>{props.subtitle}</p>}
             {props.cta_label?.trim() && (
@@ -729,7 +1118,7 @@ function renderBannerSection(
           </div>
         ) : variant === "split-image" ? (
           <div className={tplStyles.bannerSplitImage}>
-            <div className={styles.bannerMedia} data-reveal="">
+            <div className={styles.bannerMedia} data-reveal="clip">
               <img
                 src={imgSrc}
                 alt={props.title}
@@ -738,8 +1127,8 @@ function renderBannerSection(
                 className={styles.collectionBannerImg}
               />
             </div>
-            <div className={styles.bannerCopy} data-reveal="">
-              <h2 className={styles.sectionTitle}>{props.title}</h2>
+            <div className={styles.bannerCopy}>
+              {renderMaskedHeading("h2", props.title, styles.sectionTitle)}
               {props.subtitle?.trim() && <p className={styles.bannerSubtitle}>{props.subtitle}</p>}
               {props.cta_label?.trim() && (
                 <div className={styles.heroActions}>
@@ -756,8 +1145,8 @@ function renderBannerSection(
           </div>
         ) : (
           <div className={styles.bannerGrid}>
-            <div className={styles.bannerCopy} data-reveal="">
-              <h2 className={styles.sectionTitle}>{props.title}</h2>
+            <div className={styles.bannerCopy}>
+              {renderMaskedHeading("h2", props.title, styles.sectionTitle)}
               {props.subtitle?.trim() && <p className={styles.bannerSubtitle}>{props.subtitle}</p>}
               {props.cta_label?.trim() && (
                 <div className={styles.heroActions}>
@@ -771,7 +1160,7 @@ function renderBannerSection(
               )}
               {renderInlineBlocks(blocks, previewMode)}
             </div>
-            <div className={styles.bannerMedia} data-reveal="">
+            <div className={styles.bannerMedia} data-reveal="clip">
               <img
                 src={imgSrc}
                 alt={props.title}
@@ -807,9 +1196,9 @@ function renderVoucherStripSection(
       data-padding={sectionPaddingAttr(section)}
     >
       <div className={tplStyles.sectionInner}>
-        <div className={styles.sectionHead} data-reveal="">
+        <div className={styles.sectionHead}>
           <div className={styles.sectionHeadCopy}>
-            <h2 className={styles.sectionTitle}>{props.title || "Ưu đãi riêng của cửa hàng"}</h2>
+            {renderMaskedHeading("h2", props.title || "Ưu đãi cửa hàng", styles.sectionTitle)}
             {props.subtitle?.trim() && (
               <p className={`${styles.sectionSubtitle} ${tplStyles.mutedOnSurface}`}>
                 {props.subtitle}
@@ -818,58 +1207,89 @@ function renderVoucherStripSection(
           </div>
           {!previewMode && shopOnlyVouchers.length > 0 && (
             <Link href="/voucher" className={styles.sectionLink}>
-              Xem tất cả mã giảm giá
+              Tất cả mã giảm giá
             </Link>
           )}
         </div>
 
-        {shopOnlyVouchers.length > 0 ? (
+        {shopOnlyVouchers.length === 1 ? (
+          /* Single voucher: full-row horizontal ticket band (zero blank half-screen!) */
+          <article className={tplStyles.voucherSingleBand}>
+            <div className={tplStyles.voucherSingleCodeCol}>
+              <span className={tplStyles.voucherBigCode}>{shopOnlyVouchers[0].code}</span>
+            </div>
+            <div className={tplStyles.voucherSingleInfoCol}>
+              <h3 className={styles.voucherHeadline}>
+                {formatVoucherBenefit(shopOnlyVouchers[0])}
+              </h3>
+              <p className={styles.voucherDetail}>
+                {shopOnlyVouchers[0].minOrderValue > 0
+                  ? `Đơn từ ${formatVnd(shopOnlyVouchers[0].minOrderValue)}`
+                  : "Áp dụng mọi đơn tại cửa hàng"}
+                {`, còn ${formatInt(shopOnlyVouchers[0].remainingUses)} lượt`}
+              </p>
+            </div>
+            <div className={tplStyles.voucherSingleActionCol}>
+              {previewMode ? (
+                <span className={styles.btnPrimary}>Lưu mã</span>
+              ) : (
+                <Link href="/voucher" className={styles.btnPrimary}>
+                  Lưu mã
+                </Link>
+              )}
+            </div>
+          </article>
+        ) : shopOnlyVouchers.length > 1 ? (
           variant === "compact-bar" ? (
-            <div className={tplStyles.voucherCompactRow}>
+            <div
+              className={
+                shopOnlyVouchers.length === 2
+                  ? tplStyles.voucherCompactRow2
+                  : tplStyles.voucherCompactRow
+              }
+              data-reveal="rows"
+            >
               {shopOnlyVouchers.map((voucher) => (
-                <article
-                  key={voucher.id || voucher.code}
-                  className={tplStyles.voucherCompactPill}
-                  data-reveal=""
-                >
+                <article key={voucher.id || voucher.code} className={tplStyles.voucherCompactPill}>
                   <div>
                     <p className={styles.voucherCode}>{voucher.code}</p>
                     <p className={styles.voucherDetail}>{formatVoucherBenefit(voucher)}</p>
                   </div>
                   {previewMode ? (
-                    <span className={styles.sectionLink}>Lưu mã</span>
+                    <span className={styles.sectionLink}>Lưu</span>
                   ) : (
                     <Link href="/voucher" className={styles.sectionLink}>
-                      Lưu mã
+                      Lưu
                     </Link>
                   )}
                 </article>
               ))}
             </div>
           ) : (
-            <div className={styles.voucherGrid}>
+            <div
+              className={
+                shopOnlyVouchers.length === 2 ? tplStyles.voucherGrid2 : styles.voucherGrid
+              }
+              data-reveal="rows"
+            >
               {shopOnlyVouchers.map((voucher) => (
-                <article
-                  key={voucher.id || voucher.code}
-                  className={styles.voucherCard}
-                  data-reveal=""
-                >
+                <article key={voucher.id || voucher.code} className={styles.voucherCard}>
                   <p className={styles.voucherCode}>{voucher.code}</p>
                   <h3 className={styles.voucherHeadline}>{formatVoucherBenefit(voucher)}</h3>
                   <p className={styles.voucherDetail}>
                     {voucher.minOrderValue > 0
-                      ? `Áp dụng cho đơn từ ${formatVnd(voucher.minOrderValue)} tại cửa hàng.`
-                      : "Áp dụng trực tiếp cho sản phẩm của cửa hàng."}
+                      ? `Đơn từ ${formatVnd(voucher.minOrderValue)}`
+                      : "Áp dụng toàn cửa hàng"}
                   </p>
                   <div className={styles.voucherFoot}>
                     <span className={`${styles.voucherQuota} num`}>
                       Còn {formatInt(voucher.remainingUses)} lượt
                     </span>
                     {previewMode ? (
-                      <span className={styles.sectionLink}>Lưu và dùng mã</span>
+                      <span className={styles.sectionLink}>Lưu mã</span>
                     ) : (
                       <Link href="/voucher" className={styles.sectionLink}>
-                        Lưu và dùng mã
+                        Lưu mã
                       </Link>
                     )}
                   </div>
@@ -878,11 +1298,8 @@ function renderVoucherStripSection(
             </div>
           )
         ) : (
-          <div className={styles.emptyPanel} data-reveal="">
-            <p className={styles.prosePara}>
-              Cửa hàng hiện chưa mở mã giảm giá mới. Mức giá niêm yết luôn cập nhật trực tiếp từ
-              kho.
-            </p>
+          <div className={styles.emptyPanel}>
+            <p className={styles.prosePara}>Chưa có mã giảm giá đang mở.</p>
           </div>
         )}
 
@@ -894,6 +1311,7 @@ function renderVoucherStripSection(
 
 function renderPoliciesSection(
   section: Extract<SiteSectionV2, { type: "policies" }>,
+  archetype: SiteArchetype,
   previewMode: boolean
 ) {
   const { props, variant, blocks } = section;
@@ -904,6 +1322,9 @@ function renderPoliciesSection(
     ...policyBlocks.map((b) => ({ heading: b.props.heading, detail: b.props.detail })),
   ];
 
+  // Signature horizontal filmstrip strictly for craft-atelier default/timeline policies
+  const useCraftFilmstrip = archetype === "craft-atelier" && (!variant || variant === "timeline");
+
   const containerClass =
     variant === "timeline"
       ? tplStyles.policyTimeline
@@ -911,7 +1332,9 @@ function renderPoliciesSection(
         ? tplStyles.policyCompactList
         : variant === "cards"
           ? tplStyles.policyCardsGrid
-          : styles.policyGrid;
+          : items.length === 3
+            ? tplStyles.policyCardsGrid
+            : styles.policyGrid;
 
   const itemClass =
     variant === "timeline"
@@ -933,20 +1356,52 @@ function renderPoliciesSection(
       data-padding={sectionPaddingAttr(section)}
     >
       <div className={tplStyles.sectionInner}>
-        <div className={styles.sectionHead} data-reveal="">
+        <div className={styles.sectionHead}>
           <div className={styles.sectionHeadCopy}>
-            <h2 className={styles.sectionTitle}>{props.title || "Chính sách bán hàng"}</h2>
+            {renderMaskedHeading("h2", props.title || "Chính sách", styles.sectionTitle)}
           </div>
         </div>
 
-        <div className={containerClass}>
-          {items.map((item, idx) => (
-            <article key={`${section.id}-${idx}`} className={itemClass} data-reveal="">
-              <h3 className={styles.policyHeading}>{item.heading}</h3>
-              <p className={styles.policyDetail}>{item.detail}</p>
-            </article>
-          ))}
-        </div>
+        {useCraftFilmstrip ? (
+          <div
+            className={tplStyles.craftFilmstrip}
+            role="list"
+            aria-label={props.title || "Công đoạn tại xưởng"}
+            data-reveal="rows"
+          >
+            {items.map((item, idx) => (
+              <article
+                key={`${section.id}-${idx}`}
+                className={tplStyles.craftFilmCard}
+                role="listitem"
+              >
+                <div className={tplStyles.craftFilmMedia} data-reveal="clip">
+                  <img
+                    src={CRAFT_FILMSTRIP_IMAGES[idx % CRAFT_FILMSTRIP_IMAGES.length]}
+                    alt={item.heading}
+                    width={640}
+                    height={480}
+                    className={tplStyles.blockImg}
+                    loading="lazy"
+                  />
+                </div>
+                <div className={tplStyles.craftFilmBody}>
+                  <h3 className={styles.policyHeading}>{item.heading}</h3>
+                  <p className={styles.policyDetail}>{item.detail}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className={containerClass} data-reveal="rows">
+            {items.map((item, idx) => (
+              <article key={`${section.id}-${idx}`} className={itemClass}>
+                <h3 className={styles.policyHeading}>{item.heading}</h3>
+                <p className={styles.policyDetail}>{item.detail}</p>
+              </article>
+            ))}
+          </div>
+        )}
 
         {renderInlineBlocks(extraBlocks, previewMode)}
       </div>
@@ -979,7 +1434,7 @@ function renderLookbookSection(
                 sanitizeSafeImageUrl(p.image) ||
                 "/banners/fabric-closeup.jpg",
               alt: p.name,
-              caption: p.name,
+              caption: "",
               aspect: i === 0 && variant === "asym-3" ? "3:4" : "4:3",
             },
           }));
@@ -1002,9 +1457,9 @@ function renderLookbookSection(
       data-padding={sectionPaddingAttr(section)}
     >
       <div className={tplStyles.sectionInner}>
-        <div className={styles.sectionHead} data-reveal="">
+        <div className={styles.sectionHead}>
           <div className={styles.sectionHeadCopy}>
-            <h2 className={styles.sectionTitle}>{props.title || "Khung hình Lookbook"}</h2>
+            {renderMaskedHeading("h2", props.title || "Lookbook", styles.sectionTitle)}
             {props.subtitle?.trim() && (
               <p className={`${styles.sectionSubtitle} ${tplStyles.mutedOnSurface}`}>
                 {props.subtitle}
@@ -1041,17 +1496,19 @@ function renderMetricsStripSection(
   );
   const otherBlocks = (blocks ?? []).filter((b) => b.type !== "stat");
 
+  const isCards3 = variant !== "telemetry" && (variant === "cards-3" || statBlocks.length === 3);
+
   const gridClass =
     variant === "telemetry"
       ? tplStyles.metricsTelemetry
-      : variant === "cards-3"
+      : isCards3
         ? tplStyles.metricsCards3
         : tplStyles.metricsBar4;
 
   const itemClass =
     variant === "telemetry"
       ? tplStyles.telemetryTile
-      : variant === "cards-3"
+      : isCards3
         ? tplStyles.metricsCard
         : tplStyles.metricsBarItem;
 
@@ -1066,9 +1523,9 @@ function renderMetricsStripSection(
       data-padding={sectionPaddingAttr(section)}
     >
       <div className={tplStyles.sectionInner}>
-        <div className={styles.sectionHead} data-reveal="">
+        <div className={styles.sectionHead}>
           <div className={styles.sectionHeadCopy}>
-            <h2 className={styles.sectionTitle}>{props.title}</h2>
+            {renderMaskedHeading("h2", props.title, styles.sectionTitle)}
             {props.subtitle?.trim() && (
               <p className={`${styles.sectionSubtitle} ${tplStyles.mutedOnSurface}`}>
                 {props.subtitle}
@@ -1078,16 +1535,8 @@ function renderMetricsStripSection(
         </div>
 
         {statBlocks.length > 0 && (
-          <div className={gridClass}>
-            {statBlocks.map((b) => (
-              <div key={b.id} className={itemClass} data-reveal="">
-                <span className={`${tplStyles.metricValue} num`}>{b.props.value}</span>
-                <span className={tplStyles.metricLabel}>{b.props.label}</span>
-                {b.props.note?.trim() && (
-                  <span className={tplStyles.metricNote}>{b.props.note}</span>
-                )}
-              </div>
-            ))}
+          <div className={gridClass} data-reveal="rows">
+            {statBlocks.map((b) => renderStatCard(b, itemClass))}
           </div>
         )}
 
@@ -1153,9 +1602,9 @@ function renderSkuMatrixSection(
       data-padding={sectionPaddingAttr(section)}
     >
       <div className={tplStyles.sectionInner}>
-        <div className={styles.sectionHead} data-reveal="">
+        <div className={styles.sectionHead}>
           <div className={styles.sectionHeadCopy}>
-            <h2 className={styles.sectionTitle}>{props.title || "Bảng tồn kho theo SKU"}</h2>
+            {renderMaskedHeading("h2", props.title || "Bảng SKU đặt nhanh", styles.sectionTitle)}
             {props.subtitle?.trim() && (
               <p className={`${styles.sectionSubtitle} ${tplStyles.mutedOnSurface}`}>
                 {props.subtitle}
@@ -1164,37 +1613,35 @@ function renderSkuMatrixSection(
           </div>
           {!previewMode && (
             <Link href="/san-pham" className={styles.sectionLink}>
-              Mở toàn bộ bảng SKU
+              Toàn bộ bảng SKU
             </Link>
           )}
         </div>
 
         {rows.length === 0 ? (
           <div className={styles.emptyPanel}>
-            <p className={styles.prosePara}>Chưa có dữ liệu biến thể SKU sẵn hiển thị.</p>
+            <p className={styles.prosePara}>Chưa có biến thể SKU hiển thị.</p>
           </div>
         ) : variant === "grouped" ? (
-          <div className={tplStyles.skuGroupedList}>
+          <div className={tplStyles.skuGroupedList} data-reveal="rows">
             {matchingProducts.slice(0, Math.min(8, maxRows)).map((product) => {
               const skus = product.skus.filter((s) => showOos || s.stock > 0);
               if (skus.length === 0) return null;
               return (
-                <article key={product.id} className={tplStyles.skuGroupCard} data-reveal="">
+                <article key={product.id} className={tplStyles.skuGroupCard}>
                   <div className={tplStyles.skuGroupHead}>
                     <div>
                       <h3 className={styles.policyHeading}>{product.name}</h3>
-                      <p className={tplStyles.cardSpec}>
-                        {product.fabric} · Giá từ {formatVnd(product.price)}
-                      </p>
+                      <p className={`${tplStyles.cardSpec} num`}>{formatVnd(product.price)}</p>
                     </div>
                     {previewMode ? (
-                      <span className={styles.sectionLink}>Xem chi tiết</span>
+                      <span className={styles.sectionLink}>Đặt mua</span>
                     ) : (
                       <Link
                         href={`/san-pham/${encodeURIComponent(product.slug)}`}
                         className={styles.sectionLink}
                       >
-                        Chọn mua
+                        Đặt mua
                       </Link>
                     )}
                   </div>
@@ -1218,26 +1665,26 @@ function renderSkuMatrixSection(
             })}
           </div>
         ) : (
-          <div className={tplStyles.tableScrollWrap} data-reveal="">
+          <div className={tplStyles.tableScrollWrap}>
             <table className={tplStyles.skuTable}>
               <thead>
                 <tr>
                   <th>Sản phẩm</th>
-                  <th>Mã SKU</th>
-                  <th>Màu sắc</th>
-                  <th>Kích cỡ</th>
+                  <th>SKU</th>
+                  <th>Màu</th>
+                  <th>Size</th>
                   <th>Đơn giá</th>
-                  <th>Tồn kho</th>
-                  <th>Đặt mua</th>
+                  <th>Tồn</th>
+                  <th>Đặt nhanh</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody data-reveal="rows">
                 {rows.map((row) => (
                   <tr key={row.key}>
                     <td>
                       <strong>{row.product.name}</strong>
                     </td>
-                    <td className={tplStyles.skuCodeMono}>{row.sku.skuCode}</td>
+                    <td className={`${tplStyles.skuCodeMono} num`}>{row.sku.skuCode}</td>
                     <td>
                       <span className={tplStyles.colorSwatchInline}>
                         <span
@@ -1254,18 +1701,18 @@ function renderSkuMatrixSection(
                       <span
                         className={`${tplStyles.stockBadge} ${row.sku.stock <= 0 ? tplStyles.stockBadgeOut : ""} num`}
                       >
-                        {row.sku.stock > 0 ? `Còn ${formatInt(row.sku.stock)}` : "Tạm hết"}
+                        {row.sku.stock > 0 ? `Còn ${formatInt(row.sku.stock)}` : "Hết hàng"}
                       </span>
                     </td>
                     <td>
                       {previewMode ? (
-                        <span className={styles.sectionLink}>Chi tiết</span>
+                        <span className={styles.sectionLink}>Chọn</span>
                       ) : (
                         <Link
                           href={`/san-pham/${encodeURIComponent(row.product.slug)}`}
                           className={styles.sectionLink}
                         >
-                          Xem SP
+                          Đặt mua
                         </Link>
                       )}
                     </td>
@@ -1293,7 +1740,9 @@ function renderTestimonialsSection(
   const otherBlocks = (blocks ?? []).filter((b) => b.type !== "quote");
 
   const gridClass =
-    variant === "editorial-quotes" ? tplStyles.testimonialsEditorial : tplStyles.testimonialsGrid3;
+    variant === "editorial-quotes" || quoteBlocks.length === 2
+      ? tplStyles.testimonialsEditorial
+      : tplStyles.testimonialsGrid3;
 
   return (
     <section
@@ -1306,9 +1755,9 @@ function renderTestimonialsSection(
       data-padding={sectionPaddingAttr(section)}
     >
       <div className={tplStyles.sectionInner}>
-        <div className={styles.sectionHead} data-reveal="">
+        <div className={styles.sectionHead}>
           <div className={styles.sectionHeadCopy}>
-            <h2 className={styles.sectionTitle}>{props.title || "Nhận xét từ khách hàng"}</h2>
+            {renderMaskedHeading("h2", props.title || "Nhận xét khách hàng", styles.sectionTitle)}
             {props.subtitle?.trim() && (
               <p className={`${styles.sectionSubtitle} ${tplStyles.mutedOnSurface}`}>
                 {props.subtitle}
@@ -1318,9 +1767,9 @@ function renderTestimonialsSection(
         </div>
 
         {quoteBlocks.length > 0 ? (
-          <div className={gridClass}>
+          <div className={gridClass} data-reveal="rows">
             {quoteBlocks.map((q) => (
-              <blockquote key={q.id} className={tplStyles.testimonialCard} data-reveal="">
+              <blockquote key={q.id} className={tplStyles.testimonialCard}>
                 <p className={tplStyles.testimonialQuote}>“{q.props.body}”</p>
                 <footer>
                   <p className={tplStyles.testimonialAuthor}>{q.props.author}</p>
@@ -1333,7 +1782,7 @@ function renderTestimonialsSection(
           </div>
         ) : (
           <div className={styles.emptyPanel}>
-            <p className={styles.prosePara}>Chưa có nhận xét nào được thêm vào mục đánh giá này.</p>
+            <p className={styles.prosePara}>Chưa có nhận xét nào.</p>
           </div>
         )}
 
@@ -1353,6 +1802,7 @@ export function SiteRenderer({
   shop,
   products,
   vouchers,
+  categories = [],
   previewMode = false,
   sectionsOverride,
 }: SiteRendererProps) {
@@ -1368,6 +1818,7 @@ export function SiteRenderer({
   const sourceSections = sectionsOverride ?? tpl.sections;
   const visibleSections = sourceSections.filter((s) => s.visible !== false);
   const firstHeroIndex = visibleSections.findIndex((s) => s.type === "hero");
+  const archetype = tpl.layout.archetype;
   const cardStyle: SiteCardStyle = tpl.layout.card_style;
 
   if (sectionsOverride && visibleSections.length === 0) {
@@ -1385,15 +1836,13 @@ export function SiteRenderer({
             style={{ "--i": 0 } as React.CSSProperties}
           >
             <h1 className={styles.heroTitle}>{brandName}</h1>
-            <p className={styles.heroSubtitle}>
-              {tpl.theme.tagline?.trim() ||
-                shop.description ||
-                "Cửa hàng đang hoàn thiện nội dung trang chủ. Bạn vẫn có thể xem toàn bộ sản phẩm hiện có."}
-            </p>
+            {tpl.theme.tagline?.trim() && (
+              <p className={styles.heroSubtitle}>{tpl.theme.tagline}</p>
+            )}
             <div className={styles.heroActions}>
               <SafeActionLink
                 href="/san-pham"
-                label="Xem sản phẩm của cửa hàng"
+                label="Xem sản phẩm"
                 className={styles.btnPrimary}
                 previewMode={previewMode}
               />
@@ -1435,12 +1884,20 @@ export function SiteRenderer({
             return renderHeroSection(
               section,
               tpl,
+              shop,
               products,
+              categories,
               !sectionsOverride && idx === firstHeroIndex,
               previewMode
             );
           case "featured_products":
-            return renderFeaturedProductsSection(section, products, cardStyle, previewMode);
+            return renderFeaturedProductsSection(
+              section,
+              archetype,
+              products,
+              cardStyle,
+              previewMode
+            );
           case "collection":
             return renderCollectionSection(section, tpl, products, cardStyle, previewMode);
           case "text":
@@ -1450,7 +1907,7 @@ export function SiteRenderer({
           case "voucher_strip":
             return renderVoucherStripSection(section, vouchers, previewMode);
           case "policies":
-            return renderPoliciesSection(section, previewMode);
+            return renderPoliciesSection(section, archetype, previewMode);
           case "lookbook":
             return renderLookbookSection(section, products, previewMode);
           case "metrics_strip":

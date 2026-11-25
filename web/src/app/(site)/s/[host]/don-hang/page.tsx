@@ -55,7 +55,6 @@ export default async function SiteOrdersPage({ params }: PageProps) {
       <OrdersClientView
         brandName={brandName}
         initialOrders={res.items}
-        totalOrders={res.total}
         suggestedProducts={res.suggestedProducts}
       />
     );
@@ -68,7 +67,6 @@ export default async function SiteOrdersPage({ params }: PageProps) {
       <OrdersClientView
         brandName={brandName}
         initialOrders={[]}
-        totalOrders={0}
         suggestedProducts={bundle.products.slice(0, 4)}
         initialError={msg}
       />

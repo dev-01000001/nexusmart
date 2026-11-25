@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { formatInt } from "@/lib/format";
 import styles from "./SellerTrendChart.module.css";
 
@@ -25,7 +25,10 @@ function useMeasureWidth(fallback = 680) {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const sync = () => setWidth(Math.max(240, Math.round(el.clientWidth || fallback)));
+    const sync = () => {
+      const rectW = Math.floor(el.getBoundingClientRect().width || el.clientWidth || 0);
+      if (rectW > 0) setWidth(Math.max(220, rectW));
+    };
     sync();
     if (typeof ResizeObserver !== "undefined") {
       const ro = new ResizeObserver(sync);
@@ -34,7 +37,7 @@ function useMeasureWidth(fallback = 680) {
     }
     window.addEventListener("resize", sync);
     return () => window.removeEventListener("resize", sync);
-  }, [fallback]);
+  }, []);
 
   return { ref, width };
 }
@@ -51,11 +54,11 @@ export interface SellerTrendChartProps {
 }
 
 /**
- * Achromatic Ledger trend line chart (seller-sheet.md §5):
- * - Single data hue (#0d7480 / var(--chart-1)) on the active segment
- * - Straight segments, 2.25px stroke, no fill, 3-4 solid 1px horizontal gridlines, round y-ticks
- * - Interactive 8px hover dot + 1px dashed guide + muted pale-grey segment after the hovered point
- * - Responsive phone height (180px) with 4 evenly spaced x-axis labels
+ * Framed-sheet trend line chart:
+ * - Single data hue (--chart-1 / #0d7480) on the active segment, straight segments, 2.25px stroke
+ * - Axis tick labels >= 13px (--fs-small floor), tabular figures
+ * - Synchronized one-shot horizontal clip reveal on series switch
+ * - Interactive 8px hover dot + 1px dashed vertical guide + pale-grey trailing segment
  */
 export function SellerTrendChart({
   labels,
@@ -64,41 +67,41 @@ export function SellerTrendChart({
   formatValue = formatInt,
   formatTick,
   annotation = null,
-  desktopHeight = 204,
+  desktopHeight = 216,
   mobileHeight = 180,
 }: SellerTrendChartProps) {
   const { ref, width } = useMeasureWidth(720);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const clipUid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  const clipId = `nm-seller-trend-${clipUid}`;
   const isCompact = width < 480;
   const height = isCompact ? mobileHeight : desktopHeight;
   const tickFormatter = formatTick ?? formatValue;
 
-  const { yt, padL, padT, padB, padR, xScale, yScale, xIndices } = useMemo(() => {
+  const { yt, padL, padT, padB, padR, plotW, plotH, xScale, yScale, xIndices } = useMemo(() => {
     const maxV = values.length ? Math.max(...values, 0) : 0;
     const ticks = computeRoundTicks(maxV, 3);
     const maxTickChars = Math.max(...ticks.map((t) => tickFormatter(t).length), 3);
-    const leftPad = Math.max(48, Math.round(maxTickChars * 7.1 + 14));
-    const topPad = annotation ? 26 : 12;
-    const bottomPad = 26;
-    const rightPad = 14;
-    const plotW = Math.max(80, width - leftPad - rightPad);
-    const plotH = Math.max(60, height - topPad - bottomPad);
+    const leftPad = Math.max(54, Math.ceil(maxTickChars * 8.2 + 12));
+    const topPad = annotation ? 28 : 14;
+    const bottomPad = 28;
+    const rightPad = isCompact ? 8 : 14;
+    const pW = Math.max(80, width - leftPad - rightPad);
+    const pH = Math.max(60, height - topPad - bottomPad);
     const yHi = ticks[ticks.length - 1] || 1;
 
     const xFn = (i: number) =>
-      labels.length <= 1 ? leftPad : leftPad + (i / (labels.length - 1)) * plotW;
-    const yFn = (v: number) => topPad + plotH * (1 - v / yHi);
+      labels.length <= 1 ? leftPad : leftPad + (i / (labels.length - 1)) * pW;
+    const yFn = (v: number) => topPad + pH * (1 - v / yHi);
 
-    // Even step on x-labels (4 labels on phone, up to 7 on desktop)
     const n = labels.length;
     const picks: number[] = [];
     if (n <= 4) {
       for (let i = 0; i < n; i++) picks.push(i);
     } else if (isCompact) {
-      // Exact 4 evenly spaced labels for 7-day series: 0, 2, 4, 6
-      const step = Math.max(1, Math.floor((n - 1) / 3));
-      for (let i = 0; i < n; i += step) {
-        if (picks.length < 4) picks.push(i);
+      const raw = [0, Math.round((n - 1) / 3), Math.round((2 * (n - 1)) / 3), n - 1];
+      for (const idx of raw) {
+        if (!picks.includes(idx)) picks.push(idx);
       }
     } else {
       for (let i = 0; i < n; i++) picks.push(i);
@@ -110,6 +113,8 @@ export function SellerTrendChart({
       padT: topPad,
       padB: bottomPad,
       padR: rightPad,
+      plotW: pW,
+      plotH: pH,
       xScale: xFn,
       yScale: yFn,
       xIndices: picks,
@@ -156,8 +161,21 @@ export function SellerTrendChart({
         role="img"
         aria-label={`${metricName} từ ${labels[0] ?? ""} đến ${labels.at(-1) ?? ""}, ngày gần nhất ${formatValue(latestVal)}`}
       >
-        {/* Solid 1px horizontal gridlines + round y-axis ticks (no y-axis line) */}
-        {yt.map((tick) => {
+        <defs>
+          <clipPath id={clipId}>
+            <rect
+              key={metricName}
+              x={padL - 4}
+              y={padT - 8}
+              width={plotW + 8}
+              height={plotH + 16}
+              className={styles.plotReveal}
+              style={{ transformOrigin: `${padL - 4}px 0px` }}
+            />
+          </clipPath>
+        </defs>
+
+        {yt.map((tick, idx) => {
           const yy = yScale(tick);
           return (
             <g key={tick}>
@@ -166,18 +184,17 @@ export function SellerTrendChart({
                 x2={width - padR}
                 y1={yy}
                 y2={yy}
-                stroke="var(--grid)"
+                stroke={idx === 0 ? "var(--control)" : "var(--grid)"}
                 strokeWidth={1}
                 shapeRendering="crispEdges"
               />
-              <text x={padL - 8} y={yy + 4} textAnchor="end" fontSize={12} fill="var(--axis-ink)">
+              <text x={padL - 8} y={yy + 4} textAnchor="end" fontSize={13} fill="var(--axis-ink)">
                 {tickFormatter(tick)}
               </text>
             </g>
           );
         })}
 
-        {/* X-axis labels */}
         {xIndices.map((idx) => {
           const xx = xScale(idx);
           const anchor = idx === 0 ? "start" : idx === labels.length - 1 ? "end" : "middle";
@@ -187,7 +204,7 @@ export function SellerTrendChart({
               x={xx}
               y={height - 6}
               textAnchor={anchor}
-              fontSize={12}
+              fontSize={13}
               fill="var(--axis-ink)"
             >
               {labels[idx]}
@@ -195,7 +212,6 @@ export function SellerTrendChart({
           );
         })}
 
-        {/* Event annotation above plot (e.g. Flash sale 12:00 spike) */}
         {annotation && annotation.index >= 0 && annotation.index < labels.length && (
           <g>
             <line
@@ -216,7 +232,7 @@ export function SellerTrendChart({
               }
               y={padT - 9}
               textAnchor={xScale(annotation.index) > width * 0.68 ? "end" : "start"}
-              fontSize={12}
+              fontSize={13}
               fill="var(--axis-ink)"
             >
               {annotation.label}
@@ -224,31 +240,30 @@ export function SellerTrendChart({
           </g>
         )}
 
-        {/* Muted segment after hovered cursor */}
-        {mutedTailPath && (
-          <path
-            d={mutedTailPath}
-            fill="none"
-            stroke="var(--chart-muted)"
-            strokeWidth={2.25}
-            strokeLinejoin="round"
-            strokeLinecap="round"
-          />
-        )}
+        <g clipPath={`url(#${clipId})`}>
+          {mutedTailPath && (
+            <path
+              d={mutedTailPath}
+              fill="none"
+              stroke="var(--chart-muted)"
+              strokeWidth={2.25}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+          )}
 
-        {/* Active data series in the one brand data hue (#0d7480) */}
-        {activePath && (
-          <path
-            d={activePath}
-            fill="none"
-            stroke="var(--chart-1)"
-            strokeWidth={2.25}
-            strokeLinejoin="round"
-            strokeLinecap="round"
-          />
-        )}
+          {activePath && (
+            <path
+              d={activePath}
+              fill="none"
+              stroke="var(--chart-1)"
+              strokeWidth={2.25}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+          )}
+        </g>
 
-        {/* Hover vertical dashed guide + 8px hover ring dot */}
         {hoverIdx != null && points[hoverIdx] && (
           <g>
             <line
@@ -264,15 +279,14 @@ export function SellerTrendChart({
             <circle
               cx={points[hoverIdx][0]}
               cy={points[hoverIdx][1]}
-              r={4}
-              fill="var(--card)"
+              r={4.5}
+              fill="var(--bg-0)"
               stroke="var(--chart-1)"
               strokeWidth={2.25}
             />
           </g>
         )}
 
-        {/* Pointer capture surface */}
         <rect
           x={padL}
           y={padT}
@@ -288,7 +302,7 @@ export function SellerTrendChart({
         <div
           className={styles.tooltip}
           style={{
-            left: `${Math.min(Math.max(padL, xScale(hoverIdx) + 10), Math.max(padL, width - 176))}px`,
+            left: `${Math.min(Math.max(padL, xScale(hoverIdx) + 10), Math.max(padL, width - 190))}px`,
           }}
         >
           <div className={styles.tooltipRow}>

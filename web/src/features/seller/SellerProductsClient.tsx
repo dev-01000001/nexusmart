@@ -3,10 +3,11 @@
 import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Button, IconPlus, IconSearch, StateView } from "@/components";
+import { Button, IconArrowUpRight, IconPlus, IconSearch, StateView } from "@/components";
 import { api, ApiError } from "@/lib/api";
 import { formatInt, formatVnd } from "@/lib/format";
 import { useSellerContext } from "./SellerShell";
+import { SellerDrawer, statusPillClass } from "./SellerUiPrimitives";
 import {
   getSellerProductStatusMeta,
   type GwCategory,
@@ -48,10 +49,12 @@ export function SellerProductsClient({
   const searchParams = useSearchParams();
   const uiState = parseUiState(searchParams.get("state"));
   const initialFilter = (searchParams.get("filter") as ProductFilterKey | null) ?? "all";
-  const { shop, showToast } = useSellerContext();
+  const { showToast } = useSellerContext();
 
   const [products, setProducts] = useState<GwSellerProduct[]>(initialProducts);
   const [busySkuId, setBusySkuId] = useState<string | null>(null);
+  const [drawerProductId, setDrawerProductId] = useState<string | null>(null);
+
   const [filter, setFilter] = useState<ProductFilterKey>(
     ["all", "active", "low", "oos"].includes(initialFilter) ? initialFilter : "all"
   );
@@ -71,11 +74,6 @@ export function SellerProductsClient({
       low: products.filter((p) => hasLowSku(p)).length,
       oos: products.filter((p) => hasOutSku(p)).length,
     }),
-    [products]
-  );
-
-  const totalSkuCount = useMemo(
-    () => products.reduce((s, p) => s + (p.skus ?? []).filter((k) => k.is_active).length, 0),
     [products]
   );
 
@@ -114,6 +112,11 @@ export function SellerProductsClient({
     });
   }, [products, filter, categoryFilter, query]);
 
+  const drawerProduct = useMemo(
+    () => (drawerProductId ? (products.find((p) => p.id === drawerProductId) ?? null) : null),
+    [products, drawerProductId]
+  );
+
   const handleQuickRestockSku = async (product: GwSellerProduct, sku: GwSellerSku) => {
     if (busySkuId) return;
     setBusySkuId(sku.id);
@@ -145,7 +148,7 @@ export function SellerProductsClient({
         )
       );
       showToast(
-        `Đã nhập +20 chiếc cho ${updated.sku_code} (tồn khả dụng mới: ${formatInt(updated.available_stock)}).`
+        `Đã nhập +20 cho ${updated.sku_code} (khả dụng: ${formatInt(updated.available_stock)}).`
       );
     } catch (err) {
       showToast(err instanceof ApiError ? err.message : "Không thể cập nhật tồn kho SKU.");
@@ -168,28 +171,12 @@ export function SellerProductsClient({
     { key: "oos", label: "Hết biến thể", count: counts.oos },
   ];
 
-  const pillCls = (tone: "pos" | "warn" | "neg" | "neutral") =>
-    tone === "pos"
-      ? `${common.pill} ${common.pillPos}`
-      : tone === "warn"
-        ? `${common.pill} ${common.pillWarn}`
-        : tone === "neg"
-          ? `${common.pill} ${common.pillNeg}`
-          : common.pill;
-
   return (
     <div className={common.page}>
       <header className={common.pageHeader}>
-        <div className={common.headerText}>
-          <h1 className={common.title}>Sản phẩm gian hàng</h1>
-          <p className={common.finding}>
-            {shop?.name ?? "Gian hàng"} · {formatInt(products.length)} mẫu niêm yết,{" "}
-            {formatInt(totalSkuCount)} SKU hoạt động · {formatInt(lowStockRows.length)} SKU dưới
-            ngưỡng 5
-          </p>
-        </div>
+        <h1 className={common.title}>Sản phẩm</h1>
         <div className={common.headerActions}>
-          <Button variant="ink" size="sm" shape="app" href="/seller/san-pham/moi">
+          <Button variant="primary" size="sm" shape="app" href="/seller/san-pham/moi">
             <IconPlus size={14} />
             <span>Thêm sản phẩm</span>
           </Button>
@@ -200,8 +187,9 @@ export function SellerProductsClient({
         <StateView
           kind="loading"
           surface="app"
-          title="Đang tải danh mục sản phẩm và tồn kho SKU..."
-          rows={5}
+          skeletonVariant="table"
+          title="Đang tải sản phẩm..."
+          rows={6}
         />
       )}
 
@@ -209,8 +197,8 @@ export function SellerProductsClient({
         <StateView
           kind="error"
           surface="app"
-          title="Không thể tải danh sách sản phẩm"
-          message={loadError ?? "Dịch vụ kho hàng chưa phản hồi. Vui lòng thử lại."}
+          title="Không thể tải sản phẩm"
+          message={loadError ?? "Dịch vụ kho hàng chưa phản hồi."}
           actionLabel="Thử lại"
           onAction={() => router.refresh()}
         />
@@ -220,8 +208,7 @@ export function SellerProductsClient({
         <StateView
           kind="empty"
           surface="app"
-          title="Gian hàng chưa có sản phẩm nào"
-          message="Tạo sản phẩm đầu tiên cùng bảng biến thể màu sắc và kích cỡ để bắt đầu mở bán."
+          title="Gian hàng chưa có sản phẩm nào."
           actionLabel="Thêm sản phẩm"
           actionHref="/seller/san-pham/moi"
         />
@@ -267,7 +254,7 @@ export function SellerProductsClient({
             })}
           </div>
 
-          <section className={common.card} aria-label="Danh sách sản phẩm theo biến thể">
+          <section className={common.card} aria-label="Danh sách sản phẩm">
             <div className={common.toolbar} style={{ marginBottom: 14 }}>
               <div className={common.toolbarLeft}>
                 <div className={common.searchWrap}>
@@ -297,16 +284,13 @@ export function SellerProductsClient({
                   ))}
                 </select>
               </div>
-              <span className={common.cardMeta}>
-                Hiển thị {formatInt(filteredProducts.length)} trên {formatInt(products.length)} sản
-                phẩm
+              <span className={common.toolbarMeta}>
+                {formatInt(filteredProducts.length)} / {formatInt(products.length)} sản phẩm
               </span>
             </div>
 
             {filteredProducts.length === 0 ? (
-              <div className={common.inlineEmpty}>
-                Không có sản phẩm nào khớp bộ lọc hiện tại. Hãy đổi bộ lọc hoặc tạo sản phẩm mới.
-              </div>
+              <div className={common.inlineEmpty}>Không có sản phẩm khớp bộ lọc.</div>
             ) : (
               <>
                 <div className={`${common.tableWrap} ${common.tableWrapDesktop}`}>
@@ -351,25 +335,32 @@ export function SellerProductsClient({
                                   src={thumb}
                                   alt={p.name}
                                   className={styles.prodThumb}
-                                  width={40}
-                                  height={53}
+                                  width={36}
+                                  height={46}
                                 />
                                 <div className={styles.prodText}>
-                                  <Link
-                                    href={`/seller/san-pham/${p.id}`}
-                                    className={styles.prodName}
+                                  <button
+                                    type="button"
+                                    className={common.rowTriggerBtn}
+                                    title={p.name}
+                                    onClick={() => setDrawerProductId(p.id)}
                                   >
                                     {p.name}
-                                  </Link>
+                                  </button>
                                   <span className={styles.prodSub}>
-                                    {formatInt(activeSkus.length)} biến thể SKU
-                                    {p.rejection_reason ? ` · ${p.rejection_reason}` : ""}
+                                    {formatInt(activeSkus.length)} SKU
+                                    {p.rejection_reason ? `, ${p.rejection_reason}` : ""}
                                   </span>
                                 </div>
                               </div>
                             </td>
                             <td>
-                              <span>{categoryNameById.get(p.category_id) ?? "Danh mục chung"}</span>
+                              <span
+                                className={styles.catCell}
+                                title={categoryNameById.get(p.category_id) ?? "Chung"}
+                              >
+                                {categoryNameById.get(p.category_id) ?? "Chung"}
+                              </span>
                             </td>
                             <td className={common.numCol}>
                               <strong>{formatVnd(p.min_price_vnd)}</strong>
@@ -385,16 +376,16 @@ export function SellerProductsClient({
                               </span>
                               {(oosSkus > 0 || lowSkus > 0) && (
                                 <span className={common.cellSub}>
-                                  {oosSkus > 0 ? `${oosSkus} hết hàng` : `${lowSkus} sắp hết`}
+                                  {oosSkus > 0 ? `${oosSkus} hết` : `${lowSkus} sắp hết`}
                                 </span>
                               )}
                             </td>
                             <td className={common.numCol}>{formatInt(reserved)}</td>
                             <td>
-                              <span className={pillCls(st.tone)}>{st.label}</span>
+                              <span className={statusPillClass(st.tone)}>{st.label}</span>
                             </td>
                             <td className={common.numCol}>
-                              <div className={styles.actionRow}>
+                              <div className={common.rowHoverActions}>
                                 {lowestSku && (oosSkus > 0 || lowSkus > 0) && (
                                   <button
                                     type="button"
@@ -437,22 +428,22 @@ export function SellerProductsClient({
                               src={thumb}
                               alt={p.name}
                               className={styles.prodThumb}
-                              width={40}
-                              height={53}
+                              width={36}
+                              height={46}
                             />
                             <div className={styles.prodText}>
                               <Link href={`/seller/san-pham/${p.id}`} className={styles.prodName}>
                                 {p.name}
                               </Link>
                               <span className={styles.prodSub}>
-                                Khả dụng {formatInt(avail)} · {formatInt(activeSkus.length)} SKU
+                                Tồn {formatInt(avail)}, {formatInt(activeSkus.length)} SKU
                               </span>
                             </div>
                           </div>
                           <span className={styles.mobilePrice}>{formatVnd(p.min_price_vnd)}</span>
                         </div>
                         <div className={common.mobileRowMeta}>
-                          <span className={pillCls(st.tone)}>{st.label}</span>
+                          <span className={statusPillClass(st.tone)}>{st.label}</span>
                           <div className={styles.actionRow}>
                             {lowestSku && (hasOutSku(p) || hasLowSku(p)) && (
                               <button
@@ -481,16 +472,15 @@ export function SellerProductsClient({
             <section className={common.card} aria-labelledby="restock-heading">
               <div className={common.cardHeader}>
                 <h2 id="restock-heading" className={common.cardTitle}>
-                  Biến thể cần nhập kho ngay
+                  SKU cần nhập kho ({formatInt(lowStockRows.length)})
                 </h2>
-                <span className={common.cardMeta}>Cập nhật tồn kho trực tiếp theo từng mã SKU</span>
               </div>
 
               <div className={`${common.tableWrap} ${common.tableWrapDesktop}`}>
                 <table className={common.dataTable}>
                   <thead>
                     <tr>
-                      <th>Sản phẩm & biến thể</th>
+                      <th>Sản phẩm &amp; biến thể</th>
                       <th>Mã SKU</th>
                       <th className={common.numCol}>Đơn giá</th>
                       <th className={common.numCol}>Tồn khả dụng</th>
@@ -530,20 +520,20 @@ export function SellerProductsClient({
                         <td className={common.numCol}>
                           <span className={sku.available_stock <= 0 ? styles.stockWarn : ""}>
                             {sku.available_stock <= 0
-                              ? "0 (Hết hàng)"
-                              : `${formatInt(sku.available_stock)} chiếc`}
+                              ? "Hết hàng"
+                              : `Còn ${formatInt(sku.available_stock)}`}
                           </span>
                         </td>
                         <td className={common.numCol}>{formatInt(sku.reserved_stock)}</td>
                         <td className={common.numCol}>
-                          <div className={styles.actionRow}>
+                          <div className={common.rowHoverActions}>
                             <button
                               type="button"
                               className={styles.restockBtn}
                               disabled={busySkuId === sku.id}
                               onClick={() => void handleQuickRestockSku(product, sku)}
                             >
-                              {busySkuId === sku.id ? "Đang lưu..." : "Nhập +20 tồn"}
+                              {busySkuId === sku.id ? "Đang lưu..." : "+20 tồn"}
                             </button>
                             <Link
                               href={`/seller/san-pham/${product.id}`}
@@ -563,23 +553,22 @@ export function SellerProductsClient({
                 {lowStockRows.slice(0, 8).map(({ product, sku }) => (
                   <div key={sku.id} className={common.mobileRow}>
                     <div className={common.mobileRowTop}>
-                      <div>
+                      <div className={styles.mobileSkuInfo}>
                         <Link href={`/seller/san-pham/${product.id}`} className={styles.prodName}>
-                          {product.name} · {sku.name || sku.sku_code}
+                          {product.name} ({sku.name || sku.sku_code})
                         </Link>
                         <span className={styles.prodSub}>{sku.sku_code}</span>
                       </div>
                       <span
                         className={sku.available_stock <= 0 ? styles.stockWarn : styles.mobilePrice}
-                        style={{ fontVariantNumeric: "tabular-nums" }}
                       >
                         {sku.available_stock <= 0
-                          ? "0 chiếc"
+                          ? "Hết hàng"
                           : `Còn ${formatInt(sku.available_stock)}`}
                       </span>
                     </div>
                     <div className={common.mobileRowMeta}>
-                      <span>{formatVnd(sku.price_vnd)}</span>
+                      <span className="num">{formatVnd(sku.price_vnd)}</span>
                       <div className={styles.actionRow}>
                         <button
                           type="button"
@@ -601,6 +590,71 @@ export function SellerProductsClient({
           )}
         </>
       )}
+
+      {/* Slide-over Quick SKU Inventory Drawer */}
+      <SellerDrawer
+        open={Boolean(drawerProduct)}
+        onClose={() => setDrawerProductId(null)}
+        title={drawerProduct?.name ?? ""}
+        subtitle={
+          drawerProduct
+            ? `${categoryNameById.get(drawerProduct.category_id) ?? "Chung"}, ${formatInt(
+                (drawerProduct.skus ?? []).filter((s) => s.is_active).length
+              )} SKU`
+            : ""
+        }
+        badge={
+          drawerProduct ? (
+            <span
+              className={statusPillClass(getSellerProductStatusMeta(drawerProduct.status).tone)}
+            >
+              {getSellerProductStatusMeta(drawerProduct.status).label}
+            </span>
+          ) : null
+        }
+        footer={
+          drawerProduct ? (
+            <>
+              <span className={common.cardMeta}>
+                Tổng khả dụng: {formatInt(totalAvailable(drawerProduct))}
+              </span>
+              <Button
+                variant="primary"
+                size="sm"
+                shape="app"
+                href={`/seller/san-pham/${drawerProduct.id}`}
+              >
+                <span>Chỉnh sửa sản phẩm</span>
+                <IconArrowUpRight size={14} />
+              </Button>
+            </>
+          ) : null
+        }
+      >
+        {drawerProduct && (
+          <div className={styles.drawerSkuList}>
+            {(drawerProduct.skus ?? [])
+              .filter((s) => s.is_active)
+              .map((sku) => (
+                <div key={sku.id} className={styles.drawerSkuRow}>
+                  <div className={styles.drawerSkuMain}>
+                    <strong className={styles.drawerSkuName}>{sku.name || sku.sku_code}</strong>
+                    <span className={common.cellSub}>
+                      {sku.sku_code}, {formatVnd(sku.price_vnd)}
+                    </span>
+                  </div>
+                  <div className={styles.drawerSkuRight}>
+                    <span className={sku.available_stock <= 5 ? styles.stockWarn : "num"}>
+                      {sku.available_stock <= 0
+                        ? "Hết hàng"
+                        : `Còn ${formatInt(sku.available_stock)}`}
+                    </span>
+                  </div>
+                </div>
+              ))}
+          </div>
+        )}
+      </SellerDrawer>
     </div>
   );
 }

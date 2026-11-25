@@ -1,5 +1,74 @@
 /* Seller Orders List (/seller/don-hang) */
 
+.orderIdentity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.orderThumb {
+  width: 32px;
+  height: 40px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--bg-2);
+  flex: none;
+}
+
+.orderMetaStack {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-template-areas:
+    "code channel"
+    "date date";
+  align-items: center;
+  justify-content: start;
+  column-gap: 6px;
+  row-gap: 1px;
+}
+
+.orderCodeBtn {
+  grid-area: code;
+  white-space: nowrap;
+}
+
+.orderChannelInline {
+  grid-area: channel;
+}
+
+.orderDateSub {
+  grid-area: date;
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+.buyerCell {
+  min-width: 0;
+  max-width: 148px;
+}
+
+.buyerName {
+  display: block;
+  color: var(--ink-1);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.buyerProvince {
+  display: block;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ink-3);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .actionGroup {
   display: inline-flex;
   align-items: center;
@@ -8,47 +77,62 @@
 }
 
 .rowAdvanceBtn {
-  height: 30px;
-  padding: 0 10px;
+  height: 28px;
+  padding: 0 9px;
   border-radius: var(--radius-control);
-  border: 1px solid var(--ink); /* taste-skill-ignore: outlined ink row transition button */
-  background: var(--card);
-  color: var(--ink);
+  background: var(--ink-1);
+  color: var(--bg-0);
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
-  transition: background-color var(--t-hover) ease;
+  transition: background-color var(--t-hover) var(--ease-out);
 }
 
-.rowAdvanceBtn:hover {
-  background: var(--surface);
+.rowAdvanceBtn:hover:not(:disabled) {
+  background: var(--accent);
 }
 
 .rowDetailLink {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 30px;
-  padding: 0 10px;
+  height: 28px;
+  padding: 0 9px;
   border-radius: var(--radius-control);
-  border: 1px solid var(--control); /* taste-skill-ignore: secondary order detail button */
-  background: var(--card);
-  color: var(--ink);
+  border: 1px solid var(--control);
+  background: var(--bg-0);
+  color: var(--ink-1);
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
+  transition: background-color var(--t-hover) var(--ease-out);
 }
 
 .rowDetailLink:hover {
-  background: var(--surface);
+  background: var(--bg-2);
 }
 
 .orderCodeCell {
   white-space: nowrap;
 }
 
+.itemColCell {
+  min-width: 0;
+  max-width: 210px;
+}
+
 .itemSummaryCell {
-  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.itemSubCell {
+  display: block;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ink-3);
+  margin-top: 1px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -57,49 +141,75 @@
 .mobileOrderCode {
   font-size: 14px;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--ink-1);
 }
 
 .mobileOrderTotal {
   font-size: 14px;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--ink-1);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .mobileOrderSummary {
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-3);
   line-height: 18px;
 }
 
-.signalList {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 4px;
+@media (max-width: 1340px) {
+  .orderIdentity .orderThumb {
+    display: none;
+  }
+
+  .orderCodeBtn {
+    font-stretch: 94%;
+  }
+
+  .buyerCell {
+    max-width: 116px;
+  }
+
+  .itemColCell {
+    max-width: 152px;
+  }
+
+  .rowAdvanceBtn,
+  .rowDetailLink {
+    padding: 0 7px;
+  }
 }
 
-.signalTag {
-  display: inline-flex;
-  align-items: center;
-  height: 20px;
-  padding: 0 7px;
-  border-radius: var(--radius-chip);
-  background: var(--surface);
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-}
+@media (max-width: 1160px) {
+  .orderMetaStack {
+    grid-template-areas:
+      "code code"
+      "channel date";
+    column-gap: 5px;
+  }
 
-.signalTagWarn {
-  background: var(--pill-warning-bg);
-  color: var(--pill-warning-ink);
-}
+  .orderCodeBtn {
+    font-stretch: 86%;
+  }
 
-.queueMeta {
-  font-size: 13px;
-  color: var(--muted);
+  .orderDateSub {
+    max-width: 58px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .buyerCell {
+    max-width: 68px;
+  }
+
+  .itemColCell {
+    max-width: 80px;
+  }
+
+  .rowAdvanceBtn,
+  .rowDetailLink {
+    padding: 0 6px;
+    height: 26px;
+  }
 }

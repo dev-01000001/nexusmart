@@ -1,9 +1,11 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { CategoryInfo, Product } from "@/data/products";
 import type { Voucher } from "@/data/vouchers";
+import { IconClose, IconFilter } from "@/components/Icons";
+import { useModalFocusTrap } from "@/components/modalFocus";
 import { formatInt, formatVnd } from "@/lib/format";
 import type { SitePublicShopDTO } from "@/lib/site/types";
 import { SiteProductCard } from "./SiteProductCard";
@@ -29,6 +31,12 @@ export interface SiteCatalogViewProps {
 
 type SortKey = "newest" | "price_asc" | "price_desc";
 
+const SORT_LABELS: Record<SortKey, string> = {
+  newest: "Mới nhất",
+  price_asc: "Giá tăng dần",
+  price_desc: "Giá giảm dần",
+};
+
 function foldVietnamese(input: string): string {
   return input
     .normalize("NFD")
@@ -39,23 +47,28 @@ function foldVietnamese(input: string): string {
     .trim();
 }
 
-function effectivePrice(p: Product): number {
-  return p.price;
-}
-
 function resolveCatalogGridClass(
   layout: CatalogPageConfig["layout"],
   columns: number,
   count: number
 ): string {
-  if (layout === "single-strip") return tplStyles.singleStripList;
+  if (layout === "single-strip" || columns === 1) return tplStyles.singleStripList;
+  if (count <= 1) return tplStyles.gridSingle;
+  if (count === 2) return tplStyles.gridCols2;
   if (layout === "editorial-magazine" || layout === "luxury-curated" || columns === 2) {
     return tplStyles.gridCols2;
   }
-  if (columns === 5) return tplStyles.gridCols5;
-  if (columns === 3 || layout === "minimal-gallery") return tplStyles.gridCols3;
-  if (columns === 1) return tplStyles.singleStripList;
-  return count === 3 ? tplStyles.gridCols3 : tplStyles.gridCols4;
+  if (count === 4 && (columns === 3 || layout === "sidebar-left" || layout === "minimal-gallery")) {
+    return tplStyles.gridCols2;
+  }
+  if (layout === "minimal-gallery") return tplStyles.gridStagger3;
+  if (columns === 5) {
+    if (count === 3) return tplStyles.gridCols3;
+    if (count === 4) return tplStyles.gridCols4;
+    return tplStyles.gridCols5;
+  }
+  if (columns === 3 || count === 3) return tplStyles.gridCols3;
+  return tplStyles.gridCols4;
 }
 
 export function SiteCatalogView({
@@ -84,7 +97,7 @@ export function SiteCatalogView({
   const introTitle =
     pageConfig?.intro_title?.trim() ||
     templateConfig?.pages.catalog.intro_title?.trim() ||
-    `Sản phẩm của ${brandName}`;
+    `Sản phẩm ${brandName}`;
   const introSubtitle =
     pageConfig?.intro_subtitle?.trim() ||
     templateConfig?.pages.catalog.intro_subtitle?.trim() ||
@@ -112,6 +125,48 @@ export function SiteCatalogView({
   const [viewMode, setViewMode] = useState<"grid" | "sku-table">(
     layout === "sku-table" || showSkuMatrix ? "sku-table" : "grid"
   );
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [sheetClosing, setSheetClosing] = useState(false);
+  const filterSheetRef = useRef<HTMLElement | null>(null);
+  const sheetCloseTimerRef = useRef<number | null>(null);
+
+  const openSheet = useCallback(() => {
+    if (sheetCloseTimerRef.current !== null) {
+      window.clearTimeout(sheetCloseTimerRef.current);
+      sheetCloseTimerRef.current = null;
+    }
+    setSheetClosing(false);
+    setSheetOpen(true);
+  }, []);
+
+  const closeSheet = useCallback(() => {
+    if (!sheetOpen || sheetClosing) return;
+    setSheetClosing(true);
+    sheetCloseTimerRef.current = window.setTimeout(() => {
+      sheetCloseTimerRef.current = null;
+      setSheetOpen(false);
+      setSheetClosing(false);
+    }, 180);
+  }, [sheetOpen, sheetClosing]);
+
+  useEffect(() => {
+    return () => {
+      if (sheetCloseTimerRef.current !== null) {
+        window.clearTimeout(sheetCloseTimerRef.current);
+      }
+    };
+  }, []);
+
+  useModalFocusTrap({
+    open: !previewMode && sheetOpen && !sheetClosing,
+    containerRef: filterSheetRef,
+    onEscape: closeSheet,
+  });
+
+  const categoryLabelMap = useMemo(
+    () => new Map<string, string>(categories.map((c) => [c.slug, c.name])),
+    [categories]
+  );
 
   const filteredProducts = useMemo(() => {
     const foldedQuery = foldVietnamese(query);
@@ -128,9 +183,9 @@ export function SiteCatalogView({
 
     const sorted = [...list];
     if (sort === "price_asc") {
-      sorted.sort((a, b) => effectivePrice(a) - effectivePrice(b));
+      sorted.sort((a, b) => a.price - b.price);
     } else if (sort === "price_desc") {
-      sorted.sort((a, b) => effectivePrice(b) - effectivePrice(a));
+      sorted.sort((a, b) => b.price - a.price);
     }
     return sorted;
   }, [products, selectedCategory, query, sort]);
@@ -158,6 +213,13 @@ export function SiteCatalogView({
     });
   }, [filteredProducts]);
 
+  const activeFilterCount =
+    (selectedCategory ? 1 : 0) + (query.trim() ? 1 : 0) + (sort !== "newest" ? 1 : 0);
+  const sheetFilterCount =
+    (showFilters && selectedCategory ? 1 : 0) +
+    (showSearch && query.trim() ? 1 : 0) +
+    (sort !== "newest" ? 1 : 0);
+
   const useSidebar = layout === "sidebar-left" || layout === "sku-table";
   const gridClass = resolveCatalogGridClass(layout, columns, pagedProducts.length);
 
@@ -168,18 +230,184 @@ export function SiteCatalogView({
     setPage(1);
   };
 
+  const resetSheetFilters = () => {
+    if (showFilters) setSelectedCategory("");
+    if (showSearch) setQuery("");
+    setSort("newest");
+    setPage(1);
+  };
+
+  const renderViewToggle = () => {
+    if (!showSkuMatrix) return null;
+    return (
+      <div className={tplStyles.viewToggleGroup} role="group" aria-label="Chế độ xem">
+        <button
+          type="button"
+          className={`${tplStyles.viewToggleBtn} ${
+            viewMode === "sku-table" ? tplStyles.viewToggleBtnActive : ""
+          }`}
+          aria-pressed={viewMode === "sku-table"}
+          onClick={() => setViewMode("sku-table")}
+        >
+          Bảng SKU
+        </button>
+        <button
+          type="button"
+          className={`${tplStyles.viewToggleBtn} ${
+            viewMode === "grid" ? tplStyles.viewToggleBtnActive : ""
+          }`}
+          aria-pressed={viewMode === "grid"}
+          onClick={() => setViewMode("grid")}
+        >
+          Lưới thẻ
+        </button>
+      </div>
+    );
+  };
+
+  const renderFilterFields = (idPrefix: string) => (
+    <>
+      {showFilters && (
+        <div className={tplStyles.catalogSidebarGroup}>
+          <span className={tplStyles.catalogSidebarTitle}>Danh mục</span>
+          <button
+            type="button"
+            className={`${tplStyles.catalogSidebarBtn} ${
+              selectedCategory === "" ? tplStyles.catalogSidebarBtnActive : ""
+            }`}
+            onClick={() => {
+              setSelectedCategory("");
+              setPage(1);
+            }}
+          >
+            Tất cả ({products.length})
+          </button>
+          {categories.map((cat) => (
+            <button
+              key={cat.slug}
+              type="button"
+              className={`${tplStyles.catalogSidebarBtn} ${
+                selectedCategory === cat.slug ? tplStyles.catalogSidebarBtnActive : ""
+              }`}
+              onClick={() => {
+                setSelectedCategory(cat.slug);
+                setPage(1);
+              }}
+            >
+              {cat.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {showSearch && (
+        <div className={tplStyles.catalogSidebarGroup}>
+          <label htmlFor={`${idPrefix}-search`} className={tplStyles.catalogSidebarTitle}>
+            Lọc từ khóa
+          </label>
+          <input
+            id={`${idPrefix}-search`}
+            type="search"
+            className={styles.searchInput}
+            style={{ minWidth: 0, width: "100%" }}
+            placeholder="Tên, chất liệu..."
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setPage(1);
+            }}
+          />
+        </div>
+      )}
+
+      <div className={tplStyles.catalogSidebarGroup}>
+        <label htmlFor={`${idPrefix}-sort`} className={tplStyles.catalogSidebarTitle}>
+          Sắp xếp
+        </label>
+        <select
+          id={`${idPrefix}-sort`}
+          className={styles.sortSelect}
+          style={{ width: "100%" }}
+          value={sort}
+          onChange={(e) => {
+            setSort(e.target.value as SortKey);
+            setPage(1);
+          }}
+        >
+          <option value="newest">Mới nhất</option>
+          <option value="price_asc">Giá tăng dần</option>
+          <option value="price_desc">Giá giảm dần</option>
+        </select>
+      </div>
+    </>
+  );
+
+  const renderActiveChips = () => {
+    if (activeFilterCount === 0) return null;
+    const categoryLabel = categoryLabelMap.get(selectedCategory) ?? selectedCategory;
+    return (
+      <div className={tplStyles.activeChipBar}>
+        {selectedCategory && (
+          <button
+            type="button"
+            className={tplStyles.activeChip}
+            aria-label={`Bỏ lọc danh mục ${categoryLabel}`}
+            onClick={() => {
+              setSelectedCategory("");
+              setPage(1);
+            }}
+          >
+            <span>{categoryLabel}</span>
+            <IconClose size={13} />
+          </button>
+        )}
+        {query.trim() && (
+          <button
+            type="button"
+            className={tplStyles.activeChip}
+            aria-label={`Bỏ lọc từ khóa ${query.trim()}`}
+            onClick={() => {
+              setQuery("");
+              setPage(1);
+            }}
+          >
+            <span>“{query.trim()}”</span>
+            <IconClose size={13} />
+          </button>
+        )}
+        {sort !== "newest" && (
+          <button
+            type="button"
+            className={tplStyles.activeChip}
+            aria-label={`Bỏ lọc sắp xếp ${SORT_LABELS[sort]}`}
+            onClick={() => {
+              setSort("newest");
+              setPage(1);
+            }}
+          >
+            <span>{SORT_LABELS[sort]}</span>
+            <IconClose size={13} />
+          </button>
+        )}
+        <button type="button" className={tplStyles.clearChipBtn} onClick={resetFilters}>
+          Xóa lọc
+        </button>
+      </div>
+    );
+  };
+
   const renderSkuMatrixTable = () => (
-    <div className={tplStyles.tableScrollWrap} data-reveal="">
+    <div className={tplStyles.tableScrollWrap}>
       <table className={tplStyles.skuTable}>
         <thead>
           <tr>
             <th>Sản phẩm</th>
-            <th>Mã SKU</th>
-            <th>Màu sắc</th>
-            <th>Kích cỡ</th>
+            <th>SKU</th>
+            <th>Màu</th>
+            <th>Size</th>
             <th>Đơn giá</th>
-            <th>Tồn kho</th>
-            <th>Thao tác</th>
+            <th>Tồn</th>
+            <th>Đặt mua</th>
           </tr>
         </thead>
         <tbody>
@@ -188,7 +416,7 @@ export function SiteCatalogView({
               <td>
                 <strong>{row.product.name}</strong>
               </td>
-              <td className={tplStyles.skuCodeMono}>{row.sku.skuCode}</td>
+              <td className={`${tplStyles.skuCodeMono} num`}>{row.sku.skuCode}</td>
               <td>
                 <span className={tplStyles.colorSwatchInline}>
                   <span
@@ -205,12 +433,12 @@ export function SiteCatalogView({
                 <span
                   className={`${tplStyles.stockBadge} ${row.sku.stock <= 0 ? tplStyles.stockBadgeOut : ""} num`}
                 >
-                  {row.sku.stock > 0 ? `Còn ${formatInt(row.sku.stock)}` : "Tạm hết"}
+                  {row.sku.stock > 0 ? `Còn ${formatInt(row.sku.stock)}` : "Hết"}
                 </span>
               </td>
               <td>
                 {previewMode ? (
-                  <span className={styles.sectionLink}>Chi tiết</span>
+                  <span className={styles.sectionLink}>Chọn</span>
                 ) : (
                   <Link
                     href={`/san-pham/${encodeURIComponent(row.product.slug)}`}
@@ -230,13 +458,11 @@ export function SiteCatalogView({
   const renderResultsArea = () => {
     if (filteredProducts.length === 0) {
       return (
-        <div className={styles.emptyPanel} data-reveal="">
-          <h2 className={styles.sectionTitle}>Không tìm thấy sản phẩm phù hợp</h2>
-          <p className={styles.prosePara}>
-            Thử xóa từ khóa tìm kiếm hoặc chọn lại tất cả danh mục của {brandName}.
-          </p>
+        <div className={styles.emptyPanel}>
+          <h2 className={styles.sectionTitle}>Không tìm thấy sản phẩm</h2>
+          <p className={styles.prosePara}>Thử bỏ bộ lọc để xem toàn bộ mẫu của {brandName}.</p>
           <button type="button" className={styles.btnPrimary} onClick={resetFilters}>
-            Xem toàn bộ sản phẩm
+            Xem tất cả
           </button>
         </div>
       );
@@ -256,6 +482,7 @@ export function SiteCatalogView({
               previewMode={previewMode}
               index={idx}
               cardStyle={cardStyle}
+              layoutMode={pagedProducts.length === 1 ? "single-wide" : "default"}
               showExcerpt={layout === "editorial-magazine" || layout === "single-strip"}
             />
           ))}
@@ -303,10 +530,11 @@ export function SiteCatalogView({
           <h1 className={styles.pageTitle} data-rise="" style={{ "--i": 0 } as React.CSSProperties}>
             {introTitle}
           </h1>
-          <p className={styles.pageLead} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
-            {introSubtitle ||
-              `Hiển thị ${filteredProducts.length} mẫu sẵn bán trực tiếp từ kho của ${brandName}.`}
-          </p>
+          {introSubtitle && (
+            <p className={styles.pageLead} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
+              {introSubtitle}
+            </p>
+          )}
         </div>
       </section>
 
@@ -315,67 +543,74 @@ export function SiteCatalogView({
           {useSidebar ? (
             <div className={tplStyles.catalogSidebarShell}>
               <aside className={tplStyles.catalogSidebar} aria-label="Bộ lọc danh mục">
-                {showFilters && (
-                  <div className={tplStyles.catalogSidebarGroup}>
-                    <span className={tplStyles.catalogSidebarTitle}>Danh mục sản phẩm</span>
+                {renderFilterFields("sidebar")}
+              </aside>
+
+              <div style={{ minWidth: 0 }}>
+                <div className={tplStyles.catalogToolbarRow}>
+                  <div className={tplStyles.catalogToolbarLeft}>
+                    {(showFilters || showSearch) && (
+                      <button
+                        type="button"
+                        className={`${tplStyles.filterSheetBtn} ${tplStyles.filterSheetBtnMobileOnly}`}
+                        aria-expanded={sheetOpen}
+                        onClick={openSheet}
+                      >
+                        <IconFilter size={15} />
+                        <span>Bộ lọc</span>
+                        {activeFilterCount > 0 && (
+                          <span className={`${tplStyles.filterCountBadge} num`}>
+                            {activeFilterCount}
+                          </span>
+                        )}
+                      </button>
+                    )}
+                    <span className={`${tplStyles.resultCountText} num`}>
+                      {viewMode === "sku-table" && showSkuMatrix
+                        ? `${formatInt(skuMatrixRows.length)} SKU (${formatInt(filteredProducts.length)} mẫu)`
+                        : `${formatInt(filteredProducts.length)} sản phẩm`}
+                    </span>
+                  </div>
+
+                  {renderViewToggle()}
+                </div>
+
+                {renderActiveChips()}
+                {renderResultsArea()}
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className={tplStyles.catalogToolbarSticky}>
+                <div className={tplStyles.catalogToolbarLeft}>
+                  {(showFilters || showSearch) && (
                     <button
                       type="button"
-                      className={`${tplStyles.catalogSidebarBtn} ${
-                        selectedCategory === "" ? tplStyles.catalogSidebarBtnActive : ""
-                      }`}
-                      onClick={() => {
-                        setSelectedCategory("");
-                        setPage(1);
-                      }}
+                      className={tplStyles.filterSheetBtn}
+                      aria-expanded={sheetOpen}
+                      onClick={openSheet}
                     >
-                      Tất cả ({products.length})
+                      <IconFilter size={15} />
+                      <span>Bộ lọc</span>
+                      {activeFilterCount > 0 && (
+                        <span className={`${tplStyles.filterCountBadge} num`}>
+                          {activeFilterCount}
+                        </span>
+                      )}
                     </button>
-                    {categories.map((cat) => (
-                      <button
-                        key={cat.slug}
-                        type="button"
-                        className={`${tplStyles.catalogSidebarBtn} ${
-                          selectedCategory === cat.slug ? tplStyles.catalogSidebarBtnActive : ""
-                        }`}
-                        onClick={() => {
-                          setSelectedCategory(cat.slug);
-                          setPage(1);
-                        }}
-                      >
-                        {cat.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
+                  )}
+                  <span className={`${tplStyles.resultCountText} num`}>
+                    {formatInt(filteredProducts.length)} sản phẩm
+                  </span>
+                </div>
 
-                {showSearch && (
-                  <div className={tplStyles.catalogSidebarGroup}>
-                    <label htmlFor="site-catalog-search" className={tplStyles.catalogSidebarTitle}>
-                      Lọc nhanh từ khóa
-                    </label>
-                    <input
-                      id="site-catalog-search"
-                      type="search"
-                      className={styles.searchInput}
-                      style={{ minWidth: 0, width: "100%" }}
-                      placeholder="Tên, chất liệu..."
-                      value={query}
-                      onChange={(e) => {
-                        setQuery(e.target.value);
-                        setPage(1);
-                      }}
-                    />
-                  </div>
-                )}
-
-                <div className={tplStyles.catalogSidebarGroup}>
-                  <label htmlFor="site-catalog-sort" className={tplStyles.catalogSidebarTitle}>
+                <div className={tplStyles.catalogToolbarRight}>
+                  <label htmlFor="site-catalog-sort-bar" className="sr-only">
                     Sắp xếp
                   </label>
                   <select
-                    id="site-catalog-sort"
+                    id="site-catalog-sort-bar"
                     className={styles.sortSelect}
-                    style={{ width: "100%" }}
                     value={sort}
                     onChange={(e) => {
                       setSort(e.target.value as SortKey);
@@ -386,157 +621,73 @@ export function SiteCatalogView({
                     <option value="price_asc">Giá tăng dần</option>
                     <option value="price_desc">Giá giảm dần</option>
                   </select>
+
+                  {renderViewToggle()}
                 </div>
-              </aside>
-
-              <div style={{ minWidth: 0 }}>
-                <div className={tplStyles.catalogToolbarRow}>
-                  <span className={`${tplStyles.cardSpec} num`}>
-                    {viewMode === "sku-table" && showSkuMatrix
-                      ? `${formatInt(skuMatrixRows.length)} biến thể SKU từ ${formatInt(filteredProducts.length)} sản phẩm`
-                      : `${formatInt(filteredProducts.length)} sản phẩm`}
-                  </span>
-
-                  {showSkuMatrix && (
-                    <div className={tplStyles.viewToggleGroup} role="group" aria-label="Chế độ xem">
-                      <button
-                        type="button"
-                        className={`${tplStyles.viewToggleBtn} ${
-                          viewMode === "sku-table" ? tplStyles.viewToggleBtnActive : ""
-                        }`}
-                        onClick={() => setViewMode("sku-table")}
-                      >
-                        Bảng ma trận SKU
-                      </button>
-                      <button
-                        type="button"
-                        className={`${tplStyles.viewToggleBtn} ${
-                          viewMode === "grid" ? tplStyles.viewToggleBtnActive : ""
-                        }`}
-                        onClick={() => setViewMode("grid")}
-                      >
-                        Lưới thẻ
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {renderResultsArea()}
               </div>
-            </div>
-          ) : (
-            <>
-              {(showFilters || showSearch || showSkuMatrix) && (
-                <div
-                  className={styles.filterBar}
-                  data-ui=""
-                  data-rise=""
-                  style={{ "--i": 2 } as React.CSSProperties}
-                >
-                  {showFilters && (
-                    <div className={styles.filterGroup} role="group" aria-label="Lọc theo danh mục">
-                      <button
-                        type="button"
-                        className={`${styles.filterChip} ${
-                          selectedCategory === "" ? styles.filterChipActive : ""
-                        }`}
-                        onClick={() => {
-                          setSelectedCategory("");
-                          setPage(1);
-                        }}
-                      >
-                        Tất cả ({products.length})
-                      </button>
-                      {categories.map((cat) => (
-                        <button
-                          key={cat.slug}
-                          type="button"
-                          className={`${styles.filterChip} ${
-                            selectedCategory === cat.slug ? styles.filterChipActive : ""
-                          }`}
-                          onClick={() => {
-                            setSelectedCategory(cat.slug);
-                            setPage(1);
-                          }}
-                        >
-                          {cat.name}
-                        </button>
-                      ))}
-                    </div>
-                  )}
 
-                  <div className={styles.filterGroup}>
-                    {showSearch && (
-                      <>
-                        <label htmlFor="site-catalog-search" className="sr-only">
-                          Tìm sản phẩm trong cửa hàng
-                        </label>
-                        <input
-                          id="site-catalog-search"
-                          type="search"
-                          className={styles.searchInput}
-                          placeholder="Tìm tên, chất liệu..."
-                          value={query}
-                          onChange={(e) => {
-                            setQuery(e.target.value);
-                            setPage(1);
-                          }}
-                        />
-                      </>
-                    )}
-
-                    <label htmlFor="site-catalog-sort" className="sr-only">
-                      Sắp xếp sản phẩm
-                    </label>
-                    <select
-                      id="site-catalog-sort"
-                      className={styles.sortSelect}
-                      value={sort}
-                      onChange={(e) => {
-                        setSort(e.target.value as SortKey);
-                        setPage(1);
-                      }}
-                    >
-                      <option value="newest">Mới nhất</option>
-                      <option value="price_asc">Giá tăng dần</option>
-                      <option value="price_desc">Giá giảm dần</option>
-                    </select>
-
-                    {showSkuMatrix && (
-                      <div
-                        className={tplStyles.viewToggleGroup}
-                        role="group"
-                        aria-label="Chế độ xem"
-                      >
-                        <button
-                          type="button"
-                          className={`${tplStyles.viewToggleBtn} ${
-                            viewMode === "sku-table" ? tplStyles.viewToggleBtnActive : ""
-                          }`}
-                          onClick={() => setViewMode("sku-table")}
-                        >
-                          Bảng SKU
-                        </button>
-                        <button
-                          type="button"
-                          className={`${tplStyles.viewToggleBtn} ${
-                            viewMode === "grid" ? tplStyles.viewToggleBtnActive : ""
-                          }`}
-                          onClick={() => setViewMode("grid")}
-                        >
-                          Lưới
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
+              {renderActiveChips()}
               {renderResultsArea()}
             </>
           )}
         </div>
       </section>
+
+      {/* Filter Sheet Drawer */}
+      {sheetOpen && (
+        <div
+          className={`${styles.siteDrawerBackdrop} ${
+            sheetClosing ? styles.siteDrawerBackdropClosing : ""
+          }`}
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeSheet();
+          }}
+        >
+          <aside
+            ref={filterSheetRef}
+            tabIndex={-1}
+            className={`${tplStyles.filterSheet} ${
+              sheetClosing ? styles.siteDrawerPanelClosing : ""
+            }`}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Bộ lọc sản phẩm"
+          >
+            <header className={tplStyles.filterSheetHead}>
+              <span className={tplStyles.filterSheetTitle}>Bộ lọc</span>
+              <button
+                type="button"
+                className={styles.siteDrawerClose}
+                onClick={closeSheet}
+                aria-label="Đóng bộ lọc"
+              >
+                <IconClose size={18} />
+              </button>
+            </header>
+
+            <div className={tplStyles.filterSheetBody}>{renderFilterFields("sheet")}</div>
+
+            <footer className={tplStyles.filterSheetFoot}>
+              {sheetFilterCount > 0 && (
+                <button
+                  type="button"
+                  className={styles.btnSecondary}
+                  onClick={() => {
+                    resetSheetFilters();
+                    closeSheet();
+                  }}
+                >
+                  Xóa lọc
+                </button>
+              )}
+              <button type="button" className={styles.btnPrimary} onClick={closeSheet}>
+                Xem {formatInt(filteredProducts.length)} mẫu
+              </button>
+            </footer>
+          </aside>
+        </div>
+      )}
 
       {templateConfig && extraSections.length > 0 && (
         <SiteRenderer

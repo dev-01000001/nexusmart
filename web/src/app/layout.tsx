@@ -1,15 +1,16 @@
 import type { Metadata } from "next";
-import { Work_Sans } from "next/font/google";
+import { Archivo } from "next/font/google";
+import { RevealObserver } from "@/components/Reveal";
 import { SessionProvider } from "@/components/SessionProvider";
 import { StoreProvider } from "@/context/StoreContext";
 import { getSession, type SessionUser } from "@/lib/server/session";
 import "@/styles/tokens.css";
 import "@/styles/globals.css";
 
-const workSans = Work_Sans({
+const archivo = Archivo({
   subsets: ["latin", "vietnamese"],
-  weight: ["300", "400", "500", "600"],
-  variable: "--font-work-sans",
+  axes: ["wdth"],
+  variable: "--font-archivo",
   display: "swap",
 });
 
@@ -37,10 +38,21 @@ export default async function RootLayout({
   }
 
   return (
-    <html lang="vi" className={workSans.variable}>
+    <html lang="vi" className={archivo.variable} suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "document.documentElement.classList.add('js');setTimeout(function(){if(!window.__nmRevealReady)document.documentElement.classList.remove('js');},3000);",
+          }}
+        />
+      </head>
       <body>
         <SessionProvider initialUser={initialUser}>
-          <StoreProvider>{children}</StoreProvider>
+          <StoreProvider>
+            <RevealObserver />
+            {children}
+          </StoreProvider>
         </SessionProvider>
       </body>
     </html>

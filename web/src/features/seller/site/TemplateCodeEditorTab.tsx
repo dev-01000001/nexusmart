@@ -20,6 +20,7 @@ import {
 } from "./siteEditorUtils";
 import type { PreviewStorefrontDataset } from "./previewData";
 import { SitePreviewContent } from "./SitePreviewContent";
+import { SitePreviewFrame, type DevicePreviewWidth } from "./SitePreviewFrame";
 import styles from "./SellerSiteEditor.module.css";
 
 export interface TemplateCodeEditorTabProps {
@@ -66,24 +67,29 @@ export function TemplateCodeEditorTab({
   onValidConfigChange,
   onNotify,
 }: TemplateCodeEditorTabProps) {
-  const initialPretty = useMemo(() => serializePretty(config), [config]);
-  const [codeText, setCodeText] = useState<string>(initialPretty);
+  const [codeState, setCodeState] = useState(() => {
+    const text = serializePretty(config);
+    return {
+      text,
+      validation: validateSiteTemplateJson(text),
+    };
+  });
+  const codeText = codeState.text;
+  const validation = codeState.validation;
   const [lastValidConfig, setLastValidConfig] = useState<SiteTemplateConfig>(config);
   const [previewPage, setPreviewPage] = useState<TemplatePageKey>("home");
-  const [previewViewport, setPreviewViewport] = useState<"desktop" | "mobile">("desktop");
+  const [previewDevice, setPreviewDevice] = useState<DevicePreviewWidth>("1440");
   const [highlightedLine, setHighlightedLine] = useState<number | null>(null);
 
-  const lastEmittedSerializedRef = useRef<string>(initialPretty);
+  const lastEmittedSerializedRef = useRef<string>(codeText);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const gutterRef = useRef<HTMLDivElement | null>(null);
 
-  // Sync external updates (e.g. applying a template, editing visual controls, or rolling back)
-  // without clobbering user typing when the update came from this code editor itself.
   useEffect(() => {
     const incoming = serializePretty(config);
     if (incoming !== lastEmittedSerializedRef.current) {
       lastEmittedSerializedRef.current = incoming;
-      setCodeText(incoming);
+      setCodeState({ text: incoming, validation: validateSiteTemplateJson(incoming) });
       setLastValidConfig(config);
       setHighlightedLine(null);
     }
@@ -92,7 +98,6 @@ export function TemplateCodeEditorTab({
   const byteCount = useMemo(() => new TextEncoder().encode(codeText).length, [codeText]);
   const lineCount = useMemo(() => Math.max(1, codeText.split("\n").length), [codeText]);
 
-  const validation = useMemo(() => validateSiteTemplateJson(codeText), [codeText]);
   const errorLines = useMemo(() => {
     const set = new Set<number>();
     for (const issue of validation.issues) {
@@ -102,8 +107,8 @@ export function TemplateCodeEditorTab({
   }, [validation.issues]);
 
   const handleCodeChange = (nextText: string) => {
-    setCodeText(nextText);
     const res = validateSiteTemplateJson(nextText);
+    setCodeState({ text: nextText, validation: res });
     if (res.ok && res.config) {
       setLastValidConfig(res.config);
       setHighlightedLine(null);
@@ -117,26 +122,26 @@ export function TemplateCodeEditorTab({
     try {
       const parsed = JSON.parse(codeText);
       const formatted = JSON.stringify(parsed, null, 2);
-      setCodeText(formatted);
       const res = validateSiteTemplateJson(formatted);
+      setCodeState({ text: formatted, validation: res });
       if (res.ok && res.config) {
         setLastValidConfig(res.config);
         lastEmittedSerializedRef.current = serializePretty(res.config);
         onValidConfigChange(res.config);
       }
-      onNotify?.("Đã định dạng lại mã JSON gọn 2 khoảng trắng.");
+      onNotify?.("Đã định dạng lại mã JSON.");
     } catch {
-      onNotify?.("Không thể định dạng vì mã JSON đang có lỗi cú pháp. Hãy sửa dòng báo lỗi trước.");
+      onNotify?.("Không thể định dạng vì mã JSON đang có lỗi cú pháp.");
     }
   };
 
   const handleSyncFromVisual = () => {
     const synced = serializePretty(config);
     lastEmittedSerializedRef.current = synced;
-    setCodeText(synced);
+    setCodeState({ text: synced, validation: validateSiteTemplateJson(synced) });
     setLastValidConfig(config);
     setHighlightedLine(null);
-    onNotify?.("Đã đồng bộ cấu hình mới nhất từ trình chỉnh sửa trực quan.");
+    onNotify?.("Đã đồng bộ từ trình chỉnh sửa trực quan.");
   };
 
   const handleResetToBaseTemplate = () => {
@@ -152,11 +157,11 @@ export function TemplateCodeEditorTab({
     });
     const nextText = serializePretty(cloned);
     lastEmittedSerializedRef.current = nextText;
-    setCodeText(nextText);
+    setCodeState({ text: nextText, validation: validateSiteTemplateJson(nextText) });
     setLastValidConfig(cloned);
     setHighlightedLine(null);
     onValidConfigChange(cloned);
-    onNotify?.(`Đã đặt lại cấu hình theo mẫu gốc "${baseTpl.name}".`);
+    onNotify?.(`Đã đặt lại theo mẫu gốc "${baseTpl.name}".`);
   };
 
   const handleJumpToIssue = (issue: TemplateValidationIssue) => {
@@ -186,38 +191,30 @@ export function TemplateCodeEditorTab({
       {/* Left pane: Line-aware JSON editor + strict schema diagnostics */}
       <section className={common.card} aria-label="Trình sửa mã template JSON v2">
         <div className={styles.codeHeaderRow}>
-          <div>
-            <h2 className={common.cardTitle}>Mã template (Declarative Theme JSON v2)</h2>
-            <p className={common.cardMeta}>
-              Chỉnh trực tiếp JSON chuẩn schema v2 — đồng bộ hai chiều với trình trực quan và kiểm
-              tra bảo mật XSS/SSRF/WCAG tức thì.
-            </p>
-          </div>
+          <h2 className={common.cardTitle}>Mã JSON v2</h2>
           <span
             className={`${common.pill} ${overByteLimit ? common.pillNeg : ""}`}
             aria-label="Dung lượng cấu hình"
           >
-            {formatBytesVi(byteCount)} / {formatBytesVi(MAX_CONFIG_BYTES)} byte
+            {formatBytesVi(byteCount)} / {formatBytesVi(MAX_CONFIG_BYTES)} B
           </span>
         </div>
 
         <div className={styles.codeToolbar}>
           <div className={styles.codeToolbarActions}>
             <Button variant="outline" size="sm" shape="app" onClick={handleBeautify}>
-              Định dạng JSON
+              Định dạng
             </Button>
             <Button variant="outline" size="sm" shape="app" onClick={handleSyncFromVisual}>
-              Đồng bộ từ trình trực quan
+              Đồng bộ
             </Button>
             <Button variant="outline" size="sm" shape="app" onClick={handleResetToBaseTemplate}>
-              Đặt lại theo mẫu gốc
+              Đặt lại mẫu gốc
             </Button>
           </div>
           <div className={styles.codeStatusWrap} aria-live="polite">
             {validation.ok ? (
-              <span className={`${common.pill} ${common.pillPos}`}>
-                Schema v2 hợp lệ · An toàn XSS/SSRF · WCAG đạt chuẩn
-              </span>
+              <span className={`${common.pill} ${common.pillPos}`}>Hợp lệ, WCAG đạt</span>
             ) : (
               <span className={`${common.pill} ${common.pillNeg}`}>
                 {validation.issues.length} lỗi cần sửa
@@ -260,13 +257,11 @@ export function TemplateCodeEditorTab({
 
         <div className={styles.codeFooterMeta}>
           <span>
-            {lineCount} dòng · {countAllSections(lastValidConfig)} tổng khối trên 5 trang · Mẫu:{" "}
+            {lineCount} dòng, {countAllSections(lastValidConfig)} khối,{" "}
             <code>{lastValidConfig.template_id}</code>
           </span>
           {!validation.ok && (
-            <span className={styles.codeStaleNotice}>
-              Xem trước bên phải giữ bản hợp lệ gần nhất cho tới khi sửa hết lỗi.
-            </span>
+            <span className={styles.codeStaleNotice}>Giữ bản xem trước hợp lệ gần nhất.</span>
           )}
         </div>
 
@@ -276,9 +271,7 @@ export function TemplateCodeEditorTab({
             role="alert"
             aria-label="Danh sách lỗi mã template"
           >
-            <div className={styles.diagnosticsHead}>
-              Chi tiết lỗi (nhấn vào từng dòng để nhảy tới vị trí chính xác)
-            </div>
+            <div className={styles.diagnosticsHead}>Nhấn vào lỗi để nhảy tới vị trí chính xác</div>
             <ul className={styles.diagnosticsList}>
               {validation.issues.map((issue, idx) => (
                 <li key={`${issue.line}-${issue.column}-${issue.code}-${idx}`}>
@@ -288,7 +281,7 @@ export function TemplateCodeEditorTab({
                     onClick={() => handleJumpToIssue(issue)}
                   >
                     <span className={styles.diagnosticLoc}>
-                      Dòng {issue.line}, Cột {issue.column}
+                      Dòng {issue.line}:{issue.column}
                     </span>
                     <span className={styles.diagnosticCode}>[{issue.code}]</span>
                     <span className={styles.diagnosticMsg}>
@@ -302,61 +295,53 @@ export function TemplateCodeEditorTab({
         )}
       </section>
 
-      {/* Right pane: Live Preview with 5-page switcher & Desktop/Mobile viewport toggle */}
-      <section className={common.card} aria-label="Xem trước trực tiếp mã template">
-        <div className={styles.livePreviewHeader}>
-          <div>
-            <h2 className={common.cardTitle}>Xem trước trực tiếp</h2>
-            <p className={common.cardMeta}>
-              Cập nhật tức thì khi mã JSON hợp lệ — kiểm tra đủ 5 trang trên máy tính và di động.
-            </p>
-          </div>
-          <div className={styles.viewportGroup} role="group" aria-label="Khung xem trực tiếp">
-            <button
-              type="button"
-              className={`${styles.viewportBtn} ${
-                previewViewport === "desktop" ? styles.viewportBtnActive : ""
-              }`}
-              onClick={() => setPreviewViewport("desktop")}
-            >
-              Máy tính
-            </button>
-            <button
-              type="button"
-              className={`${styles.viewportBtn} ${
-                previewViewport === "mobile" ? styles.viewportBtnActive : ""
-              }`}
-              onClick={() => setPreviewViewport("mobile")}
-            >
-              Di động 390px
-            </button>
-          </div>
-        </div>
-
-        <div className={styles.pageSwitcherGroup} role="tablist" aria-label="Chọn trang xem trước">
-          {TEMPLATE_PAGE_TABS.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              role="tab"
-              aria-selected={previewPage === tab.key}
-              className={`${styles.pageSwitchBtn} ${
-                previewPage === tab.key ? styles.pageSwitchBtnActive : ""
-              }`}
-              onClick={() => setPreviewPage(tab.key)}
-            >
-              {tab.shortLabel}
-            </button>
-          ))}
-        </div>
-
-        <div className={styles.livePreviewStage}>
+      {/* Right pane (>= 60%): Live Preview with 5-page switcher & 390 / 768 / 1440 device frame */}
+      <section className={styles.previewPaneSticky} aria-label="Xem trước trực tiếp mã template">
+        <div className={styles.previewPaneBar}>
           <div
-            className={
-              previewViewport === "mobile"
-                ? styles.previewCanvasMobile
-                : styles.previewCanvasDesktop
-            }
+            className={styles.pageSwitcherGroup}
+            role="tablist"
+            aria-label="Chọn trang xem trước"
+          >
+            {TEMPLATE_PAGE_TABS.map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                role="tab"
+                aria-selected={previewPage === tab.key}
+                className={`${styles.pageSwitchBtn} ${
+                  previewPage === tab.key ? styles.pageSwitchBtnActive : ""
+                }`}
+                onClick={() => setPreviewPage(tab.key)}
+              >
+                {tab.shortLabel}
+              </button>
+            ))}
+          </div>
+
+          <div className={styles.viewportGroup} role="group" aria-label="Khung xem trực tiếp">
+            {(["390", "768", "1440"] as const).map((w) => (
+              <button
+                key={w}
+                type="button"
+                aria-pressed={previewDevice === w}
+                className={`${styles.viewportBtn} ${
+                  previewDevice === w ? styles.viewportBtnActive : ""
+                }`}
+                onClick={() => setPreviewDevice(w)}
+              >
+                {w}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className={styles.previewStage}>
+          <SitePreviewFrame
+            device={previewDevice}
+            title={`Xem trước mã template (${previewDevice}px)`}
+            resetScrollKey={`${lastValidConfig.template_id}:${previewPage}:${previewDevice}`}
+            viewportHeight={600}
           >
             <SitePreviewContent
               config={lastValidConfig}
@@ -367,7 +352,7 @@ export function TemplateCodeEditorTab({
               vouchers={previewDataset.vouchers}
               platformOrigin={platformOrigin}
             />
-          </div>
+          </SitePreviewFrame>
         </div>
       </section>
     </div>

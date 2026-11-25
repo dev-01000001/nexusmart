@@ -1,6 +1,6 @@
 "use client";
 
-import React, { Suspense, useMemo, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -8,14 +8,14 @@ import {
   PAYMENT_METHOD_LABELS,
   PAYMENT_STATUS_META,
   type OrderStatus,
-  type StatusTone,
 } from "@/data/orders";
 import type { Product } from "@/data/products";
-import { formatDateTimeVi, formatVnd } from "@/lib/format";
+import { formatVnd } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";
 import { Button, StateView } from "@/components";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
-import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
+import { renderOrderDateTime, statusToneClass } from "@/features/commerce/orderDisplay";
+import { usePageStateParam } from "@/features/commerce/usePageStateParam";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./OrdersClientView.module.css";
 import type { OrderView } from "./orderView";
@@ -33,13 +33,6 @@ const FILTER_TABS: Array<{ key: FilterKey; label: string }> = [
   { key: "da_huy", label: "Đã hủy" },
 ];
 
-function toneClass(tone: StatusTone): string {
-  if (tone === "pos") return shared.tonePos;
-  if (tone === "warn") return shared.toneWarn;
-  if (tone === "neg") return shared.toneNeg;
-  return shared.toneNeutral;
-}
-
 function isUnpaidVietQr(order: OrderView): boolean {
   return (
     order.paymentMethod === "vietqr" &&
@@ -51,7 +44,6 @@ function isUnpaidVietQr(order: OrderView): boolean {
 export interface OrdersClientViewProps {
   brandName: string;
   initialOrders: OrderView[];
-  totalOrders: number;
   suggestedProducts: Product[];
   initialError?: string | null;
 }
@@ -59,7 +51,6 @@ export interface OrdersClientViewProps {
 function OrdersClientInner({
   brandName,
   initialOrders,
-  totalOrders,
   suggestedProducts,
   initialError = null,
 }: OrdersClientViewProps) {
@@ -69,7 +60,27 @@ function OrdersClientInner({
   const [activeTab, setActiveTab] = useState<FilterKey>("all");
   const [reorderingId, setReorderingId] = useState<string | null>(null);
 
-  useRevealOnScroll(`${viewState ?? "live"}-${activeTab}-${initialOrders.length}`);
+  const tabBarRef = useRef<HTMLDivElement | null>(null);
+  const tabRefs = useRef<Partial<Record<FilterKey, HTMLButtonElement | null>>>({});
+  const [indicator, setIndicator] = useState<{ left: number; width: number }>({
+    left: 0,
+    width: 0,
+  });
+
+  const measureIndicator = useCallback(() => {
+    const activeBtn = tabRefs.current[activeTab];
+    if (!activeBtn) return;
+    setIndicator({ left: activeBtn.offsetLeft, width: activeBtn.offsetWidth });
+  }, [activeTab]);
+
+  useEffect(() => {
+    measureIndicator();
+    const bar = tabBarRef.current;
+    if (!bar || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => measureIndicator());
+    ro.observe(bar);
+    return () => ro.disconnect();
+  }, [measureIndicator]);
 
   const counts = useMemo(() => {
     const map: Record<FilterKey, number> = {
@@ -99,11 +110,6 @@ function OrdersClientInner({
     return initialOrders.filter((o) => o.status === activeTab);
   }, [initialOrders, activeTab]);
 
-  const inProgressCount = initialOrders.filter(
-    (o) => o.status === "cho_xac_nhan" || o.status === "dang_chuan_bi" || o.status === "dang_giao"
-  ).length;
-  const pendingPayCount = initialOrders.filter(isUnpaidVietQr).length;
-
   const handleReorder = async (order: OrderView) => {
     setReorderingId(order.id);
     let added = 0;
@@ -124,45 +130,28 @@ function OrdersClientInner({
         if (res.ok) added += 1;
       }
       if (added > 0) {
-        showToast(`Đã thêm lại ${added} sản phẩm từ đơn ${order.orderCode} vào giỏ hàng.`);
+        showToast(`Đã thêm ${added} sản phẩm vào giỏ hàng.`);
         router.push("/gio-hang");
       } else {
-        showToast("Sản phẩm trong đơn hiện không còn sẵn hàng để mua lại.");
+        showToast("Sản phẩm trong đơn hiện hết hàng.");
       }
     } finally {
       setReorderingId(null);
     }
   };
 
-  const renderHeader = (subtitle: string) => (
-    <section className={shared.pageHeader}>
+  const renderHeader = () => (
+    <section className={styles.ordersHeader}>
       <div className={shared.headerLeadGroup}>
-        <h1 className={`${shared.pageTitle} lines`}>
+        <h1 className={`${styles.ordersTitle} lines`}>
           <span className="line">
             <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
-              Đơn hàng tại {brandName}
+              Đơn hàng <span className={styles.ordersShopSuffix}>tại {brandName}</span>
             </span>
           </span>
         </h1>
-        <p className={shared.pageLead} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
-          {subtitle}
-        </p>
       </div>
-      <div className={styles.summaryStat} data-rise="" style={{ "--i": 2 } as React.CSSProperties}>
-        <div className={styles.statItem}>
-          <span className={styles.statLabel}>Tổng số đơn</span>
-          <span className={`${styles.statVal} num`}>{totalOrders} đơn</span>
-        </div>
-        <div className={styles.statItem}>
-          <span className={styles.statLabel}>Đang xử lý</span>
-          <span className={`${styles.statVal} num`}>{inProgressCount} đơn</span>
-        </div>
-        {pendingPayCount > 0 && (
-          <div className={styles.statItem}>
-            <span className={styles.statLabel}>Chờ thanh toán</span>
-            <span className={`${styles.statVal} num`}>{pendingPayCount} đơn</span>
-          </div>
-        )}
+      <div className={shared.headerAside} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
         <Button variant="secondary" size="md" href="/tai-khoan">
           Tài khoản
         </Button>
@@ -173,14 +162,10 @@ function OrdersClientInner({
   if (viewState === "loading") {
     return (
       <div className={shared.page}>
-        {renderHeader(`Đang cập nhật lịch sử đơn hàng của bạn tại ${brandName}.`)}
+        {renderHeader()}
         <section className={shared.section}>
-          <h2 className={shared.sectionTitle}>Danh sách đơn hàng</h2>
-          <StateView kind="loading" title="Đang tải danh sách đơn hàng..." rows={5} />
+          <StateView kind="loading" skeletonVariant="table" title="Đang tải đơn hàng..." rows={5} />
         </section>
-        {suggestedProducts.length > 0 && (
-          <ProductAddonStrip title={`Sản phẩm của ${brandName}`} products={suggestedProducts} />
-        )}
       </div>
     );
   }
@@ -188,20 +173,16 @@ function OrdersClientInner({
   if (viewState === "error" || initialError) {
     return (
       <div className={shared.page}>
-        {renderHeader("Không thể kết nối đến lịch sử đơn hàng lúc này.")}
+        {renderHeader()}
         <section className={shared.section}>
-          <h2 className={shared.sectionTitle}>Trạng thái tải đơn hàng</h2>
           <StateView
             kind="error"
-            title="Chưa tải được danh sách đơn hàng"
-            message={initialError ?? "Kết nối đang tạm gián đoạn. Vui lòng thử lại sau ít giây."}
-            actionLabel="Tải lại trang"
+            title="Chưa tải được danh sách đơn hàng."
+            message={initialError ?? "Thử lại sau ít giây."}
+            actionLabel="Tải lại"
             actionHref="/don-hang"
           />
         </section>
-        {suggestedProducts.length > 0 && (
-          <ProductAddonStrip title={`Sản phẩm của ${brandName}`} products={suggestedProducts} />
-        )}
       </div>
     );
   }
@@ -209,18 +190,12 @@ function OrdersClientInner({
   if (viewState === "empty" || initialOrders.length === 0) {
     return (
       <div className={shared.page}>
-        {renderHeader(`Bạn chưa có đơn hàng nào tại ${brandName}.`)}
-        <section
-          className={shared.section}
-          data-rise=""
-          style={{ "--i": 3 } as React.CSSProperties}
-        >
-          <h2 className={shared.sectionTitle}>Lịch sử mua hàng</h2>
+        {renderHeader()}
+        <section className={shared.section}>
           <StateView
             kind="empty"
-            title="Chưa có đơn hàng nào"
-            message={`Mọi đơn hàng bạn đặt tại ${brandName} sẽ được lưu và theo dõi từng chặng tại đây.`}
-            actionLabel="Xem sản phẩm cửa hàng"
+            title="Chưa có đơn hàng nào."
+            actionLabel="Xem sản phẩm"
             actionHref="/san-pham"
           />
         </section>
@@ -233,30 +208,24 @@ function OrdersClientInner({
 
   return (
     <div className={shared.page}>
-      {renderHeader(
-        `Theo dõi hành trình giao hàng, hoàn tất thanh toán VietQR hoặc gửi yêu cầu đổi trả cho các đơn đặt tại ${brandName}.`
-      )}
+      {renderHeader()}
 
       <section className={shared.section}>
-        <div className={shared.sectionHead}>
-          <h2 className={shared.sectionTitle}>Danh sách đơn hàng</h2>
-          <p className={shared.sectionNote}>
-            Hiển thị <strong className="num">{filteredOrders.length}</strong> /{" "}
-            <span className="num">{initialOrders.length}</span> đơn
-          </p>
-        </div>
-
-        <div
-          className={styles.filterControls}
-          data-rise=""
-          style={{ "--i": 2 } as React.CSSProperties}
-        >
-          <div className={styles.tabBar} role="tablist" aria-label="Lọc trạng thái đơn hàng">
+        <div className={styles.tabRailWrap}>
+          <div
+            ref={tabBarRef}
+            className={styles.tabBar}
+            role="tablist"
+            aria-label="Lọc trạng thái đơn hàng"
+          >
             {FILTER_TABS.map((tab) => {
               const isActive = activeTab === tab.key;
               return (
                 <button
                   key={tab.key}
+                  ref={(el) => {
+                    tabRefs.current[tab.key] = el;
+                  }}
                   type="button"
                   role="tab"
                   aria-selected={isActive}
@@ -268,104 +237,105 @@ function OrdersClientInner({
                 </button>
               );
             })}
+            {indicator.width > 0 && (
+              <span
+                className={styles.tabIndicator}
+                aria-hidden="true"
+                style={{
+                  transform: `translateX(${indicator.left}px) scaleX(${indicator.width})`,
+                }}
+              />
+            )}
           </div>
         </div>
 
         {filteredOrders.length === 0 ? (
           <StateView
             kind="empty"
-            title="Không có đơn hàng khớp bộ lọc hiện tại"
-            message="Đặt lại bộ lọc để xem toàn bộ lịch sử mua hàng của bạn."
-            actionLabel="Xem tất cả đơn hàng"
+            title="Không có đơn hàng ở trạng thái này."
+            actionLabel="Xem tất cả"
             onAction={() => setActiveTab("all")}
           />
         ) : (
-          <div className={styles.orderList}>
-            {filteredOrders.map((order, idx) => {
+          <div className={styles.orderList} data-reveal="rows">
+            {filteredOrders.map((order) => {
               const meta = ORDER_STATUS_META[order.status];
               const payMeta = order.paymentStatus ? PAYMENT_STATUS_META[order.paymentStatus] : null;
               const pendingQr = isUnpaidVietQr(order);
+              const visibleThumbs = order.items.slice(0, 3);
+              const extraCount = Math.max(0, order.items.length - visibleThumbs.length);
 
               return (
                 <article
                   key={order.id}
                   className={`${styles.orderCard} ${pendingQr ? styles.orderCardPending : ""}`}
-                  data-rise=""
-                  style={{ "--i": Math.min(idx + 3, 7) } as React.CSSProperties}
                 >
-                  <div className={styles.orderTop}>
-                    <div className={styles.orderMetaLeft}>
+                  <div className={styles.thumbStrip}>
+                    {visibleThumbs.map((item) => (
+                      <Link
+                        key={item.skuCode}
+                        href={`/don-hang/${order.id}`}
+                        className={`${styles.thumbLink} ${
+                          visibleThumbs.length > 1 ? styles.thumbLinkSmall : ""
+                        }`}
+                      >
+                        <img
+                          src={item.image || "/products/ao-thun-cotton-trang.png"}
+                          alt={item.productName}
+                          width={896}
+                          height={1200}
+                          loading="lazy"
+                          className={styles.thumbImg}
+                        />
+                      </Link>
+                    ))}
+                    {extraCount > 0 && (
+                      <span className={`${styles.thumbMore} num`}>+{extraCount}</span>
+                    )}
+                  </div>
+
+                  <div className={styles.orderBody}>
+                    <div className={styles.orderHeadRow}>
                       <Link href={`/don-hang/${order.id}`} className={`${styles.orderCode} num`}>
                         {order.orderCode}
                       </Link>
-                      <span className={styles.shopLink}>{brandName}</span>
-                      {order.createdAt && (
-                        <span className={`${styles.orderDate} num`}>
-                          {formatDateTimeVi(order.createdAt)}
-                        </span>
-                      )}
-                    </div>
-
-                    <div className={styles.orderMetaRight}>
-                      <span className={styles.payNote}>
-                        {PAYMENT_METHOD_LABELS[order.paymentMethod]}
+                      <span className={`${shared.statusTag} ${statusToneClass(meta.tone)}`}>
+                        {meta.label}
                       </span>
                       {payMeta && (
-                        <span className={`${shared.statusTag} ${toneClass(payMeta.tone)}`}>
+                        <span className={`${shared.statusTag} ${statusToneClass(payMeta.tone)}`}>
                           {payMeta.label}
                         </span>
                       )}
-                      <span className={`${shared.statusTag} ${toneClass(meta.tone)}`}>
-                        {meta.label}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className={styles.itemsWrap}>
-                    {order.items.map((item) => {
-                      const productHref = `/san-pham/${item.productSlug || item.productId}`;
-                      return (
-                        <div key={item.skuCode} className={styles.itemLine}>
-                          <Link href={productHref} className={styles.itemThumbLink}>
-                            <img
-                              src={item.image || "/products/ao-thun-cotton-trang.png"}
-                              alt={item.productName}
-                              width={896}
-                              height={1200}
-                              loading="lazy"
-                              className={styles.itemThumb}
-                            />
-                          </Link>
-                          <div className={styles.itemDetails}>
-                            <Link href={productHref} className={styles.itemTitle}>
-                              {item.productName}
-                            </Link>
-                            <span className={styles.itemVariant}>
-                              {item.colorName}
-                              {item.size ? ` · Size ${item.size}` : ""} · SL{" "}
-                              <span className="num">{item.quantity}</span> ×{" "}
-                              <span className="num">{formatVnd(item.unitPrice)}</span>
-                            </span>
-                          </div>
-                          <span className={`${styles.itemSubtotal} num`}>
-                            {formatVnd(item.lineTotal)}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  <div className={styles.orderFoot}>
-                    <div className={styles.totalCluster}>
-                      <span className={styles.totalLabel}>Tổng thanh toán</span>
-                      <span className={`${styles.totalValue} num`}>{formatVnd(order.total)}</span>
-                      {order.trackingCode && (
-                        <span className={`${styles.trackingCode} num`}>
-                          {order.carrier ? `${order.carrier} · ` : ""}Vận đơn: {order.trackingCode}
+                      {order.createdAt && (
+                        <span className={styles.orderDate}>
+                          {renderOrderDateTime(order.createdAt)}
                         </span>
                       )}
                     </div>
 
+                    <div className={styles.itemSummaryList}>
+                      {order.items.map((item) => (
+                        <div key={item.skuCode} className={styles.itemSummaryLine}>
+                          <span className={styles.itemSummaryName}>{item.productName}</span>
+                          <span className={styles.itemSummaryMeta}>
+                            <span>{item.colorName}</span>
+                            {item.size && <span>Size {item.size}</span>}
+                            <span className="num">×{item.quantity}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className={styles.metaFootLine}>
+                      <span>{PAYMENT_METHOD_LABELS[order.paymentMethod]}</span>
+                      {order.carrier && <span>{order.carrier}</span>}
+                      {order.trackingCode && <span className="num">{order.trackingCode}</span>}
+                    </div>
+                  </div>
+
+                  <div className={styles.orderAside}>
+                    <span className={`${styles.totalVal} num`}>{formatVnd(order.total)}</span>
                     <div className={styles.actionRow}>
                       {pendingQr && order.paymentId && (
                         <Button
@@ -382,10 +352,11 @@ function OrdersClientInner({
                       <Button
                         variant="secondary"
                         size="sm"
-                        disabled={reorderingId === order.id}
+                        loading={reorderingId === order.id}
+                        loadingLabel="Đang thêm"
                         onClick={() => void handleReorder(order)}
                       >
-                        {reorderingId === order.id ? "Đang thêm..." : "Mua lại"}
+                        Mua lại
                       </Button>
                     </div>
                   </div>
@@ -397,11 +368,7 @@ function OrdersClientInner({
       </section>
 
       {suggestedProducts.length > 0 && (
-        <ProductAddonStrip
-          title={`Mua thêm từ ${brandName}`}
-          subtitle="Sản phẩm sẵn hàng tại kho của cửa hàng"
-          products={suggestedProducts}
-        />
+        <ProductAddonStrip title={`Mua thêm từ ${brandName}`} products={suggestedProducts} />
       )}
     </div>
   );
@@ -412,7 +379,7 @@ export function OrdersClientView(props: OrdersClientViewProps) {
     <Suspense
       fallback={
         <div className={shared.page}>
-          <StateView kind="loading" title="Đang tải danh sách đơn hàng..." rows={5} />
+          <StateView kind="loading" skeletonVariant="table" title="Đang tải đơn hàng..." rows={5} />
         </div>
       }
     >

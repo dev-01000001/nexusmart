@@ -1,0 +1,239 @@
+/* Split-screen auth frame for /dang-nhap and /dang-ky.
+   Left half: role-switching color stage + clip-path photo.
+   Right half: minimalist form host with horizontal OTP step transition. */
+
+.split {
+  width: 100%;
+  min-height: 100svh;
+  padding-top: 68px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: stretch;
+  background: var(--bg-1);
+}
+
+.stageCol {
+  padding: clamp(28px, 4vw, 52px) clamp(24px, 3.6vw, 48px) clamp(28px, 4vw, 48px) var(--margin);
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 24px;
+  min-width: 0;
+  transition:
+    background-color 420ms var(--ease-out),
+    color 300ms var(--ease-out);
+}
+
+.stageCol[data-role="buyer"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.stageTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.roleSwitch {
+  display: inline-flex;
+  padding: 4px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  gap: 4px;
+}
+
+.roleBtn {
+  min-height: 40px;
+  padding: 0 18px;
+  border-radius: var(--radius-pill);
+  font-size: 14px;
+  font-weight: 600;
+  color: color-mix(in srgb, currentColor 80%, transparent);
+  transition:
+    background-color var(--t-hover) var(--ease-out),
+    color var(--t-hover) var(--ease-out);
+}
+
+.roleBtnActive {
+  background: var(--bg-0);
+  color: var(--ink-1);
+}
+
+.shopPill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 14px;
+  background: var(--band-dark-surface);
+  color: var(--band-dark-ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.shopSlug {
+  font-size: 13px;
+  color: var(--band-dark-accent);
+}
+
+.stageMedia {
+  position: relative;
+  width: 100%;
+  flex: 1;
+  min-height: clamp(240px, 40svh, 440px);
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  overflow: hidden;
+}
+
+.stageLayer {
+  position: absolute;
+  inset: 0;
+  clip-path: inset(0 100% 0 0);
+  opacity: 0;
+  transition:
+    clip-path 560ms var(--ease-expo),
+    opacity 360ms var(--ease-out);
+}
+
+.stageLayerActive {
+  clip-path: inset(0 0 0 0);
+  opacity: 1;
+  z-index: 1;
+}
+
+.coverImg {
+  object-fit: cover;
+  object-position: center 22%;
+}
+
+.stageBottom {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.stageStatement {
+  font-size: clamp(1.5rem, 2.6vw, 2.35rem);
+  line-height: 1.14;
+  color: inherit;
+  max-width: 22ch;
+}
+
+.stageCta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 22px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-size: 14px;
+  font-weight: 600;
+  transition: transform var(--t-press) var(--ease-out);
+}
+
+.stageCta:active {
+  transform: scale(0.97);
+}
+
+/* Right half: minimalist form */
+.formCol {
+  background: var(--bg-1);
+  padding: clamp(32px, 5vw, 68px) var(--margin);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+
+.formInner {
+  width: 100%;
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+
+.formHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.title {
+  font-size: clamp(2rem, 3.6vw, 3.2rem);
+  color: var(--ink-1);
+}
+
+.formSlot {
+  width: 100%;
+  overflow: hidden;
+}
+
+.formSlot[data-slide="forward"] form {
+  animation: authSlideForward 340ms var(--ease-expo) both;
+}
+
+.formSlot[data-slide="back"] form {
+  animation: authSlideBack 300ms var(--ease-out) both;
+}
+
+@keyframes authSlideForward {
+  from {
+    opacity: 0;
+    transform: translateX(32px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes authSlideBack {
+  from {
+    opacity: 0;
+    transform: translateX(-32px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: auto;
+    padding-top: 64px;
+  }
+
+  .stageCol {
+    padding: 16px var(--margin);
+    gap: 12px;
+  }
+
+  .stageMedia {
+    display: none;
+  }
+
+  .stageBottom {
+    gap: 10px;
+  }
+
+  .stageStatement {
+    font-size: 14px;
+    line-height: 1.45;
+    max-width: none;
+  }
+
+  .formCol {
+    padding: 24px var(--margin) 56px;
+  }
+}

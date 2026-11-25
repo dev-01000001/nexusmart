@@ -1,6 +1,6 @@
 "use client";
 
-import React, { Suspense, useEffect, useMemo, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -9,15 +9,25 @@ import {
   PAYMENT_STATUS_META,
   type OrderLineItem,
   type OrderStatus,
-  type StatusTone,
 } from "@/data/orders";
 import type { Product } from "@/data/products";
 import { ApiError, api } from "@/lib/api";
-import { formatDateTimeVi, formatSignedVnd, formatVnd } from "@/lib/format";
+import { formatSignedVnd, formatVnd } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";
-import { Button, IconMinus, IconPlus, IconTrash, StateView } from "@/components";
+import {
+  Button,
+  IconCheck,
+  IconChevronDown,
+  IconClose,
+  IconMinus,
+  IconPlus,
+  IconTrash,
+  StateView,
+} from "@/components";
+import { useModalFocusTrap } from "@/components/modalFocus";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
-import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
+import { renderOrderDateTime, statusToneClass } from "@/features/commerce/orderDisplay";
+import { usePageStateParam } from "@/features/commerce/usePageStateParam";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./OrderDetailClientView.module.css";
 import type { OrderView } from "./orderView";
@@ -40,25 +50,21 @@ const STANDARD_STEPS: Array<{ status: OrderStatus; label: string }> = [
 ];
 
 const CANCEL_REASONS = [
-  "Thay đổi địa chỉ nhận hàng sang tỉnh/phường khác",
-  "Muốn đổi size hoặc chọn thêm màu khác",
-  "Quên áp mã giảm giá của cửa hàng",
-  "Đặt trùng đơn hàng, không còn nhu cầu",
+  "Đổi địa chỉ nhận hàng",
+  "Đổi size hoặc màu khác",
+  "Quên áp mã giảm giá",
+  "Không còn nhu cầu mua",
 ];
 
 const RETURN_REASONS = [
-  "Cần đổi size khác để mặc vừa vai hơn",
-  "Sản phẩm có lỗi đường may hoặc bề mặt vải",
-  "Giao nhầm màu sắc hoặc nhầm mẫu so với đơn đặt",
-  "Chất liệu thực tế chưa phù hợp nhu cầu sử dụng",
+  "Đổi size khác",
+  "Sản phẩm có lỗi may hoặc bề mặt vải",
+  "Giao nhầm màu hoặc nhầm mẫu",
+  "Chất liệu chưa phù hợp nhu cầu",
 ];
 
-function toneClass(tone: StatusTone): string {
-  if (tone === "pos") return shared.tonePos;
-  if (tone === "warn") return shared.toneWarn;
-  if (tone === "neg") return shared.toneNeg;
-  return shared.toneNeutral;
-}
+const RETURN_STEP_LABELS = ["Chọn sản phẩm", "Lý do & ảnh", "Xác nhận"] as const;
+const RETURN_STEP_GUARD_MS = 600;
 
 interface ReturnItemSelection {
   selected: boolean;
@@ -101,6 +107,8 @@ function OrderDetailInner({
   const [confirmError, setConfirmError] = useState<string | null>(null);
 
   const [returns, setReturns] = useState<ReturnRequestView[]>([]);
+  const [returnSheetOpen, setReturnSheetOpen] = useState(false);
+  const [returnStep, setReturnStep] = useState<0 | 1 | 2>(0);
   const [returnSelections, setReturnSelections] = useState<Record<string, ReturnItemSelection>>(
     () => buildInitialSelections(initialOrder?.items ?? [])
   );
@@ -115,12 +123,21 @@ function OrderDetailInner({
   const [retryingPayment, setRetryingPayment] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const [reordering, setReordering] = useState(false);
+  const returnSheetRef = useRef<HTMLDivElement | null>(null);
+  const returnStepEnteredAtRef = useRef(-Infinity);
+
+  const closeReturnSheet = useCallback(() => setReturnSheetOpen(false), []);
 
   useEffect(() => {
     setReturnSelections(buildInitialSelections(order?.items ?? []));
   }, [order?.id, order?.items]);
 
-  // Fetch existing return requests for this order; silently ignore 404/503 if not deployed yet.
+  useModalFocusTrap({
+    open: returnSheetOpen && Boolean(order?.canRequestReturn),
+    containerRef: returnSheetRef,
+    onEscape: closeReturnSheet,
+  });
+
   useEffect(() => {
     if (!order?.id || viewState) return;
     const controller = new AbortController();
@@ -139,7 +156,7 @@ function OrderDetailInner({
           setReturns(normalizeReturnRequests(data));
         }
       } catch {
-        // Silently ignore network/abort/503 errors so order detail remains responsive.
+        // Non-blocking
       }
     };
     void loadReturns();
@@ -173,10 +190,6 @@ function OrderDetailInner({
     return { count, totalQty, estimatedVnd };
   }, [order, returnSelections]);
 
-  useRevealOnScroll(
-    `${viewState ?? "live"}-${order?.id ?? "none"}-${order?.status ?? ""}-${order?.paymentStatus ?? ""}-${returns.length}`
-  );
-
   const handleReorder = async () => {
     if (!order) return;
     setReordering(true);
@@ -198,10 +211,10 @@ function OrderDetailInner({
         if (res.ok) added += 1;
       }
       if (added > 0) {
-        showToast(`Đã đưa lại ${added} sản phẩm vào giỏ hàng.`);
+        showToast(`Đã thêm ${added} sản phẩm vào giỏ hàng.`);
         router.push("/gio-hang");
       } else {
-        showToast("Sản phẩm trong đơn hiện không còn sẵn hàng để mua lại.");
+        showToast("Sản phẩm trong đơn hiện hết hàng.");
       }
     } finally {
       setReordering(false);
@@ -215,19 +228,12 @@ function OrderDetailInner({
     try {
       const res = await api<{ payment: { payment_id: string } }>(
         `/api/payments/${encodeURIComponent(order.paymentId)}/retry`,
-        {
-          method: "POST",
-          body: { method: "VIETQR" },
-        }
+        { method: "POST", body: { method: "VIETQR" } }
       );
       const nextId = res.payment?.payment_id || order.paymentId;
       router.push(`/thanh-toan/cho/${encodeURIComponent(nextId)}`);
     } catch (err) {
-      setRetryError(
-        err instanceof ApiError
-          ? err.message
-          : "Chưa tạo lại được mã VietQR lúc này. Bạn vui lòng thử lại."
-      );
+      setRetryError(err instanceof ApiError ? err.message : "Chưa tạo lại được mã VietQR.");
     } finally {
       setRetryingPayment(false);
     }
@@ -241,18 +247,13 @@ function OrderDetailInner({
     try {
       const res = await api<{ order: OrderView }>(
         `/api/orders/${encodeURIComponent(order.id)}/cancel`,
-        {
-          method: "POST",
-          body: { reason: cancelReason },
-        }
+        { method: "POST", body: { reason: cancelReason } }
       );
       setOrder(res.order);
-      showToast(`Đã hủy đơn hàng ${res.order.orderCode}.`);
+      showToast(`Đã hủy đơn ${res.order.orderCode}.`);
       router.refresh();
     } catch (err) {
-      setCancelError(
-        err instanceof ApiError ? err.message : "Chưa hủy được đơn hàng lúc này. Vui lòng thử lại."
-      );
+      setCancelError(err instanceof ApiError ? err.message : "Chưa hủy được đơn hàng.");
     } finally {
       setCancelling(false);
     }
@@ -268,12 +269,10 @@ function OrderDetailInner({
         { method: "POST" }
       );
       setOrder(res.order);
-      showToast(`Đã xác nhận nhận hàng. Cảm ơn bạn đã mua sắm tại ${brandName}.`);
+      showToast("Đã xác nhận nhận hàng.");
       router.refresh();
     } catch (err) {
-      setConfirmError(
-        err instanceof ApiError ? err.message : "Chưa xác nhận được lúc này. Bạn vui lòng thử lại."
-      );
+      setConfirmError(err instanceof ApiError ? err.message : "Chưa xác nhận được lúc này.");
     } finally {
       setConfirming(false);
     }
@@ -298,10 +297,7 @@ function OrderDetailInner({
     setReturnSelections((prev) => {
       const current = prev[skuCode] ?? { selected: true, quantity: maxQty };
       const nextQty = Math.max(1, Math.min(maxQty, current.quantity + delta));
-      return {
-        ...prev,
-        [skuCode]: { selected: true, quantity: nextQty },
-      };
+      return { ...prev, [skuCode]: { selected: true, quantity: nextQty } };
     });
   };
 
@@ -309,36 +305,59 @@ function OrderDetailInner({
     setPhotoError(null);
     const trimmed = photoInput.trim();
     if (!trimmed) {
-      setPhotoError("Vui lòng nhập đường dẫn ảnh minh chứng trước khi thêm.");
+      setPhotoError("Nhập đường dẫn ảnh trước khi thêm.");
       return;
     }
     if (returnPhotos.length >= MAX_RETURN_PHOTOS) {
-      setPhotoError(`Bạn chỉ có thể đính kèm tối đa ${MAX_RETURN_PHOTOS} ảnh minh chứng.`);
+      setPhotoError(`Tối đa ${MAX_RETURN_PHOTOS} ảnh.`);
       return;
     }
     const safeUrl = sanitizeReturnPhotoUrl(trimmed);
     if (!safeUrl) {
-      setPhotoError(
-        "Đường dẫn ảnh không hợp lệ. Chỉ chấp nhận ảnh nội bộ (/...) hoặc liên kết https://."
-      );
+      setPhotoError("Chỉ chấp nhận đường dẫn /... hoặc https://.");
       return;
     }
     if (returnPhotos.includes(safeUrl)) {
-      setPhotoError("Ảnh này đã có trong danh sách đính kèm.");
+      setPhotoError("Ảnh này đã được thêm.");
       return;
     }
     setReturnPhotos((prev) => [...prev, safeUrl]);
     setPhotoInput("");
   };
 
-  const handleRemoveReturnPhoto = (urlToRemove: string) => {
-    setPhotoError(null);
-    setReturnPhotos((prev) => prev.filter((u) => u !== urlToRemove));
+  const handleAdvanceReturnStep = () => {
+    const now = performance.now();
+    if (now - returnStepEnteredAtRef.current < RETURN_STEP_GUARD_MS) return;
+    setReturnError(null);
+    if (returnStep === 0) {
+      if (selectedReturnSummary.count === 0) {
+        setReturnError("Chọn ít nhất 1 sản phẩm.");
+        return;
+      }
+      returnStepEnteredAtRef.current = now;
+      setReturnStep(1);
+      return;
+    }
+    if (returnStep === 1) {
+      if (returnDetail.trim().length < 5) {
+        setReturnError("Mô tả tình trạng sản phẩm (tối thiểu 5 ký tự).");
+        return;
+      }
+      returnStepEnteredAtRef.current = now;
+      setReturnStep(2);
+    }
   };
 
   const handleReturnSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!order) return;
+    if (
+      returnStep !== 2 ||
+      !order ||
+      submittingReturn ||
+      performance.now() - returnStepEnteredAtRef.current < RETURN_STEP_GUARD_MS
+    ) {
+      return;
+    }
 
     const selectedItems: ReturnRequestItem[] = [];
     for (const item of order.items) {
@@ -352,15 +371,15 @@ function OrderDetailInner({
     }
 
     if (selectedItems.length === 0) {
-      setReturnError("Vui lòng chọn ít nhất 1 sản phẩm cần đổi trả.");
+      setReturnError("Chọn ít nhất 1 sản phẩm.");
+      setReturnStep(0);
       return;
     }
 
     const cleanNote = returnDetail.trim();
     if (cleanNote.length < 5) {
-      setReturnError(
-        "Vui lòng mô tả ngắn tình trạng sản phẩm hoặc size cần đổi (tối thiểu 5 ký tự)."
-      );
+      setReturnError("Mô tả tình trạng sản phẩm (tối thiểu 5 ký tự).");
+      setReturnStep(1);
       return;
     }
 
@@ -378,14 +397,10 @@ function OrderDetailInner({
     setReturnError(null);
     setSubmittingReturn(true);
     try {
-      const res = await api<{
-        return_request?: unknown;
-        order?: OrderView | null;
-      }>(`/api/orders/${encodeURIComponent(order.id)}/returns`, {
-        method: "POST",
-        body: validation.data,
-      });
-
+      const res = await api<{ return_request?: unknown; order?: OrderView | null }>(
+        `/api/orders/${encodeURIComponent(order.id)}/returns`,
+        { method: "POST", body: validation.data }
+      );
       const created = normalizeReturnRequest(res.return_request);
       if (created) {
         setReturns((prev) => [created, ...prev.filter((r) => r.id !== created.id)]);
@@ -397,14 +412,13 @@ function OrderDetailInner({
       setReturnPhotos([]);
       setPhotoInput("");
       setPhotoError(null);
+      returnStepEnteredAtRef.current = -Infinity;
+      setReturnStep(0);
+      setReturnSheetOpen(false);
       showToast(`Đã gửi yêu cầu đổi trả tới ${brandName}.`);
       router.refresh();
     } catch (err) {
-      setReturnError(
-        err instanceof ApiError
-          ? err.message
-          : "Chưa gửi được yêu cầu đổi trả lúc này. Vui lòng thử lại."
-      );
+      setReturnError(err instanceof ApiError ? err.message : "Chưa gửi được yêu cầu đổi trả.");
     } finally {
       setSubmittingReturn(false);
     }
@@ -424,18 +438,7 @@ function OrderDetailInner({
     return (
       <div className={shared.page}>
         {renderBreadcrumb()}
-        <section className={shared.pageHeader}>
-          <div className={shared.headerLeadGroup}>
-            <h1 className={shared.pageTitle}>Chi tiết đơn hàng</h1>
-            <p className={styles.detailLead}>
-              Đang tải hành trình giao hàng và thông tin thanh toán cho đơn hàng này.
-            </p>
-          </div>
-        </section>
-        <section className={shared.section}>
-          <h2 className={shared.sectionTitle}>Thông tin đơn</h2>
-          <StateView kind="loading" title="Đang tải chi tiết đơn hàng..." rows={5} />
-        </section>
+        <StateView kind="loading" skeletonVariant="detail" title="Đang tải đơn hàng..." rows={5} />
       </div>
     );
   }
@@ -444,26 +447,13 @@ function OrderDetailInner({
     return (
       <div className={shared.page}>
         {renderBreadcrumb()}
-        <section className={shared.pageHeader}>
-          <div className={shared.headerLeadGroup}>
-            <h1 className={shared.pageTitle}>Chi tiết đơn hàng</h1>
-            <p className={styles.detailLead}>
-              Không thể lấy dữ liệu mới nhất cho mã đơn hàng này vào lúc này.
-            </p>
-          </div>
-        </section>
-        <section className={shared.section}>
-          <h2 className={shared.sectionTitle}>Trạng thái kết nối</h2>
-          <StateView
-            kind="error"
-            title="Chưa thể tải chi tiết đơn hàng"
-            message={
-              initialError ?? "Hệ thống theo dõi đơn hàng đang tạm gián đoạn. Vui lòng thử tải lại."
-            }
-            actionLabel="Quay lại danh sách đơn"
-            actionHref="/don-hang"
-          />
-        </section>
+        <StateView
+          kind="error"
+          title="Chưa thể tải chi tiết đơn hàng."
+          message={initialError ?? undefined}
+          actionLabel="Về danh sách đơn"
+          actionHref="/don-hang"
+        />
       </div>
     );
   }
@@ -472,24 +462,12 @@ function OrderDetailInner({
     return (
       <div className={shared.page}>
         {renderBreadcrumb()}
-        <section className={shared.pageHeader}>
-          <div className={shared.headerLeadGroup}>
-            <h1 className={shared.pageTitle}>Không tìm thấy đơn</h1>
-            <p className={styles.detailLead}>
-              Mã đơn hàng bạn mở không thuộc tài khoản hiện tại tại {brandName}.
-            </p>
-          </div>
-        </section>
-        <section className={shared.section}>
-          <h2 className={shared.sectionTitle}>Trạng thái tra cứu</h2>
-          <StateView
-            kind="empty"
-            title="Không tìm thấy đơn hàng tương ứng"
-            message="Quay lại danh sách đơn hàng của tài khoản để kiểm tra lại."
-            actionLabel="Về danh sách đơn hàng"
-            actionHref="/don-hang"
-          />
-        </section>
+        <StateView
+          kind="empty"
+          title="Không tìm thấy đơn hàng này."
+          actionLabel="Về danh sách đơn"
+          actionHref="/don-hang"
+        />
       </div>
     );
   }
@@ -503,6 +481,7 @@ function OrderDetailInner({
     Boolean(order.paymentId);
   const currentStepIdx = STANDARD_STEPS.findIndex((s) => s.status === order.status);
   const isTerminalSpecial = order.status === "da_huy" || order.status === "yeu_cau_tra_hang";
+  const progressFraction = currentStepIdx <= 0 ? 0 : currentStepIdx / (STANDARD_STEPS.length - 1);
 
   return (
     <div className={shared.page}>
@@ -510,21 +489,29 @@ function OrderDetailInner({
 
       <section className={shared.pageHeader}>
         <div className={shared.headerLeadGroup}>
-          <h1 className={`${shared.pageTitle} lines num`}>
+          <h1 className={`${styles.detailTitle} lines`}>
             <span className="line">
               <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
-                Chi tiết đơn {order.orderCode}
+                Chi tiết đơn{" "}
+              </span>
+            </span>
+            <span className="line">
+              <span
+                data-line=""
+                style={{ "--i": 1 } as React.CSSProperties}
+                className={`${styles.detailOrderCode} type-tight num`}
+              >
+                {order.orderCode}
               </span>
             </span>
           </h1>
-          <p className={styles.detailLead} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
-            Đơn hàng tại <strong>{brandName}</strong>
-            {order.createdAt ? (
-              <>
-                , đặt lúc <span className="num">{formatDateTimeVi(order.createdAt)}</span>
-              </>
-            ) : null}
-            . Theo dõi giao nhận và hỗ trợ sau mua.
+          <p
+            className={`${shared.pageLead} ${styles.leadMetaRow}`}
+            data-rise=""
+            style={{ "--i": 2 } as React.CSSProperties}
+          >
+            <span>{brandName}</span>
+            {order.createdAt ? renderOrderDateTime(order.createdAt) : null}
           </p>
         </div>
 
@@ -533,21 +520,57 @@ function OrderDetailInner({
           data-rise=""
           style={{ "--i": 2 } as React.CSSProperties}
         >
+          <span className={`${shared.statusTag} ${statusToneClass(statusMeta.tone)}`}>
+            {statusMeta.label}
+          </span>
           {payMeta && (
-            <span className={`${shared.statusTag} ${toneClass(payMeta.tone)}`}>
+            <span className={`${shared.statusTag} ${statusToneClass(payMeta.tone)}`}>
               {payMeta.label}
             </span>
           )}
-          <span className={`${shared.statusTag} ${toneClass(statusMeta.tone)}`}>
-            {statusMeta.label}
-          </span>
+          {isUnpaidQr && (
+            <Button
+              variant="primary"
+              size="md"
+              href={`/thanh-toan/cho/${encodeURIComponent(order.paymentId)}`}
+            >
+              Thanh toán VietQR
+            </Button>
+          )}
+          {order.canConfirmReceived && (
+            <Button
+              variant="primary"
+              size="md"
+              loading={confirming}
+              loadingLabel="Đang xác nhận"
+              onClick={() => void handleConfirmReceived()}
+            >
+              Đã nhận được hàng
+            </Button>
+          )}
+          {order.canRequestReturn && (
+            <Button
+              variant="secondary"
+              size="md"
+              onClick={() => {
+                returnStepEnteredAtRef.current = -Infinity;
+                setReturnStep(0);
+                setReturnError(null);
+                setPhotoError(null);
+                setReturnSheetOpen(true);
+              }}
+            >
+              Yêu cầu đổi trả
+            </Button>
+          )}
           <Button
             variant="ink"
             size="md"
-            disabled={reordering}
+            loading={reordering}
+            loadingLabel="Đang thêm"
             onClick={() => void handleReorder()}
           >
-            {reordering ? "Đang thêm..." : "Mua lại"}
+            Mua lại
           </Button>
         </div>
       </section>
@@ -556,132 +579,117 @@ function OrderDetailInner({
         <div className={styles.detailGrid}>
           <div className={styles.mainCol}>
             {isUnpaidQr && (
-              <div
-                className={styles.vietQrBanner}
-                role="region"
-                aria-label="Hoàn tất thanh toán VietQR"
-                data-rise=""
-                style={{ "--i": 2 } as React.CSSProperties}
-              >
-                <div className={styles.notifyHead}>
-                  <strong>Đơn {order.orderCode} đang chờ hoàn tất thanh toán VietQR</strong>
-                  <span className={`${shared.statusTag} ${shared.toneWarn} num`}>
-                    Cần thanh toán: {formatVnd(order.total)}
-                  </span>
-                </div>
-                <p className={styles.actionPanelDesc}>
-                  Mở trang quét mã VietQR để hoàn tất chuyển khoản
-                  {order.paymentDueAt ? ` trước ${formatDateTimeVi(order.paymentDueAt)}` : ""}. Hệ
-                  thống sẽ tự xác nhận đơn ngay khi nhận được thanh toán.
-                </p>
-                {retryError && (
-                  <p className={shared.fieldError} role="alert">
-                    {retryError}
+              <div className={styles.actionBanner} role="region" aria-label="Thanh toán VietQR">
+                <div className={styles.actionBannerCopy}>
+                  <p className={styles.actionBannerTitle}>
+                    <span>Chờ thanh toán VietQR</span>
+                    <span className="num">{formatVnd(order.total)}</span>
                   </p>
-                )}
+                  {order.paymentDueAt && (
+                    <p className={styles.actionBannerSub}>
+                      Hạn trước {renderOrderDateTime(order.paymentDueAt)}.
+                    </p>
+                  )}
+                  {retryError && (
+                    <p className={shared.fieldError} role="alert">
+                      {retryError}
+                    </p>
+                  )}
+                </div>
                 <div className={shared.formActions}>
                   <Button
                     variant="primary"
                     size="md"
                     href={`/thanh-toan/cho/${encodeURIComponent(order.paymentId)}`}
                   >
-                    Mở trang thanh toán VietQR
+                    Mở mã VietQR
                   </Button>
                   {order.paymentStatus === "thanh_toan_that_bai" && (
                     <Button
                       variant="secondary"
                       size="md"
-                      disabled={retryingPayment}
+                      loading={retryingPayment}
+                      loadingLabel="Đang tạo mã"
                       onClick={() => void handleRetryVietQr()}
                     >
-                      {retryingPayment ? "Đang tạo mã mới..." : "Tạo lại mã VietQR"}
+                      Tạo mã mới
                     </Button>
                   )}
                 </div>
               </div>
             )}
 
+            {confirmError && (
+              <p className={`${shared.feedbackBox} ${shared.feedbackError}`} role="alert">
+                {confirmError}
+              </p>
+            )}
+
             <div className={styles.orderSheet}>
-              <div data-rise="" style={{ "--i": 2 } as React.CSSProperties}>
+              <div>
                 <div className={shared.sectionHead}>
-                  <h2 className={shared.sectionTitle}>Tiến trình đơn hàng</h2>
+                  <h2 className={shared.sectionTitle}>Trạng thái đơn hàng</h2>
                   {order.updatedAt && (
-                    <span className={`${shared.sectionNote} num`}>
-                      Cập nhật: {formatDateTimeVi(order.updatedAt)}
+                    <span className={shared.sectionNote}>
+                      {renderOrderDateTime(order.updatedAt)}
                     </span>
                   )}
                 </div>
 
                 {!isTerminalSpecial ? (
-                  <div className={styles.milestoneGrid}>
-                    {STANDARD_STEPS.map((step, idx) => {
-                      const done = currentStepIdx > idx;
-                      const current = currentStepIdx === idx;
-                      return (
-                        <div
-                          key={step.status}
-                          className={`${styles.milestoneStep} ${
-                            current ? styles.milestoneCurrent : done ? styles.milestoneDone : ""
-                          }`}
-                        >
-                          <span className={styles.milestoneLabel}>{step.label}</span>
-                          <span className={styles.milestoneSub}>
-                            {current ? "Hiện tại" : done ? "Hoàn tất" : "Sắp tới"}
-                          </span>
-                        </div>
-                      );
-                    })}
+                  <div className={styles.stepperContainer}>
+                    <div className={styles.stepperTrack} aria-hidden="true">
+                      <span
+                        className={styles.stepperTrackFill}
+                        style={{ transform: `scaleX(${progressFraction})` }}
+                      />
+                    </div>
+                    <ol className={styles.stepperWrap} aria-label="Tiến trình giao hàng">
+                      {STANDARD_STEPS.map((step, idx) => {
+                        const done = currentStepIdx > idx;
+                        const current = currentStepIdx === idx;
+                        return (
+                          <li
+                            key={step.status}
+                            className={`${styles.stepNode} ${
+                              done ? styles.stepNodeDone : current ? styles.stepNodeCurrent : ""
+                            }`}
+                            aria-current={current ? "step" : undefined}
+                          >
+                            <span className={styles.stepDot} aria-hidden="true">
+                              {done ? (
+                                <IconCheck size={14} />
+                              ) : current ? (
+                                <span className={styles.stepCurrentPip} />
+                              ) : null}
+                            </span>
+                            <span className={styles.stepLabel}>{step.label}</span>
+                          </li>
+                        );
+                      })}
+                    </ol>
                   </div>
                 ) : (
                   <div className={styles.reasonBanner}>
                     <p>
-                      Trạng thái xử lý: <strong>{statusMeta.label}</strong>
+                      <strong>{statusMeta.label}</strong>
                     </p>
                     <p>{order.returnReason ?? order.cancelReason ?? statusMeta.description}</p>
                   </div>
                 )}
-
-                {order.timeline.length > 0 && (
-                  <ol className={styles.eventList}>
-                    {order.timeline
-                      .slice()
-                      .reverse()
-                      .map((ev, idx) => (
-                        <li
-                          key={`${ev.timestamp}-${idx}`}
-                          className={`${styles.eventRow} ${idx === 0 ? styles.eventRowLatest : ""}`}
-                          data-reveal=""
-                        >
-                          <span className={`${styles.eventTime} num`}>
-                            {ev.timestamp ? formatDateTimeVi(ev.timestamp) : ""}
-                          </span>
-                          <div className={styles.eventBody}>
-                            <span className={styles.eventTitle}>{ev.title}</span>
-                            <span className={styles.eventNote}>{ev.note}</span>
-                          </div>
-                        </li>
-                      ))}
-                  </ol>
-                )}
               </div>
 
-              <div
-                className={styles.sheetDivider}
-                data-rise=""
-                style={{ "--i": 3 } as React.CSSProperties}
-              >
+              <div className={styles.sheetDivider}>
                 <div className={shared.sectionHead}>
-                  <h2 className={shared.sectionTitle}>Sản phẩm đã đặt</h2>
-                  <Link href="/san-pham" className={shared.breadcrumbLink}>
-                    Xem thêm tại {brandName}
-                  </Link>
+                  <h2 className={shared.sectionTitle}>Sản phẩm</h2>
+                  <span className={`${shared.sectionNote} num`}>{order.items.length} mục</span>
                 </div>
 
                 <div className={styles.itemStack}>
                   {order.items.map((item) => {
                     const productHref = `/san-pham/${item.productSlug || item.productId}`;
                     return (
-                      <div key={item.skuCode} className={styles.itemRow} data-reveal="">
+                      <div key={item.skuCode} className={styles.itemRow}>
                         <Link href={productHref} className={styles.itemThumbLink}>
                           <img
                             src={item.image || "/products/ao-thun-cotton-trang.png"}
@@ -696,11 +704,11 @@ function OrderDetailInner({
                             {item.productName}
                           </Link>
                           <span className={styles.itemMeta}>
-                            {item.colorName}
-                            {item.size ? ` · Size ${item.size}` : ""}
-                          </span>
-                          <span className={`${styles.itemMeta} num`}>
-                            {formatVnd(item.unitPrice)} × {item.quantity}
+                            <span>{item.colorName}</span>
+                            {item.size && <span>Size {item.size}</span>}
+                            <span className="num">
+                              {formatVnd(item.unitPrice)} × {item.quantity}
+                            </span>
                           </span>
                         </div>
                         <span className={`${styles.itemAmount} num`}>
@@ -714,226 +722,313 @@ function OrderDetailInner({
             </div>
 
             {returns.length > 0 && (
-              <section
-                className={styles.returnSheet}
-                aria-label="Yêu cầu đổi trả và hoàn tiền"
-                data-reveal=""
-              >
+              <section className={styles.returnSheet} aria-label="Yêu cầu đổi trả">
                 <div className={shared.sectionHead} style={{ marginBottom: 0 }}>
-                  <h2 className={shared.sectionTitle}>Yêu cầu đổi trả & hoàn tiền</h2>
-                  <span className={`${shared.sectionNote} num`}>{returns.length} yêu cầu</span>
+                  <h2 className={shared.sectionTitle}>Yêu cầu đổi trả</h2>
+                  <span className={`${shared.sectionNote} num`}>{returns.length}</span>
                 </div>
 
-                <div className={styles.returnRequestList}>
-                  {returns.map((ret) => {
-                    const retMeta = RETURN_STATUS_META[ret.status];
-                    return (
-                      <article key={ret.id} className={styles.returnRequestItem}>
-                        <div className={styles.returnRequestHead}>
-                          <span className={`${shared.statusTag} ${toneClass(retMeta.tone)}`}>
-                            {retMeta.label}
+                {returns.map((ret) => {
+                  const retMeta = RETURN_STATUS_META[ret.status];
+                  return (
+                    <article key={ret.id} className={styles.returnRequestItem}>
+                      <div className={styles.returnRequestHead}>
+                        <span className={`${shared.statusTag} ${statusToneClass(retMeta.tone)}`}>
+                          {retMeta.label}
+                        </span>
+                        {ret.createdAt && (
+                          <span className={shared.sectionNote}>
+                            {renderOrderDateTime(ret.createdAt)}
                           </span>
-                          {ret.createdAt && (
-                            <span className={`${shared.sectionNote} num`}>
-                              Gửi lúc {formatDateTimeVi(ret.createdAt)}
-                            </span>
-                          )}
+                        )}
+                      </div>
+
+                      {ret.items.length > 0 && (
+                        <div>
+                          {ret.items.map((rit, idx) => {
+                            const matched = rit.sku_id
+                              ? itemLookupBySkuId.get(rit.sku_id)
+                              : undefined;
+                            const variantParts = matched
+                              ? [
+                                  matched.colorName,
+                                  matched.size ? `Size ${matched.size}` : "",
+                                ].filter(Boolean)
+                              : [];
+                            return (
+                              <div
+                                key={`${rit.order_item_id || rit.sku_id || idx}`}
+                                className={styles.returnItemSummaryRow}
+                              >
+                                <span>
+                                  {matched
+                                    ? variantParts.length > 0
+                                      ? `${matched.productName} (${variantParts.join(", ")})`
+                                      : matched.productName
+                                    : "Sản phẩm trong đơn"}
+                                </span>
+                                <span className="num">× {rit.quantity}</span>
+                              </div>
+                            );
+                          })}
                         </div>
+                      )}
 
-                        <p className={styles.actionPanelDesc}>{retMeta.description}</p>
+                      {ret.reason && <p className={styles.returnBodyText}>{ret.reason}</p>}
 
-                        {ret.items.length > 0 && (
-                          <div className={styles.returnSubBlock}>
-                            <span className={styles.returnSubLabel}>Sản phẩm yêu cầu đổi trả</span>
-                            <ul className={styles.returnItemSummaryList}>
-                              {ret.items.map((rit, idx) => {
-                                const matched =
-                                  (rit.sku_id ? itemLookupBySkuId.get(rit.sku_id) : undefined) ??
-                                  undefined;
-                                return (
-                                  <li
-                                    key={`${rit.order_item_id || rit.sku_id || idx}`}
-                                    className={styles.returnItemSummaryRow}
-                                  >
-                                    <span>
-                                      {matched
-                                        ? `${matched.productName}${
-                                            matched.colorName ? ` (${matched.colorName}` : ""
-                                          }${matched.size ? `, Size ${matched.size}` : ""}${
-                                            matched.colorName ? ")" : ""
-                                          }`
-                                        : "Sản phẩm trong đơn"}
-                                    </span>
-                                    <span className="num">× {rit.quantity}</span>
-                                  </li>
-                                );
-                              })}
-                            </ul>
-                          </div>
-                        )}
+                      {ret.photos.length > 0 && (
+                        <div className={styles.returnPhotoGrid}>
+                          {ret.photos.map((photoUrl, pIdx) => (
+                            <a
+                              key={photoUrl}
+                              href={photoUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className={styles.returnPhotoThumbLink}
+                            >
+                              <img
+                                src={photoUrl}
+                                alt={`Ảnh đổi trả ${pIdx + 1}`}
+                                className={styles.returnPhotoThumb}
+                                loading="lazy"
+                              />
+                            </a>
+                          ))}
+                        </div>
+                      )}
 
-                        {ret.reason && (
-                          <div className={styles.returnSubBlock}>
-                            <span className={styles.returnSubLabel}>Lý do của bạn</span>
-                            <p className={styles.returnBodyText}>{ret.reason}</p>
-                          </div>
-                        )}
+                      {ret.refundAmountVnd > 0 && (
+                        <div className={styles.returnRefundRow}>
+                          <span>{ret.status === "REFUNDED" ? "Đã hoàn" : "Hoàn dự kiến"}</span>
+                          <strong className="num">{formatVnd(ret.refundAmountVnd)}</strong>
+                        </div>
+                      )}
 
-                        {ret.photos.length > 0 && (
-                          <div className={styles.returnSubBlock}>
-                            <span className={styles.returnSubLabel}>Ảnh minh chứng</span>
-                            <div className={styles.returnPhotoGrid}>
-                              {ret.photos.map((photoUrl, pIdx) => (
-                                <a
-                                  key={photoUrl}
-                                  href={photoUrl}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className={styles.returnPhotoThumbLink}
-                                >
-                                  <img
-                                    src={photoUrl}
-                                    alt={`Ảnh minh chứng đổi trả ${pIdx + 1}`}
-                                    className={styles.returnPhotoThumb}
-                                    loading="lazy"
-                                  />
-                                </a>
-                              ))}
-                            </div>
-                          </div>
-                        )}
+                      {ret.reverseTrackingCode && (
+                        <p className={`${styles.sideMuted} num`}>
+                          Vận đơn hoàn: <strong>{ret.reverseTrackingCode}</strong>
+                        </p>
+                      )}
 
-                        {ret.refundAmountVnd > 0 && (
-                          <div className={styles.returnRefundRow}>
-                            <span>
-                              {ret.status === "REFUNDED"
-                                ? "Số tiền đã hoàn"
-                                : "Số tiền hoàn dự kiến"}
-                            </span>
-                            <strong className={`${styles.returnRefundVal} num`}>
-                              {formatVnd(ret.refundAmountVnd)}
-                            </strong>
-                          </div>
-                        )}
+                      {ret.sellerNote && (
+                        <div className={styles.returnNoteBox}>
+                          <span className={styles.returnSubLabel}>Phản hồi từ {brandName}</span>
+                          <p className={styles.returnBodyText}>{ret.sellerNote}</p>
+                        </div>
+                      )}
 
-                        {ret.reverseTrackingCode && (
-                          <p className={`${styles.returnMetaLine} num`}>
-                            Mã vận đơn hoàn hàng: <strong>{ret.reverseTrackingCode}</strong>
+                      {ret.status === "REJECTED" && (
+                        <div className={`${shared.feedbackBox} ${shared.feedbackWarn}`} role="note">
+                          <p>
+                            <strong>Hướng dẫn tiếp theo:</strong> Xem phản hồi từ {brandName}. Nếu
+                            cần kiểm tra lại, nhắn gian hàng hoặc liên hệ hỗ trợ kèm mã đơn{" "}
+                            <strong className="num">{order.orderCode}</strong>.
                           </p>
-                        )}
-
-                        {ret.sellerNote && (
-                          <div className={styles.returnSellerNote}>
-                            <span className={styles.returnSubLabel}>Phản hồi từ {brandName}</span>
-                            <p className={styles.returnBodyText}>{ret.sellerNote}</p>
-                          </div>
-                        )}
-
-                        {ret.status === "REJECTED" && (
-                          <div className={styles.returnRejectedGuide} role="note">
-                            <p>
-                              <strong>Hướng dẫn tiếp theo:</strong> Vui lòng xem kỹ phản hồi từ{" "}
-                              {brandName}. Nếu sản phẩm vẫn còn nguyên tem mác hoặc có lỗi cần kiểm
-                              tra thêm, bạn có thể nhắn trực tiếp cho gian hàng hoặc liên hệ bộ phận
-                              hỗ trợ khách hàng kèm mã đơn{" "}
-                              <strong className="num">{order.orderCode}</strong> để được xem xét
-                              lại.
-                            </p>
-                          </div>
-                        )}
-                      </article>
-                    );
-                  })}
-                </div>
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
               </section>
             )}
 
-            {order.canConfirmReceived && (
-              <div className={styles.unboxedSection} data-reveal="">
-                <h2 className={shared.sectionTitle}>Xác nhận đã nhận hàng</h2>
-                <p className={styles.actionPanelDesc}>
-                  Nếu bạn đã kiểm tra đủ sản phẩm và hài lòng với kiện hàng, hãy xác nhận để hoàn
-                  tất đơn hàng.
-                </p>
-                {confirmError && (
-                  <p className={shared.fieldError} role="alert">
-                    {confirmError}
-                  </p>
-                )}
-                <div className={shared.formActions}>
-                  <Button
-                    type="button"
-                    variant="primary"
-                    size="md"
-                    disabled={confirming}
-                    onClick={() => void handleConfirmReceived()}
-                  >
-                    {confirming ? "Đang xác nhận..." : "Đã nhận được hàng"}
-                  </Button>
+            {/* Secondary sections folded inside native <details> */}
+            {order.timeline.length > 0 && (
+              <details className={shared.disclosure}>
+                <summary className={shared.disclosureSummary}>
+                  <span>
+                    Nhật ký hành trình (<span className="num">{order.timeline.length}</span>)
+                  </span>
+                  <IconChevronDown size={16} className={shared.disclosureChevron} />
+                </summary>
+                <div className={shared.disclosureBody}>
+                  <ol className={styles.eventList}>
+                    {order.timeline
+                      .slice()
+                      .reverse()
+                      .map((ev, idx) => (
+                        <li
+                          key={`${ev.timestamp}-${idx}`}
+                          className={`${styles.eventRow} ${idx === 0 ? styles.eventRowLatest : ""}`}
+                        >
+                          <span className={styles.eventStem} aria-hidden="true">
+                            <span className={styles.eventDot} />
+                            <span className={styles.eventLine} />
+                          </span>
+                          <span className={styles.eventTime}>
+                            {ev.timestamp ? renderOrderDateTime(ev.timestamp) : ""}
+                          </span>
+                          <div className={styles.eventBody}>
+                            <span className={styles.eventTitle}>{ev.title}</span>
+                            {ev.note && <span className={styles.eventNote}>{ev.note}</span>}
+                          </div>
+                        </li>
+                      ))}
+                  </ol>
                 </div>
-              </div>
+              </details>
             )}
 
             {order.canCancel && (
-              <form className={styles.unboxedSection} onSubmit={handleCancelSubmit} data-reveal="">
-                <h2 className={shared.sectionTitle}>Hủy đơn trước khi bàn giao vận chuyển</h2>
-                <p className={styles.actionPanelDesc}>
-                  Đơn chưa bàn giao cho đơn vị vận chuyển nên bạn có thể hủy ngay. Với đơn đã thanh
-                  toán trước, số tiền <strong className="num">{formatVnd(order.total)}</strong> sẽ
-                  được hoàn về tài khoản gốc.
-                </p>
-
-                <div className={shared.field}>
-                  <label htmlFor="cancel-reason" className={shared.fieldLabel}>
-                    Lý do hủy đơn
-                  </label>
-                  <select
-                    id="cancel-reason"
-                    className={shared.select}
-                    value={cancelReason}
-                    onChange={(e) => setCancelReason(e.target.value)}
-                    disabled={cancelling}
-                  >
-                    {CANCEL_REASONS.map((reason) => (
-                      <option key={reason} value={reason}>
-                        {reason}
-                      </option>
-                    ))}
-                  </select>
+              <details className={shared.disclosure}>
+                <summary className={shared.disclosureSummary}>
+                  <span>Hủy đơn hàng</span>
+                  <IconChevronDown size={16} className={shared.disclosureChevron} />
+                </summary>
+                <div className={shared.disclosureBody}>
+                  <form className={styles.cancelForm} onSubmit={handleCancelSubmit}>
+                    <div className={shared.field}>
+                      <label htmlFor="cancel-reason" className={shared.fieldLabel}>
+                        Lý do hủy
+                      </label>
+                      <select
+                        id="cancel-reason"
+                        className={shared.select}
+                        value={cancelReason}
+                        onChange={(e) => setCancelReason(e.target.value)}
+                        disabled={cancelling}
+                      >
+                        {CANCEL_REASONS.map((reason) => (
+                          <option key={reason} value={reason}>
+                            {reason}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    {cancelError && (
+                      <p className={shared.fieldError} role="alert">
+                        {cancelError}
+                      </p>
+                    )}
+                    <div className={shared.formActions}>
+                      <Button
+                        type="submit"
+                        variant="danger"
+                        size="md"
+                        loading={cancelling}
+                        loadingLabel="Đang hủy"
+                      >
+                        Xác nhận hủy đơn
+                      </Button>
+                    </div>
+                  </form>
                 </div>
+              </details>
+            )}
+          </div>
 
-                {cancelError && (
-                  <p className={shared.fieldError} role="alert">
-                    {cancelError}
+          <aside className={styles.sideCol}>
+            <div className={styles.summarySheet}>
+              <div className={styles.sideBlock}>
+                <h2 className={styles.sideTitle}>Địa chỉ nhận hàng</h2>
+                <p className={`${styles.sideLine} ${styles.metaPair}`}>
+                  <strong>{order.buyerName || "Người nhận"}</strong>
+                  {order.buyerPhone && <span className="num">{order.buyerPhone}</span>}
+                </p>
+                <p className={styles.sideLine}>
+                  {order.shippingAddress || "Đang cập nhật địa chỉ"}
+                </p>
+                {order.trackingCode && (
+                  <p className={`${styles.sideMuted} ${styles.metaPair} num`}>
+                    {order.carrier && <span>{order.carrier}</span>}
+                    <span>
+                      Vận đơn: <strong>{order.trackingCode}</strong>
+                    </span>
                   </p>
                 )}
+              </div>
 
-                <div className={shared.formActions}>
-                  <Button type="submit" variant="danger" size="md" disabled={cancelling}>
-                    {cancelling ? "Đang hủy đơn..." : "Xác nhận hủy đơn"}
-                  </Button>
-                </div>
-              </form>
-            )}
-
-            {order.canRequestReturn && (
-              <form
-                className={styles.unboxedSection}
-                onSubmit={handleReturnSubmit}
-                noValidate
-                data-reveal=""
-              >
-                <div className={shared.sectionHead} style={{ marginBottom: 0 }}>
-                  <h2 className={shared.sectionTitle}>Gửi yêu cầu đổi trả hàng</h2>
-                  <span className={`${shared.statusTag} ${shared.tonePos}`}>Hỗ trợ sau mua</span>
-                </div>
-                <p className={styles.actionPanelDesc}>
-                  Chọn sản phẩm và số lượng cần đổi trả, kèm mô tả tình trạng hoặc ảnh minh chứng để{" "}
-                  {brandName} tiếp nhận nhanh hơn.
+              <div className={styles.sideBlock}>
+                <h2 className={styles.sideTitle}>Thanh toán</h2>
+                <p className={styles.sideLine}>{PAYMENT_METHOD_LABELS[order.paymentMethod]}</p>
+                <p className={styles.sideMuted}>
+                  {payMeta?.label ?? (order.isPaid ? "Đã thanh toán" : "Thu hộ khi nhận hàng")}
                 </p>
 
+                <dl className={styles.ledgerBox}>
+                  <div className={styles.ledgerRow}>
+                    <dt className={styles.ledgerLabel}>Tạm tính</dt>
+                    <dd className="num">{formatVnd(order.subtotal)}</dd>
+                  </div>
+                  <div className={styles.ledgerRow}>
+                    <dt className={styles.ledgerLabel}>Mã giảm giá</dt>
+                    <dd className={`${styles.ledgerDiscount} num`}>
+                      {order.shopVoucherDiscount > 0
+                        ? formatSignedVnd(-order.shopVoucherDiscount)
+                        : "0₫"}
+                    </dd>
+                  </div>
+                  <div className={styles.ledgerRow}>
+                    <dt className={styles.ledgerLabel}>Phí vận chuyển</dt>
+                    <dd className="num">{formatVnd(order.shippingFee)}</dd>
+                  </div>
+                </dl>
+              </div>
+
+              <div className={styles.totalRow}>
+                <span>Tổng thanh toán</span>
+                <span className={`${styles.totalVal} num`}>{formatVnd(order.total)}</span>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      {suggestedProducts.length > 0 && (
+        <ProductAddonStrip title={`Gợi ý từ ${brandName}`} products={suggestedProducts} />
+      )}
+
+      {/* Step-by-step slide-over sheet for returns */}
+      {returnSheetOpen && order.canRequestReturn && (
+        <div
+          className={shared.sheetBackdrop}
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setReturnSheetOpen(false);
+          }}
+        >
+          <div
+            ref={returnSheetRef}
+            tabIndex={-1}
+            className={shared.sheetPanel}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="return-sheet-title"
+          >
+            <div className={shared.sheetHeader}>
+              <h2 id="return-sheet-title" className={shared.sheetTitle}>
+                Yêu cầu đổi trả
+              </h2>
+              <button
+                type="button"
+                className={shared.sheetCloseBtn}
+                aria-label="Đóng bảng đổi trả"
+                onClick={() => setReturnSheetOpen(false)}
+              >
+                <IconClose size={18} />
+              </button>
+            </div>
+
+            <form className={shared.sheetBody} onSubmit={handleReturnSubmit} noValidate>
+              <div className={styles.sheetStepBar} aria-label="Tiến độ yêu cầu đổi trả">
+                {RETURN_STEP_LABELS.map((label, idx) => (
+                  <div
+                    key={label}
+                    className={`${styles.sheetStepSeg} ${
+                      idx <= returnStep ? styles.sheetStepSegActive : ""
+                    }`}
+                  >
+                    <span className={styles.sheetStepTrack} aria-hidden="true">
+                      <span className={styles.sheetStepTrackFill} />
+                    </span>
+                    <span className={styles.sheetStepName}>{label}</span>
+                  </div>
+                ))}
+              </div>
+
+              {returnStep === 0 && (
                 <div className={shared.field}>
-                  <span className={shared.fieldLabel}>Chọn sản phẩm cần đổi trả</span>
+                  <span className={shared.fieldLabel}>Chọn sản phẩm và số lượng</span>
                   <div className={styles.returnPickerList}>
                     {order.items.map((item) => {
                       const sel = returnSelections[item.skuCode] ?? {
@@ -960,16 +1055,15 @@ function OrderDetailInner({
                             <img
                               src={item.image || "/products/ao-thun-cotton-trang.png"}
                               alt={item.productName}
-                              width={56}
-                              height={74}
+                              width={48}
+                              height={64}
                               className={styles.returnPickerThumb}
                             />
                             <span className={styles.returnPickerInfo}>
                               <span className={styles.returnPickerName}>{item.productName}</span>
                               <span className={styles.returnPickerMeta}>
-                                {item.colorName}
-                                {item.size ? ` · Size ${item.size}` : ""}
-                                {" · "}
+                                <span>{item.colorName}</span>
+                                {item.size && <span>{item.size}</span>}
                                 <span className="num">{formatVnd(item.unitPrice)}</span>
                               </span>
                             </span>
@@ -977,7 +1071,7 @@ function OrderDetailInner({
 
                           <div
                             className={styles.qtyStepper}
-                            aria-label={`Số lượng đổi trả cho ${item.productName}`}
+                            aria-label={`Số lượng đổi trả ${item.productName}`}
                           >
                             <button
                               type="button"
@@ -1007,212 +1101,218 @@ function OrderDetailInner({
                       );
                     })}
                   </div>
-                  <p className={styles.returnSelectionSummary}>
-                    {selectedReturnSummary.count > 0 ? (
-                      <>
-                        Đã chọn <strong className="num">{selectedReturnSummary.totalQty}</strong>{" "}
-                        sản phẩm
-                        {" · "}Giá trị tạm tính:{" "}
+
+                  {selectedReturnSummary.count > 0 && (
+                    <p className={`${styles.sideLine} ${styles.metaPair}`}>
+                      <span>
+                        Đã chọn <strong className="num">{selectedReturnSummary.totalQty}</strong>
+                      </span>
+                      <span>
+                        Tạm tính{" "}
                         <strong className="num">
                           {formatVnd(selectedReturnSummary.estimatedVnd)}
                         </strong>
-                      </>
-                    ) : (
-                      "Chưa chọn sản phẩm nào. Vui lòng tích chọn ít nhất 1 sản phẩm."
-                    )}
-                  </p>
-                </div>
-
-                <div className={shared.field}>
-                  <label htmlFor="return-reason" className={shared.fieldLabel}>
-                    Lý do đổi trả
-                  </label>
-                  <select
-                    id="return-reason"
-                    className={shared.select}
-                    value={returnReason}
-                    onChange={(e) => setReturnReason(e.target.value)}
-                    disabled={submittingReturn}
-                  >
-                    {RETURN_REASONS.map((reason) => (
-                      <option key={reason} value={reason}>
-                        {reason}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className={shared.field}>
-                  <label htmlFor="return-note" className={shared.fieldLabel}>
-                    Mô tả tình trạng sản phẩm hoặc size cần đổi
-                  </label>
-                  <textarea
-                    id="return-note"
-                    className={shared.textarea}
-                    value={returnDetail}
-                    onChange={(e) => setReturnDetail(e.target.value)}
-                    placeholder="Ví dụ: Áo còn nguyên tem mác, cần đổi từ size M sang size L."
-                    disabled={submittingReturn}
-                  />
-                </div>
-
-                <div className={shared.field}>
-                  <label htmlFor="return-photo-url" className={shared.fieldLabel}>
-                    Ảnh minh chứng (tùy chọn, tối đa {MAX_RETURN_PHOTOS} ảnh)
-                  </label>
-                  <div className={shared.codeInputRow}>
-                    <input
-                      id="return-photo-url"
-                      type="text"
-                      className={shared.input}
-                      value={photoInput}
-                      onChange={(e) => {
-                        setPhotoInput(e.target.value);
-                        if (photoError) setPhotoError(null);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          handleAddReturnPhoto();
-                        }
-                      }}
-                      placeholder="Nhập đường dẫn ảnh (/products/... hoặc https://...)"
-                      disabled={submittingReturn || returnPhotos.length >= MAX_RETURN_PHOTOS}
-                    />
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="md"
-                      disabled={submittingReturn || returnPhotos.length >= MAX_RETURN_PHOTOS}
-                      onClick={handleAddReturnPhoto}
-                    >
-                      Thêm ảnh
-                    </Button>
-                  </div>
-                  <p className={shared.fieldHint}>
-                    Hỗ trợ liên kết ảnh bắt đầu bằng / hoặc https:// ({returnPhotos.length}/
-                    {MAX_RETURN_PHOTOS} ảnh).
-                  </p>
-                  {photoError && (
-                    <p className={shared.fieldError} role="alert">
-                      {photoError}
+                      </span>
                     </p>
                   )}
+                </div>
+              )}
 
-                  {returnPhotos.length > 0 && (
-                    <div className={styles.returnPhotoDraftList}>
-                      {returnPhotos.map((url, idx) => (
-                        <div key={url} className={styles.returnPhotoDraftCard}>
-                          <img
-                            src={url}
-                            alt={`Ảnh minh chứng ${idx + 1}`}
-                            className={styles.returnPhotoDraftImg}
-                          />
-                          <span className={styles.returnPhotoDraftUrl}>{url}</span>
-                          <button
-                            type="button"
-                            className={styles.returnPhotoRemoveBtn}
-                            aria-label={`Xóa ảnh minh chứng ${idx + 1}`}
-                            disabled={submittingReturn}
-                            onClick={() => handleRemoveReturnPhoto(url)}
-                          >
-                            <IconTrash size={15} />
-                            <span>Xóa</span>
-                          </button>
-                        </div>
+              {returnStep === 1 && (
+                <>
+                  <div className={shared.field}>
+                    <label htmlFor="return-reason" className={shared.fieldLabel}>
+                      Lý do đổi trả
+                    </label>
+                    <select
+                      id="return-reason"
+                      className={shared.select}
+                      value={returnReason}
+                      onChange={(e) => setReturnReason(e.target.value)}
+                      disabled={submittingReturn}
+                    >
+                      {RETURN_REASONS.map((reason) => (
+                        <option key={reason} value={reason}>
+                          {reason}
+                        </option>
                       ))}
+                    </select>
+                  </div>
+
+                  <div className={shared.field}>
+                    <label htmlFor="return-note" className={shared.fieldLabel}>
+                      Mô tả chi tiết
+                    </label>
+                    <textarea
+                      id="return-note"
+                      className={`${shared.textarea} ${returnError ? shared.textareaInvalid : ""}`}
+                      aria-invalid={Boolean(returnError) || undefined}
+                      aria-describedby={returnError ? "return-form-error" : undefined}
+                      value={returnDetail}
+                      onChange={(e) => {
+                        setReturnDetail(e.target.value);
+                        if (returnError) setReturnError(null);
+                      }}
+                      placeholder="Áo còn nguyên tem, cần đổi từ size M sang L."
+                      disabled={submittingReturn}
+                    />
+                  </div>
+
+                  <div className={shared.field}>
+                    <label htmlFor="return-photo-url" className={shared.fieldLabel}>
+                      Ảnh minh chứng (tối đa {MAX_RETURN_PHOTOS})
+                    </label>
+                    <div className={shared.codeInputRow}>
+                      <input
+                        id="return-photo-url"
+                        type="text"
+                        className={shared.input}
+                        aria-describedby={photoError ? "return-photo-error" : undefined}
+                        value={photoInput}
+                        onChange={(e) => {
+                          setPhotoInput(e.target.value);
+                          if (photoError) setPhotoError(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            handleAddReturnPhoto();
+                          }
+                        }}
+                        placeholder="/products/... hoặc https://..."
+                        disabled={submittingReturn || returnPhotos.length >= MAX_RETURN_PHOTOS}
+                      />
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="md"
+                        disabled={submittingReturn || returnPhotos.length >= MAX_RETURN_PHOTOS}
+                        onClick={handleAddReturnPhoto}
+                      >
+                        Thêm ảnh
+                      </Button>
                     </div>
+                    {photoError && (
+                      <p id="return-photo-error" className={shared.fieldError} role="alert">
+                        {photoError}
+                      </p>
+                    )}
+
+                    {returnPhotos.length > 0 && (
+                      <div className={styles.returnPhotoDraftList}>
+                        {returnPhotos.map((url, idx) => (
+                          <div key={url} className={styles.returnPhotoDraftCard}>
+                            <img
+                              src={url}
+                              alt={`Ảnh ${idx + 1}`}
+                              className={styles.returnPhotoDraftImg}
+                            />
+                            <span className={styles.returnPhotoDraftUrl}>{url}</span>
+                            <button
+                              type="button"
+                              className={styles.returnPhotoRemoveBtn}
+                              aria-label={`Xóa ảnh ${idx + 1}`}
+                              disabled={submittingReturn}
+                              onClick={() => {
+                                setReturnPhotos((prev) => prev.filter((u) => u !== url));
+                                setPhotoError(null);
+                              }}
+                            >
+                              <IconTrash size={14} />
+                              <span>Xóa</span>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {returnStep === 2 && (
+                <div className={styles.confirmBox}>
+                  <p className={styles.sideTitle}>Xác nhận gửi tới {brandName}</p>
+                  <p className={`${styles.sideLine} ${styles.metaPair}`}>
+                    <span>
+                      <strong className="num">{selectedReturnSummary.totalQty}</strong> sản phẩm
+                    </span>
+                    <span>
+                      Tạm tính{" "}
+                      <strong className="num">
+                        {formatVnd(selectedReturnSummary.estimatedVnd)}
+                      </strong>
+                    </span>
+                  </p>
+                  <p className={styles.sideLine}>
+                    <strong>Lý do:</strong> {returnReason}
+                  </p>
+                  <p className={styles.sideLine}>{returnDetail.trim()}</p>
+                  {returnPhotos.length > 0 && (
+                    <p className={styles.sideMuted}>
+                      Đính kèm <span className="num">{returnPhotos.length}</span> ảnh minh chứng.
+                    </p>
                   )}
                 </div>
+              )}
 
-                {returnError && (
-                  <p className={shared.fieldError} role="alert">
-                    {returnError}
-                  </p>
+              {returnError && (
+                <p id="return-form-error" className={shared.fieldError} role="alert">
+                  {returnError}
+                </p>
+              )}
+
+              <div className={shared.sheetFooter} style={{ margin: "auto -24px -24px" }}>
+                {returnStep > 0 ? (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="md"
+                    disabled={submittingReturn}
+                    onClick={() => {
+                      returnStepEnteredAtRef.current = -Infinity;
+                      setReturnError(null);
+                      setReturnStep((s) => (s === 2 ? 1 : 0));
+                    }}
+                  >
+                    Quay lại
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="md"
+                    onClick={() => setReturnSheetOpen(false)}
+                  >
+                    Đóng
+                  </Button>
                 )}
 
-                <div className={shared.formActions}>
+                {returnStep < 2 ? (
                   <Button
+                    key="return-next"
+                    type="button"
+                    variant="ink"
+                    size="md"
+                    onClick={handleAdvanceReturnStep}
+                  >
+                    Tiếp tục
+                  </Button>
+                ) : (
+                  <Button
+                    key="return-submit"
                     type="submit"
                     variant="primary"
                     size="md"
-                    disabled={submittingReturn || selectedReturnSummary.count === 0}
+                    loading={submittingReturn}
+                    loadingLabel="Đang gửi"
                   >
-                    {submittingReturn ? "Đang gửi yêu cầu..." : "Gửi yêu cầu đổi trả"}
+                    Gửi yêu cầu đổi trả
                   </Button>
-                </div>
-              </form>
-            )}
-          </div>
-
-          <aside className={styles.sideCol}>
-            <div
-              className={styles.summarySheet}
-              data-rise=""
-              style={{ "--i": 3 } as React.CSSProperties}
-            >
-              <div className={styles.sideBlock}>
-                <h2 className={styles.sideTitle}>Địa chỉ & Giao hàng</h2>
-                <p className={styles.sideLine}>
-                  <strong>{order.buyerName || "Người nhận"}</strong>
-                  {order.buyerPhone ? ` · ${order.buyerPhone}` : ""}
-                </p>
-                <p className={styles.sideLine}>
-                  {order.shippingAddress || "Đang cập nhật địa chỉ"}
-                </p>
-                {order.trackingCode && (
-                  <p className={`${styles.sideLine} num`}>
-                    {order.carrier ? `${order.carrier} · ` : ""}Mã vận đơn:{" "}
-                    <strong>{order.trackingCode}</strong>
-                  </p>
                 )}
               </div>
-
-              <div className={styles.sideBlock}>
-                <h2 className={styles.sideTitle}>Chi tiết thanh toán</h2>
-                <p className={styles.sideLine}>{PAYMENT_METHOD_LABELS[order.paymentMethod]}</p>
-                <p className={styles.sideMuted}>
-                  Trạng thái:{" "}
-                  <strong>
-                    {payMeta?.label ?? (order.isPaid ? "Đã thanh toán" : "Thu hộ khi nhận hàng")}
-                  </strong>
-                </p>
-
-                <dl className={styles.ledgerBox}>
-                  <div className={styles.ledgerRow}>
-                    <dt className={styles.ledgerLabel}>Tạm tính tiền hàng</dt>
-                    <dd className="num">{formatVnd(order.subtotal)}</dd>
-                  </div>
-                  <div className={styles.ledgerRow}>
-                    <dt className={styles.ledgerLabel}>Mã giảm giá cửa hàng</dt>
-                    <dd className={`${styles.ledgerDiscount} num`}>
-                      {order.shopVoucherDiscount > 0
-                        ? formatSignedVnd(-order.shopVoucherDiscount)
-                        : "0₫"}
-                    </dd>
-                  </div>
-                  <div className={styles.ledgerRow}>
-                    <dt className={styles.ledgerLabel}>Phí vận chuyển</dt>
-                    <dd className="num">{formatVnd(order.shippingFee)}</dd>
-                  </div>
-                </dl>
-              </div>
-
-              <div className={styles.totalRow}>
-                <span>Tổng thanh toán</span>
-                <span className={`${styles.totalVal} num`}>{formatVnd(order.total)}</span>
-              </div>
-            </div>
-          </aside>
+            </form>
+          </div>
         </div>
-      </section>
-
-      {suggestedProducts.length > 0 && (
-        <ProductAddonStrip
-          title={`Gợi ý thêm từ ${brandName}`}
-          subtitle="Sản phẩm đang sẵn hàng tại kho của cửa hàng"
-          products={suggestedProducts}
-        />
       )}
     </div>
   );
@@ -1223,7 +1323,12 @@ export function OrderDetailClientView(props: OrderDetailClientViewProps) {
     <Suspense
       fallback={
         <div className={shared.page}>
-          <StateView kind="loading" title="Đang tải chi tiết đơn hàng..." rows={5} />
+          <StateView
+            kind="loading"
+            skeletonVariant="detail"
+            title="Đang tải đơn hàng..."
+            rows={5}
+          />
         </div>
       }
     >

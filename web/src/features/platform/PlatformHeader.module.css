@@ -1,14 +1,15 @@
-/* Root platform header on crisp white tone step (zero resting shadow, zero 1px hairline). */
+/* Platform header: transparent over hero, hide on scroll-down, reveal on scroll-up,
+   full-screen clip-path mobile sheet. Zero glass/blur, zero resting shadow. */
 
 .skipLink {
-  position: absolute;
+  position: fixed;
   left: -9999px;
   top: 0;
   z-index: 90;
   padding: 10px 16px;
   background: var(--band-dark);
   color: var(--band-dark-ink);
-  font-size: 14px;
+  font-size: var(--step-small);
   font-weight: 500;
 }
 
@@ -18,110 +19,139 @@
 }
 
 .headerShell {
-  width: 100%;
-  position: sticky;
+  position: fixed;
   top: 0;
-  z-index: 35;
-  background: var(--surface-white);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  height: 68px;
+  background: transparent;
+  transition:
+    transform var(--t-ui) var(--ease-out),
+    background-color var(--t-ui) var(--ease-out);
+}
+
+.headerShell[data-surface="transparent"] {
+  background: transparent;
+}
+
+.headerShell[data-surface="flat"] {
+  background: var(--bg-1);
+}
+
+.headerShell[data-surface="solid"] {
+  background: var(--bg-0);
+}
+
+.headerShell[data-hidden="true"] {
+  transform: translateY(-105%);
+  transition:
+    transform 210ms var(--ease-exit),
+    background-color var(--t-hover) var(--ease-out);
+}
+
+.headerShell:focus-within {
+  transform: translateY(0);
 }
 
 .inner {
   width: 100%;
+  height: 100%;
   padding: 0 var(--margin);
-  min-height: 72px;
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-}
-
-.leftCluster {
-  display: flex;
-  align-items: center;
-  gap: clamp(20px, 3vw, 40px);
-  min-width: 0;
+  gap: 16px;
 }
 
 .brand {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  color: var(--ink);
-  flex: none;
+  min-height: 36px;
+  padding-block: 4px;
+  color: var(--ink-1);
+  width: fit-content;
+  transition: opacity var(--t-hover) var(--ease-out);
+}
+
+.brand:hover {
+  opacity: 0.78;
 }
 
 .brandWord {
-  font-size: 20px;
-  font-weight: 600;
-  letter-spacing: -0.025em;
+  font-size: 18px;
   line-height: 1;
 }
 
 .navDesktop {
   display: flex;
   align-items: center;
-  gap: clamp(16px, 2vw, 28px);
+  justify-content: center;
+  gap: clamp(20px, 2.4vw, 36px);
 }
 
 .navLink {
-  font-size: 14px;
-  font-weight: 400;
-  color: var(--ink);
-  padding: 8px 0;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink-2);
+  padding: 8px 4px;
   white-space: nowrap;
-  transition: color var(--t-hover) ease;
+  position: relative;
+  transition: color var(--t-hover) var(--ease-out);
 }
 
-.navLink:hover {
-  color: var(--accent);
-}
-
+.navLink:hover,
 .navLinkActive {
   color: var(--accent);
-  font-weight: 500;
 }
 
 .actionsDesktop {
   display: flex;
   align-items: center;
-  gap: 14px;
-  flex: none;
+  justify-content: flex-end;
+  gap: 12px;
 }
 
-.loginLink,
-.workspaceLink {
-  font-size: 14px;
+.loginLink {
+  font-size: 15px;
   font-weight: 500;
-  color: var(--ink);
-  padding: 8px 10px;
+  color: var(--ink-1);
+  padding: 8px 12px;
   white-space: nowrap;
   transition:
-    color var(--t-hover) ease,
-    background-color var(--t-hover) ease;
+    color var(--t-hover) var(--ease-out),
+    background-color var(--t-hover) var(--ease-out);
 }
 
-.loginLink:hover,
-.workspaceLink:hover {
+.loginLink:hover {
   color: var(--accent);
-  background: var(--surface-subtle);
+  background: var(--bg-2);
 }
 
 .ctaPrimary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 42px;
+  min-height: 40px;
   padding: 0 20px;
+  border-radius: var(--radius-pill);
   background: var(--accent);
   color: var(--accent-ink);
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   white-space: nowrap;
-  transition: background-color var(--t-hover) ease;
+  transition:
+    background-color var(--t-hover) var(--ease-out),
+    transform var(--t-press) var(--ease-out);
 }
 
 .ctaPrimary:hover {
   background: var(--accent-hover);
+}
+
+.ctaPrimary:active {
+  transform: scale(0.98);
 }
 
 .userMenuWrap {
@@ -132,22 +162,23 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 42px;
-  padding: 0 12px;
-  background: var(--surface-subtle);
-  color: var(--ink);
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-2);
+  color: var(--ink-1);
   font-size: 14px;
   font-weight: 500;
-  transition: background-color var(--t-hover) ease;
+  transition: background-color var(--t-hover) var(--ease-out);
 }
 
 .accountBtn:hover,
 .accountBtnActive {
-  background: var(--surface-muted);
+  background: var(--bg-3);
 }
 
 .userName {
-  max-width: 140px;
+  max-width: 130px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -167,17 +198,29 @@
   right: 0;
   top: calc(100% + 8px);
   width: 248px;
-  background: var(--surface-white);
+  background: var(--bg-0);
   border: 1px solid var(--border);
-  box-shadow: 0 10px 28px rgba(31, 48, 56, 0.12);
+  box-shadow: 0 12px 28px rgba(21, 34, 41, 0.12);
   display: flex;
   flex-direction: column;
-  z-index: 45;
+  z-index: 50;
+  animation: dropdownIn 180ms var(--ease-out) both;
+}
+
+@keyframes dropdownIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .dropdownHead {
   padding: 14px 16px;
-  background: var(--surface-subtle);
+  background: var(--bg-2);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -186,12 +229,12 @@
 .dropdownName {
   font-size: 15px;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--ink-1);
 }
 
 .dropdownEmail {
   font-size: 13px;
-  color: var(--ink-secondary);
+  color: var(--ink-3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -205,42 +248,43 @@
 }
 
 .dropdownLink {
-  padding: 9px 10px;
+  padding: 10px 10px;
   font-size: 14px;
   font-weight: 500;
-  color: var(--ink);
-  transition: background-color var(--t-hover) ease;
+  color: var(--ink-1);
+  transition: background-color var(--t-hover) var(--ease-out);
 }
 
 .dropdownLink:hover {
-  background: var(--surface-subtle);
+  background: var(--bg-2);
   color: var(--accent);
 }
 
 .dropdownFoot {
   padding: 8px;
-  background: var(--bg);
+  background: var(--bg-1);
 }
 
 .logoutBtn {
   width: 100%;
-  min-height: 36px;
+  min-height: 40px;
   padding: 0 10px;
   text-align: left;
   font-size: 14px;
   font-weight: 500;
   color: var(--negative);
-  transition: background-color var(--t-hover) ease;
+  transition: background-color var(--t-hover) var(--ease-out);
 }
 
 .logoutBtn:hover {
   background: var(--pill-negative-bg);
 }
 
-/* Mobile trigger cluster */
+/* Mobile controls */
 .mobileCluster {
   display: none;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
 }
 
@@ -248,119 +292,168 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 36px;
-  padding: 0 12px;
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: var(--radius-pill);
   background: var(--accent);
   color: var(--accent-ink);
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   white-space: nowrap;
 }
 
 .menuBtn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 36px;
-  padding: 0 10px;
-  background: var(--surface-subtle);
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 500;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-2);
+  color: var(--ink-1);
+  transition:
+    background-color var(--t-hover) var(--ease-out),
+    transform var(--t-press) var(--ease-out);
 }
 
-/* Mobile drawer */
-.drawerBackdrop {
+.menuBtn:active {
+  transform: scale(0.95);
+}
+
+/* Full-screen mobile clip-path sheet (closes faster than it opens) */
+.sheet {
   position: fixed;
   inset: 0;
-  z-index: 70;
-  background: rgba(31, 48, 56, 0.44);
-  display: flex;
-  justify-content: flex-end;
+  z-index: 80;
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+  clip-path: inset(0 0 100% 0);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    clip-path 240ms var(--ease-exit),
+    visibility 0s linear 240ms;
 }
 
-.drawerPanel[data-ui] {
-  width: min(340px, 88vw);
+.sheet[data-open="true"] {
+  clip-path: inset(0 0 0 0);
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    clip-path 440ms var(--ease-expo),
+    visibility 0s linear 0s;
+}
+
+.sheetInner {
   height: 100svh;
-  background: var(--surface-white);
-  color: var(--ink);
-  padding: 20px;
+  padding: 14px var(--margin) 32px;
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  justify-content: space-between;
   overflow-y: auto;
-  box-shadow: -8px 0 24px rgba(31, 48, 56, 0.14);
 }
 
-.drawerHead {
+.sheetHead {
+  min-height: 44px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
 }
 
-.drawerClose {
-  min-width: 40px;
-  min-height: 40px;
+.sheetBrand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding-block: 4px;
+  color: var(--band-dark-ink);
+}
+
+.sheetClose {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-pill);
+  background: var(--band-dark-surface);
+  color: var(--band-dark-ink);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--ink);
-  background: var(--surface-subtle);
 }
 
-.drawerNav {
+.sheetNav {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 12px;
+  margin-block: 36px;
 }
 
-.drawerLink {
-  padding: 12px 10px;
-  font-size: 16px;
-  font-weight: 500;
-  color: var(--ink);
-  background: var(--bg);
+.sheetLink {
+  font-size: clamp(2rem, 8.5vw, 3rem);
+  color: var(--band-dark-ink);
+  padding-block: 8px;
+  opacity: 0;
+  transform: translateY(18px);
+  transition:
+    opacity 180ms var(--ease-exit),
+    transform 180ms var(--ease-exit),
+    color var(--t-hover) var(--ease-out);
 }
 
-.drawerActions {
-  margin-top: auto;
+.sheet[data-open="true"] .sheetLink {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity 420ms var(--ease-out) calc(120ms + var(--i, 0) * 65ms),
+    transform 520ms var(--ease-expo) calc(120ms + var(--i, 0) * 65ms),
+    color var(--t-hover) var(--ease-out);
+}
+
+.sheetLink:hover {
+  color: var(--band-dark-accent);
+}
+
+.sheetActions {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-.drawerUserMeta {
+.sheetUserMeta {
   font-size: 14px;
-  color: var(--ink-secondary);
+  color: var(--band-dark-muted);
   word-break: break-word;
+  margin-bottom: 4px;
 }
 
-.drawerPrimary,
-.drawerSecondary {
+.sheetPrimary,
+.sheetSecondary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 44px;
-  padding: 0 16px;
-  font-size: 15px;
-  font-weight: 500;
-  text-align: center;
+  min-height: 48px;
+  padding: 0 20px;
+  border-radius: var(--radius-pill);
+  font-size: 16px;
+  font-weight: 600;
 }
 
-.drawerPrimary {
+.sheetPrimary {
   background: var(--accent);
   color: var(--accent-ink);
 }
 
-.drawerSecondary {
-  background: var(--surface);
-  color: var(--ink);
+.sheetSecondary {
+  background: var(--band-dark-surface);
+  color: var(--band-dark-ink);
 }
 
 @media (max-width: 960px) {
+  .headerShell {
+    height: 64px;
+  }
+
   .inner {
-    min-height: 60px;
+    grid-template-columns: auto 1fr;
   }
 
   .navDesktop,

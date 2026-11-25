@@ -1,13 +1,12 @@
 /* AI-synthesized product review summary card for storefront PDPs.
-   Adapts to every template via --site-* tokens with Frost & Slate fallbacks. */
+   Flat tonal surfaces, >=13px typography floor, zero resting shadows. */
 
 .card[data-ui="review-summary"] {
   display: flex;
   flex-direction: column;
   gap: 14px;
   padding: 18px 20px;
-  border-radius: var(--radius-card, 8px);
-  border: 1px solid var(--site-divider, var(--border));
+  border-radius: var(--site-radius, var(--radius-card, 0px));
   background: var(--site-surface-alt, var(--surface-subtle));
   color: var(--site-ink, var(--ink));
   font-family: var(--site-font, var(--font-sans));
@@ -28,9 +27,9 @@
 }
 
 [data-ui="review-summary"] .iconWrap {
-  width: 26px;
-  height: 26px;
-  border-radius: var(--radius-control, 6px);
+  width: 28px;
+  height: 28px;
+  border-radius: var(--site-btn-radius, var(--radius-control, 0px));
   background: var(--site-accent-soft, var(--accent-tint));
   color: var(--site-accent, var(--accent));
   display: inline-flex;
@@ -59,8 +58,8 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 8px;
-  border-radius: var(--radius-chip, 4px);
+  padding: 3px 9px;
+  border-radius: var(--site-btn-radius, var(--radius-chip, 0px));
   background: var(--site-surface, var(--surface-white));
   color: var(--site-ink, var(--ink));
   font-size: 13px;
@@ -94,23 +93,23 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px 14px;
-  border-radius: var(--radius-control, 6px);
+  padding: 14px 16px;
+  border-radius: var(--site-radius, var(--radius-card, 0px));
   background: var(--site-surface, var(--surface-white));
 }
 
 [data-ui="review-summary"] .listHeadingPos {
   margin: 0;
-  font-size: 13px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 19px;
   font-weight: 600;
   color: var(--positive, #1b6e4b);
 }
 
 [data-ui="review-summary"] .listHeadingWarn {
   margin: 0;
-  font-size: 13px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 19px;
   font-weight: 600;
   color: var(--amber-ink, #754c09);
 }
@@ -121,15 +120,15 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
 }
 
 [data-ui="review-summary"] .bulletItem {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  font-size: 13.5px;
-  line-height: 19px;
+  font-size: 14px;
+  line-height: 20px;
   color: var(--site-ink, var(--ink));
 }
 
@@ -153,8 +152,8 @@
 
 [data-ui="review-summary"] .footnote {
   margin: 0;
-  font-size: 12px;
-  line-height: 16px;
+  font-size: 13px;
+  line-height: 18px;
   color: var(--site-muted, var(--muted));
 }
 

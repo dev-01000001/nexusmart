@@ -4,7 +4,6 @@ import React, { useCallback, useState } from "react";
 import { Button, IconClock, IconRefresh, IconSpark, StateView } from "@/components";
 import { ApiError, api } from "@/lib/api";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
-import { useSellerContext } from "@/features/seller/SellerShell";
 import {
   normalizeSellerReport,
   type SellerReportPeriod,
@@ -81,8 +80,6 @@ export interface SellerAiReportClientProps {
 }
 
 export function SellerAiReportClient({ hasShop }: SellerAiReportClientProps) {
-  const { shop } = useSellerContext();
-
   const [period, setPeriod] = useState<SellerReportPeriod>("30d");
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
@@ -102,7 +99,7 @@ export function SellerAiReportClient({ hasShop }: SellerAiReportClientProps) {
     if (cleanQuestion.length < 3) {
       setErrorState({
         kind: "invalid",
-        message: "Vui lòng nhập câu hỏi tối thiểu 3 ký tự để phân tích số liệu gian hàng.",
+        message: "Vui lòng nhập câu hỏi tối thiểu 3 ký tự.",
       });
       return;
     }
@@ -172,7 +169,7 @@ export function SellerAiReportClient({ hasShop }: SellerAiReportClientProps) {
           kind="empty"
           surface="app"
           title="Gian hàng chưa được kích hoạt"
-          message="Hoàn tất đăng ký và kích hoạt gian hàng để sử dụng báo cáo phân tích AI."
+          message="Hoàn tất kích hoạt gian hàng để sử dụng báo cáo phân tích AI."
           actionLabel="Về tổng quan"
           actionHref="/seller"
         />
@@ -197,13 +194,9 @@ export function SellerAiReportClient({ hasShop }: SellerAiReportClientProps) {
 
   return (
     <div className={common.page} data-ui="seller-ai-report">
-      <div className={common.pageHeader}>
+      <header className={common.pageHeader}>
         <div className={common.headerText}>
-          <h1 className={common.title}>Báo cáo phân tích AI</h1>
-          <p className={common.finding}>
-            {shop?.name ?? "Gian hàng của bạn"} · Đặt câu hỏi bằng tiếng Việt tự nhiên trên dữ liệu
-            đơn hàng, doanh thu và tồn kho thực tế
-          </p>
+          <h1 className={common.title}>Báo cáo AI</h1>
         </div>
         <div className={common.headerActions}>
           <div className={common.segmented} role="group" aria-label="Chọn khoảng thời gian báo cáo">
@@ -222,21 +215,9 @@ export function SellerAiReportClient({ hasShop }: SellerAiReportClientProps) {
             ))}
           </div>
         </div>
-      </div>
+      </header>
 
-      <section className={common.card} aria-labelledby="ai-report-query-heading">
-        <div className={common.cardHeader}>
-          <div>
-            <h2 id="ai-report-query-heading" className={common.cardTitle}>
-              Đặt câu hỏi kinh doanh
-            </h2>
-            <span className={common.cardMeta}>
-              Phạm vi phân tích hiện tại: {getPeriodLabel(period)} gần nhất (chỉ đọc số liệu gian
-              hàng của bạn)
-            </span>
-          </div>
-        </div>
-
+      <section className={common.card} aria-label="Truy vấn báo cáo AI">
         <form className={styles.queryForm} onSubmit={handleSubmit}>
           <input
             type="text"
@@ -249,7 +230,7 @@ export function SellerAiReportClient({ hasShop }: SellerAiReportClientProps) {
           />
           <Button type="submit" variant="ink" size="md" shape="app" disabled={loading}>
             <IconSpark size={15} />
-            <span>{loading ? "Đang phân tích..." : "Phân tích báo cáo"}</span>
+            <span>{loading ? "Đang phân tích..." : "Phân tích"}</span>
           </Button>
         </form>
 
@@ -288,7 +269,8 @@ export function SellerAiReportClient({ hasShop }: SellerAiReportClientProps) {
               <StateView
                 kind="loading"
                 surface="app"
-                title="Đang tổng hợp số liệu và phân tích báo cáo..."
+                skeletonVariant="table"
+                title="Đang tổng hợp số liệu và phân tích..."
                 rows={4}
               />
             </div>
@@ -335,11 +317,12 @@ export function SellerAiReportClient({ hasShop }: SellerAiReportClientProps) {
                 <div className={common.cardHeader}>
                   <div>
                     <h2 id="ai-narrative-heading" className={common.cardTitle}>
-                      Nhận định từ dữ liệu gian hàng
+                      Nhận định dữ liệu
                     </h2>
                     <span className={common.cardMeta}>
-                      {activeReport.question ? `Câu hỏi: "${activeReport.question}" · ` : ""}
-                      Kỳ {getPeriodLabel(activeReport.period)}
+                      {activeReport.question
+                        ? `${activeReport.question} (${getPeriodLabel(activeReport.period)})`
+                        : getPeriodLabel(activeReport.period)}
                     </span>
                   </div>
                   {lastSubmitted && (
@@ -364,23 +347,17 @@ export function SellerAiReportClient({ hasShop }: SellerAiReportClientProps) {
               {activeReport.rows.length > 0 && (
                 <section className={common.card} aria-labelledby="ai-source-table-heading">
                   <div className={common.cardHeader}>
-                    <div>
-                      <h2 id="ai-source-table-heading" className={common.cardTitle}>
-                        Bảng số liệu đối chiếu
-                      </h2>
-                      <span className={common.cardMeta}>
-                        {formatInt(activeReport.rows.length)} dòng dữ liệu nguồn dùng để tổng hợp
-                        báo cáo
-                      </span>
-                    </div>
+                    <h2 id="ai-source-table-heading" className={common.cardTitle}>
+                      Bảng đối chiếu ({formatInt(activeReport.rows.length)})
+                    </h2>
                   </div>
                   <div className={common.tableWrap}>
                     <table className={common.dataTable}>
                       <thead>
                         <tr>
                           <th>Sản phẩm / Hạng mục</th>
-                          <th className={common.numCol}>Số lượng bán</th>
-                          <th className={common.numCol}>Doanh thu (VND)</th>
+                          <th className={common.numCol}>SL bán</th>
+                          <th className={common.numCol}>Doanh thu</th>
                           {activeReport.rows.some((r) => Boolean(r.extra)) && <th>Ghi chú</th>}
                         </tr>
                       </thead>
@@ -417,7 +394,7 @@ export function SellerAiReportClient({ hasShop }: SellerAiReportClientProps) {
                   <section className={common.card} aria-labelledby="ai-generic-table-heading">
                     <div className={common.cardHeader}>
                       <h2 id="ai-generic-table-heading" className={common.cardTitle}>
-                        Bảng số liệu chi tiết
+                        Số liệu chi tiết
                       </h2>
                     </div>
                     <div className={common.tableWrap}>
@@ -454,8 +431,8 @@ export function SellerAiReportClient({ hasShop }: SellerAiReportClientProps) {
               <StateView
                 kind="empty"
                 surface="app"
-                title="Chọn một câu hỏi gợi ý hoặc nhập câu hỏi riêng"
-                message="Báo cáo AI tổng hợp trực tiếp từ doanh thu, trạng thái đơn hàng và tồn kho hiện tại của gian hàng."
+                title="Chọn câu hỏi gợi ý hoặc nhập câu hỏi riêng"
+                message="Phân tích trực tiếp trên dữ liệu đơn hàng, doanh thu và tồn kho gian hàng."
               />
             </section>
           )}
@@ -467,16 +444,14 @@ export function SellerAiReportClient({ hasShop }: SellerAiReportClientProps) {
               <div className={styles.historyTitleRow}>
                 <IconClock size={15} />
                 <h2 id="ai-history-heading" className={common.cardTitle}>
-                  Lịch sử phiên này
+                  Lịch sử phiên
                 </h2>
               </div>
-              <span className={common.cardMeta}>{formatInt(history.length)} câu hỏi</span>
+              <span className={common.cardMeta}>{formatInt(history.length)}</span>
             </div>
 
             {history.length === 0 ? (
-              <div className={common.inlineEmpty}>
-                Các câu hỏi bạn vừa chạy sẽ xuất hiện tại đây để mở lại nhanh.
-              </div>
+              <div className={common.inlineEmpty}>Câu hỏi đã chạy sẽ lưu tại đây.</div>
             ) : (
               <ul className={styles.historyList}>
                 {history.map((entry) => {

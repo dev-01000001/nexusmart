@@ -83,6 +83,7 @@ export default async function SiteCheckoutPage({ params }: PageProps) {
       initialAddresses={initialAddresses}
       initialVouchers={initialVouchers}
       initialError={initialError}
+      serverNowMs={Date.now()}
     />
   );
 }

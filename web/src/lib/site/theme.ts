@@ -140,18 +140,11 @@ export function sanitizeSafeHref(raw: string | undefined | null, fallback = ""):
   return clean || fallback;
 }
 
-export function resolveSiteFontStack(fontFamily: SiteFontFamily | string | undefined): string {
-  switch (fontFamily) {
-    case "be-vietnam-pro":
-      return 'var(--font-be-vietnam-pro, var(--font-work-sans)), "Work Sans", sans-serif';
-    case "ibm-plex-sans":
-      return 'var(--font-ibm-plex-sans, var(--font-work-sans)), "Work Sans", sans-serif';
-    case "inter":
-    case "plus-jakarta-sans":
-    case "work-sans":
-    default:
-      return 'var(--font-work-sans), "Work Sans", sans-serif';
-  }
+export const SITE_FONT_STACK = "var(--font-archivo), system-ui, sans-serif";
+
+export function resolveSiteFontStack(_fontFamily?: SiteFontFamily | string): string {
+  void _fontFamily;
+  return SITE_FONT_STACK;
 }
 
 export interface SiteThemeVars {

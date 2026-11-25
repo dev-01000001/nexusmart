@@ -1,0 +1,564 @@
+/* Hero = The Door: 42% quiet Frost & Slate input column, 58% live color-shifting HTML storefront
+   anchored flush to right and bottom edges. Zero gradients, zero resting shadows, zero browser chrome. */
+
+.hero {
+  width: 100%;
+  min-height: 100svh;
+  padding-top: 68px;
+  background: var(--bg-1);
+  color: var(--ink-1);
+  display: grid;
+  grid-template-columns: minmax(0, 44%) minmax(0, 56%);
+  align-items: stretch;
+}
+
+.leftCol {
+  padding: clamp(32px, 5vw, 72px) clamp(16px, 2vw, 26px) clamp(32px, 4.5vw, 56px) var(--margin);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 32px;
+  min-width: 0;
+}
+
+.headline {
+  font-size: clamp(2.1rem, 4.7vw, 4.35rem);
+  color: var(--ink-1);
+  line-height: 1.06;
+}
+
+.doorCluster {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.lead {
+  font-size: var(--step-lead);
+  line-height: 1.45;
+  color: var(--ink-3);
+  max-width: 34ch;
+}
+
+/* Live Storefront Stage (58% width, flush right & bottom) */
+.stageCol[data-ui] {
+  background: var(--stage-bg);
+  color: var(--stage-text);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: calc(100svh - 68px);
+  overflow: hidden;
+  transition:
+    background-color 480ms var(--ease-out),
+    color 320ms var(--ease-out);
+}
+
+.stageTopBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px clamp(18px, 2.4vw, 32px) 12px;
+}
+
+.addressPill {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  padding: 6px 14px;
+  border-radius: var(--radius-pill);
+  background: var(--stage-surface);
+  font-size: 13px;
+  line-height: 1.3;
+  overflow: hidden;
+  max-width: 100%;
+}
+
+.addressDot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--stage-accent);
+  margin-right: 8px;
+  flex: none;
+  transition: background-color 360ms var(--ease-out);
+}
+
+.addressSlug {
+  font-weight: 600;
+  color: var(--stage-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.addressDomain {
+  color: color-mix(in srgb, var(--stage-text) 68%, transparent);
+  white-space: nowrap;
+  flex: none;
+}
+
+.stageControls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dotBtn {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-pill);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  transition:
+    border-color var(--t-hover) var(--ease-out),
+    transform var(--t-press) var(--ease-out);
+}
+
+.dotBtnActive {
+  border-color: var(--stage-text);
+}
+
+.dotBtn:active {
+  transform: scale(0.92);
+}
+
+.dotSwatch {
+  width: 12px;
+  height: 12px;
+  border-radius: var(--radius-pill);
+  display: block;
+}
+
+.pauseBtn {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-pill);
+  background: var(--stage-surface);
+  color: var(--stage-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform var(--t-press) var(--ease-out);
+}
+
+.pauseBtn:active {
+  transform: scale(0.92);
+}
+
+/* Animated clip-path curtain swap between archetypes */
+.stageCanvas {
+  flex: 1;
+  display: flex;
+  padding: clamp(20px, 2.8vw, 36px);
+  min-height: 0;
+  animation: stageCurtain 620ms var(--ease-expo) both;
+}
+
+@keyframes stageCurtain {
+  from {
+    clip-path: inset(0 0 0 18%);
+    opacity: 0.35;
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+    opacity: 1;
+  }
+}
+
+.coverImg {
+  object-fit: cover;
+  object-position: center 20%;
+}
+
+/* Archetype 1: Sport Active */
+.sportLayout {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.sportHeader {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.sportBrand {
+  font-size: clamp(2rem, 3.6vw, 3.4rem);
+  line-height: 1.04;
+  color: var(--stage-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sportChip {
+  padding: 5px 12px;
+  background: var(--stage-accent);
+  color: var(--stage-accent-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sportVisualGrid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1.35fr 0.85fr;
+  gap: 14px;
+  min-height: 320px;
+}
+
+.sportMainPhoto {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 280px;
+  background: var(--stage-surface);
+  overflow: hidden;
+}
+
+.sportSideCard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--stage-surface);
+  padding: 14px;
+}
+
+.sportInsetPhoto {
+  position: relative;
+  flex: 1;
+  min-height: 170px;
+  overflow: hidden;
+}
+
+.sportCaptionBlock {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.stageHeadline {
+  font-size: clamp(1.125rem, 1.6vw, 1.5rem);
+  color: var(--stage-text);
+}
+
+.mockCta {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 16px;
+  background: var(--stage-accent);
+  color: var(--stage-accent-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Archetype 2: Luxury Maison */
+.maisonLayout {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.maisonTop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.maisonBrand {
+  font-size: clamp(1.5rem, 2.5vw, 2.3rem);
+  font-stretch: 112%;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  color: var(--stage-text);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maisonCenter {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 22px;
+  align-items: stretch;
+  min-height: 320px;
+}
+
+.maisonPortrait {
+  position: relative;
+  width: 100%;
+  min-height: 280px;
+  background: var(--stage-surface);
+  overflow: hidden;
+}
+
+.maisonAside {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.maisonTexture {
+  position: relative;
+  flex: 1;
+  min-height: 170px;
+  background: var(--stage-surface);
+  overflow: hidden;
+}
+
+.maisonHeadline {
+  font-size: clamp(1.25rem, 1.8vw, 1.75rem);
+  font-weight: 400;
+  line-height: 1.25;
+  color: var(--stage-text);
+}
+
+.maisonCta {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 9px 20px;
+  background: var(--stage-surface);
+  color: var(--stage-text);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* Archetype 3: Craft Atelier */
+.atelierLayout {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1.3fr 0.85fr;
+  gap: 16px;
+  min-height: 360px;
+}
+
+.atelierLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.atelierHead {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.atelierBrand {
+  font-size: clamp(1.6rem, 2.6vw, 2.4rem);
+  color: var(--stage-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.atelierSub {
+  font-size: 15px;
+  color: color-mix(in srgb, var(--stage-text) 76%, transparent);
+}
+
+.atelierBanner {
+  position: relative;
+  flex: 1;
+  min-height: 220px;
+  background: var(--stage-surface);
+  overflow: hidden;
+}
+
+.atelierRight {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.atelierModel {
+  position: relative;
+  flex: 1;
+  min-height: 240px;
+  background: var(--stage-surface);
+  overflow: hidden;
+}
+
+.atelierSpecs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.atelierSpecTag {
+  padding: 6px 12px;
+  background: var(--stage-accent);
+  color: var(--stage-accent-text);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* Archetype 4: Editorial */
+.editorialLayout {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.editorialMasthead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid var(--stage-text);
+}
+
+.editorialBrand {
+  font-size: clamp(1.8rem, 3.2vw, 3rem);
+  color: var(--stage-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editorialPill {
+  padding: 6px 14px;
+  border-radius: var(--radius-pill);
+  background: var(--stage-accent);
+  color: var(--stage-accent-text);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.editorialSpread {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1.3fr 0.85fr;
+  gap: 16px;
+  min-height: 310px;
+}
+
+.editorialWide {
+  position: relative;
+  width: 100%;
+  min-height: 260px;
+  background: var(--stage-surface);
+  overflow: hidden;
+}
+
+.editorialColumn {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.editorialPortrait {
+  position: relative;
+  flex: 1;
+  min-height: 190px;
+  background: var(--stage-surface);
+  overflow: hidden;
+}
+
+.editorialQuote {
+  font-size: clamp(1.0625rem, 1.5vw, 1.35rem);
+  color: var(--stage-text);
+}
+
+@media (max-width: 1024px) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: auto;
+    padding-top: 64px;
+  }
+
+  .leftCol {
+    padding: 28px var(--margin) 28px;
+    gap: 24px;
+  }
+
+  .headline {
+    font-size: clamp(2.5rem, 9.5vw, 3.75rem);
+  }
+
+  .stageCol[data-ui] {
+    min-height: 460px;
+  }
+}
+
+@media (max-width: 640px) {
+  .headline {
+    font-size: clamp(2.1rem, 9.2vw, 3.1rem);
+  }
+
+  .stageTopBar {
+    padding: 12px 16px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .addressPill {
+    width: 100%;
+  }
+
+  .stageControls {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .stageCanvas {
+    padding: 16px;
+  }
+
+  .sportVisualGrid,
+  .maisonCenter,
+  .atelierLayout,
+  .editorialSpread {
+    grid-template-columns: 1fr;
+    min-height: 340px;
+  }
+
+  .sportSideCard,
+  .maisonTexture,
+  .atelierRight,
+  .editorialColumn {
+    display: none;
+  }
+
+  .sportMainPhoto,
+  .maisonPortrait,
+  .atelierBanner,
+  .editorialWide {
+    min-height: 290px;
+  }
+}
