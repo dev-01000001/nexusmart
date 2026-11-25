@@ -43,6 +43,7 @@ type MemoryStore struct {
 	outbox               []db.OutboxEvent
 	processedEvents      map[string]db.ProcessedEvent
 	deadLetters          []db.DeadLetterEvent
+	addressChanges       map[string]db.OrderAddressChange
 }
 
 // NewMemoryStore initializes an empty MemoryStore.
@@ -58,6 +59,7 @@ func NewMemoryStore() *MemoryStore {
 		returnRequests:       make(map[string]db.ReturnRequest),
 		returnEvents:         make(map[string][]db.ReturnEvent),
 		processedEvents:      make(map[string]db.ProcessedEvent),
+		addressChanges:       make(map[string]db.OrderAddressChange),
 	}
 }
 
@@ -1036,39 +1038,18 @@ func (m *MemoryStore) ListOrdersByCheckoutGroup(_ context.Context, checkoutGroup
 	return aggs, nil
 }
 
-func (m *MemoryStore) ListOrdersFiltered(_ context.Context, buyerID, shopID, status string, limit, offset int32) ([]OrderAggregate, int64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var matched []OrderAggregate
-	for _, ord := range m.orders {
-		if buyerID != "" && ord.BuyerID != buyerID {
-			continue
-		}
-		if shopID != "" && ord.ShopID != shopID {
-			continue
-		}
-		if status != "" && ord.Status != status {
-			continue
-		}
-		agg, _ := m.getOrderLocked(ord.ID)
-		matched = append(matched, *agg)
-	}
-	sort.Slice(matched, func(i, j int) bool {
-		if !matched[i].Order.CreatedAt.Equal(matched[j].Order.CreatedAt) {
-			return matched[i].Order.CreatedAt.After(matched[j].Order.CreatedAt)
-		}
-		return matched[i].Order.ID > matched[j].Order.ID
+func (m *MemoryStore) ListOrdersFiltered(ctx context.Context, buyerID, shopID, status string, limit, offset int32) ([]OrderAggregate, int64, error) {
+	res, err := m.ListOrdersWithFilter(ctx, OrderListFilter{
+		BuyerID: buyerID,
+		ShopID:  shopID,
+		Status:  status,
+		Limit:   limit,
+		Offset:  offset,
 	})
-	total := int64(len(matched))
-	start := int(offset)
-	if start >= len(matched) {
-		return []OrderAggregate{}, total, nil
+	if err != nil {
+		return nil, 0, err
 	}
-	end := start + int(limit)
-	if end > len(matched) {
-		end = len(matched)
-	}
-	return matched[start:end], total, nil
+	return res.Orders, res.Total, nil
 }
 
 func (m *MemoryStore) GetOrderTimeline(_ context.Context, orderID string) ([]db.OrderTimelineEvent, error) {
@@ -1512,6 +1493,9 @@ func (m *MemoryStore) MarkOrderShipmentCreating(_ context.Context, orderID strin
 	cur := statemachine.StringToStatus(ord.Status)
 	if cur != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED && cur != orderv1.OrderStatus_ORDER_STATUS_PREPARING {
 		return "", fmt.Errorf("%w: cannot create shipment from status %s", statemachine.ErrInvalidTransition, statemachine.StatusToString(cur))
+	}
+	if m.hasOpenAddressChangeLocked(ord.ID) {
+		return "", ErrAddressChangeInProgress
 	}
 	token := uuid.NewString()
 	markedAt := now
@@ -2244,6 +2228,11 @@ func (m *MemoryStore) ApplyShipmentUpdate(_ context.Context, params ShipmentUpda
 			outcome.NeedsOrphanShipmentCancel = true
 		}
 		outcome.Order, _ = m.getOrderLocked(ord.ID)
+		return outcome, nil
+	}
+
+	// G3: Suppress delayed shipment.updated events for an old shipment cancelled by UpdateOrderAddress.
+	if evTracking != "" && m.isCancelledAddressChangeTrackingLocked(ord.ID, evTracking) {
 		return outcome, nil
 	}
 

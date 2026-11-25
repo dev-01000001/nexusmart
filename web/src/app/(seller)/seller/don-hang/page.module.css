@@ -5,6 +5,8 @@
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
+  flex-wrap: wrap;
+  max-width: 184px;
 }
 
 .rowAdvanceBtn {
@@ -17,6 +19,7 @@
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
+  cursor: pointer;
   transition: background-color var(--t-hover) ease;
 }
 
@@ -37,21 +40,126 @@
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
+  cursor: pointer;
 }
 
 .rowDetailLink:hover {
   background: var(--surface);
 }
 
+table.ordersTable.ordersTable {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+table.ordersTable thead th,
+table.ordersTable tbody td {
+  padding-left: var(--space-2);
+  padding-right: var(--space-2);
+}
+
+table.ordersTable thead th:first-child,
+table.ordersTable tbody td:first-child {
+  padding-left: 0;
+}
+
+table.ordersTable thead th:last-child,
+table.ordersTable tbody td:last-child {
+  padding-right: 0;
+}
+
+table.ordersTable thead th.checkCol,
+table.ordersTable tbody td.checkCol {
+  width: 26px;
+  padding-right: 4px;
+}
+
+.rowCheckbox {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--ink);
+  cursor: pointer;
+  flex: none;
+}
+
 .orderCodeCell {
   white-space: nowrap;
 }
 
+.recipientCol {
+  min-width: 156px;
+  max-width: 210px;
+}
+
+.recipientAddress {
+  line-height: 18px;
+}
+
+.productCol {
+  min-width: 175px;
+  max-width: 215px;
+}
+
+.itemSummaryRow {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 200px;
+}
+
 .itemSummaryCell {
-  max-width: 260px;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.compactQtyBadge {
+  display: none;
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.itemMetaSub {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 17px;
+  max-width: 200px;
+}
+
+.qtyCol,
+.subtotalCol {
+  white-space: nowrap;
+}
+
+table.ordersTable thead th.actionCol,
+table.ordersTable tbody td.actionCol {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: var(--card);
+  border-left: 1px solid var(--border); /* taste-skill-ignore: sticky action column hairline */
+  padding-left: var(--space-2);
+  padding-right: 0;
+}
+
+table.ordersTable thead th.actionCol {
+  z-index: 3;
+}
+
+.orderCodesCell {
+  font-size: 13px;
+  color: var(--muted);
+  word-break: break-word;
 }
 
 .mobileOrderCode {
@@ -74,34 +182,76 @@
   line-height: 18px;
 }
 
-.signalList {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 4px;
+.mobileSelectAllRow {
+  padding: 6px 0 10px;
+  border-bottom: 1px solid var(--border);
 }
 
-.signalTag {
+.mobileCheckLabel {
   display: inline-flex;
   align-items: center;
-  height: 20px;
-  padding: 0 7px;
-  border-radius: var(--radius-chip);
-  background: var(--surface);
-  color: var(--ink);
-  font-size: 12px;
+  gap: 8px;
+  font-size: 13px;
   font-weight: 500;
-  white-space: nowrap;
+  color: var(--ink);
+  cursor: pointer;
 }
 
-.signalTagWarn {
-  background: var(--pill-warning-bg);
-  color: var(--pill-warning-ink);
+.mobileRowLead {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
 }
 
 .queueMeta {
   font-size: 13px;
   color: var(--muted);
+  white-space: nowrap;
+}
+
+.dateFilterWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dateFilterInput {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--control);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.batchBar {
+  background: var(--card);
+  border: 1px solid var(--border); /* taste-skill-ignore: flat batch action panel */
+  border-radius: var(--radius-card);
+  padding: 12px var(--card-pad);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.batchBarInfo {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.batchBarControls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .shipDrawer {
@@ -131,4 +281,139 @@
   padding: 10px;
   border-radius: var(--radius-control);
   background: var(--bg);
+}
+
+.paginationBar {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.paginationControls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pageBtn {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--control); /* taste-skill-ignore: pagination control */
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.pageBtn:hover:not(:disabled) {
+  background: var(--surface);
+}
+
+.pageBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pageBtnActive {
+  background: var(--primary-ink-bg);
+  color: var(--primary-ink-fg);
+  border-color: var(--primary-ink-bg);
+}
+
+.pageBtnActive:hover:not(:disabled) {
+  background: var(--primary-ink-bg);
+}
+
+.pageEllipsis {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 0 4px;
+}
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(31, 48, 56, 0.48);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+
+.modalDialog {
+  width: 100%;
+  max-width: 780px;
+  max-height: 90dvh;
+  overflow-y: auto;
+  background: var(--card);
+  border: 1px solid var(--border); /* taste-skill-ignore: flat seller modal */
+  border-radius: var(--radius-card);
+  padding: var(--card-pad);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+@media (max-width: 1366px) {
+  table.ordersTable thead th,
+  table.ordersTable tbody td {
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+
+  table.ordersTable thead th.qtyCol,
+  table.ordersTable tbody td.qtyCol,
+  table.ordersTable thead th.subtotalCol,
+  table.ordersTable tbody td.subtotalCol {
+    display: none;
+  }
+
+  .compactQtyBadge {
+    display: inline;
+  }
+
+  .recipientCol {
+    min-width: 150px;
+    max-width: 180px;
+  }
+
+  .productCol {
+    min-width: 160px;
+    max-width: 190px;
+  }
+
+  .itemSummaryRow,
+  .itemMetaSub {
+    max-width: 180px;
+  }
+}
+
+@media (max-width: 640px) {
+  .batchBar {
+    padding: 12px 14px;
+  }
+
+  .batchBarControls {
+    width: 100%;
+  }
+
+  .dateFilterWrap {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .dateFilterInput {
+    flex: 1;
+    min-width: 0;
+  }
 }

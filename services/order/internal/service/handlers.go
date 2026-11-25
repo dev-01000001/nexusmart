@@ -1457,6 +1457,7 @@ func (s *OrderService) RunExpiryWatchdog(ctx context.Context) {
 			runSweep("pending stock confirms", s.ScanPendingStockConfirms)
 			runSweep("pending cancel compensations", s.ScanPendingCancelCompensations)
 			runSweep("pending return compensations", s.ScanPendingReturnCompensations)
+			runSweep("pending address changes", s.ScanPendingAddressChanges)
 		}
 	}
 }

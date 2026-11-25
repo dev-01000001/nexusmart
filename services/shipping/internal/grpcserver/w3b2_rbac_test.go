@@ -324,25 +324,30 @@ func TestShippingGRPC_W3B2_ShopSettingsAndCreateShipmentRBACMatrix(t *testing.T)
 		})
 	}
 
-	// 2. UpdateShopShippingSettings & CreateShipment: seller owner + super_admin/admin/ops allowed;
+	// 2. UpdateShopShippingSettings: seller owner + super_admin/admin/ops allowed;
 	// moderator, cskh, accountant, buyer, other seller, service token denied.
+	// CreateShipment (G3): additionally permits strictly claims.Service == "order-service",
+	// while rejecting all other service identities (e.g. product-service).
 	mutCases := []struct {
-		name      string
-		ctx       context.Context
-		wantAllow bool
-		wantCode  codes.Code
+		name            string
+		ctx             context.Context
+		wantSettingsOK  bool
+		wantSettingsErr codes.Code
+		wantCreateOK    bool
+		wantCreateErr   codes.Code
 	}{
-		{name: "seller_owner", ctx: ctxWithRole("seller-1", auth.RoleSeller, "shop-1"), wantAllow: true},
-		{name: "super_admin", ctx: ctxWithRole("sa-1", auth.RoleSuperAdmin, ""), wantAllow: true},
-		{name: "admin", ctx: ctxWithRole("adm-1", auth.RoleAdmin, ""), wantAllow: true},
-		{name: "ops", ctx: ctxWithRole("ops-1", auth.RoleOps, ""), wantAllow: true},
-		{name: "moderator", ctx: ctxWithRole("mod-1", auth.RoleModerator, ""), wantCode: codes.PermissionDenied},
-		{name: "cskh", ctx: ctxWithRole("cskh-1", auth.RoleCSKH, ""), wantCode: codes.PermissionDenied},
-		{name: "accountant", ctx: ctxWithRole("acc-1", auth.RoleAccountant, ""), wantCode: codes.PermissionDenied},
-		{name: "buyer", ctx: ctxWithRole("buyer-1", auth.RoleBuyer, ""), wantCode: codes.PermissionDenied},
-		{name: "other_seller", ctx: ctxWithRole("seller-2", auth.RoleSeller, "shop-2"), wantCode: codes.PermissionDenied},
-		{name: "service_token", ctx: ctxWithService("order-service"), wantCode: codes.PermissionDenied},
-		{name: "anonymous", ctx: context.Background(), wantCode: codes.Unauthenticated},
+		{name: "seller_owner", ctx: ctxWithRole("seller-1", auth.RoleSeller, "shop-1"), wantSettingsOK: true, wantCreateOK: true},
+		{name: "super_admin", ctx: ctxWithRole("sa-1", auth.RoleSuperAdmin, ""), wantSettingsOK: true, wantCreateOK: true},
+		{name: "admin", ctx: ctxWithRole("adm-1", auth.RoleAdmin, ""), wantSettingsOK: true, wantCreateOK: true},
+		{name: "ops", ctx: ctxWithRole("ops-1", auth.RoleOps, ""), wantSettingsOK: true, wantCreateOK: true},
+		{name: "moderator", ctx: ctxWithRole("mod-1", auth.RoleModerator, ""), wantSettingsErr: codes.PermissionDenied, wantCreateErr: codes.PermissionDenied},
+		{name: "cskh", ctx: ctxWithRole("cskh-1", auth.RoleCSKH, ""), wantSettingsErr: codes.PermissionDenied, wantCreateErr: codes.PermissionDenied},
+		{name: "accountant", ctx: ctxWithRole("acc-1", auth.RoleAccountant, ""), wantSettingsErr: codes.PermissionDenied, wantCreateErr: codes.PermissionDenied},
+		{name: "buyer", ctx: ctxWithRole("buyer-1", auth.RoleBuyer, ""), wantSettingsErr: codes.PermissionDenied, wantCreateErr: codes.PermissionDenied},
+		{name: "other_seller", ctx: ctxWithRole("seller-2", auth.RoleSeller, "shop-2"), wantSettingsErr: codes.PermissionDenied, wantCreateErr: codes.PermissionDenied},
+		{name: "service_token_order_service", ctx: ctxWithService("order-service"), wantSettingsErr: codes.PermissionDenied, wantCreateOK: true},
+		{name: "service_token_product_service", ctx: ctxWithService("product-service"), wantSettingsErr: codes.PermissionDenied, wantCreateErr: codes.PermissionDenied},
+		{name: "anonymous", ctx: context.Background(), wantSettingsErr: codes.Unauthenticated, wantCreateErr: codes.Unauthenticated},
 	}
 
 	for _, tc := range mutCases {
@@ -353,14 +358,14 @@ func TestShippingGRPC_W3B2_ShopSettingsAndCreateShipmentRBACMatrix(t *testing.T)
 				EnabledCarrierCodes: []string{carrier.CodeGHN},
 				DefaultWeightGrams:  1200,
 			})
-			if tc.wantAllow {
+			if tc.wantSettingsOK {
 				if err != nil {
 					t.Fatalf("UpdateShopShippingSettings(%s): expected nil error, got %v", tc.name, err)
 				}
 				return
 			}
-			if status.Code(err) != tc.wantCode {
-				t.Fatalf("UpdateShopShippingSettings(%s): code=%v, want %v (err=%v)", tc.name, status.Code(err), tc.wantCode, err)
+			if status.Code(err) != tc.wantSettingsErr {
+				t.Fatalf("UpdateShopShippingSettings(%s): code=%v, want %v (err=%v)", tc.name, status.Code(err), tc.wantSettingsErr, err)
 			}
 		})
 
@@ -372,14 +377,14 @@ func TestShippingGRPC_W3B2_ShopSettingsAndCreateShipmentRBACMatrix(t *testing.T)
 				CarrierCode: carrier.CodeGHN,
 				WeightGrams: 500,
 			})
-			if tc.wantAllow {
+			if tc.wantCreateOK {
 				if err != nil {
 					t.Fatalf("CreateShipment(%s): expected nil error, got %v", tc.name, err)
 				}
 				return
 			}
-			if status.Code(err) != tc.wantCode {
-				t.Fatalf("CreateShipment(%s): code=%v, want %v (err=%v)", tc.name, status.Code(err), tc.wantCode, err)
+			if status.Code(err) != tc.wantCreateErr {
+				t.Fatalf("CreateShipment(%s): code=%v, want %v (err=%v)", tc.name, status.Code(err), tc.wantCreateErr, err)
 			}
 		})
 	}

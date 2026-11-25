@@ -57,6 +57,8 @@ func run() error {
 	jwtSecret := env.EnvString("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me")
 	otelEndpoint := env.EnvString("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	logLevel := parseLogLevel(env.EnvString("LOG_LEVEL", "info"))
+	importMaxBytes := env.EnvInt("PRODUCT_IMPORT_MAX_BYTES", server.DefaultProductImportMaxBytes)
+	importMaxRows := env.EnvInt("PRODUCT_IMPORT_MAX_ROWS", server.DefaultProductImportMaxRows)
 
 	log := logger.New(serviceName, logger.WithLevel(logLevel))
 
@@ -119,6 +121,7 @@ func run() error {
 		),
 	)
 	productSrv := server.New(pgStore, log)
+	productSrv.SetImportLimits(importMaxBytes, importMaxRows)
 	if orderGRPCAddr != "" {
 		orderConn, dialErr := grpc.NewClient(
 			orderGRPCAddr,
@@ -159,10 +162,14 @@ func run() error {
 		_ = shopStatusConsumer.Stop()
 		bgWG.Wait()
 	}()
-	bgWG.Add(1)
+	bgWG.Add(2)
 	go func() {
 		defer bgWG.Done()
 		outboxRelay.Run(ctx)
+	}()
+	go func() {
+		defer bgWG.Done()
+		productSrv.RunImportWorker(ctx, 250*time.Millisecond)
 	}()
 
 	grpcLis, err := net.Listen("tcp", ":"+grpcPort)

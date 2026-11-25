@@ -774,8 +774,14 @@ func TestW3B_Moderation_ProhibitedCategory_BannedKeywords_Preview_Rescan_E10_E11
 		t.Fatalf("admin-approved revProd must stay APPROVED, got %v", revAfter.GetProduct().GetStatus())
 	}
 	outboxAfterFirst := len(mem.OutboxEvents())
-	if outboxAfterFirst-outboxBefore != 1 {
-		t.Fatalf("expected exactly 1 product.reviewed outbox event from rescan, got %d", outboxAfterFirst-outboxBefore)
+	reviewedFromRescan := 0
+	for _, ev := range mem.OutboxEvents()[outboxBefore:] {
+		if ev.EventType == events.SubjectProductReviewed {
+			reviewedFromRescan++
+		}
+	}
+	if reviewedFromRescan != 1 {
+		t.Fatalf("expected exactly 1 product.reviewed outbox event from rescan, got %d", reviewedFromRescan)
 	}
 
 	// Re-run rescan -> 0 newly blocked, 0 newly flagged, 0 duplicate outbox events (E11)!

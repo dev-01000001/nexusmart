@@ -747,6 +747,15 @@ select.sortSelect {
   color: var(--accent-hover);
 }
 
+.paginationNav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
 .careGrid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

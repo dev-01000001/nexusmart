@@ -100,6 +100,44 @@ type Product struct {
 	ShopSuspended   bool
 }
 
+type ProductImportJob struct {
+	ID           string
+	ShopID       string
+	CreatedBy    string
+	Filename     string
+	RawCsv       []byte
+	Status       string
+	TotalRows    int32
+	ValidRows    int32
+	InvalidRows  int32
+	CreatedRows  int32
+	FailedRows   int32
+	ErrorMessage string
+	ClaimedUntil *time.Time
+	ClaimToken   string
+	ConfirmedAt  *time.Time
+	FinishedAt   *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type ProductImportRow struct {
+	ID               string
+	JobID            string
+	RowNumber        int32
+	Status           string
+	ErrorCode        string
+	ErrorMessage     string
+	ProductName      string
+	SkuCode          string
+	CategoryID       string
+	PriceVnd         int64
+	Stock            int32
+	WeightGrams      int32
+	CreatedProductID string
+	RawRowJson       []byte
+}
+
 type ProductReview struct {
 	ID          string
 	ProductID   string

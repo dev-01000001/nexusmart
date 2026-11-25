@@ -162,6 +162,21 @@ func (r *stubRepo) GetShipmentByTrackingCode(_ context.Context, trackingCode str
 	}
 	return nil, store.ErrNotFound
 }
+func (r *stubRepo) GetShipmentsByTrackingCodes(_ context.Context, trackingCodes []string) ([]store.Shipment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	want := make(map[string]bool, len(trackingCodes))
+	for _, c := range trackingCodes {
+		want[c] = true
+	}
+	var out []store.Shipment
+	for _, sh := range r.shipments {
+		if want[sh.TrackingCode] {
+			out = append(out, *sh)
+		}
+	}
+	return out, nil
+}
 func (r *stubRepo) ListShipmentEvents(_ context.Context, shipmentID string) ([]store.ShipmentEvent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

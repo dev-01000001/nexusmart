@@ -1013,6 +1013,9 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 			deliveries: deliveries,
 		}, nil
 
+	case "order.address_updated":
+		return buildOrderAddressUpdatedPlan(env.Payload, now)
+
 	case "order.cancelled":
 		var p struct {
 			OrderID   string `json:"order_id"`
@@ -1550,6 +1553,167 @@ func buildShopStatusChangedPlan(raw json.RawMessage, envOccurredAt string, now t
 			},
 		}},
 	}, nil
+}
+
+type orderAddressUpdatedPayload struct {
+	OrderID           string `json:"order_id"`
+	OrderCode         string `json:"order_code"`
+	BuyerID           string `json:"buyer_id"`
+	ShopID            string `json:"shop_id"`
+	OldFeeVND         int64  `json:"old_fee_vnd"`
+	NewFeeVND         int64  `json:"new_fee_vnd"`
+	TrackingCode      string `json:"tracking_code"`
+	ShipmentRecreated bool   `json:"shipment_recreated"`
+	ShipmentQueued    bool   `json:"shipment_queued"`
+	ProvinceName      string `json:"province_name"`
+	WardName          string `json:"ward_name"`
+}
+
+func buildOrderAddressUpdatedPlan(raw json.RawMessage, now time.Time) (*eventPlan, error) {
+	var p orderAddressUpdatedPayload
+	if err := json.Unmarshal(raw, &p); err != nil ||
+		strings.TrimSpace(p.OrderID) == "" ||
+		strings.TrimSpace(p.ShopID) == "" {
+		return nil, fmt.Errorf("%w: invalid order.address_updated payload", ErrMalformedPayload)
+	}
+	p.OrderID = strings.TrimSpace(p.OrderID)
+	p.OrderCode = strings.TrimSpace(p.OrderCode)
+	p.BuyerID = strings.TrimSpace(p.BuyerID)
+	p.ShopID = strings.TrimSpace(p.ShopID)
+	p.TrackingCode = strings.TrimSpace(p.TrackingCode)
+	p.ProvinceName = strings.TrimSpace(p.ProvinceName)
+	p.WardName = strings.TrimSpace(p.WardName)
+
+	plan := &eventPlan{}
+	if p.BuyerID != "" {
+		plan.cacheOrder = &store.OrderParticipant{
+			OrderID:   p.OrderID,
+			BuyerID:   p.BuyerID,
+			ShopID:    p.ShopID,
+			OrderCode: p.OrderCode,
+		}
+	}
+
+	buildDeliveries := func(buyerID, orderCode string) []recipientDelivery {
+		code := orderLabel(orderCode, p.OrderID)
+		area := formatAddressArea(p.WardName, p.ProvinceName)
+		needsReprint := p.ShipmentRecreated || p.ShipmentQueued
+
+		feeDiff := p.NewFeeVND - p.OldFeeVND
+		feeDelta := ""
+		if feeDiff > 0 {
+			feeDelta = "+" + FormatVND(feeDiff)
+		} else if feeDiff < 0 {
+			feeDelta = FormatVND(feeDiff)
+		}
+
+		sellerTitle := fmt.Sprintf("Đơn hàng %s đã cập nhật địa chỉ giao hàng", code)
+		sellerSubject := fmt.Sprintf("NexusMart - Đơn hàng %s đã cập nhật địa chỉ giao hàng", code)
+		if needsReprint {
+			sellerTitle = fmt.Sprintf("Đơn hàng %s đổi địa chỉ - cần in lại nhãn vận đơn", code)
+			sellerSubject = fmt.Sprintf("NexusMart - Đơn hàng %s đổi địa chỉ giao hàng (cần in lại nhãn vận đơn)", code)
+		}
+
+		var sellerBody strings.Builder
+		if area != "" {
+			fmt.Fprintf(&sellerBody, "Người mua đã cập nhật địa chỉ giao hàng cho đơn hàng %s sang khu vực %s.", code, area)
+		} else {
+			fmt.Fprintf(&sellerBody, "Người mua đã cập nhật địa chỉ giao hàng cho đơn hàng %s.", code)
+		}
+		if feeDiff != 0 {
+			fmt.Fprintf(&sellerBody, " Phí vận chuyển thay đổi từ %s thành %s (%s).", FormatVND(p.OldFeeVND), FormatVND(p.NewFeeVND), feeDelta)
+		}
+		if p.ShipmentRecreated {
+			if p.TrackingCode != "" {
+				fmt.Fprintf(&sellerBody, " Vận đơn cũ đã bị hủy và tạo lại vận đơn mới (mã vận đơn: %s). Vui lòng in lại nhãn vận đơn mới trước khi bàn giao hàng.", p.TrackingCode)
+			} else {
+				sellerBody.WriteString(" Vận đơn cũ đã bị hủy và tạo lại vận đơn mới. Vui lòng in lại nhãn vận đơn mới trước khi bàn giao hàng.")
+			}
+		} else if p.ShipmentQueued {
+			sellerBody.WriteString(" Vận đơn cũ đã bị hủy và hệ thống đang xếp hàng đợi tạo lại vận đơn mới. Vui lòng theo dõi mã vận đơn mới và in lại nhãn vận đơn mới trước khi bàn giao hàng.")
+		}
+
+		deliveries := []recipientDelivery{{
+			role:     "seller",
+			shopID:   p.ShopID,
+			category: store.CategoryOrder,
+			inApp: &store.Notification{
+				Category:  store.CategoryOrder,
+				Title:     sellerTitle,
+				Body:      sellerBody.String(),
+				Link:      sellerOrderLink(p.OrderID),
+				CreatedAt: now,
+			},
+			email: &mailer.Message{
+				Subject: sellerSubject,
+				Body:    sellerBody.String() + "\n",
+			},
+		}}
+
+		if buyerID != "" {
+			var buyerBody strings.Builder
+			if area != "" {
+				fmt.Fprintf(&buyerBody, "Địa chỉ giao hàng của đơn %s đã được cập nhật sang khu vực %s.", code, area)
+			} else {
+				fmt.Fprintf(&buyerBody, "Địa chỉ giao hàng của đơn %s đã được cập nhật thành công.", code)
+			}
+			if feeDiff != 0 {
+				fmt.Fprintf(&buyerBody, " Phí vận chuyển thay đổi từ %s thành %s (%s).", FormatVND(p.OldFeeVND), FormatVND(p.NewFeeVND), feeDelta)
+			}
+			if p.ShipmentRecreated && p.TrackingCode != "" {
+				fmt.Fprintf(&buyerBody, " Mã vận đơn mới: %s.", p.TrackingCode)
+			} else if p.ShipmentQueued {
+				buyerBody.WriteString(" Hệ thống đang cập nhật lại vận đơn cho đơn hàng của bạn.")
+			}
+
+			deliveries = append(deliveries, recipientDelivery{
+				role:     "buyer",
+				userID:   buyerID,
+				category: store.CategoryOrder,
+				inApp: &store.Notification{
+					Category:  store.CategoryOrder,
+					Title:     fmt.Sprintf("Đã cập nhật địa chỉ đơn hàng %s", code),
+					Body:      buyerBody.String(),
+					Link:      orderLink(p.OrderID),
+					CreatedAt: now,
+				},
+			})
+		}
+
+		return deliveries
+	}
+
+	plan.deliveries = buildDeliveries(p.BuyerID, p.OrderCode)
+	if p.BuyerID == "" || p.OrderCode == "" {
+		plan.lookupOrderID = p.OrderID
+		plan.applyParticipant = func(part store.OrderParticipant, found bool) {
+			if !found {
+				return
+			}
+			if p.BuyerID == "" {
+				p.BuyerID = part.BuyerID
+			}
+			if p.OrderCode == "" {
+				p.OrderCode = part.OrderCode
+			}
+			plan.deliveries = buildDeliveries(p.BuyerID, p.OrderCode)
+		}
+	}
+
+	return plan, nil
+}
+
+func formatAddressArea(wardName, provinceName string) string {
+	wardName = strings.TrimSpace(wardName)
+	provinceName = strings.TrimSpace(provinceName)
+	switch {
+	case wardName != "" && provinceName != "":
+		return wardName + ", " + provinceName
+	case wardName != "":
+		return wardName
+	default:
+		return provinceName
+	}
 }
 
 type returnUpdatedPayload struct {

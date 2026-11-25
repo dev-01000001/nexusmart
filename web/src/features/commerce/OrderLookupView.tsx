@@ -1,108 +1,142 @@
 "use client";
 
 import React, { Suspense, useMemo, useState } from "react";
-import Link from "next/link";
-import { ORDER_STATUS_META, PAYMENT_METHOD_LABELS, PAYMENT_STATUS_META, PRODUCTS } from "@/data";
+import { PRODUCTS } from "@/data";
 import { MEDIA_BANNERS } from "@/data/media";
-import type { Order, StatusTone } from "@/data";
-import { formatDateTimeVi, formatVnd } from "@/lib/format";
+import { formatCarrierLabel, formatDateTimeVi, formatVnd } from "@/lib/format";
 import {
-  GUEST_LOOKUP_DEFAULT_PHONE,
-  GUEST_LOOKUP_SAMPLES,
-  cancelGuestSampleOrder,
-  createInitialGuestLookupOrders,
-  lookupGuestSampleOrder,
-  requestEditGuestSampleAddress,
-} from "@/mock/guestOrderLookup";
-import { useMockStore } from "@/mock/MockStoreContext";
-import { Button, IconChat, StateView } from "@/components";
+  ORDER_LOOKUP_NOT_FOUND_MESSAGE,
+  type OrderLookupResponse,
+  type PublicOrderSummary,
+  formatLookupRateLimitMessage,
+  formatPublicOrderArea,
+  translateOrderLookupError,
+} from "@/lib/a8-types";
+import {
+  type BadgeTone,
+  getOrderStatusInfo,
+  getPaymentMethodLabel,
+  getPaymentStatusInfo,
+} from "@/features/account/orderMeta";
+import { Button, StateView } from "@/components";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./OrderLookupView.module.css";
 
-function toneClass(tone: StatusTone): string {
+function toneClass(tone: BadgeTone): string {
   if (tone === "pos") return shared.tonePos;
   if (tone === "warn") return shared.toneWarn;
   if (tone === "neg") return shared.toneNeg;
   return shared.toneNeutral;
 }
 
+type LookupResultState =
+  | { kind: "idle" }
+  | { kind: "loading" }
+  | { kind: "found"; order: PublicOrderSummary }
+  | { kind: "not_found"; message: string }
+  | { kind: "rate_limited"; message: string }
+  | { kind: "error"; message: string };
+
 function OrderLookupContent() {
   const viewState = usePageStateParam();
-  const { openChat, showToast } = useMockStore();
 
-  const [sampleOrders, setSampleOrders] = useState<Order[]>(() => createInitialGuestLookupOrders());
-  const [orderCode, setOrderCode] = useState("NM-261120-109");
-  const [phone, setPhone] = useState(GUEST_LOOKUP_DEFAULT_PHONE);
-  const [searchedKey, setSearchedKey] = useState<{ code: string; phone: string } | null>({
-    code: "NM-261120-109",
-    phone: GUEST_LOOKUP_DEFAULT_PHONE,
-  });
+  const [orderCode, setOrderCode] = useState("");
+  const [phone, setPhone] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
-
-  const [newAddress, setNewAddress] = useState("");
-  const [editReason, setEditReason] = useState("Cập nhật địa chỉ nhận hàng");
-  const [editError, setEditError] = useState<string | null>(null);
-
-  const foundOrder = useMemo(() => {
-    if (!searchedKey) return undefined;
-    return lookupGuestSampleOrder(sampleOrders, searchedKey.code, searchedKey.phone);
-  }, [sampleOrders, searchedKey]);
+  const [lookupState, setLookupState] = useState<LookupResultState>({ kind: "idle" });
 
   const suggestedProducts = useMemo(() => PRODUCTS.slice(2, 6), []);
 
+  const foundOrder = lookupState.kind === "found" ? lookupState.order : null;
+
   useRevealOnScroll(
-    `${viewState ?? "live"}-${foundOrder?.id ?? "none"}-${foundOrder?.status ?? ""}`
+    `${viewState ?? "live"}-${lookupState.kind}-${foundOrder?.order_code ?? "none"}-${foundOrder?.status ?? ""}`
   );
+
+  const runLookup = async (code: string, recipientPhone: string) => {
+    setLookupState({ kind: "loading" });
+    try {
+      const res = await fetch("/api/gw/orders/lookup", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          order_code: code,
+          phone: recipientPhone,
+        }),
+      });
+
+      if (res.status === 404) {
+        setLookupState({
+          kind: "not_found",
+          message: ORDER_LOOKUP_NOT_FOUND_MESSAGE,
+        });
+        return;
+      }
+
+      if (res.status === 429) {
+        setLookupState({
+          kind: "rate_limited",
+          message: formatLookupRateLimitMessage(res.headers.get("retry-after")),
+        });
+        return;
+      }
+
+      if (!res.ok) {
+        let errorCode: string | null = null;
+        try {
+          const errBody = (await res.json()) as { error?: { code?: string } } | null;
+          if (typeof errBody?.error?.code === "string") {
+            errorCode = errBody.error.code;
+          }
+        } catch {
+          // Keep status-based Vietnamese fallback
+        }
+        setLookupState({
+          kind: "error",
+          message: translateOrderLookupError(res.status, errorCode, res.headers.get("retry-after")),
+        });
+        return;
+      }
+
+      const data = (await res.json()) as Partial<OrderLookupResponse> | null;
+      if (!data?.order?.order_code) {
+        setLookupState({
+          kind: "not_found",
+          message: ORDER_LOOKUP_NOT_FOUND_MESSAGE,
+        });
+        return;
+      }
+      setLookupState({ kind: "found", order: data.order });
+    } catch {
+      setLookupState({
+        kind: "error",
+        message: "Kết nối đến hệ thống tra cứu đơn hàng đang tạm gián đoạn. Vui lòng thử lại.",
+      });
+    }
+  };
 
   const handleLookupSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const cleanCode = orderCode.trim();
     const digits = phone.replace(/\D/g, "");
-    if (cleanCode.length < 5) {
-      setFormError("Vui lòng nhập mã đơn hàng hợp lệ (ví dụ: NM-261120-109).");
+    if (cleanCode.length < 3) {
+      setFormError("Vui lòng nhập mã đơn hàng nhận được trong email hoặc mục Đơn hàng của tôi.");
       return;
     }
     if (digits.length < 8) {
-      setFormError("Vui lòng nhập số điện thoại đã dùng khi đặt hàng (tối thiểu 8 chữ số).");
+      setFormError(
+        "Vui lòng nhập số điện thoại người nhận đã dùng khi đặt hàng (tối thiểu 8 chữ số)."
+      );
       return;
     }
     setFormError(null);
-    setSearchedKey({ code: cleanCode, phone: phone.trim() });
-  };
-
-  const handleSelectSample = (code: string, samplePhone: string) => {
-    setOrderCode(code);
-    setPhone(samplePhone);
-    setFormError(null);
-    setSearchedKey({ code, phone: samplePhone });
-  };
-
-  const handleCancelSample = (targetOrderId: string) => {
-    setSampleOrders((prev) =>
-      cancelGuestSampleOrder(
-        prev,
-        targetOrderId,
-        "Người mua tự hủy trên trang tra cứu trước khi đóng gói."
-      )
-    );
-    showToast("Đã hủy đơn hàng trước khi đóng gói.");
-  };
-
-  const handleEditAddress = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!foundOrder) return;
-    if (newAddress.trim().length < 10) {
-      setEditError("Vui lòng nhập đầy đủ số nhà, Phường/Xã và Tỉnh/Thành phố mới.");
-      return;
-    }
-    setEditError(null);
-    setSampleOrders((prev) =>
-      requestEditGuestSampleAddress(prev, foundOrder.id, newAddress, editReason)
-    );
-    showToast("Đã ghi nhận yêu cầu đổi địa chỉ giao hàng.");
-    setNewAddress("");
+    void runLookup(cleanCode, phone.trim());
   };
 
   const renderHeader = (subtitle: string) => (
@@ -171,7 +205,7 @@ function OrderLookupContent() {
           <StateView
             kind="empty"
             title="Chưa nhập mã đơn cần tra cứu"
-            message="Mở lại trang tra cứu và chọn một mã đơn như NM-261120-109 để xem chi tiết hành trình giao hàng."
+            message="Nhập mã đơn hàng trong email xác nhận kèm số điện thoại người nhận để xem tiến trình giao hàng."
             actionLabel="Mở tra cứu đơn"
             actionHref="/tra-cuu-don-hang"
           />
@@ -181,29 +215,27 @@ function OrderLookupContent() {
     );
   }
 
-  const statusMeta = foundOrder ? ORDER_STATUS_META[foundOrder.status] : null;
-  const payMeta = foundOrder?.paymentStatus ? PAYMENT_STATUS_META[foundOrder.paymentStatus] : null;
-  const needsRetry = Boolean(
-    foundOrder &&
-    (foundOrder.paymentStatus === "cho_thanh_toan" ||
-      foundOrder.paymentStatus === "thanh_toan_that_bai")
-  );
-  const canEditAddr = Boolean(
-    foundOrder &&
-    (foundOrder.status === "cho_xac_nhan" ||
-      foundOrder.status === "dang_chuan_bi" ||
-      foundOrder.status === "dang_giao")
-  );
+  const statusMeta = foundOrder ? getOrderStatusInfo(foundOrder.status) : null;
+  const payMeta = foundOrder
+    ? getPaymentStatusInfo(foundOrder.payment_status, foundOrder.payment_method, foundOrder.status)
+    : null;
+  const sortedTimeline = foundOrder
+    ? [...(foundOrder.timeline ?? [])].sort((a, b) => {
+        const ta = a.created_at ? Date.parse(a.created_at) : 0;
+        const tb = b.created_at ? Date.parse(b.created_at) : 0;
+        return tb - ta;
+      })
+    : [];
+  const isSubmitting = lookupState.kind === "loading";
 
   return (
     <div className={shared.page}>
       {renderHeader(
-        "Nhập mã đơn và số điện thoại để theo dõi hành trình giao hàng, không cần đăng nhập."
+        "Nhập mã đơn hàng và số điện thoại người nhận để theo dõi tiến trình giao nhận mà không cần đăng nhập."
       )}
 
       <section className={shared.section}>
         <div className={styles.lookupLayout}>
-          {/* Left: Single white search surface + unboxed reassurance below */}
           <div className={styles.lookupCol}>
             <div
               className={styles.lookupPanel}
@@ -224,7 +256,9 @@ function OrderLookupContent() {
                       className={shared.input}
                       value={orderCode}
                       onChange={(e) => setOrderCode(e.target.value)}
-                      placeholder="Ví dụ: NM-261120-109"
+                      placeholder="Nhập mã đơn hàng của bạn"
+                      autoComplete="off"
+                      disabled={isSubmitting}
                     />
                   </div>
                   <div className={`${shared.field} ${shared.formFull}`}>
@@ -237,7 +271,9 @@ function OrderLookupContent() {
                       className={shared.input}
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
-                      placeholder="0912 486 305"
+                      placeholder="Ví dụ: 0912345678"
+                      autoComplete="tel"
+                      disabled={isSubmitting}
                     />
                   </div>
                 </div>
@@ -249,33 +285,17 @@ function OrderLookupContent() {
                 )}
 
                 <div className={shared.formActions} style={{ marginTop: 16 }}>
-                  <Button type="submit" variant="primary" size="md" fullWidth>
-                    Tra cứu đơn hàng
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    size="md"
+                    fullWidth
+                    disabled={isSubmitting}
+                  >
+                    {isSubmitting ? "Đang tra cứu..." : "Tra cứu đơn hàng"}
                   </Button>
                 </div>
               </form>
-
-              <div className={styles.sampleWrap}>
-                <p className={shared.fieldLabel}>Chọn nhanh một đơn gần đây</p>
-                <div className={styles.sampleList}>
-                  {GUEST_LOOKUP_SAMPLES.map((sample, idx) => {
-                    const isActive = searchedKey?.code.toUpperCase() === sample.code.toUpperCase();
-                    return (
-                      <button
-                        key={sample.code}
-                        type="button"
-                        data-rise=""
-                        style={{ "--i": Math.min(idx + 3, 6) } as React.CSSProperties}
-                        className={`${styles.sampleBtn} ${isActive ? styles.sampleBtnActive : ""}`}
-                        onClick={() => handleSelectSample(sample.code, sample.phone)}
-                      >
-                        <span className={`${styles.sampleCode} num`}>{sample.code}</span>
-                        <span className={styles.sampleHint}>{sample.hint}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
             </div>
 
             <div className={styles.guideBlock} data-reveal="">
@@ -288,296 +308,225 @@ function OrderLookupContent() {
               />
               <div className={styles.guideList}>
                 <p className={styles.bodyCopy}>
-                  Thông báo hành trình vận đơn và bản nháp hóa đơn VAT được gửi tự động qua{" "}
-                  <strong>Email</strong> và <strong>Zalo OA NexusMart</strong>.
+                  Để bảo vệ quyền riêng tư, trang tra cứu công khai chỉ hiển thị thông tin người
+                  nhận đã che và khu vực giao hàng (Phường/Xã, Tỉnh/Thành phố).
                 </p>
                 <p className={styles.bodyCopy}>
-                  Đặt hàng không cần tài khoản vẫn được hủy trước khi đóng gói, gửi yêu cầu đổi địa
-                  chỉ và hưởng trọn đổi trả 7 ngày.
+                  Cần sửa địa chỉ, hủy đơn, thanh toán lại hoặc yêu cầu trả hàng? Vui lòng đăng nhập
+                  vào mục <strong>Đơn hàng của tôi</strong>.
                 </p>
               </div>
             </div>
           </div>
 
-          {/* Right: Single white order result sheet */}
           <div
             className={styles.resultCol}
             data-rise=""
             style={{ "--i": 3 } as React.CSSProperties}
           >
-            {!foundOrder ? (
+            {lookupState.kind === "idle" && (
               <StateView
                 kind="empty"
-                title="Không tìm thấy đơn hàng khớp mã và số điện thoại"
-                message="Kiểm tra lại mã đơn gửi trong email xác nhận hoặc chọn nhanh một đơn bên trái."
-                actionLabel="Xem đơn NM-261120-109"
-                onAction={() => handleSelectSample("NM-261120-109", GUEST_LOOKUP_DEFAULT_PHONE)}
+                title="Nhập mã đơn và số điện thoại để bắt đầu"
+                message="Hệ thống sẽ tra cứu trực tiếp trạng thái xử lý, mã vận đơn và lịch sử giao hàng của đơn hàng."
+                actionLabel="Mở đơn hàng của tôi"
+                actionHref="/don-hang"
               />
-            ) : (
+            )}
+
+            {lookupState.kind === "loading" && (
+              <StateView kind="loading" title="Đang tra cứu thông tin đơn hàng..." rows={4} />
+            )}
+
+            {lookupState.kind === "not_found" && (
+              <StateView
+                kind="empty"
+                title="Không tìm thấy đơn hàng"
+                message={lookupState.message}
+                actionLabel="Đăng nhập xem đơn của tôi"
+                actionHref="/don-hang"
+              />
+            )}
+
+            {lookupState.kind === "rate_limited" && (
+              <StateView
+                kind="error"
+                title="Tạm giới hạn lượt tra cứu"
+                message={lookupState.message}
+                actionLabel="Đăng nhập xem đơn của tôi"
+                actionHref="/don-hang"
+              />
+            )}
+
+            {lookupState.kind === "error" && (
+              <StateView
+                kind="error"
+                title="Chưa thể tra cứu đơn hàng"
+                message={lookupState.message}
+                actionLabel="Thử lại"
+                onAction={() => {
+                  const cleanCode = orderCode.trim();
+                  if (cleanCode && phone.replace(/\D/g, "").length >= 8) {
+                    void runLookup(cleanCode, phone.trim());
+                  }
+                }}
+              />
+            )}
+
+            {foundOrder && statusMeta && payMeta && (
               <div className={styles.resultCard}>
-                {/* Dark header band for clear hierarchy */}
                 <div className={styles.resultBanner}>
                   <div className={styles.resultTitleGroup}>
-                    <h2 className={`${styles.resultOrderCode} num`}>{foundOrder.orderCode}</h2>
+                    <h2 className={`${styles.resultOrderCode} num`}>{foundOrder.order_code}</h2>
                     <p className={styles.resultBannerMeta}>
-                      {foundOrder.shopName} · Đặt lúc {formatDateTimeVi(foundOrder.createdAt)}
+                      {foundOrder.created_at
+                        ? `Đặt lúc ${formatDateTimeVi(foundOrder.created_at)}`
+                        : "Thông tin đơn hàng trên NexusMart"}
                     </p>
                     <div className={styles.badgeGroup}>
-                      {payMeta && (
-                        <span className={`${shared.statusTag} ${toneClass(payMeta.tone)}`}>
-                          {payMeta.label}
-                        </span>
-                      )}
-                      {statusMeta && (
-                        <span className={`${shared.statusTag} ${toneClass(statusMeta.tone)}`}>
-                          {statusMeta.label}
-                        </span>
-                      )}
+                      <span className={`${shared.statusTag} ${toneClass(payMeta.tone)}`}>
+                        {payMeta.label}
+                      </span>
+                      <span className={`${shared.statusTag} ${toneClass(statusMeta.tone)}`}>
+                        {statusMeta.label}
+                      </span>
                     </div>
                   </div>
                   <div className={styles.resultTotalCluster}>
                     <span className={styles.resultBannerMeta}>Tổng thanh toán</span>
                     <span className={`${styles.resultTotalVal} num`}>
-                      {formatVnd(foundOrder.total)}
+                      {formatVnd(foundOrder.total_payable_vnd)}
                     </span>
                   </div>
                 </div>
 
                 <div className={styles.sheetBody}>
-                  {needsRetry && (
-                    <div
-                      className={shared.retryBox}
-                      role="region"
-                      aria-label={`Thông tin chờ thanh toán đơn ${foundOrder.orderCode}`}
-                      data-rise=""
-                      style={{ "--i": 4 } as React.CSSProperties}
-                    >
-                      <div className={shared.retryHead}>
-                        <p className={shared.retryTitle}>
-                          Đơn <span className="num">{foundOrder.orderCode}</span> đang chờ hoàn tất
-                          thanh toán
-                        </p>
-                        <span className={`${shared.statusTag} ${shared.toneWarn} num`}>
-                          Cần thanh toán: {formatVnd(foundOrder.total)}
-                        </span>
-                      </div>
-                      <p className={shared.retryText}>
-                        Giao dịch chuyển khoản trước đó chưa hoàn tất. Các sản phẩm đúng màu và size
-                        vẫn đang được giữ chỗ
-                        {foundOrder.paymentDueAt
-                          ? ` đến ${formatDateTimeVi(foundOrder.paymentDueAt)}`
-                          : ""}
-                        . Đăng nhập vào tài khoản mua hàng để mở lại mã VietQR và hoàn tất thanh
-                        toán an toàn.
-                      </p>
-                      <div className={shared.formActions}>
-                        <Button variant="primary" size="md" href="/don-hang">
-                          Đăng nhập để thanh toán lại
-                        </Button>
-                        <Button variant="secondary" size="md" href="/tro-giup">
-                          Liên hệ hỗ trợ
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Unboxed 2-column order summary details */}
                   <div className={styles.sheetSectionFirst}>
                     <h3 className={styles.sheetHeading}>Thông tin giao nhận</h3>
                     <dl className={styles.infoGrid}>
-                      <div className={styles.infoTile} data-reveal="">
-                        <dt className={styles.infoKey}>Địa chỉ nhận hàng</dt>
+                      <div className={styles.infoTile}>
+                        <dt className={styles.infoKey}>Người nhận &amp; khu vực</dt>
                         <dd className={styles.infoVal}>
-                          {foundOrder.buyerName} · {foundOrder.buyerPhone}
+                          {[foundOrder.recipient_name_masked, foundOrder.recipient_phone_masked]
+                            .filter(Boolean)
+                            .join(" · ") || "Thông tin đã được che"}
                         </dd>
-                        <dd className={styles.infoSub}>{foundOrder.shippingAddress}</dd>
+                        <dd className={styles.infoSub}>
+                          {formatPublicOrderArea(foundOrder.ward_name, foundOrder.province_name)}
+                        </dd>
                       </div>
-                      <div className={styles.infoTile} data-reveal="">
-                        <dt className={styles.infoKey}>Giao hàng & Thông báo</dt>
+
+                      <div className={styles.infoTile}>
+                        <dt className={styles.infoKey}>Đơn vị vận chuyển</dt>
                         <dd className={`${styles.infoVal} num`}>
-                          {foundOrder.carrier ?? "SPX"} ·{" "}
-                          {foundOrder.trackingCode ?? "Đang cấp mã vận đơn"}
+                          {foundOrder.carrier_code
+                            ? formatCarrierLabel(foundOrder.carrier_code)
+                            : "Đang sắp xếp vận chuyển"}
                         </dd>
-                        <dd className={styles.infoSub}>
-                          Nhận thông báo qua Email và Zalo OA NexusMart
-                        </dd>
-                      </div>
-                      <div className={styles.infoTile} data-reveal="">
-                        <dt className={styles.infoKey}>Phương thức thanh toán</dt>
-                        <dd className={styles.infoVal}>
-                          {PAYMENT_METHOD_LABELS[foundOrder.paymentMethod]}
-                        </dd>
-                        <dd className={styles.infoSub}>
-                          {foundOrder.isPaid ? "Đã thanh toán" : "Chưa thanh toán / Thu hộ"}
+                        <dd className={`${styles.infoSub} num`}>
+                          {foundOrder.tracking_code
+                            ? `Mã vận đơn: ${foundOrder.tracking_code}`
+                            : "Chưa có mã vận đơn"}
                         </dd>
                       </div>
-                      <div className={styles.infoTile} data-reveal="">
-                        <dt className={styles.infoKey}>Quyền lợi đi kèm</dt>
+
+                      <div className={styles.infoTile}>
+                        <dt className={styles.infoKey}>Thanh toán</dt>
                         <dd className={styles.infoVal}>
-                          {foundOrder.coInspectionEnabled
-                            ? "Mở kiểm tra khi nhận hàng"
-                            : "Giao tiêu chuẩn"}
+                          {getPaymentMethodLabel(foundOrder.payment_method)}
                         </dd>
-                        <dd className={styles.infoSub}>Đổi size 2 chiều tận nơi trong 7 ngày</dd>
+                        <dd className={`${styles.infoSub} num`}>
+                          Tiền hàng: {formatVnd(foundOrder.subtotal_vnd)} · Phí giao hàng:{" "}
+                          {formatVnd(foundOrder.shipping_fee_vnd)}
+                        </dd>
+                      </div>
+
+                      <div className={styles.infoTile}>
+                        <dt className={styles.infoKey}>Cập nhật gần nhất</dt>
+                        <dd className={`${styles.infoVal} num`}>
+                          {foundOrder.updated_at
+                            ? formatDateTimeVi(foundOrder.updated_at)
+                            : statusMeta.label}
+                        </dd>
+                        <dd className={styles.infoSub}>
+                          {foundOrder.delivered_at
+                            ? `Giao thành công lúc ${formatDateTimeVi(foundOrder.delivered_at)}`
+                            : statusMeta.description}
+                        </dd>
                       </div>
                     </dl>
                   </div>
 
-                  {/* Products */}
-                  <div className={styles.sheetSection}>
-                    <h3 className={styles.sheetHeading}>Sản phẩm trong đơn</h3>
-                    <div className={styles.itemList}>
-                      {foundOrder.items.map((item) => (
-                        <div key={item.skuCode} className={styles.itemRow} data-reveal="">
-                          <img
-                            src={item.image}
-                            alt={item.productName}
-                            width={896}
-                            height={1200}
-                            className={styles.itemImg}
-                          />
-                          <div className={styles.itemInfo}>
-                            <Link
-                              href={`/san-pham/${item.productSlug}`}
-                              className={styles.itemName}
-                            >
-                              {item.productName}
-                            </Link>
-                            <span className={styles.itemMeta}>
-                              Màu: {item.colorName} · Size {item.size} · SL {item.quantity}
+                  {Array.isArray(foundOrder.items) && foundOrder.items.length > 0 && (
+                    <div className={styles.sheetSection}>
+                      <h3 className={styles.sheetHeading}>Sản phẩm trong đơn</h3>
+                      <div className={styles.itemList}>
+                        {foundOrder.items.map((item, idx) => (
+                          <div
+                            key={`${item.product_name}-${item.sku_name}-${idx}`}
+                            className={styles.itemRow}
+                            style={{ gridTemplateColumns: "minmax(0, 1fr) auto" }}
+                          >
+                            <div className={styles.itemInfo}>
+                              <span className={styles.itemName}>{item.product_name}</span>
+                              <span className={styles.itemMeta}>
+                                {item.sku_name ? `${item.sku_name} · ` : ""}SL {item.quantity}
+                              </span>
+                            </div>
+                            <span className={`${styles.itemPrice} num`}>
+                              {formatVnd(item.line_total_vnd)}
                             </span>
                           </div>
-                          <span className={`${styles.itemPrice} num`}>
-                            {formatVnd(item.lineTotal)}
-                          </span>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
-                  </div>
+                  )}
 
-                  {/* Timeline */}
                   <div className={styles.sheetSection}>
                     <h3 className={styles.sheetHeading}>Hành trình đơn hàng</h3>
-                    <ol className={styles.timelineList}>
-                      {foundOrder.timeline
-                        .slice()
-                        .reverse()
-                        .map((ev, i) => (
-                          <li
-                            key={`${ev.timestamp}-${i}`}
-                            className={`${styles.timelineRow} ${
-                              i === 0 ? styles.timelineRowLatest : ""
-                            }`}
-                            data-reveal=""
-                          >
-                            <span className={`${styles.timelineTime} num`}>
-                              {formatDateTimeVi(ev.timestamp)}
-                            </span>
-                            <div>
-                              <p className={styles.infoVal}>{ev.title}</p>
-                              <p className={styles.bodyCopy}>{ev.note}</p>
-                            </div>
-                          </li>
-                        ))}
-                    </ol>
+                    {sortedTimeline.length > 0 ? (
+                      <ol className={styles.timelineList}>
+                        {sortedTimeline.map((ev, i) => {
+                          const evMeta = getOrderStatusInfo(ev.to_status);
+                          return (
+                            <li
+                              key={`${ev.to_status}-${ev.created_at ?? i}-${i}`}
+                              className={`${styles.timelineRow} ${
+                                i === 0 ? styles.timelineRowLatest : ""
+                              }`}
+                            >
+                              <span className={`${styles.timelineTime} num`}>
+                                {ev.created_at ? formatDateTimeVi(ev.created_at) : "—"}
+                              </span>
+                              <div>
+                                <p className={styles.infoVal}>{evMeta.label}</p>
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ol>
+                    ) : (
+                      <p className={styles.bodyCopy}>
+                        Chưa có mốc cập nhật hành trình cho đơn này.
+                      </p>
+                    )}
                   </div>
 
-                  {/* Self-cancel */}
-                  {foundOrder.status === "cho_xac_nhan" && (
-                    <div className={styles.guestActionBlock} data-reveal="">
-                      <h3 className={styles.sheetHeading}>Hủy đơn trước khi đóng gói</h3>
-                      <p className={styles.bodyCopy}>
-                        Bạn có thể hủy ngay khi xưởng chưa đóng gói. Nếu đã thanh toán trước, tiền
-                        được hoàn về tài khoản gốc trong vòng 24 giờ.
-                      </p>
-                      <div className={shared.formActions}>
-                        <Button
-                          variant="danger"
-                          size="sm"
-                          onClick={() => handleCancelSample(foundOrder.id)}
-                        >
-                          Hủy đơn {foundOrder.orderCode}
-                        </Button>
-                      </div>
+                  <div className={styles.guestActionBlock}>
+                    <h3 className={styles.sheetHeading}>Thao tác với đơn hàng</h3>
+                    <p className={styles.bodyCopy}>
+                      Để thay đổi địa chỉ nhận hàng, hủy đơn, thanh toán lại hoặc gửi yêu cầu trả
+                      hàng, vui lòng đăng nhập tài khoản đặt hàng của bạn.
+                    </p>
+                    <div className={shared.formActions}>
+                      <Button variant="primary" size="sm" href="/don-hang">
+                        Đăng nhập để quản lý đơn hàng
+                      </Button>
+                      <Button variant="secondary" size="sm" href="/tro-giup">
+                        Trung tâm trợ giúp
+                      </Button>
                     </div>
-                  )}
-
-                  {/* Edit address / support request */}
-                  {canEditAddr && (
-                    <form
-                      className={styles.guestActionBlock}
-                      onSubmit={handleEditAddress}
-                      noValidate
-                      data-reveal=""
-                    >
-                      <h3 className={styles.sheetHeading}>Yêu cầu đổi địa chỉ nhận hàng</h3>
-                      {foundOrder.addressEditRequest && (
-                        <p className={`${shared.feedbackBox} ${shared.feedbackSuccess}`}>
-                          Đã ghi nhận địa chỉ mới: {foundOrder.addressEditRequest.requestedAddress}{" "}
-                          (
-                          {foundOrder.addressEditRequest.status === "da_cap_nhat"
-                            ? "Đã cập nhật"
-                            : "Chờ xưởng duyệt"}
-                          ).
-                        </p>
-                      )}
-                      <div className={shared.formGrid}>
-                        <div className={`${shared.field} ${shared.formFull}`}>
-                          <label htmlFor="guest-edit-addr" className={shared.fieldLabel}>
-                            Địa chỉ giao hàng mới
-                          </label>
-                          <input
-                            id="guest-edit-addr"
-                            type="text"
-                            className={shared.input}
-                            value={newAddress}
-                            onChange={(e) => setNewAddress(e.target.value)}
-                            placeholder="Số nhà, đường, Phường/Xã, Tỉnh/Thành phố"
-                          />
-                        </div>
-                        <div className={`${shared.field} ${shared.formFull}`}>
-                          <label htmlFor="guest-edit-reason" className={shared.fieldLabel}>
-                            Loại yêu cầu
-                          </label>
-                          <select
-                            id="guest-edit-reason"
-                            className={shared.select}
-                            value={editReason}
-                            onChange={(e) => setEditReason(e.target.value)}
-                          >
-                            <option value="Cập nhật địa chỉ nhận hàng">
-                              Cập nhật địa chỉ nhận hàng
-                            </option>
-                            <option value="Yêu cầu hủy muộn trước khi giao bưu tá">
-                              Yêu cầu hủy đơn trước khi giao bưu tá
-                            </option>
-                          </select>
-                        </div>
-                      </div>
-                      {editError && (
-                        <p className={shared.fieldError} role="alert">
-                          {editError}
-                        </p>
-                      )}
-                      <div className={shared.formActions}>
-                        <Button type="submit" variant="ink" size="sm">
-                          Gửi yêu cầu cập nhật
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => openChat(foundOrder.shopId)}
-                        >
-                          <IconChat size={14} />
-                          <span>Nhắn tin cho xưởng</span>
-                        </Button>
-                        <Button variant="secondary" size="sm" href="/don-hang">
-                          Đơn hàng của tôi
-                        </Button>
-                      </div>
-                    </form>
-                  )}
+                  </div>
                 </div>
               </div>
             )}

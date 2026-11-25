@@ -53,6 +53,7 @@
     "carriers.write": ["super_admin", "admin", "ops"],
     "payment_methods.read": ["super_admin", "admin", "accountant", "ops"],
     "payment_methods.write": ["super_admin", "admin", "ops"],
-    "approvals.read": ["super_admin", "admin", "moderator", "cskh", "accountant", "ops"]
+    "approvals.read": ["super_admin", "admin", "moderator", "cskh", "accountant", "ops"],
+    "search.reindex": ["super_admin", "admin", "ops"]
   }
 }

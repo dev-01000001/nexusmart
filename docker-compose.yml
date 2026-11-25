@@ -18,6 +18,39 @@ services:
       timeout: 5s
       retries: 15
 
+  # Dedicated pgvector Postgres for search_db (G13): keeps shared postgres on postgres:16-alpine to avoid musl/glibc collation corruption; pinned >= 0.8 for hnsw.iterative_scan.
+  search-postgres:
+    image: pgvector/pgvector:0.8.7-pg16
+    mem_limit: 384m
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nexusmart}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexusmart_dev_password}
+      POSTGRES_DB: search_db
+    volumes:
+      - search_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-nexusmart} -d search_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  # Meilisearch Community pinned per ADR-0004/G13; internal compose network only (no host port published).
+  meilisearch:
+    image: getmeili/meilisearch:v1.58.0
+    mem_limit: 512m
+    environment:
+      MEILI_ENV: ${MEILI_ENV:-production}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-dev-only-meilisearch-master-key-change-me}
+      MEILI_NO_ANALYTICS: ${MEILI_NO_ANALYTICS:-true}
+      MEILI_MAX_INDEXING_MEMORY: ${MEILI_MAX_INDEXING_MEMORY:-256Mb}
+    volumes:
+      - meilisearch_data:/meili_data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:7700/health || curl -fsS http://127.0.0.1:7700/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
@@ -133,6 +166,8 @@ services:
       # Lazy gRPC dial targets for review verification/display (E5/E6); never add order/user to product.depends_on (avoids cycle).
       ORDER_GRPC_ADDR: order:50055
       USER_GRPC_ADDR: user:50051
+      PRODUCT_IMPORT_MAX_ROWS: ${PRODUCT_IMPORT_MAX_ROWS:-1000}
+      PRODUCT_IMPORT_MAX_BYTES: ${PRODUCT_IMPORT_MAX_BYTES:-1048576}
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
@@ -397,6 +432,7 @@ services:
       ORDER_RETURN_SELLER_RESPONSE_DAYS: ${ORDER_RETURN_SELLER_RESPONSE_DAYS:-3}
       ORDER_RETURN_SHIP_DAYS: ${ORDER_RETURN_SHIP_DAYS:-5}
       ORDER_RETURN_INSPECT_DAYS: ${ORDER_RETURN_INSPECT_DAYS:-3}
+      ORDER_BATCH_SHIP_MAX_ITEMS: ${ORDER_BATCH_SHIP_MAX_ITEMS:-50}
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
@@ -429,6 +465,59 @@ services:
       timeout: 3s
       retries: 20
 
+  search:
+    build:
+      context: .
+      dockerfile: services/search/Dockerfile
+    environment:
+      SERVICE_NAME: search
+      GRPC_PORT: "50059"
+      HTTP_PORT: "8089"
+      DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@search-postgres:5432/search_db?sslmode=disable
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
+      NATS_DLQ_STREAM: ${NATS_DLQ_STREAM:-NEXUSMART_DLQ}
+      MEILISEARCH_URL: ${MEILISEARCH_URL:-http://meilisearch:7700}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-dev-only-meilisearch-master-key-change-me}
+      PRODUCT_GRPC_ADDR: product:50052
+      USER_GRPC_ADDR: user:50051
+      EMBEDDING_MODE: ${EMBEDDING_MODE:-mock}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-1536}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      SEARCH_RRF_K: ${SEARCH_RRF_K:-60}
+      SEARCH_MEILI_TIMEOUT_MS: ${SEARCH_MEILI_TIMEOUT_MS:-1500}
+      SEARCH_VECTOR_TIMEOUT_MS: ${SEARCH_VECTOR_TIMEOUT_MS:-800}
+      SEARCH_VECTOR_MIN_SIMILARITY: ${SEARCH_VECTOR_MIN_SIMILARITY:-0.25}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:-dev-only-nexusmart-service-hs256-secret-change-me}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "127.0.0.1:${SEARCH_HTTP_PORT:-8089}:8089"
+    depends_on:
+      search-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      meilisearch:
+        condition: service_started
+      user:
+        condition: service_healthy
+      product:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8089/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   gateway:
     build:
       context: .
@@ -445,7 +534,12 @@ services:
       RATE_LIMIT_BANK_OTP_PER_MIN: ${RATE_LIMIT_BANK_OTP_PER_MIN:-5}
       RATE_LIMIT_PHONE_OTP_PER_MIN: ${RATE_LIMIT_PHONE_OTP_PER_MIN:-5}
       RATE_LIMIT_SHIPPING_FEE_PER_MIN: ${RATE_LIMIT_SHIPPING_FEE_PER_MIN:-30}
+      RATE_LIMIT_ORDER_LOOKUP_PER_MIN: ${RATE_LIMIT_ORDER_LOOKUP_PER_MIN:-10}
+      RATE_LIMIT_ORDER_LOOKUP_CODE_PER_10MIN: ${RATE_LIMIT_ORDER_LOOKUP_CODE_PER_10MIN:-5}
       RATE_LIMIT_WEBHOOK_PER_MIN: ${RATE_LIMIT_WEBHOOK_PER_MIN:-600}
+      PRODUCT_IMPORT_MAX_ROWS: ${PRODUCT_IMPORT_MAX_ROWS:-1000}
+      PRODUCT_IMPORT_MAX_BYTES: ${PRODUCT_IMPORT_MAX_BYTES:-1048576}
+      SEARCH_FALLBACK_TIMEOUT_MS: ${SEARCH_FALLBACK_TIMEOUT_MS:-1500}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-web}
       USER_GRPC_ADDR: user:50051
       PRODUCT_GRPC_ADDR: product:50052
@@ -457,6 +551,7 @@ services:
       SHIPPING_GRPC_ADDR: shipping:50057
       SHIPPING_HTTP_URL: http://shipping:8087
       NOTIFICATION_GRPC_ADDR: notification:50058
+      SEARCH_GRPC_ADDR: search:50059
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
       OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -481,6 +576,8 @@ services:
         condition: service_healthy
       notification:
         condition: service_healthy
+      search:
+        condition: service_started
       otel-collector:
         condition: service_started
     healthcheck:
@@ -534,12 +631,16 @@ services:
       PAYMENT_HTTP_URL: http://payment:8086
       SHIPPING_HTTP_URL: http://shipping:8087
       NOTIFICATION_HTTP_URL: http://notification:8088
+      SEARCH_HTTP_URL: http://search:8089
       USER_GRPC_ADDR: user:50051
       PROMOTION_GRPC_ADDR: promotion:50054
       PRODUCT_GRPC_ADDR: product:50052
       ORDER_GRPC_ADDR: order:50055
       PAYMENT_GRPC_ADDR: payment:50056
       SHIPPING_GRPC_ADDR: shipping:50057
+      SEARCH_GRPC_ADDR: search:50059
+      MEILISEARCH_URL: ${MEILISEARCH_URL:-http://meilisearch:7700}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-dev-only-meilisearch-master-key-change-me}
       OTEL_PROM_URL: http://otel-collector:8889/metrics
       OTEL_HEALTH_URL: http://otel-collector:13133/
       MAILPIT_URL: http://mailpit:8025
@@ -563,5 +664,7 @@ services:
 
 volumes:
   postgres_data:
+  search_postgres_data:
+  meilisearch_data:
   redis_data:
   nats_data:

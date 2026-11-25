@@ -69,6 +69,7 @@ const (
 	CapPaymentMethodsRead    = "payment_methods.read"
 	CapPaymentMethodsWrite   = "payment_methods.write"
 	CapApprovalsRead         = "approvals.read"
+	CapSearchReindex         = "search.reindex"
 )
 
 //go:embed capabilities.json

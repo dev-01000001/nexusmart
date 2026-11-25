@@ -1,6 +1,9 @@
 import React, { Suspense } from "react";
 import { notFound, redirect } from "next/navigation";
 import type {
+  GatewayActiveShopDiscount,
+  GatewayFlashSale,
+  GatewayFlashSalesResponse,
   GatewayOrder,
   GatewayPayment,
   GatewayPaymentResponse,
@@ -10,6 +13,10 @@ import type {
 } from "@/lib/gateway-types";
 import { requireUser } from "@/lib/server/auth";
 import { GatewayError, gatewayFetch } from "@/lib/server/gateway";
+import { fetchActiveShopDiscounts } from "@/lib/catalog";
+import { buildActiveShopDiscountsMap, buildLiveFlashItemsBySkuId } from "@/lib/catalog-mapper";
+import { enrichProductsWithPromotions } from "@/lib/search-client";
+import { DEFAULT_SHOP_LOOKUP_CONCURRENCY, lookupShopsByIdsWithFetcher } from "@/lib/shop-lookup";
 import { StateView } from "@/components";
 import shared from "@/features/commerce/commerce.module.css";
 import { PaymentWaitingClient } from "./PaymentWaitingClient";
@@ -90,11 +97,17 @@ export default async function PaymentWaitingPage({ params }: PageProps) {
   const orderIds =
     allocatedIds.length > 0 ? allocatedIds : payment?.order_id ? [payment.order_id] : [];
 
-  const [productsRes, shopsRes, ...orderResults] = await Promise.allSettled([
+  const [productsRes, shopsRes, flashSalesRes, ...orderResults] = await Promise.allSettled([
     gatewayFetch<PaginatedResponse<GatewayProduct>>("/products?page_size=4", {
+      token: false,
       cache: "no-store",
     }),
-    gatewayFetch<PaginatedResponse<GatewayPublicShop>>("/shops?page_size=50", {
+    gatewayFetch<PaginatedResponse<GatewayPublicShop>>("/shops?page_size=100", {
+      token: false,
+      cache: "no-store",
+    }),
+    gatewayFetch<GatewayFlashSalesResponse>("/flash-sales?include_upcoming=false", {
+      token: false,
       cache: "no-store",
     }),
     ...orderIds.map((orderId) =>
@@ -111,15 +124,67 @@ export default async function PaymentWaitingPage({ params }: PageProps) {
     }
   }
 
-  const suggestedProducts: GatewayProduct[] =
+  const rawSuggestedProducts: GatewayProduct[] =
     productsRes.status === "fulfilled" ? (productsRes.value?.items ?? []).slice(0, 4) : [];
+  const rawFlashSales: GatewayFlashSale[] =
+    flashSalesRes.status === "fulfilled" && Array.isArray(flashSalesRes.value?.flash_sales)
+      ? flashSalesRes.value.flash_sales
+      : [];
 
-  const shopNameById: Record<string, string> = {};
+  const existingShopMap: Record<string, GatewayPublicShop> = {};
   if (shopsRes.status === "fulfilled" && Array.isArray(shopsRes.value?.items)) {
     for (const s of shopsRes.value.items) {
-      shopNameById[s.id] = s.name;
+      if (s?.id) existingShopMap[s.id] = s;
     }
   }
+
+  // §10-3 + §10: hydrate shop #101+ names via GET /shops/{id} (concurrency <= 8)
+  // and fetch active shop discounts for suggested strip SKUs.
+  const neededShopIds = Array.from(
+    new Set([
+      ...(payment?.shop_allocations ?? []).map((a) => a.shop_id),
+      ...initialOrders.map((o) => o.shop_id),
+      ...rawSuggestedProducts.map((p) => p.shop_id),
+    ])
+  ).filter(Boolean);
+
+  const suggestedSkuIds = Array.from(
+    new Set(
+      rawSuggestedProducts.flatMap((p) =>
+        (p.skus ?? []).filter((s) => s.is_active !== false && s.id).map((s) => s.id)
+      )
+    )
+  );
+
+  const [resolvedShopMap, activeShopDiscounts] = await Promise.all([
+    lookupShopsByIdsWithFetcher(
+      neededShopIds,
+      async (id) => {
+        const res = await gatewayFetch<{ shop?: GatewayPublicShop }>(
+          `/shops/${encodeURIComponent(id)}`,
+          { token: false, cache: "no-store" }
+        );
+        return res?.shop ?? null;
+      },
+      { existing: existingShopMap, concurrency: DEFAULT_SHOP_LOOKUP_CONCURRENCY }
+    ),
+    suggestedSkuIds.length > 0
+      ? fetchActiveShopDiscounts({ skuIds: suggestedSkuIds }).catch(
+          () => [] as GatewayActiveShopDiscount[]
+        )
+      : Promise.resolve([] as GatewayActiveShopDiscount[]),
+  ]);
+
+  const shopNameById: Record<string, string> = {};
+  for (const [id, shop] of Object.entries(resolvedShopMap)) {
+    shopNameById[id] = shop.name;
+  }
+
+  const suggestedProducts = enrichProductsWithPromotions(
+    rawSuggestedProducts,
+    buildLiveFlashItemsBySkuId(rawFlashSales, Date.now()),
+    buildActiveShopDiscountsMap(activeShopDiscounts)
+  );
 
   return (
     <Suspense

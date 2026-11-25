@@ -42,7 +42,21 @@ const (
 	BannedKeywordActionBlock  = "BLOCK"
 	BannedKeywordActionReview = "REVIEW"
 
+	ImportJobStatusQueued     = "QUEUED"
+	ImportJobStatusValidating = "VALIDATING"
+	ImportJobStatusReady      = "READY"
+	ImportJobStatusConfirming = "CONFIRMING"
+	ImportJobStatusCompleted  = "COMPLETED"
+	ImportJobStatusFailed     = "FAILED"
+
+	ImportRowStatusPending = "PENDING"
+	ImportRowStatusValid   = "VALID"
+	ImportRowStatusInvalid = "INVALID"
+	ImportRowStatusCreated = "CREATED"
+	ImportRowStatusFailed  = "FAILED"
+
 	PriceHistoryWindow = 30 * 24 * time.Hour
+	LowStockThreshold  = 5
 )
 
 type asOfContextKey struct{}
@@ -319,18 +333,103 @@ type StockHistoryEntry struct {
 	CreatedAt      time.Time
 }
 
+type StockHistoryRecord struct {
+	ID             string
+	SKUID          string
+	ProductID      string
+	ShopID         string
+	ProductName    string
+	SKUCode        string
+	SKUName        string
+	OrderID        string
+	ChangeType     string
+	Delta          int32
+	StockBefore    int32
+	StockAfter     int32
+	ReservedBefore int32
+	ReservedAfter  int32
+	ActorID        string
+	Reason         string
+	CreatedAt      time.Time
+}
+
+type ListStockHistoryFilter struct {
+	ShopID     string
+	ProductID  string
+	SKUID      string
+	ChangeType string
+	FromTime   *time.Time
+	ToTime     *time.Time
+	Limit      int32
+	Offset     int32
+}
+
+type ProductImportJob struct {
+	ID           string
+	ShopID       string
+	CreatedBy    string
+	Filename     string
+	RawCSV       []byte
+	Status       string
+	TotalRows    int32
+	ValidRows    int32
+	InvalidRows  int32
+	CreatedRows  int32
+	FailedRows   int32
+	ErrorMessage string
+	ClaimedUntil *time.Time
+	ClaimToken   string
+	ConfirmedAt  *time.Time
+	FinishedAt   *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type ProductImportRow struct {
+	ID               string
+	JobID            string
+	RowNumber        int32
+	Status           string
+	ErrorCode        string
+	ErrorMessage     string
+	ProductName      string
+	SKUCode          string
+	CategoryID       string
+	PriceVND         int64
+	Stock            int32
+	WeightGrams      int32
+	CreatedProductID string
+	RawRowJSON       []byte
+}
+
+type ListProductImportRowsFilter struct {
+	JobID      string
+	Status     string
+	ErrorsOnly bool
+	Limit      int32
+	Offset     int32
+}
+
+type ImportRowOutcomeCounts struct {
+	RemainingValid int32
+	Created        int32
+	Failed         int32
+}
+
 type ListProductsFilter struct {
-	CategoryID  string
-	Keyword     string
-	ShopID      string
-	Status      string
-	PublicOnly  bool
-	MinPriceVND int64
-	MaxPriceVND int64
-	SKUIDs      []string
-	SortBy      string
-	Limit       int32
-	Offset      int32
+	CategoryID   string
+	Keyword      string
+	MatchSKUCode bool
+	ShopID       string
+	Status       string
+	PublicOnly   bool
+	LowStock     bool
+	MinPriceVND  int64
+	MaxPriceVND  int64
+	SKUIDs       []string
+	SortBy       string
+	Limit        int32
+	Offset       int32
 }
 
 // Queries defines all repository operations usable directly or inside a transaction.
@@ -349,6 +448,7 @@ type Queries interface {
 	IsCategoryProhibited(ctx context.Context, categoryID string) (bool, error)
 	ListProhibitedCategoryIDs(ctx context.Context) ([]string, error)
 	GetCategoryDescendants(ctx context.Context, categoryIDs []string) ([]string, error)
+	GetCategoryAncestors(ctx context.Context, categoryID string) ([]string, error)
 
 	InsertCategoryFeeSchedule(ctx context.Context, sched CategoryFeeSchedule) (CategoryFeeSchedule, error)
 	ListCategoryFeeSchedules(ctx context.Context, categoryID string, limit, offset int32) ([]CategoryFeeSchedule, int64, error)
@@ -357,14 +457,16 @@ type Queries interface {
 	GetProductByID(ctx context.Context, id string) (Product, error)
 	GetProductByIDForUpdate(ctx context.Context, id string) (Product, error)
 	GetProductByIDForUpdateAny(ctx context.Context, id string) (Product, error)
+	GetProductShopIDAny(ctx context.Context, id string) (string, error)
 	GetProductBySlug(ctx context.Context, slug string) (Product, error)
 	GetDeletedApprovedProductBySlug(ctx context.Context, slug string) (Product, error)
 	UpdateProduct(ctx context.Context, p Product) (Product, error)
 	UpdateProductReview(ctx context.Context, id, status, rejectionReason string, flaggedKeywords []string) (Product, error)
 	IncrementProductRating(ctx context.Context, id string, ratingDelta int64) (int64, int32, error)
 	ListProductsForModerationScan(ctx context.Context, cursorID string, limit int32) ([]Product, error)
+	ListProductsForIndex(ctx context.Context, afterID string, limit int32) ([]Product, error)
 	UpdateProductStatus(ctx context.Context, id, status string) error
-	SoftDeleteProduct(ctx context.Context, id string) (bool, error)
+	SoftDeleteProduct(ctx context.Context, id string) (time.Time, bool, error)
 	ListProducts(ctx context.Context, filter ListProductsFilter) ([]Product, int64, error)
 
 	CreateProductReview(ctx context.Context, r ProductReview) (ProductReview, error)
@@ -406,6 +508,28 @@ type Queries interface {
 	TransitionStockReservation(ctx context.Context, id, toStatus, fromStatus string) (bool, error)
 	InsertStockHistory(ctx context.Context, h StockHistoryEntry) error
 	TryInsertRestockHistory(ctx context.Context, h StockHistoryEntry) (bool, error)
+	ListStockHistory(ctx context.Context, filter ListStockHistoryFilter) ([]StockHistoryRecord, int64, error)
+
+	ListExistingShopSKUCodes(ctx context.Context, shopID string, skuCodes []string) (map[string]bool, error)
+	CreateProductImportJob(ctx context.Context, job ProductImportJob) (ProductImportJob, error)
+	// HasActiveProductImportJob reports whether shopID has a QUEUED, VALIDATING or CONFIRMING import job
+	// other than excludeJobID (when non-empty).
+	HasActiveProductImportJob(ctx context.Context, shopID, excludeJobID string) (bool, error)
+	GetProductImportJobByID(ctx context.Context, id string) (ProductImportJob, error)
+	GetProductImportJobByIDForUpdate(ctx context.Context, id string) (ProductImportJob, error)
+	ClaimNextProductImportJob(ctx context.Context, claimToken string, lease time.Duration) (ProductImportJob, bool, error)
+	MarkProductImportJobReady(ctx context.Context, id, claimToken string, totalRows, validRows, invalidRows int32) (ProductImportJob, bool, error)
+	MarkProductImportJobFailed(ctx context.Context, id, claimToken, errMsg string) (ProductImportJob, bool, error)
+	TransitionProductImportJobConfirming(ctx context.Context, id string) (ProductImportJob, bool, error)
+	UpdateProductImportJobProgress(ctx context.Context, id, claimToken string, createdDelta, failedDelta int32, lease time.Duration) (bool, error)
+	MarkProductImportJobCompleted(ctx context.Context, id, claimToken string, createdRows, failedRows int32) (ProductImportJob, bool, error)
+	DeleteProductImportRowsByJob(ctx context.Context, jobID string) error
+	InsertProductImportRow(ctx context.Context, row ProductImportRow) error
+	ListProductImportRows(ctx context.Context, filter ListProductImportRowsFilter) ([]ProductImportRow, int64, error)
+	ListValidProductImportRows(ctx context.Context, jobID string) ([]ProductImportRow, error)
+	GetProductImportRowByIDForUpdate(ctx context.Context, id string) (ProductImportRow, error)
+	UpdateProductImportRowOutcome(ctx context.Context, id, status, errCode, errMsg, createdProductID string) (bool, error)
+	GetProductImportRowOutcomeCounts(ctx context.Context, jobID string) (ImportRowOutcomeCounts, error)
 
 	InsertOutboxEvent(ctx context.Context, ev OutboxEvent) error
 

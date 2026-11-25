@@ -389,6 +389,48 @@ pub struct UpdatePaymentMethodConfigInput {
     pub updated_by: String,
 }
 
+/// Error prefix returned on `FailedPrecondition` when COD shipping fee adjustment is attempted
+/// on a non-COD, non-pending, cancelled, or already-collected payment/allocation (G2).
+pub const ERR_COD_ALREADY_COLLECTED: &str = "COD_ALREADY_COLLECTED";
+
+#[derive(Debug, Clone)]
+pub struct AdjustCodShippingFeeInput {
+    pub order_id: String,
+    pub new_shipping_fee_vnd: i64,
+    pub idempotency_key: String,
+    pub trace_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdjustCodShippingFeeOutput {
+    pub payment: PaymentWithAllocations,
+    pub old_shipping_fee_vnd: i64,
+    pub new_shipping_fee_vnd: i64,
+    pub new_order_payable_vnd: i64,
+    pub already_applied: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct CodFeeAdjustmentRecord {
+    pub id: Uuid,
+    pub idempotency_key: String,
+    pub payment_id: Uuid,
+    pub order_id: String,
+    pub old_shipping_fee_vnd: i64,
+    pub new_shipping_fee_vnd: i64,
+    pub new_order_payable_vnd: i64,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodShippingFeeAdjustmentPlan {
+    pub allocation_id: Uuid,
+    pub old_shipping_fee_vnd: i64,
+    pub new_shipping_fee_vnd: i64,
+    pub new_order_payable_vnd: i64,
+    pub new_payment_amount_vnd: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRefundOutput {
     pub refund: RefundRecord,
@@ -2173,6 +2215,136 @@ pub fn decide_reconciliation_match_action(
         }
         other => other,
     }
+}
+
+pub fn validate_adjust_cod_shipping_fee_input<'a>(
+    order_id: &'a str,
+    idempotency_key: &'a str,
+    new_shipping_fee_vnd: i64,
+) -> Result<(&'a str, &'a str)> {
+    let order_id = order_id.trim();
+    if order_id.is_empty() {
+        return Err(PaymentError::Validation("order_id is required".to_string()));
+    }
+    let idempotency_key = idempotency_key.trim();
+    if idempotency_key.is_empty() {
+        return Err(PaymentError::Validation(
+            "idempotency_key is required".to_string(),
+        ));
+    }
+    if new_shipping_fee_vnd < 0 {
+        return Err(PaymentError::Validation(
+            "new_shipping_fee_vnd must be non-negative".to_string(),
+        ));
+    }
+    Ok((order_id, idempotency_key))
+}
+
+pub fn validate_cod_fee_adjustment_replay(
+    existing: &CodFeeAdjustmentRecord,
+    order_id: &str,
+    new_shipping_fee_vnd: i64,
+) -> Result<()> {
+    if existing.order_id != order_id || existing.new_shipping_fee_vnd != new_shipping_fee_vnd {
+        return Err(PaymentError::FailedPrecondition(format!(
+            "idempotency_key '{}' was already used with different parameters",
+            existing.idempotency_key
+        )));
+    }
+    Ok(())
+}
+
+pub fn plan_cod_shipping_fee_adjustment(
+    payment: &PaymentRecord,
+    allocations: &[ShopAllocationRecord],
+    order_id: &str,
+    new_shipping_fee_vnd: i64,
+) -> Result<CodShippingFeeAdjustmentPlan> {
+    if new_shipping_fee_vnd < 0 {
+        return Err(PaymentError::Validation(
+            "new_shipping_fee_vnd must be non-negative".to_string(),
+        ));
+    }
+    if payment.method != "COD" {
+        return Err(PaymentError::FailedPrecondition(format!(
+            "{ERR_COD_ALREADY_COLLECTED}: payment method {} does not support COD shipping fee adjustment",
+            payment.method
+        )));
+    }
+    if payment.status != "pending" {
+        return Err(PaymentError::FailedPrecondition(format!(
+            "{ERR_COD_ALREADY_COLLECTED}: payment status is {} (must be pending)",
+            payment.status
+        )));
+    }
+
+    let mut matched_alloc: Option<&ShopAllocationRecord> = None;
+    for alloc in allocations {
+        if alloc.order_id == order_id {
+            if matched_alloc.is_some() {
+                return Err(PaymentError::FailedPrecondition(format!(
+                    "multiple COD allocations found for order {order_id}"
+                )));
+            }
+            matched_alloc = Some(alloc);
+        }
+    }
+    let target = matched_alloc.ok_or_else(|| {
+        PaymentError::NotFound(format!("COD allocation not found for order {order_id}"))
+    })?;
+
+    if target.escrow_status != "awaiting_collection" {
+        return Err(PaymentError::FailedPrecondition(format!(
+            "{ERR_COD_ALREADY_COLLECTED}: allocation escrow_status is {} (must be awaiting_collection)",
+            target.escrow_status
+        )));
+    }
+
+    let gross = target
+        .subtotal_vnd
+        .checked_add(new_shipping_fee_vnd)
+        .ok_or_else(|| {
+            PaymentError::FailedPrecondition("overflow computing new_order_payable_vnd".to_string())
+        })?;
+    if target.platform_discount_vnd > gross {
+        return Err(PaymentError::FailedPrecondition(format!(
+            "new_order_payable_vnd must be non-negative: subtotal ({}) + new_shipping_fee ({}) - platform_discount ({}) < 0",
+            target.subtotal_vnd, new_shipping_fee_vnd, target.platform_discount_vnd
+        )));
+    }
+    let new_order_payable_vnd = gross - target.platform_discount_vnd;
+
+    let mut new_payment_amount_vnd = 0_i64;
+    for alloc in allocations {
+        if alloc.escrow_status == "cancelled" {
+            continue;
+        }
+        let alloc_payable = if alloc.id == target.id {
+            new_order_payable_vnd
+        } else {
+            allocation_buyer_payable_vnd(alloc)?
+        };
+        new_payment_amount_vnd = new_payment_amount_vnd
+            .checked_add(alloc_payable)
+            .ok_or_else(|| {
+                PaymentError::FailedPrecondition(
+                    "overflow computing parent payment amount_vnd".to_string(),
+                )
+            })?;
+    }
+    if new_payment_amount_vnd < 0 {
+        return Err(PaymentError::FailedPrecondition(
+            "new payment amount_vnd must be non-negative".to_string(),
+        ));
+    }
+
+    Ok(CodShippingFeeAdjustmentPlan {
+        allocation_id: target.id,
+        old_shipping_fee_vnd: target.shipping_fee_vnd,
+        new_shipping_fee_vnd,
+        new_order_payable_vnd,
+        new_payment_amount_vnd,
+    })
 }
 
 #[cfg(test)]
@@ -3974,5 +4146,208 @@ mod tests {
             decide_zalopay_window_exhausted(Some(99), Some(false)),
             ZaloPayWindowExhaustedDecision::EscalateManualReview
         );
+    }
+
+    #[test]
+    fn test_w3b3_g2_cod_shipping_fee_adjustment_domain_rules() {
+        let now = Utc::now();
+        let pid = Uuid::new_v4();
+        let alloc_a_id = Uuid::new_v4();
+        let alloc_b_id = Uuid::new_v4();
+        let alloc_c_id = Uuid::new_v4();
+
+        let make_payment = |method: &str, status: &str, amount_vnd: i64| PaymentRecord {
+            id: pid,
+            order_group_id: "grp-cod-1".into(),
+            order_id: "grp-cod-1".into(),
+            user_id: "buyer-1".into(),
+            method: method.into(),
+            provider: if method == "COD" { "cod" } else { "mock" }.into(),
+            amount_vnd,
+            status: status.into(),
+            provider_tx_id: None,
+            provider_order_code: "NM-COD-1".into(),
+            qr_code: None,
+            qr_url: None,
+            pay_url: None,
+            idempotency_key: Some("checkout:grp-cod-1".into()),
+            expires_at: None,
+            paid_at: None,
+            trace_id: "trace-1".into(),
+            created_at: now,
+            updated_at: now,
+        };
+        let make_alloc = |id: Uuid,
+                          order_id: &str,
+                          shop_id: &str,
+                          subtotal: i64,
+                          commission: i64,
+                          ship: i64,
+                          discount: i64,
+                          escrow: &str| ShopAllocationRecord {
+            id,
+            payment_id: pid,
+            order_id: order_id.into(),
+            shop_id: shop_id.into(),
+            subtotal_vnd: subtotal,
+            commission_vnd: commission,
+            shipping_fee_vnd: ship,
+            platform_discount_vnd: discount,
+            escrow_status: escrow.into(),
+            settled_at: None,
+            released_at: None,
+            tracking_code: None,
+            carrier_code: None,
+            order_code: None,
+            cod_reconciled_at: None,
+            cod_reconciliation_run_id: None,
+            created_at: now,
+        };
+
+        // Input validation
+        assert_eq!(
+            validate_adjust_cod_shipping_fee_input("  ord-1  ", "  key-1  ", 25_000).unwrap(),
+            ("ord-1", "key-1")
+        );
+        assert!(matches!(
+            validate_adjust_cod_shipping_fee_input("   ", "key-1", 25_000),
+            Err(PaymentError::Validation(_))
+        ));
+        assert!(matches!(
+            validate_adjust_cod_shipping_fee_input("ord-1", "   ", 25_000),
+            Err(PaymentError::Validation(_))
+        ));
+        assert!(matches!(
+            validate_adjust_cod_shipping_fee_input("ord-1", "key-1", -1),
+            Err(PaymentError::Validation(_))
+        ));
+
+        // Increase & decrease on multi-shop COD with one held sibling and one cancelled sibling.
+        let payment = make_payment("COD", "pending", 420_000);
+        let allocs = vec![
+            make_alloc(
+                alloc_a_id, "ord-a", "shop-a", 100_000, 5_000, 20_000, 0, "held",
+            ),
+            make_alloc(
+                alloc_b_id,
+                "ord-b",
+                "shop-b",
+                80_000,
+                4_000,
+                20_000,
+                0,
+                "cancelled",
+            ),
+            make_alloc(
+                alloc_c_id,
+                "ord-c",
+                "shop-c",
+                200_000,
+                10_000,
+                30_000,
+                30_000,
+                "awaiting_collection",
+            ),
+        ];
+
+        // Increase shipping fee on ord-c (30k -> 50k): new_payable = 200k + 50k - 30k = 220k.
+        // Parent amount excludes cancelled ord-b: held ord-a (120k) + ord-c (220k) = 340k.
+        let inc = plan_cod_shipping_fee_adjustment(&payment, &allocs, "ord-c", 50_000).unwrap();
+        assert_eq!(
+            inc,
+            CodShippingFeeAdjustmentPlan {
+                allocation_id: alloc_c_id,
+                old_shipping_fee_vnd: 30_000,
+                new_shipping_fee_vnd: 50_000,
+                new_order_payable_vnd: 220_000,
+                new_payment_amount_vnd: 340_000,
+            }
+        );
+
+        // Decrease shipping fee on ord-c (30k -> 10k): new_payable = 200k + 10k - 30k = 180k.
+        let dec = plan_cod_shipping_fee_adjustment(&payment, &allocs, "ord-c", 10_000).unwrap();
+        assert_eq!(dec.new_order_payable_vnd, 180_000);
+        assert_eq!(dec.new_payment_amount_vnd, 300_000);
+
+        // Payable < 0 (discount exceeds subtotal + new_shipping_fee) -> FailedPrecondition.
+        let heavy_discount = vec![make_alloc(
+            alloc_c_id,
+            "ord-c",
+            "shop-c",
+            100_000,
+            5_000,
+            30_000,
+            120_000,
+            "awaiting_collection",
+        )];
+        assert!(matches!(
+            plan_cod_shipping_fee_adjustment(&payment, &heavy_discount, "ord-c", 10_000),
+            Err(PaymentError::FailedPrecondition(_))
+        ));
+        // Exactly 0 payable is valid (100k + 20k - 120k = 0).
+        let zero_pay =
+            plan_cod_shipping_fee_adjustment(&payment, &heavy_discount, "ord-c", 20_000).unwrap();
+        assert_eq!(zero_pay.new_order_payable_vnd, 0);
+        assert_eq!(zero_pay.new_payment_amount_vnd, 0);
+
+        // Non-COD (VIETQR / ZALOPAY) -> FailedPrecondition with COD_ALREADY_COLLECTED prefix.
+        for bad_method in ["VIETQR", "ZALOPAY"] {
+            let p = make_payment(bad_method, "pending", 200_000);
+            let err = plan_cod_shipping_fee_adjustment(&p, &allocs, "ord-c", 40_000).unwrap_err();
+            assert!(
+                matches!(err, PaymentError::FailedPrecondition(ref msg) if msg.starts_with(ERR_COD_ALREADY_COLLECTED)),
+                "method={bad_method} got {err:?}"
+            );
+        }
+
+        // Non-pending payment status -> FailedPrecondition with COD_ALREADY_COLLECTED prefix.
+        for bad_status in ["succeeded", "cancelled", "refunded", "expired", "failed"] {
+            let p = make_payment("COD", bad_status, 200_000);
+            let err = plan_cod_shipping_fee_adjustment(&p, &allocs, "ord-c", 40_000).unwrap_err();
+            assert!(
+                matches!(err, PaymentError::FailedPrecondition(ref msg) if msg.starts_with(ERR_COD_ALREADY_COLLECTED)),
+                "status={bad_status} got {err:?}"
+            );
+        }
+
+        // Non-awaiting_collection allocation -> FailedPrecondition with COD_ALREADY_COLLECTED prefix.
+        for bad_escrow in [
+            "held",
+            "pending_release",
+            "released",
+            "refunded",
+            "cancelled",
+        ] {
+            let one = vec![make_alloc(
+                alloc_c_id, "ord-c", "shop-c", 100_000, 5_000, 20_000, 0, bad_escrow,
+            )];
+            let err =
+                plan_cod_shipping_fee_adjustment(&payment, &one, "ord-c", 35_000).unwrap_err();
+            assert!(
+                matches!(err, PaymentError::FailedPrecondition(ref msg) if msg.starts_with(ERR_COD_ALREADY_COLLECTED)),
+                "escrow={bad_escrow} got {err:?}"
+            );
+        }
+
+        // Idempotency replay match vs conflict.
+        let rec = CodFeeAdjustmentRecord {
+            id: Uuid::new_v4(),
+            idempotency_key: "adj-1".into(),
+            payment_id: pid,
+            order_id: "ord-c".into(),
+            old_shipping_fee_vnd: 30_000,
+            new_shipping_fee_vnd: 50_000,
+            new_order_payable_vnd: 220_000,
+            created_at: now,
+        };
+        assert!(validate_cod_fee_adjustment_replay(&rec, "ord-c", 50_000).is_ok());
+        assert!(matches!(
+            validate_cod_fee_adjustment_replay(&rec, "ord-c", 40_000),
+            Err(PaymentError::FailedPrecondition(_))
+        ));
+        assert!(matches!(
+            validate_cod_fee_adjustment_replay(&rec, "ord-other", 50_000),
+            Err(PaymentError::FailedPrecondition(_))
+        ));
     }
 }

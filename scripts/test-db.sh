@@ -6,15 +6,72 @@ export PROTOC="${PROTOC:-$HOME/.local/bin/protoc}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PG_IMAGE="${TEST_DB_IMAGE:-postgres:16-alpine}"
+SEARCH_PG_IMAGE="${TEST_SEARCH_DB_IMAGE:-pgvector/pgvector:0.8.7-pg16}"
 NATS_IMAGE="${TEST_NATS_IMAGE:-nats:2.10-alpine}"
 REDIS_IMAGE="${TEST_REDIS_IMAGE:-redis:7-alpine}"
 PG_USER="nexusmart"
 PG_PASS="testdb_ephemeral_pw"
 CONTAINER_NAME=""
+SEARCH_PG_CONTAINER_NAME=""
 NATS_CONTAINER_NAME=""
 REDIS_CONTAINER_NAME=""
 TMP_DIR="$(mktemp -d)"
 CLEANED_UP=0
+
+stop_search_pg() {
+	if [[ -n "$SEARCH_PG_CONTAINER_NAME" ]]; then
+		docker rm -f "$SEARCH_PG_CONTAINER_NAME" >/dev/null 2>&1 || true
+		SEARCH_PG_CONTAINER_NAME=""
+	fi
+}
+
+start_search_pg() {
+	stop_search_pg
+	SEARCH_PG_CONTAINER_NAME="nexusmart-testsearchdb-$$"
+
+	echo "==> Starting ephemeral search pgvector Postgres ($SEARCH_PG_IMAGE, container=$SEARCH_PG_CONTAINER_NAME, tmpfs, random localhost port)"
+	docker run -d \
+		--name "$SEARCH_PG_CONTAINER_NAME" \
+		-e "POSTGRES_USER=$PG_USER" \
+		-e "POSTGRES_PASSWORD=$PG_PASS" \
+		-e "POSTGRES_DB=search_db" \
+		-p "127.0.0.1::5432" \
+		--tmpfs /var/lib/postgresql/data:rw \
+		"$SEARCH_PG_IMAGE" \
+		postgres -c max_connections=100 >/dev/null
+
+	local search_pg_port
+	search_pg_port="$(docker port "$SEARCH_PG_CONTAINER_NAME" 5432/tcp | head -n 1 | awk -F: '{print $NF}')"
+	if [[ -z "$search_pg_port" ]]; then
+		echo "ERROR: failed to determine mapped host port for $SEARCH_PG_CONTAINER_NAME" >&2
+		exit 1
+	fi
+
+	echo "==> Waiting for search pgvector TCP readiness on 127.0.0.1:${search_pg_port}"
+	local search_ready=0
+	for _ in $(seq 1 60); do
+		if [[ "$(docker inspect -f '{{.State.Running}}' "$SEARCH_PG_CONTAINER_NAME" 2>/dev/null || true)" != "true" ]]; then
+			echo "ERROR: ephemeral search pgvector container exited unexpectedly:" >&2
+			docker logs "$SEARCH_PG_CONTAINER_NAME" >&2 || true
+			exit 1
+		fi
+		if docker exec "$SEARCH_PG_CONTAINER_NAME" pg_isready -h 127.0.0.1 -p 5432 -U "$PG_USER" -d search_db >/dev/null 2>&1 \
+			&& (exec 3<>/dev/tcp/127.0.0.1/"$search_pg_port") 2>/dev/null \
+			&& docker exec "$SEARCH_PG_CONTAINER_NAME" psql -h 127.0.0.1 -U "$PG_USER" -d search_db -c 'SELECT 1' >/dev/null 2>&1; then
+			search_ready=1
+			break
+		fi
+		sleep 0.5
+	done
+
+	if [[ "$search_ready" -ne 1 ]]; then
+		echo "ERROR: ephemeral search pgvector on 127.0.0.1:${search_pg_port} did not become ready in time" >&2
+		docker logs "$SEARCH_PG_CONTAINER_NAME" >&2 || true
+		exit 1
+	fi
+
+	export TEST_SEARCH_DB_URL="postgres://${PG_USER}:${PG_PASS}@127.0.0.1:${search_pg_port}/search_db?sslmode=disable"
+}
 
 stop_nats() {
 	if [[ -n "$NATS_CONTAINER_NAME" ]]; then
@@ -78,6 +135,7 @@ cleanup() {
 	if [[ -n "$CONTAINER_NAME" ]]; then
 		docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 	fi
+	stop_search_pg
 	stop_nats
 	if [[ -n "$REDIS_CONTAINER_NAME" ]]; then
 		docker rm -f "$REDIS_CONTAINER_NAME" >/dev/null 2>&1 || true
@@ -218,7 +276,11 @@ fi
 export TEST_REDIS_ADDR="127.0.0.1:${REDIS_PORT}"
 
 # Wrapper mode: allow other scripts (such as scripts/coverage.sh) to share this ephemeral Postgres + NATS + Redis lifecycle.
+# Set TEST_WITH_SEARCH_DB=1 to also launch the ephemeral pgvector/pgvector:0.8.7-pg16 container (TEST_SEARCH_DB_URL).
 if [[ "${1:-}" == "--run" ]]; then
+	if [[ "${TEST_WITH_SEARCH_DB:-0}" == "1" ]]; then
+		start_search_pg
+	fi
 	start_nats
 	shift
 	"$@"
@@ -279,6 +341,14 @@ for svc in order product promotion shipping user notification; do
 	run_go_pg_tests "$svc"
 	stop_nats
 done
+
+if [[ -d "$ROOT_DIR/services/search/migrations" ]]; then
+	start_search_pg
+	start_nats "search"
+	run_go_pg_tests "search"
+	stop_nats
+	stop_search_pg
+fi
 
 start_nats "payment"
 run_rust_payment_tests

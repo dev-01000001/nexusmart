@@ -17,6 +17,7 @@ require (
 	github.com/nexusmart/core/pkg/common v0.0.0
 	github.com/prometheus/client_golang v1.19.1
 	github.com/redis/go-redis/v9 v9.6.1
+	github.com/signintech/gopdf v0.38.6
 	github.com/sony/gobreaker/v2 v2.0.0
 	golang.org/x/text v0.16.0
 	google.golang.org/grpc v1.65.0
@@ -37,6 +38,8 @@ require (
 	github.com/klauspost/compress v1.17.2 // indirect
 	github.com/nats-io/nkeys v0.4.7 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
+	github.com/phpdave11/gofpdi v1.0.14-0.20211212211723-1f10f9844311 // indirect
+	github.com/pkg/errors v0.8.1 // indirect
 	github.com/prometheus/client_model v0.5.0 // indirect
 	github.com/prometheus/common v0.48.0 // indirect
 	github.com/prometheus/procfs v0.12.0 // indirect

@@ -358,6 +358,8 @@ func auditTargetType(routePattern string) string {
 		return "shop_suspension_approval"
 	case strings.HasPrefix(trimmed, "payment-methods"):
 		return "payment_method_config"
+	case strings.HasPrefix(trimmed, "search/reindex"):
+		return "search_reindex"
 	}
 	seg, _, _ := strings.Cut(trimmed, "/")
 	switch seg {
@@ -430,7 +432,7 @@ func extractTargetIDFromJSON(raw []byte) string {
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return ""
 	}
-	for _, key := range []string{"id", "run_id", "user_id", "refund_id", "carrier_code"} {
+	for _, key := range []string{"id", "job_id", "run_id", "user_id", "refund_id", "carrier_code"} {
 		if s, ok := obj[key].(string); ok && strings.TrimSpace(s) != "" {
 			return strings.TrimSpace(s)
 		}

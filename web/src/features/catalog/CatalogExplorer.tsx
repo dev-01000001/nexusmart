@@ -10,10 +10,39 @@ import type {
   MaterialCode,
   OccasionCode,
   PatternCode,
-  SizeCode,
   SportCode,
 } from "@/data";
+import { api } from "@/lib/api";
+import {
+  buildActiveShopDiscountsMap,
+  buildCategoryDescendantSlugMap,
+  buildLiveFlashItemsBySkuId,
+  mapGatewayShop,
+  resolvePriceBucketRange,
+} from "@/lib/catalog-mapper";
 import type { CatalogCategory, CatalogProduct, CatalogShop } from "@/lib/catalog-types";
+import { formatInt } from "@/lib/format";
+import type {
+  GatewayActiveShopDiscount,
+  GatewayActiveShopDiscountsResponse,
+  GatewayFlashSale,
+  GatewayFlashSalesResponse,
+  GatewaySearchFacetCount,
+  GatewaySearchSortBy,
+} from "@/lib/gateway-types";
+import {
+  buildCatalogCountSummary,
+  collectSearchHitSkuIds,
+  fetchSearchProductsClient,
+  mapSearchHitToCatalogProduct,
+  normalizeColorFilterParam,
+  normalizeSearchSortParam,
+  parseInStockParam,
+  parseMinRatingX100Param,
+  shouldShowCatalogEmptyState,
+} from "@/lib/search-client";
+import { fetchMissingShopsClient } from "@/lib/shop-lookup";
+import { fetchActiveShopDiscountsWithFetcher } from "@/features/checkout/helpers";
 import {
   CARE_GUIDE_LIBRARY,
   FABRIC_FEATURE_LABELS,
@@ -23,12 +52,9 @@ import {
   OCCASION_LABELS,
   PATTERN_LABELS,
   SPORT_LABELS,
-  TRENDING_KEYWORDS,
   getLegacyShopSlugById,
   matchesGenderFilter,
 } from "@/mock/productEditorial";
-import { buildCategoryDescendantSlugMap } from "@/lib/catalog-mapper";
-import { searchProducts, suggestSpelling } from "@/lib/search";
 import { Button, IconClose, IconSearch, IconSliders, ProductCard, StateView } from "@/components";
 import { useRevealObserver } from "./useRevealObserver";
 import styles from "./CatalogExplorer.module.css";
@@ -37,13 +63,18 @@ export interface CatalogExplorerProps {
   mode: "catalog" | "search";
   categories: CatalogCategory[];
   shops: CatalogShop[];
-  allProducts: CatalogProduct[];
-  serverFilteredProducts: CatalogProduct[];
-  hasServerFilter: boolean;
+  products: CatalogProduct[];
+  serverTotal: number;
+  page: number;
+  pageSize: number;
+  categoryFacets: GatewaySearchFacetCount[];
+  shopFacets: GatewaySearchFacetCount[];
+  didYouMean: string;
+  degradedMode: string;
+  trendingKeywords: string[];
   error: string | null;
 }
 
-type SortKey = "bestseller" | "newest" | "price-asc" | "price-desc" | "name-asc";
 type PriceBucket =
   "all" | "under-180" | "180-250" | "250-350" | "over-350" | "under-200" | "200-300" | "over-300";
 
@@ -51,6 +82,8 @@ type FilterGroupKey =
   | "cat"
   | "size"
   | "price"
+  | "rating"
+  | "in_stock"
   | "color"
   | "shop"
   | "material"
@@ -62,47 +95,30 @@ type FilterGroupKey =
   | "pattern"
   | "origin";
 
-// 12 products initially: fills 4-col (3 rows), 3-col (4 rows), and 2-col (6 rows) with zero orphans.
-const PAGE_STEP = 12;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Quick size chips XS -> 4XL (syncs with URL; out-of-stock sizes dim cleanly)
 const QUICK_SIZE_CHIPS = ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL"] as const;
-type QuickSizeChip = (typeof QUICK_SIZE_CHIPS)[number];
 
-interface ColorGroup {
-  id: string;
+interface ColorOption {
+  code: string;
   label: string;
   swatch: string;
-  codes: string[];
 }
 
-const COLOR_GROUPS: ColorGroup[] = [
-  {
-    id: "trang-kem",
-    label: "Trắng & Kem",
-    swatch: "#f0efe9",
-    codes: ["trang", "kem", "combo-trangxam"],
-  },
-  {
-    id: "xam",
-    label: "Xám & Xám đá",
-    swatch: "#9aa5ac",
-    codes: ["xamda", "xamdam", "xam", "xamtro", "combo-5mau"],
-  },
-  {
-    id: "den-than",
-    label: "Đen & Than chì",
-    swatch: "#273036",
-    codes: ["den", "thanchi", "combo-trungtinh"],
-  },
-  {
-    id: "xanh",
-    label: "Xanh than & Xanh đá",
-    swatch: "#546f7d",
-    codes: ["xanhthan", "xanhda", "combo-xanhxam"],
-  },
-  { id: "covit", label: "Xanh cổ vịt", swatch: "#0d7480", codes: ["covit"] },
-  { id: "be", label: "Be cát", swatch: "#d6cec1", codes: ["be"] },
+const COLOR_OPTIONS: ColorOption[] = [
+  { code: "trang", label: "Trắng", swatch: "#f0efe9" },
+  { code: "kem", label: "Kem", swatch: "#ece6d8" },
+  { code: "be", label: "Be cát", swatch: "#d6cec1" },
+  { code: "xam", label: "Xám muối tiêu", swatch: "#949ea6" },
+  { code: "xamda", label: "Xám đá", swatch: "#9aa5ac" },
+  { code: "xamtro", label: "Xám tro", swatch: "#808991" },
+  { code: "xamdam", label: "Xám đậm", swatch: "#5c666e" },
+  { code: "den", label: "Đen", swatch: "#1f2428" },
+  { code: "thanchi", label: "Than chì", swatch: "#313a40" },
+  { code: "xanhthan", label: "Xanh than", swatch: "#25394a" },
+  { code: "xanhda", label: "Xanh đá", swatch: "#546f7d" },
+  { code: "covit", label: "Xanh cổ vịt", swatch: "#0d7480" },
+  { code: "reu", label: "Xanh rêu", swatch: "#4f6457" },
 ];
 
 const PRICE_OPTIONS: Array<{ id: PriceBucket; label: string }> = [
@@ -111,6 +127,12 @@ const PRICE_OPTIONS: Array<{ id: PriceBucket; label: string }> = [
   { id: "180-250", label: "180.000₫ – 250.000₫" },
   { id: "250-350", label: "250.000₫ – 350.000₫" },
   { id: "over-350", label: "Trên 350.000₫" },
+];
+
+const RATING_OPTIONS: Array<{ value: number; label: string }> = [
+  { value: 500, label: "5 sao" },
+  { value: 400, label: "Từ 4 sao trở lên" },
+  { value: 300, label: "Từ 3 sao trở lên" },
 ];
 
 const ORIGIN_OPTIONS: Array<{ code: string; label: string }> = [
@@ -138,117 +160,28 @@ const SUBCATEGORY_FILTER_MAP: Record<string, Record<string, string | null>> = {
   "ao-khoac-gio": { material: "nylon-ripstop", sport: null, occasion: null },
 };
 
-interface ActiveFilters {
-  q: string;
-  gender: GenderCode | "";
-  cat: string;
-  shop: string;
-  origin: string;
-  size: string;
-  color: string;
-  price: PriceBucket;
-  material: MaterialCode | "";
-  fit: FitCode | "";
-  occasion: OccasionCode | "";
-  sport: SportCode | "";
-  feature: FabricFeatureCode | "";
-  pattern: PatternCode | "";
-}
-
-function matchPriceBucket(price: number, bucket: PriceBucket): boolean {
-  if (bucket === "under-180") return price < 180_000;
-  if (bucket === "180-250") return price >= 180_000 && price <= 250_000;
-  if (bucket === "250-350") return price > 250_000 && price <= 350_000;
-  if (bucket === "over-350") return price > 350_000;
-  if (bucket === "under-200") return price < 200_000;
-  if (bucket === "200-300") return price >= 200_000 && price <= 300_000;
-  if (bucket === "over-300") return price > 300_000;
-  return true;
-}
-
-function matchesShopParam(product: CatalogProduct, shopFilter: string): boolean {
-  if (!shopFilter) return true;
-  if (product.shopId === shopFilter || product.shopSlug === shopFilter) return true;
-  const legacySlug = getLegacyShopSlugById(shopFilter);
-  if (legacySlug && product.shopSlug === legacySlug) return true;
-  return false;
-}
-
-function applyStructuredFilters(
-  basePool: CatalogProduct[],
-  filters: ActiveFilters,
-  shopsById: Map<string, CatalogShop>,
-  categoryDescendantsBySlug: Map<string, Set<string>>,
-  omitKey?: keyof ActiveFilters
-): CatalogProduct[] {
-  const activeColorGroup =
-    omitKey === "color" ? undefined : COLOR_GROUPS.find((g) => g.id === filters.color);
-  const allowedCategorySlugs =
-    omitKey === "cat" || !filters.cat ? undefined : categoryDescendantsBySlug.get(filters.cat);
-
-  return basePool.filter((product) => {
-    if (omitKey !== "gender" && filters.gender) {
-      if (!matchesGenderFilter(product, filters.gender)) return false;
-    }
-    if (omitKey !== "cat" && filters.cat) {
-      if (
-        allowedCategorySlugs
-          ? !allowedCategorySlugs.has(product.rawCategorySlug)
-          : product.rawCategorySlug !== filters.cat
-      ) {
-        return false;
-      }
-    }
-    if (omitKey !== "shop" && filters.shop && !matchesShopParam(product, filters.shop)) {
-      return false;
-    }
-    if (omitKey !== "origin" && filters.origin) {
-      const shop = shopsById.get(product.shopId);
-      const provCode = shop?.provinceCode ?? product.shopProvinceCode;
-      if (provCode !== filters.origin) return false;
-    }
-    if (omitKey !== "size" && filters.size) {
-      const hasStock = product.skus.some(
-        (sku) => sku.size === (filters.size as SizeCode) && sku.stock > 0
-      );
-      if (!hasStock) return false;
-    }
-    if (activeColorGroup) {
-      const hasColor = product.colors.some((c) => activeColorGroup.codes.includes(c.code));
-      if (!hasColor) return false;
-    }
-    if (omitKey !== "price" && !matchPriceBucket(product.price, filters.price)) {
-      return false;
-    }
-    if (omitKey !== "material" && filters.material && product.material !== filters.material) {
-      return false;
-    }
-    if (omitKey !== "fit" && filters.fit && product.fitType !== filters.fit) {
-      return false;
-    }
-    if (omitKey !== "occasion" && filters.occasion) {
-      if (!product.occasion?.includes(filters.occasion)) return false;
-    }
-    if (omitKey !== "sport" && filters.sport) {
-      if (!product.sport?.includes(filters.sport)) return false;
-    }
-    if (omitKey !== "feature" && filters.feature) {
-      if (!product.fabricFeatures?.includes(filters.feature)) return false;
-    }
-    if (omitKey !== "pattern" && filters.pattern && product.pattern !== filters.pattern) {
-      return false;
-    }
-    return true;
-  });
+function buildPageWindow(currentPage: number, totalPages: number): number[] {
+  if (totalPages <= 1) return [1];
+  const pages = new Set<number>([1, totalPages]);
+  for (let p = Math.max(1, currentPage - 2); p <= Math.min(totalPages, currentPage + 2); p += 1) {
+    pages.add(p);
+  }
+  return Array.from(pages).sort((a, b) => a - b);
 }
 
 export function CatalogExplorer({
   mode,
   categories,
   shops,
-  allProducts,
-  serverFilteredProducts,
-  hasServerFilter,
+  products,
+  serverTotal,
+  page,
+  pageSize,
+  categoryFacets,
+  shopFacets,
+  didYouMean,
+  degradedMode,
+  trendingKeywords,
   error,
 }: CatalogExplorerProps) {
   const router = useRouter();
@@ -257,37 +190,97 @@ export function CatalogExplorer({
   const rootRef = useRef<HTMLDivElement>(null);
 
   const qParam = searchParams.get("q") ?? "";
-  const genderParam = (searchParams.get("gender") ?? "") as GenderCode | "";
   const catParam = searchParams.get("cat") ?? "";
   const shopParam = searchParams.get("shop") ?? "";
-  const originParam = searchParams.get("origin") ?? "";
-  const sizeParam = searchParams.get("size") ?? "";
-  const colorParam = searchParams.get("color") ?? "";
   const priceParam = (searchParams.get("price") ?? "all") as PriceBucket;
+  const ratingRawParam = searchParams.get("min_rating") ?? searchParams.get("rating") ?? "";
+  const minRatingX100 = parseMinRatingX100Param(ratingRawParam);
+  const inStockOnly = parseInStockParam(searchParams.get("in_stock"));
+  const sizeParam = searchParams.get("size") ?? "";
+  const rawColorParam = searchParams.get("color") ?? "";
+  const colorParam = normalizeColorFilterParam(rawColorParam) ?? "";
+  const sortParam: GatewaySearchSortBy = normalizeSearchSortParam(searchParams.get("sort"));
+  const stateParam = searchParams.get("state");
+
+  // Secondary editorial filters (productEditorial.ts)
+  const genderParam = (searchParams.get("gender") ?? "") as GenderCode | "";
+  const originParam = searchParams.get("origin") ?? "";
   const materialParam = (searchParams.get("material") ?? "") as MaterialCode | "";
   const fitParam = (searchParams.get("fit") ?? "") as FitCode | "";
   const occasionParam = (searchParams.get("occasion") ?? "") as OccasionCode | "";
   const sportParam = (searchParams.get("sport") ?? "") as SportCode | "";
   const featureParam = (searchParams.get("feature") ?? "") as FabricFeatureCode | "";
   const patternParam = (searchParams.get("pattern") ?? "") as PatternCode | "";
-  const sortParam = (searchParams.get("sort") ?? "bestseller") as SortKey;
-  const stateParam = searchParams.get("state");
 
   const [draftQuery, setDraftQuery] = useState(qParam);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [visibleCount, setVisibleCount] = useState(PAGE_STEP);
 
+  const [loadedProducts, setLoadedProducts] = useState<CatalogProduct[]>(products);
+  const [loadedPage, setLoadedPage] = useState<number>(Math.max(1, page));
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
+
+  const loadMoreSeqRef = useRef(0);
+  const flashCacheRef = useRef<{ fetchedAt: number; sales: GatewayFlashSale[] } | null>(null);
+
+  const safePageSize = Math.max(1, Math.trunc(pageSize || 24));
+  const safePage = Math.max(1, Math.trunc(page || 1));
+  const totalPages = Math.max(1, Math.ceil(serverTotal / safePageSize));
+
+  // Hide partial client counts on the 10 editorial facets (productEditorial.ts) whenever total > page_size (proposal 3 b1 §4).
+  const hideEditorialCounts = serverTotal > safePageSize;
+
+  const filterSignature = [
+    qParam,
+    catParam,
+    shopParam,
+    priceParam,
+    minRatingX100 ?? "",
+    inStockOnly ? "1" : "",
+    sizeParam,
+    colorParam,
+    sortParam,
+    safePage,
+    genderParam,
+    originParam,
+    materialParam,
+    fitParam,
+    occasionParam,
+    sportParam,
+    featureParam,
+    patternParam,
+  ].join("|");
+
+  useEffect(() => {
+    setDraftQuery(qParam);
+  }, [qParam]);
+
+  useEffect(() => {
+    loadMoreSeqRef.current += 1;
+    setLoadedProducts(products);
+    setLoadedPage(safePage);
+    setLoadingMore(false);
+    setLoadMoreError(null);
+  }, [products, safePage, filterSignature]);
+
+  const categoriesById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
   const shopsById = useMemo(() => new Map(shops.map((s) => [s.id, s])), [shops]);
+  const categoryDescendantsBySlug = useMemo(
+    () => buildCategoryDescendantSlugMap(categories),
+    [categories]
+  );
 
-  // Primary groups open by default (Danh mục, Kích cỡ, Mức giá);
+  // Primary groups open by default (Danh mục, Kích cỡ, Mức giá, Đánh giá, Tình trạng hàng);
   // secondary groups collapsed by default unless active in URL.
   const [openGroups, setOpenGroups] = useState<Record<FilterGroupKey, boolean>>(() => ({
     cat: true,
     size: true,
     price: true,
+    rating: true,
+    in_stock: true,
     color: Boolean(colorParam),
-    shop: Boolean(shopParam),
+    shop: Boolean(shopParam) || shopFacets.length > 0,
     material: Boolean(materialParam),
     fit: Boolean(fitParam),
     occasion: Boolean(occasionParam),
@@ -309,6 +302,8 @@ export function CatalogExplorer({
       const activateIfSet: Array<[FilterGroupKey, boolean]> = [
         ["color", Boolean(colorParam)],
         ["shop", Boolean(shopParam)],
+        ["rating", Boolean(minRatingX100)],
+        ["in_stock", inStockOnly],
         ["material", Boolean(materialParam)],
         ["fit", Boolean(fitParam)],
         ["occasion", Boolean(occasionParam)],
@@ -329,6 +324,8 @@ export function CatalogExplorer({
   }, [
     colorParam,
     shopParam,
+    minRatingX100,
+    inStockOnly,
     materialParam,
     fitParam,
     occasionParam,
@@ -339,59 +336,25 @@ export function CatalogExplorer({
     originParam,
   ]);
 
-  const filters = useMemo<ActiveFilters>(
-    () => ({
-      q: qParam,
-      gender: genderParam,
-      cat: catParam,
-      shop: shopParam,
-      origin: originParam,
-      size: sizeParam,
-      color: colorParam,
-      price: priceParam,
-      material: materialParam,
-      fit: fitParam,
-      occasion: occasionParam,
-      sport: sportParam,
-      feature: featureParam,
-      pattern: patternParam,
-    }),
-    [
-      qParam,
-      genderParam,
-      catParam,
-      shopParam,
-      originParam,
-      sizeParam,
-      colorParam,
-      priceParam,
-      materialParam,
-      fitParam,
-      occasionParam,
-      sportParam,
-      featureParam,
-      patternParam,
-    ]
-  );
-
-  const filterSignature = `${qParam}|${genderParam}|${catParam}|${shopParam}|${originParam}|${sizeParam}|${colorParam}|${priceParam}|${materialParam}|${fitParam}|${occasionParam}|${sportParam}|${featureParam}|${patternParam}|${sortParam}`;
-
-  useEffect(() => {
-    setDraftQuery(qParam);
-  }, [qParam]);
-
-  useEffect(() => {
-    setVisibleCount(PAGE_STEP);
-  }, [filterSignature]);
-
   const updateParams = useCallback(
     (updates: Record<string, string | null>) => {
       const next = new URLSearchParams(searchParams.toString());
       if (!("state" in updates)) {
         next.delete("state");
       }
+      if (!("page" in updates)) {
+        next.delete("page");
+      }
+      if ("min_rating" in updates) {
+        next.delete("rating");
+      }
       for (const [k, v] of Object.entries(updates)) {
-        if (!v || v === "all" || (k === "sort" && v === "bestseller")) {
+        if (
+          !v ||
+          v === "all" ||
+          (k === "sort" && v === "relevance") ||
+          (k === "page" && v === "1")
+        ) {
           next.delete(k);
         } else {
           next.set(k, v);
@@ -413,40 +376,9 @@ export function CatalogExplorer({
     router.replace(pathname, { scroll: false });
   };
 
-  // ponytail: backend `GET /products?keyword=...` dùng ILIKE chưa bỏ dấu tiếng Việt / chưa đồng nghĩa;
-  // gộp kết quả từ gateway với tìm bỏ dấu/đồng nghĩa phía client trên tập sản phẩm thật (tối đa 100 SP).
-  // Khi có Search service sẽ chuyển toàn bộ tìm kiếm & 13 nhóm facet lên server.
-  const searchPool = useMemo<CatalogProduct[]>(() => {
-    const trimmed = qParam.trim();
-    if (!trimmed) return allProducts;
-
-    const clientMatched = searchProducts(trimmed, allProducts) as CatalogProduct[];
-    if (!hasServerFilter || serverFilteredProducts.length === 0) {
-      return clientMatched;
-    }
-
-    const seen = new Set<string>();
-    const merged: CatalogProduct[] = [];
-    for (const item of serverFilteredProducts) {
-      if (!seen.has(item.id)) {
-        seen.add(item.id);
-        merged.push(item);
-      }
-    }
-    for (const item of clientMatched) {
-      if (!seen.has(item.id)) {
-        seen.add(item.id);
-        merged.push(item);
-      }
-    }
-    return merged;
-  }, [allProducts, hasServerFilter, qParam, serverFilteredProducts]);
-
-  const hasClientOnlyAttributeFilter = Boolean(
+  const hasEditorialFilter = Boolean(
     genderParam ||
     originParam ||
-    sizeParam ||
-    colorParam ||
     materialParam ||
     fitParam ||
     occasionParam ||
@@ -455,299 +387,301 @@ export function CatalogExplorer({
     patternParam
   );
 
-  const isBackendSort =
-    sortParam === "newest" ||
-    sortParam === "price-asc" ||
-    sortParam === "price-desc" ||
-    sortParam === "name-asc";
-
-  const categoryDescendantsBySlug = useMemo(
-    () => buildCategoryDescendantSlugMap(categories),
-    [categories]
-  );
-
-  const filteredProducts = useMemo<CatalogProduct[]>(() => {
-    // When only gateway-supported filters/sorts are active without Vietnamese synonym search,
-    // display the authoritative gateway-filtered & sorted list directly.
-    if (hasServerFilter && !qParam.trim() && !hasClientOnlyAttributeFilter && isBackendSort) {
-      return serverFilteredProducts;
-    }
-
-    const list = applyStructuredFilters(searchPool, filters, shopsById, categoryDescendantsBySlug);
-    const sorted = [...list];
-    if (sortParam === "price-asc") {
-      sorted.sort((a, b) => a.price - b.price);
-    } else if (sortParam === "price-desc") {
-      sorted.sort((a, b) => b.price - a.price);
-    } else if (sortParam === "name-asc") {
-      sorted.sort((a, b) => a.name.localeCompare(b.name, "vi"));
-    } else if (sortParam === "newest") {
-      sorted.sort((a, b) => {
-        const aTime = a.createdAt ? Date.parse(a.createdAt) : 0;
-        const bTime = b.createdAt ? Date.parse(b.createdAt) : 0;
-        return bTime - aTime || Number(Boolean(b.isNew)) - Number(Boolean(a.isNew));
-      });
-    } else {
-      // ponytail: sắp xếp bán chạy dựa vào editorial salesRank tới khi có bảng xếp hạng doanh số từ backend.
-      sorted.sort((a, b) => (a.salesRank ?? 99) - (b.salesRank ?? 99));
-    }
-    return sorted;
+  // Server already filtered/sorted by q, cat, shop, price, min_rating, in_stock, size, color, sort.
+  // Only apply client-side secondary editorial filtering when an editorial query param is set.
+  const displayedProducts = useMemo<CatalogProduct[]>(() => {
+    if (!hasEditorialFilter) return loadedProducts;
+    return loadedProducts.filter((product) => {
+      if (genderParam && !matchesGenderFilter(product, genderParam)) return false;
+      if (originParam) {
+        const shop = shopsById.get(product.shopId);
+        const provCode = shop?.provinceCode ?? product.shopProvinceCode;
+        if (provCode !== originParam) return false;
+      }
+      if (materialParam && product.material !== materialParam) return false;
+      if (fitParam && product.fitType !== fitParam) return false;
+      if (occasionParam && !product.occasion?.includes(occasionParam)) return false;
+      if (sportParam && !product.sport?.includes(sportParam)) return false;
+      if (featureParam && !product.fabricFeatures?.includes(featureParam)) return false;
+      if (patternParam && product.pattern !== patternParam) return false;
+      return true;
+    });
   }, [
-    categoryDescendantsBySlug,
-    filters,
-    hasClientOnlyAttributeFilter,
-    hasServerFilter,
-    isBackendSort,
-    qParam,
-    searchPool,
-    serverFilteredProducts,
+    featureParam,
+    fitParam,
+    genderParam,
+    hasEditorialFilter,
+    loadedProducts,
+    materialParam,
+    occasionParam,
+    originParam,
+    patternParam,
     shopsById,
-    sortParam,
+    sportParam,
   ]);
 
-  const visibleProducts = useMemo(
-    () => filteredProducts.slice(0, visibleCount),
-    [filteredProducts, visibleCount]
-  );
+  // Real server category & shop facet counts
+  const categoryCountBySlug = useMemo(() => {
+    const byId = new Map<string, number>();
+    const bySlug = new Map<string, number>();
+    for (const f of categoryFacets) {
+      if (f.id) byId.set(f.id, Math.max(0, Math.trunc(f.count ?? 0)));
+      if (f.slug) bySlug.set(f.slug, Math.max(0, Math.trunc(f.count ?? 0)));
+    }
+    const out: Record<string, number> = {};
+    for (const cat of categories) {
+      const direct = byId.get(cat.id) ?? bySlug.get(cat.slug);
+      if (direct !== undefined) {
+        out[cat.slug] = direct;
+        continue;
+      }
+      const descendants = categoryDescendantsBySlug.get(cat.slug);
+      if (descendants && categoryFacets.length > 0) {
+        let sum = 0;
+        for (const dSlug of descendants) {
+          sum += bySlug.get(dSlug) ?? 0;
+        }
+        out[cat.slug] = sum;
+      } else {
+        out[cat.slug] = 0;
+      }
+    }
+    return out;
+  }, [categories, categoryDescendantsBySlug, categoryFacets]);
 
-  // Live faceted counts computed across real backend products loaded from gateway
-  // ponytail: 13 nhóm facet chạy phía client trên tập sản phẩm thật đã tải (<= 100 SP);
-  // chuyển lên Search service khi triển khai Tháng 4–6.
-  const facets = useMemo(() => {
-    const poolGender = applyStructuredFilters(
-      searchPool,
-      filters,
-      shopsById,
-      categoryDescendantsBySlug,
-      "gender"
+  const resolvedShopSlugParam = shopParam ? (getLegacyShopSlugById(shopParam) ?? shopParam) : "";
+  const activeShop = useMemo(() => {
+    if (!shopParam) return undefined;
+    const fromShops = shops.find((s) => s.slug === resolvedShopSlugParam || s.id === shopParam);
+    if (fromShops) return fromShops;
+    const fromFacet = shopFacets.find(
+      (f) => f.slug === resolvedShopSlugParam || f.id === shopParam
     );
-    const poolCat = applyStructuredFilters(
-      searchPool,
-      filters,
-      shopsById,
-      categoryDescendantsBySlug,
-      "cat"
-    );
-    const poolSize = applyStructuredFilters(
-      searchPool,
-      filters,
-      shopsById,
-      categoryDescendantsBySlug,
-      "size"
-    );
-    const poolColor = applyStructuredFilters(
-      searchPool,
-      filters,
-      shopsById,
-      categoryDescendantsBySlug,
-      "color"
-    );
-    const poolPrice = applyStructuredFilters(
-      searchPool,
-      filters,
-      shopsById,
-      categoryDescendantsBySlug,
-      "price"
-    );
-    const poolMaterial = applyStructuredFilters(
-      searchPool,
-      filters,
-      shopsById,
-      categoryDescendantsBySlug,
-      "material"
-    );
-    const poolFit = applyStructuredFilters(
-      searchPool,
-      filters,
-      shopsById,
-      categoryDescendantsBySlug,
-      "fit"
-    );
-    const poolOccasion = applyStructuredFilters(
-      searchPool,
-      filters,
-      shopsById,
-      categoryDescendantsBySlug,
-      "occasion"
-    );
-    const poolSport = applyStructuredFilters(
-      searchPool,
-      filters,
-      shopsById,
-      categoryDescendantsBySlug,
-      "sport"
-    );
-    const poolFeature = applyStructuredFilters(
-      searchPool,
-      filters,
-      shopsById,
-      categoryDescendantsBySlug,
-      "feature"
-    );
-    const poolPattern = applyStructuredFilters(
-      searchPool,
-      filters,
-      shopsById,
-      categoryDescendantsBySlug,
-      "pattern"
-    );
-    const poolShop = applyStructuredFilters(
-      searchPool,
-      filters,
-      shopsById,
-      categoryDescendantsBySlug,
-      "shop"
-    );
-    const poolOrigin = applyStructuredFilters(
-      searchPool,
-      filters,
-      shopsById,
-      categoryDescendantsBySlug,
-      "origin"
-    );
+    if (fromFacet) {
+      return mapGatewayShop({
+        id: fromFacet.id,
+        name: fromFacet.name,
+        slug: fromFacet.slug || fromFacet.id,
+        description: "",
+        status: "ACTIVE",
+      });
+    }
+    return undefined;
+  }, [resolvedShopSlugParam, shopFacets, shopParam, shops]);
 
+  const shopFacetEntries = useMemo(() => {
+    const entries: Array<{ id: string; slug: string; name: string; count: number }> = [];
+    const seen = new Set<string>();
+    for (const f of shopFacets) {
+      if (!f.id || seen.has(f.id)) continue;
+      seen.add(f.id);
+      const shop = shopsById.get(f.id);
+      entries.push({
+        id: f.id,
+        slug: f.slug || shop?.slug || f.id,
+        name: shop?.shortName || f.name || shop?.name || "Gian hàng NexusMart",
+        count: Math.max(0, Math.trunc(f.count ?? 0)),
+      });
+    }
+    if (activeShop && !seen.has(activeShop.id)) {
+      entries.unshift({
+        id: activeShop.id,
+        slug: activeShop.slug || activeShop.id,
+        name: activeShop.shortName || activeShop.name,
+        count: serverTotal,
+      });
+    }
+    return entries;
+  }, [activeShop, serverTotal, shopFacets, shopsById]);
+
+  // Accurate local editorial facet counts ONLY when all matches fit on the current page (total <= page_size)
+  const localEditorialCounts = useMemo(() => {
+    if (hideEditorialCounts) return null;
+    const pool = loadedProducts;
     const gender: Record<GenderCode, number> = {
-      nam: poolGender.filter((p) => matchesGenderFilter(p, "nam")).length,
-      nu: poolGender.filter((p) => matchesGenderFilter(p, "nu")).length,
-      unisex: poolGender.filter((p) => matchesGenderFilter(p, "unisex")).length,
+      nam: pool.filter((p) => matchesGenderFilter(p, "nam")).length,
+      nu: pool.filter((p) => matchesGenderFilter(p, "nu")).length,
+      unisex: pool.filter((p) => matchesGenderFilter(p, "unisex")).length,
     };
-
-    const cat: Record<string, number> = {};
-    for (const c of categories) {
-      const allowed = categoryDescendantsBySlug.get(c.slug);
-      cat[c.slug] = poolCat.filter((p) =>
-        allowed ? allowed.has(p.rawCategorySlug) : p.rawCategorySlug === c.slug
-      ).length;
-    }
-
-    const size: Record<QuickSizeChip, number> = {
-      XS: 0,
-      S: 0,
-      M: 0,
-      L: 0,
-      XL: 0,
-      "2XL": 0,
-      "3XL": 0,
-      "4XL": 0,
-    };
-    for (const sz of QUICK_SIZE_CHIPS) {
-      size[sz] = poolSize.filter((p) =>
-        p.skus.some((sku) => sku.size === (sz as SizeCode) && sku.stock > 0)
-      ).length;
-    }
-
-    const color: Record<string, number> = {};
-    for (const cg of COLOR_GROUPS) {
-      color[cg.id] = poolColor.filter((p) =>
-        p.colors.some((c) => cg.codes.includes(c.code))
-      ).length;
-    }
-
-    const price: Record<string, number> = {};
-    for (const po of PRICE_OPTIONS) {
-      price[po.id] = poolPrice.filter((p) => matchPriceBucket(p.price, po.id)).length;
-    }
-
     const material: Record<string, number> = {};
     for (const key of Object.keys(MATERIAL_LABELS) as MaterialCode[]) {
-      material[key] = poolMaterial.filter((p) => p.material === key).length;
+      material[key] = pool.filter((p) => p.material === key).length;
     }
-
     const fit: Record<string, number> = {};
     for (const key of Object.keys(FIT_LABELS) as FitCode[]) {
-      fit[key] = poolFit.filter((p) => p.fitType === key).length;
+      fit[key] = pool.filter((p) => p.fitType === key).length;
     }
-
     const occasion: Record<string, number> = {};
     for (const key of Object.keys(OCCASION_LABELS) as OccasionCode[]) {
-      occasion[key] = poolOccasion.filter((p) => p.occasion?.includes(key)).length;
+      occasion[key] = pool.filter((p) => p.occasion?.includes(key)).length;
     }
-
     const sport: Record<string, number> = {};
     for (const key of Object.keys(SPORT_LABELS) as SportCode[]) {
-      sport[key] = poolSport.filter((p) => p.sport?.includes(key)).length;
+      sport[key] = pool.filter((p) => p.sport?.includes(key)).length;
     }
-
     const feature: Record<string, number> = {};
     for (const key of Object.keys(FABRIC_FEATURE_LABELS) as FabricFeatureCode[]) {
-      feature[key] = poolFeature.filter((p) => p.fabricFeatures?.includes(key)).length;
+      feature[key] = pool.filter((p) => p.fabricFeatures?.includes(key)).length;
     }
-
     const pattern: Record<string, number> = {};
     for (const key of Object.keys(PATTERN_LABELS) as PatternCode[]) {
-      pattern[key] = poolPattern.filter((p) => p.pattern === key).length;
+      pattern[key] = pool.filter((p) => p.pattern === key).length;
     }
-
-    const shop: Record<string, number> = {};
-    for (const s of shops) {
-      shop[s.id] = poolShop.filter((p) => p.shopId === s.id).length;
-    }
-
     const origin: Record<string, number> = {};
     for (const o of ORIGIN_OPTIONS) {
-      origin[o.code] = poolOrigin.filter((p) => {
+      origin[o.code] = pool.filter((p) => {
         const s = shopsById.get(p.shopId);
         return (s?.provinceCode ?? p.shopProvinceCode) === o.code;
       }).length;
     }
+    return { gender, material, fit, occasion, sport, feature, pattern, origin };
+  }, [hideEditorialCounts, loadedProducts, shopsById]);
 
-    return {
-      gender,
-      cat,
-      size,
-      color,
-      price,
-      material,
-      fit,
-      occasion,
-      sport,
-      feature,
-      pattern,
-      shop,
-      origin,
-      allCatTotal: poolCat.length,
-    };
-  }, [categories, categoryDescendantsBySlug, filters, searchPool, shops, shopsById]);
+  const handleLoadMore = async () => {
+    if (loadingMore || loadedPage >= totalPages) return;
+    const nextPage = loadedPage + 1;
+    const seq = ++loadMoreSeqRef.current;
+    setLoadingMore(true);
+    setLoadMoreError(null);
 
-  // Marketplace-wide matches if currently filtered by a single shop with 0 results
-  const marketplaceFallbackCount = useMemo(() => {
-    if (!shopParam || filteredProducts.length > 0) return 0;
-    return applyStructuredFilters(searchPool, filters, shopsById, categoryDescendantsBySlug, "shop")
-      .length;
-  }, [
-    categoryDescendantsBySlug,
-    filteredProducts.length,
-    filters,
-    searchPool,
-    shopParam,
-    shopsById,
-  ]);
+    try {
+      const priceRange = resolvePriceBucketRange(priceParam);
+      let shopId: string | undefined;
+      let shopSlug: string | undefined;
+      if (shopParam) {
+        if (UUID_PATTERN.test(shopParam)) {
+          shopId = shopParam;
+        } else {
+          shopSlug = getLegacyShopSlugById(shopParam) ?? shopParam;
+        }
+      }
 
-  const spellingSuggestion = useMemo(() => {
-    if (!qParam.trim() || filteredProducts.length > 0) return null;
-    return suggestSpelling(qParam);
-  }, [filteredProducts.length, qParam]);
+      const nextRes = await fetchSearchProductsClient({
+        q: qParam || undefined,
+        categorySlug: catParam || undefined,
+        shopId,
+        shopSlug,
+        minPriceVnd: priceRange.minPriceVnd,
+        maxPriceVnd: priceRange.maxPriceVnd,
+        minRatingX100,
+        inStockOnly,
+        sortBy: sortParam,
+        size: sizeParam || undefined,
+        color: colorParam || undefined,
+        page: nextPage,
+        pageSize: safePageSize,
+      });
+      if (loadMoreSeqRef.current !== seq) return;
 
-  useRevealObserver(rootRef, `${filterSignature}|${visibleCount}|${stateParam ?? ""}`);
+      const hits = nextRes.items;
+      const pageSkuIds = collectSearchHitSkuIds(hits);
+      const missingShopIds = Array.from(
+        new Set(hits.filter((h) => !h.shop_name?.trim() && h.shop_id).map((h) => h.shop_id))
+      );
+
+      const nowMs = Date.now();
+      const cachedFlash = flashCacheRef.current;
+      const flashPromise =
+        cachedFlash && nowMs - cachedFlash.fetchedAt < 30_000
+          ? Promise.resolve(cachedFlash.sales)
+          : api<GatewayFlashSalesResponse>("/flash-sales?include_upcoming=false", {
+              retryOn401: false,
+            })
+              .then((fsRes) => {
+                const sales = Array.isArray(fsRes?.flash_sales) ? fsRes.flash_sales : [];
+                flashCacheRef.current = { fetchedAt: Date.now(), sales };
+                return sales;
+              })
+              .catch(() => [] as GatewayFlashSale[]);
+
+      const shopDiscPromise =
+        pageSkuIds.length > 0
+          ? fetchActiveShopDiscountsWithFetcher({ skuIds: pageSkuIds }, async (batch) => {
+              const dqs = new URLSearchParams();
+              if (batch.skuIds && batch.skuIds.length > 0) {
+                dqs.set("sku_ids", batch.skuIds.join(","));
+              }
+              const discRes = await api<GatewayActiveShopDiscountsResponse>(
+                `/shop-discounts/active?${dqs.toString()}`,
+                { retryOn401: false }
+              );
+              return Array.isArray(discRes?.discounts) ? discRes.discounts : [];
+            }).catch(() => [] as GatewayActiveShopDiscount[])
+          : Promise.resolve([] as GatewayActiveShopDiscount[]);
+
+      const extraShopsPromise =
+        missingShopIds.length > 0
+          ? fetchMissingShopsClient(missingShopIds).catch(() => ({}))
+          : Promise.resolve({});
+
+      const [rawFlashSales, activeDiscounts, extraShopsMap] = await Promise.all([
+        flashPromise,
+        shopDiscPromise,
+        extraShopsPromise,
+      ]);
+      if (loadMoreSeqRef.current !== seq) return;
+
+      const mergedShopsById = new Map(shopsById);
+      for (const s of Object.values(extraShopsMap)) {
+        if (s?.id && !mergedShopsById.has(s.id)) {
+          mergedShopsById.set(s.id, mapGatewayShop(s));
+        }
+      }
+
+      const liveFlashItemsBySkuId = buildLiveFlashItemsBySkuId(rawFlashSales, Date.now());
+      const activeShopDiscountsBySkuId = buildActiveShopDiscountsMap(activeDiscounts);
+
+      const mappedNext = hits.map((hit) =>
+        mapSearchHitToCatalogProduct(hit, {
+          categoriesById,
+          shopsById: mergedShopsById,
+          liveFlashItemsBySkuId,
+          activeShopDiscountsBySkuId,
+        })
+      );
+
+      setLoadedProducts((prev) => {
+        const seen = new Set(prev.map((p) => p.id));
+        const appended = [...prev];
+        for (const item of mappedNext) {
+          if (!seen.has(item.id)) {
+            seen.add(item.id);
+            appended.push(item);
+          }
+        }
+        return appended;
+      });
+      setLoadedPage(nextPage);
+    } catch {
+      if (loadMoreSeqRef.current !== seq) return;
+      setLoadMoreError("Không thể tải thêm sản phẩm lúc này. Vui lòng thử lại.");
+    } finally {
+      if (loadMoreSeqRef.current === seq) {
+        setLoadingMore(false);
+      }
+    }
+  };
+
+  useRevealObserver(rootRef, `${filterSignature}|${loadedProducts.length}|${stateParam ?? ""}`);
 
   const activeCategory = categories.find((c) => c.slug === catParam);
-  const resolvedShopSlugParam = shopParam ? (getLegacyShopSlugById(shopParam) ?? shopParam) : "";
-  const activeShop = shops.find((s) => s.slug === resolvedShopSlugParam || s.id === shopParam);
-  const activeColor = COLOR_GROUPS.find((c) => c.id === colorParam);
+  const activeColor = COLOR_OPTIONS.find((c) => c.code === colorParam);
   const activePrice = PRICE_OPTIONS.find((p) => p.id === priceParam && p.id !== "all");
+  const activeRating = RATING_OPTIONS.find((r) => r.value === minRatingX100);
   const activeOrigin = ORIGIN_OPTIONS.find((o) => o.code === originParam);
-
-  const shopsWithProductsOrActive = useMemo(
-    () => shops.filter((s) => (facets.shop[s.id] ?? 0) > 0 || activeShop?.id === s.id),
-    [shops, facets.shop, activeShop?.id]
-  );
 
   const activeFilterChips = [
     qParam ? { key: "q", label: `Từ khóa: ${qParam}` } : null,
     activeCategory ? { key: "cat", label: activeCategory.name } : null,
     sizeParam ? { key: "size", label: `Size ${sizeParam}` } : null,
     activePrice ? { key: "price", label: activePrice.label } : null,
-    activeColor ? { key: "color", label: activeColor.label } : null,
+    activeRating ? { key: "min_rating", label: activeRating.label } : null,
+    inStockOnly ? { key: "in_stock", label: "Còn hàng" } : null,
+    activeColor
+      ? { key: "color", label: activeColor.label }
+      : colorParam
+        ? { key: "color", label: `Màu: ${colorParam}` }
+        : null,
     activeShop ? { key: "shop", label: activeShop.shortName } : null,
     materialParam ? { key: "material", label: MATERIAL_LABELS[materialParam] } : null,
     fitParam ? { key: "fit", label: FIT_LABELS[fitParam] } : null,
@@ -771,14 +705,32 @@ export function CatalogExplorer({
       ? "Tìm nhanh theo tên sản phẩm, chất liệu vải, phom dáng hoặc xưởng dệt."
       : activeCategory
         ? activeCategory.description
-        : `${allProducts.length} mẫu đồ basic nam nữ từ các xưởng dệt Việt Nam, cập nhật còn hàng theo màu và size.`;
+        : `${formatInt(serverTotal)} sản phẩm đồ cơ bản từ các xưởng dệt Việt Nam, cập nhật còn hàng theo màu và size.`;
 
+  const shownCountSoFar = Math.min(
+    serverTotal,
+    (safePage - 1) * safePageSize + loadedProducts.length
+  );
   const shownRatio =
-    filteredProducts.length > 0
-      ? Math.min(100, Math.round((visibleProducts.length / filteredProducts.length) * 100))
-      : 0;
+    serverTotal > 0 ? Math.min(100, Math.round((shownCountSoFar / serverTotal) * 100)) : 0;
+  const remainingToLoad = Math.max(0, serverTotal - shownCountSoFar);
+  const hasMorePages = loadedPage < totalPages && remainingToLoad > 0;
+  const pageWindow = useMemo(() => buildPageWindow(safePage, totalPages), [safePage, totalPages]);
 
-  const remainingToLoad = Math.max(0, filteredProducts.length - visibleProducts.length);
+  const isProductFallback = degradedMode === "product_fallback";
+  const showEmptyState = shouldShowCatalogEmptyState({
+    forcedEmpty: stateParam === "empty",
+    displayedCount: displayedProducts.length,
+    hasMorePages,
+  });
+  const countSummary = buildCatalogCountSummary({
+    hasEditorialFilter,
+    displayedCount: displayedProducts.length,
+    loadedCount: loadedProducts.length,
+    shownCountSoFar,
+    serverTotal,
+    page: safePage,
+  });
 
   const renderAccordionSection = (
     idPrefix: string,
@@ -817,7 +769,7 @@ export function CatalogExplorer({
 
   const renderFilterGroups = (idPrefix: string) => (
     <>
-      {/* Primary groups: open by default (Danh mục, Kích cỡ, Mức giá) */}
+      {/* 5 real server facets + size & color */}
       {renderAccordionSection(
         idPrefix,
         "cat",
@@ -831,11 +783,11 @@ export function CatalogExplorer({
             aria-pressed={!catParam}
           >
             <span>Tất cả sản phẩm</span>
-            <span className={styles.optionCount}>{facets.allCatTotal}</span>
+            <span className={styles.optionCount}>{formatInt(serverTotal)}</span>
           </button>
           {categories.map((cat) => {
             const active = catParam === cat.slug;
-            const count = facets.cat[cat.slug] ?? 0;
+            const count = categoryCountBySlug[cat.slug];
             return (
               <button
                 key={cat.id}
@@ -845,7 +797,9 @@ export function CatalogExplorer({
                 aria-pressed={active}
               >
                 <span>{cat.name}</span>
-                <span className={styles.optionCount}>{count}</span>
+                {categoryFacets.length > 0 && (
+                  <span className={styles.optionCount}>{formatInt(count ?? 0)}</span>
+                )}
               </button>
             );
           })}
@@ -859,22 +813,15 @@ export function CatalogExplorer({
         Boolean(sizeParam),
         <div className={styles.railSizeGrid} role="group" aria-label="Lọc theo kích cỡ">
           {QUICK_SIZE_CHIPS.map((sz) => {
-            const count = facets.size[sz] ?? 0;
-            const active = sizeParam === sz;
-            const unavailable = count === 0 && !active;
+            const active = sizeParam.toUpperCase() === sz;
             return (
               <button
                 key={sz}
                 type="button"
-                disabled={unavailable}
-                className={`${styles.railSizeBtn} ${active ? styles.railSizeBtnActive : ""} ${
-                  unavailable ? styles.railSizeBtnDisabled : ""
-                }`}
+                className={`${styles.railSizeBtn} ${active ? styles.railSizeBtnActive : ""}`}
                 onClick={() => updateParams({ size: active ? null : sz })}
                 aria-pressed={active}
-                title={
-                  unavailable ? `Size ${sz} tạm hết hàng` : `Lọc size ${sz} (${count} mẫu còn hàng)`
-                }
+                title={`Lọc size ${sz}`}
               >
                 {sz}
               </button>
@@ -891,7 +838,6 @@ export function CatalogExplorer({
         <div className={styles.optionList}>
           {PRICE_OPTIONS.map((opt) => {
             const active = priceParam === opt.id;
-            const count = facets.price[opt.id] ?? 0;
             return (
               <button
                 key={opt.id}
@@ -901,29 +847,74 @@ export function CatalogExplorer({
                 aria-pressed={active}
               >
                 <span>{opt.label}</span>
-                <span className={styles.optionCount}>{count}</span>
               </button>
             );
           })}
         </div>
       )}
 
-      {/* Secondary groups: collapsed by default */}
+      {renderAccordionSection(
+        idPrefix,
+        "rating",
+        "Đánh giá",
+        Boolean(minRatingX100),
+        <div className={styles.optionList}>
+          <button
+            type="button"
+            className={`${styles.optionBtn} ${!minRatingX100 ? styles.optionBtnActive : ""}`}
+            onClick={() => updateParams({ min_rating: null })}
+            aria-pressed={!minRatingX100}
+          >
+            <span>Tất cả đánh giá</span>
+          </button>
+          {RATING_OPTIONS.map((opt) => {
+            const active = minRatingX100 === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                className={`${styles.optionBtn} ${active ? styles.optionBtnActive : ""}`}
+                onClick={() => updateParams({ min_rating: active ? null : String(opt.value) })}
+                aria-pressed={active}
+              >
+                <span>{opt.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {renderAccordionSection(
+        idPrefix,
+        "in_stock",
+        "Tình trạng hàng",
+        inStockOnly,
+        <div className={styles.optionList}>
+          <button
+            type="button"
+            className={`${styles.optionBtn} ${inStockOnly ? styles.optionBtnActive : ""}`}
+            onClick={() => updateParams({ in_stock: inStockOnly ? null : "1" })}
+            aria-pressed={inStockOnly}
+          >
+            <span>Chỉ hiện sản phẩm còn hàng</span>
+          </button>
+        </div>
+      )}
+
       {renderAccordionSection(
         idPrefix,
         "color",
         "Màu sắc",
         Boolean(colorParam),
         <div className={styles.optionList}>
-          {COLOR_GROUPS.map((cg) => {
-            const active = colorParam === cg.id;
-            const count = facets.color[cg.id] ?? 0;
+          {COLOR_OPTIONS.map((cg) => {
+            const active = colorParam === cg.code;
             return (
               <button
-                key={cg.id}
+                key={cg.code}
                 type="button"
                 className={`${styles.optionBtn} ${active ? styles.optionBtnActive : ""}`}
-                onClick={() => updateParams({ color: active ? null : cg.id })}
+                onClick={() => updateParams({ color: active ? null : cg.code })}
                 aria-pressed={active}
               >
                 <span className={styles.optionLeft}>
@@ -934,7 +925,6 @@ export function CatalogExplorer({
                   />
                   <span>{cg.label}</span>
                 </span>
-                <span className={styles.optionCount}>{count}</span>
               </button>
             );
           })}
@@ -954,13 +944,13 @@ export function CatalogExplorer({
             aria-pressed={!shopParam}
           >
             <span>Tất cả xưởng</span>
-            <span className={styles.optionCount}>
-              {Object.values(facets.shop).reduce((s, n) => s + n, 0)}
-            </span>
+            <span className={styles.optionCount}>{formatInt(serverTotal)}</span>
           </button>
-          {shopsWithProductsOrActive.map((shop) => {
-            const active = activeShop?.id === shop.id;
-            const count = facets.shop[shop.id] ?? 0;
+          {shopFacetEntries.map((shop) => {
+            const active =
+              activeShop?.id === shop.id ||
+              shopParam === shop.id ||
+              resolvedShopSlugParam === shop.slug;
             return (
               <button
                 key={shop.id}
@@ -969,14 +959,15 @@ export function CatalogExplorer({
                 onClick={() => updateParams({ shop: active ? null : shop.slug })}
                 aria-pressed={active}
               >
-                <span>{shop.shortName}</span>
-                <span className={styles.optionCount}>{count}</span>
+                <span>{shop.name}</span>
+                <span className={styles.optionCount}>{formatInt(shop.count)}</span>
               </button>
             );
           })}
         </div>
       )}
 
+      {/* Secondary editorial facets (counts hidden when total > page_size per proposal 3 b1 §4) */}
       {renderAccordionSection(
         idPrefix,
         "material",
@@ -985,8 +976,8 @@ export function CatalogExplorer({
         <div className={styles.optionList}>
           {(Object.keys(MATERIAL_LABELS) as MaterialCode[]).map((key) => {
             const active = materialParam === key;
-            const count = facets.material[key] ?? 0;
-            if (count === 0 && !active) return null;
+            const count = localEditorialCounts?.material[key];
+            if (!hideEditorialCounts && count === 0 && !active) return null;
             return (
               <button
                 key={key}
@@ -996,7 +987,9 @@ export function CatalogExplorer({
                 aria-pressed={active}
               >
                 <span>{MATERIAL_LABELS[key]}</span>
-                <span className={styles.optionCount}>{count}</span>
+                {!hideEditorialCounts && count !== undefined && (
+                  <span className={styles.optionCount}>{count}</span>
+                )}
               </button>
             );
           })}
@@ -1011,7 +1004,7 @@ export function CatalogExplorer({
         <div className={styles.optionList}>
           {(Object.keys(FIT_LABELS) as FitCode[]).map((key) => {
             const active = fitParam === key;
-            const count = facets.fit[key] ?? 0;
+            const count = localEditorialCounts?.fit[key];
             return (
               <button
                 key={key}
@@ -1021,7 +1014,9 @@ export function CatalogExplorer({
                 aria-pressed={active}
               >
                 <span>{FIT_LABELS[key]}</span>
-                <span className={styles.optionCount}>{count}</span>
+                {!hideEditorialCounts && count !== undefined && (
+                  <span className={styles.optionCount}>{count}</span>
+                )}
               </button>
             );
           })}
@@ -1036,7 +1031,7 @@ export function CatalogExplorer({
         <div className={styles.optionList}>
           {(Object.keys(OCCASION_LABELS) as OccasionCode[]).map((key) => {
             const active = occasionParam === key;
-            const count = facets.occasion[key] ?? 0;
+            const count = localEditorialCounts?.occasion[key];
             return (
               <button
                 key={key}
@@ -1046,7 +1041,9 @@ export function CatalogExplorer({
                 aria-pressed={active}
               >
                 <span>{OCCASION_LABELS[key]}</span>
-                <span className={styles.optionCount}>{count}</span>
+                {!hideEditorialCounts && count !== undefined && (
+                  <span className={styles.optionCount}>{count}</span>
+                )}
               </button>
             );
           })}
@@ -1061,7 +1058,7 @@ export function CatalogExplorer({
         <div className={styles.optionList}>
           {(Object.keys(SPORT_LABELS) as SportCode[]).map((key) => {
             const active = sportParam === key;
-            const count = facets.sport[key] ?? 0;
+            const count = localEditorialCounts?.sport[key];
             return (
               <button
                 key={key}
@@ -1071,7 +1068,9 @@ export function CatalogExplorer({
                 aria-pressed={active}
               >
                 <span>{SPORT_LABELS[key]}</span>
-                <span className={styles.optionCount}>{count}</span>
+                {!hideEditorialCounts && count !== undefined && (
+                  <span className={styles.optionCount}>{count}</span>
+                )}
               </button>
             );
           })}
@@ -1086,7 +1085,7 @@ export function CatalogExplorer({
         <div className={styles.optionList}>
           {(Object.keys(FABRIC_FEATURE_LABELS) as FabricFeatureCode[]).map((key) => {
             const active = featureParam === key;
-            const count = facets.feature[key] ?? 0;
+            const count = localEditorialCounts?.feature[key];
             return (
               <button
                 key={key}
@@ -1096,7 +1095,9 @@ export function CatalogExplorer({
                 aria-pressed={active}
               >
                 <span>{FABRIC_FEATURE_LABELS[key]}</span>
-                <span className={styles.optionCount}>{count}</span>
+                {!hideEditorialCounts && count !== undefined && (
+                  <span className={styles.optionCount}>{count}</span>
+                )}
               </button>
             );
           })}
@@ -1111,7 +1112,7 @@ export function CatalogExplorer({
         <div className={styles.optionList}>
           {(["nam", "nu", "unisex"] as GenderCode[]).map((g) => {
             const active = genderParam === g;
-            const count = facets.gender[g];
+            const count = localEditorialCounts?.gender[g];
             return (
               <button
                 key={g}
@@ -1121,7 +1122,9 @@ export function CatalogExplorer({
                 aria-pressed={active}
               >
                 <span>{GENDER_LABELS[g]}</span>
-                <span className={styles.optionCount}>{count}</span>
+                {!hideEditorialCounts && count !== undefined && (
+                  <span className={styles.optionCount}>{count}</span>
+                )}
               </button>
             );
           })}
@@ -1136,7 +1139,7 @@ export function CatalogExplorer({
         <div className={styles.optionList}>
           {(Object.keys(PATTERN_LABELS) as PatternCode[]).map((key) => {
             const active = patternParam === key;
-            const count = facets.pattern[key] ?? 0;
+            const count = localEditorialCounts?.pattern[key];
             return (
               <button
                 key={key}
@@ -1146,7 +1149,9 @@ export function CatalogExplorer({
                 aria-pressed={active}
               >
                 <span>{PATTERN_LABELS[key]}</span>
-                <span className={styles.optionCount}>{count}</span>
+                {!hideEditorialCounts && count !== undefined && (
+                  <span className={styles.optionCount}>{count}</span>
+                )}
               </button>
             );
           })}
@@ -1161,7 +1166,7 @@ export function CatalogExplorer({
         <div className={styles.optionList}>
           {ORIGIN_OPTIONS.map((opt) => {
             const active = originParam === opt.code;
-            const count = facets.origin[opt.code] ?? 0;
+            const count = localEditorialCounts?.origin[opt.code];
             return (
               <button
                 key={opt.code}
@@ -1171,7 +1176,9 @@ export function CatalogExplorer({
                 aria-pressed={active}
               >
                 <span>{opt.label}</span>
-                <span className={styles.optionCount}>{count}</span>
+                {!hideEditorialCounts && count !== undefined && (
+                  <span className={styles.optionCount}>{count}</span>
+                )}
               </button>
             );
           })}
@@ -1181,7 +1188,12 @@ export function CatalogExplorer({
   );
 
   return (
-    <div ref={rootRef} className={styles.page}>
+    <div
+      ref={rootRef}
+      className={styles.page}
+      data-degraded-mode={degradedMode || ""}
+      data-server-total={serverTotal}
+    >
       <div className={styles.mainWrap}>
         <section className={styles.headerGrid} aria-label="Tìm kiếm và lọc danh mục">
           <div className={styles.titleBlock}>
@@ -1220,19 +1232,19 @@ export function CatalogExplorer({
             </form>
 
             <div className={styles.searchMetaRow}>
-              <span className={styles.countText}>
-                Khớp {filteredProducts.length} / {allProducts.length} sản phẩm
-              </span>
+              <span className={styles.countText}>{countSummary.metaText}</span>
               <div className={styles.desktopControls}>
-                <button
-                  type="button"
-                  className={styles.sidebarToggleBtn}
-                  onClick={() => setSidebarOpen((v) => !v)}
-                  aria-expanded={sidebarOpen}
-                >
-                  <IconSliders size={15} />
-                  <span>{sidebarOpen ? "Ẩn bộ lọc" : "Hiện bộ lọc"}</span>
-                </button>
+                {!isProductFallback && (
+                  <button
+                    type="button"
+                    className={styles.sidebarToggleBtn}
+                    onClick={() => setSidebarOpen((v) => !v)}
+                    aria-expanded={sidebarOpen}
+                  >
+                    <IconSliders size={15} />
+                    <span>{sidebarOpen ? "Ẩn bộ lọc" : "Hiện bộ lọc"}</span>
+                  </button>
+                )}
                 <div className={styles.sortWrap}>
                   <label htmlFor="catalog-sort-desktop" className={styles.sortLabel}>
                     Sắp xếp
@@ -1243,11 +1255,11 @@ export function CatalogExplorer({
                     value={sortParam}
                     onChange={(e) => updateParams({ sort: e.target.value })}
                   >
-                    <option value="bestseller">Bán chạy</option>
+                    <option value="relevance">Phù hợp nhất</option>
                     <option value="newest">Mới nhất</option>
-                    <option value="price-asc">Giá tăng dần</option>
-                    <option value="price-desc">Giá giảm dần</option>
-                    <option value="name-asc">Tên A–Z</option>
+                    <option value="price_asc">Giá tăng dần</option>
+                    <option value="price_desc">Giá giảm dần</option>
+                    <option value="rating_desc">Đánh giá cao nhất</option>
                   </select>
                 </div>
               </div>
@@ -1255,24 +1267,23 @@ export function CatalogExplorer({
           </div>
         </section>
 
-        {mode === "search" && (
+        {mode === "search" && trendingKeywords.length > 0 && (
           <div className={styles.trendingStrip} aria-label="Từ khóa xu hướng">
             <span className={styles.trendingLabel}>Tìm nhiều:</span>
             <div className={styles.trendingList}>
-              {TRENDING_KEYWORDS.map((kw) => {
-                const active = qParam.toLowerCase() === kw.query.toLowerCase();
+              {trendingKeywords.slice(0, 8).map((kw) => {
+                const active = qParam.trim().toLowerCase() === kw.trim().toLowerCase();
                 return (
                   <button
-                    key={kw.query}
+                    key={kw}
                     type="button"
                     className={`${styles.trendingBtn} ${active ? styles.trendingBtnActive : ""}`}
                     onClick={() => {
-                      setDraftQuery(kw.query);
-                      updateParams({ q: kw.query });
+                      setDraftQuery(kw);
+                      updateParams({ q: kw });
                     }}
                   >
-                    <span>{kw.label}</span>
-                    {kw.tag && <span className={styles.trendingTag}>{kw.tag}</span>}
+                    <span>{kw}</span>
                   </button>
                 );
               })}
@@ -1280,35 +1291,40 @@ export function CatalogExplorer({
           </div>
         )}
 
-        <nav className={styles.catStrip} aria-label="Nhóm danh mục sản phẩm">
-          <button
-            type="button"
-            className={`${styles.catBtn} ${!catParam ? styles.catBtnActive : ""}`}
-            onClick={() => updateParams({ cat: null })}
-            aria-pressed={!catParam}
-          >
-            <span>Tất cả</span>
-            <span className={styles.catCount}>{facets.allCatTotal}</span>
-          </button>
-          {categories.map((cat) => {
-            const count = facets.cat[cat.slug] ?? 0;
-            const active = catParam === cat.slug;
-            return (
-              <button
-                key={cat.id}
-                type="button"
-                className={`${styles.catBtn} ${active ? styles.catBtnActive : ""}`}
-                onClick={() => updateParams({ cat: active ? null : cat.slug })}
-                aria-pressed={active}
-              >
-                <span>{cat.name}</span>
-                <span className={styles.catCount}>{count}</span>
-              </button>
-            );
-          })}
-        </nav>
+        {!isProductFallback && (
+          <nav className={styles.catStrip} aria-label="Nhóm danh mục sản phẩm">
+            <button
+              type="button"
+              className={`${styles.catBtn} ${!catParam ? styles.catBtnActive : ""}`}
+              onClick={() => updateParams({ cat: null })}
+              aria-pressed={!catParam}
+            >
+              <span>Tất cả</span>
+              <span className={styles.catCount}>{formatInt(serverTotal)}</span>
+            </button>
+            {categories.map((cat) => {
+              const count = categoryCountBySlug[cat.slug];
+              const active = catParam === cat.slug;
+              return (
+                <button
+                  key={cat.id}
+                  type="button"
+                  className={`${styles.catBtn} ${active ? styles.catBtnActive : ""}`}
+                  onClick={() => updateParams({ cat: active ? null : cat.slug })}
+                  aria-pressed={active}
+                >
+                  <span>{cat.name}</span>
+                  {categoryFacets.length > 0 && (
+                    <span className={styles.catCount}>{formatInt(count ?? 0)}</span>
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+        )}
 
-        {activeCategory &&
+        {!isProductFallback &&
+          activeCategory &&
           activeCategory.subCategories &&
           activeCategory.subCategories.length > 0 && (
             <div className={styles.subCatBanner} aria-label="Phân nhóm chất liệu trong danh mục">
@@ -1360,16 +1376,18 @@ export function CatalogExplorer({
         )}
 
         <div className={styles.mobileToolbar}>
-          <button
-            type="button"
-            className={styles.mobileFilterBtn}
-            onClick={() => setSheetOpen(true)}
-          >
-            <IconSliders size={16} />
-            <span>
-              Bộ lọc{activeFilterChips.length > 0 ? ` (${activeFilterChips.length})` : ""}
-            </span>
-          </button>
+          {!isProductFallback && (
+            <button
+              type="button"
+              className={styles.mobileFilterBtn}
+              onClick={() => setSheetOpen(true)}
+            >
+              <IconSliders size={16} />
+              <span>
+                Bộ lọc{activeFilterChips.length > 0 ? ` (${activeFilterChips.length})` : ""}
+              </span>
+            </button>
+          )}
 
           <select
             className={styles.sortSelect}
@@ -1377,19 +1395,19 @@ export function CatalogExplorer({
             onChange={(e) => updateParams({ sort: e.target.value })}
             aria-label="Sắp xếp sản phẩm"
           >
-            <option value="bestseller">Bán chạy</option>
+            <option value="relevance">Phù hợp nhất</option>
             <option value="newest">Mới nhất</option>
-            <option value="price-asc">Giá tăng dần</option>
-            <option value="price-desc">Giá giảm dần</option>
-            <option value="name-asc">Tên A–Z</option>
+            <option value="price_asc">Giá tăng dần</option>
+            <option value="price_desc">Giá giảm dần</option>
+            <option value="rating_desc">Đánh giá cao nhất</option>
           </select>
         </div>
 
         <section
-          className={`${styles.bodyGrid} ${!sidebarOpen ? styles.bodyGridWide : ""}`}
+          className={`${styles.bodyGrid} ${!sidebarOpen || isProductFallback ? styles.bodyGridWide : ""}`}
           aria-labelledby="catalog-results-heading"
         >
-          {sidebarOpen && (
+          {!isProductFallback && sidebarOpen && (
             <aside className={styles.rail} aria-label="Bộ lọc sản phẩm">
               <div className={styles.railHead}>
                 <span className={styles.railTitle}>Bộ lọc</span>
@@ -1412,14 +1430,28 @@ export function CatalogExplorer({
               <h2 id="catalog-results-heading" className={styles.resultsTitle}>
                 {qParam ? `Kết quả cho "${qParam}"` : "Sản phẩm xưởng dệt"}
               </h2>
-              <span className={styles.resultsSub}>
-                Đang hiện {visibleProducts.length} / {filteredProducts.length} sản phẩm
-              </span>
+              <span className={styles.resultsSub}>{countSummary.resultsSub}</span>
             </div>
+
+            {didYouMean && displayedProducts.length > 0 && (
+              <div className={styles.spellingRow}>
+                <span className={styles.spellingPrompt}>Có phải bạn muốn tìm:</span>
+                <button
+                  type="button"
+                  className={styles.spellingBtn}
+                  onClick={() => {
+                    setDraftQuery(didYouMean);
+                    updateParams({ q: didYouMean });
+                  }}
+                >
+                  {didYouMean}
+                </button>
+              </div>
+            )}
 
             {stateParam === "loading" ? (
               <StateView kind="loading" title="Đang tải danh mục sản phẩm..." rows={6} />
-            ) : stateParam === "error" || error ? (
+            ) : stateParam === "error" || (error && !isProductFallback) ? (
               <StateView
                 kind="error"
                 title="Không thể tải danh mục lúc này"
@@ -1435,7 +1467,7 @@ export function CatalogExplorer({
                   }
                 }}
               />
-            ) : stateParam === "empty" || filteredProducts.length === 0 ? (
+            ) : showEmptyState ? (
               <div className={styles.emptyBox}>
                 <h3 className={styles.emptyHeading}>
                   Chưa tìm thấy sản phẩm khớp với bộ lọc hiện tại
@@ -1446,32 +1478,39 @@ export function CatalogExplorer({
                     : "Hãy thử nới lỏng mức giá, đổi kích cỡ hoặc xóa bớt bộ lọc để xem thêm mẫu."}
                 </p>
 
-                {spellingSuggestion && (
+                {didYouMean && (
                   <div className={styles.spellingRow}>
                     <span className={styles.spellingPrompt}>Có phải bạn muốn tìm:</span>
                     <button
                       type="button"
                       className={styles.spellingBtn}
                       onClick={() => {
-                        setDraftQuery(spellingSuggestion);
-                        updateParams({ q: spellingSuggestion });
+                        setDraftQuery(didYouMean);
+                        updateParams({ q: didYouMean });
                       }}
                     >
-                      {spellingSuggestion}
+                      {didYouMean}
                     </button>
                   </div>
                 )}
 
                 <div className={styles.emptyActions}>
+                  {safePage > 1 && (
+                    <Button
+                      variant="secondary"
+                      size="md"
+                      onClick={() => updateParams({ page: null })}
+                    >
+                      Quay về trang 1
+                    </Button>
+                  )}
                   {shopParam && (
                     <Button
                       variant="primary"
                       size="md"
                       onClick={() => updateParams({ shop: null })}
                     >
-                      {marketplaceFallbackCount > 0
-                        ? `Xem kết quả trên toàn NexusMart (${marketplaceFallbackCount} mẫu)`
-                        : "Xem kết quả trên toàn NexusMart"}
+                      Xem kết quả trên toàn NexusMart
                     </Button>
                   )}
                   <Button
@@ -1483,84 +1522,143 @@ export function CatalogExplorer({
                   </Button>
                 </div>
 
-                <div className={styles.emptyTrending}>
-                  <span className={styles.trendingLabel}>Gợi ý từ khóa phổ biến:</span>
-                  <div className={styles.trendingList}>
-                    {TRENDING_KEYWORDS.slice(0, 6).map((kw) => (
-                      <button
-                        key={kw.query}
-                        type="button"
-                        className={styles.trendingBtn}
-                        onClick={() => {
-                          setDraftQuery(kw.query);
-                          router.replace(`${pathname}?q=${encodeURIComponent(kw.query)}`, {
-                            scroll: false,
-                          });
-                        }}
-                      >
-                        {kw.label}
-                      </button>
-                    ))}
+                {trendingKeywords.length > 0 && (
+                  <div className={styles.emptyTrending}>
+                    <span className={styles.trendingLabel}>Gợi ý từ khóa phổ biến:</span>
+                    <div className={styles.trendingList}>
+                      {trendingKeywords.slice(0, 6).map((kw) => (
+                        <button
+                          key={kw}
+                          type="button"
+                          className={styles.trendingBtn}
+                          onClick={() => {
+                            setDraftQuery(kw);
+                            router.replace(`${pathname}?q=${encodeURIComponent(kw)}`, {
+                              scroll: false,
+                            });
+                          }}
+                        >
+                          {kw}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             ) : (
               <>
-                <div className={styles.productGrid}>
-                  {visibleProducts.map((product, idx) => (
-                    <div
-                      key={product.id}
-                      data-cat-reveal=""
-                      style={{ "--stagger": idx % 4 } as React.CSSProperties}
-                    >
-                      <ProductCard
-                        product={product}
-                        showSpec={true}
-                        showSla={true}
-                        showBadges={true}
-                        showWishlist={true}
-                        showRating={true}
-                        enableQuickAdd={true}
-                        enableInteractiveSwatches={true}
-                        priority={idx < 4}
-                        quotaLabel={
-                          sizeParam
-                            ? `Còn ${product.skus
-                                .filter((s) => s.size === (sizeParam as SizeCode))
-                                .reduce((acc, s) => acc + s.stock, 0)} size ${sizeParam}`
-                            : undefined
-                        }
-                      />
-                    </div>
-                  ))}
-                </div>
+                {displayedProducts.length === 0 ? (
+                  <div className={styles.emptyBox}>
+                    <p className={styles.emptyMessage}>
+                      Chưa có mẫu khớp trong {formatInt(loadedProducts.length)} sản phẩm đã xem. Bấm
+                      Xem thêm hoặc chuyển trang bên dưới để tiếp tục lọc.
+                    </p>
+                  </div>
+                ) : (
+                  <div className={styles.productGrid}>
+                    {displayedProducts.map((product, idx) => (
+                      <div
+                        key={product.id}
+                        data-cat-reveal=""
+                        style={{ "--stagger": idx % 4 } as React.CSSProperties}
+                      >
+                        <ProductCard
+                          product={product}
+                          showSpec={true}
+                          showSla={true}
+                          showBadges={true}
+                          showWishlist={true}
+                          showRating={true}
+                          enableQuickAdd={true}
+                          enableInteractiveSwatches={true}
+                          priority={idx < 4}
+                          quotaLabel={sizeParam ? `Có size ${sizeParam}` : undefined}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 <div
                   className={styles.loadMoreBar}
                   data-cat-reveal=""
                   style={{ "--stagger": 1 } as React.CSSProperties}
                 >
-                  <p className={styles.loadMoreMeta}>
-                    Đã hiển thị {visibleProducts.length} / {filteredProducts.length} sản phẩm
-                  </p>
+                  <p className={styles.loadMoreMeta}>{countSummary.loadMoreMeta}</p>
                   <div
                     className={styles.loadMoreTrack}
                     role="progressbar"
                     aria-valuemin={0}
-                    aria-valuemax={filteredProducts.length}
-                    aria-valuenow={visibleProducts.length}
+                    aria-valuemax={serverTotal}
+                    aria-valuenow={shownCountSoFar}
                     aria-label="Tiến độ hiển thị sản phẩm"
                   >
                     <div className={styles.loadMoreFill} style={{ width: `${shownRatio}%` }} />
                   </div>
-                  {remainingToLoad > 0 && (
+                  {loadMoreError && (
+                    <p className={styles.resultsSub} role="alert">
+                      {loadMoreError}
+                    </p>
+                  )}
+                  {hasMorePages && (
                     <Button
                       variant="ink"
                       size="md"
-                      onClick={() => setVisibleCount((c) => c + PAGE_STEP)}
+                      disabled={loadingMore}
+                      onClick={() => void handleLoadMore()}
                     >
-                      Xem thêm {Math.min(PAGE_STEP, remainingToLoad)} sản phẩm
+                      {loadingMore
+                        ? "Đang tải thêm sản phẩm..."
+                        : `Xem thêm ${formatInt(Math.min(safePageSize, remainingToLoad))} sản phẩm`}
                     </Button>
+                  )}
+                  {totalPages > 1 && (
+                    <nav
+                      aria-label="Phân trang danh sách sản phẩm"
+                      className={styles.paginationNav}
+                    >
+                      <button
+                        type="button"
+                        className={styles.trendingBtn}
+                        disabled={safePage <= 1}
+                        onClick={() =>
+                          updateParams({ page: safePage - 1 <= 1 ? null : String(safePage - 1) })
+                        }
+                      >
+                        Trang trước
+                      </button>
+                      {pageWindow.map((p, idx) => {
+                        const prev = idx > 0 ? pageWindow[idx - 1] : null;
+                        const needsGap = prev !== null && p - prev > 1;
+                        return (
+                          <React.Fragment key={p}>
+                            {needsGap && (
+                              <span className={styles.resultsSub} aria-hidden="true">
+                                …
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              className={`${styles.trendingBtn} ${
+                                p === safePage ? styles.trendingBtnActive : ""
+                              }`}
+                              aria-current={p === safePage ? "page" : undefined}
+                              onClick={() => updateParams({ page: p <= 1 ? null : String(p) })}
+                            >
+                              {formatInt(p)}
+                            </button>
+                          </React.Fragment>
+                        );
+                      })}
+                      <button
+                        type="button"
+                        className={styles.trendingBtn}
+                        disabled={safePage >= totalPages}
+                        onClick={() => updateParams({ page: String(safePage + 1) })}
+                      >
+                        Trang sau
+                      </button>
+                    </nav>
                   )}
                 </div>
               </>
@@ -1612,7 +1710,7 @@ export function CatalogExplorer({
         </div>
       </section>
 
-      {sheetOpen && (
+      {sheetOpen && !isProductFallback && (
         <div
           className={styles.sheetOverlay}
           role="dialog"
@@ -1645,7 +1743,7 @@ export function CatalogExplorer({
               Đặt lại
             </Button>
             <Button variant="primary" size="md" onClick={() => setSheetOpen(false)}>
-              Xem {filteredProducts.length} sản phẩm
+              {countSummary.mobileCta}
             </Button>
           </div>
         </div>

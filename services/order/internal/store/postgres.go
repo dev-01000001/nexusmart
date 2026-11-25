@@ -956,55 +956,17 @@ func (s *PostgresStore) ListOrdersByCheckoutGroup(ctx context.Context, checkoutG
 }
 
 func (s *PostgresStore) ListOrdersFiltered(ctx context.Context, buyerID, shopID, status string, limit, offset int32) ([]OrderAggregate, int64, error) {
-	total, err := s.queries.CountOrdersFiltered(ctx, db.CountOrdersFilteredParams{
+	res, err := s.ListOrdersWithFilter(ctx, OrderListFilter{
 		BuyerID: buyerID,
 		ShopID:  shopID,
 		Status:  status,
+		Limit:   limit,
+		Offset:  offset,
 	})
 	if err != nil {
 		return nil, 0, err
 	}
-
-	rows, err := s.queries.ListOrdersFiltered(ctx, db.ListOrdersFilteredParams{
-		BuyerID:    buyerID,
-		ShopID:     shopID,
-		Status:     status,
-		PageLimit:  limit,
-		PageOffset: offset,
-	})
-	if err != nil {
-		return nil, 0, err
-	}
-
-	orderIDs := make([]string, 0, len(rows))
-	for _, ord := range rows {
-		orderIDs = append(orderIDs, ord.ID)
-	}
-	retByOrder, err := loadReturnSummaries(ctx, s.queries, orderIDs)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	aggs := make([]OrderAggregate, 0, len(rows))
-	for _, ord := range rows {
-		items, err := s.queries.ListOrderItemsByOrderID(ctx, ord.ID)
-		if err != nil {
-			return nil, 0, err
-		}
-		tl, err := s.queries.ListOrderTimelineByOrderID(ctx, ord.ID)
-		if err != nil {
-			return nil, 0, err
-		}
-		ret := retByOrder[ord.ID]
-		aggs = append(aggs, OrderAggregate{
-			Order:           ord,
-			Items:           items,
-			Timeline:        tl,
-			ReturnRequestID: ret.ID,
-			ReturnStatus:    ret.Status,
-		})
-	}
-	return aggs, total, nil
+	return res.Orders, res.Total, nil
 }
 
 func (s *PostgresStore) GetOrderTimeline(ctx context.Context, orderID string) ([]db.OrderTimelineEvent, error) {
@@ -1580,6 +1542,14 @@ func (s *PostgresStore) MarkOrderShipmentCreating(ctx context.Context, orderID s
 	curStatus := statemachine.StringToStatus(ord.Status)
 	if curStatus != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED && curStatus != orderv1.OrderStatus_ORDER_STATUS_PREPARING {
 		return "", fmt.Errorf("%w: cannot create shipment from status %s", statemachine.ErrInvalidTransition, statemachine.StatusToString(curStatus))
+	}
+	// G3: Block shipment creation while an address change intent is open on this order.
+	hasOpenChange, err := q.HasOpenOrderAddressChange(ctx, ord.ID)
+	if err != nil {
+		return "", err
+	}
+	if hasOpenChange {
+		return "", ErrAddressChangeInProgress
 	}
 	// Always refresh pending_shipment_cancel_at and rotate token on every SellerShipOrder attempt/retry.
 	token := uuid.NewString()
@@ -2600,6 +2570,23 @@ func (s *PostgresStore) ApplyShipmentUpdate(ctx context.Context, params Shipment
 		}
 		outcome.Order = agg
 		return outcome, nil
+	}
+
+	// G3: Suppress delayed shipment.updated events for an old shipment cancelled by UpdateOrderAddress.
+	if evTracking != "" {
+		isCancelledOld, err := q.IsCancelledAddressChangeTracking(ctx, db.IsCancelledAddressChangeTrackingParams{
+			OrderID:      ord.ID,
+			TrackingCode: evTracking,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if isCancelledOld {
+			if err := tx.Commit(ctx); err != nil {
+				return nil, err
+			}
+			return outcome, nil
+		}
 	}
 
 	// P1-5: Match tracking_code when the order already has one assigned (ignore stale replaced shipments).

@@ -79,10 +79,13 @@ function EmbeddedProductBuyCard({ product }: { product: Product }) {
     }
     setSubmitting(true);
     try {
+      const hasRealColor = Boolean(activeColor && activeColor.code !== "mac-dinh");
+      const hasRealSize = product.sizes.length > 0 && Boolean(resolvedSize);
       const realSkuId = await resolveGatewaySkuId(product.slug, {
-        skuCode: resolvedSku.skuCode,
-        colorCode: activeColor.code,
-        size: resolvedSize,
+        skuCode: resolvedSku.skuCode || undefined,
+        colorCode: hasRealColor ? activeColor.code : undefined,
+        colorName: hasRealColor ? activeColor.name : undefined,
+        size: hasRealSize ? resolvedSize : undefined,
       });
       if (!realSkuId) {
         showToast("Phân loại sản phẩm này hiện đã hết hàng.");

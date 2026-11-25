@@ -22,8 +22,8 @@ func TestEmbeddedMigrationsPresentAndIdempotentGuards(t *testing.T) {
 	for _, e := range entries {
 		found[e.Name()] = true
 	}
-	if !found["000001_init.sql"] || !found["000002_shipping_ops.sql"] || !found["000003_return_recreate_index.sql"] || !found["000004_shop_freeship_settings.sql"] || !found["000005_outbox_lease.sql"] || !found["000006_w3b_wards_and_shipment_jobs.sql"] {
-		t.Fatalf("expected 000001..000006 migrations, got %v", found)
+	if !found["000001_init.sql"] || !found["000002_shipping_ops.sql"] || !found["000003_return_recreate_index.sql"] || !found["000004_shop_freeship_settings.sql"] || !found["000005_outbox_lease.sql"] || !found["000006_w3b_wards_and_shipment_jobs.sql"] || !found["000007_w3b3_shipment_label_fields.sql"] {
+		t.Fatalf("expected 000001..000007 migrations, got %v", found)
 	}
 
 	raw, err := fs.ReadFile(migrations.FS, "000002_shipping_ops.sql")
@@ -122,6 +122,24 @@ func TestEmbeddedMigrationsPresentAndIdempotentGuards(t *testing.T) {
 	} {
 		if !strings.Contains(sql6, mustContain) {
 			t.Fatalf("000006_w3b_wards_and_shipment_jobs.sql missing %q", mustContain)
+		}
+	}
+
+	raw7, err := fs.ReadFile(migrations.FS, "000007_w3b3_shipment_label_fields.sql")
+	if err != nil {
+		t.Fatalf("read 000007_w3b3_shipment_label_fields.sql: %v", err)
+	}
+	sql7 := string(raw7)
+	for _, mustContain := range []string{
+		"ADD COLUMN IF NOT EXISTS from_name",
+		"ADD COLUMN IF NOT EXISTS from_phone",
+		"ADD COLUMN IF NOT EXISTS from_street_address",
+		"ADD COLUMN IF NOT EXISTS to_name",
+		"ADD COLUMN IF NOT EXISTS to_phone",
+		"ADD COLUMN IF NOT EXISTS to_street_address",
+	} {
+		if !strings.Contains(sql7, mustContain) {
+			t.Fatalf("000007_w3b3_shipment_label_fields.sql missing %q", mustContain)
 		}
 	}
 }

@@ -176,12 +176,15 @@ export function ProductCard({
     try {
       let realSkuId: string | null = isCatalogSku(matchedSku) ? matchedSku.id : null;
 
-      // Backward compatibility for mock pages passing static Product objects without backend UUIDs
+      // Resolve exact backend SKU UUID for search hits / editorial cards without eager N+1 SKU loads
       if (!realSkuId) {
+        const hasRealColor = Boolean(activeColor && activeColor.code !== "mac-dinh");
+        const hasRealSize = product.sizes.length > 0 && Boolean(size);
         realSkuId = await resolveGatewaySkuId(product.slug, {
-          skuCode: matchedSku.skuCode,
-          colorCode,
-          size,
+          skuCode: matchedSku.skuCode || undefined,
+          colorCode: hasRealColor ? colorCode : undefined,
+          colorName: hasRealColor ? activeColor?.name : undefined,
+          size: hasRealSize ? size : undefined,
         });
         if (!realSkuId) {
           showToast("Phân loại sản phẩm này hiện đã hết hàng.");

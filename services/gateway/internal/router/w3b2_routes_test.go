@@ -17,6 +17,7 @@ import (
 	paymentv1 "github.com/nexusmart/core/gen/go/nexusmart/payment/v1"
 	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	promotionv1 "github.com/nexusmart/core/gen/go/nexusmart/promotion/v1"
+	searchv1 "github.com/nexusmart/core/gen/go/nexusmart/search/v1"
 	shippingv1 "github.com/nexusmart/core/gen/go/nexusmart/shipping/v1"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
@@ -718,6 +719,18 @@ func (s *w3b2ShippingClient) AdminTestCarrier(_ context.Context, _ *shippingv1.A
 	return &shippingv1.AdminTestCarrierResponse{Ok: true}, nil
 }
 
+type w3b2SearchClient struct {
+	searchv1.SearchServiceClient
+}
+
+func (s *w3b2SearchClient) ReindexAll(_ context.Context, _ *searchv1.ReindexAllRequest, _ ...grpc.CallOption) (*searchv1.ReindexAllResponse, error) {
+	return &searchv1.ReindexAllResponse{JobId: "reindex-1", Status: searchv1.ReindexJobStatus_REINDEX_JOB_STATUS_RUNNING}, nil
+}
+
+func (s *w3b2SearchClient) GetReindexStatus(_ context.Context, in *searchv1.GetReindexStatusRequest, _ ...grpc.CallOption) (*searchv1.GetReindexStatusResponse, error) {
+	return &searchv1.GetReindexStatusResponse{JobId: in.GetJobId(), Status: searchv1.ReindexJobStatus_REINDEX_JOB_STATUS_COMPLETED}, nil
+}
+
 type w3b2Harness struct {
 	handler    http.Handler
 	authMgr    *auth.Manager
@@ -727,6 +740,7 @@ type w3b2Harness struct {
 	order      *w3b2OrderClient
 	payment    *w3b2PaymentClient
 	shipping   *w3b2ShippingClient
+	search     *w3b2SearchClient
 	webhookSrv *httptest.Server
 	labelSrv   *httptest.Server
 	lastWHPath string
@@ -833,6 +847,7 @@ func newW3B2Harness(t *testing.T, webhookLimit int) *w3b2Harness {
 			},
 		},
 		shipping: &w3b2ShippingClient{},
+		search:   &w3b2SearchClient{},
 	}
 
 	hw.webhookSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -883,6 +898,7 @@ func newW3B2Harness(t *testing.T, webhookLimit int) *w3b2Harness {
 			Order:     hw.order,
 			Payment:   hw.payment,
 			Shipping:  hw.shipping,
+			Search:    hw.search,
 			Timeout:   5 * time.Second,
 		},
 		AuthManager:            authMgr,
@@ -1020,6 +1036,10 @@ func TestW3B2_AdminRBACMatrixExhaustiveAllRoutesAndRoles(t *testing.T) {
 		{http.MethodGet, "/api/v1/admin/carriers", "/api/v1/admin/carriers", auth.CapCarriersRead, "", "", nil},
 		{http.MethodPut, "/api/v1/admin/carriers/{code}", "/api/v1/admin/carriers/ghn", auth.CapCarriersWrite, "", `{"enabled":true}`, nil},
 		{http.MethodPost, "/api/v1/admin/carriers/{code}/test", "/api/v1/admin/carriers/ghn/test", auth.CapCarriersWrite, "", "", nil},
+
+		// Section 4.8a Search Reindex (B1 / G11)
+		{http.MethodPost, "/api/v1/admin/search/reindex", "/api/v1/admin/search/reindex", auth.CapSearchReindex, "", `{"batch_size":200}`, nil},
+		{http.MethodGet, "/api/v1/admin/search/reindex/{job_id}", "/api/v1/admin/search/reindex/reindex-1", auth.CapSearchReindex, "", "", nil},
 	}
 
 	// 1. Verify EVERY /api/v1/admin/* route registered in chi router is present in the test matrix.

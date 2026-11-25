@@ -111,11 +111,7 @@ describe("Wave 3a web requirements — unit tests", () => {
       "function",
       "collectFlashSaleSkuIds must be exported"
     );
-    assert.equal(
-      typeof catalogMapperMod.chunkSkuIds,
-      "function",
-      "chunkSkuIds must be exported"
-    );
+    assert.equal(typeof catalogMapperMod.chunkSkuIds, "function", "chunkSkuIds must be exported");
     assert.equal(
       typeof catalogMapperMod.fetchProductsForFlashSalesWithFetcher,
       "function",
@@ -237,7 +233,11 @@ describe("Wave 3a web requirements — unit tests", () => {
       }
     );
 
-    assert.equal(fetchedBatches.length, 2, "127 missing SKUs must split into 2 batches (<= 100 each)");
+    assert.equal(
+      fetchedBatches.length,
+      2,
+      "127 missing SKUs must split into 2 batches (<= 100 each)"
+    );
     assert.equal(fetchedBatches[0].length, 100);
     assert.equal(fetchedBatches[1].length, 27);
     assert.ok(
@@ -270,7 +270,10 @@ describe("Wave 3a web requirements — unit tests", () => {
       catalogSrc.includes("fetchProductsForFlashSalesWithFetcher"),
       "catalog.ts must use fetchProductsForFlashSalesWithFetcher for home & flash-sale loaders"
     );
-    const checkoutPageSrc = readFileSync(resolve(WEB_SRC, "app/(shop)/thanh-toan/page.tsx"), "utf8");
+    const checkoutPageSrc = readFileSync(
+      resolve(WEB_SRC, "app/(shop)/thanh-toan/page.tsx"),
+      "utf8"
+    );
     assert.ok(
       checkoutPageSrc.includes("sku_ids"),
       "thanh-toan/page.tsx Buy Now must look up SKU via /products?sku_ids="
@@ -563,15 +566,23 @@ describe("Wave 3a web requirements — unit tests", () => {
     assert.equal(p2Pricing.originalPriceVnd, 200_000);
     assert.equal(p2Pricing.promoKind, "shop_discount");
 
-    // Verify ShopHeader uses computeProductDisplayPricing and fetches flash-sales + shop-discounts/active
+    // Verify ShopHeader uses computeSearchHitDisplayPricing, fetches flash-sales + shop-discounts/active, and guards stale responses via searchReqSeq
     const headerSrc = readFileSync(resolve(WEB_SRC, "components/ShopHeader.tsx"), "utf8");
-    assert.ok(headerSrc.includes("computeProductDisplayPricing"));
+    assert.ok(headerSrc.includes("computeSearchHitDisplayPricing"));
     assert.ok(headerSrc.includes("flash-sales"));
     assert.ok(headerSrc.includes("shop-discounts/active"));
+    assert.ok(
+      headerSrc.includes("searchReqSeq"),
+      "ShopHeader must guard suggest requests with seq cancellation"
+    );
 
     // P3-2: collectProductDetailDiscountSkuIds includes SKUs from main product, sameShop, AND other-shop similar products
     const otherShopProd = makeProduct(3, { shop_id: "shop-c" });
-    const detailSkuIds = catalogMapperMod.collectProductDetailDiscountSkuIds(p1, [p1], [p1, p2, otherShopProd]);
+    const detailSkuIds = catalogMapperMod.collectProductDetailDiscountSkuIds(
+      p1,
+      [p1],
+      [p1, p2, otherShopProd]
+    );
     assert.ok(detailSkuIds.includes("sku-1"));
     assert.ok(detailSkuIds.includes("sku-1-xl"));
     assert.ok(detailSkuIds.includes("sku-2"), "must include SKU from shop-b");
@@ -640,7 +651,11 @@ describe("Wave 3a web requirements — unit tests", () => {
       description: "Xưởng dệt",
       status: "ACTIVE",
     });
-    assert.equal("commissionRate" in mappedShop, false, "CatalogShop must not carry commissionRate");
+    assert.equal(
+      "commissionRate" in mappedShop,
+      false,
+      "CatalogShop must not carry commissionRate"
+    );
 
     // ProductFormView must not render NaN% when public /categories omits commission_rate_bps
     const productFormSrc = readFileSync(
@@ -1273,20 +1288,37 @@ describe("Wave 3a web requirements — unit tests", () => {
     // P2-12: per-ID sequence counters & per-ID submitting records & PENDING-only buttons
     assert.ok(gianHangSrc.includes("ownerReqSeqRef"), "must track per-owner request sequence");
     assert.ok(gianHangSrc.includes("bankReqSeqRef"), "must track per-shop bank request sequence");
-    assert.ok(gianHangSrc.includes("submittingByShopId"), "must track shop submitting state per shopId");
+    assert.ok(
+      gianHangSrc.includes("submittingByShopId"),
+      "must track shop submitting state per shopId"
+    );
     assert.ok(
       gianHangSrc.includes("bankSubmittingByShopId"),
       "must track bank submitting state per shopId"
     );
-    assert.ok(gianHangSrc.includes("canReviewShopStatus"), "must gate all review buttons on PENDING status");
+    assert.ok(
+      gianHangSrc.includes("canReviewShopStatus"),
+      "must gate all review buttons on PENDING status"
+    );
     // P3-20: transient errors retried on row re-selection via refs
-    assert.ok(gianHangSrc.includes("ownerByUserIdRef"), "must check error state via ref on row switch");
-    assert.ok(gianHangSrc.includes("bankByShopIdRef"), "must check bank error state via ref on row switch");
+    assert.ok(
+      gianHangSrc.includes("ownerByUserIdRef"),
+      "must check error state via ref on row switch"
+    );
+    assert.ok(
+      gianHangSrc.includes("bankByShopIdRef"),
+      "must check bank error state via ref on row switch"
+    );
     // P2-17: desktop/mobile prefixed input IDs, loading state when !bankState, role="alert" on bank error
     assert.ok(gianHangSrc.includes("${panelPrefix}-shop-note-${shop.id}"));
     assert.ok(gianHangSrc.includes("${panelPrefix}-bank-note-${shop.id}"));
     assert.ok(gianHangSrc.includes("!bankState || bankState.loading"));
-    assert.ok(/role="alert"[^>]*>\s*\{bankState\.error\}/.test(gianHangSrc) || /className=\{shared\.validationError\}\s+role="alert">\s*\{bankState\.error\}/.test(gianHangSrc));
+    assert.ok(
+      /role="alert"[^>]*>\s*\{bankState\.error\}/.test(gianHangSrc) ||
+        /className=\{shared\.validationError\}\s+role="alert">\s*\{bankState\.error\}/.test(
+          gianHangSrc
+        )
+    );
   });
 
   test("13. [P1-3] Partial sku_ids batch failure preserves fulfilled batches and logs console.warn without user PII", async () => {
@@ -1551,7 +1583,10 @@ describe("Wave 3a web requirements — unit tests", () => {
       useCoins: true,
       coinBalance: 10_000,
     });
-    assert.ok(blockedCoins && blockedCoins.length > 10, "must block when useCoins active & preview null");
+    assert.ok(
+      blockedCoins && blockedCoins.length > 10,
+      "must block when useCoins active & preview null"
+    );
     const blockedVoucher = checkoutHelpersMod.getCheckoutPreviewBlockReason({
       preview: null,
       previewError: null,
@@ -1559,7 +1594,10 @@ describe("Wave 3a web requirements — unit tests", () => {
       useCoins: false,
       coinBalance: 0,
     });
-    assert.ok(blockedVoucher && blockedVoucher.length > 10, "must block when voucher active & preview null");
+    assert.ok(
+      blockedVoucher && blockedVoucher.length > 10,
+      "must block when voucher active & preview null"
+    );
     assert.equal(
       checkoutHelpersMod.getCheckoutPreviewBlockReason({
         preview: null,
@@ -1578,7 +1616,10 @@ describe("Wave 3a web requirements — unit tests", () => {
     );
     assert.ok(checkoutSrc.includes("isTerminalCancelledCheckoutResponse"));
     assert.ok(checkoutSrc.includes("cancelledReplayPrior"));
-    assert.ok(checkoutSrc.includes("submittingRef"), "must use synchronous submittingRef double-click lock");
+    assert.ok(
+      checkoutSrc.includes("submittingRef"),
+      "must use synchronous submittingRef double-click lock"
+    );
     assert.ok(checkoutSrc.includes("previewError"), "must store and display previewError");
     assert.ok(checkoutSrc.includes("getCheckoutPreviewBlockReason"));
   });
@@ -1644,7 +1685,11 @@ describe("Wave 3a web requirements — unit tests", () => {
         },
       ],
     ]);
-    const tiePricing = catalogMapperMod.computeProductDisplayPricing(tieProduct, undefined, discMap);
+    const tiePricing = catalogMapperMod.computeProductDisplayPricing(
+      tieProduct,
+      undefined,
+      discMap
+    );
     assert.equal(tiePricing.minPriceVnd, 150_000);
     assert.equal(tiePricing.maxPriceVnd, 150_000);
     assert.equal(
@@ -1715,9 +1760,13 @@ describe("Wave 3a web requirements — unit tests", () => {
     assert.ok(headerSrc.includes("buildLiveFlashItemsBySkuId"));
     assert.ok(headerSrc.includes("buildActiveShopDiscountsMap"));
     assert.ok(headerSrc.includes("searchError"), "ShopHeader must expose searchError state");
-    const itemsAssignIdx = headerSrc.indexOf("const items = Array.isArray(res?.items)");
+    const itemsAssignIdx = headerSrc.indexOf("const items = Array.isArray(res?.products)");
     const emptySkuGuardIdx = headerSrc.indexOf("if (skuIds.length === 0)", itemsAssignIdx);
     const promiseAllIdx = headerSrc.indexOf("await Promise.all([", emptySkuGuardIdx);
+    const seqGuardAfterFetchIdx = headerSrc.indexOf(
+      "if (searchReqSeq.current !== seq) return;",
+      promiseAllIdx
+    );
     const setResultsAfterFetchIdx = headerSrc.indexOf("setSearchResults(items)", promiseAllIdx);
     const earlySection = headerSrc.slice(itemsAssignIdx, emptySkuGuardIdx);
     assert.ok(
@@ -1725,8 +1774,11 @@ describe("Wave 3a web requirements — unit tests", () => {
         emptySkuGuardIdx > itemsAssignIdx &&
         !earlySection.includes("setSearchResults") &&
         promiseAllIdx > emptySkuGuardIdx &&
-        setResultsAfterFetchIdx > promiseAllIdx,
-      "ShopHeader must not commit setSearchResults(items) before discount maps finish loading when SKUs exist"
+        seqGuardAfterFetchIdx > promiseAllIdx &&
+        seqGuardAfterFetchIdx < setResultsAfterFetchIdx &&
+        setResultsAfterFetchIdx > promiseAllIdx &&
+        headerSrc.includes("window.clearTimeout(timer)"),
+      "ShopHeader must cancel stale seq/timer and never commit setSearchResults(items) before discount maps finish loading when SKUs exist"
     );
 
     const promoCoinsSrc = readFileSync(
@@ -1760,10 +1812,7 @@ describe("Wave 3a web requirements — unit tests", () => {
     for (const root of publicRoots) {
       for (const file of collectFilesRecursive(root, [".ts", ".tsx"])) {
         const normalized = file.replace(/\\/g, "/");
-        if (
-          normalized.includes("/features/admin/") ||
-          normalized.includes("/features/seller/")
-        ) {
+        if (normalized.includes("/features/admin/") || normalized.includes("/features/seller/")) {
           continue;
         }
         filesToCheck.push(file);
@@ -1918,10 +1967,7 @@ describe("Wave 3a web requirements — unit tests", () => {
       },
       {
         name: "fresh none -> flash_blocked opens flash opt-out and clears stored key without rotating",
-        events: [
-          { type: "submit_start" },
-          { type: "submit_error", kind: "flash_blocked" },
-        ],
+        events: [{ type: "submit_start" }, { type: "submit_error", kind: "flash_blocked" }],
         expectedUncertainty: "none",
         canToggleFlash: true,
         rotateKey: false,
@@ -1930,10 +1976,7 @@ describe("Wave 3a web requirements — unit tests", () => {
       },
       {
         name: "fresh none -> definite_failure clears stored key without rotating",
-        events: [
-          { type: "submit_start" },
-          { type: "submit_error", kind: "definite_failure" },
-        ],
+        events: [{ type: "submit_start" }, { type: "submit_error", kind: "definite_failure" }],
         expectedUncertainty: "none",
         canToggleFlash: true,
         rotateKey: false,
@@ -1942,10 +1985,7 @@ describe("Wave 3a web requirements — unit tests", () => {
       },
       {
         name: "fresh none -> 401 unauthenticated clears stored key without rotating",
-        events: [
-          { type: "submit_start" },
-          { type: "submit_error", kind: "unauthenticated" },
-        ],
+        events: [{ type: "submit_start" }, { type: "submit_error", kind: "unauthenticated" }],
         expectedUncertainty: "none",
         canToggleFlash: true,
         rotateKey: false,
@@ -2118,8 +2158,14 @@ describe("Wave 3a web requirements — unit tests", () => {
     assert.equal(checkoutHelpersMod.isTerminalPaymentStatus("PENDING"), false);
     assert.equal(checkoutHelpersMod.isTerminalPaymentStatus("UNKNOWN"), false);
 
-    const retrySrc = readFileSync(resolve(WEB_SRC, "features/commerce/RetryPaymentBox.tsx"), "utf8");
-    assert.ok(retrySrc.includes("activePaymentIdRef"), "RetryPaymentBox must track activePaymentIdRef");
+    const retrySrc = readFileSync(
+      resolve(WEB_SRC, "features/commerce/RetryPaymentBox.tsx"),
+      "utf8"
+    );
+    assert.ok(
+      retrySrc.includes("activePaymentIdRef"),
+      "RetryPaymentBox must track activePaymentIdRef"
+    );
     assert.ok(
       retrySrc.includes("shouldApplyPaymentFetchResult"),
       "RetryPaymentBox must guard fetchPayment with shouldApplyPaymentFetchResult"
@@ -2232,10 +2278,21 @@ describe("Wave 3a web requirements — unit tests", () => {
 
     // P2: bps inputs allow integer step={1} (e.g. 520, 580 bps)
     const feesSrc = readFileSync(resolve(WEB_SRC, "features/admin/AdminFeesPanel.tsx"), "utf8");
-    const catsSrc = readFileSync(resolve(WEB_SRC, "features/admin/AdminCategoriesPanel.tsx"), "utf8");
+    const catsSrc = readFileSync(
+      resolve(WEB_SRC, "features/admin/AdminCategoriesPanel.tsx"),
+      "utf8"
+    );
     assert.equal(feesSrc.includes("step={25}"), false, "AdminFeesPanel bps must not use step={25}");
-    assert.equal(feesSrc.includes("step={10}"), false, "AdminFeesPanel payment bps must not use step={10}");
-    assert.equal(catsSrc.includes("step={50}"), false, "AdminCategoriesPanel bps must not use step={50}");
+    assert.equal(
+      feesSrc.includes("step={10}"),
+      false,
+      "AdminFeesPanel payment bps must not use step={10}"
+    );
+    assert.equal(
+      catsSrc.includes("step={50}"),
+      false,
+      "AdminCategoriesPanel bps must not use step={50}"
+    );
 
     // P3: /admin/gian-hang maps 404 bank-account to empty state, not red error
     const adminShopsSrc = readFileSync(
@@ -2368,7 +2425,11 @@ describe("Wave 3a web requirements — unit tests", () => {
       },
     });
     assert.equal(shopProbeCalls, 1, "known SHOP voucher must be verified via previewFn");
-    assert.equal(shopRejected.ok, false, "known SHOP voucher rejected by preview must return ok:false");
+    assert.equal(
+      shopRejected.ok,
+      false,
+      "known SHOP voucher rejected by preview must return ok:false"
+    );
     assert.equal(shopRejected.scope, "SHOP");
 
     const shopAccepted = await checkoutHelpersMod.resolveManualVoucherCode({
@@ -2427,7 +2488,10 @@ describe("Wave 3a web requirements — unit tests", () => {
       },
     });
     await probeFn({ shopVoucherIds: { "shop-a": "SHOPCAT30" } });
-    assert.deepEqual(capturedPayload.shop_voucher_ids, { "shop-b": "KEEPB", "shop-a": "SHOPCAT30" });
+    assert.deepEqual(capturedPayload.shop_voucher_ids, {
+      "shop-b": "KEEPB",
+      "shop-a": "SHOPCAT30",
+    });
     assert.equal(capturedPayload.platform_voucher_id, "PLAT1");
     assert.equal(capturedPayload.freeship_voucher_id, "SHIP1");
 
@@ -2443,8 +2507,14 @@ describe("Wave 3a web requirements — unit tests", () => {
       ),
       "gio-hang must clear stale preview (setPreview(null)) on all preview errors, not only 401"
     );
-    assert.ok(cartSrc.includes("manualPromoSeqRef"), "gio-hang must guard manual voucher probe with seq ref");
-    assert.ok(checkoutSrc.includes("manualPromoSeqRef"), "CheckoutClient must guard manual voucher probe with seq ref");
+    assert.ok(
+      cartSrc.includes("manualPromoSeqRef"),
+      "gio-hang must guard manual voucher probe with seq ref"
+    );
+    assert.ok(
+      checkoutSrc.includes("manualPromoSeqRef"),
+      "CheckoutClient must guard manual voucher probe with seq ref"
+    );
     assert.ok(cartSrc.includes("createManualVoucherPreviewFn"));
     assert.ok(checkoutSrc.includes("createManualVoucherPreviewFn"));
     assert.ok(checkoutSrc.includes("previewErrorStatus"));
@@ -2540,9 +2610,11 @@ describe("Wave 3a web requirements — unit tests", () => {
     for (const file of authFiles) {
       const src = readFileSync(file, "utf8");
       const jsonCount = (src.match(/NextResponse\.json\(/g) ?? []).length;
-      const hasNoStoreConst = /NO_STORE\s*=\s*\{\s*["']Cache-Control["']:\s*["']no-store["']\s*\}/.test(src);
+      const hasNoStoreConst =
+        /NO_STORE\s*=\s*\{\s*["']Cache-Control["']:\s*["']no-store["']\s*\}/.test(src);
       if (hasNoStoreConst) {
-        const usedCount = (src.match(/NO_STORE|Cache-Control["']?\s*:\s*["']no-store["']/g) ?? []).length - 1;
+        const usedCount =
+          (src.match(/NO_STORE|Cache-Control["']?\s*:\s*["']no-store["']/g) ?? []).length - 1;
         assert.ok(
           usedCount >= jsonCount,
           `${file.replace(WEB_SRC, "web/src")} must attach Cache-Control: no-store to every NextResponse.json`
@@ -2583,12 +2655,19 @@ describe("Wave 3a web requirements — unit tests", () => {
 
     // P3-3: per-product Flash copy & PDP variant clamp via computePdpQuantityCap
     const homeSrc = readFileSync(resolve(WEB_SRC, "app/(shop)/HomeClient.tsx"), "utf8");
-    const flashSrc = readFileSync(resolve(WEB_SRC, "app/(shop)/flash-sale/FlashSaleClient.tsx"), "utf8");
+    const flashSrc = readFileSync(
+      resolve(WEB_SRC, "app/(shop)/flash-sale/FlashSaleClient.tsx"),
+      "utf8"
+    );
     const pdpSrc = readFileSync(
       resolve(WEB_SRC, "app/(shop)/san-pham/[slug]/ProductDetailClient.tsx"),
       "utf8"
     );
-    assert.equal(homeSrc.includes("Tối đa 3 món"), false, "HomeClient must not hardcode 3-item Flash limit");
+    assert.equal(
+      homeSrc.includes("Tối đa 3 món"),
+      false,
+      "HomeClient must not hardcode 3-item Flash limit"
+    );
     assert.equal(
       flashSrc.includes("FLASH_SALE_RULES.maxItemsPerOrder"),
       false,

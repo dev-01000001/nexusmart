@@ -48,6 +48,7 @@ import {
   Price,
 } from "@/components";
 import { formatCarrierLabel, formatVnd } from "@/lib/format";
+import { resolveInitialProductColor } from "@/lib/search-client";
 import { computePdpQuantityCap } from "@/features/checkout/helpers";
 import { recommendSize } from "@/lib/sizing";
 import { useRevealObserver } from "@/features/catalog/useRevealObserver";
@@ -146,10 +147,11 @@ export function ProductDetailClient({
         product.skus.find((s) => s.stock > 0 && Boolean(activeShopDiscountBySkuId[s.id])))
       : undefined;
 
-  const initialColor =
-    initialColorQuery && product.colors.some((c) => c.code === initialColorQuery)
-      ? initialColorQuery
-      : (defaultPromotedSku?.colorCode ?? product.colors[0]?.code ?? "");
+  const initialColor = resolveInitialProductColor(
+    product.colors,
+    initialColorQuery,
+    defaultPromotedSku?.colorCode ?? product.colors[0]?.code ?? ""
+  );
   const initialSize =
     !initialSizeQuery &&
     defaultPromotedSku &&

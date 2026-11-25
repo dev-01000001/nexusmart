@@ -12,6 +12,7 @@ import type {
 } from "@/lib/gateway-types";
 import { api, getErrorMessage } from "@/lib/api";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
+import { filterUnresolvedActorIds } from "@/lib/a8-types";
 import { canDecideTwoPersonApproval, roleHasCapability } from "@/lib/admin-rbac";
 import { localizeRefundReason } from "@/features/account/orderMeta";
 import { useMockStore } from "@/mock/MockStoreContext";
@@ -130,7 +131,6 @@ export function AdminApprovalsPanel() {
     }
 
     if (!canReadUsers) return;
-    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const candidateIds = new Set<string>();
     for (const item of shopApprovals) {
       if (item.requested_by) candidateIds.add(item.requested_by.trim());
@@ -141,15 +141,10 @@ export function AdminApprovalsPanel() {
       if (rf.approved_by) candidateIds.add(rf.approved_by.trim());
     }
 
-    const toFetch = Array.from(candidateIds).filter(
-      (id) => uuidPattern.test(id) && !fetchedUserIdsRef.current.has(id)
-    );
+    const toFetch = filterUnresolvedActorIds(candidateIds, fetchedUserIdsRef.current);
     if (toFetch.length === 0) return;
 
     let cancelled = false;
-    for (const id of toFetch) {
-      fetchedUserIdsRef.current.add(id);
-    }
 
     void Promise.all(
       toFetch.map(async (id) => {
@@ -158,6 +153,7 @@ export function AdminApprovalsPanel() {
             api<PaginatedResponse<GatewayUser>>(path)
           );
           if (cancelled) return;
+          fetchedUserIdsRef.current.add(id);
           setUserById((prev) => ({
             ...prev,
             [id]: found
@@ -165,8 +161,9 @@ export function AdminApprovalsPanel() {
               : null,
           }));
         } catch {
+          // Leave id out of fetchedUserIdsRef so transient failures retry on refresh/re-run.
           if (cancelled) return;
-          setUserById((prev) => ({ ...prev, [id]: null }));
+          setUserById((prev) => (id in prev ? prev : { ...prev, [id]: null }));
         }
       })
     );

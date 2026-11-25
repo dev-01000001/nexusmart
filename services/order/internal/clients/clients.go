@@ -62,6 +62,7 @@ type PaymentClient interface {
 	CreateRefund(ctx context.Context, req *paymentv1.CreateRefundRequest, opts ...grpc.CallOption) (*paymentv1.CreateRefundResponse, error)
 	GetFeeConfig(ctx context.Context, req *paymentv1.GetFeeConfigRequest, opts ...grpc.CallOption) (*paymentv1.GetFeeConfigResponse, error)
 	GetPaymentMethodConfigs(ctx context.Context, req *paymentv1.GetPaymentMethodConfigsRequest, opts ...grpc.CallOption) (*paymentv1.GetPaymentMethodConfigsResponse, error)
+	AdjustCODShippingFee(ctx context.Context, req *paymentv1.AdjustCODShippingFeeRequest, opts ...grpc.CallOption) (*paymentv1.AdjustCODShippingFeeResponse, error)
 }
 
 // ShippingClient defines the subset of ShippingService RPCs required by OrderService.

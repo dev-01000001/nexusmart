@@ -1628,12 +1628,26 @@ async function main() {
   }
 
   // 5. Vouchers (platform + freeship via admin, shop via owning seller).
+  // B15: Clean up retired false-promise membership/student vouchers if present on older volumes.
+  const RETIRED_VOUCHER_CODES = new Set(["EDU15", "SINHNHAT50", "NEXUSVIP12"]);
   const voucherListRes = await apiRequest("GET", "/api/v1/admin/vouchers?include_inactive=true", {
     token: adminToken,
   });
   const existingVouchers = Array.isArray(voucherListRes.data?.vouchers)
     ? voucherListRes.data.vouchers
     : [];
+
+  for (const existing of existingVouchers) {
+    const codeUpper = String(existing?.code || "").toUpperCase();
+    const statusUpper = String(existing?.status || "").toUpperCase();
+    if (RETIRED_VOUCHER_CODES.has(codeUpper) && statusUpper !== "DELETED" && existing?.id) {
+      await apiRequest("DELETE", `/api/v1/admin/vouchers/${encodeURIComponent(existing.id)}`, {
+        token: adminToken,
+        allowStatuses: [200, 404],
+      });
+    }
+  }
+
   const existingVoucherCodes = new Set(existingVouchers.map((v) => String(v.code).toUpperCase()));
 
   const nowMs = Date.now();
@@ -1642,6 +1656,9 @@ async function main() {
 
   for (const v of VOUCHERS) {
     const codeUpper = v.code.toUpperCase();
+    if (RETIRED_VOUCHER_CODES.has(codeUpper)) {
+      continue;
+    }
     if (existingVoucherCodes.has(codeUpper)) {
       stats.vouchers.existing += 1;
       continue;

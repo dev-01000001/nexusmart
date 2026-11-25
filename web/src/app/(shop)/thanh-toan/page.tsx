@@ -19,6 +19,9 @@ import type {
 import { requireUser } from "@/lib/server/auth";
 import { GatewayError, gatewayFetch } from "@/lib/server/gateway";
 import { fetchActiveShopDiscounts } from "@/lib/catalog";
+import { buildActiveShopDiscountsMap, buildLiveFlashItemsBySkuId } from "@/lib/catalog-mapper";
+import { enrichProductsWithPromotions } from "@/lib/search-client";
+import { DEFAULT_SHOP_LOOKUP_CONCURRENCY, lookupShopsByIdsWithFetcher } from "@/lib/shop-lookup";
 import { StateView } from "@/components";
 import shared from "@/features/commerce/commerce.module.css";
 import type { BuyNowResolvedItem } from "@/features/checkout/types";
@@ -118,7 +121,8 @@ export default async function CheckoutPage({
     gatewayFetch<{ addresses: GatewayAddress[] }>("/users/me/addresses", { cache: "no-store" }),
     gatewayFetch<GatewayCoinBalance>("/coins/balance", { cache: "no-store" }),
     gatewayFetch<GatewayVouchersResponse>("/vouchers", { cache: "no-store" }),
-    gatewayFetch<PaginatedResponse<GatewayPublicShop>>("/shops?page_size=50", {
+    gatewayFetch<PaginatedResponse<GatewayPublicShop>>("/shops?page_size=100", {
+      token: false,
       cache: "no-store",
     }),
     skuParam
@@ -175,23 +179,60 @@ export default async function CheckoutPage({
     initialError = initialError ?? cartRes.reason.message;
   }
 
+  const allProducts: GatewayProduct[] =
+    productsRes.status === "fulfilled" ? (productsRes.value?.items ?? []) : [];
+  const rawSuggestedProducts = allProducts.slice(0, 4);
+  const targetedBuyNowProducts: GatewayProduct[] =
+    buyNowProductRes.status === "fulfilled" ? (buyNowProductRes.value?.items ?? []) : [];
+
   // Gateway requires sku_ids (<= 200) or shop_id on GET /shop-discounts/active;
-  // fetch only for the target Buy Now SKU or SKUs present in the loaded cart.
-  const targetDiscountSkuIds: string[] = skuParam
-    ? [skuParam]
-    : Array.from(
-        new Set(
-          (initialCart?.shop_groups ?? [])
-            .flatMap((g) => (g.items ?? []).map((it) => it.sku_id))
-            .filter(Boolean)
-        )
-      );
-  const initialActiveShopDiscounts: GatewayActiveShopDiscount[] =
+  // fetch for the target Buy Now SKU / cart SKUs AND suggested strip SKUs (§10).
+  const suggestedSkuIds = rawSuggestedProducts.flatMap((p) =>
+    (p.skus ?? []).filter((s) => s.is_active !== false && s.id).map((s) => s.id)
+  );
+  const targetDiscountSkuIds: string[] = Array.from(
+    new Set([
+      ...(skuParam
+        ? [skuParam]
+        : (initialCart?.shop_groups ?? []).flatMap((g) => (g.items ?? []).map((it) => it.sku_id))),
+      ...suggestedSkuIds,
+    ])
+  ).filter(Boolean);
+
+  const initialShopsSeed: GatewayPublicShop[] =
+    shopsRes.status === "fulfilled" ? (shopsRes.value?.items ?? []) : [];
+  const existingShopMap: Record<string, GatewayPublicShop> = {};
+  for (const s of initialShopsSeed) {
+    if (s?.id) existingShopMap[s.id] = s;
+  }
+
+  // §10-3: resolve any shop #101+ referenced by cart, Buy Now, or suggested products via GET /shops/{id} (concurrency <= 8).
+  const neededShopIds = Array.from(
+    new Set([
+      ...(initialCart?.shop_groups ?? []).map((g) => g.shop_id),
+      ...targetedBuyNowProducts.map((p) => p.shop_id),
+      ...allProducts.map((p) => p.shop_id),
+    ])
+  ).filter(Boolean);
+
+  const [initialActiveShopDiscounts, resolvedShopMap] = await Promise.all([
     targetDiscountSkuIds.length > 0
-      ? await fetchActiveShopDiscounts({ skuIds: targetDiscountSkuIds }).catch(
+      ? fetchActiveShopDiscounts({ skuIds: targetDiscountSkuIds }).catch(
           () => [] as GatewayActiveShopDiscount[]
         )
-      : [];
+      : Promise.resolve([] as GatewayActiveShopDiscount[]),
+    lookupShopsByIdsWithFetcher(
+      neededShopIds,
+      async (id) => {
+        const res = await gatewayFetch<{ shop?: GatewayPublicShop }>(
+          `/shops/${encodeURIComponent(id)}`,
+          { token: false, cache: "no-store" }
+        );
+        return res?.shop ?? null;
+      },
+      { existing: existingShopMap, concurrency: DEFAULT_SHOP_LOOKUP_CONCURRENCY }
+    ),
+  ]);
 
   const initialCoinBalance =
     coinsRes.status === "fulfilled" && typeof coinsRes.value?.balance === "number"
@@ -201,16 +242,12 @@ export default async function CheckoutPage({
   const initialVouchers: GatewayVoucher[] =
     vouchersRes.status === "fulfilled" ? (vouchersRes.value?.vouchers ?? []) : [];
 
-  const initialShops: GatewayPublicShop[] =
-    shopsRes.status === "fulfilled" ? (shopsRes.value?.items ?? []) : [];
+  const initialShops: GatewayPublicShop[] = Object.values(resolvedShopMap);
 
   const shopNameById = new Map<string, string>();
   for (const s of initialShops) {
     shopNameById.set(s.id, s.name);
   }
-
-  const allProducts: GatewayProduct[] =
-    productsRes.status === "fulfilled" ? (productsRes.value?.items ?? []) : [];
 
   // Contract 2: Buy Now / Flash Sale direct mode `/thanh-toan?sku=<sku_id>&qty=<n>[&flash=<flash_sale_item_id>]`
   let buyNowItem: BuyNowResolvedItem | null = null;
@@ -321,7 +358,11 @@ export default async function CheckoutPage({
     }
   }
 
-  const suggestedProducts = allProducts.slice(0, 4);
+  const suggestedProducts = enrichProductsWithPromotions(
+    rawSuggestedProducts,
+    buildLiveFlashItemsBySkuId(initialFlashSales, Date.now()),
+    buildActiveShopDiscountsMap(initialActiveShopDiscounts)
+  );
 
   return (
     <Suspense

@@ -26,6 +26,7 @@ receivers:
                 - payment:8086
                 - shipping:8087
                 - notification:8088
+                - search:8089
 
 processors:
   batch:

@@ -14,6 +14,8 @@ import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import {
   buildShippingLabelHref,
   getReturnFeeBearerLabel,
+  getTimelineEventTitle,
+  isAddressUpdatedTimelineNote,
   localizeTimelineNote,
   normalizeEnumSuffix,
   parseSafeEvidenceUrl,
@@ -526,7 +528,11 @@ function AdminReturnsContent({
                       {ev.created_at ? formatDateTimeVi(ev.created_at) : "—"}
                     </span>
                     <div className={styles.timelineBody}>
-                      <span className={styles.timelineTitle}>{evMeta.label}</span>
+                      <span className={styles.timelineTitle}>
+                        {isAddressUpdatedTimelineNote(ev.note)
+                          ? getTimelineEventTitle(ev)
+                          : evMeta.label}
+                      </span>
                       {ev.note && (
                         <span className={styles.timelineNote}>{localizeTimelineNote(ev.note)}</span>
                       )}

@@ -234,3 +234,281 @@ input.skuStockInput {
   border-radius: var(--radius-control);
   background: var(--bg);
 }
+
+.paginationBar {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.paginationControls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pageBtn {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--control); /* taste-skill-ignore: pagination control */
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.pageBtn:hover:not(:disabled) {
+  background: var(--surface);
+}
+
+.pageBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pageBtnActive {
+  background: var(--primary-ink-bg);
+  color: var(--primary-ink-fg);
+  border-color: var(--primary-ink-bg);
+}
+
+.pageBtnActive:hover:not(:disabled) {
+  background: var(--primary-ink-bg);
+}
+
+.pageEllipsis {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 0 4px;
+}
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(31, 48, 56, 0.48);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+
+.modalDialog {
+  width: 100%;
+  max-width: 680px;
+  max-height: 90dvh;
+  overflow-y: auto;
+  background: var(--card);
+  border: 1px solid var(--border); /* taste-skill-ignore: flat seller modal */
+  border-radius: var(--radius-card);
+  padding: var(--card-pad);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.modalDialogWide {
+  max-width: 860px;
+}
+
+.modalHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modalTitle {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0;
+}
+
+.modalSub {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 4px 0 0;
+  line-height: 18px;
+}
+
+.drawerFilters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dateInput {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--control);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.nowrapCell {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.deltaPos {
+  color: var(--positive);
+}
+
+.deltaNeg {
+  color: var(--negative);
+}
+
+.orderRefLink {
+  color: var(--ink);
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.noticeBox {
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border); /* taste-skill-ignore: modal informational notice */
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 19px;
+}
+
+.noticeWarn {
+  background: var(--pill-warning-bg);
+  color: var(--pill-warning-ink);
+  border-color: var(--border);
+}
+
+.noticePos {
+  background: var(--pill-positive-bg);
+  color: var(--pill-positive-ink);
+  border-color: var(--border);
+}
+
+.noticeNeg {
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+  border-color: var(--border);
+}
+
+.stepSection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.stepTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0;
+}
+
+.uploadBox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px dashed var(--control);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+}
+
+.fileInput {
+  font-size: 13px;
+  color: var(--ink);
+  max-width: 100%;
+}
+
+.fileMeta {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.jobHeaderRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.statGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.statBox {
+  padding: 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border); /* taste-skill-ignore: CSV import summary counter */
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.statLabel {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.statValue {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.errorCell {
+  color: var(--negative);
+  font-size: 13px;
+  line-height: 18px;
+  max-width: 320px;
+  word-break: break-word;
+}
+
+.modalFooter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 768px) {
+  .statGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .modalDialog {
+    padding: 16px;
+  }
+
+  .dateInput {
+    flex: 1;
+    min-width: 130px;
+  }
+}

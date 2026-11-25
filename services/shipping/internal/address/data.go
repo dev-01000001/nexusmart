@@ -90,6 +90,8 @@ var (
 	vietnamProvinces []Province
 	vietnamWards     []Ward
 	provinceRegions  map[string]string
+	provinceNames    map[string]string
+	wardNames        map[string]string
 	catalogChecksum  string
 )
 
@@ -111,6 +113,7 @@ func init() {
 
 	vietnamProvinces = make([]Province, len(payload.Provinces))
 	provinceRegions = make(map[string]string, len(payload.Provinces))
+	provinceNames = make(map[string]string, len(payload.Provinces))
 	for i, p := range payload.Provinces {
 		vietnamProvinces[i] = Province{
 			Code:          p.Code,
@@ -119,9 +122,11 @@ func init() {
 			GHNProvinceID: p.GHNProvinceID,
 		}
 		provinceRegions[p.Code] = p.Region
+		provinceNames[p.Code] = p.Name
 	}
 
 	vietnamWards = make([]Ward, len(payload.Wards))
+	wardNames = make(map[string]string, len(payload.Wards))
 	for i, w := range payload.Wards {
 		vietnamWards[i] = Ward{
 			Code:          w.Code,
@@ -132,6 +137,7 @@ func init() {
 			CODSupported:  w.CODSupported,
 			IsActive:      true,
 		}
+		wardNames[w.Code] = w.Name
 	}
 
 	// Deterministic SHA256 over embedded catalog + legacy mappings so any catalog update triggers re-seed,
@@ -176,6 +182,16 @@ func RegionOfProvince(provinceCode string) string {
 		return r
 	}
 	return RegionCentral
+}
+
+// LookupProvinceName returns the official Vietnamese province name for code, or "" if unknown.
+func LookupProvinceName(provinceCode string) string {
+	return provinceNames[strings.TrimSpace(provinceCode)]
+}
+
+// LookupWardName returns the official Vietnamese ward name for code, or "" if unknown.
+func LookupWardName(wardCode string) string {
+	return wardNames[strings.TrimSpace(wardCode)]
 }
 
 // StripDiacritics lowercases input, removes Vietnamese diacritics/d-stroke, and collapses punctuation/whitespace.

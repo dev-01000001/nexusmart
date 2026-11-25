@@ -229,6 +229,9 @@ message ListProductsRequest {
   int32 page_size = 9;
   // Optional filter (max 200): return ACTIVE/public products containing any of these SKU IDs (D8/A3).
   repeated string sku_ids = 10;
+  // Optional seller/admin filter (ignored on public calls): return only products having at least one
+  // active SKU (product APPROVED/OUT_OF_STOCK, SKU status != INACTIVE) with available stock (stock - reserved) <= 5.
+  bool low_stock = 11;
 }
 
 message ListProductsResponse {
@@ -495,6 +498,185 @@ message RescanProductsForBannedContentResponse {
   string next_cursor = 6;
 }
 
+enum ProductImportJobStatus {
+  PRODUCT_IMPORT_JOB_STATUS_UNSPECIFIED = 0;
+  PRODUCT_IMPORT_JOB_STATUS_QUEUED = 1;
+  PRODUCT_IMPORT_JOB_STATUS_VALIDATING = 2;
+  PRODUCT_IMPORT_JOB_STATUS_READY = 3;
+  PRODUCT_IMPORT_JOB_STATUS_CONFIRMING = 4;
+  PRODUCT_IMPORT_JOB_STATUS_COMPLETED = 5;
+  PRODUCT_IMPORT_JOB_STATUS_FAILED = 6;
+}
+
+enum ProductImportRowStatus {
+  PRODUCT_IMPORT_ROW_STATUS_UNSPECIFIED = 0;
+  PRODUCT_IMPORT_ROW_STATUS_PENDING = 1;
+  PRODUCT_IMPORT_ROW_STATUS_VALID = 2;
+  PRODUCT_IMPORT_ROW_STATUS_INVALID = 3;
+  PRODUCT_IMPORT_ROW_STATUS_CREATED = 4;
+  PRODUCT_IMPORT_ROW_STATUS_FAILED = 5;
+}
+
+message StockHistoryItem {
+  string id = 1;
+  string sku_id = 2;
+  string product_id = 3;
+  string shop_id = 4;
+  string product_name = 5;
+  string sku_code = 6;
+  string sku_name = 7;
+  string order_id = 8;
+  // MANUAL_UPDATE, RESERVE, RELEASE, CONFIRM, RESTOCK.
+  string change_type = 9;
+  int32 delta = 10;
+  int32 stock_before = 11;
+  int32 stock_after = 12;
+  int32 reserved_before = 13;
+  int32 reserved_after = 14;
+  string actor_id = 15;
+  string reason = 16;
+  google.protobuf.Timestamp created_at = 17;
+}
+
+message ListStockHistoryRequest {
+  // Always overridden by verified JWT shop_id for sellers; staff with products.read may filter by shop_id (S03/G8).
+  string shop_id = 1;
+  string product_id = 2;
+  string sku_id = 3;
+  string change_type = 4;
+  google.protobuf.Timestamp from_time = 5;
+  google.protobuf.Timestamp to_time = 6;
+  int32 page = 7;
+  int32 page_size = 8;
+}
+
+message ListStockHistoryResponse {
+  repeated StockHistoryItem items = 1;
+  int64 total = 2;
+}
+
+message ProductImportJob {
+  string id = 1;
+  string shop_id = 2;
+  string created_by = 3;
+  string filename = 4;
+  ProductImportJobStatus status = 5;
+  int32 total_rows = 6;
+  int32 valid_rows = 7;
+  int32 invalid_rows = 8;
+  int32 created_rows = 9;
+  int32 failed_rows = 10;
+  string error_message = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+  google.protobuf.Timestamp confirmed_at = 14;
+  google.protobuf.Timestamp finished_at = 15;
+}
+
+message ProductImportRow {
+  string id = 1;
+  string job_id = 2;
+  int32 row_number = 3;
+  ProductImportRowStatus status = 4;
+  string error_code = 5;
+  string error_message = 6;
+  string product_name = 7;
+  string sku_code = 8;
+  string category_id = 9;
+  int64 price_vnd = 10;
+  int32 stock = 11;
+  int32 weight_grams = 12;
+  string created_product_id = 13;
+  string raw_row_json = 14;
+}
+
+message CreateProductImportJobRequest {
+  string filename = 1;
+  // UTF-8 CSV (optional UTF-8 BOM), max 1 MiB, max 1,000 data rows; create-only, two-step confirm required (UC-S13, G6).
+  bytes csv_content = 2;
+}
+
+message CreateProductImportJobResponse {
+  ProductImportJob job = 1;
+}
+
+message GetProductImportJobRequest {
+  string job_id = 1;
+}
+
+message GetProductImportJobResponse {
+  ProductImportJob job = 1;
+}
+
+message ListProductImportRowsRequest {
+  string job_id = 1;
+  ProductImportRowStatus status = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+  // When true, returns only INVALID and FAILED rows (used by errors.csv export, G6).
+  bool errors_only = 5;
+}
+
+message ListProductImportRowsResponse {
+  repeated ProductImportRow rows = 1;
+  int64 total = 2;
+}
+
+message ConfirmProductImportJobRequest {
+  string job_id = 1;
+}
+
+message ConfirmProductImportJobResponse {
+  ProductImportJob job = 1;
+  // True on repeated confirm click when job is already CONFIRMING or COMPLETED (idempotent, G6).
+  bool already_confirmed = 2;
+}
+
+// Compact public-only product projection for SearchService full reindex (B1, G9, G11).
+// Strictly omits commission_rate_bps and flagged_keywords.
+message IndexableProduct {
+  string id = 1;
+  string shop_id = 2;
+  string category_id = 3;
+  repeated string category_ancestor_ids = 4;
+  string name = 5;
+  string slug = 6;
+  string description = 7;
+  string thumbnail_url = 8;
+  int64 min_price_vnd = 9;
+  int64 max_price_vnd = 10;
+  ProductStatus status = 11;
+  repeated string sku_codes = 12;
+  string sku_attributes_text = 13;
+  int32 total_stock = 14;
+  int32 sku_count = 15;
+  google.protobuf.Timestamp updated_at = 16;
+  repeated string sku_ids = 17;
+  repeated string colors = 18;
+  repeated string sizes = 19;
+  // Real rating snapshot from A4 (E6/G9): integer average * 100 (0..500) and review count.
+  int32 rating_avg_x100 = 20;
+  int32 review_count = 21;
+  string default_sku_id = 22;
+  // Mirrors products.shop_suspended (F12/G10) so SearchService keeps shop visibility aligned.
+  bool shop_suspended = 23;
+  // Distinct SKU color codes from attributes["color_code"] so GET /search?color= matches name OR color_code.
+  repeated string color_codes = 24;
+}
+
+message ListProductsForIndexRequest {
+  // Keyset cursor: return public products (APPROVED/OUT_OF_STOCK, not deleted) with id > after_id.
+  string after_id = 1;
+  // Batch size (default 200, max 500 per G11).
+  int32 page_size = 2;
+}
+
+message ListProductsForIndexResponse {
+  repeated IndexableProduct items = 1;
+  string next_cursor = 2;
+  bool has_more = 3;
+}
+
 service ProductService {
   rpc CreateCategory(CreateCategoryRequest) returns (CreateCategoryResponse);
   rpc UpdateCategory(UpdateCategoryRequest) returns (UpdateCategoryResponse);
@@ -524,4 +706,10 @@ service ProductService {
   rpc DeleteBannedKeyword(DeleteBannedKeywordRequest) returns (DeleteBannedKeywordResponse);
   rpc PreviewBannedKeyword(PreviewBannedKeywordRequest) returns (PreviewBannedKeywordResponse);
   rpc RescanProductsForBannedContent(RescanProductsForBannedContentRequest) returns (RescanProductsForBannedContentResponse);
+  rpc ListStockHistory(ListStockHistoryRequest) returns (ListStockHistoryResponse);
+  rpc CreateProductImportJob(CreateProductImportJobRequest) returns (CreateProductImportJobResponse);
+  rpc GetProductImportJob(GetProductImportJobRequest) returns (GetProductImportJobResponse);
+  rpc ListProductImportRows(ListProductImportRowsRequest) returns (ListProductImportRowsResponse);
+  rpc ConfirmProductImportJob(ConfirmProductImportJobRequest) returns (ConfirmProductImportJobResponse);
+  rpc ListProductsForIndex(ListProductsForIndexRequest) returns (ListProductsForIndexResponse);
 }

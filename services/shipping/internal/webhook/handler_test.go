@@ -94,6 +94,22 @@ func (s *stubRepo) GetShipmentByTrackingCode(_ context.Context, trackingCode str
 	cp := *sh
 	return &cp, nil
 }
+func (s *stubRepo) GetShipmentsByTrackingCodes(_ context.Context, trackingCodes []string) ([]store.Shipment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]store.Shipment, 0, len(trackingCodes))
+	seen := make(map[string]bool, len(trackingCodes))
+	for _, code := range trackingCodes {
+		if seen[code] {
+			continue
+		}
+		seen[code] = true
+		if sh, ok := s.byTracking[code]; ok {
+			out = append(out, *sh)
+		}
+	}
+	return out, nil
+}
 func (s *stubRepo) ListShipmentEvents(_ context.Context, _ string) ([]store.ShipmentEvent, error) {
 	return nil, nil
 }

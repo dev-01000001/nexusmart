@@ -226,6 +226,10 @@ export interface GatewayProduct {
   review_count?: number;
   flagged_keywords?: string[];
   skus: GatewaySKU[];
+  /** Optional storefront-enriched display fields derived from active flash sale / shop discount. */
+  effective_price_vnd?: number;
+  original_price_vnd?: number;
+  promo_kind?: "flash" | "shop_discount" | "none";
   created_at?: string;
   updated_at?: string;
 }
@@ -1300,4 +1304,101 @@ export interface GatewayAdminApprovalsResponse {
   refund_approvals: GatewayRefund[];
   shop_total: number;
   refund_total: number;
+}
+
+// --- Section 4.8a: Search & Discovery (Wave 3b-3 B1, ADR-0004, G9-G14) ---
+
+export type GatewaySearchSortBy =
+  "relevance" | "price_asc" | "price_desc" | "newest" | "rating_desc";
+
+export type GatewaySearchMode = "auto" | "keyword" | "hybrid";
+
+export type GatewaySearchDegradedMode = "" | "keyword_only" | "product_fallback";
+
+export interface GatewaySearchProductHit {
+  id: string;
+  shop_id: string;
+  shop_name: string;
+  shop_slug: string;
+  category_id: string;
+  category_slug: string;
+  category_name: string;
+  name: string;
+  slug: string;
+  thumbnail_url: string;
+  min_price_vnd: number;
+  max_price_vnd: number;
+  status: string;
+  rating_avg_x100: number;
+  review_count: number;
+  in_stock: boolean;
+  sku_count: number;
+  score: number;
+  description_snippet: string;
+  sku_ids: string[];
+  default_sku_id: string;
+  colors: string[];
+  sizes: string[];
+}
+
+export interface GatewaySearchFacetCount {
+  id: string;
+  name: string;
+  slug: string;
+  count: number;
+}
+
+export interface GatewaySearchProductsResponse {
+  items: GatewaySearchProductHit[];
+  total: number;
+  page: number;
+  page_size: number;
+  category_facets: GatewaySearchFacetCount[];
+  shop_facets: GatewaySearchFacetCount[];
+  did_you_mean: string;
+  degraded_mode: GatewaySearchDegradedMode | string;
+  used_vector: boolean;
+}
+
+export interface GatewaySearchSuggestEntity {
+  id: string;
+  name: string;
+  slug: string;
+}
+
+export interface GatewaySearchSuggestResponse {
+  keywords: string[];
+  categories: GatewaySearchSuggestEntity[];
+  shops: GatewaySearchSuggestEntity[];
+  trending: string[];
+  products: GatewaySearchProductHit[];
+}
+
+export interface GatewaySearchHistoryItem {
+  id: string;
+  query: string;
+  created_at?: string;
+}
+
+export interface GatewaySearchHistoryResponse {
+  items: GatewaySearchHistoryItem[];
+}
+
+export interface GatewayDeleteSearchHistoryResponse {
+  ok: boolean;
+}
+
+export interface GatewaySearchReindexResponse {
+  job_id: string;
+  status: "RUNNING" | "COMPLETED" | "FAILED" | string;
+}
+
+export interface GatewaySearchReindexStatusResponse {
+  job_id: string;
+  status: "RUNNING" | "COMPLETED" | "FAILED" | string;
+  products_indexed: number;
+  embeddings_updated: number;
+  error_message: string;
+  started_at?: string;
+  finished_at?: string;
 }

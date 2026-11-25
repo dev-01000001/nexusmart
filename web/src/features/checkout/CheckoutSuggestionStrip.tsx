@@ -4,16 +4,17 @@ import React, { useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import type { GatewayProduct } from "@/lib/gateway-types";
-import { formatVnd } from "@/lib/format";
 import { useCart } from "@/context/CartContext";
 import { useSession } from "@/context/SessionContext";
 import { Button } from "@/components/Button";
+import { Price } from "@/components/Price";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./CheckoutSuggestionStrip.module.css";
 
 export interface CheckoutSuggestionStripProps {
   title: string;
   subtitle?: string;
+  /** Pre-enriched products with `effective_price_vnd` / `original_price_vnd` from `enrichProductsWithPromotions`. */
   products: GatewayProduct[];
   shopNameById?: Record<string, string>;
   showQuickAdd?: boolean;
@@ -81,10 +82,18 @@ export function CheckoutSuggestionStrip({
           const href = product.slug ? `/san-pham/${encodeURIComponent(product.slug)}` : "/danh-muc";
           const imageSrc = pickProductImage(product);
           const availableSku = pickFirstAvailableSku(product);
-          const displayPrice =
-            (product.min_price_vnd ?? 0) > 0
-              ? (product.min_price_vnd ?? 0)
-              : (availableSku?.price_vnd ?? 0);
+          const displayPriceVnd =
+            product.effective_price_vnd != null && product.effective_price_vnd > 0
+              ? Math.trunc(product.effective_price_vnd)
+              : product.min_price_vnd > 0
+                ? Math.trunc(product.min_price_vnd)
+                : Math.trunc(availableSku?.price_vnd ?? 0);
+          const rawOriginalPriceVnd =
+            product.original_price_vnd != null ? Math.trunc(product.original_price_vnd) : 0;
+          const originalPriceVnd =
+            rawOriginalPriceVnd > displayPriceVnd && displayPriceVnd > 0
+              ? rawOriginalPriceVnd
+              : undefined;
           const shopName = shopNameById?.[product.shop_id] ?? "Xưởng dệt NexusMart";
           const isAdding = addingId === product.id;
           const isAdded = addedId === product.id;
@@ -106,7 +115,13 @@ export function CheckoutSuggestionStrip({
                   {product.name}
                 </Link>
                 <div className={styles.foot}>
-                  <span className={`${styles.price} num`}>{formatVnd(displayPrice)}</span>
+                  <Price
+                    amount={displayPriceVnd}
+                    originalAmount={originalPriceVnd}
+                    showDiscount={Boolean(originalPriceVnd)}
+                    size="sm"
+                    className={styles.price}
+                  />
                   {showQuickAdd && availableSku ? (
                     <Button
                       variant="secondary"

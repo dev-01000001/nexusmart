@@ -40,6 +40,11 @@ type OrderService struct {
 	acquireMaxWait        time.Duration
 	acquireInitialBackoff time.Duration
 	acquireMaxBackoff     time.Duration
+	// Optional overrides for fast deterministic lease-fence tests (defaults: 30s lease, 5s safety margin).
+	addressChangeLease       time.Duration
+	addressChangeLeaseSafety time.Duration
+	// Optional whitebox test hook invoked after each committed step of UpdateOrderAddress (G3 crash tests).
+	afterAddressChangeStep func(step int, changeID string) error
 }
 
 // NewOrderService constructs an OrderService.
@@ -200,16 +205,26 @@ func mapStoreError(err error) error {
 	if errors.Is(err, store.ErrNotFound) {
 		return status.Error(codes.NotFound, "record not found")
 	}
+	if errors.Is(err, store.ErrAddressChangeLostLease) {
+		return status.Error(codes.FailedPrecondition, store.ErrAddressChangeInProgress.Error())
+	}
 	if errors.Is(err, statemachine.ErrInvalidTransition) ||
 		errors.Is(err, statemachine.ErrInvalidReturnTransition) ||
 		errors.Is(err, store.ErrRetryPrecondition) ||
 		errors.Is(err, store.ErrDuplicateReturnRequest) ||
 		errors.Is(err, store.ErrReturnDeadlineNotReached) ||
-		errors.Is(err, store.ErrOrderNotNeedingReview) {
+		errors.Is(err, store.ErrOrderNotNeedingReview) ||
+		errors.Is(err, store.ErrAddressUpdateNotAllowed) ||
+		errors.Is(err, store.ErrAddressChangeInProgress) ||
+		errors.Is(err, store.ErrAddressChangeIdemConflict) ||
+		errors.Is(err, store.ErrCODLimitExceeded) {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	if _, ok := status.FromError(err); ok {
 		return err
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return status.FromContextError(err).Err()
 	}
 	return status.Errorf(codes.Internal, "internal order error: %v", err)
 }
@@ -257,6 +272,13 @@ func (s *OrderService) sellerConfirmTimeout() time.Duration {
 		hours = 48
 	}
 	return time.Duration(hours) * time.Hour
+}
+
+func (s *OrderService) batchShipMaxItems() int {
+	if s.cfg.BatchShipMaxItems <= 0 {
+		return 50
+	}
+	return s.cfg.BatchShipMaxItems
 }
 
 func (s *OrderService) returnSellerResponseDuration() time.Duration {

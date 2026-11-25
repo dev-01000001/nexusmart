@@ -459,7 +459,9 @@ export function MockStoreProvider({ children }: { children: React.ReactNode }) {
 
   const claimBirthdayGift = useCallback(() => {
     setMembership((prev) => ({ ...prev, birthdayGiftClaimed: true }));
-    showToast("Đã kích hoạt quà sinh nhật và mã SINHNHAT50 vào giỏ hàng.");
+    showToast(
+      "Đã ghi nhận xem thử ưu đãi sinh nhật Hội viên (dữ liệu minh họa, chưa phát hành mã thanh toán)."
+    );
   }, [showToast]);
 
   const inviteFriendMock = useCallback(
@@ -542,8 +544,14 @@ export function MockStoreProvider({ children }: { children: React.ReactNode }) {
         eduEmail: clean,
         eduVerified: true,
       }));
-      showToast("Xác thực email sinh viên thành công. Đã mở khóa mã EDU15 (giảm 15%).");
-      return { ok: true, message: "Xác thực thành công và đã thêm mã EDU15 vào ví voucher." };
+      showToast(
+        "Đã ghi nhận email sinh viên ở bản xem trước (chưa phát hành mã giảm giá thanh toán)."
+      );
+      return {
+        ok: true,
+        message:
+          "Đã ghi nhận email .edu ở bản xem trước minh họa (chưa phát hành mã giảm giá thanh toán).",
+      };
     },
     [showToast]
   );

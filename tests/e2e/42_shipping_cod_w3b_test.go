@@ -360,10 +360,14 @@ func TestE2E_W3B_PublicCalculateFeeAndPerUserRateLimit(t *testing.T) {
 	}); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("anonymous gRPC CreateShipment want Unauthenticated, got %v", err)
 	}
-	if _, err := shipClient.CreateShipment(svcCtx, &shippingv1.CreateShipmentRequest{
+	// Under G3 (w3b-3), CreateShipment accepts order-service for UC-B26 recreation while
+	// still rejecting other service identities (e.g. product-service) with PermissionDenied.
+	otherSvcTok := promoMintServiceToken("product-service")
+	otherSvcCtx := metadata.NewOutgoingContext(env.ctx(t), metadata.Pairs("authorization", "Bearer "+otherSvcTok))
+	if _, err := shipClient.CreateShipment(otherSvcCtx, &shippingv1.CreateShipmentRequest{
 		OrderId: uuid.NewString(), ShopId: seller1.ShopID,
 	}); status.Code(err) != codes.PermissionDenied {
-		t.Fatalf("service-token gRPC CreateShipment want PermissionDenied, got %v", err)
+		t.Fatalf("non-order service-token gRPC CreateShipment want PermissionDenied, got %v", err)
 	}
 
 	// 2. Anonymous REST POST /api/v1/shipping/calculate-fee with empty to_ward_code + 0g SKU items[].

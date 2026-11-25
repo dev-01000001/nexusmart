@@ -504,9 +504,16 @@ check("Wave 2 tier discounts, voucher validation reasons, and gift cards reconci
   assert.equal(res.freeGifts.length, 2); // order threshold + birthday gift
   assert.equal(res.grandTotal, res.subtotal + res.shippingFee - res.totalDiscount);
 
-  const eduReject = validateVoucher("EDU15", { eligibleAmount: 300000, eduVerified: false });
-  assert.equal(eduReject.valid, false);
-  assert.ok(eduReject.reason && eduReject.reason.includes(".edu"));
+  // B15: retired false-promise membership/student vouchers must not exist in VOUCHERS
+  for (const retiredCode of ["EDU15", "SINHNHAT50", "NEXUSVIP12"]) {
+    assert.equal(
+      VOUCHERS.some((v) => v.code.toUpperCase() === retiredCode),
+      false,
+      `Retired voucher ${retiredCode} must not be present in VOUCHERS`
+    );
+    const retiredCheck = validateVoucher(retiredCode, { eligibleAmount: 500000 });
+    assert.equal(retiredCheck.valid, false);
+  }
 
   const minReject = validateVoucher("NEXUS30", { eligibleAmount: 200000 });
   assert.equal(minReject.valid, false);
@@ -543,7 +550,13 @@ check("Hội viên Nexus tiers, sample reviews/QAs, and gift cards", () => {
   assert.ok(GIFT_CARD_DENOMINATIONS.every((v) => Number.isInteger(v) && v >= 100000));
   assert.ok(GIFT_CARD_POLICY.validityDays < 365);
   assert.ok(INITIAL_GIFT_CARDS.every((gc) => Number.isInteger(gc.remainingVnd)));
-  assert.equal(EDU_DISCOUNT_CONFIG.voucherCode, "EDU15");
+  assert.equal(EDU_DISCOUNT_CONFIG.voucherCode.includes("EDU15"), false);
+  assert.equal(
+    MEMBERSHIP_TIERS.some((t) =>
+      t.perks.some((p) => p.includes("SINHNHAT50") || p.includes("NEXUSVIP12"))
+    ),
+    false
+  );
 });
 
 // 12. Content, CSR Sợi Xanh statement math, non-diacritic search & per-shop sizing

@@ -37,6 +37,7 @@ jobs:
           - services/order
           - services/shipping
           - services/notification
+          - services/search
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -125,7 +126,7 @@ jobs:
       - name: Run govulncheck across all Go modules
         run: |
           set -euo pipefail
-          for mod in pkg/common gen/go services/gateway services/user services/product services/cart services/promotion services/order services/shipping services/notification; do
+          for mod in pkg/common gen/go services/gateway services/user services/product services/cart services/promotion services/order services/shipping services/notification services/search; do
             echo "==> govulncheck $mod"
             (cd "$mod" && govulncheck ./...)
           done
@@ -182,6 +183,8 @@ jobs:
             dockerfile: services/shipping/Dockerfile
           - service: notification
             dockerfile: services/notification/Dockerfile
+          - service: search
+            dockerfile: services/search/Dockerfile
           - service: web
             dockerfile: web/Dockerfile
     steps:

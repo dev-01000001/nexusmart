@@ -6,7 +6,8 @@ import type { CategorySlug, Product, Shop } from "@/data";
 import type { CatalogProduct, CatalogShop } from "@/lib/catalog-types";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { getEditorialCatalogFallback } from "@/mock/productEditorial";
-import { formatVnd } from "@/lib/format";
+import { resolveSizeFinderProductPricing } from "@/lib/a8-types";
+import { Price } from "@/components/Price";
 import { BODY_SHAPE_LABELS, recommendSize, type BodyShape, type FitPreference } from "@/lib/sizing";
 import styles from "./SizeFinder.module.css";
 
@@ -417,7 +418,17 @@ export function SizeFinder({ defaultShopId, products, shops }: SizeFinderProps) 
                   {recommendedSize}
                 </span>
               </span>
-              <span className={styles.matchPrice}>{formatVnd(product.price)}</span>
+              {(() => {
+                const pricing = resolveSizeFinderProductPricing(product);
+                return (
+                  <Price
+                    amount={pricing.displayPriceVnd}
+                    originalAmount={pricing.originalPriceVnd}
+                    size="sm"
+                    className={styles.matchPrice}
+                  />
+                );
+              })()}
             </Link>
           ))}
         </div>

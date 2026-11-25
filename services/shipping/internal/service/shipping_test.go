@@ -283,6 +283,23 @@ func (m *memRepo) GetShipmentByTrackingCode(_ context.Context, trackingCode stri
 	return &cp, nil
 }
 
+func (m *memRepo) GetShipmentsByTrackingCodes(_ context.Context, trackingCodes []string) ([]store.Shipment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]store.Shipment, 0, len(trackingCodes))
+	seen := make(map[string]bool, len(trackingCodes))
+	for _, code := range trackingCodes {
+		if seen[code] {
+			continue
+		}
+		seen[code] = true
+		if sh, ok := m.byTracking[code]; ok {
+			out = append(out, *sh)
+		}
+	}
+	return out, nil
+}
+
 func (m *memRepo) ListShipmentEvents(_ context.Context, shipmentID string) ([]store.ShipmentEvent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -7,6 +7,9 @@ import type {
   GatewayProductSlugResponse,
   GatewayProvince,
   GatewayPublicShop,
+  GatewaySearchFacetCount,
+  GatewaySearchProductsResponse,
+  GatewaySearchSuggestResponse,
   GatewayVoucher,
   PaginatedResponse,
 } from "@/lib/gateway-types";
@@ -31,6 +34,18 @@ import type {
   CatalogShop,
   CatalogVoucher,
 } from "@/lib/catalog-types";
+import {
+  CATALOG_PAGE_SIZE,
+  buildSearchQueryString,
+  collectSearchHitSkuIds,
+  mapSearchHitToCatalogProduct,
+  normalizeColorFilterParam,
+  normalizeSearchSortParam,
+  parseInStockParam,
+  parseMinRatingX100Param,
+  parsePageParam,
+} from "@/lib/search-client";
+import { DEFAULT_SHOP_LOOKUP_CONCURRENCY, lookupShopsByIdsWithFetcher } from "@/lib/shop-lookup";
 import { getLegacyShopSlugById } from "@/mock/productEditorial";
 import { fetchActiveShopDiscountsWithFetcher } from "@/features/checkout/helpers";
 
@@ -121,6 +136,33 @@ export async function fetchShopById(id: string): Promise<CatalogShop | null> {
       return null;
     }
     throw err;
+  }
+}
+
+async function fetchRawPublicShopById(id: string): Promise<GatewayPublicShop | null> {
+  try {
+    const res = await publicGatewayFetch<{ shop: GatewayPublicShop }>(
+      `/shops/${encodeURIComponent(id)}`
+    );
+    return res?.shop ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function hydrateMissingShops(
+  shopsById: Map<string, CatalogShop>,
+  shopIds: readonly string[]
+): Promise<void> {
+  const missingIds = Array.from(
+    new Set(shopIds.map((id) => (id ?? "").trim()).filter((id) => id && !shopsById.has(id)))
+  );
+  if (missingIds.length === 0) return;
+  const resolved = await lookupShopsByIdsWithFetcher(missingIds, fetchRawPublicShopById, {
+    concurrency: DEFAULT_SHOP_LOOKUP_CONCURRENCY,
+  });
+  for (const shop of Object.values(resolved)) {
+    shopsById.set(shop.id, mapGatewayShop(shop));
   }
 }
 
@@ -282,6 +324,7 @@ export interface HomeCatalogData {
   categories: CatalogCategory[];
   shops: CatalogShop[];
   products: CatalogProduct[];
+  totalProducts: number;
   flashSlots: CatalogFlashSaleSlot[];
   serverNowMs: number;
   error: string | null;
@@ -315,15 +358,21 @@ export async function loadHomeCatalogData(): Promise<HomeCatalogData> {
     });
 
     const homeSkuIds = collectProductSkuIds(mergedRawProducts);
-    const activeShopDiscounts =
-      homeSkuIds.length > 0
-        ? await fetchActiveShopDiscounts({ skuIds: homeSkuIds }).catch(
-            () => [] as GatewayActiveShopDiscount[]
-          )
-        : [];
-
     const categoriesById = new Map(categories.map((c) => [c.id, c]));
     const shopsById = new Map(shops.map((s) => [s.id, s]));
+
+    const [activeShopDiscounts] = await Promise.all([
+      homeSkuIds.length > 0
+        ? fetchActiveShopDiscounts({ skuIds: homeSkuIds }).catch(
+            () => [] as GatewayActiveShopDiscount[]
+          )
+        : Promise.resolve([] as GatewayActiveShopDiscount[]),
+      hydrateMissingShops(
+        shopsById,
+        mergedRawProducts.map((p) => p.shop_id)
+      ),
+    ]);
+
     const liveFlashItemsBySkuId = buildLiveFlashItemsBySkuId(rawFlashSales, serverNowMs);
     const liveFlashSkuIds = new Set(liveFlashItemsBySkuId.keys());
     const activeShopDiscountsBySkuId = buildActiveShopDiscountsMap(activeShopDiscounts);
@@ -337,6 +386,7 @@ export async function loadHomeCatalogData(): Promise<HomeCatalogData> {
         activeShopDiscountsBySkuId,
       })
     );
+    const totalProducts = Math.max(products.length, Math.trunc(productPage.total ?? 0));
     const flashSlots = mapGatewayFlashSales(rawFlashSales, products, serverNowMs);
 
     // Order shops so workshops with live catalog products appear first
@@ -354,6 +404,7 @@ export async function loadHomeCatalogData(): Promise<HomeCatalogData> {
       categories,
       shops: orderedShops,
       products,
+      totalProducts,
       flashSlots,
       serverNowMs,
       error: null,
@@ -363,6 +414,7 @@ export async function loadHomeCatalogData(): Promise<HomeCatalogData> {
       categories: [],
       shops: [],
       products: [],
+      totalProducts: 0,
       flashSlots: [],
       serverNowMs,
       error: toSafeErrorMessage(err),
@@ -373,34 +425,22 @@ export async function loadHomeCatalogData(): Promise<HomeCatalogData> {
 export interface CatalogExplorerServerData {
   categories: CatalogCategory[];
   shops: CatalogShop[];
-  allProducts: CatalogProduct[];
-  serverFilteredProducts: CatalogProduct[];
-  hasServerFilter: boolean;
+  products: CatalogProduct[];
   serverTotal: number;
+  page: number;
+  pageSize: number;
+  categoryFacets: GatewaySearchFacetCount[];
+  shopFacets: GatewaySearchFacetCount[];
+  didYouMean: string;
+  degradedMode: string;
+  usedVector: boolean;
+  trendingKeywords: string[];
   error: string | null;
 }
 
 function readSingleParam(val: string | string[] | undefined): string {
   if (Array.isArray(val)) return val[0] ?? "";
   return val ?? "";
-}
-
-function toBackendSortBy(sortParam: string): string | undefined {
-  switch (sortParam) {
-    case "newest":
-      return "newest";
-    case "price-asc":
-    case "price_asc":
-      return "price_asc";
-    case "price-desc":
-    case "price_desc":
-      return "price_desc";
-    case "name-asc":
-    case "name_asc":
-      return "name_asc";
-    default:
-      return undefined;
-  }
 }
 
 export async function loadCatalogExplorerData(
@@ -411,9 +451,25 @@ export async function loadCatalogExplorerData(
   const priceParam = readSingleParam(rawSearchParams.price).trim();
   const qParam = readSingleParam(rawSearchParams.q).trim();
   const sortParam = readSingleParam(rawSearchParams.sort).trim();
+  const ratingParam =
+    readSingleParam(rawSearchParams.min_rating).trim() ||
+    readSingleParam(rawSearchParams.rating).trim();
+  const inStockParam = readSingleParam(rawSearchParams.in_stock).trim();
+  const sizeParam = readSingleParam(rawSearchParams.size).trim();
+  const colorParam = readSingleParam(rawSearchParams.color).trim();
+  const modeParam = readSingleParam(rawSearchParams.mode).trim();
+  const page = parsePageParam(readSingleParam(rawSearchParams.page));
+  const rawPageSize = Number.parseInt(readSingleParam(rawSearchParams.page_size), 10);
+  const pageSize =
+    Number.isFinite(rawPageSize) && rawPageSize >= 1 && rawPageSize <= 100
+      ? rawPageSize
+      : CATALOG_PAGE_SIZE;
 
   const priceRange = resolvePriceBucketRange(priceParam);
-  const backendSortBy = toBackendSortBy(sortParam);
+  const sortBy = normalizeSearchSortParam(sortParam);
+  const minRatingX100 = parseMinRatingX100Param(ratingParam);
+  const inStockOnly = parseInStockParam(inStockParam);
+  const normalizedColor = normalizeColorFilterParam(colorParam);
 
   let shopId: string | undefined;
   let shopSlug: string | undefined;
@@ -425,94 +481,144 @@ export async function loadCatalogExplorerData(
     }
   }
 
-  const hasServerFilter = Boolean(
-    catParam ||
-    shopId ||
-    shopSlug ||
-    qParam ||
-    priceRange.minPriceVnd ||
-    priceRange.maxPriceVnd ||
-    backendSortBy
-  );
+  const searchQs = buildSearchQueryString({
+    q: qParam || undefined,
+    categorySlug: catParam || undefined,
+    shopId,
+    shopSlug,
+    minPriceVnd: priceRange.minPriceVnd,
+    maxPriceVnd: priceRange.maxPriceVnd,
+    minRatingX100,
+    inStockOnly,
+    sortBy,
+    mode: modeParam || undefined,
+    size: sizeParam || undefined,
+    color: normalizedColor,
+    page,
+    pageSize,
+  });
 
   try {
-    // ponytail: tải tối đa 100 sản phẩm thật để giữ 13 nhóm facet & tìm bỏ dấu/đồng nghĩa phía client;
-    // khi có Search service (Tháng 4–6) sẽ chuyển toàn bộ facet & synonym lên server.
-    const [categories, shops, allPage, filteredPage, rawFlashSales] = await Promise.all([
-      fetchCategories(),
-      fetchPublicShops(),
-      fetchRawProducts({ page: 1, pageSize: 100 }),
-      hasServerFilter
-        ? fetchRawProducts({
-            categorySlug: catParam || undefined,
-            shopId,
-            shopSlug,
-            keyword: qParam || undefined,
-            minPriceVnd: priceRange.minPriceVnd,
-            maxPriceVnd: priceRange.maxPriceVnd,
-            sortBy: backendSortBy,
-            page: 1,
-            pageSize: 100,
-          })
-        : Promise.resolve(null),
+    const [searchRes, categories, rawFlashSales, suggestRes, activeShopLookup] = await Promise.all([
+      publicGatewayFetch<GatewaySearchProductsResponse>(`/search?${searchQs}`, {
+        optionalAuth: true,
+      }),
+      fetchCategories().catch(() => [] as CatalogCategory[]),
       fetchRawFlashSales(false).catch(() => [] as GatewayFlashSale[]),
+      publicGatewayFetch<GatewaySearchSuggestResponse>("/search/suggest?limit=8").catch(() => null),
+      shopId
+        ? fetchShopById(shopId).catch(() => null)
+        : shopSlug
+          ? fetchShopBySlug(shopSlug).catch(() => null)
+          : Promise.resolve(null),
     ]);
-    const explorerSkuIds = collectProductSkuIds([...allPage.items, ...(filteredPage?.items ?? [])]);
-    const activeShopDiscounts =
-      explorerSkuIds.length > 0
-        ? await fetchActiveShopDiscounts({ skuIds: explorerSkuIds }).catch(
+
+    const hits = Array.isArray(searchRes?.items) ? searchRes.items : [];
+    const categoryFacets = Array.isArray(searchRes?.category_facets)
+      ? searchRes.category_facets
+      : [];
+    const shopFacets = Array.isArray(searchRes?.shop_facets) ? searchRes.shop_facets : [];
+    const trendingKeywords = Array.isArray(suggestRes?.trending) ? suggestRes.trending : [];
+
+    // Seed shopsById from server shop_facets + active shop filter, then hydrate any missing shop_ids
+    // (especially when degraded_mode === "product_fallback" or shop 101+ omits shop_name).
+    const shopsById = new Map<string, CatalogShop>();
+    for (const sf of shopFacets) {
+      if (sf.id && sf.name) {
+        shopsById.set(
+          sf.id,
+          mapGatewayShop({
+            id: sf.id,
+            name: sf.name,
+            slug: sf.slug || sf.id,
+            description: "",
+            status: "ACTIVE",
+          })
+        );
+      }
+    }
+    for (const hit of hits) {
+      if (hit.shop_id && hit.shop_name && !shopsById.has(hit.shop_id)) {
+        shopsById.set(
+          hit.shop_id,
+          mapGatewayShop({
+            id: hit.shop_id,
+            name: hit.shop_name,
+            slug: hit.shop_slug || hit.shop_id,
+            description: "",
+            status: "ACTIVE",
+          })
+        );
+      }
+    }
+    if (activeShopLookup) {
+      shopsById.set(activeShopLookup.id, activeShopLookup);
+    }
+
+    const pageSkuIds = collectSearchHitSkuIds(hits);
+    const missingShopIds = Array.from(
+      new Set(
+        [...hits.map((h) => h.shop_id), ...shopFacets.map((sf) => sf.id)].filter(
+          (id) => id && !shopsById.has(id)
+        )
+      )
+    );
+
+    const [activeShopDiscounts] = await Promise.all([
+      pageSkuIds.length > 0
+        ? fetchActiveShopDiscounts({ skuIds: pageSkuIds }).catch(
             () => [] as GatewayActiveShopDiscount[]
           )
-        : [];
+        : Promise.resolve([] as GatewayActiveShopDiscount[]),
+      hydrateMissingShops(shopsById, missingShopIds),
+    ]);
 
     const nowMs = Date.now();
     const categoriesById = new Map(categories.map((c) => [c.id, c]));
-    const shopsById = new Map(shops.map((s) => [s.id, s]));
     const liveFlashItemsBySkuId = buildLiveFlashItemsBySkuId(rawFlashSales, nowMs);
-    const liveFlashSkuIds = new Set(liveFlashItemsBySkuId.keys());
     const activeShopDiscountsBySkuId = buildActiveShopDiscountsMap(activeShopDiscounts);
 
-    const mapCtx = {
-      categoriesById,
-      shopsById,
-      flashSkuIds: liveFlashSkuIds,
-      liveFlashItemsBySkuId,
-      activeShopDiscountsBySkuId,
-    };
+    const products = hits.map((hit) =>
+      mapSearchHitToCatalogProduct(hit, {
+        categoriesById,
+        shopsById,
+        liveFlashItemsBySkuId,
+        activeShopDiscountsBySkuId,
+      })
+    );
 
-    const allProducts = allPage.items.map((p) => mapGatewayProduct(p, mapCtx));
-    const serverFilteredProducts = filteredPage
-      ? filteredPage.items.map((p) => mapGatewayProduct(p, mapCtx))
-      : allProducts;
-
-    // Order shops so shops with catalog products come first
-    const countByShop = new Map<string, number>();
-    for (const p of allProducts) {
-      countByShop.set(p.shopId, (countByShop.get(p.shopId) ?? 0) + 1);
-    }
-    const orderedShops = [...shops].sort((a, b) => {
-      const diff = (countByShop.get(b.id) ?? 0) - (countByShop.get(a.id) ?? 0);
-      if (diff !== 0) return diff;
-      return Number(b.hasEditorialProfile) - Number(a.hasEditorialProfile);
-    });
+    const serverTotal = Math.max(products.length, Math.trunc(searchRes?.total ?? products.length));
+    const orderedShops = Array.from(shopsById.values());
 
     return {
       categories,
       shops: orderedShops,
-      allProducts,
-      serverFilteredProducts,
-      hasServerFilter,
-      serverTotal: filteredPage ? filteredPage.total : allPage.total,
+      products,
+      serverTotal,
+      page: Math.max(1, Math.trunc(searchRes?.page ?? page)),
+      pageSize: Math.max(1, Math.trunc(searchRes?.page_size ?? pageSize)),
+      categoryFacets,
+      shopFacets,
+      didYouMean: typeof searchRes?.did_you_mean === "string" ? searchRes.did_you_mean : "",
+      degradedMode: typeof searchRes?.degraded_mode === "string" ? searchRes.degraded_mode : "",
+      usedVector: Boolean(searchRes?.used_vector),
+      trendingKeywords,
       error: null,
     };
   } catch (err) {
     return {
       categories: [],
       shops: [],
-      allProducts: [],
-      serverFilteredProducts: [],
-      hasServerFilter,
+      products: [],
       serverTotal: 0,
+      page,
+      pageSize,
+      categoryFacets: [],
+      shopFacets: [],
+      didYouMean: "",
+      degradedMode: "",
+      usedVector: false,
+      trendingKeywords: [],
       error: toSafeErrorMessage(err),
     };
   }
@@ -596,15 +702,18 @@ export async function loadProductDetailData(slug: string): Promise<ProductDetail
               }))
             ).items;
       const skuIds = collectProductSkuIds(rawCandidates);
-      const activeShopDiscounts =
-        skuIds.length > 0
-          ? await fetchActiveShopDiscounts({ skuIds }).catch(
-              () => [] as GatewayActiveShopDiscount[]
-            )
-          : [];
-
       const categoriesById = new Map(categories.map((c) => [c.id, c]));
       const shopsById = new Map(publicShops.map((s) => [s.id, s]));
+      const [activeShopDiscounts] = await Promise.all([
+        skuIds.length > 0
+          ? fetchActiveShopDiscounts({ skuIds }).catch(() => [] as GatewayActiveShopDiscount[])
+          : Promise.resolve([] as GatewayActiveShopDiscount[]),
+        hydrateMissingShops(
+          shopsById,
+          rawCandidates.map((p) => p.shop_id)
+        ),
+      ]);
+
       const liveFlashItemsBySkuId = buildLiveFlashItemsBySkuId(rawFlashSales, nowMs);
       const activeShopDiscountsBySkuId = buildActiveShopDiscountsMap(activeShopDiscounts);
 
@@ -680,18 +789,24 @@ export async function loadProductDetailData(slug: string): Promise<ProductDetail
       sameShopCandidates,
       allProductsPage.items
     );
-    const activeShopDiscounts =
-      pdpDiscountSkuIds.length > 0
-        ? await fetchActiveShopDiscounts({ skuIds: pdpDiscountSkuIds }).catch(
-            () => [] as GatewayActiveShopDiscount[]
-          )
-        : [];
-
     const categoriesById = new Map(categories.map((c) => [c.id, c]));
     const shopsById = new Map(publicShops.map((s) => [s.id, s]));
     if (shopFromId) {
       shopsById.set(shopFromId.id, shopFromId);
     }
+
+    const [activeShopDiscounts] = await Promise.all([
+      pdpDiscountSkuIds.length > 0
+        ? fetchActiveShopDiscounts({ skuIds: pdpDiscountSkuIds }).catch(
+            () => [] as GatewayActiveShopDiscount[]
+          )
+        : Promise.resolve([] as GatewayActiveShopDiscount[]),
+      hydrateMissingShops(shopsById, [
+        rawProduct.shop_id,
+        ...sameShopCandidates.map((p) => p.shop_id),
+        ...allProductsPage.items.map((p) => p.shop_id),
+      ]),
+    ]);
 
     const fallbackShop: CatalogShop =
       shopFromId ??
@@ -833,7 +948,6 @@ export async function loadShopDetailData(slug: string): Promise<ShopDetailData> 
       shopVoucherList,
       allVoucherList,
       rawFlashSales,
-      activeShopDiscounts,
     ] = await Promise.all([
       fetchPublicShops().catch(() => [] as CatalogShop[]),
       fetchCategories(),
@@ -847,13 +961,30 @@ export async function loadShopDetailData(slug: string): Promise<ShopDetailData> 
       fetchVouchers({ shopId: shop.id, scope: "SHOP" }).catch(() => [] as CatalogVoucher[]),
       fetchVouchers().catch(() => [] as CatalogVoucher[]),
       fetchRawFlashSales(false).catch(() => [] as GatewayFlashSale[]),
-      fetchActiveShopDiscounts({ shopId: shop.id }).catch(() => [] as GatewayActiveShopDiscount[]),
     ]);
 
     const nowMs = Date.now();
     const categoriesById = new Map(categories.map((c) => [c.id, c]));
     const shopsById = new Map(allShops.map((s) => [s.id, s]));
     shopsById.set(shop.id, shop);
+
+    // §10 SizeFinder + §10-3: fetch active shop discounts across ALL SKUs in shopProducts & allProducts
+    // (including other workshops) and resolve any shop #101+ names in parallel (concurrency <= 8).
+    const allShopDetailSkuIds = collectProductSkuIds([
+      ...shopProductsPage.items,
+      ...allProductsPage.items,
+    ]);
+    const [activeShopDiscounts] = await Promise.all([
+      allShopDetailSkuIds.length > 0
+        ? fetchActiveShopDiscounts({ skuIds: allShopDetailSkuIds }).catch(
+            () => [] as GatewayActiveShopDiscount[]
+          )
+        : Promise.resolve([] as GatewayActiveShopDiscount[]),
+      hydrateMissingShops(shopsById, [
+        ...shopProductsPage.items.map((p) => p.shop_id),
+        ...allProductsPage.items.map((p) => p.shop_id),
+      ]),
+    ]);
     const liveFlashItemsBySkuId = buildLiveFlashItemsBySkuId(rawFlashSales, nowMs);
     const liveFlashSkuIds = new Set(liveFlashItemsBySkuId.keys());
     const activeShopDiscountsBySkuId = buildActiveShopDiscountsMap(activeShopDiscounts);
@@ -940,6 +1071,10 @@ export async function loadFlashSalePageData(): Promise<FlashSalePageData> {
 
     const categoriesById = new Map(categories.map((c) => [c.id, c]));
     const shopsById = new Map(shops.map((s) => [s.id, s]));
+    await hydrateMissingShops(
+      shopsById,
+      mergedRawProducts.map((p) => p.shop_id)
+    );
     const liveFlashItemsBySkuId = buildLiveFlashItemsBySkuId(rawFlashSales, serverNowMs);
     const liveFlashSkuIds = buildLiveFlashSkuSet(rawFlashSales, serverNowMs);
 

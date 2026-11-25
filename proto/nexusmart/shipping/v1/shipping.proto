@@ -185,6 +185,9 @@ message CreateShipmentRequest {
   // Populated by order service from the order record; shipping never trusts buyer_id from end-user clients
   // and stores it so RequestRedelivery can verify buyer ownership. Not returned on Shipment.
   string buyer_id = 10;
+  // When true (UC-S15 batch ship, G4), validate non-retryable preconditions and enqueue directly into
+  // shipment_create_jobs without calling the carrier synchronously (returns queued=true, job_id).
+  bool enqueue_only = 11;
 }
 
 message CreateShipmentResponse {

@@ -14,7 +14,12 @@ import { ApiError, api, getErrorMessage } from "@/lib/api";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconCheck, IconFileText, IconPackage, IconTruck, StateView } from "@/components";
 import { formatCarrierLabel, formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
-import { buildShippingLabelHref, localizeTimelineNote } from "@/features/account/orderMeta";
+import {
+  buildShippingLabelHref,
+  getTimelineEventTitle,
+  isAddressUpdatedTimelineNote,
+  localizeTimelineNote,
+} from "@/features/account/orderMeta";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { SellerShopGate, useSellerContext } from "@/features/seller/SellerContext";
 import {
@@ -905,7 +910,11 @@ function SellerOrderDetailInner({ shop }: { shop: GatewayShop }) {
                       </span>
                       <div>
                         <div className={styles.timelineTitle}>
-                          {fromMeta ? `${fromMeta.label} → ${toMeta.label}` : toMeta.label}
+                          {isAddressUpdatedTimelineNote(ev.note)
+                            ? getTimelineEventTitle(ev)
+                            : fromMeta
+                              ? `${fromMeta.label} → ${toMeta.label}`
+                              : toMeta.label}
                         </div>
                         <p className={styles.timelineNote}>
                           {ev.note

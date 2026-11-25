@@ -22,18 +22,8 @@ const FIT_PREF_LABELS: Record<FitPreference, string> = {
 };
 
 export function AccountMockOverviewPanels() {
-  const { membership, membershipTier, updateBirthday, claimBirthdayGift, showToast } =
-    useMockStore();
+  const { membership, membershipTier, updateBirthday, claimBirthdayGift } = useMockStore();
   const [birthdayDraft, setBirthdayDraft] = useState(membership.birthday || "1996-11-24");
-
-  const handleCopyVipCode = async () => {
-    try {
-      await navigator.clipboard.writeText("NEXUSVIP12");
-      showToast("Đã sao chép mã minh họa NEXUSVIP12.");
-    } catch {
-      showToast("Mã minh họa: NEXUSVIP12.");
-    }
-  };
 
   return (
     <>
@@ -124,11 +114,11 @@ export function AccountMockOverviewPanels() {
 
         <div className={styles.yirPromoBar}>
           <p className={styles.yirPromoText}>
-            Mã tri ân Tổng kết năm: <strong>NEXUSVIP12</strong> (giảm 12% tối đa 90.000₫ cho hạng
-            Vàng trở lên).
+            Chương trình phân hạng Hội viên và quà tri ân Tổng kết năm hiện là bản xem trước minh
+            họa, chưa phát hành mã giảm giá thanh toán riêng.
           </p>
-          <Button type="button" variant="ink" size="sm" onClick={() => void handleCopyVipCode()}>
-            Sao chép mã
+          <Button variant="ink" size="sm" href="/khuyen-mai">
+            Xem ưu đãi đang mở
           </Button>
         </div>
       </div>
@@ -508,8 +498,8 @@ export function AccountMockGiftCardsPanel() {
         </p>
         <p className={styles.bodyCopy}>
           {membership.eduVerified
-            ? `Email ${membership.eduEmail} đã mở khóa mã EDU15 giảm 15% (tối đa 50.000₫).`
-            : "Xác thực email sinh viên để nhận ngay mã EDU15 giảm 15% vào ví ưu đãi."}
+            ? `Email ${membership.eduEmail} đã được ghi nhận ở bản xem trước minh họa (hiện chưa phát hành mã giảm giá sinh viên tại bước thanh toán).`
+            : "Tính năng xác thực email sinh viên đang ở bản xem trước minh họa, hiện chưa phát hành mã giảm giá thanh toán."}
         </p>
         <div className={shared.formActions}>
           <Button variant="primary" size="sm" href="/the-qua-tang">

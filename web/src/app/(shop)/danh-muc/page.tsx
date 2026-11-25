@@ -25,9 +25,15 @@ export default async function CatalogPage({ searchParams }: CatalogPageProps) {
         mode="catalog"
         categories={data.categories}
         shops={data.shops}
-        allProducts={data.allProducts}
-        serverFilteredProducts={data.serverFilteredProducts}
-        hasServerFilter={data.hasServerFilter}
+        products={data.products}
+        serverTotal={data.serverTotal}
+        page={data.page}
+        pageSize={data.pageSize}
+        categoryFacets={data.categoryFacets}
+        shopFacets={data.shopFacets}
+        didYouMean={data.didYouMean}
+        degradedMode={data.degradedMode}
+        trendingKeywords={data.trendingKeywords}
         error={data.error}
       />
     </Suspense>

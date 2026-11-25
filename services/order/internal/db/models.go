@@ -88,6 +88,46 @@ type Order struct {
 	ShipmentJobStatus               string     `json:"shipment_job_status"`
 }
 
+type OrderAddressChange struct {
+	ID                    string     `json:"id"`
+	OrderID               string     `json:"order_id"`
+	BuyerID               string     `json:"buyer_id"`
+	IdempotencyKey        string     `json:"idempotency_key"`
+	RequestHash           string     `json:"request_hash"`
+	NewAddressJSON        []byte     `json:"new_address_json"`
+	CarrierCode           string     `json:"carrier_code"`
+	ServiceCode           string     `json:"service_code"`
+	OldCarrierCode        string     `json:"old_carrier_code"`
+	OldServiceCode        string     `json:"old_service_code"`
+	OldTrackingCode       string     `json:"old_tracking_code"`
+	HadShipment           bool       `json:"had_shipment"`
+	ShipmentCancelled     bool       `json:"shipment_cancelled"`
+	OldShippingFeeVND     int64      `json:"old_shipping_fee_vnd"`
+	NewShippingFeeVND     int64      `json:"new_shipping_fee_vnd"`
+	AppliedShippingFeeVND int64      `json:"applied_shipping_fee_vnd"`
+	OldTotalPayableVND    int64      `json:"old_total_payable_vnd"`
+	NewTotalPayableVND    int64      `json:"new_total_payable_vnd"`
+	FeeAdjusted           bool       `json:"fee_adjusted"`
+	NeedsCODAdjust        bool       `json:"needs_cod_adjust"`
+	CODAdjusted           bool       `json:"cod_adjusted"`
+	State                 string     `json:"state"`
+	ShipmentRecreated     bool       `json:"shipment_recreated"`
+	ShipmentQueued        bool       `json:"shipment_queued"`
+	ShipmentJobID         string     `json:"shipment_job_id"`
+	NewTrackingCode       string     `json:"new_tracking_code"`
+	OutboxEmitted         bool       `json:"outbox_emitted"`
+	Attempts              int32      `json:"attempts"`
+	NextAttemptAt         time.Time  `json:"next_attempt_at"`
+	ClaimedUntil          *time.Time `json:"claimed_until"`
+	ClaimToken            string     `json:"claim_token"`
+	AbortCode             string     `json:"abort_code"`
+	LastError             string     `json:"last_error"`
+	TraceID               string     `json:"trace_id"`
+	Traceparent           string     `json:"traceparent"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+}
+
 type OrderItem struct {
 	ID                    string `json:"id"`
 	OrderID               string `json:"order_id"`

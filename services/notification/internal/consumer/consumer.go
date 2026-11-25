@@ -326,21 +326,26 @@ func (c *Consumer) routeToDLQ(ctx context.Context, eventID, subject string, raw 
 }
 
 var sensitivePayloadFields = map[string]struct{}{
-	"reset_token":    {},
-	"otp":            {},
-	"account_number": {},
+	"reset_token":     {},
+	"otp":             {},
+	"account_number":  {},
+	"street_address":  {},
+	"address_line":    {},
+	"recipient_phone": {},
+	"phone":           {},
+	"recipient_name":  {},
 }
 
 func isSensitiveSubject(subject string) bool {
 	switch strings.TrimSpace(subject) {
-	case "user.password_reset_requested", "user.registered", "user.shop_bank_account_otp", "user.phone_otp_requested":
+	case "user.password_reset_requested", "user.registered", "user.shop_bank_account_otp", "user.phone_otp_requested", "order.address_updated":
 		return true
 	default:
 		return false
 	}
 }
 
-// sanitizeDLQPayload redacts secret tokens (e.g. reset_token, otp, account_number) before persisting to dead_letter_events or NEXUSMART_DLQ.
+// sanitizeDLQPayload redacts secret tokens and recipient PII (e.g. reset_token, otp, account_number, street_address, phone) before persisting to dead_letter_events or NEXUSMART_DLQ.
 func sanitizeDLQPayload(subject string, raw []byte) []byte {
 	var top any
 	if err := json.Unmarshal(raw, &top); err != nil {

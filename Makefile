@@ -3,7 +3,7 @@ export PATH := $(HOME)/.local/bin:$(HOME)/go/bin:$(HOME)/.cargo/bin:$(PATH)
 export PROTOC := $(HOME)/.local/bin/protoc
 
 GO_MODULES := pkg/common gen/go \
-	$(wildcard services/gateway services/user services/product services/cart services/promotion services/order services/shipping services/notification)
+	$(wildcard services/gateway services/user services/product services/cart services/promotion services/order services/shipping services/notification services/search)
 
 .PHONY: proto lint test test-db coverage up down e2e seed e2e-web
 

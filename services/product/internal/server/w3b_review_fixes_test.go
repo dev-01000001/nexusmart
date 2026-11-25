@@ -474,6 +474,7 @@ func TestW3B_ReviewFix_6_RescanReevaluatesLockedCurInTx(t *testing.T) {
 
 	// Simulate seller cleaning the product concurrently AFTER ListProductsForModerationScan read stale p,
 	// right BEFORE Rescan's tx acquires GetProductByIDForUpdate(prodID).
+	outboxBefore := 0
 	hooked.targetID = prodID
 	hooked.onBefore = func() {
 		_, updErr := srv.UpdateProduct(sellerCtx, &productv1.UpdateProductRequest{
@@ -484,9 +485,10 @@ func TestW3B_ReviewFix_6_RescanReevaluatesLockedCurInTx(t *testing.T) {
 		if updErr != nil {
 			t.Errorf("concurrent seller cleanup failed: %v", updErr)
 		}
+		// The seller's own edit legitimately emits product.upserted; only events after it belong to the rescan.
+		outboxBefore = len(mem.OutboxEvents())
 	}
 
-	outboxBefore := len(mem.OutboxEvents())
 	res, err := srv.RescanProductsForBannedContent(adminCtx, &productv1.RescanProductsForBannedContentRequest{})
 	if err != nil {
 		t.Fatalf("Rescan: %v", err)

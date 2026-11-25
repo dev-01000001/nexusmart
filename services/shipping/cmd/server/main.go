@@ -254,6 +254,7 @@ func run() error {
 	opsHandler := metrics.NewOpsHandler(cfg.ServiceName, readyFn, prometheus.DefaultGatherer)
 	whHandler := webhook.NewHandler(cfg.WebhookSecret, svc, log)
 	labelHandler := webhook.NewLabelHandler(svc)
+	batchLabelHandler := webhook.NewBatchLabelHandler(svc)
 
 	router := chi.NewRouter()
 	router.Use(telemetry.HTTPMiddleware(cfg.ServiceName))
@@ -302,6 +303,8 @@ func run() error {
 		authed.Use(auth.HTTPMiddleware(jwtMgr, true))
 		authed.Get("/labels/{tracking_code}", labelHandler.ServeHTTP)
 		authed.Get("/api/v1/shipping/labels/{tracking_code}", labelHandler.ServeHTTP)
+		authed.Post("/labels/batch", batchLabelHandler.ServeHTTP)
+		authed.Post("/api/v1/shipping/labels/batch", batchLabelHandler.ServeHTTP)
 	})
 
 	httpSrv := &http.Server{

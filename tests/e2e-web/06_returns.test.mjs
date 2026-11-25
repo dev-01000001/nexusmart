@@ -994,7 +994,7 @@ describe("06. Wave 2a returns, refund settlement, forgot password, and 390px lay
         `expected /don-hang/${ownedOrder.id} to render real order ${ownedOrder.order_code} (not 404), got: ${orderDetailMetrics.bodyText.slice(0, 300)}`
       );
       assert.equal(
-        /không tìm thấy trang|404/i.test(orderDetailMetrics.bodyText),
+        /không tìm thấy trang bạn yêu cầu|lỗi 404/i.test(orderDetailMetrics.bodyText),
         false,
         `expected /don-hang/${ownedOrder.id} not to render 404 page`
       );

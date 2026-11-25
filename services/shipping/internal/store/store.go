@@ -92,28 +92,34 @@ func NormalizeDirection(dir string) string {
 
 // Shipment represents a persisted shipping consignment (FORWARD or RETURN).
 type Shipment struct {
-	ID               string
-	OrderID          string
-	ShopID           string
-	BuyerID          string
-	Direction        string
-	ReturnRequestID  string
-	RedeliveryCount  int32
-	CarrierCode      string
-	ServiceCode      string
-	TrackingCode     string
-	LabelURL         string
-	Status           string
-	FeeVND           int64
-	CODAmountVND     int64
-	WeightGrams      int32
-	FromProvinceCode string
-	FromWardCode     string
-	ToProvinceCode   string
-	ToWardCode       string
-	LastEventAt      *time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                string
+	OrderID           string
+	ShopID            string
+	BuyerID           string
+	Direction         string
+	ReturnRequestID   string
+	RedeliveryCount   int32
+	CarrierCode       string
+	ServiceCode       string
+	TrackingCode      string
+	LabelURL          string
+	Status            string
+	FeeVND            int64
+	CODAmountVND      int64
+	WeightGrams       int32
+	FromName          string
+	FromPhone         string
+	FromStreetAddress string
+	FromProvinceCode  string
+	FromWardCode      string
+	ToName            string
+	ToPhone           string
+	ToStreetAddress   string
+	ToProvinceCode    string
+	ToWardCode        string
+	LastEventAt       *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // ShipmentEvent represents a status transition entry in a shipment timeline.
@@ -250,6 +256,7 @@ type Repository interface {
 	CountInactiveShipmentsByOrder(ctx context.Context, orderID, direction string) (int, error)
 	AcquireOrderDirectionLock(ctx context.Context, orderID, direction string) (func(), error)
 	GetShipmentByTrackingCode(ctx context.Context, trackingCode string) (*Shipment, error)
+	GetShipmentsByTrackingCodes(ctx context.Context, trackingCodes []string) ([]Shipment, error)
 	ListShipmentEvents(ctx context.Context, shipmentID string) ([]ShipmentEvent, error)
 	CreateShipment(ctx context.Context, s *Shipment, initialEvent *ShipmentEvent) (*Shipment, bool, error)
 	CreateShipmentWithOutbox(ctx context.Context, s *Shipment, initialEvent *ShipmentEvent, outbox *JobOutboxParams) (*Shipment, bool, error)
@@ -854,7 +861,8 @@ const shipmentColumns = `
 	id, order_id, shop_id, buyer_id, direction, return_request_id, redelivery_count,
 	carrier_code, service_code, tracking_code, label_url,
 	status, fee_vnd, cod_amount_vnd, weight_grams,
-	from_province_code, from_ward_code, to_province_code, to_ward_code,
+	from_name, from_phone, from_street_address, from_province_code, from_ward_code,
+	to_name, to_phone, to_street_address, to_province_code, to_ward_code,
 	last_event_at, created_at, updated_at
 `
 
@@ -876,8 +884,14 @@ func scanShipment(row pgx.Row) (*Shipment, error) {
 		&sh.FeeVND,
 		&sh.CODAmountVND,
 		&sh.WeightGrams,
+		&sh.FromName,
+		&sh.FromPhone,
+		&sh.FromStreetAddress,
 		&sh.FromProvinceCode,
 		&sh.FromWardCode,
+		&sh.ToName,
+		&sh.ToPhone,
+		&sh.ToStreetAddress,
 		&sh.ToProvinceCode,
 		&sh.ToWardCode,
 		&sh.LastEventAt,
@@ -941,6 +955,27 @@ func (s *PGStore) GetShipmentByTrackingCode(ctx context.Context, trackingCode st
 	return scanShipment(s.pool.QueryRow(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE tracking_code = $1`, trackingCode))
 }
 
+func (s *PGStore) GetShipmentsByTrackingCodes(ctx context.Context, trackingCodes []string) ([]Shipment, error) {
+	if len(trackingCodes) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+shipmentColumns+` FROM shipments WHERE tracking_code = ANY($1::text[])`, trackingCodes)
+	if err != nil {
+		return nil, fmt.Errorf("get shipments by tracking codes: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]Shipment, 0, len(trackingCodes))
+	for rows.Next() {
+		sh, scanErr := scanShipment(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan shipment by tracking code: %w", scanErr)
+		}
+		out = append(out, *sh)
+	}
+	return out, rows.Err()
+}
+
 func (s *PGStore) ListShipmentEvents(ctx context.Context, shipmentID string) ([]ShipmentEvent, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, shipment_id, status, raw_status, description, occurred_at, created_at
@@ -982,15 +1017,17 @@ func (s *PGStore) CreateShipment(ctx context.Context, sh *Shipment, initialEvent
 			id, order_id, shop_id, buyer_id, direction, return_request_id, redelivery_count,
 			carrier_code, service_code, tracking_code, label_url,
 			status, fee_vnd, cod_amount_vnd, weight_grams,
-			from_province_code, from_ward_code, to_province_code, to_ward_code,
+			from_name, from_phone, from_street_address, from_province_code, from_ward_code,
+			to_name, to_phone, to_street_address, to_province_code, to_ward_code,
 			created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
 		ON CONFLICT (order_id, direction) WHERE status <> 'cancelled' AND NOT (direction = 'RETURN' AND status = 'returned') DO NOTHING
 	`,
 		sh.ID, sh.OrderID, sh.ShopID, sh.BuyerID, sh.Direction, sh.ReturnRequestID, sh.RedeliveryCount,
 		sh.CarrierCode, sh.ServiceCode, sh.TrackingCode, sh.LabelURL,
 		sh.Status, sh.FeeVND, sh.CODAmountVND, sh.WeightGrams,
-		sh.FromProvinceCode, sh.FromWardCode, sh.ToProvinceCode, sh.ToWardCode,
+		sh.FromName, sh.FromPhone, sh.FromStreetAddress, sh.FromProvinceCode, sh.FromWardCode,
+		sh.ToName, sh.ToPhone, sh.ToStreetAddress, sh.ToProvinceCode, sh.ToWardCode,
 		sh.CreatedAt, sh.UpdatedAt,
 	)
 	if err != nil {

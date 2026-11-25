@@ -19,6 +19,7 @@ type Config struct {
 	PaymentHTTPURL      string
 	ShippingHTTPURL     string
 	NotificationHTTPURL string
+	SearchHTTPURL       string
 
 	UserGRPCAddr      string
 	PromotionGRPCAddr string
@@ -26,6 +27,10 @@ type Config struct {
 	OrderGRPCAddr     string
 	PaymentGRPCAddr   string
 	ShippingGRPCAddr  string
+	SearchGRPCAddr    string
+
+	MeilisearchURL string
+	MeiliMasterKey string
 
 	NATSURL   string
 	RedisAddr string
@@ -77,6 +82,7 @@ func LoadConfig() Config {
 		PaymentHTTPURL:      envOr("PAYMENT_HTTP_URL", "http://localhost:8086"),
 		ShippingHTTPURL:     envOr("SHIPPING_HTTP_URL", "http://localhost:8087"),
 		NotificationHTTPURL: envOr("NOTIFICATION_HTTP_URL", "http://localhost:8088"),
+		SearchHTTPURL:       envOr("SEARCH_HTTP_URL", "http://localhost:8089"),
 
 		UserGRPCAddr:      envOr("USER_GRPC_ADDR", "localhost:50051"),
 		PromotionGRPCAddr: envOr("PROMOTION_GRPC_ADDR", "localhost:50054"),
@@ -84,6 +90,10 @@ func LoadConfig() Config {
 		OrderGRPCAddr:     envOr("ORDER_GRPC_ADDR", "localhost:50055"),
 		PaymentGRPCAddr:   envOr("PAYMENT_GRPC_ADDR", "localhost:50056"),
 		ShippingGRPCAddr:  envOr("SHIPPING_GRPC_ADDR", "localhost:50057"),
+		SearchGRPCAddr:    envOr("SEARCH_GRPC_ADDR", "localhost:50059"),
+
+		MeilisearchURL: envOr("MEILISEARCH_URL", "http://localhost:7700"),
+		MeiliMasterKey: envOr("MEILI_MASTER_KEY", "dev-only-meilisearch-master-key-change-me"),
 
 		NATSURL:   envOr("NATS_URL", "nats://localhost:4222"),
 		RedisAddr: envOr("REDIS_ADDR", "localhost:6379"),

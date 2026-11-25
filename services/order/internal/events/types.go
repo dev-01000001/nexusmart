@@ -7,14 +7,15 @@ import (
 
 // Event subject constants matching docs/contracts.md Section 5.
 const (
-	SubjectOrderCreated       = "order.created"
-	SubjectOrderConfirmed     = "order.confirmed"
-	SubjectOrderCancelled     = "order.cancelled"
-	SubjectOrderShipped       = "order.shipped"
-	SubjectOrderDelivered     = "order.delivered"
-	SubjectOrderReturned      = "order.returned"
-	SubjectOrderReturnUpdated = "order.return_updated"
-	SubjectOrderCompleted     = "order.completed"
+	SubjectOrderCreated        = "order.created"
+	SubjectOrderConfirmed      = "order.confirmed"
+	SubjectOrderAddressUpdated = "order.address_updated"
+	SubjectOrderCancelled      = "order.cancelled"
+	SubjectOrderShipped        = "order.shipped"
+	SubjectOrderDelivered      = "order.delivered"
+	SubjectOrderReturned       = "order.returned"
+	SubjectOrderReturnUpdated  = "order.return_updated"
+	SubjectOrderCompleted      = "order.completed"
 
 	SubjectPaymentSucceeded      = "payment.succeeded"
 	SubjectPaymentFailed         = "payment.failed"
@@ -56,6 +57,22 @@ type OrderConfirmedPayload struct {
 	ShopID          string `json:"shop_id"`
 	PaymentMethod   string `json:"payment_method"`
 	TotalPayableVND int64  `json:"total_payable_vnd"`
+}
+
+// OrderAddressUpdatedPayload matches docs/contracts.md Section 5 (G3).
+// PII-safe: strictly omits street_address, phone, and full recipient name.
+type OrderAddressUpdatedPayload struct {
+	OrderID           string `json:"order_id"`
+	OrderCode         string `json:"order_code"`
+	BuyerID           string `json:"buyer_id"`
+	ShopID            string `json:"shop_id"`
+	OldFeeVND         int64  `json:"old_fee_vnd"`
+	NewFeeVND         int64  `json:"new_fee_vnd"`
+	TrackingCode      string `json:"tracking_code"`
+	ShipmentRecreated bool   `json:"shipment_recreated"`
+	ShipmentQueued    bool   `json:"shipment_queued"`
+	ProvinceName      string `json:"province_name"`
+	WardName          string `json:"ward_name"`
 }
 
 // OrderCancelledPayload matches docs/contracts.md Section 5.

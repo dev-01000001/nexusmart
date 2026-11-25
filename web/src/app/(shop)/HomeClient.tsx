@@ -24,7 +24,7 @@ import {
 import { ProductCard, StateView } from "@/components";
 import { SizeFinder } from "@/features/catalog/SizeFinder";
 import { useRevealObserver } from "@/features/catalog/useRevealObserver";
-import { formatVnd } from "@/lib/format";
+import { formatInt, formatVnd } from "@/lib/format";
 import { getRootCategories, pickPreferredFlashSlot } from "@/lib/catalog-mapper";
 import styles from "./page.module.css";
 
@@ -32,6 +32,7 @@ export interface HomeClientProps {
   categories: CatalogCategory[];
   shops: CatalogShop[];
   products: CatalogProduct[];
+  totalProducts?: number;
   flashSlots: CatalogFlashSaleSlot[];
   serverNowMs: number;
   error: string | null;
@@ -269,10 +270,15 @@ export function HomeClient({
   categories,
   shops,
   products,
+  totalProducts,
   flashSlots,
   serverNowMs,
   error,
 }: HomeClientProps) {
+  const displayedTotalProducts = Math.max(
+    products.length,
+    Math.trunc(totalProducts ?? products.length)
+  );
   const router = useRouter();
   const pageRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -516,7 +522,7 @@ export function HomeClient({
               Danh mục đồ cơ bản
             </h2>
             <Link href="/danh-muc" className={styles.sectionLink}>
-              Xem tất cả {products.length} sản phẩm
+              Xem tất cả {formatInt(displayedTotalProducts)} sản phẩm
             </Link>
           </div>
 
@@ -735,7 +741,7 @@ export function HomeClient({
             }
             className={styles.catalogMoreBtn}
           >
-            Xem toàn bộ {products.length} sản phẩm
+            Xem toàn bộ {formatInt(displayedTotalProducts)} sản phẩm
           </Link>
         </div>
       </section>

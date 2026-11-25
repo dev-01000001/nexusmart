@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { type AddressFeeChangedQuote, extractSafeAddressFeeQuote } from "@/lib/a8-types";
 import { verifyCsrfOrigin } from "@/lib/server/csrf";
 import { sanitizeGatewayError } from "@/lib/server/gateway";
 import {
@@ -215,12 +216,16 @@ async function handleProxy(
       const val = upstream.headers.get(h);
       if (val) errHeaders.set(h, val);
     }
-    return jsonWithSecurity(
-      { error: { code: sanitized.code, message: sanitized.message } },
-      sanitized.status,
-      errHeaders,
-      upstream.headers
-    );
+    const errBody: { error: { code: string; message: string }; quote?: AddressFeeChangedQuote } = {
+      error: { code: sanitized.code, message: sanitized.message },
+    };
+    if (sanitized.status === 409 && sanitized.code === "ADDRESS_FEE_CHANGED") {
+      const safeQuote = extractSafeAddressFeeQuote(parsed);
+      if (safeQuote) {
+        errBody.quote = safeQuote;
+      }
+    }
+    return jsonWithSecurity(errBody, sanitized.status, errHeaders, upstream.headers);
   }
 
   const resHeaders = new Headers({ "Cache-Control": "no-store" });

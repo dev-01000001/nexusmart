@@ -128,6 +128,7 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.product.v1.ProductService/ConfirmStock",
 		"/nexusmart.product.v1.ProductService/RestockOrderItems",
 		"/nexusmart.product.v1.ProductService/GetCategoryDescendants",
+		"/nexusmart.product.v1.ProductService/ListProductsForIndex",
 		"/nexusmart.promotion.v1.PromotionService/ReleasePromotion",
 		"/nexusmart.promotion.v1.PromotionService/ReleasePromotionShop",
 		"/nexusmart.promotion.v1.PromotionService/CreditCoins",
@@ -137,6 +138,10 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.shipping.v1.ShippingService/CancelShipment",
 		"/nexusmart.shipping.v1.ShippingService/CreateReturnShipment",
 		"/nexusmart.shipping.v1.ShippingService/GetShopShippingSettings",
+		"/nexusmart.shipping.v1.ShippingService/CreateShipment",
+		"/nexusmart.search.v1.SearchService/HybridSearch",
+		"/nexusmart.search.v1.SearchService/ReindexAll",
+		"/nexusmart.search.v1.SearchService/GetReindexStatus",
 	}
 	userOnlyInternalRPCs := []string{
 		// UserService
@@ -187,6 +192,11 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.product.v1.ProductService/DeleteBannedKeyword",
 		"/nexusmart.product.v1.ProductService/PreviewBannedKeyword",
 		"/nexusmart.product.v1.ProductService/RescanProductsForBannedContent",
+		"/nexusmart.product.v1.ProductService/ListStockHistory",
+		"/nexusmart.product.v1.ProductService/CreateProductImportJob",
+		"/nexusmart.product.v1.ProductService/GetProductImportJob",
+		"/nexusmart.product.v1.ProductService/ListProductImportRows",
+		"/nexusmart.product.v1.ProductService/ConfirmProductImportJob",
 		// CartService
 		"/nexusmart.cart.v1.CartService/GetCart",
 		"/nexusmart.cart.v1.CartService/AddItem",
@@ -233,8 +243,10 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.order.v1.OrderService/GetPlatformReport",
 		"/nexusmart.order.v1.OrderService/ListOrdersNeedingReview",
 		"/nexusmart.order.v1.OrderService/ResolveOrderReview",
+		"/nexusmart.order.v1.OrderService/UpdateOrderAddress",
+		"/nexusmart.order.v1.OrderService/BatchShipOrders",
+		"/nexusmart.order.v1.OrderService/GetPickingList",
 		// ShippingService
-		"/nexusmart.shipping.v1.ShippingService/CreateShipment",
 		"/nexusmart.shipping.v1.ShippingService/RequestRedelivery",
 		"/nexusmart.shipping.v1.ShippingService/UpdateShopShippingSettings",
 		"/nexusmart.shipping.v1.ShippingService/AdminListCarriers",
@@ -245,6 +257,9 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.notification.v1.NotificationService/MarkRead",
 		"/nexusmart.notification.v1.NotificationService/GetPreferences",
 		"/nexusmart.notification.v1.NotificationService/UpdatePreferences",
+		// SearchService
+		"/nexusmart.search.v1.SearchService/ListSearchHistory",
+		"/nexusmart.search.v1.SearchService/DeleteSearchHistory",
 	}
 	expectedPublicRPCs := []string{
 		"/nexusmart.user.v1.UserService/Register",
@@ -256,6 +271,7 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.user.v1.UserService/RefreshToken",
 		"/nexusmart.user.v1.UserService/GetShop",
 		"/nexusmart.user.v1.UserService/ListPublicShops",
+		"/nexusmart.order.v1.OrderService/LookupOrder",
 		"/nexusmart.shipping.v1.ShippingService/ListProvinces",
 		"/nexusmart.shipping.v1.ShippingService/ListWards",
 		"/nexusmart.shipping.v1.ShippingService/MapLegacyAddress",
@@ -268,6 +284,8 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.product.v1.ProductService/ListProducts",
 		"/nexusmart.product.v1.ProductService/GetSKUsBatch",
 		"/nexusmart.product.v1.ProductService/ListProductReviews",
+		"/nexusmart.search.v1.SearchService/SearchProducts",
+		"/nexusmart.search.v1.SearchService/Suggest",
 	}
 
 	if got, want := len(serviceAllowedRPCs)+len(userOnlyInternalRPCs), len(internalRPCs); got != want {
@@ -354,6 +372,21 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		{"/nexusmart.order.v1.OrderService/GetPlatformReport", adminTok, "admin-1"},
 		{"/nexusmart.order.v1.OrderService/ListOrdersNeedingReview", adminTok, "admin-1"},
 		{"/nexusmart.order.v1.OrderService/ResolveOrderReview", adminTok, "admin-1"},
+		{"/nexusmart.order.v1.OrderService/UpdateOrderAddress", buyerTok, "buyer-1"},
+		{"/nexusmart.order.v1.OrderService/BatchShipOrders", sellerTok, "seller-1"},
+		{"/nexusmart.order.v1.OrderService/GetPickingList", sellerTok, "seller-1"},
+		{"/nexusmart.product.v1.ProductService/ListStockHistory", sellerTok, "seller-1"},
+		{"/nexusmart.product.v1.ProductService/CreateProductImportJob", sellerTok, "seller-1"},
+		{"/nexusmart.product.v1.ProductService/GetProductImportJob", sellerTok, "seller-1"},
+		{"/nexusmart.product.v1.ProductService/ListProductImportRows", sellerTok, "seller-1"},
+		{"/nexusmart.product.v1.ProductService/ConfirmProductImportJob", sellerTok, "seller-1"},
+		{"/nexusmart.product.v1.ProductService/ListProductsForIndex", adminTok, "admin-1"},
+		{"/nexusmart.search.v1.SearchService/SearchProducts", buyerTok, "buyer-1"},
+		{"/nexusmart.search.v1.SearchService/HybridSearch", buyerTok, "buyer-1"},
+		{"/nexusmart.search.v1.SearchService/ListSearchHistory", buyerTok, "buyer-1"},
+		{"/nexusmart.search.v1.SearchService/DeleteSearchHistory", buyerTok, "buyer-1"},
+		{"/nexusmart.search.v1.SearchService/ReindexAll", adminTok, "admin-1"},
+		{"/nexusmart.search.v1.SearchService/GetReindexStatus", adminTok, "admin-1"},
 		{"/nexusmart.cart.v1.CartService/GetCart", buyerTok, "buyer-1"},
 		{"/nexusmart.cart.v1.CartService/AddItem", buyerTok, "buyer-1"},
 		{"/nexusmart.cart.v1.CartService/UpdateItemQty", buyerTok, "buyer-1"},

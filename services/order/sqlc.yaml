@@ -52,6 +52,14 @@ sql:
           net_revenue_vnd: "NetRevenueVND"
           platform_subsidy_vnd: "PlatformSubsidyVND"
           revenue_vnd: "RevenueVND"
+          new_address_json: "NewAddressJSON"
+          old_shipping_fee_vnd: "OldShippingFeeVND"
+          new_shipping_fee_vnd: "NewShippingFeeVND"
+          applied_shipping_fee_vnd: "AppliedShippingFeeVND"
+          old_total_payable_vnd: "OldTotalPayableVND"
+          new_total_payable_vnd: "NewTotalPayableVND"
+          needs_cod_adjust: "NeedsCODAdjust"
+          cod_adjusted: "CODAdjusted"
         overrides:
           - db_type: "timestamptz"
             go_type:

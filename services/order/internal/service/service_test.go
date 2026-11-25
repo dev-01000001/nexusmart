@@ -545,6 +545,10 @@ type mockPaymentClient struct {
 	cancelCalls         []*paymentv1.CancelPaymentRequest
 	refundCalls         []*paymentv1.CreateRefundRequest
 	refundAuth          []authCallSnapshot
+	adjustCODCalls      []*paymentv1.AdjustCODShippingFeeRequest
+	adjustCODAuth       []authCallSnapshot
+	adjustCODErr        error
+	onAdjustCOD         func(ctx context.Context, req *paymentv1.AdjustCODShippingFeeRequest) (*paymentv1.AdjustCODShippingFeeResponse, error)
 }
 
 func (m *mockPaymentClient) CreatePayment(ctx context.Context, req *paymentv1.CreatePaymentRequest, _ ...grpc.CallOption) (*paymentv1.CreatePaymentResponse, error) {
@@ -774,6 +778,32 @@ func (m *mockPaymentClient) GetPaymentMethodConfigs(ctx context.Context, req *pa
 	}, nil
 }
 
+func (m *mockPaymentClient) AdjustCODShippingFee(ctx context.Context, req *paymentv1.AdjustCODShippingFeeRequest, _ ...grpc.CallOption) (*paymentv1.AdjustCODShippingFeeResponse, error) {
+	m.mu.Lock()
+	m.adjustCODCalls = append(m.adjustCODCalls, req)
+	var svcName string
+	if c, ok := auth.ClaimsFromContext(ctx); ok {
+		svcName = c.Service
+	}
+	m.adjustCODAuth = append(m.adjustCODAuth, authCallSnapshot{
+		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
+		rawToken: auth.RawTokenFromContext(ctx),
+	})
+	hook := m.onAdjustCOD
+	adjErr := m.adjustCODErr
+	m.mu.Unlock()
+	if hook != nil {
+		return hook(ctx, req)
+	}
+	if adjErr != nil {
+		return nil, adjErr
+	}
+	return &paymentv1.AdjustCODShippingFeeResponse{
+		NewShippingFeeVnd: req.GetNewShippingFeeVnd(),
+	}, nil
+}
+
 func (m *mockPaymentClient) GetFeeConfig(ctx context.Context, req *paymentv1.GetFeeConfigRequest, _ ...grpc.CallOption) (*paymentv1.GetFeeConfigResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -817,7 +847,9 @@ type mockShippingClient struct {
 	getShopSettingsCalls    []*shippingv1.GetShopShippingSettingsRequest
 	getShopSettingsAuth     []authCallSnapshot
 	createShipCalls         []*shippingv1.CreateShipmentRequest
+	createShipAuth          []authCallSnapshot
 	onCreateShipment        func(req *shippingv1.CreateShipmentRequest) (*shippingv1.CreateShipmentResponse, error)
+	onCreateShipmentCtx     func(ctx context.Context, req *shippingv1.CreateShipmentRequest) (*shippingv1.CreateShipmentResponse, error)
 	createReturnShipCalls   []*shippingv1.CreateReturnShipmentRequest
 	createReturnShipAuth    []authCallSnapshot
 	createReturnShipErr     error
@@ -826,6 +858,7 @@ type mockShippingClient struct {
 	cancelShipAuth          []authCallSnapshot
 	cancelShipErr           error
 	onCancelShipment        func(req *shippingv1.CancelShipmentRequest) error
+	onCancelShipmentCtx     func(ctx context.Context, req *shippingv1.CancelShipmentRequest) error
 	getShipCalls            []*shippingv1.GetShipmentRequest
 	getShipAuth             []authCallSnapshot
 	getShipResp             *shippingv1.GetShipmentResponse
@@ -851,26 +884,42 @@ func newMockShippingClient() *mockShippingClient {
 
 func (m *mockShippingClient) CalculateFee(_ context.Context, req *shippingv1.CalculateFeeRequest, _ ...grpc.CallOption) (*shippingv1.CalculateFeeResponse, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.calculateFeeCall++
 	m.calculateFeeReqs = append(m.calculateFeeReqs, req)
-	if m.onCalculateFee != nil {
-		return m.onCalculateFee(req)
+	hook := m.onCalculateFee
+	calcErr := m.calculateFeeErr
+	quotes := m.quotes
+	isEst := m.calculateFeeIsEstimated
+	m.mu.Unlock()
+	if hook != nil {
+		return hook(req)
 	}
-	if m.calculateFeeErr != nil {
-		return nil, m.calculateFeeErr
+	if calcErr != nil {
+		return nil, calcErr
 	}
-	return &shippingv1.CalculateFeeResponse{Quotes: m.quotes, IsEstimated: m.calculateFeeIsEstimated}, nil
+	return &shippingv1.CalculateFeeResponse{Quotes: quotes, IsEstimated: isEst}, nil
 }
 
-func (m *mockShippingClient) CreateShipment(_ context.Context, req *shippingv1.CreateShipmentRequest, _ ...grpc.CallOption) (*shippingv1.CreateShipmentResponse, error) {
+func (m *mockShippingClient) CreateShipment(ctx context.Context, req *shippingv1.CreateShipmentRequest, _ ...grpc.CallOption) (*shippingv1.CreateShipmentResponse, error) {
 	m.mu.Lock()
 	m.createShipCalls = append(m.createShipCalls, req)
+	var svcName string
+	if c, ok := auth.ClaimsFromContext(ctx); ok {
+		svcName = c.Service
+	}
+	m.createShipAuth = append(m.createShipAuth, authCallSnapshot{
+		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
+		rawToken: auth.RawTokenFromContext(ctx),
+	})
 	hook := m.onCreateShipment
+	hookCtx := m.onCreateShipmentCtx
 	m.mu.Unlock()
 	var resp *shippingv1.CreateShipmentResponse
 	var err error
-	if hook != nil {
+	if hookCtx != nil {
+		resp, err = hookCtx(ctx, req)
+	} else if hook != nil {
 		resp, err = hook(req)
 	} else {
 		resp = &shippingv1.CreateShipmentResponse{
@@ -953,9 +1002,18 @@ func (m *mockShippingClient) CancelShipment(ctx context.Context, req *shippingv1
 		rawToken: auth.RawTokenFromContext(ctx),
 	})
 	hook := m.onCancelShipment
+	hookCtx := m.onCancelShipmentCtx
 	cancelErr := m.cancelShipErr
 	trk := m.forwardTrackings[req.GetOrderId()]
 	m.mu.Unlock()
+	if hookCtx != nil {
+		if err := hookCtx(ctx, req); err != nil {
+			return nil, err
+		}
+		return &shippingv1.CancelShipmentResponse{
+			Shipment: &shippingv1.Shipment{OrderId: req.GetOrderId(), TrackingCode: trk, Status: shippingv1.ShipmentStatus_SHIPMENT_STATUS_CANCELLED},
+		}, nil
+	}
 	if hook != nil {
 		if err := hook(req); err != nil {
 			return nil, err

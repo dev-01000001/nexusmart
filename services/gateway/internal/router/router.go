@@ -5,6 +5,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	paymentv1 "github.com/nexusmart/core/gen/go/nexusmart/payment/v1"
@@ -18,32 +19,42 @@ import (
 
 // Dependencies wires all handlers, middlewares, and reverse proxies into the gateway router.
 type Dependencies struct {
-	ServiceName                string
-	Clients                    *clients.Clients
-	AuthManager                *auth.Manager
-	RevocationChecker          middleware.TokenRevocationChecker
-	RateLimiter                middleware.RateLimiter
-	RateLimitIPPerMin          int
-	RateLimitUserPerMin        int
-	RateLimitFlashPerMin       int
-	RateLimitAuthPerMin        int
-	RateLimitBankOTPPerMin     int
-	RateLimitPhoneOTPPerMin    int
-	RateLimitShippingFeePerMin int
-	RateLimitWebhookPerMin     int
-	TrustedProxies             *middleware.TrustedProxies
-	RED                        *metrics.RED
-	OpsHandler                 http.Handler
-	PaymentWebhookProxy        http.Handler
-	ShippingWebhookProxy       http.Handler
-	ShippingLabelProxy         http.Handler
-	PaymentSSEProxy            http.Handler
-	Logger                     *slog.Logger
+	ServiceName                      string
+	Clients                          *clients.Clients
+	AuthManager                      *auth.Manager
+	RevocationChecker                middleware.TokenRevocationChecker
+	RateLimiter                      middleware.RateLimiter
+	RateLimitIPPerMin                int
+	RateLimitUserPerMin              int
+	RateLimitFlashPerMin             int
+	RateLimitAuthPerMin              int
+	RateLimitBankOTPPerMin           int
+	RateLimitPhoneOTPPerMin          int
+	RateLimitShippingFeePerMin       int
+	RateLimitWebhookPerMin           int
+	RateLimitOrderLookupPerMin       int
+	RateLimitOrderLookupCodePer10Min int
+	ProductImportMaxRows             int
+	ProductImportMaxBytes            int64
+	SearchFallbackTimeout            time.Duration
+	TrustedProxies                   *middleware.TrustedProxies
+	RED                              *metrics.RED
+	OpsHandler                       http.Handler
+	PaymentWebhookProxy              http.Handler
+	ShippingWebhookProxy             http.Handler
+	ShippingLabelProxy               http.Handler
+	PaymentSSEProxy                  http.Handler
+	Logger                           *slog.Logger
 }
 
 type handler struct {
-	clients *clients.Clients
-	log     *slog.Logger
+	clients                          *clients.Clients
+	log                              *slog.Logger
+	rateLimiter                      middleware.RateLimiter
+	rateLimitOrderLookupCodePer10Min int
+	productImportMaxRows             int
+	productImportMaxBytes            int64
+	searchFallbackTimeout            time.Duration
 }
 
 // New constructs the complete API Gateway HTTP router matching docs/contracts.md Section 4.
@@ -53,9 +64,27 @@ func New(deps Dependencies) http.Handler {
 		serviceName = "gateway"
 	}
 
+	importMaxRows := deps.ProductImportMaxRows
+	if importMaxRows <= 0 {
+		importMaxRows = 1000
+	}
+	importMaxBytes := deps.ProductImportMaxBytes
+	if importMaxBytes <= 0 {
+		importMaxBytes = 1 << 20 // 1 MiB
+	}
+	searchTimeout := deps.SearchFallbackTimeout
+	if searchTimeout <= 0 {
+		searchTimeout = 1500 * time.Millisecond
+	}
+
 	h := &handler{
-		clients: deps.Clients,
-		log:     deps.Logger,
+		clients:                          deps.Clients,
+		log:                              deps.Logger,
+		rateLimiter:                      deps.RateLimiter,
+		rateLimitOrderLookupCodePer10Min: deps.RateLimitOrderLookupCodePer10Min,
+		productImportMaxRows:             importMaxRows,
+		productImportMaxBytes:            importMaxBytes,
+		searchFallbackTimeout:            searchTimeout,
 	}
 
 	r := chi.NewRouter()
@@ -115,7 +144,7 @@ func New(deps Dependencies) http.Handler {
 			main.Use(deps.RED.HTTPMiddleware())
 		}
 		main.Use(middleware.RequestLogger(deps.Logger, deps.TrustedProxies))
-		main.Use(middleware.MaxBodyBytesFunc(requestBodyLimit))
+		main.Use(middleware.MaxBodyBytesFunc(h.requestBodyLimit))
 
 		// Section 4.9 Webhooks (no JWT; HMAC verified by upstream; exact raw body & headers preserved).
 		main.Group(func(wh chi.Router) {
@@ -168,11 +197,31 @@ func New(deps Dependencies) http.Handler {
 				fee.Post("/shipping/calculate-fee", h.handleCalculateShippingFee)
 			})
 
-			// Optional-auth endpoints (vouchers forwards JWT claims when present; payment-methods always returns public-only fields).
+			// Public guest order lookup (UC-B08 / G7): POST only with dual IP + order_code rate limits.
+			// Explicitly reject GET /orders/lookup with 405 so chi never falls back to GET /orders/{id}.
+			api.Get("/orders/lookup", func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("Allow", http.MethodPost)
+				httpx.WriteError(w, req, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST /api/v1/orders/lookup")
+			})
+			api.Group(func(lookup chi.Router) {
+				lookup.Use(middleware.RateLimitOrderLookupIP(
+					deps.RateLimiter,
+					deps.RateLimitOrderLookupPerMin,
+					deps.Logger,
+					deps.TrustedProxies,
+				))
+				lookup.Post("/orders/lookup", h.handleLookupOrder)
+			})
+
+			// Public search autocomplete (B1 / G13)
+			api.Get("/search/suggest", h.handleSearchSuggest)
+
+			// Optional-auth endpoints (vouchers & search forward JWT claims when present; payment-methods always returns public-only fields).
 			api.Group(func(opt chi.Router) {
 				opt.Use(middleware.Auth(deps.AuthManager, deps.RevocationChecker, deps.Logger, false))
 				opt.Get("/vouchers", h.handleListVouchers)
 				opt.Get("/payment-methods", h.handleListPublicPaymentMethods)
+				opt.Get("/search", h.handleSearchProducts)
 			})
 
 			// Public flash-sales list with flash-sale rate limit if configured.
@@ -225,6 +274,7 @@ func New(deps Dependencies) http.Handler {
 				authed.Post("/checkout", h.handleCheckout)
 				authed.Get("/orders", h.handleListBuyerOrders)
 				authed.Get("/orders/{id}", h.handleGetOrder)
+				authed.Patch("/orders/{id}/address", h.handleUpdateOrderAddress)
 				authed.Get("/orders/{id}/timeline", h.handleGetOrderTimeline)
 				authed.Post("/orders/{id}/cancel", h.handleCancelOrder)
 				authed.Post("/orders/{id}/confirm-received", h.handleConfirmReceived)
@@ -252,6 +302,20 @@ func New(deps Dependencies) http.Handler {
 					}
 					deps.ShippingLabelProxy.ServeHTTP(w, req)
 				})
+				authed.Post("/shipping/labels/batch", func(w http.ResponseWriter, req *http.Request) {
+					claims, _ := auth.ClaimsFromContext(req.Context())
+					isSellerWithShop := auth.HasRole(claims, auth.RoleSeller) && strings.TrimSpace(claims.ShopID) != ""
+					isAuthorizedStaff := auth.HasCapability(claims, auth.CapOrdersRead) || auth.HasCapability(claims, auth.CapCarriersRead)
+					if !isSellerWithShop && !isAuthorizedStaff {
+						httpx.WriteError(w, req, http.StatusForbidden, "PERMISSION_DENIED", "insufficient permissions to print batch shipping labels")
+						return
+					}
+					if deps.ShippingLabelProxy == nil {
+						httpx.WriteError(w, req, http.StatusServiceUnavailable, "UNAVAILABLE", "shipping label proxy not configured")
+						return
+					}
+					deps.ShippingLabelProxy.ServeHTTP(w, req)
+				})
 				authed.Post("/orders/{id}/redelivery", h.handleRequestRedelivery)
 
 				// Section 4.8 Notifications
@@ -259,6 +323,11 @@ func New(deps Dependencies) http.Handler {
 				authed.Post("/notifications/read", h.handleMarkNotificationsRead)
 				authed.Get("/notifications/preferences", h.handleGetNotificationPreferences)
 				authed.Put("/notifications/preferences", h.handleUpdateNotificationPreferences)
+
+				// Section 4.8a Search History (B1 / G14)
+				authed.Get("/search/history", h.handleListSearchHistory)
+				authed.Delete("/search/history", h.handleClearSearchHistory)
+				authed.Delete("/search/history/{id}", h.handleDeleteSearchHistoryItem)
 
 				// --- Seller routes (`seller`) ---
 				authed.Route("/seller", func(seller chi.Router) {
@@ -282,6 +351,14 @@ func New(deps Dependencies) http.Handler {
 					seller.Put("/products/{id}", h.handleSellerUpdateProduct)
 					seller.Delete("/products/{id}", h.handleSellerDeleteProduct)
 					seller.Patch("/skus/{sku_id}/stock", h.handleSellerUpdateStock)
+					seller.Get("/stock-history", h.handleSellerListStockHistory)
+					seller.Get("/skus/{sku_id}/stock-history", h.handleSellerListSKUStockHistory)
+					seller.Get("/products/import/template", h.handleSellerProductImportTemplate)
+					seller.Post("/products/import", h.handleSellerCreateProductImport)
+					seller.Get("/products/import/{job_id}", h.handleSellerGetProductImportJob)
+					seller.Get("/products/import/{job_id}/rows", h.handleSellerListProductImportRows)
+					seller.Get("/products/import/{job_id}/errors.csv", h.handleSellerExportProductImportErrorsCSV)
+					seller.Post("/products/import/{job_id}/confirm", h.handleSellerConfirmProductImportJob)
 
 					// Section 4.4 Seller Vouchers, Flash Sales & Discount Programs
 					seller.Get("/vouchers", h.handleSellerListVouchers)
@@ -300,6 +377,8 @@ func New(deps Dependencies) http.Handler {
 
 					// Section 4.5 Seller Orders, Returns & Reports
 					seller.Get("/orders", h.handleSellerListOrders)
+					seller.Post("/orders/batch-ship", h.handleSellerBatchShipOrders)
+					seller.Post("/orders/picking-list", h.handleSellerPickingList)
 					seller.Get("/orders/{id}", h.handleSellerGetOrder)
 					seller.Post("/orders/{id}/confirm", h.handleSellerConfirmOrder)
 					seller.Post("/orders/{id}/ship", h.handleSellerShipOrder)
@@ -406,6 +485,10 @@ func New(deps Dependencies) http.Handler {
 					admin.With(middleware.RequireCapability(auth.CapCarriersRead)).Get("/carriers", h.handleAdminListCarriers)
 					admin.With(middleware.RequireCapability(auth.CapCarriersWrite)).Put("/carriers/{code}", h.handleAdminUpdateCarrier)
 					admin.With(middleware.RequireCapability(auth.CapCarriersWrite)).Post("/carriers/{code}/test", h.handleAdminTestCarrier)
+
+					// Section 4.8a Admin Search Reindex (B1 / G11)
+					admin.With(middleware.RequireCapability(auth.CapSearchReindex)).Post("/search/reindex", h.handleAdminSearchReindex)
+					admin.With(middleware.RequireCapability(auth.CapSearchReindex)).Get("/search/reindex/{job_id}", h.handleAdminGetSearchReindexStatus)
 				})
 			})
 		})
@@ -423,16 +506,34 @@ func New(deps Dependencies) http.Handler {
 
 const (
 	codImportRoutePath              = "/api/v1/admin/reconciliation/cod/import"
-	codImportMultipartOverheadBytes = 64 << 10 // 64 KiB multipart framing overhead for COD CSV upload only
+	productImportRoutePath          = "/api/v1/seller/products/import"
+	codImportMultipartOverheadBytes = 64 << 10 // 64 KiB multipart framing overhead for CSV uploads
 )
 
-func requestBodyLimit(r *http.Request) int64 {
-	if r.Method == http.MethodPost && r.URL.Path == codImportRoutePath {
-		if ct := strings.TrimSpace(r.Header.Get("Content-Type")); ct != "" {
-			if mt, _, err := mime.ParseMediaType(ct); err == nil && strings.EqualFold(strings.TrimSpace(mt), "multipart/form-data") {
-				return httpx.MaxBodyBytes + codImportMultipartOverheadBytes
-			}
+func (h *handler) requestBodyLimit(r *http.Request) int64 {
+	if r.Method != http.MethodPost {
+		return httpx.MaxBodyBytes
+	}
+	isMultipart := false
+	if ct := strings.TrimSpace(r.Header.Get("Content-Type")); ct != "" {
+		if mt, _, err := mime.ParseMediaType(ct); err == nil && strings.EqualFold(strings.TrimSpace(mt), "multipart/form-data") {
+			isMultipart = true
 		}
+	}
+	switch r.URL.Path {
+	case codImportRoutePath:
+		if isMultipart {
+			return httpx.MaxBodyBytes + codImportMultipartOverheadBytes
+		}
+	case productImportRoutePath:
+		limit := h.productImportMaxBytes
+		if limit <= 0 {
+			limit = 1 << 20
+		}
+		if isMultipart {
+			return limit + codImportMultipartOverheadBytes
+		}
+		return limit
 	}
 	return httpx.MaxBodyBytes
 }

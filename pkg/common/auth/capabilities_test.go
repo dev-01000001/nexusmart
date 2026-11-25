@@ -58,6 +58,7 @@ func TestCapabilityMatrixExhaustive(t *testing.T) {
 		CapPaymentMethodsRead:    {RoleSuperAdmin, RoleAdmin, RoleAccountant, RoleOps},
 		CapPaymentMethodsWrite:   {RoleSuperAdmin, RoleAdmin, RoleOps},
 		CapApprovalsRead:         {RoleSuperAdmin, RoleAdmin, RoleModerator, RoleCSKH, RoleAccountant, RoleOps},
+		CapSearchReindex:         {RoleSuperAdmin, RoleAdmin, RoleOps},
 	}
 
 	allCaps := AllCapabilities()

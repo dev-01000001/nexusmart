@@ -679,22 +679,30 @@ func (p *pgQueries) UpdateProductStatus(ctx context.Context, id, status string) 
 	}))
 }
 
-func (p *pgQueries) SoftDeleteProduct(ctx context.Context, id string) (bool, error) {
-	n, err := p.q.SoftDeleteProduct(ctx, id)
+func (p *pgQueries) SoftDeleteProduct(ctx context.Context, id string) (time.Time, bool, error) {
+	updatedAt, err := p.q.SoftDeleteProduct(ctx, id)
 	if err != nil {
-		return false, mapPgError(err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return time.Time{}, false, nil
+		}
+		return time.Time{}, false, mapPgError(err)
 	}
-	return n > 0, nil
+	return updatedAt, true, nil
 }
 
 func (p *pgQueries) ListProducts(ctx context.Context, filter ListProductsFilter) ([]Product, int64, error) {
 	sqlKeyword := ""
-	if strings.TrimSpace(filter.Keyword) != "" {
-		norm := NormalizeSearchText(filter.Keyword)
-		if norm == "" {
+	sqlSKUKeyword := ""
+	if rawKW := strings.TrimSpace(filter.Keyword); rawKW != "" {
+		if norm := NormalizeSearchText(rawKW); norm != "" {
+			sqlKeyword = EscapeLikePattern(norm)
+		}
+		if filter.MatchSKUCode {
+			sqlSKUKeyword = EscapeLikePattern(strings.ToLower(rawKW))
+		}
+		if sqlKeyword == "" && sqlSKUKeyword == "" {
 			return []Product{}, 0, nil
 		}
-		sqlKeyword = EscapeLikePattern(norm)
 	}
 
 	if len(filter.SKUIDs) > 0 {
@@ -739,9 +747,11 @@ func (p *pgQueries) ListProducts(ctx context.Context, filter ListProductsFilter)
 	total, err := p.q.CountProductsFiltered(ctx, db.CountProductsFilteredParams{
 		CategoryID:   filter.CategoryID,
 		Keyword:      sqlKeyword,
+		SkuKeyword:   sqlSKUKeyword,
 		ShopID:       filter.ShopID,
 		StatusFilter: filter.Status,
 		PublicOnly:   filter.PublicOnly,
+		LowStock:     filter.LowStock,
 		MinPriceVnd:  filter.MinPriceVND,
 		MaxPriceVnd:  filter.MaxPriceVND,
 	})
@@ -755,9 +765,11 @@ func (p *pgQueries) ListProducts(ctx context.Context, filter ListProductsFilter)
 	rows, err := p.q.ListProductsFiltered(ctx, db.ListProductsFilteredParams{
 		CategoryID:   filter.CategoryID,
 		Keyword:      sqlKeyword,
+		SkuKeyword:   sqlSKUKeyword,
 		ShopID:       filter.ShopID,
 		StatusFilter: filter.Status,
 		PublicOnly:   filter.PublicOnly,
+		LowStock:     filter.LowStock,
 		MinPriceVnd:  filter.MinPriceVND,
 		MaxPriceVnd:  filter.MaxPriceVND,
 		SortBy:       filter.SortBy,
@@ -1488,6 +1500,23 @@ func (p *pgQueries) InsertDeadLetterEvent(ctx context.Context, ev DeadLetterEven
 		ErrorMessage: ev.ErrorMessage,
 		Attempts:     ev.Attempts,
 	}))
+}
+
+// IsPermanentDataError reports whether err was caused by the written data itself (SQLSTATE class 22 data
+// exception, 23 integrity violation, 54 program limit exceeded), so retrying the same write can never succeed.
+func IsPermanentDataError(err error) bool {
+	if errors.Is(err, ErrAlreadyExists) || errors.Is(err, ErrForeignKeyViolation) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || len(pgErr.Code) < 2 {
+		return false
+	}
+	switch pgErr.Code[:2] {
+	case "22", "23", "54":
+		return true
+	}
+	return false
 }
 
 func mapPgError(err error) error {

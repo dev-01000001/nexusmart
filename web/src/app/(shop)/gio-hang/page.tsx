@@ -36,7 +36,13 @@ import {
 } from "@/components";
 import { usePageStateParam, useRevealOnScroll } from "@/features/commerce/useRevealOnScroll";
 import { formatVoucherCondition, translateVoucherReason } from "@/features/checkout/messages";
-import { chunkSkuIds } from "@/lib/catalog-mapper";
+import {
+  buildActiveShopDiscountsMap,
+  buildLiveFlashItemsBySkuId,
+  chunkSkuIds,
+} from "@/lib/catalog-mapper";
+import { enrichProductsWithPromotions } from "@/lib/search-client";
+import { fetchMissingShopsClient } from "@/lib/shop-lookup";
 import {
   buildCalculateFeePayload,
   createManualVoucherPreviewFn,
@@ -121,6 +127,7 @@ function CartPageContent() {
 
   const previewReqSeq = useRef(0);
   const manualPromoSeqRef = useRef(0);
+  const resolvedShopIdsRef = useRef<Set<string>>(new Set());
 
   useRevealOnScroll(
     `${viewState ?? "live"}-${cartItems.length}-${shopGroups.length}-${isAuthenticated}`
@@ -131,23 +138,24 @@ function CartPageContent() {
     let active = true;
     const loadMeta = async () => {
       const [shopsRes, productsRes] = await Promise.allSettled([
-        api<PaginatedResponse<GatewayPublicShop>>("shops?page_size=50"),
-        api<PaginatedResponse<GatewayProduct>>("products?page_size=100"),
+        api<PaginatedResponse<GatewayPublicShop>>("shops?page_size=100", { retryOn401: false }),
+        api<PaginatedResponse<GatewayProduct>>("products?page_size=100", { retryOn401: false }),
       ]);
       if (!active) return;
       if (shopsRes.status === "fulfilled" && Array.isArray(shopsRes.value?.items)) {
         const map: Record<string, GatewayPublicShop> = {};
         for (const s of shopsRes.value.items) {
           map[s.id] = s;
+          resolvedShopIdsRef.current.add(s.id);
         }
-        setShopMetaById(map);
+        setShopMetaById((prev) => ({ ...prev, ...map }));
       }
       if (productsRes.status === "fulfilled" && Array.isArray(productsRes.value?.items)) {
         const map: Record<string, string> = {};
         for (const p of productsRes.value.items) {
           if (p.slug) map[p.id] = p.slug;
         }
-        setProductSlugById(map);
+        setProductSlugById((prev) => ({ ...prev, ...map }));
         setCatalogProducts(productsRes.value.items);
       }
     };
@@ -339,26 +347,81 @@ function CartPageContent() {
     effectiveSubtotalByShop,
   ]);
 
-  // Load real live flash sales & active shop discount programs for available SKUs in cart (batched <= 200)
+  const suggestedBaseProducts = useMemo(() => {
+    const inCartIds = new Set(cartItems.map((it) => it.productId));
+    const fresh = catalogProducts.filter((p) => !inCartIds.has(p.id));
+    return (fresh.length >= 4 ? fresh : catalogProducts).slice(0, 4);
+  }, [catalogProducts, cartItems]);
+
+  // §10-3: resolve any shop #101+ appearing in cart groups or suggested products via GET /shops/{id} (concurrency <= 8).
+  const displayedShopIdsKey = useMemo(() => {
+    const ids = Array.from(
+      new Set([...shopGroups.map((g) => g.shopId), ...suggestedBaseProducts.map((p) => p.shop_id)])
+    )
+      .filter(Boolean)
+      .sort();
+    return ids.join(",");
+  }, [shopGroups, suggestedBaseProducts]);
+
+  useEffect(() => {
+    if (!displayedShopIdsKey) return;
+    const candidateIds = displayedShopIdsKey.split(",").filter(Boolean);
+    const missing = candidateIds.filter(
+      (id) => !shopMetaById[id] && !resolvedShopIdsRef.current.has(id)
+    );
+    if (missing.length === 0) return;
+
+    let cancelled = false;
+    void fetchMissingShopsClient(missing, shopMetaById).then((resolved) => {
+      if (cancelled) return;
+      for (const id of missing) {
+        resolvedShopIdsRef.current.add(id);
+      }
+      if (Object.keys(resolved).length > 0) {
+        setShopMetaById((prev) => ({ ...prev, ...resolved }));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [displayedShopIdsKey, shopMetaById]);
+
+  // Load real live flash sales & active shop discount programs for cart SKUs + suggested strip SKUs (§10, batched <= 200)
   const cartSkuIds = useMemo(
     () =>
       Array.from(new Set(cartItems.filter((it) => !it.unavailable).map((it) => it.skuId))).sort(),
     [cartItems]
   );
+  const suggestedSkuIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          suggestedBaseProducts.flatMap((p) =>
+            (p.skus ?? []).filter((s) => s.is_active !== false && s.id).map((s) => s.id)
+          )
+        )
+      ).sort(),
+    [suggestedBaseProducts]
+  );
+  const promoSkuIds = useMemo(
+    () => Array.from(new Set([...cartSkuIds, ...suggestedSkuIds])).sort(),
+    [cartSkuIds, suggestedSkuIds]
+  );
+  const promoSkuIdsKey = promoSkuIds.join(",");
   const cartSkuIdsKey = cartSkuIds.join(",");
 
   useEffect(() => {
-    if (cartSkuIds.length === 0) {
+    if (promoSkuIds.length === 0) {
       setFlashSales([]);
       setActiveShopDiscountsBySkuId({});
       return;
     }
     let active = true;
     const loadPromos = async () => {
-      const slugBatches = chunkSkuIds(cartSkuIds, 100);
+      const slugBatches = cartSkuIds.length > 0 ? chunkSkuIds(cartSkuIds, 100) : [];
       const [fsRes, discRes, ...slugResults] = await Promise.allSettled([
-        api<GatewayFlashSalesResponse>("flash-sales?include_upcoming=true"),
-        fetchActiveShopDiscountsWithFetcher({ skuIds: cartSkuIds }, async (batch) => {
+        api<GatewayFlashSalesResponse>("flash-sales?include_upcoming=true", { retryOn401: false }),
+        fetchActiveShopDiscountsWithFetcher({ skuIds: promoSkuIds }, async (batch) => {
           const qs = new URLSearchParams();
           if (batch.skuIds && batch.skuIds.length > 0) {
             qs.set("sku_ids", batch.skuIds.join(","));
@@ -367,13 +430,15 @@ function CartPageContent() {
             qs.set("shop_id", batch.shopId);
           }
           const res = await api<GatewayActiveShopDiscountsResponse>(
-            `shop-discounts/active?${qs.toString()}`
+            `shop-discounts/active?${qs.toString()}`,
+            { retryOn401: false }
           );
           return Array.isArray(res?.discounts) ? res.discounts : [];
         }),
         ...slugBatches.map((batch) =>
           api<PaginatedResponse<GatewayProduct>>(
-            `products?sku_ids=${encodeURIComponent(batch.join(","))}&page=1&page_size=100`
+            `products?sku_ids=${encodeURIComponent(batch.join(","))}&page=1&page_size=100`,
+            { retryOn401: false }
           )
         ),
       ]);
@@ -406,7 +471,7 @@ function CartPageContent() {
     return () => {
       active = false;
     };
-  }, [cartSkuIdsKey, cartSkuIds]);
+  }, [promoSkuIdsKey, promoSkuIds, cartSkuIdsKey, cartSkuIds]);
 
   const promoBySkuId = useMemo(() => {
     const out: Record<
@@ -698,10 +763,10 @@ function CartPageContent() {
   }, [shopMetaById]);
 
   const suggestedProducts = useMemo(() => {
-    const inCartIds = new Set(cartItems.map((it) => it.productId));
-    const fresh = catalogProducts.filter((p) => !inCartIds.has(p.id));
-    return (fresh.length >= 4 ? fresh : catalogProducts).slice(0, 4);
-  }, [catalogProducts, cartItems]);
+    const liveFlashMap = buildLiveFlashItemsBySkuId(flashSales, Date.now());
+    const shopDiscMap = buildActiveShopDiscountsMap(Object.values(activeShopDiscountsBySkuId));
+    return enrichProductsWithPromotions(suggestedBaseProducts, liveFlashMap, shopDiscMap);
+  }, [suggestedBaseProducts, flashSales, activeShopDiscountsBySkuId]);
 
   const translatedWarnings = useMemo(() => {
     if (!preview?.warnings?.length) return [];

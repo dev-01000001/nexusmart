@@ -377,9 +377,9 @@ function MembershipPageContent() {
               <span className={`${shared.statusTag} ${shared.tonePos}`}>Hạng Bạc trở lên</span>
             </div>
             <p className={styles.bodyCopy}>
-              Hội viên từ hạng <strong>Bạc</strong> trở lên đã cập nhật ngày sinh được nhận tự động
-              túi vải rút Sợi Xanh Nexus trong giỏ hàng kèm mã giảm <strong>SINHNHAT50</strong>{" "}
-              (50.000₫ cho đơn từ 299.000₫).
+              Bản xem trước minh họa quyền lợi quà sinh nhật cho Hội viên từ hạng{" "}
+              <strong>Bạc</strong> trở lên đã cập nhật ngày sinh (chức năng hiện chưa phát hành mã
+              giảm giá thanh toán trên sàn).
             </p>
             <div className={shared.formGrid}>
               <div className={shared.field}>

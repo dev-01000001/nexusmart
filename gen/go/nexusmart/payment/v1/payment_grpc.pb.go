@@ -40,6 +40,7 @@ const (
 	PaymentService_GetPaymentMethodConfigs_FullMethodName   = "/nexusmart.payment.v1.PaymentService/GetPaymentMethodConfigs"
 	PaymentService_UpdatePaymentMethodConfig_FullMethodName = "/nexusmart.payment.v1.PaymentService/UpdatePaymentMethodConfig"
 	PaymentService_DecideRefundApproval_FullMethodName      = "/nexusmart.payment.v1.PaymentService/DecideRefundApproval"
+	PaymentService_AdjustCODShippingFee_FullMethodName      = "/nexusmart.payment.v1.PaymentService/AdjustCODShippingFee"
 )
 
 // PaymentServiceClient is the client API for PaymentService service.
@@ -67,6 +68,7 @@ type PaymentServiceClient interface {
 	GetPaymentMethodConfigs(ctx context.Context, in *GetPaymentMethodConfigsRequest, opts ...grpc.CallOption) (*GetPaymentMethodConfigsResponse, error)
 	UpdatePaymentMethodConfig(ctx context.Context, in *UpdatePaymentMethodConfigRequest, opts ...grpc.CallOption) (*UpdatePaymentMethodConfigResponse, error)
 	DecideRefundApproval(ctx context.Context, in *DecideRefundApprovalRequest, opts ...grpc.CallOption) (*DecideRefundApprovalResponse, error)
+	AdjustCODShippingFee(ctx context.Context, in *AdjustCODShippingFeeRequest, opts ...grpc.CallOption) (*AdjustCODShippingFeeResponse, error)
 }
 
 type paymentServiceClient struct {
@@ -287,6 +289,16 @@ func (c *paymentServiceClient) DecideRefundApproval(ctx context.Context, in *Dec
 	return out, nil
 }
 
+func (c *paymentServiceClient) AdjustCODShippingFee(ctx context.Context, in *AdjustCODShippingFeeRequest, opts ...grpc.CallOption) (*AdjustCODShippingFeeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdjustCODShippingFeeResponse)
+	err := c.cc.Invoke(ctx, PaymentService_AdjustCODShippingFee_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PaymentServiceServer is the server API for PaymentService service.
 // All implementations must embed UnimplementedPaymentServiceServer
 // for forward compatibility.
@@ -312,6 +324,7 @@ type PaymentServiceServer interface {
 	GetPaymentMethodConfigs(context.Context, *GetPaymentMethodConfigsRequest) (*GetPaymentMethodConfigsResponse, error)
 	UpdatePaymentMethodConfig(context.Context, *UpdatePaymentMethodConfigRequest) (*UpdatePaymentMethodConfigResponse, error)
 	DecideRefundApproval(context.Context, *DecideRefundApprovalRequest) (*DecideRefundApprovalResponse, error)
+	AdjustCODShippingFee(context.Context, *AdjustCODShippingFeeRequest) (*AdjustCODShippingFeeResponse, error)
 	mustEmbedUnimplementedPaymentServiceServer()
 }
 
@@ -384,6 +397,9 @@ func (UnimplementedPaymentServiceServer) UpdatePaymentMethodConfig(context.Conte
 }
 func (UnimplementedPaymentServiceServer) DecideRefundApproval(context.Context, *DecideRefundApprovalRequest) (*DecideRefundApprovalResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DecideRefundApproval not implemented")
+}
+func (UnimplementedPaymentServiceServer) AdjustCODShippingFee(context.Context, *AdjustCODShippingFeeRequest) (*AdjustCODShippingFeeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AdjustCODShippingFee not implemented")
 }
 func (UnimplementedPaymentServiceServer) mustEmbedUnimplementedPaymentServiceServer() {}
 func (UnimplementedPaymentServiceServer) testEmbeddedByValue()                        {}
@@ -784,6 +800,24 @@ func _PaymentService_DecideRefundApproval_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PaymentService_AdjustCODShippingFee_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdjustCODShippingFeeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).AdjustCODShippingFee(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_AdjustCODShippingFee_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).AdjustCODShippingFee(ctx, req.(*AdjustCODShippingFeeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PaymentService_ServiceDesc is the grpc.ServiceDesc for PaymentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -874,6 +908,10 @@ var PaymentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DecideRefundApproval",
 			Handler:    _PaymentService_DecideRefundApproval_Handler,
+		},
+		{
+			MethodName: "AdjustCODShippingFee",
+			Handler:    _PaymentService_AdjustCODShippingFee_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

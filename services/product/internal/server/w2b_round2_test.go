@@ -42,6 +42,16 @@ func TestW2B_Round2_AdminReviewProduct_IdempotentZeroStockHiddenDeletedAndTakedo
 	}
 	p1ID := p1Resp.GetProduct().GetId()
 
+	reviewedEvents := func() []store.OutboxEvent {
+		var out []store.OutboxEvent
+		for _, ev := range st.OutboxEvents() {
+			if ev.EventType == events.SubjectProductReviewed {
+				out = append(out, ev)
+			}
+		}
+		return out
+	}
+
 	rev1, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
 		ProductId: p1ID,
 		Decision:  productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_APPROVE,
@@ -49,9 +59,10 @@ func TestW2B_Round2_AdminReviewProduct_IdempotentZeroStockHiddenDeletedAndTakedo
 	if err != nil || rev1.GetProduct().GetStatus() != productv1.ProductStatus_PRODUCT_STATUS_APPROVED {
 		t.Fatalf("first APPROVE: resp=%+v err=%v", rev1, err)
 	}
-	if len(st.OutboxEvents()) != 1 {
-		t.Fatalf("after first APPROVE: expected 1 outbox event, got %d", len(st.OutboxEvents()))
+	if len(reviewedEvents()) != 1 {
+		t.Fatalf("after first APPROVE: expected 1 product.reviewed outbox event, got %d", len(reviewedEvents()))
 	}
+	outboxAfterFirstApprove := len(st.OutboxEvents())
 
 	rev1Dup, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
 		ProductId: p1ID,
@@ -60,13 +71,13 @@ func TestW2B_Round2_AdminReviewProduct_IdempotentZeroStockHiddenDeletedAndTakedo
 	if err != nil || rev1Dup.GetProduct().GetStatus() != productv1.ProductStatus_PRODUCT_STATUS_APPROVED {
 		t.Fatalf("duplicate APPROVE: resp=%+v err=%v", rev1Dup, err)
 	}
-	if len(st.OutboxEvents()) != 1 {
-		t.Fatalf("duplicate APPROVE MUST NOT emit extra product.reviewed event, got %d", len(st.OutboxEvents()))
+	if len(st.OutboxEvents()) != outboxAfterFirstApprove {
+		t.Fatalf("duplicate APPROVE MUST NOT emit extra outbox event, got %d (was %d)", len(st.OutboxEvents()), outboxAfterFirstApprove)
 	}
 
-	// 2. Admin takedown APPROVED -> REJECTED is allowed and emits 1 event.
+	// 2. Admin takedown APPROVED -> REJECTED is allowed and emits 1 product.reviewed event.
 	//    Re-rejecting with same reason is idempotent (0 extra events).
-	//    Re-rejecting with a new reason updates rejection_reason and emits 1 event.
+	//    Re-rejecting with a new reason updates rejection_reason and emits 1 product.reviewed event.
 	rej1, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
 		ProductId: p1ID,
 		Decision:  productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_REJECT,
@@ -75,9 +86,10 @@ func TestW2B_Round2_AdminReviewProduct_IdempotentZeroStockHiddenDeletedAndTakedo
 	if err != nil || rej1.GetProduct().GetStatus() != productv1.ProductStatus_PRODUCT_STATUS_REJECTED {
 		t.Fatalf("takedown APPROVED->REJECTED: resp=%+v err=%v", rej1, err)
 	}
-	if len(st.OutboxEvents()) != 2 {
-		t.Fatalf("after takedown REJECT: expected 2 outbox events, got %d", len(st.OutboxEvents()))
+	if len(reviewedEvents()) != 2 {
+		t.Fatalf("after takedown REJECT: expected 2 product.reviewed outbox events, got %d", len(reviewedEvents()))
 	}
+	outboxAfterRej1 := len(st.OutboxEvents())
 
 	rej1Same, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
 		ProductId: p1ID,
@@ -87,8 +99,8 @@ func TestW2B_Round2_AdminReviewProduct_IdempotentZeroStockHiddenDeletedAndTakedo
 	if err != nil || rej1Same.GetProduct().GetStatus() != productv1.ProductStatus_PRODUCT_STATUS_REJECTED {
 		t.Fatalf("duplicate REJECT same reason: resp=%+v err=%v", rej1Same, err)
 	}
-	if len(st.OutboxEvents()) != 2 {
-		t.Fatalf("duplicate REJECT with same reason MUST NOT emit extra event, got %d", len(st.OutboxEvents()))
+	if len(st.OutboxEvents()) != outboxAfterRej1 {
+		t.Fatalf("duplicate REJECT with same reason MUST NOT emit extra event, got %d (was %d)", len(st.OutboxEvents()), outboxAfterRej1)
 	}
 
 	rej1Diff, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
@@ -99,8 +111,8 @@ func TestW2B_Round2_AdminReviewProduct_IdempotentZeroStockHiddenDeletedAndTakedo
 	if err != nil || rej1Diff.GetProduct().GetRejectionReason() != "Thiếu chứng từ xuất xứ" {
 		t.Fatalf("REJECT with updated reason: resp=%+v err=%v", rej1Diff, err)
 	}
-	if len(st.OutboxEvents()) != 3 {
-		t.Fatalf("REJECT with different reason should emit event, got %d", len(st.OutboxEvents()))
+	if len(reviewedEvents()) != 3 {
+		t.Fatalf("REJECT with different reason should emit product.reviewed event, got %d", len(reviewedEvents()))
 	}
 
 	// 3. Approving PENDING product whose SKUs all have stock == 0 -> OUT_OF_STOCK (using syncProductStockStatus).
@@ -125,16 +137,18 @@ func TestW2B_Round2_AdminReviewProduct_IdempotentZeroStockHiddenDeletedAndTakedo
 	if revZero.GetProduct().GetStatus() != productv1.ProductStatus_PRODUCT_STATUS_OUT_OF_STOCK {
 		t.Fatalf("approving 0-stock product: want OUT_OF_STOCK, got %v", revZero.GetProduct().GetStatus())
 	}
-	if len(st.OutboxEvents()) != 4 {
-		t.Fatalf("after approving 0-stock product: expected 4 outbox events, got %d", len(st.OutboxEvents()))
+	revEvs := reviewedEvents()
+	if len(revEvs) != 4 {
+		t.Fatalf("after approving 0-stock product: expected 4 product.reviewed outbox events, got %d", len(revEvs))
 	}
 	var lastPayload events.ProductReviewedPayload
-	if err := json.Unmarshal(st.OutboxEvents()[3].PayloadJSON, &lastPayload); err != nil {
+	if err := json.Unmarshal(revEvs[3].PayloadJSON, &lastPayload); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
 	if lastPayload.ProductID != pZeroID || lastPayload.Decision != "APPROVE" {
 		t.Fatalf("unexpected outbox payload for 0-stock approval: %+v", lastPayload)
 	}
+	outboxAfterZeroApprove := len(st.OutboxEvents())
 
 	revZeroDup, err := srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
 		ProductId: pZeroID,
@@ -143,8 +157,8 @@ func TestW2B_Round2_AdminReviewProduct_IdempotentZeroStockHiddenDeletedAndTakedo
 	if err != nil || revZeroDup.GetProduct().GetStatus() != productv1.ProductStatus_PRODUCT_STATUS_OUT_OF_STOCK {
 		t.Fatalf("duplicate APPROVE on OUT_OF_STOCK: resp=%+v err=%v", revZeroDup, err)
 	}
-	if len(st.OutboxEvents()) != 4 {
-		t.Fatalf("duplicate APPROVE on OUT_OF_STOCK MUST NOT emit extra event, got %d", len(st.OutboxEvents()))
+	if len(st.OutboxEvents()) != outboxAfterZeroApprove {
+		t.Fatalf("duplicate APPROVE on OUT_OF_STOCK MUST NOT emit extra event, got %d (was %d)", len(st.OutboxEvents()), outboxAfterZeroApprove)
 	}
 
 	// 4. Seller-HIDDEN product: APPROVE MUST NOT re-open listing (returns FailedPrecondition, stays HIDDEN, 0 events).

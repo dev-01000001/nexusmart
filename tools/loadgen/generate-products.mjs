@@ -76,7 +76,7 @@ const IMAGE_BY_CATEGORY = {
   "ao-polo": "/products/ao-polo-pique-kem.png",
   "quan-short": "/products/quan-short-daily-be.png",
   "quan-jogger": "/products/quan-jogger-terry-xam.png",
-  "do-lot": "/products/do-lot-boxer-modal.png",
+  "do-lot": "/products/do-lot-boxer-modal-3.png",
   "tat-phu-kien": "/products/tat-cotton-co-trung-5.png",
 };
 

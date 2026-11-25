@@ -12,6 +12,7 @@ export default async function HomePage() {
       categories={data.categories}
       shops={data.shops}
       products={data.products}
+      totalProducts={data.totalProducts}
       flashSlots={data.flashSlots}
       serverNowMs={data.serverNowMs}
       error={data.error}

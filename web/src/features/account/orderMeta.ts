@@ -386,8 +386,69 @@ export function localizeRefundReason(raw: string | null | undefined): string {
   return trimmed;
 }
 
+const BUYER_UPDATED_ADDRESS_NOTE_RE =
+  /^buyer\s+updated\s+shipping\s+address(?:\s*\((.+)\))?(?:;\s*shipping\s+fee\s+adjusted\s+from\s+(\d+)\s+to\s+(\d+)\s+vnd)?$/i;
+
+export function isAddressUpdatedTimelineNote(rawNote: string | null | undefined): boolean {
+  return BUYER_UPDATED_ADDRESS_NOTE_RE.test((rawNote ?? "").trim());
+}
+
 function localizeCoreTimelineNote(trimmed: string): string {
   const lower = trimmed.toLowerCase();
+
+  // Buyer pre-pickup shipping address update notes (services/order/internal/store/store.go:381-392)
+  const buyerAddrMatch = BUYER_UPDATED_ADDRESS_NOTE_RE.exec(trimmed);
+  if (buyerAddrMatch) {
+    const loc = (buyerAddrMatch[1] ?? "").trim();
+    const oldFeeRaw = buyerAddrMatch[2];
+    const newFeeRaw = buyerAddrMatch[3];
+    const base = loc
+      ? `Người mua đã cập nhật địa chỉ nhận hàng (${loc})`
+      : "Người mua đã cập nhật địa chỉ nhận hàng";
+    if (oldFeeRaw !== undefined && newFeeRaw !== undefined) {
+      const oldFee = Number.parseInt(oldFeeRaw, 10);
+      const newFee = Number.parseInt(newFeeRaw, 10);
+      const oldText = Number.isFinite(oldFee) ? formatVnd(oldFee) : `${oldFeeRaw}₫`;
+      const newText = Number.isFinite(newFee) ? formatVnd(newFee) : `${newFeeRaw}₫`;
+      return `${base}; phí vận chuyển điều chỉnh từ ${oldText} sang ${newText}.`;
+    }
+    return `${base}.`;
+  }
+
+  // Shipment recreation / restoration notes after address update (services/order/internal/store/store.go:357-370)
+  const addrShipDoneMatch =
+    /^shipment\s+(recreation|restoration\s+to\s+the\s+original\s+address)\s+done\s+after\s+address\s+update(?:\s+was\s+rejected)?\s+via\s+([^\s(]+)(?:\s*\(tracking:\s*([^)]+)\))?$/i.exec(
+      trimmed
+    );
+  if (addrShipDoneMatch) {
+    const isRestore = addrShipDoneMatch[1].toLowerCase().startsWith("restoration");
+    const carrierName = formatCarrierLabel(addrShipDoneMatch[2]);
+    const track = (addrShipDoneMatch[3] ?? "").trim();
+    const prefix = isRestore
+      ? "Đã khôi phục vận đơn về địa chỉ cũ sau khi đổi địa chỉ bị từ chối"
+      : "Đã tạo lại vận đơn sau khi cập nhật địa chỉ";
+    return track
+      ? `${prefix} qua ${carrierName} (mã vận đơn: ${track}).`
+      : `${prefix} qua ${carrierName}.`;
+  }
+  if (lower === "shipment recreation queued for async retry after address update") {
+    return "Đang xếp hàng tạo lại vận đơn sau khi cập nhật địa chỉ.";
+  }
+  if (lower === "shipment recreation failed after address update; seller can recreate shipment") {
+    return "Tạo lại vận đơn sau khi cập nhật địa chỉ thất bại; gian hàng có thể tạo lại vận đơn.";
+  }
+  if (
+    lower ===
+    "shipment restoration to the original address queued for async retry after address update was rejected"
+  ) {
+    return "Đang xếp hàng khôi phục vận đơn về địa chỉ cũ sau khi đổi địa chỉ bị từ chối.";
+  }
+  if (
+    lower ===
+    "shipment restoration to the original address failed after address update was rejected; seller can recreate shipment"
+  ) {
+    return "Khôi phục vận đơn về địa chỉ cũ thất bại; gian hàng có thể tạo lại vận đơn.";
+  }
 
   // [SHIPMENT_STATUS] <inner note>
   const bracketStatusMatch = /^\[([A-Z0-9_]+)\]\s*(.+)$/.exec(trimmed);
@@ -917,7 +978,12 @@ export function canRequestRedelivery(
   return (shipment.redelivery_count ?? 0) < MAX_REDELIVERY_ATTEMPTS;
 }
 
-export function getTimelineEventTitle(ev: GatewayOrderTimelineEvent): string {
+export function getTimelineEventTitle(
+  ev: Pick<GatewayOrderTimelineEvent, "from_status" | "to_status" | "note">
+): string {
+  if (isAddressUpdatedTimelineNote(ev.note)) {
+    return "Đã cập nhật địa chỉ nhận hàng";
+  }
   const toStatus = ev.to_status;
   switch (toStatus) {
     case "PENDING":

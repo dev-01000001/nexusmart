@@ -502,8 +502,8 @@ describe("Wave 2b web features — unit tests", () => {
       "ShopHeader must fetch real /notifications unread count"
     );
     assert.ok(
-      headerSrc.includes("products?keyword=") || headerSrc.includes('"/products?'),
-      "ShopHeader instant search must query real /api/gw/products"
+      headerSrc.includes("fetchSearchSuggestClient") || headerSrc.includes("search/suggest"),
+      "ShopHeader instant search must query real /api/gw/search/suggest via SearchService"
     );
     assert.equal(
       headerSrc.includes("getInstantSearchSuggestions"),
@@ -894,7 +894,8 @@ describe("Wave 2b web features — unit tests", () => {
       "checkout helpers must check applied_shop_program_item_ids via isShopProgramItemApplied"
     );
     assert.ok(
-      cartSrc.includes("isShopProgramItemApplied") || cartSrc.includes("resolveDisplayedLinePricing"),
+      cartSrc.includes("isShopProgramItemApplied") ||
+        cartSrc.includes("resolveDisplayedLinePricing"),
       "/gio-hang must check applied_shop_program_item_ids (directly or via resolveDisplayedLinePricing)"
     );
 

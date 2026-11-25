@@ -142,7 +142,7 @@ export const MEMBERSHIP_TIERS: MembershipTier[] = [
     cashbackPercentLabel: "2%",
     perks: [
       "Hoàn 2% Xu dùng chéo cả 4 xưởng dệt, nhân đôi vào Thứ Sáu (4%).",
-      "Tự động nhận quà sinh nhật trong giỏ hàng và mã giảm SINHNHAT50 (50.000₫).",
+      "Quà sinh nhật minh họa theo hạng Hội viên (chưa phát hành mã giảm giá thanh toán).",
       "Ưu tiên suất đăng ký sớm các đợt Flash sale khung trưa.",
     ],
   },
@@ -154,7 +154,7 @@ export const MEMBERSHIP_TIERS: MembershipTier[] = [
     cashbackPercentLabel: "4%",
     perks: [
       "Hoàn 4% Xu mỗi đơn hoàn tất, nhân đôi Thứ Sáu lên tới 8%.",
-      "Mở khóa mã đặc quyền NEXUSVIP12 giảm 12% tối đa 90.000₫.",
+      "Đặc quyền ưu tiên chăm sóc khách hàng theo hạng (bản xem trước minh họa, chưa phát hành mã thanh toán).",
       "Miễn phí 1 lượt giao nhanh nội thành mỗi tháng tại TP.HCM, Hà Nội, Đà Nẵng.",
     ],
   },
@@ -200,12 +200,12 @@ export const GIFT_CARD_POLICY = {
 } as const;
 
 export const EDU_DISCOUNT_CONFIG = {
-  voucherCode: "EDU15",
+  voucherCode: "(xem trước)",
   discountPercent: 15,
   maxDiscountVnd: 50000,
   minOrderVnd: 199000,
   allowedDomains: [".edu", ".edu.vn"],
-  note: "Xác thực email sinh viên đuôi .edu hoặc .edu.vn để mở khóa ngay mã EDU15 giảm 15% (tối đa 50.000₫) cho đơn từ 199.000₫.",
+  note: "Bản xem trước tính năng xác thực email sinh viên đuôi .edu hoặc .edu.vn (hiện chưa phát hành mã giảm giá thanh toán trên sàn).",
 } as const;
 
 export function getTierBySpend(spend4Q: number): MembershipTier {

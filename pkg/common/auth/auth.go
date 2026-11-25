@@ -74,6 +74,7 @@ var internalRPCs = map[string]bool{
 	"/nexusmart.product.v1.ProductService/ConfirmStock":                   true,
 	"/nexusmart.product.v1.ProductService/RestockOrderItems":              true,
 	"/nexusmart.product.v1.ProductService/GetCategoryDescendants":         true,
+	"/nexusmart.product.v1.ProductService/ListProductsForIndex":           true,
 	"/nexusmart.product.v1.ProductService/CreateCategory":                 false,
 	"/nexusmart.product.v1.ProductService/UpdateCategory":                 false,
 	"/nexusmart.product.v1.ProductService/DeleteCategory":                 false,
@@ -93,6 +94,11 @@ var internalRPCs = map[string]bool{
 	"/nexusmart.product.v1.ProductService/DeleteBannedKeyword":            false,
 	"/nexusmart.product.v1.ProductService/PreviewBannedKeyword":           false,
 	"/nexusmart.product.v1.ProductService/RescanProductsForBannedContent": false,
+	"/nexusmart.product.v1.ProductService/ListStockHistory":               false,
+	"/nexusmart.product.v1.ProductService/CreateProductImportJob":         false,
+	"/nexusmart.product.v1.ProductService/GetProductImportJob":            false,
+	"/nexusmart.product.v1.ProductService/ListProductImportRows":          false,
+	"/nexusmart.product.v1.ProductService/ConfirmProductImportJob":        false,
 	// CartService (all RPCs require forwarded end-user JWT)
 	"/nexusmart.cart.v1.CartService/GetCart":       false,
 	"/nexusmart.cart.v1.CartService/AddItem":       false,
@@ -120,7 +126,7 @@ var internalRPCs = map[string]bool{
 	"/nexusmart.promotion.v1.PromotionService/ListShopDiscountPrograms":  false,
 	"/nexusmart.promotion.v1.PromotionService/GetCoinBalance":            false,
 	"/nexusmart.promotion.v1.PromotionService/PreviewDiscounts":          false,
-	// OrderService (all RPCs require authentication)
+	// OrderService (public: LookupOrder)
 	"/nexusmart.order.v1.OrderService/MarkPaymentResult":       true,
 	"/nexusmart.order.v1.OrderService/CreateCheckout":          false,
 	"/nexusmart.order.v1.OrderService/GetOrder":                false,
@@ -144,12 +150,15 @@ var internalRPCs = map[string]bool{
 	"/nexusmart.order.v1.OrderService/GetPlatformReport":       false,
 	"/nexusmart.order.v1.OrderService/ListOrdersNeedingReview": false,
 	"/nexusmart.order.v1.OrderService/ResolveOrderReview":      false,
+	"/nexusmart.order.v1.OrderService/UpdateOrderAddress":      false,
+	"/nexusmart.order.v1.OrderService/BatchShipOrders":         false,
+	"/nexusmart.order.v1.OrderService/GetPickingList":          false,
 	// ShippingService (public: ListProvinces, ListWards, MapLegacyAddress, CalculateFee)
 	"/nexusmart.shipping.v1.ShippingService/GetShipment":                true,
 	"/nexusmart.shipping.v1.ShippingService/CancelShipment":             true,
 	"/nexusmart.shipping.v1.ShippingService/CreateReturnShipment":       true,
 	"/nexusmart.shipping.v1.ShippingService/GetShopShippingSettings":    true,
-	"/nexusmart.shipping.v1.ShippingService/CreateShipment":             false,
+	"/nexusmart.shipping.v1.ShippingService/CreateShipment":             true, // G3: seller owner, orders.review.resolve, or order-service token for UC-B26 recreation
 	"/nexusmart.shipping.v1.ShippingService/RequestRedelivery":          false,
 	"/nexusmart.shipping.v1.ShippingService/UpdateShopShippingSettings": false,
 	"/nexusmart.shipping.v1.ShippingService/AdminListCarriers":          false,
@@ -160,6 +169,12 @@ var internalRPCs = map[string]bool{
 	"/nexusmart.notification.v1.NotificationService/MarkRead":          false,
 	"/nexusmart.notification.v1.NotificationService/GetPreferences":    false,
 	"/nexusmart.notification.v1.NotificationService/UpdatePreferences": false,
+	// SearchService (public: SearchProducts, Suggest)
+	"/nexusmart.search.v1.SearchService/HybridSearch":        true,
+	"/nexusmart.search.v1.SearchService/ReindexAll":          true,
+	"/nexusmart.search.v1.SearchService/GetReindexStatus":    true,
+	"/nexusmart.search.v1.SearchService/ListSearchHistory":   false,
+	"/nexusmart.search.v1.SearchService/DeleteSearchHistory": false,
 }
 
 // publicRPCs are Go service RPCs explicitly permitted for anonymous callers
@@ -184,10 +199,13 @@ var publicRPCs = map[string]bool{
 	"/nexusmart.promotion.v1.PromotionService/ListAvailableVouchers":   true,
 	"/nexusmart.promotion.v1.PromotionService/ListActiveFlashSales":    true,
 	"/nexusmart.promotion.v1.PromotionService/ListActiveShopDiscounts": true,
+	"/nexusmart.order.v1.OrderService/LookupOrder":                     true,
 	"/nexusmart.shipping.v1.ShippingService/ListProvinces":             true,
 	"/nexusmart.shipping.v1.ShippingService/ListWards":                 true,
 	"/nexusmart.shipping.v1.ShippingService/MapLegacyAddress":          true,
 	"/nexusmart.shipping.v1.ShippingService/CalculateFee":              true,
+	"/nexusmart.search.v1.SearchService/SearchProducts":                true,
+	"/nexusmart.search.v1.SearchService/Suggest":                       true,
 }
 
 var (

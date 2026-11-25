@@ -18,18 +18,19 @@ use crate::domain::{
     decide_zalopay_window_exhausted, find_cod_carrier_mismatch, format_seller_ledger_description,
     format_settlement_note_with_masked_account, is_online_method,
     is_payment_already_cancelled_terminal, late_payment_refund_key, normalize_cod_carrier_code,
-    order_cancel_refund_key, order_expiry_candidate_indices, plan_initial_payment,
-    reconciliation_overpay_key, reconciliation_provider_matches_method, reconciliation_refund_key,
-    resolve_cod_payment_status, select_payment_for_group_action,
-    should_require_large_refund_approval, utc_to_vn_date, validate_allocations_sum,
-    validate_cod_reconciliation_rows, validate_group_can_create_payment,
-    validate_payment_idempotency_match, validate_payment_method_eligibility,
-    validate_reconciliation_provider_tx_accountable, validate_refund_bank_account,
-    validate_refund_eligibility, validate_refund_idempotency_match,
+    order_cancel_refund_key, order_expiry_candidate_indices, plan_cod_shipping_fee_adjustment,
+    plan_initial_payment, reconciliation_overpay_key, reconciliation_provider_matches_method,
+    reconciliation_refund_key, resolve_cod_payment_status, select_payment_for_group_action,
+    should_require_large_refund_approval, utc_to_vn_date, validate_adjust_cod_shipping_fee_input,
+    validate_allocations_sum, validate_cod_fee_adjustment_replay, validate_cod_reconciliation_rows,
+    validate_group_can_create_payment, validate_payment_idempotency_match,
+    validate_payment_method_eligibility, validate_reconciliation_provider_tx_accountable,
+    validate_refund_bank_account, validate_refund_eligibility, validate_refund_idempotency_match,
     validate_resolve_reconciliation_idempotency_match, validate_set_fee_config,
     validate_settle_refund_idempotency_match, validate_suborder_refund_cap,
     validate_supersede_previous_payments, validate_update_payment_method_config, vn_day_utc_bounds,
-    vn_today, zalopay_late_sweep_backoff, AssignAmountSplit, CodAllocationMatchDecision,
+    vn_today, zalopay_late_sweep_backoff, AdjustCodShippingFeeInput, AdjustCodShippingFeeOutput,
+    AssignAmountSplit, CodAllocationMatchDecision, CodFeeAdjustmentRecord,
     CodReconciliationRowInput, CreatePaymentInput, CreateRefundInput, CreateRefundOutput,
     DecideRefundApprovalInput, GetFeeConfigFilter, GetFeeConfigResult, GroupPaymentSelection,
     ImportCodReconciliationInput, ListReconciliationQueueResult, ListReconciliationRunsFilter,
@@ -41,7 +42,7 @@ use crate::domain::{
     ResolveReconciliationInput, ResolveReconciliationOutput, ReturnAllocationAction,
     SellerLedgerAccountFilter, SellerLedgerEntryRecord, SellerPayoutRecord, SetFeeConfigInput,
     SettleRefundInput, SettleRefundOutput, ShopAllocationRecord, SubmitRefundBankAccountInput,
-    UpdatePaymentMethodConfigInput, ZaloPayWindowExhaustedDecision,
+    UpdatePaymentMethodConfigInput, ZaloPayWindowExhaustedDecision, ERR_COD_ALREADY_COLLECTED,
     PROVIDER_FINAL_STATUS_AMOUNT_MISMATCH, PROVIDER_FINAL_STATUS_LATE_REFUND_QUEUED,
     PROVIDER_FINAL_STATUS_MANUAL_REVIEW, PROVIDER_FINAL_STATUS_NOT_PAID,
     PROVIDER_FINAL_STATUS_PAID_CONFIRMED, REFUND_PROVIDER_STATUS_FAILED,
@@ -933,6 +934,222 @@ impl PaymentService {
         Ok(PaymentWithAllocations {
             payment,
             allocations,
+        })
+    }
+
+    /// Adjusts `shipping_fee_vnd` (increase or decrease) on a single sub-order's uncollected COD
+    /// allocation (`payment.method == "COD"`, `payment.status == "pending"`,
+    /// `allocation.escrow_status == "awaiting_collection"`) and recomputes parent `payments.amount_vnd`
+    /// over all non-cancelled allocations in a single ACID transaction with zero ledger postings (G2).
+    pub async fn adjust_cod_shipping_fee(
+        &self,
+        input: AdjustCodShippingFeeInput,
+    ) -> Result<AdjustCodShippingFeeOutput> {
+        let (order_id, idempotency_key) = validate_adjust_cod_shipping_fee_input(
+            &input.order_id,
+            &input.idempotency_key,
+            input.new_shipping_fee_vnd,
+        )?;
+
+        let mut tx = self.pool.begin().await?;
+
+        if let Some(existing) = fetch_cod_fee_adjustment_by_key_tx(&mut tx, idempotency_key).await?
+        {
+            let out = build_cod_adjustment_replay_tx(
+                &mut tx,
+                &existing,
+                order_id,
+                input.new_shipping_fee_vnd,
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(out);
+        }
+
+        let group_keys: Option<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT p.order_id, p.order_group_id
+            FROM payments p
+            LEFT JOIN payment_shop_allocations a ON a.payment_id = p.id
+            WHERE a.order_id = $1 OR p.order_id = $1
+            ORDER BY
+                CASE p.status
+                    WHEN 'succeeded' THEN 1
+                    WHEN 'pending' THEN 2
+                    ELSE 3
+                END,
+                p.created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(order_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let Some((pay_order_id, pay_group_id)) = group_keys else {
+            return Err(PaymentError::NotFound(format!(
+                "payment not found for order {order_id}"
+            )));
+        };
+
+        // Lock checkout payment group in deterministic `ORDER BY id ASC FOR UPDATE` order
+        // (matching `collect_cod_order_allocations_tx` / `order.delivered` to prevent deadlocks).
+        let mut group = lock_payment_group_tx(&mut tx, &pay_order_id, &pay_group_id).await?;
+        if select_payment_for_group_action(&group) == GroupPaymentSelection::AllSupersededRetry {
+            group = lock_payment_group_tx(&mut tx, &pay_order_id, &pay_group_id).await?;
+        }
+        let payment = match select_payment_for_group_action(&group) {
+            GroupPaymentSelection::Found(idx) => group.swap_remove(idx),
+            GroupPaymentSelection::Empty => {
+                return Err(PaymentError::NotFound(format!(
+                    "payment not found for order {order_id}"
+                )));
+            }
+            GroupPaymentSelection::AllSupersededRetry => {
+                return Err(PaymentError::FailedPrecondition(format!(
+                    "{ERR_COD_ALREADY_COLLECTED}: payment was superseded"
+                )));
+            }
+        };
+
+        // Re-check idempotency after acquiring the payment row lock so concurrent duplicate calls
+        // serialize cleanly into `already_applied = true` even if `order.delivered` followed.
+        if let Some(existing) = fetch_cod_fee_adjustment_by_key_tx(&mut tx, idempotency_key).await?
+        {
+            let out = build_cod_adjustment_replay_tx(
+                &mut tx,
+                &existing,
+                order_id,
+                input.new_shipping_fee_vnd,
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(out);
+        }
+
+        let locked_allocs = sqlx::query_as::<_, ShopAllocationRecord>(
+            r#"
+            SELECT * FROM payment_shop_allocations
+            WHERE payment_id = $1
+            ORDER BY id ASC
+            FOR UPDATE
+            "#,
+        )
+        .bind(payment.id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let plan = plan_cod_shipping_fee_adjustment(
+            &payment,
+            &locked_allocs,
+            order_id,
+            input.new_shipping_fee_vnd,
+        )?;
+
+        sqlx::query(
+            r#"
+            UPDATE payment_shop_allocations
+            SET shipping_fee_vnd = $1
+            WHERE id = $2
+            "#,
+        )
+        .bind(plan.new_shipping_fee_vnd)
+        .bind(plan.allocation_id)
+        .execute(&mut *tx)
+        .await?;
+
+        let updated_payment = sqlx::query_as::<_, PaymentRecord>(
+            r#"
+            UPDATE payments
+            SET amount_vnd = $1, updated_at = NOW()
+            WHERE id = $2
+            RETURNING *
+            "#,
+        )
+        .bind(plan.new_payment_amount_vnd)
+        .bind(payment.id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let adj_insert = sqlx::query(
+            r#"
+            INSERT INTO cod_fee_adjustments (
+                idempotency_key, payment_id, order_id,
+                old_shipping_fee_vnd, new_shipping_fee_vnd, new_order_payable_vnd
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+        )
+        .bind(idempotency_key)
+        .bind(payment.id)
+        .bind(order_id)
+        .bind(plan.old_shipping_fee_vnd)
+        .bind(plan.new_shipping_fee_vnd)
+        .bind(plan.new_order_payable_vnd)
+        .execute(&mut *tx)
+        .await;
+
+        if let Err(err) = adj_insert {
+            if is_unique_violation(&err, "idempotency_key") {
+                let _ = tx.rollback().await;
+                if let Some(existing) = sqlx::query_as::<_, CodFeeAdjustmentRecord>(
+                    "SELECT * FROM cod_fee_adjustments WHERE idempotency_key = $1",
+                )
+                .bind(idempotency_key)
+                .fetch_optional(&self.pool)
+                .await?
+                {
+                    validate_cod_fee_adjustment_replay(
+                        &existing,
+                        order_id,
+                        input.new_shipping_fee_vnd,
+                    )?;
+                    let replay_payment =
+                        sqlx::query_as::<_, PaymentRecord>("SELECT * FROM payments WHERE id = $1")
+                            .bind(existing.payment_id)
+                            .fetch_one(&self.pool)
+                            .await?;
+                    let replay_allocs =
+                        fetch_allocations_pool(&self.pool, replay_payment.id).await?;
+                    return Ok(AdjustCodShippingFeeOutput {
+                        payment: PaymentWithAllocations {
+                            payment: replay_payment,
+                            allocations: replay_allocs,
+                        },
+                        old_shipping_fee_vnd: existing.old_shipping_fee_vnd,
+                        new_shipping_fee_vnd: existing.new_shipping_fee_vnd,
+                        new_order_payable_vnd: existing.new_order_payable_vnd,
+                        already_applied: true,
+                    });
+                }
+            }
+            return Err(PaymentError::Database(err));
+        }
+
+        let allocations = fetch_allocations_tx(&mut tx, updated_payment.id).await?;
+        tx.commit().await?;
+        self.emit_sse(&updated_payment);
+
+        info!(
+            trace_id = %input.trace_id,
+            payment_id = %updated_payment.id,
+            order_id = %order_id,
+            old_shipping_fee_vnd = plan.old_shipping_fee_vnd,
+            new_shipping_fee_vnd = plan.new_shipping_fee_vnd,
+            new_order_payable_vnd = plan.new_order_payable_vnd,
+            new_payment_amount_vnd = updated_payment.amount_vnd,
+            "adjusted uncollected COD shipping fee (0 ledger postings)"
+        );
+
+        Ok(AdjustCodShippingFeeOutput {
+            payment: PaymentWithAllocations {
+                payment: updated_payment,
+                allocations,
+            },
+            old_shipping_fee_vnd: plan.old_shipping_fee_vnd,
+            new_shipping_fee_vnd: plan.new_shipping_fee_vnd,
+            new_order_payable_vnd: plan.new_order_payable_vnd,
+            already_applied: false,
         })
     }
 
@@ -9394,6 +9611,43 @@ async fn record_late_payment_refund_tx(
 
     // R3 / PAY-B6: Never emit payment.succeeded or payment.refunded for late/superseded payments.
     Ok(())
+}
+
+async fn fetch_cod_fee_adjustment_by_key_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    idempotency_key: &str,
+) -> Result<Option<CodFeeAdjustmentRecord>> {
+    let row = sqlx::query_as::<_, CodFeeAdjustmentRecord>(
+        "SELECT * FROM cod_fee_adjustments WHERE idempotency_key = $1",
+    )
+    .bind(idempotency_key)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row)
+}
+
+async fn build_cod_adjustment_replay_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    existing: &CodFeeAdjustmentRecord,
+    order_id: &str,
+    new_shipping_fee_vnd: i64,
+) -> Result<AdjustCodShippingFeeOutput> {
+    validate_cod_fee_adjustment_replay(existing, order_id, new_shipping_fee_vnd)?;
+    let payment = sqlx::query_as::<_, PaymentRecord>("SELECT * FROM payments WHERE id = $1")
+        .bind(existing.payment_id)
+        .fetch_one(&mut **tx)
+        .await?;
+    let allocations = fetch_allocations_tx(tx, payment.id).await?;
+    Ok(AdjustCodShippingFeeOutput {
+        payment: PaymentWithAllocations {
+            payment,
+            allocations,
+        },
+        old_shipping_fee_vnd: existing.old_shipping_fee_vnd,
+        new_shipping_fee_vnd: existing.new_shipping_fee_vnd,
+        new_order_payable_vnd: existing.new_order_payable_vnd,
+        already_applied: true,
+    })
 }
 
 async fn fetch_allocations_pool(

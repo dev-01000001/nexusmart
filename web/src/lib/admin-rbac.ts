@@ -120,6 +120,7 @@ export const CAPABILITY_MATRIX = {
   "payment_methods.read": ["super_admin", "admin", "accountant", "ops"],
   "payment_methods.write": ["super_admin", "admin", "ops"],
   "approvals.read": ["super_admin", "admin", "moderator", "cskh", "accountant", "ops"],
+  "search.reindex": ["super_admin", "admin", "ops"],
 } as const satisfies Record<string, readonly AdminStaffRole[]>;
 
 export type AdminCapability = keyof typeof CAPABILITY_MATRIX;

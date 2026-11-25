@@ -483,6 +483,23 @@ message DecideRefundApprovalResponse {
   Refund refund = 1;
 }
 
+// Adjusts the shipping fee (increase or decrease) on a single sub-order's uncollected COD allocation
+// (escrow_status = awaiting_collection, payment status = pending, method = COD).
+// Restricted strictly to order-service token; prepaid surcharges are explicitly out of scope (G2).
+message AdjustCODShippingFeeRequest {
+  string order_id = 1;
+  int64 new_shipping_fee_vnd = 2;
+  string idempotency_key = 3;
+}
+
+message AdjustCODShippingFeeResponse {
+  Payment payment = 1;
+  int64 old_shipping_fee_vnd = 2;
+  int64 new_shipping_fee_vnd = 3;
+  int64 new_order_payable_vnd = 4;
+  bool already_applied = 5;
+}
+
 service PaymentService {
   rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentResponse);
   rpc GetPayment(GetPaymentRequest) returns (GetPaymentResponse);
@@ -505,4 +522,5 @@ service PaymentService {
   rpc GetPaymentMethodConfigs(GetPaymentMethodConfigsRequest) returns (GetPaymentMethodConfigsResponse);
   rpc UpdatePaymentMethodConfig(UpdatePaymentMethodConfigRequest) returns (UpdatePaymentMethodConfigResponse);
   rpc DecideRefundApproval(DecideRefundApprovalRequest) returns (DecideRefundApprovalResponse);
+  rpc AdjustCODShippingFee(AdjustCODShippingFeeRequest) returns (AdjustCODShippingFeeResponse);
 }

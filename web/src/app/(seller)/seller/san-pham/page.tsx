@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type {
@@ -10,23 +10,45 @@ import type {
   GatewaySKU,
   PaginatedResponse,
 } from "@/lib/gateway-types";
-import { ApiError, api, getErrorMessage } from "@/lib/api";
+import { ApiError, api, apiBlob, getErrorMessage } from "@/lib/api";
+import {
+  IMPORT_JOB_STATUS_META,
+  IMPORT_ROW_STATUS_META,
+  MAX_IMPORT_CSV_ROWS,
+  SELLER_PRODUCTS_PAGE_SIZE,
+  SELLER_PRODUCT_TAB_FILTER_KEYS,
+  STOCK_HISTORY_CHANGE_META,
+  STOCK_HISTORY_PAGE_SIZE,
+  buildSellerProductsQuery,
+  buildStockHistoryQuery,
+  createInitialSellerProductTabCounts,
+  formatSellerProductsHeaderSummary,
+  formatStockHistoryReason,
+  isImportJobPollingStatus,
+  resolveClampedPageOnEmpty,
+  settleSellerProductTabCounts,
+  shouldResetImportJobOnModalOpen,
+  translateProductImportError,
+  translateProductImportJobError,
+  translateProductImportRowError,
+  validateImportCsvFile,
+  type ConfirmProductImportJobResponse,
+  type ProductImportJob,
+  type ProductImportJobResponse,
+  type ProductImportRow,
+  type SellerProductFilterKey,
+  type SellerProductTabCounts,
+  type StockHistoryItem,
+} from "@/lib/a8-types";
 import { useMockStore } from "@/mock/MockStoreContext";
 import { Button, IconPlus, IconSearch, StateView } from "@/components";
-import { formatInt, formatVnd } from "@/lib/format";
+import { formatDateTimeVi, formatInt, formatSignedInt, formatVnd } from "@/lib/format";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { SellerShopGate } from "@/features/seller/SellerContext";
 import { getProductCoverImage, getProductStatusMeta } from "@/features/seller/types";
 import { parseUiState } from "@/features/seller/sellerStore";
 import common from "@/features/seller/SellerCommon.module.css";
 import styles from "./page.module.css";
-
-type ProductFilterKey = "all" | "APPROVED" | "PENDING" | "REJECTED" | "HIDDEN" | "LOW_OOS";
-
-function isLowOrOutProduct(p: GatewayProduct): boolean {
-  if (p.status === "OUT_OF_STOCK") return true;
-  return (p.skus ?? []).some((s) => s.is_active && s.available_stock <= 5);
-}
 
 function formatPriceRange(p: GatewayProduct): string {
   const minP = p.min_price_vnd;
@@ -35,27 +57,70 @@ function formatPriceRange(p: GatewayProduct): string {
   return `${formatVnd(minP)} - ${formatVnd(maxP)}`;
 }
 
+function buildPageNumbers(current: number, totalPages: number): Array<number | "ellipsis"> {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+  const pages: Array<number | "ellipsis"> = [1];
+  const start = Math.max(2, current - 1);
+  const end = Math.min(totalPages - 1, current + 1);
+  if (start > 2) pages.push("ellipsis");
+  for (let p = start; p <= end; p += 1) pages.push(p);
+  if (end < totalPages - 1) pages.push("ellipsis");
+  pages.push(totalPages);
+  return pages;
+}
+
+function triggerBlobDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function tonePillCls(tone: "neutral" | "warn" | "pos" | "neg"): string {
+  if (tone === "pos") return `${common.pill} ${common.pillPos}`;
+  if (tone === "warn") return `${common.pill} ${common.pillWarn}`;
+  if (tone === "neg") return `${common.pill} ${common.pillNeg}`;
+  return common.pill;
+}
+
 function SellerProductsInner({ shop }: { shop: GatewayShop }) {
   const searchParams = useSearchParams();
   const uiState = parseUiState(searchParams.get("state"));
   const rawFilter = searchParams.get("filter");
-  const normalizedInitialFilter: ProductFilterKey =
-    rawFilter === "low" || rawFilter === "oos" || rawFilter === "LOW_OOS"
+  const normalizedInitialFilter: SellerProductFilterKey =
+    rawFilter === "low" ||
+    rawFilter === "oos" ||
+    rawFilter === "LOW_OOS" ||
+    rawFilter === "OUT_OF_STOCK"
       ? "LOW_OOS"
       : rawFilter && ["all", "APPROVED", "PENDING", "REJECTED", "HIDDEN"].includes(rawFilter)
-        ? (rawFilter as ProductFilterKey)
+        ? (rawFilter as SellerProductFilterKey)
         : "all";
 
   const { showToast } = useMockStore();
 
+  // Main server-paginated product list state (S03/G8)
   const [products, setProducts] = useState<GatewayProduct[]>([]);
+  const [totalProducts, setTotalProducts] = useState(0);
+  const [page, setPage] = useState(1);
   const [categories, setCategories] = useState<GatewayCategory[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [conflictNotice, setConflictNotice] = useState<string | null>(null);
 
-  const [filter, setFilter] = useState<ProductFilterKey>(normalizedInitialFilter);
-  const [query, setQuery] = useState("");
+  const [tabCounts, setTabCounts] = useState<SellerProductTabCounts>(
+    createInitialSellerProductTabCounts
+  );
+
+  const [filter, setFilter] = useState<SellerProductFilterKey>(normalizedInitialFilter);
+  const [queryInput, setQueryInput] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
 
   const [expandedProductIds, setExpandedProductIds] = useState<Record<string, boolean>>({});
@@ -64,38 +129,298 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    setErrorMsg(null);
-    try {
-      const [prodRes, catRes] = await Promise.all([
-        api<PaginatedResponse<GatewayProduct>>("seller/products?page=1&page_size=100"),
-        api<{ categories: GatewayCategory[] }>("categories").catch(() => ({ categories: [] })),
-      ]);
-      const items = prodRes.items ?? [];
-      setProducts(items);
-      setCategories(catRes.categories ?? []);
-      setStockDrafts(() => {
-        const next: Record<string, string> = {};
-        for (const p of items) {
-          for (const s of p.skus ?? []) {
-            next[s.id] = String(s.stock);
-          }
-        }
-        return next;
+  // S03 Stock History Drawer state
+  const [historyTarget, setHistoryTarget] = useState<{
+    product: GatewayProduct;
+    sku: GatewaySKU;
+  } | null>(null);
+  const [historyItems, setHistoryItems] = useState<StockHistoryItem[]>([]);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyChangeType, setHistoryChangeType] = useState("all");
+  const [historyFromDate, setHistoryFromDate] = useState("");
+  const [historyToDate, setHistoryToDate] = useState("");
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+
+  // UC-S13 2-Step CSV Import Modal state (G6)
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [importCategoryId, setImportCategoryId] = useState("all");
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importFileError, setImportFileError] = useState<string | null>(null);
+  const [importUploading, setImportUploading] = useState(false);
+  const [downloadingTemplate, setDownloadingTemplate] = useState(false);
+  const [downloadingErrors, setDownloadingErrors] = useState(false);
+  const [confirmingImport, setConfirmingImport] = useState(false);
+  const [importJob, setImportJob] = useState<ProductImportJob | null>(null);
+  const [importActionError, setImportActionError] = useState<string | null>(null);
+  const [importErrorRows, setImportErrorRows] = useState<ProductImportRow[]>([]);
+  const [importErrorTotal, setImportErrorTotal] = useState(0);
+  const [importErrorPage, setImportErrorPage] = useState(1);
+  const [importErrorLoading, setImportErrorLoading] = useState(false);
+  const importFileInputRef = useRef<HTMLInputElement | null>(null);
+  const completedRefreshedJobIdRef = useRef<string | null>(null);
+  const productsLoadSeqRef = useRef(0);
+  const historyLoadSeqRef = useRef(0);
+  const tabCountsLoadSeqRef = useRef(0);
+
+  // Debounce keyword search
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedQuery(queryInput.trim());
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [queryInput]);
+
+  // Load categories once
+  useEffect(() => {
+    if (uiState) return;
+    let active = true;
+    void api<{ categories: GatewayCategory[] }>("categories")
+      .then((res) => {
+        if (active) setCategories(res.categories ?? []);
+      })
+      .catch(() => {
+        if (active) setCategories([]);
       });
-    } catch (err) {
-      setErrorMsg(getErrorMessage(err, "Không thể tải danh sách sản phẩm lúc này."));
-    } finally {
-      setLoading(false);
-    }
+    return () => {
+      active = false;
+    };
+  }, [uiState]);
+
+  const loadTabCounts = useCallback(async () => {
+    const seq = ++tabCountsLoadSeqRef.current;
+    const results = await Promise.allSettled(
+      SELLER_PRODUCT_TAB_FILTER_KEYS.map((key) => {
+        const qs = buildSellerProductsQuery({ page: 1, pageSize: 1, filter: key });
+        return api<PaginatedResponse<GatewayProduct>>(`seller/products?${qs}`).then((res) =>
+          Math.max(0, Math.trunc(res.total ?? res.items?.length ?? 0))
+        );
+      })
+    );
+    if (seq !== tabCountsLoadSeqRef.current) return;
+    setTabCounts(
+      settleSellerProductTabCounts(
+        SELLER_PRODUCT_TAB_FILTER_KEYS.map((key, idx) => ({
+          key,
+          result: results[idx],
+        }))
+      )
+    );
   }, []);
+
+  const loadProducts = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      const seq = ++productsLoadSeqRef.current;
+      if (!opts?.silent) {
+        setLoading(true);
+      }
+      setErrorMsg(null);
+      try {
+        const qs = buildSellerProductsQuery({
+          page,
+          pageSize: SELLER_PRODUCTS_PAGE_SIZE,
+          filter,
+          categoryId: categoryFilter,
+          keyword: debouncedQuery,
+        });
+        const prodRes = await api<PaginatedResponse<GatewayProduct>>(`seller/products?${qs}`);
+        if (seq !== productsLoadSeqRef.current) return;
+        const items = prodRes.items ?? [];
+        const resolvedTotal = Math.max(0, Math.trunc(prodRes.total ?? items.length));
+        const clampedPage = resolveClampedPageOnEmpty(
+          page,
+          items.length,
+          resolvedTotal,
+          SELLER_PRODUCTS_PAGE_SIZE
+        );
+        if (clampedPage !== null) {
+          setTotalProducts(resolvedTotal);
+          setPage(clampedPage);
+          return;
+        }
+        setProducts(items);
+        setTotalProducts(resolvedTotal);
+        if (categoryFilter === "all" && !debouncedQuery) {
+          setTabCounts((prev) => ({ ...prev, [filter]: resolvedTotal }));
+        }
+        setStockDrafts((prev) => {
+          const next = { ...prev };
+          for (const p of items) {
+            for (const s of p.skus ?? []) {
+              next[s.id] = String(s.stock);
+            }
+          }
+          return next;
+        });
+      } catch (err) {
+        if (seq !== productsLoadSeqRef.current) return;
+        setErrorMsg(getErrorMessage(err, "Không thể tải danh sách sản phẩm lúc này."));
+      } finally {
+        if (!opts?.silent && seq === productsLoadSeqRef.current) {
+          setLoading(false);
+        }
+      }
+    },
+    [page, filter, categoryFilter, debouncedQuery]
+  );
 
   useEffect(() => {
     if (!uiState) {
-      void loadData();
+      void loadProducts();
     }
-  }, [uiState, loadData]);
+  }, [uiState, loadProducts]);
+
+  useEffect(() => {
+    if (!uiState) {
+      void loadTabCounts();
+    }
+  }, [uiState, loadTabCounts]);
+
+  const refreshAll = useCallback(async () => {
+    await Promise.all([loadProducts(), loadTabCounts()]);
+  }, [loadProducts, loadTabCounts]);
+
+  // Stock history loader (sequence-guarded against rapid filter/SKU switches — W2)
+  const loadStockHistory = useCallback(async () => {
+    if (!historyTarget) return;
+    const seq = ++historyLoadSeqRef.current;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const qs = buildStockHistoryQuery({
+        page: historyPage,
+        pageSize: STOCK_HISTORY_PAGE_SIZE,
+        changeType: historyChangeType,
+        fromDate: historyFromDate,
+        toDate: historyToDate,
+      });
+      const res = await api<PaginatedResponse<StockHistoryItem>>(
+        `seller/skus/${encodeURIComponent(historyTarget.sku.id)}/stock-history?${qs}`
+      );
+      if (seq !== historyLoadSeqRef.current) return;
+      const items = res.items ?? [];
+      const resolvedTotal = Math.max(0, Math.trunc(res.total ?? items.length));
+      const clampedPage = resolveClampedPageOnEmpty(
+        historyPage,
+        items.length,
+        resolvedTotal,
+        STOCK_HISTORY_PAGE_SIZE
+      );
+      if (clampedPage !== null) {
+        setHistoryTotal(resolvedTotal);
+        setHistoryPage(clampedPage);
+        return;
+      }
+      setHistoryItems(items);
+      setHistoryTotal(resolvedTotal);
+    } catch (err) {
+      if (seq !== historyLoadSeqRef.current) return;
+      setHistoryError(getErrorMessage(err, "Không thể tải lịch sử biến động tồn kho SKU."));
+    } finally {
+      if (seq === historyLoadSeqRef.current) {
+        setHistoryLoading(false);
+      }
+    }
+  }, [historyTarget, historyPage, historyChangeType, historyFromDate, historyToDate]);
+
+  useEffect(() => {
+    if (historyTarget) {
+      void loadStockHistory();
+    }
+  }, [historyTarget, loadStockHistory]);
+
+  // CSV Import polling while QUEUED / VALIDATING / CONFIRMING
+  const activeImportJobId = importJob?.id ?? null;
+  const activeImportStatus = importJob?.status ?? "";
+  useEffect(() => {
+    if (!importModalOpen || !activeImportJobId || !isImportJobPollingStatus(activeImportStatus)) {
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void api<ProductImportJobResponse>(
+        `seller/products/import/${encodeURIComponent(activeImportJobId)}`
+      )
+        .then((res) => {
+          if (!cancelled && res.job) {
+            setImportJob(res.job);
+          }
+        })
+        .catch(() => {
+          // Keep polling quietly on transient network hiccups
+        });
+    }, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [importModalOpen, activeImportJobId, activeImportStatus]);
+
+  // Auto-fetch error rows when job reaches READY / COMPLETED / FAILED with invalid or failed rows
+  const hasImportRowErrors = Boolean(
+    importJob &&
+    !isImportJobPollingStatus(importJob.status) &&
+    (importJob.invalid_rows > 0 || importJob.failed_rows > 0)
+  );
+
+  useEffect(() => {
+    if (!importModalOpen || !activeImportJobId || !hasImportRowErrors) {
+      return;
+    }
+    let cancelled = false;
+    setImportErrorLoading(true);
+    void api<PaginatedResponse<ProductImportRow>>(
+      `seller/products/import/${encodeURIComponent(activeImportJobId)}/rows?errors_only=true&page=${importErrorPage}&page_size=20`
+    )
+      .then((res) => {
+        if (cancelled) return;
+        const items = res.items ?? [];
+        setImportErrorRows(items);
+        setImportErrorTotal(Math.max(0, Math.trunc(res.total ?? items.length)));
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setImportErrorRows([]);
+          setImportErrorTotal(0);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setImportErrorLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [importModalOpen, activeImportJobId, activeImportStatus, hasImportRowErrors, importErrorPage]);
+
+  // Refresh catalog list & tab counts once when a CSV import job completes
+  useEffect(() => {
+    if (
+      importJob &&
+      importJob.status === "COMPLETED" &&
+      completedRefreshedJobIdRef.current !== importJob.id
+    ) {
+      completedRefreshedJobIdRef.current = importJob.id;
+      void loadProducts({ silent: true });
+      void loadTabCounts();
+    }
+  }, [importJob, loadProducts, loadTabCounts]);
+
+  // Escape key closes open modal/drawer
+  useEffect(() => {
+    if (!historyTarget && !importModalOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (historyTarget) {
+        historyLoadSeqRef.current += 1;
+        setHistoryTarget(null);
+      } else if (importModalOpen && !importUploading && !confirmingImport) {
+        setImportModalOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [historyTarget, importModalOpen, importUploading, confirmingImport]);
 
   const categoryNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -104,22 +429,6 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
     }
     return map;
   }, [categories]);
-
-  const counts = useMemo(() => {
-    return {
-      all: products.length,
-      APPROVED: products.filter((p) => p.status === "APPROVED").length,
-      PENDING: products.filter((p) => p.status === "PENDING").length,
-      REJECTED: products.filter((p) => p.status === "REJECTED").length,
-      HIDDEN: products.filter((p) => p.status === "HIDDEN").length,
-      LOW_OOS: products.filter((p) => isLowOrOutProduct(p)).length,
-    };
-  }, [products]);
-
-  const totalSkuCount = useMemo(
-    () => products.reduce((sum, p) => sum + (p.skus ?? []).filter((s) => s.is_active).length, 0),
-    [products]
-  );
 
   const lowStockRows = useMemo(() => {
     const rows: Array<{ product: GatewayProduct; sku: GatewaySKU }> = [];
@@ -133,45 +442,47 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
     return rows.sort((a, b) => a.sku.available_stock - b.sku.available_stock).slice(0, 8);
   }, [products]);
 
-  const filteredProducts = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return products.filter((p) => {
-      if (filter === "LOW_OOS") {
-        if (!isLowOrOutProduct(p)) return false;
-      } else if (filter !== "all" && p.status !== filter) {
-        return false;
-      }
-      if (categoryFilter !== "all" && p.category_id !== categoryFilter) return false;
-      if (q) {
-        const hitName = p.name.toLowerCase().includes(q);
-        const hitSku = (p.skus ?? []).some(
-          (s) => s.sku_code.toLowerCase().includes(q) || s.name.toLowerCase().includes(q)
-        );
-        if (!hitName && !hitSku) return false;
-      }
-      return true;
-    });
-  }, [products, filter, categoryFilter, query]);
-
-  const countCards: Array<{ key: ProductFilterKey; label: string; count: number }> = [
-    { key: "all", label: "Tất cả", count: counts.all },
-    { key: "APPROVED", label: "Đang bán", count: counts.APPROVED },
-    { key: "PENDING", label: "Chờ duyệt", count: counts.PENDING },
-    { key: "REJECTED", label: "Bị từ chối", count: counts.REJECTED },
-    { key: "HIDDEN", label: "Đang ẩn", count: counts.HIDDEN },
-    { key: "LOW_OOS", label: "Hết / Sắp hết", count: counts.LOW_OOS },
+  const countCards: Array<{ key: SellerProductFilterKey; label: string; count: number | null }> = [
+    { key: "all", label: "Tất cả", count: tabCounts.all },
+    { key: "APPROVED", label: "Đang bán", count: tabCounts.APPROVED },
+    { key: "PENDING", label: "Chờ duyệt", count: tabCounts.PENDING },
+    { key: "REJECTED", label: "Bị từ chối", count: tabCounts.REJECTED },
+    { key: "HIDDEN", label: "Đang ẩn", count: tabCounts.HIDDEN },
+    { key: "LOW_OOS", label: "Hết / Sắp hết", count: tabCounts.LOW_OOS },
   ];
+
+  const totalPages = Math.max(1, Math.ceil(totalProducts / SELLER_PRODUCTS_PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const rangeStart = totalProducts === 0 ? 0 : (safePage - 1) * SELLER_PRODUCTS_PAGE_SIZE + 1;
+  const rangeEnd = Math.min(totalProducts, safePage * SELLER_PRODUCTS_PAGE_SIZE);
+  const pageNumbers = useMemo(() => buildPageNumbers(safePage, totalPages), [safePage, totalPages]);
+
+  const historyTotalPages = Math.max(1, Math.ceil(historyTotal / STOCK_HISTORY_PAGE_SIZE));
+  const importErrorTotalPages = Math.max(1, Math.ceil(importErrorTotal / 20));
 
   const statusPillCls = (status: string) => {
     const meta = getProductStatusMeta(status);
-    if (meta.tone === "pos") return `${common.pill} ${common.pillPos}`;
-    if (meta.tone === "warn") return `${common.pill} ${common.pillWarn}`;
-    if (meta.tone === "neg") return `${common.pill} ${common.pillNeg}`;
-    return common.pill;
+    return tonePillCls(meta.tone);
+  };
+
+  const handleSelectFilter = (next: SellerProductFilterKey) => {
+    setFilter(next);
+    setPage(1);
   };
 
   const toggleExpand = (productId: string) => {
     setExpandedProductIds((prev) => ({ ...prev, [productId]: !prev[productId] }));
+  };
+
+  const openStockHistory = (product: GatewayProduct, sku: GatewaySKU) => {
+    setHistoryTarget({ product, sku });
+    setHistoryPage(1);
+    setHistoryChangeType("all");
+    setHistoryFromDate("");
+    setHistoryToDate("");
+    setHistoryItems([]);
+    setHistoryTotal(0);
+    setHistoryError(null);
   };
 
   const handleUpdateSkuStock = async (sku: GatewaySKU, targetStock: number) => {
@@ -204,8 +515,12 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
           }))
         );
         setStockDrafts((prev) => ({ ...prev, [sku.id]: String(res.sku.stock) }));
+        if (historyTarget && historyTarget.sku.id === sku.id) {
+          setHistoryTarget((prev) => (prev ? { ...prev, sku: res.sku } : prev));
+        }
+        void loadTabCounts();
       } else {
-        await loadData();
+        await refreshAll();
       }
       showToast(`Đã cập nhật tồn kho ${sku.sku_code} thành ${formatInt(newStock)} chiếc.`);
     } catch (err) {
@@ -214,7 +529,7 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
           "Dữ liệu vừa thay đổi ở phiên khác, hệ thống đã tải lại tồn kho mới nhất. Vui lòng kiểm tra và lưu lại.";
         setConflictNotice(msg);
         showToast("Dữ liệu vừa thay đổi, đang tải lại tồn kho mới nhất.");
-        await loadData();
+        await refreshAll();
       } else {
         showToast(getErrorMessage(err, "Không thể cập nhật tồn kho SKU lúc này."));
       }
@@ -229,9 +544,14 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
       await api<{ ok: boolean }>(`seller/products/${product.id}`, {
         method: "DELETE",
       });
-      setProducts((prev) => prev.filter((p) => p.id !== product.id));
       setConfirmDeleteId(null);
       showToast(`Đã xóa sản phẩm "${product.name}".`);
+      if (products.length <= 1 && page > 1) {
+        setPage((p) => Math.max(1, p - 1));
+        void loadTabCounts();
+      } else {
+        await refreshAll();
+      }
     } catch (err) {
       showToast(getErrorMessage(err, "Không thể xóa sản phẩm lúc này."));
     } finally {
@@ -239,19 +559,181 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
     }
   };
 
+  // UC-S13 handlers
+  const resetImportJobState = () => {
+    setImportJob(null);
+    setImportFile(null);
+    setImportFileError(null);
+    setImportActionError(null);
+    setImportErrorRows([]);
+    setImportErrorTotal(0);
+    setImportErrorPage(1);
+    completedRefreshedJobIdRef.current = null;
+    if (importFileInputRef.current) {
+      importFileInputRef.current.value = "";
+    }
+  };
+
+  const openImportModal = () => {
+    if (importJob && shouldResetImportJobOnModalOpen(importJob.status)) {
+      resetImportJobState();
+    } else {
+      setImportActionError(null);
+    }
+    setImportModalOpen(true);
+  };
+
+  const closeStockHistory = () => {
+    historyLoadSeqRef.current += 1;
+    setHistoryTarget(null);
+  };
+
+  const handleDownloadTemplate = async () => {
+    setDownloadingTemplate(true);
+    setImportActionError(null);
+    try {
+      const templatePath =
+        importCategoryId !== "all"
+          ? `seller/products/import/template?category_id=${encodeURIComponent(importCategoryId)}`
+          : "seller/products/import/template";
+      const blob = await apiBlob(templatePath, { headers: { Accept: "text/csv" } });
+      triggerBlobDownload(blob, "nexusmart-mau-nhap-san-pham.csv");
+      showToast("Đã tải tệp mẫu CSV.");
+    } catch (err) {
+      setImportActionError(translateProductImportError(err, "Không thể tải tệp mẫu CSV lúc này."));
+    } finally {
+      setDownloadingTemplate(false);
+    }
+  };
+
+  const handleSelectCsvFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setImportActionError(null);
+    const chosen = e.target.files?.[0] ?? null;
+    if (!chosen) {
+      setImportFile(null);
+      setImportFileError(null);
+      return;
+    }
+    const validation = validateImportCsvFile(chosen);
+    if (!validation.ok) {
+      setImportFile(null);
+      setImportFileError(validation.message);
+      return;
+    }
+    setImportFile(chosen);
+    setImportFileError(null);
+  };
+
+  const handleUploadCsv = async () => {
+    if (!importFile) {
+      setImportFileError("Vui lòng chọn tệp CSV trước khi tải lên.");
+      return;
+    }
+    const validation = validateImportCsvFile(importFile);
+    if (!validation.ok) {
+      setImportFileError(validation.message);
+      return;
+    }
+
+    setImportUploading(true);
+    setImportActionError(null);
+    setImportErrorRows([]);
+    setImportErrorTotal(0);
+    setImportErrorPage(1);
+    try {
+      const form = new FormData();
+      form.append("file", importFile);
+      const res = await api<ProductImportJobResponse>("seller/products/import", {
+        method: "POST",
+        body: form,
+      });
+      if (res.job) {
+        setImportJob(res.job);
+        showToast("Đã tải tệp CSV lên hệ thống. Đang kiểm tra dữ liệu từng dòng.");
+      }
+    } catch (err) {
+      setImportActionError(
+        translateProductImportError(
+          err,
+          "Không thể tải lên tệp CSV. Vui lòng kiểm tra mã hóa UTF-8, cột tiêu đề và giới hạn tối đa 1.000 dòng."
+        )
+      );
+    } finally {
+      setImportUploading(false);
+    }
+  };
+
+  const handleConfirmImport = async () => {
+    if (!importJob) return;
+    setConfirmingImport(true);
+    setImportActionError(null);
+    try {
+      const res = await api<ConfirmProductImportJobResponse>(
+        `seller/products/import/${encodeURIComponent(importJob.id)}/confirm`,
+        { method: "POST" }
+      );
+      if (res.job) {
+        setImportJob(res.job);
+      }
+      if (res.already_confirmed) {
+        showToast("Đợt nhập này đã được xác nhận trước đó, hệ thống đang tiếp tục xử lý.");
+      } else {
+        showToast("Đã xác nhận nhập các dòng hợp lệ. Sản phẩm mới sẽ vào mục Chờ duyệt.");
+      }
+    } catch (err) {
+      setImportActionError(
+        translateProductImportError(err, "Chưa thể xác nhận nhập CSV lúc này. Vui lòng thử lại.")
+      );
+    } finally {
+      setConfirmingImport(false);
+    }
+  };
+
+  const handleDownloadImportErrors = async () => {
+    if (!importJob) return;
+    setDownloadingErrors(true);
+    setImportActionError(null);
+    try {
+      const blob = await apiBlob(
+        `seller/products/import/${encodeURIComponent(importJob.id)}/errors.csv`,
+        { headers: { Accept: "text/csv" } }
+      );
+      triggerBlobDownload(blob, `nexusmart-loi-nhap-csv-${importJob.id.slice(0, 8)}.csv`);
+    } catch (err) {
+      setImportActionError(
+        translateProductImportError(err, "Không thể tải tệp danh sách lỗi lúc này.")
+      );
+    } finally {
+      setDownloadingErrors(false);
+    }
+  };
+
+  const handleViewPendingTabAfterImport = () => {
+    setImportModalOpen(false);
+    setFilter("PENDING");
+    setCategoryFilter("all");
+    setQueryInput("");
+    setDebouncedQuery("");
+    setPage(1);
+    void loadTabCounts();
+  };
+
+  const hasActiveFilters = filter !== "all" || categoryFilter !== "all" || debouncedQuery !== "";
+
   return (
     <div className={common.page}>
       <header className={common.pageHeader}>
         <div className={common.headerText}>
           <h1 className={common.title}>Sản phẩm gian hàng</h1>
           <p className={common.finding}>
-            {shop.name} · {formatInt(products.length)} sản phẩm, {formatInt(totalSkuCount)} SKU đang
-            hoạt động · {formatInt(counts.PENDING)} chờ duyệt · {formatInt(lowStockRows.length)} SKU
-            tồn thấp
+            {formatSellerProductsHeaderSummary(shop.name, tabCounts, formatInt)}
           </p>
         </div>
         <div className={common.headerActions}>
-          <Button variant="outline" size="sm" shape="app" onClick={() => void loadData()}>
+          <Button variant="outline" size="sm" shape="app" onClick={openImportModal}>
+            Nhập file CSV
+          </Button>
+          <Button variant="outline" size="sm" shape="app" onClick={() => void refreshAll()}>
             Làm mới
           </Button>
           <Button variant="ink" size="sm" shape="app" href="/seller/san-pham/moi">
@@ -270,7 +752,7 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
         </div>
       )}
 
-      {(uiState === "loading" || (!uiState && loading)) && (
+      {(uiState === "loading" || (!uiState && loading && products.length === 0)) && (
         <StateView
           kind="loading"
           surface="app"
@@ -286,7 +768,7 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
           title="Không thể tải danh sách sản phẩm"
           message={errorMsg ?? "Dịch vụ sản phẩm chưa phản hồi."}
           actionLabel="Thử lại"
-          onAction={() => void loadData()}
+          onAction={() => void refreshAll()}
         />
       )}
 
@@ -301,7 +783,7 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
         />
       )}
 
-      {!uiState && !loading && !errorMsg && (
+      {!uiState && !(loading && products.length === 0) && !errorMsg && (
         <>
           <div className={common.countCards6} role="tablist" aria-label="Lọc trạng thái sản phẩm">
             {countCards.map((c) => {
@@ -313,10 +795,12 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                   role="tab"
                   aria-selected={selected}
                   className={`${common.countCard} ${selected ? common.countCardSelected : ""}`}
-                  onClick={() => setFilter(c.key)}
+                  onClick={() => handleSelectFilter(c.key)}
                 >
                   <span className={common.countCardLabel}>{c.label}</span>
-                  <span className={common.countCardValue}>{formatInt(c.count)}</span>
+                  {c.count !== null && (
+                    <span className={common.countCardValue}>{formatInt(c.count)}</span>
+                  )}
                 </button>
               );
             })}
@@ -332,10 +816,12 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                   role="tab"
                   aria-selected={selected}
                   className={`${common.chipBtn} ${selected ? common.chipBtnActive : ""}`}
-                  onClick={() => setFilter(c.key)}
+                  onClick={() => handleSelectFilter(c.key)}
                 >
                   <span>{c.label}</span>
-                  <span className={common.chipCount}>{formatInt(c.count)}</span>
+                  {c.count !== null && (
+                    <span className={common.chipCount}>{formatInt(c.count)}</span>
+                  )}
                 </button>
               );
             })}
@@ -351,8 +837,11 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                   <input
                     type="search"
                     className={common.searchInput}
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
+                    value={queryInput}
+                    onChange={(e) => {
+                      setQueryInput(e.target.value);
+                      setPage(1);
+                    }}
                     placeholder="Tìm tên sản phẩm hoặc mã SKU..."
                     aria-label="Tìm sản phẩm hoặc mã SKU"
                   />
@@ -360,7 +849,10 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                 <select
                   className={common.filterSelect}
                   value={categoryFilter}
-                  onChange={(e) => setCategoryFilter(e.target.value)}
+                  onChange={(e) => {
+                    setCategoryFilter(e.target.value);
+                    setPage(1);
+                  }}
                   aria-label="Lọc theo danh mục"
                 >
                   <option value="all">Mọi danh mục</option>
@@ -370,17 +862,35 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                     </option>
                   ))}
                 </select>
+                {hasActiveFilters && (
+                  <button
+                    type="button"
+                    className={styles.editLink}
+                    onClick={() => {
+                      setFilter("all");
+                      setCategoryFilter("all");
+                      setQueryInput("");
+                      setDebouncedQuery("");
+                      setPage(1);
+                    }}
+                  >
+                    Xóa bộ lọc
+                  </button>
+                )}
               </div>
               <span className={common.cardMeta}>
-                Hiển thị {formatInt(filteredProducts.length)} trên {formatInt(products.length)} sản
-                phẩm
+                {loading
+                  ? "Đang cập nhật..."
+                  : totalProducts === 0
+                    ? "0 sản phẩm"
+                    : `Hiển thị ${formatInt(rangeStart)}–${formatInt(rangeEnd)} trên ${formatInt(totalProducts)} sản phẩm`}
               </span>
             </div>
 
-            {filteredProducts.length === 0 ? (
+            {products.length === 0 ? (
               <div className={common.inlineEmpty}>
-                {products.length === 0
-                  ? "Gian hàng chưa đăng sản phẩm nào. Nhấn Thêm sản phẩm để tạo sản phẩm đầu tiên."
+                {!hasActiveFilters && tabCounts.all === 0
+                  ? "Gian hàng chưa đăng sản phẩm nào. Nhấn Thêm sản phẩm hoặc Nhập file CSV để bắt đầu."
                   : "Không có sản phẩm nào khớp bộ lọc hiện tại."}
               </div>
             ) : (
@@ -398,7 +908,7 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredProducts.map((p) => {
+                      {products.map((p) => {
                         const allSkus = p.skus ?? [];
                         const availStock = allSkus.reduce(
                           (sum, s) => sum + Math.max(0, s.available_stock),
@@ -552,6 +1062,13 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                                               >
                                                 {isSaving ? "Đang lưu..." : "Lưu tồn"}
                                               </button>
+                                              <button
+                                                type="button"
+                                                className={styles.editLink}
+                                                onClick={() => openStockHistory(p, sku)}
+                                              >
+                                                Lịch sử tồn
+                                              </button>
                                             </div>
                                           </div>
                                         );
@@ -569,7 +1086,7 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                 </div>
 
                 <div className={common.mobileList}>
-                  {filteredProducts.map((p) => {
+                  {products.map((p) => {
                     const allSkus = p.skus ?? [];
                     const availStock = allSkus.reduce(
                       (sum, s) => sum + Math.max(0, s.available_stock),
@@ -658,6 +1175,13 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                                     >
                                       {isSaving ? "..." : "Lưu"}
                                     </button>
+                                    <button
+                                      type="button"
+                                      className={styles.editLink}
+                                      onClick={() => openStockHistory(p, sku)}
+                                    >
+                                      Lịch sử tồn
+                                    </button>
                                   </div>
                                 </div>
                               );
@@ -668,6 +1192,51 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                     );
                   })}
                 </div>
+
+                {totalPages > 1 && (
+                  <nav className={styles.paginationBar} aria-label="Phân trang sản phẩm">
+                    <span className={common.cardMeta}>
+                      Trang {formatInt(safePage)} / {formatInt(totalPages)} · Tổng{" "}
+                      {formatInt(totalProducts)} sản phẩm
+                    </span>
+                    <div className={styles.paginationControls}>
+                      <button
+                        type="button"
+                        className={styles.pageBtn}
+                        disabled={safePage <= 1 || loading}
+                        onClick={() => setPage((p) => Math.max(1, p - 1))}
+                      >
+                        Trước
+                      </button>
+                      {pageNumbers.map((item, idx) =>
+                        item === "ellipsis" ? (
+                          <span key={`e-${idx}`} className={styles.pageEllipsis}>
+                            …
+                          </span>
+                        ) : (
+                          <button
+                            key={item}
+                            type="button"
+                            className={`${styles.pageBtn} ${item === safePage ? styles.pageBtnActive : ""}`}
+                            aria-current={item === safePage ? "page" : undefined}
+                            disabled={loading}
+                            onClick={() => setPage(item)}
+                          >
+                            {item}
+                          </button>
+                        )
+                      )}
+                      <button
+                        type="button"
+                        className={styles.pageBtn}
+                        disabled={safePage >= totalPages || loading}
+                        onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                      >
+                        Sau
+                      </button>
+                    </div>
+                  </nav>
+                )}
               </>
             )}
           </section>
@@ -679,7 +1248,7 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                   Biến thể cần nhập kho sớm
                 </h2>
                 <span className={common.cardMeta}>
-                  Cập nhật nhanh +10 chiếc trực tiếp vào tồn kho hệ thống
+                  Các SKU tồn khả dụng ≤ 5 trên trang hiện tại · Cập nhật nhanh +10 chiếc
                 </span>
               </div>
 
@@ -738,6 +1307,13 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                               >
                                 {isSaving ? "Đang lưu..." : "+10 tồn"}
                               </button>
+                              <button
+                                type="button"
+                                className={styles.editLink}
+                                onClick={() => openStockHistory(product, sku)}
+                              >
+                                Lịch sử tồn
+                              </button>
                               <Link
                                 href={`/seller/san-pham/${product.id}`}
                                 className={styles.editLink}
@@ -786,6 +1362,13 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
                           >
                             {isSaving ? "..." : "+10 tồn"}
                           </button>
+                          <button
+                            type="button"
+                            className={styles.editLink}
+                            onClick={() => openStockHistory(product, sku)}
+                          >
+                            Lịch sử tồn
+                          </button>
                           <Link href={`/seller/san-pham/${product.id}`} className={styles.editLink}>
                             Sửa
                           </Link>
@@ -798,6 +1381,621 @@ function SellerProductsInner({ shop }: { shop: GatewayShop }) {
             </section>
           )}
         </>
+      )}
+
+      {/* S03 Stock History Drawer/Modal */}
+      {historyTarget && (
+        <div
+          className={styles.modalBackdrop}
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeStockHistory();
+          }}
+        >
+          <div
+            className={`${styles.modalDialog} ${styles.modalDialogWide}`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="stock-history-title"
+          >
+            <div className={styles.modalHeader}>
+              <div>
+                <h2 id="stock-history-title" className={styles.modalTitle}>
+                  Lịch sử tồn kho SKU
+                </h2>
+                <p className={styles.modalSub}>
+                  {historyTarget.sku.sku_code} · {historyTarget.sku.name} —{" "}
+                  {historyTarget.product.name}
+                </p>
+                <p className={styles.modalSub}>
+                  Hiện tại: Tổng {formatInt(historyTarget.sku.stock)} · Khả dụng{" "}
+                  {formatInt(historyTarget.sku.available_stock)} · Đang giữ{" "}
+                  {formatInt(historyTarget.sku.reserved_stock)}
+                </p>
+              </div>
+              <button type="button" className={styles.editLink} onClick={closeStockHistory}>
+                Đóng
+              </button>
+            </div>
+
+            <div className={styles.drawerFilters}>
+              <select
+                className={common.filterSelect}
+                value={historyChangeType}
+                onChange={(e) => {
+                  setHistoryChangeType(e.target.value);
+                  setHistoryPage(1);
+                }}
+                aria-label="Lọc loại biến động tồn kho"
+              >
+                <option value="all">Mọi loại biến động</option>
+                <option value="MANUAL_UPDATE">Cập nhật thủ công</option>
+                <option value="RESERVE">Giữ tồn đặt đơn</option>
+                <option value="RELEASE">Hoàn tồn hủy đơn</option>
+                <option value="CONFIRM">Xuất kho xác nhận</option>
+                <option value="RESTOCK">Nhập lại kho</option>
+              </select>
+              <input
+                type="date"
+                className={styles.dateInput}
+                value={historyFromDate}
+                onChange={(e) => {
+                  setHistoryFromDate(e.target.value);
+                  setHistoryPage(1);
+                }}
+                aria-label="Từ ngày"
+                title="Từ ngày"
+              />
+              <input
+                type="date"
+                className={styles.dateInput}
+                value={historyToDate}
+                onChange={(e) => {
+                  setHistoryToDate(e.target.value);
+                  setHistoryPage(1);
+                }}
+                aria-label="Đến ngày"
+                title="Đến ngày"
+              />
+              {(historyChangeType !== "all" || historyFromDate || historyToDate) && (
+                <button
+                  type="button"
+                  className={styles.editLink}
+                  onClick={() => {
+                    setHistoryChangeType("all");
+                    setHistoryFromDate("");
+                    setHistoryToDate("");
+                    setHistoryPage(1);
+                  }}
+                >
+                  Đặt lại
+                </button>
+              )}
+              <button
+                type="button"
+                className={styles.editLink}
+                disabled={historyLoading}
+                onClick={() => void loadStockHistory()}
+              >
+                Làm mới
+              </button>
+            </div>
+
+            {historyError && (
+              <div className={`${styles.noticeBox} ${styles.noticeNeg}`} role="alert">
+                {historyError}
+              </div>
+            )}
+
+            {historyLoading ? (
+              <div className={common.inlineEmpty}>Đang tải lịch sử biến động tồn kho...</div>
+            ) : historyItems.length === 0 ? (
+              <div className={common.inlineEmpty}>
+                Chưa có bản ghi biến động tồn kho nào khớp bộ lọc.
+              </div>
+            ) : (
+              <>
+                <div className={`${common.tableWrap} ${common.tableWrapDesktop}`}>
+                  <table className={common.dataTable}>
+                    <thead>
+                      <tr>
+                        <th>Thời điểm</th>
+                        <th>Loại biến động</th>
+                        <th className={common.numCol}>Thay đổi</th>
+                        <th className={common.numCol}>Tổng tồn</th>
+                        <th className={common.numCol}>Đang giữ</th>
+                        <th>Lý do / Đơn hàng</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {historyItems.map((item) => {
+                        const meta = STOCK_HISTORY_CHANGE_META[item.change_type] ?? {
+                          label: item.change_type,
+                          tone: "neutral" as const,
+                        };
+                        return (
+                          <tr key={item.id}>
+                            <td className={styles.nowrapCell}>
+                              {item.created_at ? formatDateTimeVi(item.created_at) : "—"}
+                            </td>
+                            <td>
+                              <span className={tonePillCls(meta.tone)}>{meta.label}</span>
+                            </td>
+                            <td className={common.numCol}>
+                              <strong
+                                className={
+                                  item.delta > 0
+                                    ? styles.deltaPos
+                                    : item.delta < 0
+                                      ? styles.deltaNeg
+                                      : ""
+                                }
+                              >
+                                {formatSignedInt(item.delta)}
+                              </strong>
+                            </td>
+                            <td className={common.numCol}>
+                              {formatInt(item.stock_before)} → {formatInt(item.stock_after)}
+                            </td>
+                            <td className={common.numCol}>
+                              {formatInt(item.reserved_before)} → {formatInt(item.reserved_after)}
+                            </td>
+                            <td>
+                              <span>{formatStockHistoryReason(item.change_type, item.reason)}</span>
+                              {item.order_id && (
+                                <>
+                                  {" · "}
+                                  <Link
+                                    href={`/seller/don-hang/${item.order_id}`}
+                                    className={styles.orderRefLink}
+                                    onClick={closeStockHistory}
+                                  >
+                                    Xem đơn
+                                  </Link>
+                                </>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className={common.mobileList}>
+                  {historyItems.map((item) => {
+                    const meta = STOCK_HISTORY_CHANGE_META[item.change_type] ?? {
+                      label: item.change_type,
+                      tone: "neutral" as const,
+                    };
+                    return (
+                      <div key={item.id} className={common.mobileRow}>
+                        <div className={common.mobileRowTop}>
+                          <span className={tonePillCls(meta.tone)}>{meta.label}</span>
+                          <strong
+                            className={
+                              item.delta > 0
+                                ? styles.deltaPos
+                                : item.delta < 0
+                                  ? styles.deltaNeg
+                                  : styles.mobilePrice
+                            }
+                          >
+                            {formatSignedInt(item.delta)}
+                          </strong>
+                        </div>
+                        <span className={styles.prodSub}>
+                          {item.created_at ? formatDateTimeVi(item.created_at) : "—"} · Tổng{" "}
+                          {formatInt(item.stock_before)} → {formatInt(item.stock_after)} · Giữ{" "}
+                          {formatInt(item.reserved_before)} → {formatInt(item.reserved_after)}
+                        </span>
+                        <div className={common.mobileRowMeta}>
+                          <span>{formatStockHistoryReason(item.change_type, item.reason)}</span>
+                          {item.order_id && (
+                            <Link
+                              href={`/seller/don-hang/${item.order_id}`}
+                              className={styles.orderRefLink}
+                              onClick={closeStockHistory}
+                            >
+                              Xem đơn
+                            </Link>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {historyTotalPages > 1 && (
+                  <div className={styles.paginationBar}>
+                    <span className={common.cardMeta}>
+                      Trang {formatInt(historyPage)} / {formatInt(historyTotalPages)} ·{" "}
+                      {formatInt(historyTotal)} bản ghi
+                    </span>
+                    <div className={styles.paginationControls}>
+                      <button
+                        type="button"
+                        className={styles.pageBtn}
+                        disabled={historyPage <= 1 || historyLoading}
+                        onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}
+                      >
+                        Trước
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.pageBtn}
+                        disabled={historyPage >= historyTotalPages || historyLoading}
+                        onClick={() => setHistoryPage((p) => Math.min(historyTotalPages, p + 1))}
+                      >
+                        Sau
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* UC-S13 2-Step CSV Import Modal (G6) */}
+      {importModalOpen && (
+        <div
+          className={styles.modalBackdrop}
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !importUploading && !confirmingImport) {
+              setImportModalOpen(false);
+            }
+          }}
+        >
+          <div
+            className={`${styles.modalDialog} ${styles.modalDialogWide}`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="csv-import-title"
+          >
+            <div className={styles.modalHeader}>
+              <div>
+                <h2 id="csv-import-title" className={styles.modalTitle}>
+                  Nhập sản phẩm hàng loạt bằng file CSV
+                </h2>
+                <p className={styles.modalSub}>
+                  Quy trình 2 bước: tải tệp lên để kiểm tra từng dòng trước, sau đó xác nhận nhập
+                  các dòng hợp lệ.
+                </p>
+              </div>
+              <button
+                type="button"
+                className={styles.editLink}
+                disabled={importUploading || confirmingImport}
+                onClick={() => setImportModalOpen(false)}
+              >
+                Đóng
+              </button>
+            </div>
+
+            <div className={`${styles.noticeBox} ${styles.noticeWarn}`}>
+              <strong>Lưu ý phạm vi:</strong> Chỉ hỗ trợ <strong>tạo mới sản phẩm</strong> (chưa hỗ
+              trợ cập nhật sản phẩm đã có). Tệp CSV mã hóa UTF-8, dung lượng tối đa{" "}
+              <strong>1 MB</strong> và tối đa{" "}
+              <strong>{formatInt(MAX_IMPORT_CSV_ROWS)} dòng dữ liệu</strong>. Sản phẩm tạo thành
+              công sẽ tự động vào tab <strong>Chờ duyệt</strong>.
+            </div>
+
+            {importActionError && (
+              <div className={`${styles.noticeBox} ${styles.noticeNeg}`} role="alert">
+                {importActionError}
+              </div>
+            )}
+
+            {!importJob ? (
+              <>
+                <div className={styles.stepSection}>
+                  <h3 className={styles.stepTitle}>Bước 1: Tải tệp mẫu CSV</h3>
+                  <div className={styles.drawerFilters}>
+                    <select
+                      className={common.filterSelect}
+                      value={importCategoryId}
+                      onChange={(e) => setImportCategoryId(e.target.value)}
+                      aria-label="Chọn danh mục điền sẵn trong mẫu CSV"
+                    >
+                      <option value="all">Không điền sẵn danh mục</option>
+                      {categories.map((cat) => (
+                        <option key={cat.id} value={cat.id}>
+                          {cat.name}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className={styles.editLink}
+                      disabled={downloadingTemplate}
+                      onClick={() => void handleDownloadTemplate()}
+                    >
+                      {downloadingTemplate ? "Đang tải mẫu..." : "Tải mẫu CSV"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className={styles.stepSection}>
+                  <h3 className={styles.stepTitle}>Bước 2: Chọn tệp CSV và kiểm tra dữ liệu</h3>
+                  <div className={styles.uploadBox}>
+                    <input
+                      ref={importFileInputRef}
+                      type="file"
+                      accept=".csv,text/csv"
+                      className={styles.fileInput}
+                      onChange={handleSelectCsvFile}
+                      aria-label="Chọn tệp CSV sản phẩm"
+                    />
+                    {importFile && (
+                      <span className={styles.fileMeta}>
+                        Đã chọn: <strong>{importFile.name}</strong> (
+                        {Math.max(1, Math.round(importFile.size / 1024))} KB)
+                      </span>
+                    )}
+                    {importFileError && (
+                      <span className={styles.rejectionNote} role="alert">
+                        {importFileError}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className={styles.modalFooter}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    shape="app"
+                    disabled={importUploading}
+                    onClick={() => setImportModalOpen(false)}
+                  >
+                    Hủy
+                  </Button>
+                  <Button
+                    variant="ink"
+                    size="sm"
+                    shape="app"
+                    disabled={!importFile || importUploading}
+                    onClick={() => void handleUploadCsv()}
+                  >
+                    {importUploading ? "Đang tải lên..." : "Tải lên & Kiểm tra dữ liệu"}
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className={styles.jobHeaderRow}>
+                  <div className={styles.prodText}>
+                    <span className={styles.skuDrawerCode}>
+                      {importJob.filename || "Tệp CSV đã tải lên"}
+                    </span>
+                    <span className={styles.prodSub}>Mã đợt nhập: {importJob.id}</span>
+                  </div>
+                  <div className={styles.actionRow}>
+                    <span
+                      className={tonePillCls(
+                        (IMPORT_JOB_STATUS_META[importJob.status] ?? { tone: "neutral" as const })
+                          .tone
+                      )}
+                    >
+                      {
+                        (IMPORT_JOB_STATUS_META[importJob.status] ?? { label: importJob.status })
+                          .label
+                      }
+                    </span>
+                    {!isImportJobPollingStatus(importJob.status) && (
+                      <button
+                        type="button"
+                        className={styles.editLink}
+                        onClick={resetImportJobState}
+                      >
+                        Tải tệp khác
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className={styles.statGrid}>
+                  <div className={styles.statBox}>
+                    <span className={styles.statLabel}>Tổng dòng</span>
+                    <strong className={styles.statValue}>{formatInt(importJob.total_rows)}</strong>
+                  </div>
+                  <div className={styles.statBox}>
+                    <span className={styles.statLabel}>Hợp lệ</span>
+                    <strong className={`${styles.statValue} ${styles.deltaPos}`}>
+                      {formatInt(importJob.valid_rows)}
+                    </strong>
+                  </div>
+                  <div className={styles.statBox}>
+                    <span className={styles.statLabel}>Lỗi kiểm tra</span>
+                    <strong
+                      className={`${styles.statValue} ${importJob.invalid_rows > 0 ? styles.deltaNeg : ""}`}
+                    >
+                      {formatInt(importJob.invalid_rows)}
+                    </strong>
+                  </div>
+                  <div className={styles.statBox}>
+                    <span className={styles.statLabel}>Đã tạo mới</span>
+                    <strong className={`${styles.statValue} ${styles.deltaPos}`}>
+                      {formatInt(importJob.created_rows)}
+                    </strong>
+                  </div>
+                  <div className={styles.statBox}>
+                    <span className={styles.statLabel}>Tạo thất bại</span>
+                    <strong
+                      className={`${styles.statValue} ${importJob.failed_rows > 0 ? styles.deltaNeg : ""}`}
+                    >
+                      {formatInt(importJob.failed_rows)}
+                    </strong>
+                  </div>
+                </div>
+
+                {isImportJobPollingStatus(importJob.status) && (
+                  <div className={styles.noticeBox}>
+                    Hệ thống đang xử lý tệp CSV tự động, trạng thái sẽ cập nhật sau mỗi vài giây...
+                  </div>
+                )}
+
+                {importJob.error_message && (
+                  <div className={`${styles.noticeBox} ${styles.noticeNeg}`} role="alert">
+                    {translateProductImportJobError(importJob.error_message)}
+                  </div>
+                )}
+
+                {importJob.status === "READY" && (
+                  <div
+                    className={`${styles.noticeBox} ${importJob.valid_rows > 0 ? styles.noticePos : styles.noticeWarn}`}
+                  >
+                    {importJob.valid_rows > 0
+                      ? `Đã kiểm tra hoàn tất: có ${formatInt(importJob.valid_rows)} dòng hợp lệ sẵn sàng tạo sản phẩm mới (vào tab Chờ duyệt).`
+                      : "Không có dòng hợp lệ nào để nhập. Vui lòng tải file lỗi, chỉnh sửa rồi tải lên lại."}
+                  </div>
+                )}
+
+                {importJob.status === "COMPLETED" && (
+                  <div className={`${styles.noticeBox} ${styles.noticePos}`}>
+                    Hoàn tất nhập CSV: đã tạo thành công {formatInt(importJob.created_rows)} sản
+                    phẩm mới. Các sản phẩm vừa tạo đang nằm ở tab <strong>Chờ duyệt</strong>.
+                  </div>
+                )}
+
+                {hasImportRowErrors && (
+                  <div className={styles.stepSection}>
+                    <div className={styles.jobHeaderRow}>
+                      <h3 className={styles.stepTitle}>
+                        Danh sách dòng lỗi (
+                        {formatInt(importJob.invalid_rows + importJob.failed_rows)})
+                      </h3>
+                      <button
+                        type="button"
+                        className={styles.editLink}
+                        disabled={downloadingErrors}
+                        onClick={() => void handleDownloadImportErrors()}
+                      >
+                        {downloadingErrors ? "Đang tải..." : "Tải tệp danh sách lỗi"}
+                      </button>
+                    </div>
+
+                    {importErrorLoading ? (
+                      <div className={common.inlineEmpty}>Đang tải danh sách dòng lỗi...</div>
+                    ) : importErrorRows.length === 0 ? (
+                      <div className={common.inlineEmpty}>
+                        Không tải được chi tiết dòng lỗi, vui lòng tải tệp danh sách lỗi.
+                      </div>
+                    ) : (
+                      <>
+                        <div className={common.tableWrap}>
+                          <table className={common.dataTable}>
+                            <thead>
+                              <tr>
+                                <th>Dòng dữ liệu</th>
+                                <th>Tên sản phẩm</th>
+                                <th>Mã SKU</th>
+                                <th>Trạng thái</th>
+                                <th>Chi tiết lỗi</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {importErrorRows.map((row) => {
+                                const rowMeta = IMPORT_ROW_STATUS_META[row.status] ?? {
+                                  label: row.status,
+                                  tone: "neg" as const,
+                                };
+                                return (
+                                  <tr key={row.id || `${row.row_number}-${row.sku_code}`}>
+                                    <td>{formatInt(row.row_number)}</td>
+                                    <td>{row.product_name || "—"}</td>
+                                    <td>{row.sku_code || "—"}</td>
+                                    <td>
+                                      <span className={tonePillCls(rowMeta.tone)}>
+                                        {rowMeta.label}
+                                      </span>
+                                    </td>
+                                    <td className={styles.errorCell}>
+                                      {translateProductImportRowError(
+                                        row.error_code,
+                                        row.error_message
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                        {importErrorTotalPages > 1 && (
+                          <div className={styles.paginationBar}>
+                            <span className={common.cardMeta}>
+                              Trang {formatInt(importErrorPage)} /{" "}
+                              {formatInt(importErrorTotalPages)}
+                            </span>
+                            <div className={styles.paginationControls}>
+                              <button
+                                type="button"
+                                className={styles.pageBtn}
+                                disabled={importErrorPage <= 1 || importErrorLoading}
+                                onClick={() => setImportErrorPage((p) => Math.max(1, p - 1))}
+                              >
+                                Trước
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.pageBtn}
+                                disabled={
+                                  importErrorPage >= importErrorTotalPages || importErrorLoading
+                                }
+                                onClick={() =>
+                                  setImportErrorPage((p) => Math.min(importErrorTotalPages, p + 1))
+                                }
+                              >
+                                Sau
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+
+                <div className={styles.modalFooter}>
+                  {importJob.status === "READY" && importJob.valid_rows > 0 && (
+                    <Button
+                      variant="ink"
+                      size="sm"
+                      shape="app"
+                      disabled={confirmingImport}
+                      onClick={() => void handleConfirmImport()}
+                    >
+                      {confirmingImport ? "Đang xác nhận..." : "Xác nhận nhập dòng hợp lệ"}
+                    </Button>
+                  )}
+                  {importJob.status === "COMPLETED" && (
+                    <Button
+                      variant="ink"
+                      size="sm"
+                      shape="app"
+                      onClick={handleViewPendingTabAfterImport}
+                    >
+                      Xem tab Chờ duyệt
+                    </Button>
+                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    shape="app"
+                    disabled={confirmingImport}
+                    onClick={() => setImportModalOpen(false)}
+                  >
+                    Đóng
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

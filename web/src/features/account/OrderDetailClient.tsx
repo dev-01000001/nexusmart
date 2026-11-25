@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { PRODUCTS } from "@/data";
 import type {
+  GatewayAddress,
   GatewayOrder,
   GatewayOrderReviewsResponse,
   GatewayOrderTimelineEvent,
@@ -15,6 +16,16 @@ import type {
   GatewayShipmentResponse,
   PaginatedResponse,
 } from "@/lib/gateway-types";
+import {
+  type UpdateOrderAddressRequest,
+  type UpdateOrderAddressResponse,
+  applyTopLevelAddressFeeQuote,
+  canBuyerUpdateOrderAddress,
+  classifyAddressUpdatePreview,
+  isAddressPreviewStale,
+  isAddressUpdateInProgressError,
+  translateAddressUpdateError,
+} from "@/lib/a8-types";
 import { ApiError, api, getErrorMessage } from "@/lib/api";
 import {
   formatCarrierLabel,
@@ -297,21 +308,31 @@ export function OrderDetailClient({
 
   const [reordering, setReordering] = useState(false);
 
+  // UC-B26: 2-step pre-pickup address update modal state (G1–G3, saved address_id only)
+  const [addressModalOpen, setAddressModalOpen] = useState(false);
+  const [savedAddresses, setSavedAddresses] = useState<GatewayAddress[]>([]);
+  const [selectedAddressId, setSelectedAddressId] = useState("");
+  const [loadingAddrData, setLoadingAddrData] = useState(false);
+  const [addrListError, setAddrListError] = useState<string | null>(null);
+  const [addrPreview, setAddrPreview] = useState<UpdateOrderAddressResponse | null>(null);
+  const [addrPreviewAddressId, setAddrPreviewAddressId] = useState<string | null>(null);
+  const [addrPreviewLoading, setAddrPreviewLoading] = useState(false);
+  const [addrApplying, setAddrApplying] = useState(false);
+  const [addrError, setAddrError] = useState<string | null>(null);
+  const [addrFeeChangedNotice, setAddrFeeChangedNotice] = useState<string | null>(null);
+  const [addrIdempotencyKey, setAddrIdempotencyKey] = useState("");
+  const [addressInProgressLock, setAddressInProgressLock] = useState(false);
+  const addrPreviewSeqRef = useRef(0);
+  const addressModalOpenRef = useRef(false);
+
+  useEffect(() => {
+    addressModalOpenRef.current = addressModalOpen;
+  }, [addressModalOpen]);
+
   const cancelGroupInfo = useMemo(
     () => resolveUnpaidVietQrCancelGroup(order, groupOrders),
     [order, groupOrders]
   );
-
-  useEffect(() => {
-    if (!confirmGroupCancelOpen) return;
-    const onKeyDown = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape" && !cancelling) {
-        setConfirmGroupCancelOpen(false);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [confirmGroupCancelOpen, cancelling]);
 
   useRevealOnScroll(
     `${forcedState ?? "live"}-${order?.id ?? "none"}-${order?.status ?? ""}-${order?.payment_status ?? ""}`
@@ -337,6 +358,9 @@ export function OrderDetailClient({
         ]);
       if (orderRes?.order) {
         setOrder(orderRes.order);
+        if (!addressModalOpenRef.current) {
+          setAddressInProgressLock(false);
+        }
         if (timelineRes && Array.isArray(timelineRes.events)) {
           setTimeline(timelineRes.events);
         } else if (Array.isArray(orderRes.order.timeline)) {
@@ -367,6 +391,250 @@ export function OrderDetailClient({
       router.refresh();
     }
   }, [orderId, router]);
+
+  const createAddrIdempotencyKey = (targetOrderId: string) => {
+    const shortId = targetOrderId.slice(0, 8) || "ord";
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return `addr-upd-${shortId}-${crypto.randomUUID()}`;
+    }
+    return `addr-upd-${shortId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  };
+
+  const loadSavedAddresses = useCallback(async (targetOrder: GatewayOrder) => {
+    setAddrListError(null);
+    setLoadingAddrData(true);
+    try {
+      const addrRes = await api<{ addresses: GatewayAddress[] }>("/users/me/addresses");
+      const addrList = Array.isArray(addrRes?.addresses) ? addrRes.addresses : [];
+      setSavedAddresses(addrList);
+      if (addrList.length > 0) {
+        const alternate = addrList.find(
+          (a) =>
+            a.province_code !== targetOrder.shipping_address?.province_code ||
+            a.ward_code !== targetOrder.shipping_address?.ward_code ||
+            a.street_address !== targetOrder.shipping_address?.street_address
+        );
+        setSelectedAddressId((alternate ?? addrList[0]).id);
+      } else {
+        setSelectedAddressId("");
+      }
+    } catch (err) {
+      setSavedAddresses([]);
+      setSelectedAddressId("");
+      setAddrListError(
+        getErrorMessage(err, "Không thể tải danh sách địa chỉ đã lưu lúc này. Vui lòng thử lại.")
+      );
+    } finally {
+      setLoadingAddrData(false);
+    }
+  }, []);
+
+  const closeAddressModal = useCallback(() => {
+    addrPreviewSeqRef.current += 1;
+    addressModalOpenRef.current = false;
+    setAddressModalOpen(false);
+    setAddrPreview(null);
+    setAddrPreviewAddressId(null);
+    if (addressInProgressLock) {
+      void refreshOrder();
+    }
+  }, [addressInProgressLock, refreshOrder]);
+
+  useEffect(() => {
+    if (!confirmGroupCancelOpen && !addressModalOpen) return;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") {
+        if (confirmGroupCancelOpen && !cancelling) {
+          setConfirmGroupCancelOpen(false);
+        } else if (addressModalOpen && !addrPreviewLoading && !addrApplying) {
+          closeAddressModal();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    confirmGroupCancelOpen,
+    cancelling,
+    addressModalOpen,
+    addrPreviewLoading,
+    addrApplying,
+    closeAddressModal,
+  ]);
+
+  const handleOpenAddressModal = async () => {
+    if (!order || !canBuyerUpdateOrderAddress(order)) return;
+    addrPreviewSeqRef.current += 1;
+    setAddressModalOpen(true);
+    setAddressInProgressLock(false);
+    setAddrPreview(null);
+    setAddrPreviewAddressId(null);
+    setAddrError(null);
+    setAddrFeeChangedNotice(null);
+    setAddrIdempotencyKey(createAddrIdempotencyKey(order.id));
+    await loadSavedAddresses(order);
+  };
+
+  const buildAddressUpdateBody = (
+    previewOnly: boolean,
+    opts?: {
+      acceptFeeIncrease?: boolean;
+      expectedNewShippingFeeVnd?: number;
+      idempotencyKey?: string;
+    }
+  ): { ok: true; body: UpdateOrderAddressRequest } | { ok: false; error: string } => {
+    const cleanId = selectedAddressId.trim();
+    if (!cleanId) {
+      return {
+        ok: false,
+        error: "Vui lòng chọn một địa chỉ đã lưu từ sổ địa chỉ.",
+      };
+    }
+    return {
+      ok: true,
+      body: {
+        address_id: cleanId,
+        preview_only: previewOnly,
+        accept_fee_increase: opts?.acceptFeeIncrease ?? false,
+        expected_new_shipping_fee_vnd: opts?.expectedNewShippingFeeVnd ?? 0,
+        idempotency_key: opts?.idempotencyKey ?? "",
+      },
+    };
+  };
+
+  const handlePreviewAddressUpdate = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!order || addrPreviewLoading || addrApplying || addressInProgressLock) return;
+    const built = buildAddressUpdateBody(true);
+    if (!built.ok) {
+      setAddrError(built.error);
+      return;
+    }
+    const targetAddressId = built.body.address_id;
+    const seq = ++addrPreviewSeqRef.current;
+    setAddrError(null);
+    setAddrFeeChangedNotice(null);
+    setAddrPreviewLoading(true);
+    try {
+      const res = await api<UpdateOrderAddressResponse>(
+        `/orders/${encodeURIComponent(order.id)}/address`,
+        {
+          method: "PATCH",
+          json: built.body,
+        }
+      );
+      if (seq !== addrPreviewSeqRef.current) return;
+      setAddrPreview(res);
+      setAddrPreviewAddressId(targetAddressId);
+      setAddrIdempotencyKey(createAddrIdempotencyKey(order.id));
+    } catch (err) {
+      if (seq !== addrPreviewSeqRef.current) return;
+      if (isAddressUpdateInProgressError(err)) {
+        setAddressInProgressLock(true);
+        setAddrPreview(null);
+        setAddrPreviewAddressId(null);
+      }
+      setAddrError(translateAddressUpdateError(err));
+      if (err instanceof ApiError && err.status === 409) {
+        void refreshOrder();
+      }
+    } finally {
+      if (seq === addrPreviewSeqRef.current) {
+        setAddrPreviewLoading(false);
+      }
+    }
+  };
+
+  const handleApplyAddressUpdate = async () => {
+    if (
+      !order ||
+      !addrPreview ||
+      isAddressPreviewStale(addrPreviewAddressId, selectedAddressId) ||
+      addrApplying ||
+      addrPreviewLoading ||
+      addressInProgressLock
+    ) {
+      return;
+    }
+    const kind = classifyAddressUpdatePreview(order.payment_method, addrPreview);
+    if (kind === "prepaid_increase_blocked") return;
+
+    const idemKey = addrIdempotencyKey || createAddrIdempotencyKey(order.id);
+    const built = buildAddressUpdateBody(false, {
+      acceptFeeIncrease: kind === "cod_increase",
+      expectedNewShippingFeeVnd: addrPreview.new_shipping_fee_vnd,
+      idempotencyKey: idemKey,
+    });
+    if (!built.ok) {
+      setAddrError(built.error);
+      return;
+    }
+
+    const targetAddressId = built.body.address_id;
+    setAddrError(null);
+    setAddrFeeChangedNotice(null);
+    setAddrApplying(true);
+    try {
+      const res = await api<UpdateOrderAddressResponse>(
+        `/orders/${encodeURIComponent(order.id)}/address`,
+        {
+          method: "PATCH",
+          headers: { "Idempotency-Key": idemKey },
+          json: built.body,
+        }
+      );
+      if (res?.order) {
+        setOrder(res.order);
+      }
+      setAddressModalOpen(false);
+      setAddrPreview(null);
+      setAddrPreviewAddressId(null);
+      setAddressInProgressLock(false);
+      if (res?.shipment_recreated) {
+        showToast(
+          "Đã cập nhật địa chỉ giao hàng và tạo lại vận đơn mới. Gian hàng đã được thông báo in lại nhãn."
+        );
+      } else if (res?.shipment_queued) {
+        showToast("Đã cập nhật địa chỉ giao hàng. Vận đơn mới đang được xếp hàng tạo lại.");
+      } else {
+        showToast("Đã cập nhật địa chỉ nhận hàng thành công.");
+      }
+      await refreshOrder();
+    } catch (err) {
+      if (isAddressUpdateInProgressError(err)) {
+        setAddressInProgressLock(true);
+        setAddrPreview(null);
+        setAddrPreviewAddressId(null);
+        setAddrError(translateAddressUpdateError(err));
+        void refreshOrder();
+        return;
+      }
+
+      if (err instanceof ApiError && err.status === 409 && err.code === "ADDRESS_FEE_CHANGED") {
+        const refreshed = err.quote
+          ? applyTopLevelAddressFeeQuote({ quote: err.quote }, addrPreview, order.payment_method)
+          : null;
+        if (refreshed) {
+          setAddrPreview(refreshed);
+          setAddrPreviewAddressId(targetAddressId);
+          setAddrIdempotencyKey(createAddrIdempotencyKey(order.id));
+          setAddrFeeChangedNotice(
+            `Báo giá phí vận chuyển vừa thay đổi sang ${formatVnd(refreshed.new_shipping_fee_vnd)} (chênh lệch ${formatSignedVnd(refreshed.fee_delta_vnd)}). Vui lòng xem lại và xác nhận lại.`
+          );
+          return;
+        }
+        setAddrPreview(null);
+        setAddrPreviewAddressId(null);
+      }
+
+      setAddrError(translateAddressUpdateError(err));
+      if (err instanceof ApiError && err.status === 409) {
+        void refreshOrder();
+      }
+    } finally {
+      setAddrApplying(false);
+    }
+  };
 
   const handleOpenReviewForm = (itemId: string) => {
     setReviewingItemId((cur) => (cur === itemId ? null : itemId));
@@ -872,6 +1140,14 @@ export function OrderDetailClient({
   const allowCancel = canCancelOrder(order.status);
   const allowConfirm = canConfirmReceived(order.status);
   const allowReturn = canRequestReturn(order.status) && !returnRequest;
+  const isAddressEditableStatus = order.status === "CONFIRMED" || order.status === "PREPARING";
+  const addressBlockedByQueue =
+    isAddressEditableStatus && (order.shipment_job_status ?? "").toUpperCase() === "QUEUED";
+  const allowAddressUpdate = canBuyerUpdateOrderAddress(order);
+  const activeAddrPreview =
+    addrPreview && !isAddressPreviewStale(addrPreviewAddressId, selectedAddressId)
+      ? addrPreview
+      : null;
   const awaitingCarrierPickup = order.status === "PREPARING" && Boolean(order.tracking_code);
 
   const milestoneSteps = [
@@ -2374,6 +2650,26 @@ export function OrderDetailClient({
                     Mã vận đơn: <strong>{order.tracking_code}</strong>
                   </p>
                 )}
+
+                {isAddressEditableStatus && (
+                  <div className={styles.addressActionStack}>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      disabled={!allowAddressUpdate}
+                      onClick={() => void handleOpenAddressModal()}
+                    >
+                      {addressBlockedByQueue ? "Sửa địa chỉ (đang xử lý)" : "Sửa địa chỉ"}
+                    </Button>
+                    {addressBlockedByQueue && (
+                      <p className={styles.sideMuted}>
+                        Đơn hàng đang xếp hàng tạo vận đơn với hãng nên nút sửa địa chỉ tạm thời bị
+                        khóa.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Payment summary — strictly integer VND from backend */}
@@ -2416,6 +2712,346 @@ export function OrderDetailClient({
         subtitle="Đồ cơ bản từ các xưởng dệt Việt Nam, tiện mua thêm cho đơn kế tiếp"
         products={suggestedProducts}
       />
+
+      {addressModalOpen && (
+        <div
+          className={shared.confirmBackdrop}
+          onClick={(ev) => {
+            if (ev.target === ev.currentTarget && !addrPreviewLoading && !addrApplying) {
+              closeAddressModal();
+            }
+          }}
+        >
+          <div
+            className={`${shared.confirmDialog} ${styles.addressDialog}`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="detail-address-dialog-title"
+          >
+            <h2 id="detail-address-dialog-title" className={shared.confirmTitle}>
+              Sửa địa chỉ nhận hàng · Đơn {order.order_code}
+            </h2>
+            <p className={shared.confirmBody}>
+              Chỉ áp dụng khi đơn đang ở trạng thái Đã xác nhận / Đang chuẩn bị và đơn vị vận chuyển
+              chưa lấy hàng. Mã giảm giá và ưu đãi freeship đã chốt sẽ giữ nguyên.
+            </p>
+            {awaitingCarrierPickup && (
+              <p className={`${shared.feedbackBox} ${shared.feedbackWarn}`}>
+                Đơn đã có mã vận đơn <strong>{order.tracking_code}</strong>. Khi cập nhật thành
+                công, hệ thống sẽ hủy vận đơn cũ và tạo lại vận đơn mới; gian hàng sẽ được thông báo
+                in lại nhãn.
+              </p>
+            )}
+
+            {loadingAddrData ? (
+              <StateView kind="loading" title="Đang tải sổ địa chỉ đã lưu..." rows={3} />
+            ) : addrListError ? (
+              <div className={styles.returnSubPanel} role="alert">
+                <p className={shared.fieldError}>{addrListError}</p>
+                <div className={`${shared.formActions} ${styles.addressEmptyActions}`}>
+                  <Button
+                    type="button"
+                    variant="primary"
+                    size="sm"
+                    onClick={() => void loadSavedAddresses(order)}
+                  >
+                    Thử lại
+                  </Button>
+                  <Button type="button" variant="secondary" size="sm" onClick={closeAddressModal}>
+                    Đóng
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {addressInProgressLock && (
+                  <p className={`${shared.feedbackBox} ${shared.feedbackWarn}`} role="alert">
+                    Đơn hàng đang xử lý thay đổi địa chỉ hoặc cập nhật vận đơn. Nút xác nhận tạm
+                    thời bị khóa cho tới khi tiến trình hiện tại hoàn tất.
+                  </p>
+                )}
+
+                <form onSubmit={(e) => void handlePreviewAddressUpdate(e)} noValidate>
+                  {savedAddresses.length === 0 ? (
+                    <div className={styles.returnSubPanel}>
+                      <p className={styles.sideMuted}>
+                        Bạn chưa có địa chỉ đã lưu nào trong sổ địa chỉ. Vui lòng thêm địa chỉ mới
+                        trong sổ địa chỉ để đảm bảo tên Tỉnh/Thành phố và Phường/Xã khớp mã hành
+                        chính.
+                      </p>
+                      <div className={`${shared.formActions} ${styles.addressEmptyActions}`}>
+                        <Button variant="primary" size="sm" href="/tai-khoan?tab=dia-chi">
+                          Mở sổ địa chỉ để thêm mới
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div
+                        className={shared.confirmList}
+                        role="radiogroup"
+                        aria-label="Chọn địa chỉ đã lưu"
+                      >
+                        {savedAddresses.map((addr) => {
+                          const checked = selectedAddressId === addr.id;
+                          return (
+                            <label
+                              key={addr.id}
+                              className={`${styles.addressOption} ${
+                                checked ? styles.addressOptionSelected : ""
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name="order-saved-address"
+                                checked={checked}
+                                disabled={
+                                  addrPreviewLoading || addrApplying || addressInProgressLock
+                                }
+                                onChange={() => {
+                                  addrPreviewSeqRef.current += 1;
+                                  setSelectedAddressId(addr.id);
+                                  setAddrPreview(null);
+                                  setAddrPreviewAddressId(null);
+                                  setAddrError(null);
+                                  setAddrFeeChangedNotice(null);
+                                }}
+                                className={styles.addressRadio}
+                              />
+                              <span>
+                                <strong>{addr.recipient_name}</strong> ·{" "}
+                                <span className="num">{addr.recipient_phone}</span>
+                                <br />
+                                {[addr.street_address, addr.ward_name, addr.province_name]
+                                  .filter(Boolean)
+                                  .join(", ")}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <p className={`${styles.sideMuted} ${styles.addressBookHint}`}>
+                        Cần giao tới địa chỉ chưa có trong danh sách?{" "}
+                        <Link href="/tai-khoan?tab=dia-chi" className={shared.breadcrumbLink}>
+                          Mở sổ địa chỉ để thêm mới
+                        </Link>
+                      </p>
+                    </>
+                  )}
+
+                  {!activeAddrPreview && (
+                    <div className={`${shared.formActions} ${styles.addressFormActions}`}>
+                      <Button
+                        type="submit"
+                        variant="primary"
+                        size="md"
+                        disabled={
+                          addrPreviewLoading || addressInProgressLock || savedAddresses.length === 0
+                        }
+                      >
+                        {addrPreviewLoading
+                          ? "Đang kiểm tra phí giao hàng..."
+                          : "Kiểm tra chênh lệch phí"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="md"
+                        disabled={addrPreviewLoading}
+                        onClick={closeAddressModal}
+                      >
+                        Giữ địa chỉ cũ
+                      </Button>
+                    </div>
+                  )}
+                </form>
+
+                {addrFeeChangedNotice && (
+                  <p className={`${shared.feedbackBox} ${shared.feedbackWarn}`} role="alert">
+                    {addrFeeChangedNotice}
+                  </p>
+                )}
+
+                {activeAddrPreview &&
+                  (() => {
+                    const previewKind = classifyAddressUpdatePreview(
+                      order.payment_method,
+                      activeAddrPreview
+                    );
+                    const resolvedAddr = activeAddrPreview.resolved_address;
+                    return (
+                      <div className={styles.returnSubPanel} aria-live="polite">
+                        <p className={styles.sideLine}>
+                          <strong>Báo giá phí giao hàng mới</strong>
+                        </p>
+                        {resolvedAddr && (
+                          <p className={styles.sideMuted}>
+                            Địa chỉ mới: <strong>{resolvedAddr.recipient_name}</strong> ·{" "}
+                            <span className="num">{resolvedAddr.recipient_phone}</span> —{" "}
+                            {[
+                              resolvedAddr.street_address,
+                              resolvedAddr.ward_name,
+                              resolvedAddr.province_name,
+                            ]
+                              .filter(Boolean)
+                              .join(", ")}
+                          </p>
+                        )}
+                        <dl className={styles.ledgerBox}>
+                          <div className={styles.ledgerRow}>
+                            <dt className={styles.ledgerLabel}>Phí vận chuyển cũ</dt>
+                            <dd className="num">
+                              {formatVnd(activeAddrPreview.old_shipping_fee_vnd)}
+                            </dd>
+                          </div>
+                          <div className={styles.ledgerRow}>
+                            <dt className={styles.ledgerLabel}>Phí vận chuyển mới</dt>
+                            <dd className="num">
+                              <strong>{formatVnd(activeAddrPreview.new_shipping_fee_vnd)}</strong>
+                            </dd>
+                          </div>
+                          <div className={styles.ledgerRow}>
+                            <dt className={styles.ledgerLabel}>Chênh lệch phí</dt>
+                            <dd className="num">
+                              <strong>{formatSignedVnd(activeAddrPreview.fee_delta_vnd)}</strong>
+                            </dd>
+                          </div>
+                          <div className={styles.ledgerRow}>
+                            <dt className={styles.ledgerLabel}>Tổng thanh toán mới</dt>
+                            <dd className="num">
+                              <strong>{formatVnd(activeAddrPreview.new_total_payable_vnd)}</strong>
+                            </dd>
+                          </div>
+                        </dl>
+
+                        {previewKind === "cod_increase" && (
+                          <p
+                            className={`${shared.feedbackBox} ${shared.feedbackWarn}`}
+                            role="status"
+                          >
+                            Phí vận chuyển mới tăng thêm{" "}
+                            <strong className="num">
+                              {formatSignedVnd(activeAddrPreview.fee_delta_vnd)}
+                            </strong>
+                            . Tổng tiền thu hộ COD sẽ điều chỉnh từ{" "}
+                            <strong className="num">
+                              {formatVnd(activeAddrPreview.old_total_payable_vnd)}
+                            </strong>{" "}
+                            lên{" "}
+                            <strong className="num">
+                              {formatVnd(activeAddrPreview.new_total_payable_vnd)}
+                            </strong>
+                            .
+                          </p>
+                        )}
+
+                        {previewKind === "cod_decrease" && (
+                          <p
+                            className={`${shared.feedbackBox} ${shared.feedbackSuccess}`}
+                            role="status"
+                          >
+                            Phí vận chuyển mới giảm{" "}
+                            <strong className="num">
+                              {formatVnd(Math.abs(activeAddrPreview.fee_delta_vnd))}
+                            </strong>
+                            . Khoản thu hộ COD được cập nhật còn{" "}
+                            <strong className="num">
+                              {formatVnd(activeAddrPreview.new_total_payable_vnd)}
+                            </strong>
+                            .
+                          </p>
+                        )}
+
+                        {previewKind === "no_fee_change" && (
+                          <p
+                            className={`${shared.feedbackBox} ${shared.feedbackSuccess}`}
+                            role="status"
+                          >
+                            Phí vận chuyển không thay đổi. Bạn có thể xác nhận đổi địa chỉ ngay.
+                          </p>
+                        )}
+
+                        {previewKind === "prepaid_increase_blocked" && (
+                          <p
+                            className={`${shared.feedbackBox} ${shared.feedbackError}`}
+                            role="alert"
+                          >
+                            Phí vận chuyển mới tăng thêm{" "}
+                            <strong className="num">
+                              {formatSignedVnd(activeAddrPreview.fee_delta_vnd)}
+                            </strong>
+                            . Với đơn đã thanh toán trước (
+                            {getPaymentMethodLabel(order.payment_method)}
+                            ), hệ thống hiện chưa thu phụ thu bổ sung — vui lòng{" "}
+                            <strong>giữ địa chỉ cũ</strong> hoặc <strong>hủy đơn để đặt lại</strong>{" "}
+                            với địa chỉ mới.
+                          </p>
+                        )}
+
+                        {previewKind === "prepaid_unchanged" && (
+                          <p
+                            className={`${shared.feedbackBox} ${shared.feedbackInfo}`}
+                            role="status"
+                          >
+                            Tổng tiền bạn đã thanh toán (
+                            <strong className="num">
+                              {formatVnd(activeAddrPreview.old_total_payable_vnd)}
+                            </strong>
+                            ) giữ nguyên, không phát sinh phụ thu.
+                          </p>
+                        )}
+
+                        <div className={shared.formActions}>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="md"
+                            disabled={addrApplying}
+                            onClick={closeAddressModal}
+                          >
+                            Giữ địa chỉ cũ
+                          </Button>
+                          {previewKind === "cod_increase" && (
+                            <Button
+                              type="button"
+                              variant="primary"
+                              size="md"
+                              disabled={addrApplying || addressInProgressLock}
+                              onClick={() => void handleApplyAddressUpdate()}
+                            >
+                              {addrApplying
+                                ? "Đang cập nhật..."
+                                : `Xác nhận trả thêm (${formatSignedVnd(activeAddrPreview.fee_delta_vnd)})`}
+                            </Button>
+                          )}
+                          {(previewKind === "cod_decrease" ||
+                            previewKind === "no_fee_change" ||
+                            previewKind === "prepaid_unchanged") && (
+                            <Button
+                              type="button"
+                              variant="primary"
+                              size="md"
+                              disabled={addrApplying || addressInProgressLock}
+                              onClick={() => void handleApplyAddressUpdate()}
+                            >
+                              {addrApplying ? "Đang cập nhật..." : "Xác nhận đổi địa chỉ"}
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+              </>
+            )}
+
+            {addrError && (
+              <p className={shared.fieldError} role="alert">
+                {addrError}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
 
       {confirmGroupCancelOpen && cancelGroupInfo.isMultiShopGroup && (
         <div

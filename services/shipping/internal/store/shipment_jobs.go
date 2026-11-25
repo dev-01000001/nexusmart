@@ -317,15 +317,17 @@ func (s *PGStore) CompleteShipmentCreateJob(
 			id, order_id, shop_id, buyer_id, direction, return_request_id, redelivery_count,
 			carrier_code, service_code, tracking_code, label_url,
 			status, fee_vnd, cod_amount_vnd, weight_grams,
-			from_province_code, from_ward_code, to_province_code, to_ward_code,
+			from_name, from_phone, from_street_address, from_province_code, from_ward_code,
+			to_name, to_phone, to_street_address, to_province_code, to_ward_code,
 			created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
 		ON CONFLICT (order_id, direction) WHERE status <> 'cancelled' AND NOT (direction = 'RETURN' AND status = 'returned') DO NOTHING
 	`,
 		sh.ID, sh.OrderID, sh.ShopID, sh.BuyerID, sh.Direction, sh.ReturnRequestID, sh.RedeliveryCount,
 		sh.CarrierCode, sh.ServiceCode, sh.TrackingCode, sh.LabelURL,
 		sh.Status, sh.FeeVND, sh.CODAmountVND, sh.WeightGrams,
-		sh.FromProvinceCode, sh.FromWardCode, sh.ToProvinceCode, sh.ToWardCode,
+		sh.FromName, sh.FromPhone, sh.FromStreetAddress, sh.FromProvinceCode, sh.FromWardCode,
+		sh.ToName, sh.ToPhone, sh.ToStreetAddress, sh.ToProvinceCode, sh.ToWardCode,
 		sh.CreatedAt, sh.UpdatedAt,
 	)
 	if err != nil {
@@ -413,15 +415,17 @@ func (s *PGStore) CreateShipmentWithOutbox(
 			id, order_id, shop_id, buyer_id, direction, return_request_id, redelivery_count,
 			carrier_code, service_code, tracking_code, label_url,
 			status, fee_vnd, cod_amount_vnd, weight_grams,
-			from_province_code, from_ward_code, to_province_code, to_ward_code,
+			from_name, from_phone, from_street_address, from_province_code, from_ward_code,
+			to_name, to_phone, to_street_address, to_province_code, to_ward_code,
 			created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
 		ON CONFLICT (order_id, direction) WHERE status <> 'cancelled' AND NOT (direction = 'RETURN' AND status = 'returned') DO NOTHING
 	`,
 		sh.ID, sh.OrderID, sh.ShopID, sh.BuyerID, sh.Direction, sh.ReturnRequestID, sh.RedeliveryCount,
 		sh.CarrierCode, sh.ServiceCode, sh.TrackingCode, sh.LabelURL,
 		sh.Status, sh.FeeVND, sh.CODAmountVND, sh.WeightGrams,
-		sh.FromProvinceCode, sh.FromWardCode, sh.ToProvinceCode, sh.ToWardCode,
+		sh.FromName, sh.FromPhone, sh.FromStreetAddress, sh.FromProvinceCode, sh.FromWardCode,
+		sh.ToName, sh.ToPhone, sh.ToStreetAddress, sh.ToProvinceCode, sh.ToWardCode,
 		sh.CreatedAt, sh.UpdatedAt,
 	)
 	if err != nil {

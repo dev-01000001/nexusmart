@@ -21,10 +21,10 @@
 ## Ứng viên
 
 1. **PostgreSQL 16 (`unaccent` + `pg_trgm` + `tsvector`) + `pgvector` (`search_db` riêng)**
-   - **Phiên bản & bảo trì**: PostgreSQL 16 (đang dùng); `pgvector` `v0.8.7` (2026-10-01), image Docker Compose `pgvector/pgvector:pg16` (riêng CloudNativePG trên K8s dùng custom image từ `ghcr.io/cloudnative-pg/postgresql:16.16` + `postgresql-16-pgvector`, xem `ADR-0008`); bảo trì rất tích cực.
+   - **Phiên bản & bảo trì**: PostgreSQL 16 (đang dùng); `pgvector` `v0.8.7` (2026-10-01), image Docker Compose `pgvector/pgvector:0.8.7-pg16` (riêng CloudNativePG trên K8s dùng custom image từ `ghcr.io/cloudnative-pg/postgresql:16.16` + `postgresql-16-pgvector`, xem `ADR-0008`); bảo trì rất tích cực.
    - **Giấy phép**: PostgreSQL License (tương đương MIT/BSD, OSI).
    - **Client Go / Rust**: Go `github.com/pgvector/pgvector-go` `v0.4.1` (MIT) + `pgx/v5` (sẵn có); Rust `pgvector` crate + `sqlx`.
-   - **Vận hành & K8s**: Không thêm thành phần hạ tầng mới (chỉ đổi image Postgres Compose sang `pgvector/pgvector:pg16` — thử trên bản sao volume trước); chạy 1 container Compose; K8s đi chung CloudNativePG (`v1.30.2`, custom image PG 16.16 + `postgresql-16-pgvector`, `ADR-0008`).
+   - **Vận hành & K8s**: Không thêm thành phần hạ tầng mới (chỉ đổi image Postgres Compose sang `pgvector/pgvector:0.8.7-pg16` — thử trên bản sao volume trước); chạy 1 container Compose; K8s đi chung CloudNativePG (`v1.30.2`, custom image PG 16.16 + `postgresql-16-pgvector`, `ADR-0008`).
    - **Giới hạn**: Ở 50.000 SP với nhiều facet động (`COUNT(*) GROUP BY`), sửa lỗi gõ sai tiếng Việt và gợi ý prefix debounce 200 ms, cần tinh chỉnh index GIN/GiST/HNSW rất kỹ; p95 dễ vượt 200 ms khi chạy kiểm thử tải đồng thời (`k6`) kết hợp lọc sâu + đếm facet.
 
 2. **Meilisearch Community + `pgvector` (Hybrid RRF tại `services/search`)**
@@ -58,7 +58,7 @@
 
 ## Quyết định
 
-- **Đề xuất**: **Chọn Meilisearch Community (`v1.58.0`, MIT) cho tầng tìm kiếm từ khoá/fuzzy/facet/gợi ý, kết hợp `pgvector` (`v0.8.7`, client `pgvector-go v0.4.1`; Compose dùng `pgvector/pgvector:pg16`, K8s CNPG dùng custom image `ghcr.io/cloudnative-pg/postgresql:16.16` + `postgresql-16-pgvector`) cho tìm kiếm vector — hợp nhất bằng Reciprocal Rank Fusion (RRF) ngay trong `services/search` (Go)**.
+- **Đề xuất**: **Chọn Meilisearch Community (`v1.58.0`, MIT) cho tầng tìm kiếm từ khoá/fuzzy/facet/gợi ý, kết hợp `pgvector` (`v0.8.7`, client `pgvector-go v0.4.1`; Compose dùng `pgvector/pgvector:0.8.7-pg16`, K8s CNPG dùng custom image `ghcr.io/cloudnative-pg/postgresql:16.16` + `postgresql-16-pgvector`) cho tìm kiếm vector — hợp nhất bằng Reciprocal Rank Fusion (RRF) ngay trong `services/search` (Go)**.
   - **Lý do**:
     1. Khớp trực tiếp `docs/spec.md:31,172` (công cụ tìm kiếm nhẹ + `pgvector`) và mục tiêu p95 < 200 ms trên 50.000 SP với bộ nhớ gọn (~300 MB RAM, chạy mượt cả trên laptop dev lẫn cụm K8s nhỏ).
     2. Tách rõ trách nhiệm: Meilisearch xử lý phần mạnh nhất (prefix autocomplete 200 ms, typo tolerance, bộ lọc/facet động nhiều chiều, đồng nghĩa); `pgvector` (vốn đã bắt buộc cho `ADR-0006`) lưu vector embedding dùng chung vòng đời cập nhật event `product.>`; `services/search` ghép điểm RRF (`score = w_kw/(k+rank_kw) + w_vec/(k+rank_vec)`), tự bỏ qua nhánh vector nếu truy vấn ngắn (≤ 2 từ hoặc mã SKU) hoặc khi embedding API lỗi (`UC-AI02`).
@@ -69,10 +69,10 @@
   - Chuyển từ Meilisearch Community sang **OpenSearch** khi danh mục vượt > 2–5 triệu SP cần sharding phân tán OSS (tránh BUSL-1.1), cần phân tích hình thái tiếng Việt phức tạp/aggregation đa tầng, hoặc yêu cầu HA multi-node chịu ghi liên tục không phụ thuộc tái index từ NATS.
 - **Phụ thuộc**:
   - `ADR-0006` (chốt mô hình Embedding tiếng Việt và số chiều vector cho `pgvector`).
-  - `ADR-0008` (chốt `k3d` cục bộ và tách image Postgres: `pgvector/pgvector:pg16` cho Compose, custom image `ghcr.io/cloudnative-pg/postgresql:16.16` + `postgresql-16-pgvector` cho CloudNativePG).
+  - `ADR-0008` (chốt `k3d` cục bộ và tách image Postgres: `pgvector/pgvector:0.8.7-pg16` cho Compose, custom image `ghcr.io/cloudnative-pg/postgresql:16.16` + `postgresql-16-pgvector` cho CloudNativePG).
   - Bước tiền đề `CAT-F4` (thêm transactional outbox + phát `product.>` từ `services/product` lên stream `NEXUSMART`) và `CAT-F5` (fallback không dấu ở `product`).
 - **Chủ dự án quyết**: 2026-11-24: chủ dự án uỷ quyền cho manager chốt theo phương án đề xuất (nguyên văn: «mấy câu hỏi bạn từ đề xuất tự làm luôn đi»). Chủ dự án không duyệt riêng từng ADR.
-  - **Chốt (`w3-plan.md` §1.1 câu 2)**: Meilisearch Community (`v1.58.0`, MIT) + `pgvector` (`v0.8.7`, `pgvector-go v0.4.1`; Compose dùng `pgvector/pgvector:pg16`, K8s CNPG dùng custom image PG `16.16` + `postgresql-16-pgvector`).
+  - **Chốt (`w3-plan.md` §1.1 câu 2)**: Meilisearch Community (`v1.58.0`, MIT) + `pgvector` (`v0.8.7`, `pgvector-go v0.4.1`; Compose dùng `pgvector/pgvector:0.8.7-pg16`, K8s CNPG dùng custom image PG `16.16` + `postgresql-16-pgvector`).
   - **Cổng còn giữ**: đổi image Postgres phải thử trên bản sao volume trước (có bước quay lại); tắt Meilisearch vẫn phải tìm được qua `Product.ListProducts`; đo RAM sau khi thêm; push vẫn phải hỏi chủ dự án từng lần; mọi lần gọi Embedding/LLM thật đầu tiên và ngân sách đều phải hỏi chủ dự án (`ADR-0006`).
 
 ## Hệ quả
@@ -94,7 +94,7 @@
 | `T1` Event đồng bộ từ `product` (`CAT-F4`) | Mở rộng stream `NEXUSMART` thêm `product.>`; thêm bảng `outbox_events` + relay ở `services/product` phát `product.upserted`, `product.deleted`, `category.updated` | Tạo/sửa/duyệt/ẩn SP tạo bản ghi `outbox_events` trong cùng TX và xuất hiện trên NATS trong **< 1 giây**; có integration test |
 | `T2` Hợp đồng `search.proto` & khung `services/search` | Tạo `proto/nexusmart/search/v1/search.proto` (`SearchProducts`, `Suggest`, `ListSearchHistory`, `DeleteSearchHistory`, `ReindexAll`), chạy `make proto`, cập nhật `docs/contracts.md`; dựng `services/search` (Go, `:50059/:8089`, `search_db`, `/healthz`, `/readyz`, `/metrics`) | `buf lint`, `make proto`, unit test pass; consumer idempotent (`processed_events` + DLQ `NEXUSMART_DLQ`) |
 | `T3` Indexer Meilisearch + chuẩn hoá tiếng Việt | Tích hợp `meilisearch` vào Compose/Helm; cài chuẩn hoá `đ/Đ→d` + bỏ dấu (`name_folded`), mapping facet (`category_ids` gồm toàn bộ tổ tiên, `price_vnd`, `rating_avg`, `shop_id`, `status=APPROVED`); lệnh full-reindex batch | Sửa/duyệt SP trên `product` phản ánh trong `SearchProducts` **< 5 giây**; truy vấn `ao thun`, `duong`, `áo thun` trả kết quả khớp nhau |
-| `T4` Gợi ý, lịch sử & hybrid `pgvector` | Cài `Suggest` (từ khoá + danh mục + gian hàng + trending Redis), lịch sử tìm kiếm (client + `search_db` có xoá); đổi Postgres Compose image sang `pgvector/pgvector:pg16` (thử trên bản sao volume trước; K8s CNPG dùng custom image PG 16.16 + `postgresql-16-pgvector`), thêm bảng `product_embeddings` + RRF hybrid + fallback khi embedding/Meilisearch lỗi | `Suggest` phản hồi < 80 ms; tắt embedding API vẫn trả kết quả từ khoá; tắt Meilisearch tự fallback `Product.ListProducts` |
+| `T4` Gợi ý, lịch sử & hybrid `pgvector` | Cài `Suggest` (từ khoá + danh mục + gian hàng + trending Redis), lịch sử tìm kiếm (client + `search_db` có xoá); đổi Postgres Compose image sang `pgvector/pgvector:0.8.7-pg16` (thử trên bản sao volume trước; K8s CNPG dùng custom image PG 16.16 + `postgresql-16-pgvector`), thêm bảng `product_embeddings` + RRF hybrid + fallback khi embedding/Meilisearch lỗi | `Suggest` phản hồi < 80 ms; tắt embedding API vẫn trả kết quả từ khoá; tắt Meilisearch tự fallback `Product.ListProducts` |
 | `T5` Nối Gateway, Web & kiểm thử tải 50.000 SP | Mở route `/api/v1/search`, `/api/v1/search/suggest`, `/api/v1/search/history` ở `gateway`; bỏ trần 100 SP ở `CatalogExplorer` và thay mock `ShopHeader` (debounce 200 ms); script sinh **20.000–50.000 SP** (`CAT-D2`) + kịch bản `k6` | Chạy `k6` trên ≥ 20.000 SP (mục tiêu 50.000 SP): **p95 < 200 ms**, error rate < 0.5%; Playwright E2E pass cho tìm không dấu + lọc + gợi ý |
 
 ## Câu hỏi chủ dự án cần trả lời
@@ -110,7 +110,7 @@
 
 - **Meilisearch**: nâng tham chiếu `v1.57.0` → **`v1.58.0`** (`2026-11-23`), giữ giấy phép MIT (CE) / BUSL-1.1 (EE), không có CVE nghiêm trọng mới.
 - **`pgvector` & `pgvector-go`**: giữ `pgvector v0.8.7` (PostgreSQL License, đã vá `CVE-2026-103484`), nâng client Go `pgvector-go` `v0.4.0` → **`v0.4.1`** (MIT).
-- **Tách chiến lược image Postgres (liên đới `ADR-0008`)**: `pgvector/pgvector:pg16` chỉ dùng cho Docker Compose; CloudNativePG (`v1.30.2`) không chạy trực tiếp image này (`UID 26`/operand layout) và Image Volume Extensions yêu cầu PostgreSQL 18+, nên K8s dùng custom image từ `ghcr.io/cloudnative-pg/postgresql:16.16` cài `postgresql-16-pgvector`.
+- **Tách chiến lược image Postgres (liên đới `ADR-0008`)**: `pgvector/pgvector:0.8.7-pg16` chỉ dùng cho Docker Compose; CloudNativePG (`v1.30.2`) không chạy trực tiếp image này (`UID 26`/operand layout) và Image Volume Extensions yêu cầu PostgreSQL 18+, nên K8s dùng custom image từ `ghcr.io/cloudnative-pg/postgresql:16.16` cài `postgresql-16-pgvector`.
 - **Nguồn**:
   - https://github.com/meilisearch/meilisearch/releases/tag/v1.58.0
   - https://github.com/meilisearch/meilisearch/blob/main/LICENSE
@@ -127,3 +127,13 @@
   - pgvector & pgvector-go: https://github.com/pgvector/pgvector, https://github.com/pgvector/pgvector/releases, https://github.com/pgvector/pgvector-go
   - Typesense: https://github.com/typesense/typesense, https://github.com/typesense/typesense/releases, https://github.com/typesense/typesense-go
   - OpenSearch: https://github.com/opensearch-project/OpenSearch, https://github.com/opensearch-project/OpenSearch/releases, https://github.com/opensearch-project/opensearch-go
+
+## Phụ lục 2026-11-25: Tách container `search-postgres` cho `pgvector` (Quyết định G13)
+
+- **Kết quả thử nghiệm bản sao volume (2026-11-25)**: Manager đã thử chạy `pgvector/pgvector:0.8.7-pg16` (Debian glibc) trên bản sao raw volume `postgres_data` vốn khởi tạo bằng `postgres:16-alpine` (musl libc). Container khởi động được và bật được extension `vector` `0.8.7`, nhưng **do khác biệt collation giữa musl và glibc**, khi chưa chạy `REINDEX` có **18 chỉ mục B-tree trên 5 database bị hỏng thứ tự sắp xếp**, bao gồm cả một chỉ mục `UNIQUE` của `payment_db` (nguy cơ mất toàn vẹn dữ liệu tài chính).
+- **Quyết định cập nhật (G13, áp dụng cho Docker Compose & test cục bộ)**:
+  1. **Giữ nguyên container `postgres` chung ở `postgres:16-alpine`**; KHÔNG đổi image Postgres chung và KHÔNG sửa `infra/postgres/init-dbs.sql`.
+  2. **Thêm container `search-postgres` riêng** chạy `pgvector/pgvector:0.8.7-pg16` (ghim rõ phiên bản ≥ 0.8 vì `search` cần `hnsw.iterative_scan`), dùng volume riêng (`search_postgres_data`), `POSTGRES_DB=search_db`, chỉ nằm trong mạng nội bộ Compose (không mở cổng host), `mem_limit: 384m`, healthcheck TCP (`pg_isready -h 127.0.0.1`).
+  3. **Container `meilisearch`** ghim `getmeili/meilisearch:v1.58.0`, chỉ nằm trong mạng nội bộ Compose (không mở cổng host), `mem_limit: 512m`, `MEILI_MAX_INDEXING_MEMORY=256Mb`, `MEILI_NO_ANALYTICS=true`. Khi `search` lỗi hoặc Meilisearch tắt, `gateway` tự lùi về `Product.ListProducts` trong hạn `1,5 s` và trả `degraded_mode: "product_fallback"`.
+  4. **`scripts/test-db.sh`**: dùng container tạm `pgvector/pgvector:0.8.7-pg16` riêng cho `services/search` (`TEST_SEARCH_DB_URL`), giữ nguyên `postgres:16-alpine` cho 6 service còn lại.
+- **Lưu ý bắt buộc cho `ADR-0008` (CloudNativePG trên K8s)**: Khi triển khai CloudNativePG (nền Debian glibc) hoặc chuyển dữ liệu từ `postgres:16-alpine` (musl), **bắt buộc** thực hiện `REINDEX DATABASE` toàn bộ sau nâng cấp hoặc nạp lại sạch bằng `pg_dumpall` (không gắn trực tiếp PGDATA musl vào image glibc).

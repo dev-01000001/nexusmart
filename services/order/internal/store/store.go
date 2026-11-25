@@ -273,7 +273,124 @@ var (
 	ErrStaleShipmentAttempt          = fmt.Errorf("%w: shipment creation attempt expired or superseded", statemachine.ErrInvalidTransition)
 	ErrReturnTrackingPending         = errors.New("return shipment tracking code not yet persisted; retry event")
 	ErrOrderNotNeedingReview         = errors.New("order does not require manual review")
+	ErrAddressUpdateNotAllowed       = errors.New("ADDRESS_UPDATE_NOT_ALLOWED: order status does not allow address update")
+	ErrAddressChangeInProgress       = errors.New("ADDRESS_UPDATE_SHIPMENT_IN_PROGRESS: order has an active shipment creation or address change in progress")
+	ErrAddressChangeIdemConflict     = errors.New("IDEMPOTENCY_KEY_CONFLICT: idempotency key already used with a different address update payload")
+	ErrAddressChangeLostLease        = errors.New("address change lease lost or superseded")
+	ErrCODLimitExceeded              = errors.New("COD_LIMIT_EXCEEDED")
 )
+
+// CODLimitExceededError is returned when a COD address update pushes a checkout group's live COD total over MaxOrderVND (O3).
+type CODLimitExceededError struct {
+	TotalVND int64
+	MaxVND   int64
+}
+
+func (e *CODLimitExceededError) Error() string {
+	return fmt.Sprintf("COD_LIMIT_EXCEEDED: checkout COD total %d VND exceeds COD maximum %d VND", e.TotalVND, e.MaxVND)
+}
+
+func (e *CODLimitExceededError) Unwrap() error {
+	return ErrCODLimitExceeded
+}
+
+// Durable state machine states for order_address_changes (UC-B26, G3).
+const (
+	AddressChangeStateOpen              = "OPEN"
+	AddressChangeStateShipmentCancelled = "SHIPMENT_CANCELLED"
+	AddressChangeStateCODAdjusted       = "COD_ADJUSTED"
+	AddressChangeStateApplied           = "APPLIED"
+	AddressChangeStateRevertingCOD      = "REVERTING_COD"
+	AddressChangeStateRestoringShipment = "RESTORING_SHIPMENT"
+	AddressChangeStateCompleted         = "COMPLETED"
+	AddressChangeStateAborted           = "ABORTED"
+)
+
+// IsAddressChangeTerminal reports whether an order_address_changes intent has reached a terminal state.
+func IsAddressChangeTerminal(state string) bool {
+	return state == AddressChangeStateCompleted || state == AddressChangeStateAborted
+}
+
+// EscapeILIKEPattern escapes wildcard characters for PostgreSQL ILIKE ... ESCAPE '\'.
+func EscapeILIKEPattern(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return "%" + replacer.Replace(trimmed) + "%"
+}
+
+// BuildOrderAddressUpdatedOutbox builds the PII-safe order.address_updated outbox event emitted in the same
+// transaction that changes the address (G3). When the order already had a shipment, the old one is cancelled and
+// the new one is still being recreated at that point: shipment_queued=true with an empty tracking_code.
+func BuildOrderAddressUpdatedOutbox(ord db.Order, change db.OrderAddressChange) (db.InsertOutboxEventParams, error) {
+	var snap orderv1.OrderAddressSnapshot
+	if len(change.NewAddressJSON) > 0 {
+		_ = json.Unmarshal(change.NewAddressJSON, &snap)
+	}
+	payloadBytes, err := json.Marshal(events.OrderAddressUpdatedPayload{
+		OrderID:        ord.ID,
+		OrderCode:      ord.OrderCode,
+		BuyerID:        ord.BuyerID,
+		ShopID:         ord.ShopID,
+		OldFeeVND:      change.OldShippingFeeVND,
+		NewFeeVND:      change.AppliedShippingFeeVND,
+		ShipmentQueued: change.HadShipment,
+		ProvinceName:   strings.TrimSpace(snap.GetProvinceName()),
+		WardName:       strings.TrimSpace(snap.GetWardName()),
+	})
+	if err != nil {
+		return db.InsertOutboxEventParams{}, err
+	}
+	return db.InsertOutboxEventParams{
+		ID:          uuid.NewString(),
+		EventType:   events.SubjectOrderAddressUpdated,
+		TraceID:     change.TraceID,
+		Traceparent: change.Traceparent,
+		PayloadJSON: payloadBytes,
+	}, nil
+}
+
+// addressShipmentNote is the system timeline note for the shipment recreated after an address change was applied,
+// or restored to the unchanged address after the change was rejected.
+func addressShipmentNote(restoring bool, outcome, carrier, tracking string) string {
+	subject, cause := "Shipment recreation", "after address update"
+	if restoring {
+		subject, cause = "Shipment restoration to the original address", "after address update was rejected"
+	}
+	switch outcome {
+	case "failed":
+		return subject + " failed " + cause + "; seller can recreate shipment"
+	case "queued":
+		return subject + " queued for async retry " + cause
+	default:
+		return fmt.Sprintf("%s done %s via %s (tracking: %s)", subject, cause, carrier, tracking)
+	}
+}
+
+func buildAddressChangedTimelineNote(ch db.OrderAddressChange) string {
+	var snap orderv1.OrderAddressSnapshot
+	if len(ch.NewAddressJSON) > 0 {
+		_ = json.Unmarshal(ch.NewAddressJSON, &snap)
+	}
+	loc := strings.TrimSpace(strings.Trim(strings.Join([]string{
+		strings.TrimSpace(snap.GetWardName()),
+		strings.TrimSpace(snap.GetProvinceName()),
+	}, ", "), ", "))
+	if ch.FeeAdjusted {
+		if loc != "" {
+			return fmt.Sprintf("Buyer updated shipping address (%s); shipping fee adjusted from %d to %d VND",
+				loc, ch.OldShippingFeeVND, ch.AppliedShippingFeeVND)
+		}
+		return fmt.Sprintf("Buyer updated shipping address; shipping fee adjusted from %d to %d VND",
+			ch.OldShippingFeeVND, ch.AppliedShippingFeeVND)
+	}
+	if loc != "" {
+		return fmt.Sprintf("Buyer updated shipping address (%s)", loc)
+	}
+	return "Buyer updated shipping address"
+}
 
 // FailedCheckoutWithOrdersError is returned by CreateCheckoutGroup when a previous FAILED checkout
 // group for the same (buyer_id, idempotency_key) already persisted sub-orders (D11).
@@ -932,6 +1049,143 @@ type ExpiredGroupCandidate struct {
 	PaymentID       string
 }
 
+// OrderListFilter configures extended ListOrders filtering and optional full-scope status counts (S04, G8).
+type OrderListFilter struct {
+	BuyerID             string
+	ShopID              string
+	Status              string
+	Statuses            []string
+	CarrierCode         string
+	PaymentMethod       string
+	Keyword             string
+	DueCutoff           *time.Time
+	Limit               int32
+	Offset              int32
+	IncludeStatusCounts bool
+}
+
+// OrderListResult bundles paginated orders, total count matching filters, and optional full-scope status counts.
+type OrderListResult struct {
+	Orders       []OrderAggregate
+	Total        int64
+	StatusCounts map[string]int64
+}
+
+// PickingListRow aggregates SKU pick counts across selected orders of a shop (UC-S15, G4).
+type PickingListRow struct {
+	SKUID         string
+	ProductID     string
+	ProductName   string
+	SKUName       string
+	TotalQuantity int32
+	OrderCount    int32
+	OrderCodes    []string
+}
+
+// BatchShipPrepareOutcome describes per-order validation and locking before enqueueing shipment (UC-S15, G4).
+type BatchShipPrepareOutcome struct {
+	Order         *OrderAggregate
+	OrderCode     string
+	CreatingToken string
+	SkipReason    string
+	SkipMessage   string
+	TrackingCode  string
+}
+
+// OpenAddressChangeParams opens a durable order_address_changes intent under orders FOR UPDATE (UC-B26, G3).
+type OpenAddressChangeParams struct {
+	ID                        string
+	OrderID                   string
+	BuyerID                   string
+	IdempotencyKey            string
+	RequestHash               string
+	NewAddressJSON            []byte
+	CarrierCode               string
+	ServiceCode               string
+	ExpectedOldAddressJSON    []byte // compared under lock when non-nil so a concurrent address change is never applied twice
+	ExpectedOldShippingFeeVND int64
+	ExpectedOldTotalPayable   int64
+	NewShippingFeeVND         int64
+	AppliedShippingFeeVND     int64
+	NewTotalPayableVND        int64
+	FeeAdjusted               bool
+	NeedsCODAdjust            bool
+	MaxCODGroupTotalVND       int64 // > 0 enforces group COD ceiling inside OpenOrderAddressChange transaction (O3)
+	ClaimToken                string
+	LeaseDuration             time.Duration
+	TraceID                   string
+	Traceparent               string
+	Now                       time.Time
+}
+
+// OpenAddressChangeResult reports the created or idempotently replayed intent and current order aggregate.
+type OpenAddressChangeResult struct {
+	Change   db.OrderAddressChange
+	Order    *OrderAggregate
+	Replayed bool
+}
+
+// AddressChangeProgressUpdate advances a claimed order_address_changes intent state.
+type AddressChangeProgressUpdate struct {
+	ID                 string
+	ExpectedClaimToken string
+	State              string
+	ShipmentCancelled  bool
+	CODAdjusted        bool
+	ShipmentRecreated  bool
+	ShipmentQueued     bool
+	ShipmentJobID      string
+	NewTrackingCode    string
+	OutboxEmitted      bool
+	AbortCode          string
+	LastError          string
+	ClaimedUntil       *time.Time
+	ClaimToken         string
+	Now                time.Time
+}
+
+// ApplyAddressChangeParams applies Step 4 of UC-B26 atomically under orders FOR UPDATE.
+type ApplyAddressChangeParams struct {
+	ChangeID      string
+	OrderID       string
+	ClaimToken    string
+	LeaseDuration time.Duration
+	Now           time.Time
+}
+
+// ApplyAddressChangeResult reports the outcome of Step 4 (applied, needs COD revert, or aborted).
+type ApplyAddressChangeResult struct {
+	Change         db.OrderAddressChange
+	Order          *OrderAggregate
+	NeedsCODRevert bool
+	Aborted        bool
+	AbortedStatus  string
+	EmittedOutbox  bool
+}
+
+// FinalizeAddressChangeShipmentParams commits Step 5 shipment recreation results atomically (G3).
+type FinalizeAddressChangeShipmentParams struct {
+	ChangeID      string
+	OrderID       string
+	ClaimToken    string
+	CarrierCode   string
+	ServiceCode   string
+	TrackingCode  string
+	LabelURL      string
+	Queued        bool
+	JobID         string
+	PermanentFail bool
+	LastError     string
+	Now           time.Time
+}
+
+// FinalizeAddressChangeResult reports the outcome of Step 5 finalization.
+type FinalizeAddressChangeResult struct {
+	Change                    db.OrderAddressChange
+	Order                     *OrderAggregate
+	NeedsOrphanShipmentCancel bool
+}
+
 // Store defines the persistence contract for OrderService (Postgres in prod, Memory in unit tests).
 type Store interface {
 	GetCheckoutGroupForIdempotency(ctx context.Context, buyerID, idempotencyKey string) (*CheckoutGroupLookup, error)
@@ -951,9 +1205,27 @@ type Store interface {
 	CancelCheckoutGroupOrders(ctx context.Context, params CancelGroupOrdersParams) (*CancelGroupOrdersResult, error)
 
 	GetOrderWithDetails(ctx context.Context, orderID string) (*OrderAggregate, error)
+	GetOrderByCode(ctx context.Context, orderCode string) (*OrderAggregate, error)
+	ListOrdersByIDs(ctx context.Context, orderIDs []string) ([]db.Order, error)
 	ListOrdersByCheckoutGroup(ctx context.Context, checkoutGroupID string) ([]OrderAggregate, error)
 	ListOrdersFiltered(ctx context.Context, buyerID, shopID, status string, limit, offset int32) ([]OrderAggregate, int64, error)
+	ListOrdersWithFilter(ctx context.Context, filter OrderListFilter) (*OrderListResult, error)
+	GetPickingListByOrderIDs(ctx context.Context, shopID string, orderIDs []string) ([]PickingListRow, error)
+	PrepareOrderForBatchShip(ctx context.Context, orderID, shopID, reqCarrier, reqService string, now time.Time) (*BatchShipPrepareOutcome, error)
 	GetOrderTimeline(ctx context.Context, orderID string) ([]db.OrderTimelineEvent, error)
+
+	GetOrderAddressChangeByOrderAndIdemKey(ctx context.Context, orderID, idemKey string) (*db.OrderAddressChange, error)
+	GetOrderAddressChangeByID(ctx context.Context, id string) (*db.OrderAddressChange, error)
+	HasOpenOrderAddressChange(ctx context.Context, orderID string) (bool, error)
+	OpenOrderAddressChange(ctx context.Context, params OpenAddressChangeParams) (*OpenAddressChangeResult, error)
+	AdvanceAddressChangeState(ctx context.Context, params AddressChangeProgressUpdate) (*db.OrderAddressChange, error)
+	ApplyAddressChangeToOrder(ctx context.Context, params ApplyAddressChangeParams) (*ApplyAddressChangeResult, error)
+	FinalizeAddressChangeShipment(ctx context.Context, params FinalizeAddressChangeShipmentParams) (*FinalizeAddressChangeResult, error)
+	ReleaseAddressChangeWithBackoff(ctx context.Context, id, claimToken string, nextAttemptAt time.Time, lastErr string, now time.Time) error
+	RenewOrderAddressChangeLease(ctx context.Context, id, claimToken string, now time.Time, lease time.Duration) (*db.OrderAddressChange, error)
+	ClaimDueOrderAddressChanges(ctx context.Context, now time.Time, lease time.Duration, claimToken string, limit int32) ([]db.OrderAddressChange, error)
+	ClaimNextDueOrderAddressChange(ctx context.Context, now time.Time, lease time.Duration, claimToken string, excludeIDs []string) (*db.OrderAddressChange, error)
+	ClaimOrderAddressChangeByID(ctx context.Context, id, claimToken string, now time.Time, lease time.Duration) (*db.OrderAddressChange, error)
 
 	TransitionOrdersPaymentResult(ctx context.Context, params PaymentResultTransitionParams) (*PaymentResultTransitionOutcome, error)
 	TransitionOrderStatus(ctx context.Context, params SingleOrderTransitionParams) (*OrderTransitionResult, error)

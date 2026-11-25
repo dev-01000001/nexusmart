@@ -11,6 +11,15 @@ const (
 	// SubjectProductReviewed matches docs/contracts.md Section 5.
 	SubjectProductReviewed = "product.reviewed"
 
+	// SubjectProductUpserted matches docs/contracts.md Section 5 (B1/G9/G11).
+	SubjectProductUpserted = "product.upserted"
+
+	// SubjectProductDeleted matches docs/contracts.md Section 5 (B1/G11).
+	SubjectProductDeleted = "product.deleted"
+
+	// SubjectProductCategoryUpdated matches docs/contracts.md Section 5 (B1/G9).
+	SubjectProductCategoryUpdated = "product.category_updated"
+
 	// SubjectReviewCreated matches docs/contracts.md Section 5 (E6).
 	SubjectReviewCreated = "review.created"
 
@@ -66,4 +75,52 @@ type ShopStatusChangedPayload struct {
 	ActorID     string `json:"actor_id,omitempty"`
 	ApproverID  string `json:"approver_id,omitempty"`
 	OccurredAt  string `json:"occurred_at,omitempty"`
+}
+
+// ProductUpsertedPayload matches docs/contracts.md Section 5 for product.upserted (B1/G9/G11).
+// Strictly omits commission_rate_bps and flagged_keywords.
+type ProductUpsertedPayload struct {
+	ProductID           string   `json:"product_id"`
+	ShopID              string   `json:"shop_id"`
+	CategoryID          string   `json:"category_id"`
+	CategoryAncestorIDs []string `json:"category_ancestor_ids"`
+	Name                string   `json:"name"`
+	Slug                string   `json:"slug"`
+	Description         string   `json:"description"`
+	ThumbnailURL        string   `json:"thumbnail_url"`
+	MinPriceVND         int64    `json:"min_price_vnd"`
+	MaxPriceVND         int64    `json:"max_price_vnd"`
+	Status              string   `json:"status"`
+	SKUCodes            []string `json:"sku_codes"`
+	SKUAttributesText   string   `json:"sku_attributes_text"`
+	TotalStock          int32    `json:"total_stock"`
+	SKUCount            int32    `json:"sku_count"`
+	SKUIDs              []string `json:"sku_ids"`
+	DefaultSKUID        string   `json:"default_sku_id"`
+	Colors              []string `json:"colors"`
+	ColorCodes          []string `json:"color_codes"`
+	Sizes               []string `json:"sizes"`
+	RatingAvgX100       int32    `json:"rating_avg_x100"`
+	ReviewCount         int32    `json:"review_count"`
+	ShopSuspended       bool     `json:"shop_suspended"`
+	UpdatedAt           string   `json:"updated_at"`
+}
+
+// ProductDeletedPayload matches docs/contracts.md Section 5 for product.deleted (B1/G11).
+type ProductDeletedPayload struct {
+	ProductID string `json:"product_id"`
+	ShopID    string `json:"shop_id"`
+	Reason    string `json:"reason"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// ProductCategoryUpdatedPayload matches docs/contracts.md Section 5 for product.category_updated (B1/G9).
+type ProductCategoryUpdatedPayload struct {
+	CategoryID string `json:"category_id"`
+	Name       string `json:"name"`
+	Slug       string `json:"slug"`
+	ParentID   string `json:"parent_id"`
+	SortOrder  int32  `json:"sort_order"`
+	Action     string `json:"action"`
+	UpdatedAt  string `json:"updated_at"`
 }

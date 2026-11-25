@@ -51,6 +51,7 @@ const SERVICE_METHOD_ALLOWLIST: &[(&str, &[&str])] = &[
     ("CreateRefund", &["order-service"]),
     ("GetFeeConfig", &["order-service"]),
     ("GetPaymentMethodConfigs", &["order-service"]),
+    ("AdjustCODShippingFee", &["order-service"]),
 ];
 
 #[derive(Deserialize)]
@@ -467,6 +468,7 @@ mod tests {
             "ListReconciliationRuns",
             "UpdatePaymentMethodConfig",
             "DecideRefundApproval",
+            "AdjustCODShippingFee",
         ] {
             let err = auth().authenticate(&m, method).unwrap_err();
             assert_eq!(err.code(), tonic::Code::Unauthenticated, "{method}");
@@ -515,6 +517,7 @@ mod tests {
             "CreateRefund",
             "GetFeeConfig",
             "GetPaymentMethodConfigs",
+            "AdjustCODShippingFee",
         ] {
             let ok = a
                 .authenticate(&md(&[bearer(svc(SVC_KEY, exp_in(60)))]), method)
@@ -975,6 +978,7 @@ mod tests {
             "CreateRefund",
             "GetFeeConfig",
             "GetPaymentMethodConfigs",
+            "AdjustCODShippingFee",
         ] {
             // Only `order-service` is authorized to call PaymentService internal RPCs.
             let ok = a

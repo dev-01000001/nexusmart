@@ -17,14 +17,14 @@ use crate::domain::{
     normalize_cod_carrier_code, parse_and_validate_reconciliation_date,
     parse_reconciliation_run_type_filter, parse_seller_ledger_account_filter,
     validate_cod_reconciliation_rows, validate_user_refund_idempotency_key,
-    CodReconciliationRowInput, CreatePaymentInput, CreateRefundInput, DecideRefundApprovalInput,
-    GetFeeConfigFilter, ImportCodReconciliationInput, ListReconciliationRunsFilter,
-    ListRefundsFilter, ListSellerLedgerFilter, PaymentFeeConfigRecord,
-    PaymentMethod as DomainMethod, PaymentMethodConfigRecord, PaymentWithAllocations,
-    ReconciliationActionKind, ReconciliationItemRecord, ReconciliationQueueItem as DomainQueueItem,
-    ReconciliationRunRecord, RefundRecord, ResolveReconciliationInput, SellerLedgerEntryRecord,
-    SetFeeConfigInput, SettleRefundInput, ShopAllocationInput, SubmitRefundBankAccountInput,
-    UpdatePaymentMethodConfigInput,
+    AdjustCodShippingFeeInput, CodReconciliationRowInput, CreatePaymentInput, CreateRefundInput,
+    DecideRefundApprovalInput, GetFeeConfigFilter, ImportCodReconciliationInput,
+    ListReconciliationRunsFilter, ListRefundsFilter, ListSellerLedgerFilter,
+    PaymentFeeConfigRecord, PaymentMethod as DomainMethod, PaymentMethodConfigRecord,
+    PaymentWithAllocations, ReconciliationActionKind, ReconciliationItemRecord,
+    ReconciliationQueueItem as DomainQueueItem, ReconciliationRunRecord, RefundRecord,
+    ResolveReconciliationInput, SellerLedgerEntryRecord, SetFeeConfigInput, SettleRefundInput,
+    ShopAllocationInput, SubmitRefundBankAccountInput, UpdatePaymentMethodConfigInput,
 };
 use crate::service::PaymentService;
 use crate::telemetry::{attach_parent_context, extract_context_from_grpc};
@@ -36,8 +36,9 @@ pub mod pb {
 
 use pb::payment_service_server::PaymentService as PaymentServiceTrait;
 use pb::{
-    AccountBalance, CancelPaymentRequest, CancelPaymentResponse, CreatePaymentRequest,
-    CreatePaymentResponse, CreateRefundRequest, CreateRefundResponse, DecideRefundApprovalRequest,
+    AccountBalance, AdjustCodShippingFeeRequest, AdjustCodShippingFeeResponse,
+    CancelPaymentRequest, CancelPaymentResponse, CreatePaymentRequest, CreatePaymentResponse,
+    CreateRefundRequest, CreateRefundResponse, DecideRefundApprovalRequest,
     DecideRefundApprovalResponse, GetFeeConfigRequest, GetFeeConfigResponse,
     GetLedgerSummaryRequest, GetLedgerSummaryResponse, GetPaymentMethodConfigsRequest,
     GetPaymentMethodConfigsResponse, GetPaymentRequest, GetPaymentResponse,
@@ -1242,6 +1243,54 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         .await;
 
         self.finish_rpc(&span, "DecideRefundApproval", start, &trace_id, &result);
+        result
+    }
+
+    async fn adjust_cod_shipping_fee(
+        &self,
+        request: Request<AdjustCodShippingFeeRequest>,
+    ) -> Result<Response<AdjustCodShippingFeeResponse>, Status> {
+        let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("AdjustCODShippingFee", &request);
+        let caller = CallerAuth::from_request(&self.auth, &request, "AdjustCODShippingFee");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            // G2: Strictly service-token-only for `order-service`; reject all end-user JWTs
+            // (including admin/super_admin) and any other service identity with PermissionDenied.
+            if !caller.caller.is_service || caller.caller.service != "order-service" {
+                return Err(Status::permission_denied(
+                    "forbidden: AdjustCODShippingFee is restricted to order-service",
+                ));
+            }
+
+            let adjusted = self
+                .service
+                .adjust_cod_shipping_fee(AdjustCodShippingFeeInput {
+                    order_id: req.order_id,
+                    new_shipping_fee_vnd: req.new_shipping_fee_vnd,
+                    idempotency_key: req.idempotency_key,
+                    trace_id: trace_id.clone(),
+                })
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            Ok(Response::new(AdjustCodShippingFeeResponse {
+                payment: Some(to_proto_payment_for_caller(
+                    adjusted.payment,
+                    &caller.caller,
+                )),
+                old_shipping_fee_vnd: adjusted.old_shipping_fee_vnd,
+                new_shipping_fee_vnd: adjusted.new_shipping_fee_vnd,
+                new_order_payable_vnd: adjusted.new_order_payable_vnd,
+                already_applied: adjusted.already_applied,
+            }))
+        }
+        .instrument(span.clone())
+        .await;
+
+        self.finish_rpc(&span, "AdjustCODShippingFee", start, &trace_id, &result);
         result
     }
 }
@@ -3733,5 +3782,139 @@ mod tests {
                 "Item E: user CreateRefund must reject reserved key={bad_key:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_w3b3_g2_adjust_cod_shipping_fee_rbac_and_validation() {
+        let (server, metrics) = test_grpc_server();
+
+        let make_req = || AdjustCodShippingFeeRequest {
+            order_id: "ord-cod-1".into(),
+            new_shipping_fee_vnd: 45_000,
+            idempotency_key: "addr-cod-1".into(),
+        };
+
+        // Unauthenticated -> Unauthenticated.
+        let unauth = server
+            .adjust_cod_shipping_fee(Request::new(make_req()))
+            .await
+            .unwrap_err();
+        assert_eq!(unauth.code(), tonic::Code::Unauthenticated);
+
+        // Every end-user role (including admin & super_admin) MUST receive PermissionDenied.
+        for role in [
+            "buyer",
+            "seller",
+            "admin",
+            "super_admin",
+            "moderator",
+            "cskh",
+            "accountant",
+            "ops",
+        ] {
+            let sid = if role == "seller" { "shop-1" } else { "" };
+            let err = server
+                .adjust_cod_shipping_fee(with_auth(make_req(), role, &format!("u-{role}"), sid))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.code(),
+                tonic::Code::PermissionDenied,
+                "end-user role={role} must be denied AdjustCODShippingFee"
+            );
+        }
+
+        // Other service tokens (e.g., product-service, shipping-service) MUST receive PermissionDenied.
+        for other_svc in ["product-service", "shipping-service", "gateway"] {
+            let tok = crate::auth::sign_hs256(
+                "grpc-test-service-key",
+                serde_json::json!({
+                    "sub": other_svc,
+                    "role": "super_admin",
+                    "service": other_svc,
+                    "exp": Utc::now().timestamp() + 60,
+                }),
+            );
+            let mut req = Request::new(make_req());
+            req.metadata_mut().insert(
+                "authorization",
+                MetadataValue::try_from(format!("Bearer {tok}")).unwrap(),
+            );
+            let err = server.adjust_cod_shipping_fee(req).await.unwrap_err();
+            assert_eq!(
+                err.code(),
+                tonic::Code::PermissionDenied,
+                "service={other_svc} must be denied AdjustCODShippingFee"
+            );
+        }
+
+        // order-service token: invalid arguments return InvalidArgument before touching DB.
+        let order_svc_req = |payload: AdjustCodShippingFeeRequest| {
+            let tok = crate::auth::sign_hs256(
+                "grpc-test-service-key",
+                serde_json::json!({
+                    "sub": "order-service",
+                    "role": "service",
+                    "service": "order-service",
+                    "exp": Utc::now().timestamp() + 60,
+                }),
+            );
+            let mut req = Request::new(payload);
+            req.metadata_mut().insert(
+                "authorization",
+                MetadataValue::try_from(format!("Bearer {tok}")).unwrap(),
+            );
+            req
+        };
+
+        for (label, bad) in [
+            (
+                "empty order_id",
+                AdjustCodShippingFeeRequest {
+                    order_id: "   ".into(),
+                    new_shipping_fee_vnd: 30_000,
+                    idempotency_key: "k-1".into(),
+                },
+            ),
+            (
+                "empty idempotency_key",
+                AdjustCodShippingFeeRequest {
+                    order_id: "ord-1".into(),
+                    new_shipping_fee_vnd: 30_000,
+                    idempotency_key: "  ".into(),
+                },
+            ),
+            (
+                "negative shipping fee",
+                AdjustCodShippingFeeRequest {
+                    order_id: "ord-1".into(),
+                    new_shipping_fee_vnd: -100,
+                    idempotency_key: "k-1".into(),
+                },
+            ),
+        ] {
+            let err = server
+                .adjust_cod_shipping_fee(order_svc_req(bad))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.code(),
+                tonic::Code::InvalidArgument,
+                "order-service {label}"
+            );
+        }
+
+        // Valid order-service request passes auth & validation and reaches lazy DB (not Unimplemented/Auth/InvalidArg).
+        let err = server
+            .adjust_cod_shipping_fee(order_svc_req(make_req()))
+            .await
+            .unwrap_err();
+        assert_ne!(err.code(), tonic::Code::Unimplemented);
+        assert_ne!(err.code(), tonic::Code::Unauthenticated);
+        assert_ne!(err.code(), tonic::Code::PermissionDenied);
+        assert_ne!(err.code(), tonic::Code::InvalidArgument);
+
+        let prom = metrics.render_prometheus();
+        assert!(prom.contains("method=\"AdjustCODShippingFee\""));
     }
 }

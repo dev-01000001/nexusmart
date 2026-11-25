@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { ANNOUNCEMENT_BAR, CATEGORIES, MEGA_MENU_GROUPS, TRENDING_KEYWORDS } from "@/data";
+import { ANNOUNCEMENT_BAR, CATEGORIES, MEGA_MENU_GROUPS } from "@/data";
 import { api } from "@/lib/api";
 import type {
   GatewayActiveShopDiscount,
@@ -13,16 +13,22 @@ import type {
   GatewayFlashSaleItem,
   GatewayFlashSalesResponse,
   GatewayNotificationsResponse,
-  GatewayProduct,
-  PaginatedResponse,
+  GatewaySearchHistoryItem,
+  GatewaySearchProductHit,
+  GatewaySearchSuggestEntity,
 } from "@/lib/gateway-types";
-import {
-  buildActiveShopDiscountsMap,
-  buildLiveFlashItemsBySkuId,
-  computeProductDisplayPricing,
-} from "@/lib/catalog-mapper";
+import { buildActiveShopDiscountsMap, buildLiveFlashItemsBySkuId } from "@/lib/catalog-mapper";
 import { fetchActiveShopDiscountsWithFetcher } from "@/features/checkout/helpers";
-import { normalizeVietnamese, suggestSpelling } from "@/lib/search";
+import {
+  SEARCH_HISTORY_MAX_ITEMS,
+  SEARCH_SUGGEST_DEBOUNCE_MS,
+  clearSearchHistoryClient,
+  collectSearchHitSkuIds,
+  computeSearchHitDisplayPricing,
+  deleteSearchHistoryItemClient,
+  fetchSearchHistoryClient,
+  fetchSearchSuggestClient,
+} from "@/lib/search-client";
 import { formatVnd } from "@/lib/format";
 import { useSession } from "@/context/SessionContext";
 import { useCart } from "@/context/CartContext";
@@ -155,7 +161,14 @@ export function ShopHeader() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [mobileSearchFocus, setMobileSearchFocus] = useState(false);
-  const [searchResults, setSearchResults] = useState<GatewayProduct[]>([]);
+  const [searchResults, setSearchResults] = useState<GatewaySearchProductHit[]>([]);
+  const [suggestKeywords, setSuggestKeywords] = useState<string[]>([]);
+  const [suggestCategories, setSuggestCategories] = useState<GatewaySearchSuggestEntity[]>([]);
+  const [suggestShops, setSuggestShops] = useState<GatewaySearchSuggestEntity[]>([]);
+  const [serverTrending, setServerTrending] = useState<string[]>([]);
+  const [searchHistory, setSearchHistory] = useState<GatewaySearchHistoryItem[]>([]);
+  const [historyBusyId, setHistoryBusyId] = useState<string | null>(null);
+  const [clearingHistory, setClearingHistory] = useState(false);
   const [searchLiveFlashBySkuId, setSearchLiveFlashBySkuId] = useState<
     Map<string, GatewayFlashSaleItem>
   >(() => new Map());
@@ -171,6 +184,7 @@ export function ShopHeader() {
   const mobileSearchRef = useRef<HTMLInputElement>(null);
   const megaCloseTimerRef = useRef<number | null>(null);
   const searchReqSeq = useRef(0);
+  const historyReqSeq = useRef(0);
   const flashCacheRef = useRef<{ fetchedAt: number; sales: GatewayFlashSale[] } | null>(null);
 
   const isHome = pathname === "/";
@@ -210,30 +224,50 @@ export function ShopHeader() {
     };
   }, [isAuthenticated, pathname]);
 
-  // Debounced real catalog search via GET /api/gw/products?keyword=... enriched with live flash & active shop discounts (P3-1)
+  // Load logged-in user's search history (<= 50 items) strictly when authenticated (G14: 0 calls / 0 401 for guests).
   useEffect(() => {
-    if (!searchOpen && !(drawerOpen && searchQuery.trim())) return;
+    if (!isAuthenticated) {
+      historyReqSeq.current += 1;
+      setSearchHistory([]);
+      return;
+    }
+    if (!searchOpen && !drawerOpen) return;
+    const seq = ++historyReqSeq.current;
+    void fetchSearchHistoryClient(SEARCH_HISTORY_MAX_ITEMS)
+      .then((items) => {
+        if (historyReqSeq.current === seq) {
+          setSearchHistory(items.slice(0, SEARCH_HISTORY_MAX_ITEMS));
+        }
+      })
+      .catch(() => {
+        // Best-effort history load; keep current state.
+      });
+  }, [isAuthenticated, searchOpen, drawerOpen, pathname]);
+
+  // Debounced (200ms) SearchService suggest via GET /api/gw/search/suggest enriched with live flash & shop discounts (UC-B12).
+  useEffect(() => {
+    if (!searchOpen && !drawerOpen) return;
     const trimmed = searchQuery.trim();
     const seq = ++searchReqSeq.current;
     setSearchLoading(true);
     setSearchError(null);
     const timer = window.setTimeout(() => {
-      const runSearch = async () => {
+      const runSuggest = async () => {
         try {
-          const qs = new URLSearchParams({ page: "1", page_size: "6" });
-          if (trimmed) qs.set("keyword", trimmed);
-          const res = await api<PaginatedResponse<GatewayProduct>>(`/products?${qs.toString()}`);
+          const res = await fetchSearchSuggestClient(trimmed, 8);
           if (searchReqSeq.current !== seq) return;
-          const items = Array.isArray(res?.items) ? res.items : [];
+          const items = Array.isArray(res?.products) ? res.products : [];
+          const nextKeywords = Array.isArray(res?.keywords) ? res.keywords : [];
+          const nextCategories = Array.isArray(res?.categories) ? res.categories : [];
+          const nextShops = Array.isArray(res?.shops) ? res.shops : [];
+          const nextTrending = Array.isArray(res?.trending) ? res.trending : [];
 
-          const skuIds = Array.from(
-            new Set(
-              items
-                .flatMap((p) => (p.skus ?? []).map((s) => s.id))
-                .filter((id): id is string => Boolean(id))
-            )
-          );
+          const skuIds = collectSearchHitSkuIds(items);
           if (skuIds.length === 0) {
+            setSuggestKeywords(nextKeywords);
+            setSuggestCategories(nextCategories);
+            setSuggestShops(nextShops);
+            setServerTrending(nextTrending);
             setSearchResults(items);
             setSearchLiveFlashBySkuId(new Map());
             setSearchShopDiscountsBySkuId(new Map());
@@ -274,13 +308,20 @@ export function ShopHeader() {
           const nextFlashMap = buildLiveFlashItemsBySkuId(rawFlashSales, Date.now());
           const nextDiscMap = buildActiveShopDiscountsMap(activeDiscounts);
 
-          // Commit results and live pricing maps together so base prices never flash before discounts
+          // Commit suggest results and live pricing maps together so base prices never flash before discounts
+          setSuggestKeywords(nextKeywords);
+          setSuggestCategories(nextCategories);
+          setSuggestShops(nextShops);
+          setServerTrending(nextTrending);
           setSearchResults(items);
           setSearchLiveFlashBySkuId(nextFlashMap);
           setSearchShopDiscountsBySkuId(nextDiscMap);
           setSearchError(null);
         } catch {
           if (searchReqSeq.current !== seq) return;
+          setSuggestKeywords([]);
+          setSuggestCategories([]);
+          setSuggestShops([]);
           setSearchResults([]);
           setSearchLiveFlashBySkuId(new Map());
           setSearchShopDiscountsBySkuId(new Map());
@@ -293,26 +334,38 @@ export function ShopHeader() {
           }
         }
       };
-      void runSearch();
-    }, 220);
+      void runSuggest();
+    }, SEARCH_SUGGEST_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [searchQuery, searchOpen, drawerOpen]);
 
-  const instantKeywords = useMemo(() => {
-    const clean = normalizeVietnamese(searchQuery);
-    if (!clean) return TRENDING_KEYWORDS;
-    const matched = TRENDING_KEYWORDS.filter(
-      (kw) =>
-        normalizeVietnamese(kw.label).includes(clean) ||
-        normalizeVietnamese(kw.query).includes(clean)
-    );
-    return matched.length > 0 ? matched : TRENDING_KEYWORDS.slice(0, 4);
-  }, [searchQuery]);
+  const handleDeleteHistoryItem = async (id: string) => {
+    if (!isAuthenticated || historyBusyId === id) return;
+    setHistoryBusyId(id);
+    const prev = searchHistory;
+    setSearchHistory((cur) => cur.filter((item) => item.id !== id));
+    try {
+      await deleteSearchHistoryItemClient(id);
+    } catch {
+      setSearchHistory(prev);
+    } finally {
+      setHistoryBusyId((cur) => (cur === id ? null : cur));
+    }
+  };
 
-  const spellingSuggestion = useMemo(() => {
-    if (!searchQuery.trim() || searchLoading || searchResults.length > 0) return null;
-    return suggestSpelling(searchQuery);
-  }, [searchQuery, searchLoading, searchResults.length]);
+  const handleClearHistory = async () => {
+    if (!isAuthenticated || clearingHistory) return;
+    setClearingHistory(true);
+    const prev = searchHistory;
+    setSearchHistory([]);
+    try {
+      await clearSearchHistoryClient();
+    } catch {
+      setSearchHistory(prev);
+    } finally {
+      setClearingHistory(false);
+    }
+  };
 
   const clearMegaCloseTimer = () => {
     if (megaCloseTimerRef.current !== null) {
@@ -568,21 +621,119 @@ export function ShopHeader() {
                   role="region"
                   aria-label="Gợi ý tìm kiếm"
                 >
-                  <div className={styles.searchSection}>
-                    <p className={styles.dropdownHeading}>Tìm kiếm phổ biến</p>
-                    <div className={styles.keywordList}>
-                      {instantKeywords.slice(0, 6).map((kw) => (
+                  {isAuthenticated && searchHistory.length > 0 && (
+                    <div className={styles.searchSection} data-ui="search-history-section">
+                      <div className={styles.historyHeader}>
+                        <p className={styles.dropdownHeading}>Tìm kiếm gần đây</p>
                         <button
-                          key={kw.query}
                           type="button"
-                          className={styles.keywordChip}
-                          onClick={() => handleSelectKeyword(kw.query)}
+                          className={styles.dropdownCloseBtn}
+                          disabled={clearingHistory}
+                          onClick={() => void handleClearHistory()}
                         >
-                          {kw.label}
+                          {clearingHistory ? "Đang xóa..." : "Xóa tất cả"}
                         </button>
-                      ))}
+                      </div>
+                      <div className={`${styles.keywordList} ${styles.historyList}`}>
+                        {searchHistory.slice(0, SEARCH_HISTORY_MAX_ITEMS).map((item) => (
+                          <span
+                            key={item.id}
+                            data-ui="search-history-item"
+                            className={styles.historyChipWrap}
+                          >
+                            <button
+                              type="button"
+                              className={styles.keywordChip}
+                              onClick={() => handleSelectKeyword(item.query)}
+                            >
+                              {item.query}
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.searchClearBtn}
+                              disabled={historyBusyId === item.id}
+                              onClick={() => void handleDeleteHistoryItem(item.id)}
+                              aria-label={`Xóa lịch sử tìm kiếm ${item.query}`}
+                            >
+                              <IconClose size={12} />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
                     </div>
-                  </div>
+                  )}
+
+                  {searchQuery.trim() && suggestKeywords.length > 0 && (
+                    <div className={styles.searchSection}>
+                      <p className={styles.dropdownHeading}>Gợi ý từ khóa</p>
+                      <div className={styles.keywordList}>
+                        {suggestKeywords.slice(0, 8).map((kw) => (
+                          <button
+                            key={kw}
+                            type="button"
+                            className={styles.keywordChip}
+                            onClick={() => handleSelectKeyword(kw)}
+                          >
+                            {kw}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {serverTrending.length > 0 && (
+                    <div className={styles.searchSection}>
+                      <p className={styles.dropdownHeading}>Tìm kiếm phổ biến</p>
+                      <div className={styles.keywordList}>
+                        {serverTrending.slice(0, 8).map((kw) => (
+                          <button
+                            key={kw}
+                            type="button"
+                            className={styles.keywordChip}
+                            onClick={() => handleSelectKeyword(kw)}
+                          >
+                            {kw}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {suggestCategories.length > 0 && (
+                    <div className={styles.searchSection}>
+                      <p className={styles.dropdownHeading}>Danh mục phù hợp</p>
+                      <div className={styles.keywordList}>
+                        {suggestCategories.slice(0, 6).map((cat) => (
+                          <Link
+                            key={cat.id}
+                            href={`/danh-muc?cat=${encodeURIComponent(cat.slug)}`}
+                            className={styles.keywordChip}
+                            onClick={() => setSearchOpen(false)}
+                          >
+                            {cat.name}
+                          </Link>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {suggestShops.length > 0 && (
+                    <div className={styles.searchSection}>
+                      <p className={styles.dropdownHeading}>Gian hàng phù hợp</p>
+                      <div className={styles.keywordList}>
+                        {suggestShops.slice(0, 6).map((shop) => (
+                          <Link
+                            key={shop.id}
+                            href={`/gian-hang/${encodeURIComponent(shop.slug)}`}
+                            className={styles.keywordChip}
+                            onClick={() => setSearchOpen(false)}
+                          >
+                            {shop.name}
+                          </Link>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   <div className={styles.searchSection}>
                     <p className={styles.dropdownHeading}>
@@ -604,26 +755,14 @@ export function ShopHeader() {
                         <p className={styles.emptySearchText}>
                           Chưa thấy sản phẩm khớp trực tiếp với từ khóa này.
                         </p>
-                        {spellingSuggestion && (
-                          <button
-                            type="button"
-                            className={styles.spellingBtn}
-                            onClick={() => handleSelectKeyword(spellingSuggestion)}
-                          >
-                            Thử tìm: {spellingSuggestion}
-                          </button>
-                        )}
                       </div>
                     ) : (
                       <ul className={styles.resultList}>
-                        {searchResults.map((prod) => {
-                          const thumb =
-                            prod.images?.[0] ||
-                            prod.skus?.[0]?.image_url ||
-                            "/products/ao-thun-cotton-trang.png";
-                          const prodSlug = prod.slug || prod.id;
-                          const pricing = computeProductDisplayPricing(
-                            prod,
+                        {searchResults.map((hit) => {
+                          const thumb = hit.thumbnail_url || "/products/ao-thun-cotton-trang.png";
+                          const prodSlug = hit.slug || hit.id;
+                          const pricing = computeSearchHitDisplayPricing(
+                            hit,
                             searchLiveFlashBySkuId,
                             searchShopDiscountsBySkuId
                           );
@@ -633,8 +772,11 @@ export function ShopHeader() {
                               : pricing.promoKind === "shop_discount"
                                 ? "Giảm giá gian hàng"
                                 : "";
+                          const subBase =
+                            hit.shop_name?.trim() ||
+                            (hit.sku_count > 0 ? `${hit.sku_count} phân loại` : "NexusMart");
                           return (
-                            <li key={prod.id}>
+                            <li key={hit.id}>
                               <Link
                                 href={`/san-pham/${encodeURIComponent(prodSlug)}`}
                                 className={styles.resultItem}
@@ -642,17 +784,15 @@ export function ShopHeader() {
                               >
                                 <Image
                                   src={thumb}
-                                  alt={prod.name}
+                                  alt={hit.name}
                                   width={44}
                                   height={58}
                                   className={styles.resultThumb}
                                 />
                                 <div className={styles.resultMeta}>
-                                  <span className={styles.resultName}>{prod.name}</span>
+                                  <span className={styles.resultName}>{hit.name}</span>
                                   <span className={styles.resultSub}>
-                                    {prod.skus?.length
-                                      ? `${prod.skus.length} phân loại`
-                                      : "NexusMart"}
+                                    {subBase}
                                     {promoLabel ? ` · ${promoLabel}` : ""}
                                   </span>
                                 </div>
@@ -1056,18 +1196,63 @@ export function ShopHeader() {
               />
             </form>
 
-            <div className={styles.drawerKeywords}>
-              {TRENDING_KEYWORDS.slice(0, 5).map((kw) => (
-                <button
-                  key={kw.query}
-                  type="button"
-                  className={styles.keywordChip}
-                  onClick={() => handleSelectKeyword(kw.query)}
-                >
-                  {kw.label}
-                </button>
-              ))}
-            </div>
+            {isAuthenticated && searchHistory.length > 0 && (
+              <div className={styles.drawerSection}>
+                <div className={styles.historyHeader}>
+                  <p className={styles.dropdownHeading}>Tìm kiếm gần đây</p>
+                  <button
+                    type="button"
+                    className={styles.dropdownCloseBtn}
+                    disabled={clearingHistory}
+                    onClick={() => void handleClearHistory()}
+                  >
+                    {clearingHistory ? "Đang xóa..." : "Xóa tất cả"}
+                  </button>
+                </div>
+                <div className={styles.drawerKeywords}>
+                  {searchHistory.slice(0, 10).map((item) => (
+                    <span key={item.id} className={styles.historyChipWrap}>
+                      <button
+                        type="button"
+                        className={styles.keywordChip}
+                        onClick={() => handleSelectKeyword(item.query)}
+                      >
+                        {item.query}
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.searchClearBtn}
+                        disabled={historyBusyId === item.id}
+                        onClick={() => void handleDeleteHistoryItem(item.id)}
+                        aria-label={`Xóa lịch sử tìm kiếm ${item.query}`}
+                      >
+                        <IconClose size={12} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {(suggestKeywords.length > 0 || serverTrending.length > 0) && (
+              <div className={styles.drawerKeywords}>
+                {(searchQuery.trim() && suggestKeywords.length > 0
+                  ? suggestKeywords
+                  : serverTrending
+                )
+                  .slice(0, 6)
+                  .map((kw) => (
+                    <button
+                      key={kw}
+                      type="button"
+                      className={styles.keywordChip}
+                      onClick={() => handleSelectKeyword(kw)}
+                    >
+                      {kw}
+                    </button>
+                  ))}
+              </div>
+            )}
 
             {searchQuery.trim() && searchError && (
               <div className={styles.drawerSection} role="alert">
@@ -1079,14 +1264,11 @@ export function ShopHeader() {
               <div className={styles.drawerSection}>
                 <p className={styles.dropdownHeading}>Kết quả nhanh</p>
                 <ul className={styles.resultList}>
-                  {searchResults.slice(0, 3).map((prod) => {
-                    const thumb =
-                      prod.images?.[0] ||
-                      prod.skus?.[0]?.image_url ||
-                      "/products/ao-thun-cotton-trang.png";
-                    const prodSlug = prod.slug || prod.id;
-                    const pricing = computeProductDisplayPricing(
-                      prod,
+                  {searchResults.slice(0, 3).map((hit) => {
+                    const thumb = hit.thumbnail_url || "/products/ao-thun-cotton-trang.png";
+                    const prodSlug = hit.slug || hit.id;
+                    const pricing = computeSearchHitDisplayPricing(
+                      hit,
                       searchLiveFlashBySkuId,
                       searchShopDiscountsBySkuId
                     );
@@ -1096,8 +1278,11 @@ export function ShopHeader() {
                         : pricing.promoKind === "shop_discount"
                           ? "Giảm giá gian hàng"
                           : "";
+                    const subBase =
+                      hit.shop_name?.trim() ||
+                      (hit.sku_count > 0 ? `${hit.sku_count} phân loại` : "NexusMart");
                     return (
-                      <li key={prod.id}>
+                      <li key={hit.id}>
                         <Link
                           href={`/san-pham/${encodeURIComponent(prodSlug)}`}
                           className={styles.resultItem}
@@ -1105,15 +1290,15 @@ export function ShopHeader() {
                         >
                           <Image
                             src={thumb}
-                            alt={prod.name}
+                            alt={hit.name}
                             width={44}
                             height={58}
                             className={styles.resultThumb}
                           />
                           <div className={styles.resultMeta}>
-                            <span className={styles.resultName}>{prod.name}</span>
+                            <span className={styles.resultName}>{hit.name}</span>
                             <span className={styles.resultSub}>
-                              {prod.skus?.length ? `${prod.skus.length} phân loại` : "NexusMart"}
+                              {subBase}
                               {promoLabel ? ` · ${promoLabel}` : ""}
                             </span>
                           </div>
