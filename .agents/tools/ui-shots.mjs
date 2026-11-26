@@ -106,7 +106,9 @@ for (const route of routes) {
     if (status >= 400 || status === 0) problems.push(`${current}: HTTP ${status}`);
     if (info.overflow > 1) problems.push(`${current}: horizontal overflow ${info.overflow}px`);
     if (info.h1 !== 1) problems.push(`${current}: ${info.h1} <h1>`);
-    await page.screenshot({ path: path.join(out, `${slug}-${w}.png`), fullPage: !flag("viewport") });
+    // caret "initial": the default ("hide") writes caret-color onto inputs, and a late dev-mode hydration then reports
+    // a false "A tree hydrated but some attributes ... didn't match" warning.
+    await page.screenshot({ path: path.join(out, `${slug}-${w}.png`), fullPage: !flag("viewport"), caret: "initial" });
     lines.push(`${String(status).padEnd(4)} ${current.padEnd(40)} final=${info.url} overflow=${info.overflow} h1=${info.h1}`);
   }
 }
