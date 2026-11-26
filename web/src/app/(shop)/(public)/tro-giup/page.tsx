@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Mail, Search, SearchX, X } from "lucide-react";
-import { EmptyState } from "@/components/app";
+import { EmptyState } from "@/components/app/EmptyState";
 import {
   Accordion,
   AccordionContent,

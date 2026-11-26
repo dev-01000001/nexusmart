@@ -4,7 +4,7 @@ import React, { useCallback, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Globe } from "lucide-react";
 import { NexusMark } from "@/components/Icons";
-import { AuthSplit } from "@/components/app";
+import { AuthSplit } from "@/components/app/AuthSplit";
 import { Badge } from "@/components/ui/badge";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { MEDIA_BANNERS, WORKSHOP_MEDIA } from "@/data/media";
