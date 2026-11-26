@@ -50,20 +50,35 @@ const creds = {
 };
 
 fs.mkdirSync(out, { recursive: true });
-const browser = await chromium.launch({ channel: "chrome" });
+// Seeded site ha-noi redirects (308) to its verified custom domain hanoi-knit.verified.test; map it to the local server.
+const browser = await chromium.launch({ channel: "chrome", args: ["--host-resolver-rules=MAP *.verified.test [::1]"] });
 const ctx = await browser.newContext({ reducedMotion: "reduce" });
+const page = await ctx.newPage();
 if (login !== "none") {
   const [email, password] = creds[login] ?? [];
   if (!email) throw new Error(`unknown --login ${login}`);
-  const loginOrigin = login === "buyer" ? origin : rootOrigin;
-  const res = await ctx.request.post(`${loginOrigin}/api/auth/login`, {
-    data: { email, password },
-    headers: { Origin: loginOrigin },
-  });
-  if (!res.ok()) throw new Error(`${login} login -> HTTP ${res.status()}`);
+  if (login === "buyer") {
+    // Log in from the page so the cookie lands on the host the site finally serves from (custom domain included).
+    await page.goto(origin + "/", { waitUntil: "domcontentloaded", timeout: 45000 });
+    const status = await page.evaluate(
+      async ([e, p]) =>
+        (await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: e, password: p }),
+        })).status,
+      [email, password],
+    );
+    if (status >= 400) throw new Error(`buyer login -> HTTP ${status}`);
+  } else {
+    const res = await ctx.request.post(`${rootOrigin}/api/auth/login`, {
+      data: { email, password },
+      headers: { Origin: rootOrigin },
+    });
+    if (!res.ok()) throw new Error(`${login} login -> HTTP ${res.status()}`);
+  }
 }
 
-const page = await ctx.newPage();
 let current = "";
 const problems = [];
 const lines = [];
