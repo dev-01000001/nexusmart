@@ -298,104 +298,114 @@ function AppShellInner({
           className="top-14 h-[calc(100svh-3.5rem)] border-r border-sidebar-border bg-sidebar"
         >
           <SidebarContent className="gap-1 py-2">
-            {navGroups.map((group) => (
-              <SidebarGroup key={group.title} className="px-2 py-1.5">
-                {group.title ? (
-                  <SidebarGroupLabel className="px-2 text-[11px] font-semibold tracking-wider text-sidebar-muted uppercase">
-                    {group.title}
-                  </SidebarGroupLabel>
-                ) : null}
-                <SidebarGroupContent>
-                  <SidebarMenu>
-                    {group.items.map((item) => {
-                      const Icon = item.icon;
-                      const active = item.href === activeHref;
+            <nav aria-label="Điều hướng chính" className="flex flex-col gap-1">
+              {navGroups.map((group) => (
+                <SidebarGroup key={group.title} className="px-2 py-1.5">
+                  {group.title ? (
+                    <SidebarGroupLabel className="px-2 text-[11px] font-semibold tracking-wider text-sidebar-muted uppercase">
+                      {group.title}
+                    </SidebarGroupLabel>
+                  ) : null}
+                  <SidebarGroupContent>
+                    <SidebarMenu>
+                      {group.items.map((item) => {
+                        const Icon = item.icon;
+                        const active = item.href === activeHref;
 
-                      return (
-                        <SidebarMenuItem key={item.href}>
-                          <SidebarMenuButton
-                            asChild
-                            isActive={active}
-                            tooltip={item.label}
-                            className={cn(
-                              "h-9 rounded-lg px-2.5 text-[13px] font-medium text-sidebar-foreground transition-colors",
-                              active &&
-                                "bg-sidebar-accent font-semibold text-sidebar-accent-foreground shadow-card"
-                            )}
-                          >
-                            {item.external ? (
-                              <a
-                                href={item.href}
-                                target="_blank"
-                                rel="noreferrer"
-                                onClick={() => setOpenMobile(false)}
-                              >
-                                <Icon
-                                  className={cn(
-                                    "size-4 shrink-0",
-                                    active ? "text-brand" : "text-sidebar-muted"
-                                  )}
-                                  aria-hidden="true"
-                                />
-                                <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                                <ExternalLink
-                                  className="ml-auto size-3.5 shrink-0 text-sidebar-muted group-data-[collapsible=icon]:hidden"
-                                  aria-hidden="true"
-                                />
-                              </a>
-                            ) : (
-                              <Link href={item.href} onClick={() => setOpenMobile(false)}>
-                                <Icon
-                                  className={cn(
-                                    "size-4 shrink-0",
-                                    active ? "text-brand" : "text-sidebar-muted"
-                                  )}
-                                  aria-hidden="true"
-                                />
-                                <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                                {typeof item.badge === "number" && item.badge > 0 ? (
-                                  <Badge
-                                    variant="neutral"
-                                    className="ml-auto px-1.5 py-0 text-[11px] tabular-nums group-data-[collapsible=icon]:hidden"
-                                  >
-                                    {item.badge}
-                                  </Badge>
-                                ) : null}
-                              </Link>
-                            )}
-                          </SidebarMenuButton>
-
-                          {active && item.children && item.children.length > 0 ? (
-                            <SidebarMenuSub>
-                              {item.children.map((sub) => {
-                                const subActive = sub.href === activeChildHref;
-                                return (
-                                  <SidebarMenuSubItem key={sub.href}>
-                                    <SidebarMenuSubButton
-                                      asChild
-                                      isActive={subActive}
-                                      className={cn(
-                                        "text-[13px]",
-                                        subActive &&
-                                          "bg-sidebar-accent font-semibold text-sidebar-accent-foreground"
-                                      )}
+                        return (
+                          <SidebarMenuItem key={item.href}>
+                            <SidebarMenuButton
+                              asChild
+                              isActive={active}
+                              tooltip={item.label}
+                              className={cn(
+                                "h-9 rounded-lg px-2.5 text-[13px] font-medium text-sidebar-foreground transition-colors",
+                                active &&
+                                  "bg-sidebar-accent font-semibold text-sidebar-accent-foreground shadow-card"
+                              )}
+                            >
+                              {item.external ? (
+                                <a
+                                  href={item.href}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  onClick={() => setOpenMobile(false)}
+                                >
+                                  <Icon
+                                    className={cn(
+                                      "size-4 shrink-0",
+                                      active ? "text-brand" : "text-sidebar-muted"
+                                    )}
+                                    aria-hidden="true"
+                                  />
+                                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                                  <ExternalLink
+                                    className="ml-auto size-3.5 shrink-0 text-sidebar-muted group-data-[collapsible=icon]:hidden"
+                                    aria-hidden="true"
+                                  />
+                                </a>
+                              ) : (
+                                <Link
+                                  href={item.href}
+                                  aria-current={active && !activeChildHref ? "page" : undefined}
+                                  onClick={() => setOpenMobile(false)}
+                                >
+                                  <Icon
+                                    className={cn(
+                                      "size-4 shrink-0",
+                                      active ? "text-brand" : "text-sidebar-muted"
+                                    )}
+                                    aria-hidden="true"
+                                  />
+                                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                                  {typeof item.badge === "number" && item.badge > 0 ? (
+                                    <Badge
+                                      variant="neutral"
+                                      className="ml-auto px-1.5 py-0 text-[11px] tabular-nums group-data-[collapsible=icon]:hidden"
                                     >
-                                      <Link href={sub.href} onClick={() => setOpenMobile(false)}>
-                                        <span className="truncate">{sub.label}</span>
-                                      </Link>
-                                    </SidebarMenuSubButton>
-                                  </SidebarMenuSubItem>
-                                );
-                              })}
-                            </SidebarMenuSub>
-                          ) : null}
-                        </SidebarMenuItem>
-                      );
-                    })}
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </SidebarGroup>
-            ))}
+                                      {item.badge}
+                                    </Badge>
+                                  ) : null}
+                                </Link>
+                              )}
+                            </SidebarMenuButton>
+
+                            {active && item.children && item.children.length > 0 ? (
+                              <SidebarMenuSub>
+                                {item.children.map((sub) => {
+                                  const subActive = sub.href === activeChildHref;
+                                  return (
+                                    <SidebarMenuSubItem key={sub.href}>
+                                      <SidebarMenuSubButton
+                                        asChild
+                                        isActive={subActive}
+                                        className={cn(
+                                          "text-[13px]",
+                                          subActive &&
+                                            "bg-sidebar-accent font-semibold text-sidebar-accent-foreground"
+                                        )}
+                                      >
+                                        <Link
+                                          href={sub.href}
+                                          aria-current={subActive ? "page" : undefined}
+                                          onClick={() => setOpenMobile(false)}
+                                        >
+                                          <span className="truncate">{sub.label}</span>
+                                        </Link>
+                                      </SidebarMenuSubButton>
+                                    </SidebarMenuSubItem>
+                                  );
+                                })}
+                              </SidebarMenuSub>
+                            ) : null}
+                          </SidebarMenuItem>
+                        );
+                      })}
+                    </SidebarMenu>
+                  </SidebarGroupContent>
+                </SidebarGroup>
+              ))}
+            </nav>
           </SidebarContent>
         </Sidebar>
 
