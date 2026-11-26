@@ -12,10 +12,9 @@ export interface ShowcaseTemplateSpec {
   accent: string;
   accentText: string;
   primaryImg: string;
-  primaryAlt: string;
-  secondaryImg: string;
-  secondaryAlt: string;
   headline: string;
+  sampleProduct: string;
+  samplePriceVnd: number;
   chips: readonly string[];
 }
 
@@ -24,48 +23,43 @@ const SHOWCASE_MEDIA: Record<
   {
     label: string;
     primaryImg: string;
-    primaryAlt: string;
-    secondaryImg: string;
-    secondaryAlt: string;
     headline: string;
+    sampleProduct: string;
+    samplePriceVnd: number;
     chips: readonly string[];
   }
 > = {
   "sport-active": {
     label: "Thể thao",
     primaryImg: "/banners/campaign-running.jpg",
-    primaryAlt: "Cửa hàng thời trang thể thao vận động ngoài trời",
-    secondaryImg: "/models/model-ao-thun-dryfit.jpg",
-    secondaryAlt: "Mẫu áo thun Dry-Fit thoáng khí",
     headline: "Nhẹ bước chạy nắng sớm",
+    sampleProduct: "Áo Dry-Fit 145gsm",
+    samplePriceVnd: 249000,
     chips: ["Dry-Fit 145gsm", "Co giãn 4 chiều"],
   },
   "luxury-maison": {
     label: "Maison",
     primaryImg: "/models/model-polo-det-kim-den.jpg",
-    primaryAlt: "Mẫu áo polo dệt kim tông trầm tinh giản",
-    secondaryImg: "/banners/fabric-closeup.jpg",
-    secondaryAlt: "Cận cảnh mặt vải dệt tinh chọn",
     headline: "Tĩnh lặng của chất liệu",
-    chips: ["Phiên bản giới hạn", "May đo lô nhỏ"],
+    sampleProduct: "Áo Polo Dệt Kim Đen",
+    samplePriceVnd: 389000,
+    chips: ["Lô nhỏ", "Hoàn thiện kỹ"],
   },
   "craft-atelier": {
     label: "Xưởng dệt",
-    primaryImg: "/banners/vietnam-workshop.jpg",
-    primaryAlt: "Không gian xưởng dệt may Việt Nam sáng tự nhiên",
-    secondaryImg: "/models/model-ao-thun-trang.jpg",
-    secondaryAlt: "Mẫu áo thun cotton trắng tinh giản",
+    primaryImg: "/models/model-ao-thun-xam-da.jpg",
     headline: "Từ xưởng dệt đến tủ đồ",
-    chips: ["Cotton 220gsm", "Kiểm vải 3 bước"],
+    sampleProduct: "Áo Thun Cotton 220gsm",
+    samplePriceVnd: 229000,
+    chips: ["Cotton 220gsm", "Đổi size 45 ngày"],
   },
   editorial: {
     label: "Tạp chí",
-    primaryImg: "/banners/campaign-office.jpg",
-    primaryAlt: "Bộ sưu tập công sở đương đại tối giản",
-    secondaryImg: "/models/model-polo-kem.jpg",
-    secondaryAlt: "Mẫu áo polo pique màu kem",
+    primaryImg: "/models/model-ao-thun-xanh-than.jpg",
     headline: "Đường cắt nhẹ vai đô thị",
-    chips: ["Bộ sưu tập Thu Đông", "Phối theo bộ"],
+    sampleProduct: "Áo Thun Xanh Than",
+    samplePriceVnd: 259000,
+    chips: ["Thu Đông", "Phối theo bộ"],
   },
 };
 
@@ -90,10 +84,25 @@ export const SHOWCASE_TEMPLATES: readonly ShowcaseTemplateSpec[] = SHOWCASE_ORDE
     accent: theme?.accent_color || "#D97706",
     accentText: theme?.accent_text_color || "#111418",
     primaryImg: media.primaryImg,
-    primaryAlt: media.primaryAlt,
-    secondaryImg: media.secondaryImg,
-    secondaryAlt: media.secondaryAlt,
     headline: media.headline,
+    sampleProduct: media.sampleProduct,
+    samplePriceVnd: media.samplePriceVnd,
     chips: media.chips,
   };
 });
+
+/** Rich dark & accent colours harvested from PLATFORM_TEMPLATES for the S8 tool wall. */
+export const TEMPLATE_WALL_SWATCHES: readonly string[] = (() => {
+  const raw = new Set<string>();
+  for (const tpl of PLATFORM_TEMPLATES) {
+    const t = tpl.config.theme;
+    for (const candidate of [t.accent_color, t.bg_color, t.surface_color, t.text_color]) {
+      const hex = candidate.trim().toUpperCase();
+      // Keep saturated accents and deep dark surfaces so white icons inside stay crisp
+      if (hex && !hex.startsWith("#F") && !hex.startsWith("#E") && hex !== "#FFFFFF") {
+        raw.add(hex);
+      }
+    }
+  }
+  return Array.from(raw);
+})();

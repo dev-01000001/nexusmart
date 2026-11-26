@@ -10,8 +10,7 @@ export function PlatformFooter() {
         <div className={styles.topGrid}>
           <div className={styles.brandCol}>
             <Link href="/" className={styles.brandLink} aria-label="NexusMart trang chủ">
-              <NexusMark size={28} accentColor="var(--band-dark-accent)" />
-              <span className={styles.brandName}>NexusMart</span>
+              <NexusMark size={32} accentColor="var(--home-ink)" />
             </Link>
           </div>
 

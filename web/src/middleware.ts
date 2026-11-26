@@ -286,6 +286,6 @@ export const config = {
      * Excludes ONLY Next internals (`_next/static/*` without traversal, `_next/image`), app
      * icons (`favicon.ico`, `icon.svg`), and real static files under `web/public`.
      */
-    "/((?!_next/static/(?!.*(?:\\.\\.|%2[eE]|%2[fF]|%5[cC]|\\\\))|_next/image$|favicon\\.ico$|icon\\.svg$|media-manifest\\.json$|(?:products|models|banners|atmosphere)/[a-z0-9][a-z0-9_-]*\\.(?:png|jpg|jpeg|gif|webp|webm)$).*)",
+    "/((?!_next/static/(?!.*(?:\\.\\.|%2[eE]|%2[fF]|%5[cC]|\\\\))|_next/image$|favicon\\.ico$|icon\\.svg$|media-manifest\\.json$|globe/land-dots\\.json$|(?:products|models|banners|atmosphere)/[a-z0-9][a-z0-9_-]*\\.(?:png|jpg|jpeg|gif|webp|webm)$).*)",
   ],
 };

@@ -1,32 +1,36 @@
-/* Platform footer: dark multi-column navigation aligned to --container-max.
-   Collapses cleanly to logo-on-top + 2-column link grid on narrow viewports (<= 600px). */
+/* Platform footer (S13): pure black canvas aligned to --home-max (1260px),
+   white 32px NexusMark left, 4 link columns right, hairline rule + copyright row.
+   Shared across all (shop) pages; uses Inter only when mounted on homepage. */
+
+:global(html):has([data-platform-home="true"]) .footer {
+  --font-sans: var(--home-font);
+  font-family: var(--home-font);
+}
 
 .footer {
   width: 100%;
-  background: var(--ink-1);
-  color: var(--band-dark-ink);
-  padding: calc(var(--section) * 0.65) 0 var(--space-8);
+  background: var(--home-bg);
+  color: var(--home-ink);
+  padding: var(--home-space-section) 0 var(--space-8);
 }
 
 .footer :focus-visible {
-  outline: 2px solid var(--band-dark-accent);
+  outline: 2px solid var(--home-accent);
   outline-offset: 2px;
 }
 
 .inner {
-  width: 100%;
-  max-width: var(--container-max);
+  width: min(var(--home-max), 100% - 2 * var(--home-gutter));
   margin-inline: auto;
-  padding-inline: var(--margin);
   display: flex;
   flex-direction: column;
-  gap: var(--space-8);
+  gap: var(--home-space-head);
 }
 
 .topGrid {
   display: grid;
-  grid-template-columns: minmax(160px, 1.15fr) minmax(0, 3.85fr);
-  gap: var(--gutter);
+  grid-template-columns: minmax(120px, 1.15fr) minmax(0, 3.85fr);
+  gap: var(--space-8) var(--home-gap);
   align-items: start;
 }
 
@@ -38,66 +42,63 @@
 .brandLink {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-3);
-  min-height: var(--control-height);
-  color: var(--band-dark-ink);
+  justify-content: center;
+  min-width: var(--space-8);
+  min-height: var(--space-8);
+  color: var(--home-ink);
   transition: opacity var(--t-hover) var(--ease-out);
 }
 
 .brandLink:hover {
-  opacity: 0.8;
-}
-
-.brandName {
-  font-size: var(--step-body);
-  font-stretch: 100%;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  line-height: 1;
+  opacity: 0.78;
 }
 
 .columns {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--gutter);
+  gap: var(--space-7) var(--home-gap);
 }
 
 .col {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
   min-width: 0;
 }
 
 .colTitle {
-  font-size: var(--fs-body);
-  font-weight: 600;
-  color: var(--band-dark-ink);
-  line-height: 1.35;
+  font-size: var(--home-fs-h3);
+  font-weight: 450;
+  color: var(--home-ink);
+  line-height: 1.3;
+  letter-spacing: -0.01em;
 }
 
 .colList {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-3);
 }
 
 .link {
   display: inline-flex;
   align-items: center;
-  min-height: var(--space-7);
-  font-size: var(--fs-body);
-  font-weight: 400;
-  color: var(--band-dark-muted);
+  min-height: var(--space-6);
+  font-size: var(--home-fs-small);
+  font-weight: 420;
+  color: var(--home-ink-3);
+  line-height: 1.4;
   transition: color var(--t-hover) var(--ease-out);
   overflow-wrap: anywhere;
 }
 
 .link:hover {
-  color: var(--band-dark-ink);
+  color: var(--home-ink);
 }
 
 .bottomRow {
+  padding-top: var(--space-7);
+  border-top: 1px solid var(--home-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -106,34 +107,35 @@
 }
 
 .copyright {
-  font-size: var(--fs-body);
-  color: color-mix(in srgb, var(--band-dark-ink) 64%, var(--ink-1));
+  font-size: var(--home-fs-small);
+  font-weight: 420;
+  color: var(--home-ink-3);
   line-height: 1.5;
 }
 
 @media (max-width: 900px) {
   .topGrid {
     grid-template-columns: 1fr;
-    gap: var(--space-7);
+    gap: var(--space-8);
   }
 
   .columns {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--space-6) var(--space-5);
+    gap: var(--space-7) var(--space-5);
   }
 }
 
 @media (max-width: 600px) {
   .footer {
-    padding: var(--space-8) 0 var(--space-7);
+    padding: var(--space-9) 0 var(--space-7);
   }
 
   .inner {
-    gap: var(--space-7);
+    gap: var(--space-8);
   }
 
   .columns {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--space-6) var(--space-4);
+    gap: var(--space-7) var(--space-4);
   }
 }

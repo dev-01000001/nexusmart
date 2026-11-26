@@ -184,7 +184,10 @@ export function PlatformHeader() {
       >
         <div className={styles.inner}>
           <Link href="/" className={styles.brand} aria-label="NexusMart trang chủ">
-            <NexusMark size={20} accentColor={isHome ? "var(--band-dark-accent)" : undefined} />
+            <NexusMark
+              size={isHome ? 22 : 20}
+              accentColor={isHome ? "var(--home-accent)" : undefined}
+            />
             <span className={`${styles.brandWord}${isHome ? "" : " type-wide"}`}>NexusMart</span>
           </Link>
 
@@ -335,6 +338,7 @@ export function PlatformHeader() {
         tabIndex={-1}
         className={styles.sheet}
         data-open={drawerOpen ? "true" : "false"}
+        data-home={isHome ? "true" : undefined}
         role="dialog"
         aria-modal="true"
         aria-hidden={!drawerOpen}

@@ -1,8 +1,16 @@
 import type { Metadata } from "next";
+import { Inter } from "next/font/google";
 import React from "react";
 import { PlatformFooter } from "@/features/platform/PlatformFooter";
 import { PlatformHeader } from "@/features/platform/PlatformHeader";
 import styles from "./layout.module.css";
+
+const inter = Inter({
+  subsets: ["latin", "vietnamese"],
+  axes: ["opsz"],
+  variable: "--font-inter",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: {
@@ -15,7 +23,7 @@ export const metadata: Metadata = {
 
 export default function PlatformLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className={styles.shell}>
+    <div className={`${styles.shell} ${inter.variable}`}>
       <PlatformHeader />
       <main id="main-content" tabIndex={-1} className={styles.main}>
         {children}

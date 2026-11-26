@@ -1,4 +1,7 @@
 .shell {
+  /* Resolve --home-font on the same element as next/font's inter.variable (--font-inter)
+     so var(--font-inter) is defined even when root <html> does not attach --font-inter. */
+  --home-font: var(--font-inter), system-ui, -apple-system, sans-serif;
   min-height: 100svh;
   display: flex;
   flex-direction: column;
