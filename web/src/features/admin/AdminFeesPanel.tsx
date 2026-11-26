@@ -1,7 +1,28 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Button, StateView } from "@/components";
+import { Percent, RefreshCw } from "lucide-react";
+import { EmptyState, ErrorState, IndexRowCard, IndexTable, StatusBadge } from "@/components/app";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardFooter } from "@/components/ui/card";
+import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { api, getErrorMessage } from "@/lib/api";
 import { formatBpsPercent, formatDateTimeVi, formatInt, formatVnIsoDate } from "@/lib/format";
 import type {
@@ -15,8 +36,7 @@ import type {
 import { EMPTY_DASH, localVnInputToIso } from "./adminMeta";
 import { useAdminContext } from "./AdminShell";
 import { useAdminCapability } from "./AdminUserContext";
-import { StatusPill } from "./StatusPill";
-import shared from "./adminShared.module.css";
+import { FilterSelect, TableLoadingSkeleton } from "./config/adminUiHelpers";
 
 function defaultTomorrowVnLocal(): string {
   return `${formatVnIsoDate(Date.now() + 24 * 3600 * 1000)}T00:00`;
@@ -204,25 +224,16 @@ export function AdminFeesPanel() {
   };
 
   if (loading) {
-    return (
-      <div className={shared.stateWrap}>
-        <StateView kind="loading" surface="app" title="Đang tải biểu phí..." rows={5} />
-      </div>
-    );
+    return <TableLoadingSkeleton rows={5} label="Đang tải biểu phí..." />;
   }
 
   if (errorMsg) {
     return (
-      <div className={shared.stateWrap}>
-        <StateView
-          kind="error"
-          surface="app"
-          title="Không thể tải biểu phí sàn"
-          message={errorMsg}
-          actionLabel="Thử lại"
-          onAction={() => void loadFees()}
-        />
-      </div>
+      <ErrorState
+        title="Không thể tải biểu phí sàn"
+        description={errorMsg}
+        onRetry={() => void loadFees()}
+      />
     );
   }
 
@@ -230,310 +241,339 @@ export function AdminFeesPanel() {
   const parsedPayBps = Math.trunc(Number(payBpsStr) || 0);
 
   return (
-    <div className={shared.sectionStack}>
+    <div className="space-y-6">
       {/* Category commission fee schedules */}
-      {canReadCatFees && (
-        <section className={shared.panel} aria-labelledby="cat-fee-heading">
-          <div className={shared.panelHeader}>
+      {canReadCatFees ? (
+        <section className="space-y-4" aria-labelledby="cat-fee-heading">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h2 id="cat-fee-heading" className={shared.panelTitle}>
+              <h2 id="cat-fee-heading" className="text-sm font-semibold text-foreground">
                 Biểu phí hoa hồng danh mục ({formatInt(catSchedules.length)})
               </h2>
-              <span className={shared.panelMeta}>100 bps = 1%</span>
+              <p className="text-[13px] text-muted-foreground">
+                100 bps = 1% — lên lịch điều chỉnh theo ngày hiệu lực giờ Việt Nam.
+              </p>
             </div>
-            <div className={shared.detailButtons}>
-              <select
-                className={shared.toolbarSelect}
-                value={catFilterId}
-                onChange={(e) => setCatFilterId(e.target.value)}
-                aria-label="Lọc lịch phí theo danh mục"
-              >
-                <option value="">Tất cả danh mục</option>
-                {categories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-              <Button variant="outline" size="sm" shape="app" onClick={() => void loadFees()}>
-                Làm mới
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="w-48">
+                <FilterSelect
+                  value={catFilterId}
+                  onValueChange={setCatFilterId}
+                  ariaLabel="Lọc lịch phí theo danh mục"
+                  options={[
+                    { value: "", label: "Tất cả danh mục" },
+                    ...categories.map((c) => ({ value: c.id, label: c.name })),
+                  ]}
+                />
+              </div>
+              <Button type="button" variant="outline" size="sm" onClick={() => void loadFees()}>
+                <RefreshCw className="size-3.5" aria-hidden="true" />
+                <span>Làm mới</span>
               </Button>
             </div>
           </div>
 
-          {canWriteCatFees && (
-            <form
-              onSubmit={(e) => void handleSaveCategoryFee(e)}
-              className={shared.detailWell}
-              noValidate
-            >
-              <div className={shared.detailGrid}>
-                <div className={shared.detailField}>
-                  <label htmlFor="fee-cat-id" className={shared.fieldLabel}>
-                    Danh mục áp dụng
-                  </label>
-                  <select
-                    id="fee-cat-id"
-                    className={shared.formSelect}
-                    value={catId}
-                    onChange={(e) => setCatId(e.target.value)}
-                  >
-                    {categories.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} (hiện tại {formatBpsPercent(c.commission_rate_bps ?? 0)})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className={shared.detailField}>
-                  <label htmlFor="fee-cat-bps" className={shared.fieldLabel}>
-                    Mức hoa hồng (bps — {formatBpsPercent(parsedCatBps)})
-                  </label>
-                  <input
-                    id="fee-cat-bps"
-                    type="number"
-                    min={0}
-                    max={5000}
-                    step={1}
-                    className={shared.textInput}
-                    value={catBpsStr}
-                    onChange={(e) => setCatBpsStr(e.target.value)}
-                    required
-                  />
-                </div>
-                <div className={shared.detailField}>
-                  <label htmlFor="fee-cat-eff" className={shared.fieldLabel}>
-                    Bắt đầu hiệu lực (giờ VN)
-                  </label>
-                  <input
-                    id="fee-cat-eff"
-                    type="datetime-local"
-                    className={shared.textInput}
-                    value={catEffectiveFrom}
-                    onChange={(e) => setCatEffectiveFrom(e.target.value)}
-                    required
-                  />
-                </div>
-                <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                  <label htmlFor="fee-cat-note" className={shared.fieldLabel}>
-                    Ghi chú điều chỉnh
-                  </label>
-                  <input
-                    id="fee-cat-note"
-                    type="text"
-                    className={shared.textInput}
-                    value={catNote}
-                    onChange={(e) => setCatNote(e.target.value)}
-                    placeholder="VD: Điều chỉnh biểu phí ngành hàng Quý 4..."
-                  />
-                </div>
-              </div>
-
-              {catFormError && (
-                <p className={shared.validationError} role="alert">
-                  {catFormError}
+          {canWriteCatFees ? (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] md:items-start">
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold text-foreground">Lên lịch phí danh mục</h3>
+                <p className="text-[13px] text-muted-foreground">
+                  Áp dụng tự động cho đơn hàng mới kể từ mốc hiệu lực đã đặt.
                 </p>
-              )}
-
-              <div className={shared.detailButtons}>
-                <Button type="submit" variant="primary" size="sm" shape="app" loading={catSaving}>
-                  Lên lịch phí danh mục
-                </Button>
               </div>
-            </form>
-          )}
+              <Card>
+                <form onSubmit={(e) => void handleSaveCategoryFee(e)} noValidate>
+                  <CardContent className="pt-4">
+                    <FieldGroup className="gap-4">
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <Field className="gap-1.5 sm:col-span-2">
+                          <FieldLabel htmlFor="fee-cat-id">Danh mục áp dụng</FieldLabel>
+                          <Select value={catId} onValueChange={setCatId}>
+                            <SelectTrigger id="fee-cat-id" className="w-full bg-card">
+                              <SelectValue placeholder="Chọn danh mục..." />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {categories.map((c) => (
+                                <SelectItem key={c.id} value={c.id}>
+                                  {c.name} (hiện tại {formatBpsPercent(c.commission_rate_bps ?? 0)})
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </Field>
+
+                        <Field className="gap-1.5">
+                          <FieldLabel htmlFor="fee-cat-bps">
+                            Mức hoa hồng (bps — {formatBpsPercent(parsedCatBps)})
+                          </FieldLabel>
+                          <Input
+                            id="fee-cat-bps"
+                            type="number"
+                            min={0}
+                            max={5000}
+                            step={1}
+                            value={catBpsStr}
+                            onChange={(e) => setCatBpsStr(e.target.value)}
+                            required
+                            className="bg-card tabular-nums"
+                          />
+                        </Field>
+
+                        <Field className="gap-1.5">
+                          <FieldLabel htmlFor="fee-cat-eff">Bắt đầu hiệu lực (giờ VN)</FieldLabel>
+                          <Input
+                            id="fee-cat-eff"
+                            type="datetime-local"
+                            value={catEffectiveFrom}
+                            onChange={(e) => setCatEffectiveFrom(e.target.value)}
+                            required
+                            className="bg-card tabular-nums"
+                          />
+                        </Field>
+
+                        <Field className="gap-1.5 sm:col-span-2">
+                          <FieldLabel htmlFor="fee-cat-note">Ghi chú điều chỉnh</FieldLabel>
+                          <Input
+                            id="fee-cat-note"
+                            type="text"
+                            value={catNote}
+                            onChange={(e) => setCatNote(e.target.value)}
+                            placeholder="VD: Điều chỉnh biểu phí ngành hàng Quý 4..."
+                            className="bg-card"
+                          />
+                        </Field>
+                      </div>
+                      <FieldError>{catFormError}</FieldError>
+                    </FieldGroup>
+                  </CardContent>
+                  <CardFooter className="justify-end border-t border-border pt-3.5">
+                    <Button type="submit" size="sm" disabled={catSaving}>
+                      {catSaving ? "Đang lưu..." : "Lên lịch phí danh mục"}
+                    </Button>
+                  </CardFooter>
+                </form>
+              </Card>
+            </div>
+          ) : null}
 
           {catSchedules.length === 0 ? (
-            <p className={shared.emptyRow}>Chưa có lịch biểu phí danh mục nào.</p>
+            <EmptyState
+              icon={Percent}
+              title="Chưa có lịch biểu phí danh mục nào"
+              description="Các lịch biểu phí hoa hồng theo danh mục sẽ hiển thị tại đây."
+            />
           ) : (
-            <>
-              <div className={shared.tableWrap} style={{ marginTop: 14 }}>
-                <table className={shared.dataTable}>
-                  <thead>
-                    <tr>
-                      <th>Danh mục</th>
-                      <th className={shared.colNum}>Mức hoa hồng</th>
-                      <th>Hiệu lực từ</th>
-                      <th>Trạng thái</th>
-                      <th>Ghi chú</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+            <IndexTable>
+              <div className="hidden md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Danh mục</TableHead>
+                      <TableHead className="text-right">Mức hoa hồng</TableHead>
+                      <TableHead>Hiệu lực từ</TableHead>
+                      <TableHead>Trạng thái</TableHead>
+                      <TableHead>Ghi chú</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     {catSchedules.map((sch) => {
                       const upcoming = isEffectiveFuture(sch.effective_from);
                       return (
-                        <tr key={sch.id}>
-                          <td>
-                            <div className={shared.cellPrimary}>
+                        <TableRow key={sch.id}>
+                          <TableCell className="whitespace-normal">
+                            <div className="font-medium text-foreground">
                               {sch.category_name ||
                                 categoryNameById.get(sch.category_id) ||
                                 sch.category_id}
                             </div>
-                            {sch.created_at && (
-                              <div className={shared.cellSub}>
+                            {sch.created_at ? (
+                              <div className="text-xs text-muted-foreground tabular-nums">
                                 Tạo lúc {formatDateTimeVi(sch.created_at)}
                               </div>
-                            )}
-                          </td>
-                          <td className={shared.colNum}>
-                            <strong>{formatBpsPercent(sch.commission_rate_bps)}</strong>
-                            <div className={shared.cellSub}>
+                            ) : null}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            <div className="font-semibold text-foreground">
+                              {formatBpsPercent(sch.commission_rate_bps)}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
                               {formatInt(sch.commission_rate_bps)} bps
                             </div>
-                          </td>
-                          <td>{formatDateTimeVi(sch.effective_from)}</td>
-                          <td>
-                            <StatusPill
-                              label={upcoming ? "Chờ hiệu lực" : "Đang / đã hiệu lực"}
-                              tone={upcoming ? "warning" : "positive"}
-                            />
-                          </td>
-                          <td>{sch.note || EMPTY_DASH}</td>
-                        </tr>
+                          </TableCell>
+                          <TableCell className="tabular-nums">
+                            {formatDateTimeVi(sch.effective_from)}
+                          </TableCell>
+                          <TableCell>
+                            <StatusBadge tone={upcoming ? "attention" : "success"}>
+                              {upcoming ? "Chờ hiệu lực" : "Đang / đã hiệu lực"}
+                            </StatusBadge>
+                          </TableCell>
+                          <TableCell className="max-w-[260px] whitespace-normal text-muted-foreground">
+                            {sch.note || EMPTY_DASH}
+                          </TableCell>
+                        </TableRow>
                       );
                     })}
-                  </tbody>
-                </table>
+                  </TableBody>
+                </Table>
               </div>
 
-              <div className={shared.mobileList}>
+              <div className="md:hidden">
                 {catSchedules.map((sch) => {
                   const upcoming = isEffectiveFuture(sch.effective_from);
                   return (
-                    <div key={sch.id} className={shared.mobileItem}>
-                      <div className={shared.mobileLine1}>
-                        <span className={shared.mobileIdentity}>
-                          {sch.category_name ||
-                            categoryNameById.get(sch.category_id) ||
-                            sch.category_id}
-                        </span>
-                        <span className={shared.mobileMetric}>
-                          {formatBpsPercent(sch.commission_rate_bps)}
-                        </span>
-                      </div>
-                      <div className={shared.mobileLine2}>
-                        <span className={shared.mobileMetaText}>
-                          Từ {formatDateTimeVi(sch.effective_from)}
-                        </span>
-                        <StatusPill
-                          label={upcoming ? "Chờ hiệu lực" : "Hiệu lực"}
-                          tone={upcoming ? "warning" : "positive"}
-                        />
-                      </div>
-                    </div>
+                    <IndexRowCard
+                      key={sch.id}
+                      title={
+                        sch.category_name ||
+                        categoryNameById.get(sch.category_id) ||
+                        sch.category_id
+                      }
+                      badge={
+                        <StatusBadge tone={upcoming ? "attention" : "success"}>
+                          {upcoming ? "Chờ hiệu lực" : "Hiệu lực"}
+                        </StatusBadge>
+                      }
+                      meta={
+                        <>
+                          <span className="font-semibold text-foreground tabular-nums">
+                            {formatBpsPercent(sch.commission_rate_bps)}
+                          </span>
+                          <span>·</span>
+                          <span className="tabular-nums">
+                            Từ {formatDateTimeVi(sch.effective_from)}
+                          </span>
+                        </>
+                      }
+                    />
                   );
                 })}
               </div>
-            </>
+            </IndexTable>
           )}
         </section>
-      )}
+      ) : null}
+
+      {canReadCatFees && canReadPayFees ? <Separator /> : null}
 
       {/* Payment method fees (COD / VIETQR / ZALOPAY) */}
-      {canReadPayFees && (
-        <section className={shared.panel} aria-labelledby="pay-fee-heading">
-          <div className={shared.panelHeader}>
-            <h2 id="pay-fee-heading" className={shared.panelTitle}>
+      {canReadPayFees ? (
+        <section className="space-y-4" aria-labelledby="pay-fee-heading">
+          <div>
+            <h2 id="pay-fee-heading" className="text-sm font-semibold text-foreground">
               Phí thanh toán ({formatInt(paymentFees.length)})
             </h2>
+            <p className="text-[13px] text-muted-foreground">
+              Biểu phí xử lý giao dịch áp dụng cho VietQR, ZaloPay và COD.
+            </p>
           </div>
 
-          {canWritePayFees && (
-            <form
-              onSubmit={(e) => void handleSavePaymentFee(e)}
-              className={shared.detailWell}
-              noValidate
-            >
-              <div className={shared.detailGrid}>
-                <div className={shared.detailField}>
-                  <label htmlFor="fee-pay-method" className={shared.fieldLabel}>
-                    Phương thức thanh toán
-                  </label>
-                  <select
-                    id="fee-pay-method"
-                    className={shared.formSelect}
-                    value={payMethod}
-                    onChange={(e) => setPayMethod(e.target.value as GatewayPaymentMethod)}
-                  >
-                    <option value="VIETQR">Chuyển khoản VietQR</option>
-                    <option value="ZALOPAY">Ví điện tử ZaloPay</option>
-                    <option value="COD">Thu hộ khi nhận hàng (COD)</option>
-                  </select>
-                </div>
-                <div className={shared.detailField}>
-                  <label htmlFor="fee-pay-bps" className={shared.fieldLabel}>
-                    Mức phí (bps — {formatBpsPercent(parsedPayBps)})
-                  </label>
-                  <input
-                    id="fee-pay-bps"
-                    type="number"
-                    min={0}
-                    max={2000}
-                    step={1}
-                    className={shared.textInput}
-                    value={payBpsStr}
-                    onChange={(e) => setPayBpsStr(e.target.value)}
-                    required
-                  />
-                </div>
-                <div className={shared.detailField}>
-                  <label htmlFor="fee-pay-eff" className={shared.fieldLabel}>
-                    Bắt đầu hiệu lực (giờ VN)
-                  </label>
-                  <input
-                    id="fee-pay-eff"
-                    type="datetime-local"
-                    className={shared.textInput}
-                    value={payEffectiveFrom}
-                    onChange={(e) => setPayEffectiveFrom(e.target.value)}
-                    required
-                  />
-                </div>
-                <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                  <label htmlFor="fee-pay-note" className={shared.fieldLabel}>
-                    Ghi chú thay đổi phí thanh toán
-                  </label>
-                  <input
-                    id="fee-pay-note"
-                    type="text"
-                    className={shared.textInput}
-                    value={payNote}
-                    onChange={(e) => setPayNote(e.target.value)}
-                    placeholder="VD: Biểu phí xử lý giao dịch ngân hàng..."
-                  />
-                </div>
-              </div>
-
-              {payFormError && (
-                <p className={shared.validationError} role="alert">
-                  {payFormError}
+          {canWritePayFees ? (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] md:items-start">
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold text-foreground">Lên lịch phí thanh toán</h3>
+                <p className="text-[13px] text-muted-foreground">
+                  Mức phí hợp lệ từ 0 đến 2000 bps (0% – 20%).
                 </p>
-              )}
-
-              <div className={shared.detailButtons}>
-                <Button type="submit" variant="primary" size="sm" shape="app" loading={paySaving}>
-                  Lên lịch phí thanh toán
-                </Button>
               </div>
-            </form>
-          )}
+              <Card>
+                <form onSubmit={(e) => void handleSavePaymentFee(e)} noValidate>
+                  <CardContent className="pt-4">
+                    <FieldGroup className="gap-4">
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <Field className="gap-1.5 sm:col-span-2">
+                          <FieldLabel htmlFor="fee-pay-method">Phương thức thanh toán</FieldLabel>
+                          <Select
+                            value={payMethod}
+                            onValueChange={(v) => setPayMethod(v as GatewayPaymentMethod)}
+                          >
+                            <SelectTrigger id="fee-pay-method" className="w-full bg-card">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="VIETQR">Chuyển khoản VietQR</SelectItem>
+                              <SelectItem value="ZALOPAY">Ví điện tử ZaloPay</SelectItem>
+                              <SelectItem value="COD">Thu hộ khi nhận hàng (COD)</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </Field>
+
+                        <Field className="gap-1.5">
+                          <FieldLabel htmlFor="fee-pay-bps">
+                            Mức phí (bps — {formatBpsPercent(parsedPayBps)})
+                          </FieldLabel>
+                          <Input
+                            id="fee-pay-bps"
+                            type="number"
+                            min={0}
+                            max={2000}
+                            step={1}
+                            value={payBpsStr}
+                            onChange={(e) => setPayBpsStr(e.target.value)}
+                            required
+                            className="bg-card tabular-nums"
+                          />
+                        </Field>
+
+                        <Field className="gap-1.5">
+                          <FieldLabel htmlFor="fee-pay-eff">Bắt đầu hiệu lực (giờ VN)</FieldLabel>
+                          <Input
+                            id="fee-pay-eff"
+                            type="datetime-local"
+                            value={payEffectiveFrom}
+                            onChange={(e) => setPayEffectiveFrom(e.target.value)}
+                            required
+                            className="bg-card tabular-nums"
+                          />
+                        </Field>
+
+                        <Field className="gap-1.5 sm:col-span-2">
+                          <FieldLabel htmlFor="fee-pay-note">
+                            Ghi chú thay đổi phí thanh toán
+                          </FieldLabel>
+                          <Input
+                            id="fee-pay-note"
+                            type="text"
+                            value={payNote}
+                            onChange={(e) => setPayNote(e.target.value)}
+                            placeholder="VD: Biểu phí xử lý giao dịch ngân hàng..."
+                            className="bg-card"
+                          />
+                        </Field>
+                      </div>
+                      <FieldError>{payFormError}</FieldError>
+                    </FieldGroup>
+                  </CardContent>
+                  <CardFooter className="justify-end border-t border-border pt-3.5">
+                    <Button type="submit" size="sm" disabled={paySaving}>
+                      {paySaving ? "Đang lưu..." : "Lên lịch phí thanh toán"}
+                    </Button>
+                  </CardFooter>
+                </form>
+              </Card>
+            </div>
+          ) : null}
 
           {paymentFees.length === 0 ? (
-            <p className={shared.emptyRow}>Chưa có lịch phí thanh toán nào.</p>
+            <EmptyState
+              icon={Percent}
+              title="Chưa có lịch phí thanh toán nào"
+              description="Các biểu phí thanh toán sẽ hiển thị tại đây sau khi được cấu hình."
+            />
           ) : (
-            <>
-              <div className={shared.tableWrap} style={{ marginTop: 14 }}>
-                <table className={shared.dataTable}>
-                  <thead>
-                    <tr>
-                      <th>Phương thức</th>
-                      <th className={shared.colNum}>Mức phí</th>
-                      <th>Hiệu lực từ</th>
-                      <th>Trạng thái</th>
-                      <th>Ghi chú</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+            <IndexTable>
+              <div className="hidden md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Phương thức</TableHead>
+                      <TableHead className="text-right">Mức phí</TableHead>
+                      <TableHead>Hiệu lực từ</TableHead>
+                      <TableHead>Trạng thái</TableHead>
+                      <TableHead>Ghi chú</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     {paymentFees.map((cfg) => {
                       const upcoming = isEffectiveFuture(cfg.effective_from);
                       const isActive = activePaymentFeeIds.has(cfg.id);
@@ -542,34 +582,42 @@ export function AdminFeesPanel() {
                         : upcoming
                           ? "Chờ hiệu lực"
                           : "Lịch sử";
-                      const statusTone = isActive ? "positive" : upcoming ? "warning" : "neutral";
+                      const statusTone = isActive ? "success" : upcoming ? "attention" : "neutral";
                       return (
-                        <tr key={cfg.id}>
-                          <td>
-                            <div className={shared.cellPrimary}>{cfg.payment_method}</div>
-                            {cfg.created_at && (
-                              <div className={shared.cellSub}>
+                        <TableRow key={cfg.id}>
+                          <TableCell className="whitespace-normal">
+                            <div className="font-medium text-foreground">{cfg.payment_method}</div>
+                            {cfg.created_at ? (
+                              <div className="text-xs text-muted-foreground tabular-nums">
                                 Tạo lúc {formatDateTimeVi(cfg.created_at)}
                               </div>
-                            )}
-                          </td>
-                          <td className={shared.colNum}>
-                            <strong>{formatBpsPercent(cfg.fee_bps)}</strong>
-                            <div className={shared.cellSub}>{formatInt(cfg.fee_bps)} bps</div>
-                          </td>
-                          <td>{formatDateTimeVi(cfg.effective_from)}</td>
-                          <td>
-                            <StatusPill label={statusLabel} tone={statusTone} />
-                          </td>
-                          <td>{cfg.note || EMPTY_DASH}</td>
-                        </tr>
+                            ) : null}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            <div className="font-semibold text-foreground">
+                              {formatBpsPercent(cfg.fee_bps)}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {formatInt(cfg.fee_bps)} bps
+                            </div>
+                          </TableCell>
+                          <TableCell className="tabular-nums">
+                            {formatDateTimeVi(cfg.effective_from)}
+                          </TableCell>
+                          <TableCell>
+                            <StatusBadge tone={statusTone}>{statusLabel}</StatusBadge>
+                          </TableCell>
+                          <TableCell className="max-w-[260px] whitespace-normal text-muted-foreground">
+                            {cfg.note || EMPTY_DASH}
+                          </TableCell>
+                        </TableRow>
                       );
                     })}
-                  </tbody>
-                </table>
+                  </TableBody>
+                </Table>
               </div>
 
-              <div className={shared.mobileList}>
+              <div className="md:hidden">
                 {paymentFees.map((cfg) => {
                   const upcoming = isEffectiveFuture(cfg.effective_from);
                   const isActive = activePaymentFeeIds.has(cfg.id);
@@ -578,27 +626,31 @@ export function AdminFeesPanel() {
                     : upcoming
                       ? "Chờ hiệu lực"
                       : "Lịch sử";
-                  const statusTone = isActive ? "positive" : upcoming ? "warning" : "neutral";
+                  const statusTone = isActive ? "success" : upcoming ? "attention" : "neutral";
                   return (
-                    <div key={cfg.id} className={shared.mobileItem}>
-                      <div className={shared.mobileLine1}>
-                        <span className={shared.mobileIdentity}>{cfg.payment_method}</span>
-                        <span className={shared.mobileMetric}>{formatBpsPercent(cfg.fee_bps)}</span>
-                      </div>
-                      <div className={shared.mobileLine2}>
-                        <span className={shared.mobileMetaText}>
-                          Từ {formatDateTimeVi(cfg.effective_from)}
-                        </span>
-                        <StatusPill label={statusLabel} tone={statusTone} />
-                      </div>
-                    </div>
+                    <IndexRowCard
+                      key={cfg.id}
+                      title={cfg.payment_method}
+                      badge={<StatusBadge tone={statusTone}>{statusLabel}</StatusBadge>}
+                      meta={
+                        <>
+                          <span className="font-semibold text-foreground tabular-nums">
+                            {formatBpsPercent(cfg.fee_bps)}
+                          </span>
+                          <span>·</span>
+                          <span className="tabular-nums">
+                            Từ {formatDateTimeVi(cfg.effective_from)}
+                          </span>
+                        </>
+                      }
+                    />
                   );
                 })}
               </div>
-            </>
+            </IndexTable>
           )}
         </section>
-      )}
+      ) : null}
     </div>
   );
 }

@@ -2,7 +2,35 @@
 
 import React, { Suspense, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { IconSearch, StateView } from "@/components";
+import { Info, Search, Ticket } from "lucide-react";
+import {
+  EmptyState,
+  ErrorState,
+  IndexRowCard,
+  IndexTable,
+  PageHeader,
+  StatusBadge,
+} from "@/components/app";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
+import { Separator } from "@/components/ui/separator";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { roleHasCapability } from "@/lib/admin-rbac";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import type { GatewayCategory, GatewayVoucher } from "@/lib/gateway-types";
@@ -15,12 +43,14 @@ import { AdminPaymentMethodsPanel } from "./AdminPaymentMethodsPanel";
 import { AdminSearchReindexBlock } from "./AdminSearchReindexBlock";
 import { useAdminContext } from "./AdminShell";
 import { AdminStateGate, AdminSuspenseFallback } from "./AdminStateGate";
-import { AdminDrawer, SlidingTabBar } from "./AdminUi";
 import { AdminUsersPanel } from "./AdminUsersPanel";
-import { StatusPill } from "./StatusPill";
 import { getVoucherScopeMeta, type AdminVoucherScope } from "./adminComplaintsTypes";
-import shared from "./adminShared.module.css";
-import styles from "@/app/(admin)/admin/cau-hinh/page.module.css";
+import {
+  DetailGrid,
+  DetailItem,
+  FilterSelect,
+  pillToneToStatusTone,
+} from "./config/adminUiHelpers";
 
 type ConfigTab =
   | "thanh_toan"
@@ -90,7 +120,7 @@ function ConfigWorkspace({
     ? selectedTab
     : (tabs[0]?.id ?? "nguoi_dung");
 
-  // Read-only platform voucher history filter & drawer
+  // Read-only platform voucher history filter & Sheet
   const [voucherScopeFilter, setVoucherScopeFilter] = useState<"all" | AdminVoucherScope>("all");
   const [voucherQuery, setVoucherQuery] = useState("");
   const [drawerVoucher, setDrawerVoucher] = useState<GatewayVoucher | null>(null);
@@ -107,293 +137,339 @@ function ConfigWorkspace({
   }, [initialVouchers, voucherScopeFilter, voucherQuery]);
 
   return (
-    <div className={shared.page}>
-      <header className={shared.titleRow}>
-        <div className={shared.titleBlock}>
-          <h1 className={shared.pageTitle}>Cấu hình sàn</h1>
-        </div>
-      </header>
+    <div className="space-y-6">
+      <PageHeader
+        title="Cấu hình sàn"
+        subtitle="Thiết lập cổng thanh toán, phê duyệt 2 người, biểu phí, vận chuyển, danh mục và nhân sự."
+      />
 
-      {tabs.length > 0 && (
-        <SlidingTabBar
-          tabs={tabs}
-          activeId={activeTab}
-          onChange={setSelectedTab}
-          ariaLabel="Nhóm cấu hình nền tảng"
-        />
-      )}
-
-      {activeTab === "thanh_toan" && canReadPaymentMethods && <AdminPaymentMethodsPanel />}
-      {activeTab === "duyet_hai_nguoi" && canReadApprovals && <AdminApprovalsPanel />}
-      {activeTab === "phi_san" && canReadFees && <AdminFeesPanel />}
-      {activeTab === "van_chuyen" && canReadCarriers && <AdminCarriersPanel />}
-      {activeTab === "danh_muc" && canReadCategories && (
-        <AdminCategoriesPanel
-          initialCategories={initialCategories}
-          initialError={categoriesError}
-        />
-      )}
-      {activeTab === "nguoi_dung" && canReadUsers && (
-        <AdminUsersPanel initialQuery={initialQuery} />
-      )}
-
-      {/* Read-only history for Platform Vouchers & Coins (zero create/credit actions) */}
-      {activeTab === "voucher_san" && canReadVouchers && (
-        <section className={styles.tabBody} aria-label="Lịch sử voucher sàn và Xu">
-          <p className={styles.readOnlyNotice} role="note">
-            Chế độ chỉ đọc lịch sử. Voucher sàn và chương trình cấp Xu đã ngừng phát hành mới.
-          </p>
-
-          {vouchersError ? (
-            <StateView
-              kind="error"
-              surface="app"
-              title="Không thể tải lịch sử voucher sàn"
-              message={vouchersError}
-              actionLabel="Thử lại"
-              onAction={() => router.refresh()}
-            />
-          ) : (
-            <>
-              <div className={shared.toolbar}>
-                <div className={shared.toolbarLeft}>
-                  <div className={shared.searchWrap}>
-                    <span className={shared.searchIcon}>
-                      <IconSearch size={14} />
+      {tabs.length > 0 ? (
+        <Tabs
+          value={activeTab}
+          onValueChange={(v) => setSelectedTab(v as ConfigTab)}
+          className="space-y-5"
+        >
+          <div className="max-w-full overflow-x-auto pb-0.5">
+            <TabsList aria-label="Nhóm cấu hình nền tảng">
+              {tabs.map((t) => (
+                <TabsTrigger key={t.id} value={t.id}>
+                  <span>{t.label}</span>
+                  {typeof t.count === "number" ? (
+                    <span className="text-xs text-muted-foreground tabular-nums">
+                      {formatInt(t.count)}
                     </span>
-                    <input
-                      type="search"
-                      className={shared.toolbarSearch}
-                      value={voucherQuery}
-                      onChange={(e) => setVoucherQuery(e.target.value)}
-                      placeholder="Tìm mã hoặc tên voucher..."
-                      aria-label="Tìm lịch sử voucher sàn"
-                    />
-                  </div>
-                  <select
-                    className={shared.toolbarSelect}
-                    value={voucherScopeFilter}
-                    onChange={(e) =>
-                      setVoucherScopeFilter(e.target.value as "all" | AdminVoucherScope)
+                  ) : null}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </div>
+
+          {canReadPaymentMethods ? (
+            <TabsContent value="thanh_toan">
+              <AdminPaymentMethodsPanel />
+            </TabsContent>
+          ) : null}
+
+          {canReadApprovals ? (
+            <TabsContent value="duyet_hai_nguoi">
+              <AdminApprovalsPanel />
+            </TabsContent>
+          ) : null}
+
+          {canReadFees ? (
+            <TabsContent value="phi_san">
+              <AdminFeesPanel />
+            </TabsContent>
+          ) : null}
+
+          {canReadCarriers ? (
+            <TabsContent value="van_chuyen">
+              <AdminCarriersPanel />
+            </TabsContent>
+          ) : null}
+
+          {canReadCategories ? (
+            <TabsContent value="danh_muc">
+              <AdminCategoriesPanel
+                initialCategories={initialCategories}
+                initialError={categoriesError}
+              />
+            </TabsContent>
+          ) : null}
+
+          {canReadUsers ? (
+            <TabsContent value="nguoi_dung">
+              <AdminUsersPanel initialQuery={initialQuery} />
+            </TabsContent>
+          ) : null}
+
+          {/* Read-only history for Platform Vouchers & Coins (zero create/credit actions) */}
+          {canReadVouchers ? (
+            <TabsContent value="voucher_san">
+              <section className="space-y-4" aria-label="Lịch sử voucher sàn và Xu">
+                <Alert role="note">
+                  <Info className="size-4" aria-hidden="true" />
+                  <AlertDescription>
+                    Chế độ chỉ đọc lịch sử. Voucher sàn và chương trình cấp Xu đã ngừng phát hành
+                    mới.
+                  </AlertDescription>
+                </Alert>
+
+                {vouchersError ? (
+                  <ErrorState
+                    title="Không thể tải lịch sử voucher sàn"
+                    description={vouchersError}
+                    onRetry={() => router.refresh()}
+                  />
+                ) : (
+                  <IndexTable
+                    toolbar={
+                      <span className="text-xs text-muted-foreground tabular-nums">
+                        {formatInt(filteredVouchers.length)} voucher
+                      </span>
                     }
-                    aria-label="Lọc phạm vi voucher"
                   >
-                    <option value="all">Tất cả phạm vi</option>
-                    <option value="PLATFORM">Voucher sàn</option>
-                    <option value="FREESHIP">Freeship</option>
-                  </select>
-                </div>
-                <div className={shared.toolbarRight}>
-                  <span className={shared.resultCount}>
-                    {formatInt(filteredVouchers.length)} voucher
-                  </span>
-                </div>
-              </div>
+                    <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/35 px-4 py-2.5">
+                      <div className="relative min-w-0 flex-1 sm:max-w-xs">
+                        <Search
+                          className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                        <Input
+                          type="search"
+                          value={voucherQuery}
+                          onChange={(e) => setVoucherQuery(e.target.value)}
+                          placeholder="Tìm mã hoặc tên voucher..."
+                          aria-label="Tìm lịch sử voucher sàn"
+                          className="h-9 bg-card pl-8"
+                        />
+                      </div>
+                      <div className="w-full sm:w-44">
+                        <FilterSelect
+                          value={voucherScopeFilter}
+                          onValueChange={(v) =>
+                            setVoucherScopeFilter(v as "all" | AdminVoucherScope)
+                          }
+                          ariaLabel="Lọc phạm vi voucher"
+                          options={[
+                            { value: "all", label: "Tất cả phạm vi" },
+                            { value: "PLATFORM", label: "Voucher sàn" },
+                            { value: "FREESHIP", label: "Freeship" },
+                          ]}
+                        />
+                      </div>
+                    </div>
 
-              {filteredVouchers.length === 0 ? (
-                <p className={shared.emptyRow}>Chưa có lịch sử voucher sàn phù hợp.</p>
-              ) : (
-                <>
-                  <div className={shared.tableWrap}>
-                    <table className={shared.dataTable}>
-                      <thead>
-                        <tr>
-                          <th>Mã &amp; chương trình</th>
-                          <th>Phạm vi</th>
-                          <th className={shared.colNum}>Mức giảm &amp; đơn tối thiểu</th>
-                          <th>Lượt sử dụng</th>
-                          <th>Hiệu lực</th>
-                          <th>Trạng thái</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredVouchers.map((v) => {
-                          const scopeMeta = getVoucherScopeMeta(v.scope);
-                          const ratio = v.quota > 0 ? Math.min(1, v.used_count / v.quota) : 0;
-                          const discountSummary =
-                            v.discount_type.toUpperCase() === "PERCENT"
-                              ? `Giảm ${formatInt(v.discount_percent)}% (tối đa ${formatVnd(v.max_discount_vnd)})`
-                              : `Giảm ${formatVnd(v.value_vnd)}`;
+                    {filteredVouchers.length === 0 ? (
+                      <div className="p-4">
+                        <EmptyState
+                          icon={Ticket}
+                          title="Chưa có lịch sử voucher sàn phù hợp"
+                          className="shadow-none"
+                        />
+                      </div>
+                    ) : (
+                      <>
+                        <div className="hidden md:block">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Mã &amp; chương trình</TableHead>
+                                <TableHead>Phạm vi</TableHead>
+                                <TableHead className="text-right">
+                                  Mức giảm &amp; đơn tối thiểu
+                                </TableHead>
+                                <TableHead>Lượt sử dụng</TableHead>
+                                <TableHead>Hiệu lực</TableHead>
+                                <TableHead>Trạng thái</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {filteredVouchers.map((v) => {
+                                const scopeMeta = getVoucherScopeMeta(v.scope);
+                                const pct =
+                                  v.quota > 0
+                                    ? Math.min(100, Math.round((v.used_count / v.quota) * 100))
+                                    : 0;
+                                const discountSummary =
+                                  v.discount_type.toUpperCase() === "PERCENT"
+                                    ? `Giảm ${formatInt(v.discount_percent)}% (tối đa ${formatVnd(v.max_discount_vnd)})`
+                                    : `Giảm ${formatVnd(v.value_vnd)}`;
 
-                          return (
-                            <tr
-                              key={v.id}
-                              className={`${shared.rowInteractive} ${drawerVoucher?.id === v.id ? shared.rowSelected : ""}`}
-                              onClick={() => setDrawerVoucher(v)}
-                            >
-                              <td>
-                                <button
-                                  type="button"
-                                  className={shared.rowTriggerBtn}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setDrawerVoucher(v);
-                                  }}
-                                >
-                                  <span className={shared.cellPrimary}>{v.code}</span>
-                                  <span className={shared.cellSub}>{v.name}</span>
-                                </button>
-                              </td>
-                              <td>
-                                <StatusPill label={scopeMeta.label} tone={scopeMeta.tone} />
-                              </td>
-                              <td className={shared.colNum}>
-                                <div className={shared.cellPrimary}>{discountSummary}</div>
-                                <div className={shared.cellSub}>
-                                  Đơn từ {formatVnd(v.min_order_vnd)}
-                                </div>
-                              </td>
-                              <td>
-                                <div className={styles.quotaCell}>
-                                  <span className={shared.cellSub}>
-                                    {formatInt(v.used_count)} / {formatInt(v.quota)} lượt
-                                  </span>
-                                  <div className={shared.progressTrack} aria-hidden="true">
-                                    <div
-                                      className={shared.progressFill}
-                                      style={{ transform: `scaleX(${ratio.toFixed(4)})` }}
-                                    />
-                                  </div>
-                                </div>
-                              </td>
-                              <td>
-                                <div className={shared.cellSub}>
-                                  {v.starts_at ? `Từ ${formatDateTimeVi(v.starts_at)}` : EMPTY_DASH}
-                                </div>
-                                <div className={shared.cellSub}>
-                                  {v.ends_at ? `Đến ${formatDateTimeVi(v.ends_at)}` : EMPTY_DASH}
-                                </div>
-                              </td>
-                              <td>
-                                <StatusPill
-                                  label={v.is_active ? "Đang hoạt động" : "Tạm ngưng"}
-                                  tone={v.is_active ? "positive" : "neutral"}
-                                />
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
+                                return (
+                                  <TableRow
+                                    key={v.id}
+                                    data-state={drawerVoucher?.id === v.id ? "selected" : undefined}
+                                    className="cursor-pointer"
+                                    onClick={() => setDrawerVoucher(v)}
+                                  >
+                                    <TableCell className="whitespace-normal">
+                                      <button
+                                        type="button"
+                                        className="flex flex-col items-start text-left focus-visible:underline focus-visible:outline-none"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setDrawerVoucher(v);
+                                        }}
+                                      >
+                                        <span className="font-semibold text-foreground">
+                                          {v.code}
+                                        </span>
+                                        <span className="text-xs text-muted-foreground">
+                                          {v.name}
+                                        </span>
+                                      </button>
+                                    </TableCell>
+                                    <TableCell>
+                                      <StatusBadge tone={pillToneToStatusTone(scopeMeta.tone)}>
+                                        {scopeMeta.label}
+                                      </StatusBadge>
+                                    </TableCell>
+                                    <TableCell className="text-right whitespace-normal tabular-nums">
+                                      <div className="font-medium text-foreground">
+                                        {discountSummary}
+                                      </div>
+                                      <div className="text-xs text-muted-foreground">
+                                        Đơn từ {formatVnd(v.min_order_vnd)}
+                                      </div>
+                                    </TableCell>
+                                    <TableCell>
+                                      <div className="min-w-32 space-y-1.5">
+                                        <div className="text-xs text-muted-foreground tabular-nums">
+                                          {formatInt(v.used_count)} / {formatInt(v.quota)} lượt
+                                        </div>
+                                        <Progress value={pct} aria-label={`Đã dùng ${pct}%`} />
+                                      </div>
+                                    </TableCell>
+                                    <TableCell className="text-xs text-muted-foreground tabular-nums">
+                                      <div>
+                                        {v.starts_at
+                                          ? `Từ ${formatDateTimeVi(v.starts_at)}`
+                                          : EMPTY_DASH}
+                                      </div>
+                                      <div>
+                                        {v.ends_at
+                                          ? `Đến ${formatDateTimeVi(v.ends_at)}`
+                                          : EMPTY_DASH}
+                                      </div>
+                                    </TableCell>
+                                    <TableCell>
+                                      <StatusBadge tone={v.is_active ? "success" : "neutral"}>
+                                        {v.is_active ? "Đang hoạt động" : "Tạm ngưng"}
+                                      </StatusBadge>
+                                    </TableCell>
+                                  </TableRow>
+                                );
+                              })}
+                            </TableBody>
+                          </Table>
+                        </div>
 
-                  <div className={shared.mobileList}>
-                    {filteredVouchers.map((v) => {
-                      const scopeMeta = getVoucherScopeMeta(v.scope);
-                      const discountSummary =
-                        v.discount_type.toUpperCase() === "PERCENT"
-                          ? `-${formatInt(v.discount_percent)}%`
-                          : `-${formatVnd(v.value_vnd)}`;
-                      return (
-                        <article key={v.id} className={shared.mobileItem}>
-                          <button
-                            type="button"
-                            className={shared.mobileItemBtn}
-                            onClick={() => setDrawerVoucher(v)}
-                          >
-                            <span className={shared.mobileLine1}>
-                              <span className={shared.mobileIdentity}>
-                                {v.code}: {v.name}
-                              </span>
-                              <span className={shared.mobileMetric}>{discountSummary}</span>
-                            </span>
-                            <span className={shared.mobileLine2}>
-                              <span className={shared.mobileMetaText}>
-                                {formatInt(v.used_count)}/{formatInt(v.quota)} lượt, đơn từ{" "}
-                                {formatVnd(v.min_order_vnd)}
-                              </span>
-                              <StatusPill label={scopeMeta.label} tone={scopeMeta.tone} />
-                            </span>
-                          </button>
-                        </article>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-            </>
-          )}
-        </section>
-      )}
+                        <div className="md:hidden">
+                          {filteredVouchers.map((v) => {
+                            const scopeMeta = getVoucherScopeMeta(v.scope);
+                            const discountSummary =
+                              v.discount_type.toUpperCase() === "PERCENT"
+                                ? `-${formatInt(v.discount_percent)}%`
+                                : `-${formatVnd(v.value_vnd)}`;
+                            return (
+                              <IndexRowCard
+                                key={v.id}
+                                title={`${v.code}: ${v.name}`}
+                                badge={
+                                  <StatusBadge tone={pillToneToStatusTone(scopeMeta.tone)}>
+                                    {scopeMeta.label}
+                                  </StatusBadge>
+                                }
+                                meta={
+                                  <>
+                                    <span className="font-semibold text-foreground tabular-nums">
+                                      {discountSummary}
+                                    </span>
+                                    <span>·</span>
+                                    <span className="tabular-nums">
+                                      {formatInt(v.used_count)}/{formatInt(v.quota)} lượt
+                                    </span>
+                                    <span>·</span>
+                                    <span className="tabular-nums">
+                                      đơn từ {formatVnd(v.min_order_vnd)}
+                                    </span>
+                                  </>
+                                }
+                                onClick={() => setDrawerVoucher(v)}
+                              />
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+                  </IndexTable>
+                )}
+              </section>
+            </TabsContent>
+          ) : null}
+        </Tabs>
+      ) : null}
 
-      {canReindexSearch && (
+      {canReindexSearch ? (
         <>
-          <hr className={styles.sectionRule} />
+          <Separator />
           <AdminSearchReindexBlock />
         </>
-      )}
+      ) : null}
 
-      <AdminDrawer
-        open={Boolean(drawerVoucher)}
-        onClose={() => setDrawerVoucher(null)}
-        title={drawerVoucher?.code ?? ""}
-        subtitle={drawerVoucher?.name}
-        headerBadge={
-          drawerVoucher ? (
-            <StatusPill
-              label={drawerVoucher.is_active ? "Đang hoạt động" : "Tạm ngưng"}
-              tone={drawerVoucher.is_active ? "positive" : "neutral"}
-            />
-          ) : undefined
-        }
-      >
-        {drawerVoucher && (
-          <div className={shared.detailWell}>
-            <div className={shared.detailGrid}>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Phạm vi</span>
-                <span className={shared.detailVal}>
-                  {getVoucherScopeMeta(drawerVoucher.scope).label}
-                </span>
+      <Sheet open={Boolean(drawerVoucher)} onOpenChange={(open) => !open && setDrawerVoucher(null)}>
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-lg">
+          {drawerVoucher ? (
+            <>
+              <SheetHeader className="border-b border-border pb-4">
+                <div className="flex flex-wrap items-center gap-2 pr-6">
+                  <SheetTitle>{drawerVoucher.code}</SheetTitle>
+                  <StatusBadge tone={drawerVoucher.is_active ? "success" : "neutral"}>
+                    {drawerVoucher.is_active ? "Đang hoạt động" : "Tạm ngưng"}
+                  </StatusBadge>
+                </div>
+                {drawerVoucher.name ? (
+                  <SheetDescription>{drawerVoucher.name}</SheetDescription>
+                ) : null}
+              </SheetHeader>
+
+              <div className="px-4 pb-6">
+                <DetailGrid>
+                  <DetailItem label="Phạm vi">
+                    {getVoucherScopeMeta(drawerVoucher.scope).label}
+                  </DetailItem>
+                  <DetailItem label="Mức giảm" numeric>
+                    {drawerVoucher.discount_type.toUpperCase() === "PERCENT"
+                      ? `${formatInt(drawerVoucher.discount_percent)}% (tối đa ${formatVnd(drawerVoucher.max_discount_vnd)})`
+                      : formatVnd(drawerVoucher.value_vnd)}
+                  </DetailItem>
+                  <DetailItem label="Đơn tối thiểu" numeric>
+                    {formatVnd(drawerVoucher.min_order_vnd)}
+                  </DetailItem>
+                  <DetailItem label="Lượt đã dùng / tổng" numeric>
+                    {formatInt(drawerVoucher.used_count)} / {formatInt(drawerVoucher.quota)}
+                  </DetailItem>
+                  <DetailItem label="Giới hạn mỗi tài khoản" numeric>
+                    {formatInt(drawerVoucher.per_user_limit)} lượt
+                  </DetailItem>
+                  <DetailItem label="Ngân sách tối đa" numeric>
+                    {formatVnd(drawerVoucher.budget_vnd)}
+                  </DetailItem>
+                  <DetailItem label="Bắt đầu" numeric>
+                    {drawerVoucher.starts_at
+                      ? formatDateTimeVi(drawerVoucher.starts_at)
+                      : EMPTY_DASH}
+                  </DetailItem>
+                  <DetailItem label="Kết thúc" numeric>
+                    {drawerVoucher.ends_at ? formatDateTimeVi(drawerVoucher.ends_at) : EMPTY_DASH}
+                  </DetailItem>
+                </DetailGrid>
               </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Mức giảm</span>
-                <span className={`${shared.detailVal} num`}>
-                  {drawerVoucher.discount_type.toUpperCase() === "PERCENT"
-                    ? `${formatInt(drawerVoucher.discount_percent)}% (tối đa ${formatVnd(drawerVoucher.max_discount_vnd)})`
-                    : formatVnd(drawerVoucher.value_vnd)}
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Đơn tối thiểu</span>
-                <span className={`${shared.detailVal} num`}>
-                  {formatVnd(drawerVoucher.min_order_vnd)}
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Lượt đã dùng / tổng</span>
-                <span className={`${shared.detailVal} num`}>
-                  {formatInt(drawerVoucher.used_count)} / {formatInt(drawerVoucher.quota)}
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Giới hạn mỗi tài khoản</span>
-                <span className={`${shared.detailValPlain} num`}>
-                  {formatInt(drawerVoucher.per_user_limit)} lượt
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Ngân sách tối đa</span>
-                <span className={`${shared.detailValPlain} num`}>
-                  {formatVnd(drawerVoucher.budget_vnd)}
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Bắt đầu</span>
-                <span className={`${shared.detailValPlain} num`}>
-                  {drawerVoucher.starts_at ? formatDateTimeVi(drawerVoucher.starts_at) : EMPTY_DASH}
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Kết thúc</span>
-                <span className={`${shared.detailValPlain} num`}>
-                  {drawerVoucher.ends_at ? formatDateTimeVi(drawerVoucher.ends_at) : EMPTY_DASH}
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
-      </AdminDrawer>
+            </>
+          ) : null}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

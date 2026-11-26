@@ -1,7 +1,22 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
-import { Button, StateView } from "@/components";
+import { Truck } from "lucide-react";
+import { EmptyState, ErrorState, StatusBadge } from "@/components/app";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardFooter } from "@/components/ui/card";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { api, getErrorMessage } from "@/lib/api";
 import { formatCarrierLabel, formatDateTimeVi, formatVnd } from "@/lib/format";
 import type {
@@ -12,10 +27,8 @@ import type {
 } from "@/lib/gateway-types";
 import { useAdminContext } from "./AdminShell";
 import { useAdminCapability } from "./AdminUserContext";
-import { StatusPill } from "./StatusPill";
 import { SHIPPING_REGION_LABELS } from "./types";
-import shared from "./adminShared.module.css";
-import styles from "@/app/(admin)/admin/cau-hinh/page.module.css";
+import { TableLoadingSkeleton } from "./config/adminUiHelpers";
 
 const REGIONS: GatewayShippingRegion[] = ["SAME_PROVINCE", "SAME_REGION", "CROSS_REGION"];
 
@@ -209,51 +222,37 @@ export function AdminCarriersPanel() {
   };
 
   if (loading) {
-    return (
-      <div className={shared.stateWrap}>
-        <StateView
-          kind="loading"
-          surface="app"
-          title="Đang tải cấu hình hãng vận chuyển..."
-          rows={4}
-        />
-      </div>
-    );
+    return <TableLoadingSkeleton rows={4} label="Đang tải cấu hình hãng vận chuyển..." />;
   }
 
   if (errorMsg) {
     return (
-      <div className={shared.stateWrap}>
-        <StateView
-          kind="error"
-          surface="app"
-          title="Không thể tải danh sách hãng vận chuyển"
-          message={errorMsg}
-          actionLabel="Thử lại"
-          onAction={() => void loadCarriers()}
-        />
-      </div>
+      <ErrorState
+        title="Không thể tải danh sách hãng vận chuyển"
+        description={errorMsg}
+        onRetry={() => void loadCarriers()}
+      />
     );
   }
 
   if (carriers.length === 0) {
     return (
-      <div className={shared.stateWrap}>
-        <StateView
-          kind="empty"
-          surface="app"
-          title="Chưa có hãng vận chuyển nào"
-          message="Hệ thống vận chuyển chưa trả về đối tác nào."
-          actionLabel="Làm mới"
-          onAction={() => void loadCarriers()}
-        />
-      </div>
+      <EmptyState
+        icon={Truck}
+        title="Chưa có hãng vận chuyển nào"
+        description="Hệ thống vận chuyển chưa trả về đối tác nào."
+        action={
+          <Button type="button" variant="outline" size="sm" onClick={() => void loadCarriers()}>
+            Làm mới
+          </Button>
+        }
+      />
     );
   }
 
   return (
-    <div className={shared.sectionStack}>
-      {carriers.map((carrier) => {
+    <div className="space-y-6">
+      {carriers.map((carrier, idx) => {
         const code = carrier.carrier_code;
         const displayName = formatCarrierLabel(code, carrier.name);
         const draft = drafts[code] ?? buildDraft(carrier);
@@ -263,268 +262,273 @@ export function AdminCarriersPanel() {
         const isTesting = testingCode === code;
 
         return (
-          <section
-            key={code}
-            className={styles.configRow}
-            aria-labelledby={`carrier-heading-${code}`}
-          >
-            <div className={styles.configLabelCol}>
-              <div className={shared.detailHeaderMeta}>
-                <h2 id={`carrier-heading-${code}`} className={styles.configBlockTitle}>
-                  {displayName}
-                </h2>
-                <StatusPill
-                  label={draft.enabled ? "Đang bật" : "Đang tắt"}
-                  tone={draft.enabled ? "positive" : "neutral"}
-                />
-              </div>
-              <p className={styles.configBlockMeta}>
-                Mã: {code} · Khóa API: {carrier.token_configured ? "Đã cấu hình" : "Chưa cấu hình"}
-              </p>
-              <p className={styles.configBlockMeta}>
-                Nội tỉnh dự phòng: {formatVnd(draft.fallback_rates[0]?.base_fee_vnd ?? 0)}
-                {carrier.updated_at ? ` · ${formatDateTimeVi(carrier.updated_at)}` : ""}
-              </p>
-            </div>
-
-            <form
-              className={styles.configPanel}
-              onSubmit={(e) => void handleSaveCarrier(e, carrier)}
-              noValidate
+          <React.Fragment key={code}>
+            {idx > 0 ? <Separator /> : null}
+            <section
+              aria-labelledby={`carrier-heading-${code}`}
+              className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] md:items-start"
             >
-              <div className={styles.switchRow}>
-                <div className={styles.switchCopy}>
-                  <span className={styles.switchTitle}>Bật {displayName}</span>
+              <div className="space-y-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2
+                    id={`carrier-heading-${code}`}
+                    className="text-sm font-semibold text-foreground"
+                  >
+                    {displayName}
+                  </h2>
+                  <StatusBadge tone={draft.enabled ? "success" : "neutral"}>
+                    {draft.enabled ? "Đang bật" : "Đang tắt"}
+                  </StatusBadge>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={draft.enabled}
-                  aria-label={`Bật hoặc tắt ${displayName}`}
-                  disabled={!canWrite || isSaving}
-                  className={`${shared.toggleBtn} ${draft.enabled ? shared.toggleBtnOn : ""}`}
-                  onClick={() => updateDraft(code, (prev) => ({ ...prev, enabled: !prev.enabled }))}
-                >
-                  <span className={shared.toggleKnob} />
-                </button>
-              </div>
-
-              <div className={styles.fieldGroup}>
-                <label htmlFor={`carrier-token-${code}`} className={shared.fieldLabel}>
-                  API token đối tác (chỉ ghi mới)
-                </label>
-                <input
-                  id={`carrier-token-${code}`}
-                  type="password"
-                  autoComplete="new-password"
-                  className={shared.textInput}
-                  value={draft.api_token}
-                  onChange={(e) =>
-                    updateDraft(code, (prev) => ({ ...prev, api_token: e.target.value }))
-                  }
-                  placeholder={
-                    carrier.token_configured
-                      ? "Đã cấu hình — để trống để giữ nguyên"
-                      : "Nhập API token đối tác..."
-                  }
-                  disabled={!canWrite || isSaving}
-                />
-              </div>
-
-              <div className={shared.tableWrap}>
-                <table className={shared.dataTable}>
-                  <thead>
-                    <tr>
-                      <th>Tuyến vận chuyển</th>
-                      <th className={shared.colNum}>Cước cơ bản (₫)</th>
-                      <th className={shared.colNum}>Mốc KL (g)</th>
-                      <th className={shared.colNum}>Phụ phí / 500g (₫)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {draft.fallback_rates.map((rate) => {
-                      const regionKey = rate.region as GatewayShippingRegion;
-                      return (
-                        <tr key={rate.region}>
-                          <td>{SHIPPING_REGION_LABELS[rate.region] ?? rate.region}</td>
-                          <td className={shared.colNum}>
-                            <input
-                              type="number"
-                              min={0}
-                              step={1}
-                              className={styles.compactInput}
-                              value={rate.base_fee_vnd}
-                              onChange={(e) =>
-                                updateRateField(code, regionKey, "base_fee_vnd", e.target.value)
-                              }
-                              aria-label={`Cước cơ bản ${SHIPPING_REGION_LABELS[rate.region] ?? rate.region} của ${displayName}`}
-                              disabled={!canWrite || isSaving}
-                            />
-                          </td>
-                          <td className={shared.colNum}>
-                            <input
-                              type="number"
-                              min={1}
-                              step={1}
-                              className={styles.compactInput}
-                              value={rate.base_weight_grams}
-                              onChange={(e) =>
-                                updateRateField(
-                                  code,
-                                  regionKey,
-                                  "base_weight_grams",
-                                  e.target.value
-                                )
-                              }
-                              aria-label={`Mốc khối lượng ${SHIPPING_REGION_LABELS[rate.region] ?? rate.region} của ${displayName}`}
-                              disabled={!canWrite || isSaving}
-                            />
-                          </td>
-                          <td className={shared.colNum}>
-                            <input
-                              type="number"
-                              min={0}
-                              step={1}
-                              className={styles.compactInput}
-                              value={rate.extra_fee_vnd_per_500g}
-                              onChange={(e) =>
-                                updateRateField(
-                                  code,
-                                  regionKey,
-                                  "extra_fee_vnd_per_500g",
-                                  e.target.value
-                                )
-                              }
-                              aria-label={`Phụ phí mỗi 500g ${SHIPPING_REGION_LABELS[rate.region] ?? rate.region} của ${displayName}`}
-                              disabled={!canWrite || isSaving}
-                            />
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className={shared.mobileList}>
-                {draft.fallback_rates.map((rate) => {
-                  const regionKey = rate.region as GatewayShippingRegion;
-                  const regionLabel = SHIPPING_REGION_LABELS[rate.region] ?? rate.region;
-                  const baseId = `carrier-rate-${code}-${rate.region}-base`;
-                  const weightId = `carrier-rate-${code}-${rate.region}-weight`;
-                  const extraId = `carrier-rate-${code}-${rate.region}-extra`;
-                  return (
-                    <div key={rate.region} className={shared.mobileItem}>
-                      <span className={shared.fieldLabel}>{regionLabel}</span>
-                      <div className={styles.mobileRateGrid}>
-                        <div className={styles.fieldGroup}>
-                          <label htmlFor={baseId} className={styles.fieldHint}>
-                            Cước cơ bản (₫)
-                          </label>
-                          <input
-                            id={baseId}
-                            type="number"
-                            min={0}
-                            step={1}
-                            className={shared.textInput}
-                            value={rate.base_fee_vnd}
-                            onChange={(e) =>
-                              updateRateField(code, regionKey, "base_fee_vnd", e.target.value)
-                            }
-                            disabled={!canWrite || isSaving}
-                          />
-                        </div>
-                        <div className={styles.fieldGroup}>
-                          <label htmlFor={weightId} className={styles.fieldHint}>
-                            Mốc KL (g)
-                          </label>
-                          <input
-                            id={weightId}
-                            type="number"
-                            min={1}
-                            step={1}
-                            className={shared.textInput}
-                            value={rate.base_weight_grams}
-                            onChange={(e) =>
-                              updateRateField(code, regionKey, "base_weight_grams", e.target.value)
-                            }
-                            disabled={!canWrite || isSaving}
-                          />
-                        </div>
-                        <div className={styles.fieldGroup}>
-                          <label htmlFor={extraId} className={styles.fieldHint}>
-                            Phụ phí / 500g (₫)
-                          </label>
-                          <input
-                            id={extraId}
-                            type="number"
-                            min={0}
-                            step={1}
-                            className={shared.textInput}
-                            value={rate.extra_fee_vnd_per_500g}
-                            onChange={(e) =>
-                              updateRateField(
-                                code,
-                                regionKey,
-                                "extra_fee_vnd_per_500g",
-                                e.target.value
-                              )
-                            }
-                            disabled={!canWrite || isSaving}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {rowErr && (
-                <p className={shared.validationError} role="alert">
-                  {rowErr}
+                <p className="text-xs leading-[18px] text-muted-foreground">
+                  Mã: {code} · Khóa API:{" "}
+                  {carrier.token_configured ? "Đã cấu hình" : "Chưa cấu hình"}
                 </p>
-              )}
+                <p className="text-xs leading-[18px] text-muted-foreground tabular-nums">
+                  Nội tỉnh dự phòng: {formatVnd(draft.fallback_rates[0]?.base_fee_vnd ?? 0)}
+                  {carrier.updated_at ? ` · ${formatDateTimeVi(carrier.updated_at)}` : ""}
+                </p>
+              </div>
 
-              {testRes && (
-                <div className={styles.formFeedback} role="status">
-                  <StatusPill
-                    label={testRes.ok ? "Kết nối ổn định" : "Kiểm tra thất bại"}
-                    tone={testRes.ok ? "positive" : "negative"}
-                  />
-                  {testRes.message && <span className={styles.fieldHint}>{testRes.message}</span>}
-                </div>
-              )}
+              <Card>
+                <form onSubmit={(e) => void handleSaveCarrier(e, carrier)} noValidate>
+                  <CardContent className="space-y-4 pt-4">
+                    <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/35 px-3.5 py-2.5">
+                      <span className="text-sm font-medium text-foreground">Bật {displayName}</span>
+                      <Switch
+                        checked={draft.enabled}
+                        aria-label={`Bật hoặc tắt ${displayName}`}
+                        disabled={!canWrite || isSaving}
+                        onCheckedChange={(checked) =>
+                          updateDraft(code, (prev) => ({ ...prev, enabled: checked }))
+                        }
+                      />
+                    </div>
 
-              {canWrite && (
-                <div className={styles.formFooter}>
-                  <span />
-                  <div className={styles.formActions}>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      shape="app"
-                      loading={isTesting}
-                      disabled={isSaving}
-                      onClick={() => void handleTestCarrier(carrier)}
-                    >
-                      Kiểm tra kết nối
-                    </Button>
-                    <Button
-                      type="submit"
-                      variant="primary"
-                      size="sm"
-                      shape="app"
-                      loading={isSaving}
-                      disabled={isTesting}
-                    >
-                      Lưu cấu hình hãng
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </form>
-          </section>
+                    <Field className="gap-1.5">
+                      <FieldLabel htmlFor={`carrier-token-${code}`}>
+                        API token đối tác (chỉ ghi mới)
+                      </FieldLabel>
+                      <Input
+                        id={`carrier-token-${code}`}
+                        type="password"
+                        autoComplete="new-password"
+                        value={draft.api_token}
+                        onChange={(e) =>
+                          updateDraft(code, (prev) => ({ ...prev, api_token: e.target.value }))
+                        }
+                        placeholder={
+                          carrier.token_configured
+                            ? "Đã cấu hình — để trống để giữ nguyên"
+                            : "Nhập API token đối tác..."
+                        }
+                        disabled={!canWrite || isSaving}
+                        className="bg-card"
+                      />
+                    </Field>
+
+                    {/* Desktop fallback rates table */}
+                    <div className="hidden overflow-hidden rounded-lg border border-border md:block">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Tuyến vận chuyển</TableHead>
+                            <TableHead className="text-right">Cước cơ bản (₫)</TableHead>
+                            <TableHead className="text-right">Mốc KL (g)</TableHead>
+                            <TableHead className="text-right">Phụ phí / 500g (₫)</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {draft.fallback_rates.map((rate) => {
+                            const regionKey = rate.region as GatewayShippingRegion;
+                            const regionLabel = SHIPPING_REGION_LABELS[rate.region] ?? rate.region;
+                            return (
+                              <TableRow key={rate.region}>
+                                <TableCell className="font-medium text-foreground">
+                                  {regionLabel}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    step={1}
+                                    value={rate.base_fee_vnd}
+                                    onChange={(e) =>
+                                      updateRateField(
+                                        code,
+                                        regionKey,
+                                        "base_fee_vnd",
+                                        e.target.value
+                                      )
+                                    }
+                                    aria-label={`Cước cơ bản ${regionLabel} của ${displayName}`}
+                                    disabled={!canWrite || isSaving}
+                                    className="ml-auto h-8 w-28 bg-card text-right tabular-nums"
+                                  />
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  <Input
+                                    type="number"
+                                    min={1}
+                                    step={1}
+                                    value={rate.base_weight_grams}
+                                    onChange={(e) =>
+                                      updateRateField(
+                                        code,
+                                        regionKey,
+                                        "base_weight_grams",
+                                        e.target.value
+                                      )
+                                    }
+                                    aria-label={`Mốc khối lượng ${regionLabel} của ${displayName}`}
+                                    disabled={!canWrite || isSaving}
+                                    className="ml-auto h-8 w-24 bg-card text-right tabular-nums"
+                                  />
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    step={1}
+                                    value={rate.extra_fee_vnd_per_500g}
+                                    onChange={(e) =>
+                                      updateRateField(
+                                        code,
+                                        regionKey,
+                                        "extra_fee_vnd_per_500g",
+                                        e.target.value
+                                      )
+                                    }
+                                    aria-label={`Phụ phí mỗi 500g ${regionLabel} của ${displayName}`}
+                                    disabled={!canWrite || isSaving}
+                                    className="ml-auto h-8 w-28 bg-card text-right tabular-nums"
+                                  />
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </div>
+
+                    {/* Mobile fallback rates stacked cards */}
+                    <div className="space-y-3 md:hidden">
+                      {draft.fallback_rates.map((rate) => {
+                        const regionKey = rate.region as GatewayShippingRegion;
+                        const regionLabel = SHIPPING_REGION_LABELS[rate.region] ?? rate.region;
+                        const baseId = `carrier-rate-${code}-${rate.region}-base`;
+                        const weightId = `carrier-rate-${code}-${rate.region}-weight`;
+                        const extraId = `carrier-rate-${code}-${rate.region}-extra`;
+                        return (
+                          <div
+                            key={rate.region}
+                            className="space-y-2.5 rounded-lg border border-border bg-muted/35 p-3"
+                          >
+                            <div className="text-[13px] font-semibold text-foreground">
+                              {regionLabel}
+                            </div>
+                            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                              <Field className="gap-1">
+                                <FieldLabel htmlFor={baseId} className="text-xs">
+                                  Cước cơ bản (₫)
+                                </FieldLabel>
+                                <Input
+                                  id={baseId}
+                                  type="number"
+                                  min={0}
+                                  step={1}
+                                  value={rate.base_fee_vnd}
+                                  onChange={(e) =>
+                                    updateRateField(code, regionKey, "base_fee_vnd", e.target.value)
+                                  }
+                                  disabled={!canWrite || isSaving}
+                                  className="bg-card tabular-nums"
+                                />
+                              </Field>
+                              <Field className="gap-1">
+                                <FieldLabel htmlFor={weightId} className="text-xs">
+                                  Mốc KL (g)
+                                </FieldLabel>
+                                <Input
+                                  id={weightId}
+                                  type="number"
+                                  min={1}
+                                  step={1}
+                                  value={rate.base_weight_grams}
+                                  onChange={(e) =>
+                                    updateRateField(
+                                      code,
+                                      regionKey,
+                                      "base_weight_grams",
+                                      e.target.value
+                                    )
+                                  }
+                                  disabled={!canWrite || isSaving}
+                                  className="bg-card tabular-nums"
+                                />
+                              </Field>
+                              <Field className="gap-1">
+                                <FieldLabel htmlFor={extraId} className="text-xs">
+                                  Phụ phí / 500g (₫)
+                                </FieldLabel>
+                                <Input
+                                  id={extraId}
+                                  type="number"
+                                  min={0}
+                                  step={1}
+                                  value={rate.extra_fee_vnd_per_500g}
+                                  onChange={(e) =>
+                                    updateRateField(
+                                      code,
+                                      regionKey,
+                                      "extra_fee_vnd_per_500g",
+                                      e.target.value
+                                    )
+                                  }
+                                  disabled={!canWrite || isSaving}
+                                  className="bg-card tabular-nums"
+                                />
+                              </Field>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <FieldError>{rowErr}</FieldError>
+
+                    {testRes ? (
+                      <div className="flex flex-wrap items-center gap-2" role="status">
+                        <StatusBadge tone={testRes.ok ? "success" : "critical"}>
+                          {testRes.ok ? "Kết nối ổn định" : "Kiểm tra thất bại"}
+                        </StatusBadge>
+                        {testRes.message ? (
+                          <span className="text-xs text-muted-foreground">{testRes.message}</span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </CardContent>
+
+                  {canWrite ? (
+                    <CardFooter className="flex-wrap justify-end gap-2 border-t border-border pt-3.5">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={isTesting || isSaving}
+                        onClick={() => void handleTestCarrier(carrier)}
+                      >
+                        {isTesting ? "Đang kiểm tra..." : "Kiểm tra kết nối"}
+                      </Button>
+                      <Button type="submit" size="sm" disabled={isSaving || isTesting}>
+                        {isSaving ? "Đang lưu..." : "Lưu cấu hình hãng"}
+                      </Button>
+                    </CardFooter>
+                  ) : null}
+                </form>
+              </Card>
+            </section>
+          </React.Fragment>
         );
       })}
     </div>

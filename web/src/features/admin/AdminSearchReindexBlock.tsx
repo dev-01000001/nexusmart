@@ -1,7 +1,11 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Button } from "@/components";
+import { AlertCircle, RefreshCw } from "lucide-react";
+import { StatusBadge } from "@/components/app";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { api, getErrorMessage } from "@/lib/api";
 import { formatDateTimeVi, formatInt } from "@/lib/format";
 import type {
@@ -10,11 +14,8 @@ import type {
 } from "@/lib/gateway-types";
 import { getSearchReindexStatusMeta } from "./adminApiTypes";
 import { useAdminContext } from "./AdminShell";
-import { AdminConfirmDialog } from "./AdminUi";
 import { useAdminCapability } from "./AdminUserContext";
-import { StatusPill } from "./StatusPill";
-import shared from "./adminShared.module.css";
-import styles from "@/app/(admin)/admin/cau-hinh/page.module.css";
+import { ConfirmActionDialog, searchReindexStateTone } from "./config/adminUiHelpers";
 
 const POLL_INTERVAL_MS = 2000;
 const MAX_POLL_ERRORS = 3;
@@ -112,84 +113,98 @@ export function AdminSearchReindexBlock() {
 
   return (
     <>
-      <section className={styles.configRow} aria-labelledby="search-reindex-heading">
-        <div className={styles.configLabelCol}>
-          <h2 id="search-reindex-heading" className={styles.configBlockTitle}>
+      <section
+        className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] md:items-start"
+        aria-labelledby="search-reindex-heading"
+      >
+        <div className="space-y-1">
+          <h2 id="search-reindex-heading" className="text-sm font-semibold text-foreground">
             Chỉ mục tìm kiếm
           </h2>
-          <p className={styles.configBlockMeta}>
+          <p className="text-[13px] leading-[18px] text-muted-foreground">
             Đồng bộ lại dữ liệu sản phẩm, danh mục và gian hàng cho tìm kiếm.
           </p>
         </div>
 
-        <div className={styles.configPanel}>
-          <div className={styles.reindexRow}>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              shape="app"
-              loading={starting}
-              disabled={isRunning}
-              onClick={() => setConfirmOpen(true)}
-            >
-              Dựng lại chỉ mục
-            </Button>
+        <Card>
+          <CardContent className="space-y-3 pt-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={starting || isRunning}
+                onClick={() => setConfirmOpen(true)}
+              >
+                <RefreshCw className="size-3.5" aria-hidden="true" />
+                <span>{starting ? "Đang khởi chạy..." : "Dựng lại chỉ mục"}</span>
+              </Button>
 
-            {job && statusMeta && (
-              <div className={styles.reindexStatus} role="status" aria-live="polite">
-                <StatusPill label={statusMeta.label} tone={statusMeta.tone} />
-                <span className={styles.configBlockMeta} title={job.job_id}>
-                  #{job.job_id.slice(0, 8)}
-                </span>
-              </div>
-            )}
-          </div>
-
-          {job && statusMeta && (
-            <p className={styles.configBlockMeta}>
-              {statusMeta.state === "RUNNING" &&
-                (job.products_indexed > 0
-                  ? `Đang đồng bộ ${formatInt(job.products_indexed)} sản phẩm…`
-                  : "Đang chạy nền…")}
-              {statusMeta.state === "COMPLETED" &&
-                `Đã đồng bộ ${formatInt(job.products_indexed)} sản phẩm${
-                  job.finished_at ? ` · ${formatDateTimeVi(job.finished_at)}` : ""
-                }`}
-              {statusMeta.state === "FAILED" &&
-                (job.error_message || "Dựng lại chỉ mục thất bại. Vui lòng thử lại sau.")}
-            </p>
-          )}
-
-          {errorMsg && (
-            <div className={styles.reindexRow}>
-              <p className={shared.validationError} role="alert">
-                {errorMsg}
-              </p>
-              {isRunning && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  shape="app"
-                  onClick={() => {
-                    setErrorMsg(null);
-                    setPollEpoch((n) => n + 1);
-                  }}
+              {job && statusMeta ? (
+                <div
+                  className="inline-flex flex-wrap items-center gap-2"
+                  role="status"
+                  aria-live="polite"
                 >
-                  Kiểm tra lại
-                </Button>
-              )}
+                  <StatusBadge tone={searchReindexStateTone(statusMeta.state)}>
+                    {statusMeta.label}
+                  </StatusBadge>
+                  <span className="text-xs text-muted-foreground tabular-nums" title={job.job_id}>
+                    #{job.job_id.slice(0, 8)}
+                  </span>
+                </div>
+              ) : null}
             </div>
-          )}
-        </div>
+
+            {job && statusMeta ? (
+              <p className="text-[13px] text-muted-foreground tabular-nums">
+                {statusMeta.state === "RUNNING"
+                  ? job.products_indexed > 0
+                    ? `Đang đồng bộ ${formatInt(job.products_indexed)} sản phẩm…`
+                    : "Đang chạy nền…"
+                  : null}
+                {statusMeta.state === "COMPLETED"
+                  ? `Đã đồng bộ ${formatInt(job.products_indexed)} sản phẩm${
+                      job.finished_at ? ` · ${formatDateTimeVi(job.finished_at)}` : ""
+                    }`
+                  : null}
+                {statusMeta.state === "FAILED"
+                  ? job.error_message || "Dựng lại chỉ mục thất bại. Vui lòng thử lại sau."
+                  : null}
+              </p>
+            ) : null}
+
+            {errorMsg ? (
+              <Alert variant="destructive">
+                <AlertCircle className="size-4" aria-hidden="true" />
+                <AlertDescription className="flex w-full flex-wrap items-center justify-between gap-2">
+                  <span>{errorMsg}</span>
+                  {isRunning ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      onClick={() => {
+                        setErrorMsg(null);
+                        setPollEpoch((n) => n + 1);
+                      }}
+                    >
+                      Kiểm tra lại
+                    </Button>
+                  ) : null}
+                </AlertDescription>
+              </Alert>
+            ) : null}
+          </CardContent>
+        </Card>
       </section>
 
-      <AdminConfirmDialog
+      <ConfirmActionDialog
         open={confirmOpen}
         title="Dựng lại chỉ mục tìm kiếm?"
         description="Tiến trình chạy nền để đồng bộ lại dữ liệu tìm kiếm. Không thể khởi chạy thêm khi đang xử lý."
         confirmLabel="Dựng lại chỉ mục"
+        confirmVariant="default"
         busy={starting}
         onCancel={() => {
           if (!starting) setConfirmOpen(false);

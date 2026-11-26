@@ -2,7 +2,59 @@
 
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Button, IconPlus, IconSearch, StateView } from "@/components";
+import {
+  AlertCircle,
+  ClipboardCheck,
+  FileSpreadsheet,
+  Info,
+  Plus,
+  RefreshCw,
+  Scale,
+  Search,
+  Upload,
+  Wallet,
+} from "lucide-react";
+import {
+  EmptyState,
+  ErrorState,
+  IndexRowCard,
+  IndexTable,
+  MetricStrip,
+  Money,
+  PageHeader,
+  StatusBadge,
+  orderStatusTone,
+} from "@/components/app";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { api, getErrorMessage } from "@/lib/api";
 import { canDecideTwoPersonApproval, roleHasCapability } from "@/lib/admin-rbac";
 import {
@@ -26,12 +78,11 @@ import type {
   PaginatedResponse,
 } from "@/lib/gateway-types";
 import { getOptionalSalesChannelMeta, type SalesChannelFilter } from "@/lib/salesChannel";
+import { cn } from "@/lib/utils";
 import { getPaymentMethodLabel, localizeRefundReason } from "@/features/account/orderMeta";
 import { EMPTY_DASH, formatShortTimeDateVi } from "./adminMeta";
 import { AdminStateGate, AdminSuspenseFallback } from "./AdminStateGate";
 import { useAdminContext } from "./AdminShell";
-import { AdminDrawer, SlidingTabBar } from "./AdminUi";
-import { StatusPill } from "./StatusPill";
 import {
   formatAdminOrderPaymentDisplay,
   getAccountTypeLabelVi,
@@ -70,8 +121,16 @@ import {
   validateRefundApprovalDecisionInput,
   validateSettleRefundInput,
 } from "./AdminReconciliationHelpers";
-import shared from "./adminShared.module.css";
-import styles from "@/app/(admin)/admin/doi-soat/page.module.css";
+import {
+  DetailGrid,
+  DetailItem,
+  FilterSelect,
+  TableLoadingSkeleton,
+  TablePagination,
+  pillToneToStatusTone,
+  refundStatusTone,
+} from "./config/adminUiHelpers";
+import { CodCsvImportDialog } from "./finance/CodCsvImportDialog";
 
 export type ReconciliationMainTab = "ledger" | "cod" | "queue" | "refunds" | "needs-review";
 
@@ -82,6 +141,7 @@ const CHANNEL_TABS: Array<{ id: SalesChannelFilter; label: string; dataChannelTa
 ];
 
 const PAGE_SIZE = 20;
+const ALL_REFUND_SENTINEL = "__all_refund__";
 
 function channelScopeLabel(channel: SalesChannelFilter): string {
   if (channel === "MARKETPLACE") return "Sàn NexusMart";
@@ -172,6 +232,7 @@ function ReconciliationContent({
 
   const [mainTab, setMainTab] = useState<ReconciliationMainTab>(resolvedDefaultTab);
   const [drawerTarget, setDrawerTarget] = useState<DrawerTarget | null>(null);
+  const [codDialogOpen, setCodDialogOpen] = useState(false);
 
   // --- Ledger & daily reconcile state (phase-0b sales_channel preserved) ---
   const [ledger, setLedger] = useState<GwLedgerSummary | null>(initialLedger);
@@ -188,6 +249,10 @@ function ReconciliationContent({
   const [runError, setRunError] = useState<string | null>(null);
 
   const carrierOptions = useMemo(() => buildCodCarrierOptions(carriers), [carriers]);
+  const carrierSelectOptions = useMemo(
+    () => carrierOptions.map((c) => ({ value: c.code, label: c.label })),
+    [carrierOptions]
+  );
   const queueIdemCacheRef = useRef<StableReferenceCache | null>(null);
   const settleIdemCacheRef = useRef<StableReferenceCache | null>(null);
   const refundIdemCacheRef = useRef<StableReferenceCache | null>(null);
@@ -466,6 +531,7 @@ function ReconciliationContent({
       setCodResult(res);
       setCodResultPage(1);
       setCodFile(null);
+      setCodDialogOpen(false);
       showToast(
         `Đã đối soát COD ${formatCarrierLabel(codCarrier)}: ${formatInt(res.run.matched_count)}/${formatInt(res.run.total_rows)} dòng khớp.`
       );
@@ -759,14 +825,12 @@ function ReconciliationContent({
 
   if (loadError && mainTab === "ledger") {
     return (
-      <div className={shared.page}>
-        <StateView
-          kind="error"
-          surface="app"
+      <div className="space-y-5">
+        <PageHeader title="Đối soát & hoàn tiền" />
+        <ErrorState
           title="Không thể tải sổ cái đối soát"
-          message={loadError}
-          actionLabel="Thử lại"
-          onAction={() => router.refresh()}
+          description={loadError}
+          onRetry={() => router.refresh()}
         />
       </div>
     );
@@ -781,845 +845,937 @@ function ReconciliationContent({
     ? report.amount_mismatch_count + report.missing_local_count + report.missing_provider_count
     : 0;
 
-  return (
-    <div className={shared.page}>
-      <header className={shared.titleRow}>
-        <div className={shared.titleBlock}>
-          <h1 className={shared.pageTitle}>Đối soát &amp; hoàn tiền</h1>
-        </div>
-        <div className={shared.titleActions}>
-          {mainTab === "ledger" && canWriteRecon && (
-            <form className={styles.runFormInline} onSubmit={(e) => void handleRunReconcile(e)}>
-              <label htmlFor="recon-date" className="sr-only">
-                Ngày đối soát
-              </label>
-              <input
-                id="recon-date"
-                type="date"
-                className={shared.toolbarDate}
-                value={runDate}
-                onChange={(e) => setRunDate(e.target.value)}
-                aria-label="Chọn ngày đối soát"
-              />
-              <Button type="submit" variant="primary" size="sm" shape="app" loading={running}>
-                Chạy đối soát ngày
-              </Button>
-            </form>
-          )}
-          {mainTab === "refunds" && canCreateRefund && (
-            <Button
-              variant="primary"
-              size="sm"
-              shape="app"
-              onClick={() => {
-                setCreateRefundError(null);
-                setDrawerTarget({ kind: "create-refund" });
-              }}
-            >
-              <IconPlus size={14} />
-              <span>Tạo lệnh hoàn tiền</span>
-            </Button>
-          )}
-        </div>
-      </header>
+  const openCodDialog = () => {
+    setCodError(null);
+    setCodDialogOpen(true);
+  };
 
-      <SlidingTabBar
-        tabs={tabsWithLiveCounts}
-        activeId={mainTab}
-        onChange={setMainTab}
-        ariaLabel="Phân hệ đối soát và hoàn tiền"
+  const headerPrimaryAction =
+    mainTab === "ledger" && canWriteRecon ? (
+      <form
+        className="flex flex-wrap items-center gap-2"
+        onSubmit={(e) => void handleRunReconcile(e)}
+      >
+        <label htmlFor="recon-date" className="sr-only">
+          Ngày đối soát
+        </label>
+        <Input
+          id="recon-date"
+          type="date"
+          value={runDate}
+          onChange={(e) => setRunDate(e.target.value)}
+          aria-label="Chọn ngày đối soát"
+          className="h-8 w-40 bg-card tabular-nums"
+        />
+        <Button type="submit" size="sm" disabled={running}>
+          {running ? "Đang đối soát..." : "Chạy đối soát ngày"}
+        </Button>
+      </form>
+    ) : mainTab === "cod" && canWriteRecon ? (
+      <Button type="button" size="sm" onClick={openCodDialog}>
+        <Upload className="size-4" aria-hidden="true" />
+        <span>Tải CSV đối soát COD</span>
+      </Button>
+    ) : mainTab === "refunds" && canCreateRefund ? (
+      <Button
+        type="button"
+        size="sm"
+        onClick={() => {
+          setCreateRefundError(null);
+          setDrawerTarget({ kind: "create-refund" });
+        }}
+      >
+        <Plus className="size-4" aria-hidden="true" />
+        <span>Tạo lệnh hoàn tiền</span>
+      </Button>
+    ) : undefined;
+
+  return (
+    <div className="space-y-5">
+      <PageHeader
+        title="Đối soát & hoàn tiền"
+        subtitle="Theo dõi sổ cái ghi kép, đối soát VietQR & COD CSV, xử lý giao dịch lệch và hoàn tiền 2 bước."
+        primaryAction={headerPrimaryAction}
       />
 
-      {/* TAB 1: LEDGER & DAILY RECONCILE (PRESERVES sales_channel) */}
-      {mainTab === "ledger" && canReadLedger && (
-        <div className={styles.sectionStack}>
-          <SlidingTabBar
-            tabs={CHANNEL_TABS}
-            activeId={channelFilter}
-            onChange={(id) => void handleSelectChannel(id)}
-            ariaLabel="Lọc sổ cái và đối soát theo kênh bán"
-            rightSlot={
-              <span className={shared.resultCount}>
+      <Tabs
+        value={mainTab}
+        onValueChange={(v) => setMainTab(v as ReconciliationMainTab)}
+        className="space-y-4"
+      >
+        <div className="max-w-full overflow-x-auto pb-0.5">
+          <TabsList aria-label="Phân hệ đối soát và hoàn tiền">
+            {tabsWithLiveCounts.map((t) => (
+              <TabsTrigger key={t.id} value={t.id}>
+                <span>{t.label}</span>
+                {typeof t.count === "number" ? (
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    {formatInt(t.count)}
+                  </span>
+                ) : null}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </div>
+
+        {/* TAB 1: LEDGER & DAILY RECONCILE (PRESERVES sales_channel) */}
+        {canReadLedger ? (
+          <TabsContent value="ledger" className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div
+                role="tablist"
+                aria-label="Lọc sổ cái và đối soát theo kênh bán"
+                className="flex flex-wrap items-center gap-1"
+              >
+                {CHANNEL_TABS.map((ch) => {
+                  const isActive = channelFilter === ch.id;
+                  return (
+                    <button
+                      key={ch.dataChannelTab}
+                      type="button"
+                      role="tab"
+                      aria-selected={isActive}
+                      data-channel-tab={ch.dataChannelTab}
+                      onClick={() => void handleSelectChannel(ch.id)}
+                      className={cn(
+                        "inline-flex h-8 items-center rounded-md px-3 text-[13px] font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+                        isActive
+                          ? "bg-secondary font-semibold text-foreground"
+                          : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+                      )}
+                    >
+                      {ch.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <span className="text-xs text-muted-foreground">
                 {loadingChannel ? "Đang tải..." : `Phạm vi: ${activeScopeLabel}`}
               </span>
-            }
-          />
-
-          {channelError && <p className={shared.validationError}>{channelError}</p>}
-          {runError && <p className={shared.validationError}>{runError}</p>}
-
-          <section className={shared.kpiStrip} aria-label="Tổng hợp sổ cái ghi kép">
-            <div className={shared.kpiCell}>
-              <span className={shared.kpiLabel}>Tổng Ghi có</span>
-              <span className={shared.kpiValue}>{formatVnd(totalCredits)}</span>
-              <span className={shared.kpiCaption}>Số nguyên VND</span>
             </div>
 
-            <div className={shared.kpiCell}>
-              <span className={shared.kpiLabel}>Tổng Ghi nợ</span>
-              <span className={shared.kpiValue}>{formatVnd(totalDebits)}</span>
-              <span className={shared.kpiCaption}>Đối ứng ghi kép</span>
-            </div>
+            {channelError ? (
+              <Alert variant="destructive">
+                <AlertCircle className="size-4" aria-hidden="true" />
+                <AlertDescription>{channelError}</AlertDescription>
+              </Alert>
+            ) : null}
+            {runError ? (
+              <Alert variant="destructive">
+                <AlertCircle className="size-4" aria-hidden="true" />
+                <AlertDescription>{runError}</AlertDescription>
+              </Alert>
+            ) : null}
 
-            <div className={shared.kpiCell}>
-              <span className={shared.kpiLabel}>Chênh lệch Nợ và Có</span>
-              <span
-                className={`${shared.kpiValue} ${!isBalanced ? shared.kpiValueNegative : shared.kpiValuePositive}`}
-              >
-                {isBalanced ? "0₫" : formatSignedVnd(diff)}
-              </span>
-              <span className={shared.kpiCaption}>
-                {isBalanced ? "Cân đối tuyệt đối" : "Cần kiểm tra lệch"}
-              </span>
-            </div>
+            <MetricStrip
+              items={[
+                {
+                  label: "Tổng Ghi có",
+                  value: formatVnd(totalCredits),
+                  hint: "Số nguyên VND",
+                },
+                {
+                  label: "Tổng Ghi nợ",
+                  value: formatVnd(totalDebits),
+                  hint: "Đối ứng ghi kép",
+                },
+                {
+                  label: "Chênh lệch Nợ và Có",
+                  value: (
+                    <span className={isBalanced ? "text-badge-success-ink" : "text-destructive"}>
+                      {isBalanced ? "0₫" : formatSignedVnd(diff)}
+                    </span>
+                  ),
+                  hint: isBalanced ? "Cân đối tuyệt đối" : "Cần kiểm tra lệch",
+                },
+                {
+                  label: "Tài khoản sổ cái",
+                  value: formatInt(ledger?.accounts.length ?? 0),
+                  hint: "Escrow, gian hàng & sàn",
+                },
+              ]}
+            />
 
-            <div className={shared.kpiCell}>
-              <span className={shared.kpiLabel}>Tài khoản sổ cái</span>
-              <span className={shared.kpiValue}>{formatInt(ledger?.accounts.length ?? 0)}</span>
-              <span className={shared.kpiCaption}>Escrow, gian hàng &amp; sàn</span>
-            </div>
-          </section>
+            {report ? (
+              <section className="space-y-3" aria-labelledby="recon-result-heading">
+                <IndexTable
+                  toolbar={
+                    <div className="flex w-full flex-wrap items-center justify-between gap-2">
+                      <h2
+                        id="recon-result-heading"
+                        className="text-sm font-semibold text-foreground"
+                      >
+                        Kết quả đối soát {reportDate}
+                      </h2>
+                      <span className="text-xs text-muted-foreground tabular-nums">
+                        Phiên {report.run_id.slice(0, 12)}, khớp {formatInt(report.matched_count)},
+                        lệch {formatInt(reportIssuesCount)}
+                        {(report.auto_healed_count ?? 0) > 0
+                          ? `, tự đồng bộ ${formatInt(report.auto_healed_count ?? 0)}`
+                          : ""}
+                      </span>
+                    </div>
+                  }
+                >
+                  {report.items.length === 0 ? (
+                    <p className="p-6 text-center text-[13px] text-muted-foreground">
+                      Không có giao dịch phát sinh ngày {reportDate}.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="hidden md:block">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Mã giao dịch nội bộ</TableHead>
+                              <TableHead>Mã tham chiếu cổng</TableHead>
+                              <TableHead>Kênh bán</TableHead>
+                              <TableHead className="text-right">Nội bộ</TableHead>
+                              <TableHead className="text-right">Sao kê</TableHead>
+                              <TableHead>Trạng thái</TableHead>
+                              <TableHead>Ghi chú</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {report.items.map((item, idx) => {
+                              const meta = getReconItemStatusMeta(item.status);
+                              const channelMeta = getOptionalSalesChannelMeta(item.sales_channel);
+                              return (
+                                <TableRow
+                                  key={`${item.payment_id}-${item.provider_tx_id}-${idx}`}
+                                  className="cursor-pointer"
+                                  onClick={() =>
+                                    setDrawerTarget({ kind: "recon", item, runId: report.run_id })
+                                  }
+                                >
+                                  <TableCell className="font-medium tabular-nums">
+                                    <button
+                                      type="button"
+                                      className="text-left focus-visible:underline focus-visible:outline-none"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setDrawerTarget({
+                                          kind: "recon",
+                                          item,
+                                          runId: report.run_id,
+                                        });
+                                      }}
+                                    >
+                                      {item.payment_id || EMPTY_DASH}
+                                    </button>
+                                  </TableCell>
+                                  <TableCell className="tabular-nums">
+                                    {item.provider_tx_id || EMPTY_DASH}
+                                  </TableCell>
+                                  <TableCell>
+                                    {channelMeta ? (
+                                      <Badge
+                                        variant={channelMeta.isStorefront ? "info" : "neutral"}
+                                        data-sales-channel={channelMeta.value}
+                                      >
+                                        {channelMeta.label}
+                                      </Badge>
+                                    ) : (
+                                      "—"
+                                    )}
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    <Money vnd={item.local_amount_vnd} size="sm" />
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    <Money vnd={item.provider_amount_vnd} size="sm" />
+                                  </TableCell>
+                                  <TableCell>
+                                    <StatusBadge tone={pillToneToStatusTone(meta.tone)}>
+                                      {meta.label}
+                                    </StatusBadge>
+                                  </TableCell>
+                                  <TableCell className="max-w-[240px] whitespace-normal text-muted-foreground">
+                                    {formatReconciliationNote(item.note) || EMPTY_DASH}
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                      </div>
 
-          {report && (
-            <section className={shared.panel} aria-labelledby="recon-result-heading">
-              <div className={shared.panelHeader}>
-                <h2 id="recon-result-heading" className={shared.panelTitle}>
-                  Kết quả đối soát {reportDate}
-                </h2>
-                <span className={shared.panelMeta}>
-                  Phiên {report.run_id.slice(0, 12)}, khớp {formatInt(report.matched_count)}, lệch{" "}
-                  {formatInt(reportIssuesCount)}
-                  {(report.auto_healed_count ?? 0) > 0
-                    ? `, tự đồng bộ ${formatInt(report.auto_healed_count ?? 0)}`
-                    : ""}
-                </span>
-              </div>
-
-              {report.items.length === 0 ? (
-                <p className={shared.emptyRow}>Không có giao dịch phát sinh ngày {reportDate}.</p>
-              ) : (
-                <>
-                  <div className={shared.tableWrap}>
-                    <table className={shared.dataTable}>
-                      <thead>
-                        <tr>
-                          <th>Mã giao dịch nội bộ</th>
-                          <th>Mã tham chiếu cổng</th>
-                          <th>Kênh bán</th>
-                          <th className={shared.colNum}>Nội bộ</th>
-                          <th className={shared.colNum}>Sao kê</th>
-                          <th>Trạng thái</th>
-                          <th>Ghi chú</th>
-                        </tr>
-                      </thead>
-                      <tbody>
+                      <div className="md:hidden">
                         {report.items.map((item, idx) => {
                           const meta = getReconItemStatusMeta(item.status);
                           const channelMeta = getOptionalSalesChannelMeta(item.sales_channel);
+                          const itemDiff = item.local_amount_vnd - item.provider_amount_vnd;
                           return (
-                            <tr
+                            <IndexRowCard
                               key={`${item.payment_id}-${item.provider_tx_id}-${idx}`}
-                              className={shared.rowInteractive}
+                              title={item.payment_id || item.provider_tx_id || EMPTY_DASH}
+                              badge={
+                                <StatusBadge tone={pillToneToStatusTone(meta.tone)}>
+                                  {meta.label}
+                                </StatusBadge>
+                              }
+                              meta={
+                                <>
+                                  <span
+                                    className={cn(
+                                      "font-semibold tabular-nums",
+                                      itemDiff !== 0 ? "text-destructive" : "text-foreground"
+                                    )}
+                                  >
+                                    {formatVnd(item.local_amount_vnd)}
+                                  </span>
+                                  <span>·</span>
+                                  <span>{channelMeta ? channelMeta.label : "—"}</span>
+                                  <span>·</span>
+                                  <span className="tabular-nums">
+                                    sao kê {formatVnd(item.provider_amount_vnd)}
+                                  </span>
+                                </>
+                              }
                               onClick={() =>
                                 setDrawerTarget({ kind: "recon", item, runId: report.run_id })
                               }
-                            >
-                              <td className={shared.cellPrimary}>
-                                <button
-                                  type="button"
-                                  className={shared.rowTriggerBtn}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setDrawerTarget({ kind: "recon", item, runId: report.run_id });
-                                  }}
-                                >
-                                  {item.payment_id || EMPTY_DASH}
-                                </button>
-                              </td>
-                              <td>{item.provider_tx_id || EMPTY_DASH}</td>
-                              <td>
-                                {channelMeta ? (
-                                  <span
-                                    className={`${shared.channelBadge} ${channelMeta.isStorefront ? shared.channelBadgeStorefront : ""}`}
-                                    data-sales-channel={channelMeta.value}
-                                  >
-                                    {channelMeta.label}
-                                  </span>
-                                ) : (
-                                  "—"
-                                )}
-                              </td>
-                              <td className={shared.colNum}>{formatVnd(item.local_amount_vnd)}</td>
-                              <td className={shared.colNum}>
-                                {formatVnd(item.provider_amount_vnd)}
-                              </td>
-                              <td>
-                                <StatusPill label={meta.label} tone={meta.tone} />
-                              </td>
-                              <td>{formatReconciliationNote(item.note) || EMPTY_DASH}</td>
-                            </tr>
+                            />
                           );
                         })}
-                      </tbody>
-                    </table>
+                      </div>
+                    </>
+                  )}
+                </IndexTable>
+              </section>
+            ) : null}
+
+            <IndexTable
+              toolbar={
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {formatInt(filteredAccounts.length)} tài khoản
+                </span>
+              }
+            >
+              <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/35 px-4 py-2.5">
+                <div className="relative min-w-0 flex-1 sm:max-w-xs">
+                  <Search
+                    className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <Input
+                    type="search"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Tìm mã tài khoản sổ cái..."
+                    aria-label="Tìm kiếm tài khoản sổ cái"
+                    className="h-9 bg-card pl-8"
+                  />
+                </div>
+                <div className="w-full sm:w-52">
+                  <FilterSelect
+                    value={accountTypeFilter}
+                    onValueChange={setAccountTypeFilter}
+                    ariaLabel="Lọc theo nhóm tài khoản"
+                    options={[
+                      { value: "all", label: "Tất cả nhóm tài khoản" },
+                      { value: "ASSET", label: "Tài sản" },
+                      { value: "LIABILITY", label: "Công nợ phải trả" },
+                      { value: "REVENUE", label: "Doanh thu sàn" },
+                      { value: "EXPENSE", label: "Chi phí / hoàn trả" },
+                    ]}
+                  />
+                </div>
+              </div>
+
+              {filteredAccounts.length === 0 ? (
+                <div className="p-4">
+                  <EmptyState
+                    icon={Scale}
+                    title="Chưa có tài khoản sổ cái khớp bộ lọc"
+                    className="shadow-none"
+                  />
+                </div>
+              ) : (
+                <>
+                  <div className="hidden md:block">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Mã tài khoản</TableHead>
+                          <TableHead>Nhóm tài khoản</TableHead>
+                          <TableHead className="text-right">Tổng Ghi nợ</TableHead>
+                          <TableHead className="text-right">Tổng Ghi có</TableHead>
+                          <TableHead className="text-right">Số dư hiện tại</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {filteredAccounts.map((acc) => {
+                          const selected =
+                            drawerTarget?.kind === "account" &&
+                            drawerTarget.account.account_code === acc.account_code;
+                          return (
+                            <TableRow
+                              key={acc.account_code}
+                              data-state={selected ? "selected" : undefined}
+                              className="cursor-pointer"
+                              onClick={() => setDrawerTarget({ kind: "account", account: acc })}
+                            >
+                              <TableCell className="font-medium tabular-nums">
+                                <button
+                                  type="button"
+                                  className="text-left focus-visible:underline focus-visible:outline-none"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setDrawerTarget({ kind: "account", account: acc });
+                                  }}
+                                >
+                                  {acc.account_code}
+                                </button>
+                              </TableCell>
+                              <TableCell>{getAccountTypeLabelVi(acc.account_type)}</TableCell>
+                              <TableCell className="text-right tabular-nums">
+                                {formatVnd(acc.debit_total_vnd)}
+                              </TableCell>
+                              <TableCell className="text-right tabular-nums">
+                                {formatVnd(acc.credit_total_vnd)}
+                              </TableCell>
+                              <TableCell className="text-right font-semibold tabular-nums">
+                                {formatVnd(acc.balance_vnd)}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
                   </div>
 
-                  <div className={shared.mobileList}>
-                    {report.items.map((item, idx) => {
-                      const meta = getReconItemStatusMeta(item.status);
-                      const channelMeta = getOptionalSalesChannelMeta(item.sales_channel);
-                      const itemDiff = item.local_amount_vnd - item.provider_amount_vnd;
-                      return (
-                        <div
-                          key={`${item.payment_id}-${item.provider_tx_id}-${idx}`}
-                          className={shared.mobileItem}
-                        >
-                          <button
-                            type="button"
-                            className={shared.mobileItemBtn}
-                            onClick={() =>
-                              setDrawerTarget({ kind: "recon", item, runId: report.run_id })
-                            }
-                          >
-                            <span className={shared.mobileLine1}>
-                              <span className={shared.mobileIdentity}>
-                                {item.payment_id || item.provider_tx_id || EMPTY_DASH}
-                              </span>
-                              <span
-                                className={`${shared.mobileMetric} ${itemDiff !== 0 ? shared.numNegative : ""}`}
-                              >
-                                {formatVnd(item.local_amount_vnd)}
-                              </span>
+                  <div className="md:hidden">
+                    {filteredAccounts.map((acc) => (
+                      <IndexRowCard
+                        key={acc.account_code}
+                        title={acc.account_code}
+                        meta={
+                          <>
+                            <span className="font-semibold text-foreground tabular-nums">
+                              {formatVnd(acc.balance_vnd)}
                             </span>
-                            <span className={shared.mobileLine2}>
-                              <span className={shared.mobileMetaText}>
-                                {channelMeta ? channelMeta.label : "—"}, sao kê{" "}
-                                {formatVnd(item.provider_amount_vnd)}
-                              </span>
-                              <StatusPill label={meta.label} tone={meta.tone} />
+                            <span>·</span>
+                            <span>{getAccountTypeLabelVi(acc.account_type)}</span>
+                            <span>·</span>
+                            <span className="tabular-nums">
+                              Nợ {formatVnd(acc.debit_total_vnd)}, Có{" "}
+                              {formatVnd(acc.credit_total_vnd)}
                             </span>
-                          </button>
-                        </div>
-                      );
-                    })}
+                          </>
+                        }
+                        onClick={() => setDrawerTarget({ kind: "account", account: acc })}
+                      />
+                    ))}
                   </div>
                 </>
               )}
-            </section>
-          )}
+            </IndexTable>
+          </TabsContent>
+        ) : null}
 
-          <div className={shared.toolbar}>
-            <div className={shared.toolbarLeft}>
-              <div className={shared.searchWrap}>
-                <span className={shared.searchIcon}>
-                  <IconSearch size={14} />
-                </span>
-                <input
-                  type="search"
-                  className={shared.toolbarSearch}
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Tìm mã tài khoản sổ cái..."
-                  aria-label="Tìm kiếm tài khoản sổ cái"
+        {/* TAB 2: COD CSV IMPORT (DIALOG) & RECONCILIATION RUNS HISTORY */}
+        {canReadLedger ? (
+          <TabsContent value="cod" className="space-y-4">
+            {canWriteRecon ? (
+              <Card>
+                <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <CardTitle>Đối soát COD từ tệp CSV hãng vận chuyển</CardTitle>
+                    <CardDescription>
+                      Tải bảng kê thu hộ (.csv UTF-8, tối đa 2 MiB · 5.000 dòng) qua hộp thoại nhập
+                      tệp.
+                    </CardDescription>
+                  </div>
+                  <Button type="button" size="sm" onClick={openCodDialog}>
+                    <Upload className="size-4" aria-hidden="true" />
+                    <span>Nhập tệp CSV COD</span>
+                  </Button>
+                </CardHeader>
+              </Card>
+            ) : null}
+
+            {codResult ? (
+              <section className="space-y-3" aria-label="Kết quả đối soát COD vừa nhập">
+                <MetricStrip
+                  items={[
+                    {
+                      label: "Khớp / Tổng dòng",
+                      value: `${formatInt(codResult.run.matched_count)} / ${formatInt(codResult.run.total_rows)}`,
+                    },
+                    {
+                      label: "Tổng tiền COD khớp",
+                      value: formatVnd(codResult.run.total_matched_vnd),
+                    },
+                    {
+                      label: "Lệch tiền / Thiếu trên sàn",
+                      value: `${formatInt(codResult.run.amount_mismatch_count)} lệch · ${formatInt(codResult.run.missing_local_count)} thiếu`,
+                    },
+                    {
+                      label: "Chưa giao / Đã đối soát trước",
+                      value: `${formatInt(codResult.run.not_delivered_count)} chưa giao · ${formatInt(codResult.run.already_reconciled_count)} trùng`,
+                    },
+                  ]}
                 />
-              </div>
 
-              <select
-                className={shared.toolbarSelect}
-                value={accountTypeFilter}
-                onChange={(e) => setAccountTypeFilter(e.target.value)}
-                aria-label="Lọc theo nhóm tài khoản"
-              >
-                <option value="all">Tất cả nhóm tài khoản</option>
-                <option value="ASSET">Tài sản</option>
-                <option value="LIABILITY">Công nợ phải trả</option>
-                <option value="REVENUE">Doanh thu sàn</option>
-                <option value="EXPENSE">Chi phí / hoàn trả</option>
-              </select>
-            </div>
-
-            <div className={shared.toolbarRight}>
-              <span className={shared.resultCount}>
-                {formatInt(filteredAccounts.length)} tài khoản
-              </span>
-            </div>
-          </div>
-
-          {filteredAccounts.length === 0 ? (
-            <p className={shared.emptyRow}>Chưa có tài khoản sổ cái khớp bộ lọc.</p>
-          ) : (
-            <>
-              <div className={shared.tableWrap}>
-                <table className={shared.dataTable}>
-                  <thead>
-                    <tr>
-                      <th>Mã tài khoản</th>
-                      <th>Nhóm tài khoản</th>
-                      <th className={shared.colNum}>Tổng Ghi nợ</th>
-                      <th className={shared.colNum}>Tổng Ghi có</th>
-                      <th className={shared.colNum}>Số dư hiện tại</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredAccounts.map((acc) => {
-                      const selected =
-                        drawerTarget?.kind === "account" &&
-                        drawerTarget.account.account_code === acc.account_code;
-                      return (
-                        <tr
-                          key={acc.account_code}
-                          className={`${shared.rowInteractive} ${selected ? shared.rowSelected : ""}`}
-                          onClick={() => setDrawerTarget({ kind: "account", account: acc })}
-                        >
-                          <td className={shared.cellPrimary}>
-                            <button
-                              type="button"
-                              className={shared.rowTriggerBtn}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setDrawerTarget({ kind: "account", account: acc });
-                              }}
-                            >
-                              {acc.account_code}
-                            </button>
-                          </td>
-                          <td>{getAccountTypeLabelVi(acc.account_type)}</td>
-                          <td className={shared.colNum}>{formatVnd(acc.debit_total_vnd)}</td>
-                          <td className={shared.colNum}>{formatVnd(acc.credit_total_vnd)}</td>
-                          <td className={shared.colNum}>
-                            <strong>{formatVnd(acc.balance_vnd)}</strong>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className={shared.mobileList}>
-                {filteredAccounts.map((acc) => (
-                  <div key={acc.account_code} className={shared.mobileItem}>
-                    <button
-                      type="button"
-                      className={shared.mobileItemBtn}
-                      onClick={() => setDrawerTarget({ kind: "account", account: acc })}
-                    >
-                      <span className={shared.mobileLine1}>
-                        <span className={shared.mobileIdentity}>{acc.account_code}</span>
-                        <span className={shared.mobileMetric}>{formatVnd(acc.balance_vnd)}</span>
-                      </span>
-                      <span className={shared.mobileLine2}>
-                        <span className={shared.mobileMetaText}>
-                          {getAccountTypeLabelVi(acc.account_type)}, Nợ{" "}
-                          {formatVnd(acc.debit_total_vnd)}, Có {formatVnd(acc.credit_total_vnd)}
-                        </span>
-                      </span>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
-      {/* TAB 2: COD CSV IMPORT & RECONCILIATION RUNS HISTORY */}
-      {mainTab === "cod" && canReadLedger && (
-        <div className={styles.sectionStack}>
-          {canWriteRecon && (
-            <section className={shared.panel} aria-labelledby="cod-import-heading">
-              <div className={shared.panelHeader}>
-                <h2 id="cod-import-heading" className={shared.panelTitle}>
-                  Nhập tệp CSV đối soát COD từ hãng vận chuyển
-                </h2>
-                <span className={shared.panelMeta}>Tối đa 2 MiB · 5.000 dòng</span>
-              </div>
-
-              <form
-                onSubmit={(e) => void handleCodImport(e)}
-                className={styles.formGrid}
-                noValidate
-              >
-                <div className={styles.formField}>
-                  <label htmlFor="cod-carrier" className={shared.fieldLabel}>
-                    Hãng vận chuyển
-                  </label>
-                  <select
-                    id="cod-carrier"
-                    className={`${shared.toolbarSelect} ${styles.selectFull}`}
-                    value={codCarrier}
-                    disabled={codImporting}
-                    onChange={(e) => setCodCarrier(e.target.value)}
+                {codResult.items.length > 0 ? (
+                  <IndexTable
+                    footer={
+                      codPaged.totalPages > 1 ? (
+                        <TablePagination
+                          page={codPaged.page}
+                          totalPages={codPaged.totalPages}
+                          summary={`Hiển thị ${formatInt(codPaged.startIndex + 1)}–${formatInt(codPaged.endIndex)} / ${formatInt(codResult.items.length)} dòng`}
+                          prevLabel="Trước"
+                          nextLabel="Sau"
+                          onPageChange={(nextPage) => setCodResultPage(nextPage)}
+                        />
+                      ) : undefined
+                    }
                   >
-                    {carrierOptions.map((c) => (
-                      <option key={c.code} value={c.code}>
-                        {c.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className={styles.formField}>
-                  <label htmlFor="cod-date" className={shared.fieldLabel}>
-                    Ngày đối soát
-                  </label>
-                  <input
-                    id="cod-date"
-                    type="date"
-                    className={shared.textInput}
-                    value={codDate}
-                    disabled={codImporting}
-                    onChange={(e) => setCodDate(e.target.value)}
-                  />
-                </div>
-
-                <div className={styles.formField}>
-                  <label htmlFor="cod-file" className={shared.fieldLabel}>
-                    Tệp CSV (.csv UTF-8)
-                  </label>
-                  <input
-                    id="cod-file"
-                    type="file"
-                    accept=".csv,text/csv"
-                    className={styles.fileInput}
-                    disabled={codImporting}
-                    onChange={(e) => {
-                      setCodFile(e.target.files?.[0] ?? null);
-                      setCodError(null);
-                    }}
-                  />
-                </div>
-
-                {codError && (
-                  <div className={`${styles.formField} ${styles.formFieldWide}`}>
-                    <p className={shared.validationError} role="alert">
-                      {codError}
-                    </p>
-                  </div>
-                )}
-
-                <div className={`${styles.formField} ${styles.formFieldWide}`}>
-                  <div className={shared.detailButtons}>
-                    <Button
-                      type="submit"
-                      variant="primary"
-                      size="sm"
-                      shape="app"
-                      loading={codImporting}
-                    >
-                      Tải lên &amp; đối soát COD
-                    </Button>
-                  </div>
-                </div>
-              </form>
-
-              {codResult && (
-                <div className={shared.detailWell}>
-                  <div className={shared.detailGrid}>
-                    <div className={shared.detailField}>
-                      <span className={shared.detailKey}>Khớp / Tổng dòng</span>
-                      <span className={`${shared.detailVal} num`}>
-                        {formatInt(codResult.run.matched_count)} /{" "}
-                        {formatInt(codResult.run.total_rows)}
-                      </span>
-                    </div>
-                    <div className={shared.detailField}>
-                      <span className={shared.detailKey}>Tổng tiền COD khớp</span>
-                      <span className={`${shared.detailVal} num`}>
-                        {formatVnd(codResult.run.total_matched_vnd)}
-                      </span>
-                    </div>
-                    <div className={shared.detailField}>
-                      <span className={shared.detailKey}>Lệch tiền / Thiếu trên sàn</span>
-                      <span className={`${shared.detailVal} num`}>
-                        {formatInt(codResult.run.amount_mismatch_count)} lệch ·{" "}
-                        {formatInt(codResult.run.missing_local_count)} thiếu
-                      </span>
-                    </div>
-                    <div className={shared.detailField}>
-                      <span className={shared.detailKey}>Chưa giao / Đã đối soát trước</span>
-                      <span className={`${shared.detailVal} num`}>
-                        {formatInt(codResult.run.not_delivered_count)} chưa giao ·{" "}
-                        {formatInt(codResult.run.already_reconciled_count)} trùng
-                      </span>
-                    </div>
-                  </div>
-
-                  {codResult.items.length > 0 && (
-                    <>
-                      <div className={shared.tableWrap}>
-                        <table className={shared.dataTable}>
-                          <thead>
-                            <tr>
-                              <th>Dòng</th>
-                              <th>Mã vận đơn</th>
-                              <th className={shared.colNum}>Trên sàn</th>
-                              <th className={shared.colNum}>Tệp hãng</th>
-                              <th>Trạng thái</th>
-                              <th>Ghi chú</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {codPaged.slice.map((item, idx) => {
-                              const meta = RECONCILE_ITEM_STATUS_META[item.status] ?? {
-                                label: item.status,
-                                tone: "neutral" as const,
-                              };
-                              return (
-                                <tr key={`${item.tracking_code ?? idx}-${item.line_number ?? idx}`}>
-                                  <td className="num">
-                                    {item.line_number ?? codPaged.startIndex + idx + 1}
-                                  </td>
-                                  <td className={shared.cellPrimary}>
-                                    {item.tracking_code || item.provider_tx_id || EMPTY_DASH}
-                                  </td>
-                                  <td className={shared.colNum}>
-                                    {formatVnd(item.local_amount_vnd)}
-                                  </td>
-                                  <td className={shared.colNum}>
-                                    {formatVnd(item.provider_amount_vnd)}
-                                  </td>
-                                  <td>
-                                    <StatusPill label={meta.label} tone={meta.tone} />
-                                  </td>
-                                  <td>{formatReconciliationNote(item.note) || EMPTY_DASH}</td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-
-                      <div className={shared.mobileList}>
-                        {codPaged.slice.map((item, idx) => {
-                          const meta = RECONCILE_ITEM_STATUS_META[item.status] ?? {
-                            label: item.status,
-                            tone: "neutral" as const,
-                          };
-                          const lineNo = item.line_number ?? codPaged.startIndex + idx + 1;
-                          const noteText = formatReconciliationNote(item.note);
-                          return (
-                            <div
-                              key={`${item.tracking_code ?? idx}-${item.line_number ?? idx}`}
-                              className={shared.mobileItem}
-                            >
-                              <div className={shared.mobileLine1}>
-                                <span className={shared.mobileIdentity}>
-                                  #{lineNo} ·{" "}
+                    <div className="hidden md:block">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Dòng</TableHead>
+                            <TableHead>Mã vận đơn</TableHead>
+                            <TableHead className="text-right">Trên sàn</TableHead>
+                            <TableHead className="text-right">Tệp hãng</TableHead>
+                            <TableHead>Trạng thái</TableHead>
+                            <TableHead>Ghi chú</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {codPaged.slice.map((item, idx) => {
+                            const meta = RECONCILE_ITEM_STATUS_META[item.status] ?? {
+                              label: item.status,
+                              tone: "neutral" as const,
+                            };
+                            return (
+                              <TableRow
+                                key={`${item.tracking_code ?? idx}-${item.line_number ?? idx}`}
+                              >
+                                <TableCell className="tabular-nums">
+                                  {item.line_number ?? codPaged.startIndex + idx + 1}
+                                </TableCell>
+                                <TableCell className="font-medium tabular-nums">
                                   {item.tracking_code || item.provider_tx_id || EMPTY_DASH}
-                                </span>
-                                <span className={shared.mobileMetric}>
+                                </TableCell>
+                                <TableCell className="text-right tabular-nums">
+                                  {formatVnd(item.local_amount_vnd)}
+                                </TableCell>
+                                <TableCell className="text-right tabular-nums">
+                                  {formatVnd(item.provider_amount_vnd)}
+                                </TableCell>
+                                <TableCell>
+                                  <StatusBadge tone={pillToneToStatusTone(meta.tone)}>
+                                    {meta.label}
+                                  </StatusBadge>
+                                </TableCell>
+                                <TableCell className="max-w-[240px] whitespace-normal text-muted-foreground">
+                                  {formatReconciliationNote(item.note) || EMPTY_DASH}
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </div>
+
+                    <div className="md:hidden">
+                      {codPaged.slice.map((item, idx) => {
+                        const meta = RECONCILE_ITEM_STATUS_META[item.status] ?? {
+                          label: item.status,
+                          tone: "neutral" as const,
+                        };
+                        const lineNo = item.line_number ?? codPaged.startIndex + idx + 1;
+                        const noteText = formatReconciliationNote(item.note);
+                        return (
+                          <IndexRowCard
+                            key={`${item.tracking_code ?? idx}-${item.line_number ?? idx}`}
+                            title={`#${lineNo} · ${item.tracking_code || item.provider_tx_id || EMPTY_DASH}`}
+                            badge={
+                              <StatusBadge tone={pillToneToStatusTone(meta.tone)}>
+                                {meta.label}
+                              </StatusBadge>
+                            }
+                            meta={
+                              <>
+                                <span className="font-semibold text-foreground tabular-nums">
                                   {formatVnd(item.provider_amount_vnd)}
                                 </span>
-                              </div>
-                              <div className={shared.mobileLine2}>
-                                <span className={shared.mobileMetaText}>
+                                <span>·</span>
+                                <span className="tabular-nums">
                                   Sàn {formatVnd(item.local_amount_vnd)}
-                                  {noteText ? ` · ${noteText}` : ""}
                                 </span>
-                                <StatusPill label={meta.label} tone={meta.tone} />
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      {codPaged.totalPages > 1 && (
-                        <div className={styles.paginationRow}>
-                          <span className={styles.paginationInfo}>
-                            Hiển thị {formatInt(codPaged.startIndex + 1)}–
-                            {formatInt(codPaged.endIndex)} / {formatInt(codResult.items.length)}{" "}
-                            dòng
-                          </span>
-                          <div className={styles.paginationBtns}>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              shape="app"
-                              disabled={codPaged.page <= 1}
-                              onClick={() => setCodResultPage((p) => Math.max(1, p - 1))}
-                            >
-                              Trước
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              shape="app"
-                              disabled={codPaged.page >= codPaged.totalPages}
-                              onClick={() =>
-                                setCodResultPage((p) => Math.min(codPaged.totalPages, p + 1))
-                              }
-                            >
-                              Sau
-                            </Button>
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              )}
-            </section>
-          )}
-
-          <section className={shared.panel} aria-labelledby="recon-runs-heading">
-            <div className={shared.panelHeader}>
-              <h2 id="recon-runs-heading" className={shared.panelTitle}>
-                Lịch sử phiên đối soát ({formatInt(runsTotal)})
-              </h2>
-              <Button
-                variant="outline"
-                size="sm"
-                shape="app"
-                disabled={runsLoading}
-                onClick={() => void loadRuns(runsTypeFilter, runsChannelFilter, runsPage)}
-              >
-                Làm mới
-              </Button>
-            </div>
-
-            <div className={shared.toolbar}>
-              <div className={shared.toolbarLeft}>
-                <select
-                  className={shared.toolbarSelect}
-                  value={runsTypeFilter}
-                  onChange={(e) => {
-                    const next = e.target.value as "" | "vietqr" | "cod_file";
-                    setRunsTypeFilter(next);
-                    setRunsPage(1);
-                    void loadRuns(next, runsChannelFilter, 1);
-                  }}
-                  aria-label="Lọc loại phiên đối soát"
-                >
-                  <option value="">Tất cả loại đối soát</option>
-                  <option value="vietqr">VietQR hằng ngày</option>
-                  <option value="cod_file">Đối soát COD (CSV)</option>
-                </select>
-                <select
-                  className={shared.toolbarSelect}
-                  value={runsChannelFilter}
-                  onChange={(e) => {
-                    const next = e.target.value as SalesChannelFilter;
-                    setRunsChannelFilter(next);
-                    setRunsPage(1);
-                    void loadRuns(runsTypeFilter, next, 1);
-                  }}
-                  aria-label="Lọc phiên đối soát theo kênh bán"
-                >
-                  <option value="">Tất cả kênh bán</option>
-                  <option value="MARKETPLACE">Sàn NexusMart</option>
-                  <option value="STOREFRONT">Site riêng</option>
-                </select>
-              </div>
-            </div>
-
-            {runsLoading ? (
-              <StateView
-                kind="loading"
-                surface="app"
-                title="Đang tải lịch sử đối soát..."
-                rows={4}
-              />
-            ) : runs.length === 0 ? (
-              <p className={shared.emptyRow}>Chưa có phiên đối soát nào được ghi nhận.</p>
-            ) : (
-              <>
-                <div className={shared.tableWrap}>
-                  <table className={shared.dataTable}>
-                    <thead>
-                      <tr>
-                        <th>Ngày &amp; loại</th>
-                        <th>Đối tác / tệp</th>
-                        <th className={shared.colNum}>Khớp / Tổng</th>
-                        <th className={shared.colNum}>Mục lệch</th>
-                        <th className={shared.colNum}>Tổng khớp</th>
-                        <th>Trạng thái</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {runs.map((run) => {
-                        const issues =
-                          run.amount_mismatch_count +
-                          run.missing_local_count +
-                          run.missing_provider_count +
-                          run.not_delivered_count;
-                        return (
-                          <tr key={run.run_id}>
-                            <td>
-                              <div className={shared.cellPrimary}>{run.run_date}</div>
-                              <div className={shared.cellSub}>
-                                {run.run_type === "cod_file" ? "COD CSV" : "VietQR"}
-                                {run.created_at
-                                  ? ` · ${formatShortTimeDateVi(run.created_at)}`
-                                  : ""}
-                              </div>
-                            </td>
-                            <td>
-                              <div className={shared.cellPrimary}>
-                                {run.run_type === "cod_file"
-                                  ? formatCarrierLabel(run.provider)
-                                  : run.provider || "VietQR"}
-                              </div>
-                              {run.file_name && (
-                                <div className={shared.cellSub}>{run.file_name}</div>
-                              )}
-                            </td>
-                            <td className={shared.colNum}>
-                              {formatInt(run.matched_count)} / {formatInt(run.total_rows)}
-                            </td>
-                            <td
-                              className={`${shared.colNum} ${issues > 0 ? shared.numNegative : ""}`}
-                            >
-                              {formatInt(issues)}
-                            </td>
-                            <td className={shared.colNum}>{formatVnd(run.total_matched_vnd)}</td>
-                            <td>
-                              <StatusPill
-                                label={
-                                  run.status.toUpperCase() === "COMPLETED" ? "Hoàn tất" : run.status
-                                }
-                                tone={
-                                  run.status.toUpperCase() === "COMPLETED" ? "positive" : "neutral"
-                                }
-                              />
-                            </td>
-                          </tr>
+                                {noteText ? (
+                                  <>
+                                    <span>·</span>
+                                    <span>{noteText}</span>
+                                  </>
+                                ) : null}
+                              </>
+                            }
+                          />
                         );
                       })}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className={shared.mobileList}>
-                  {runs.map((run) => (
-                    <article key={run.run_id} className={shared.mobileItem}>
-                      <div className={shared.mobileLine1}>
-                        <span className={shared.mobileIdentity}>
-                          {run.run_date} · {run.run_type === "cod_file" ? "COD CSV" : "VietQR"}
-                        </span>
-                        <span className={shared.mobileMetric}>
-                          {formatVnd(run.total_matched_vnd)}
-                        </span>
-                      </div>
-                      <div className={shared.mobileLine2}>
-                        <span className={shared.mobileMetaText}>
-                          Khớp {formatInt(run.matched_count)}/{formatInt(run.total_rows)} ·{" "}
-                          {run.file_name || run.provider}
-                        </span>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-
-                {Math.ceil(runsTotal / PAGE_SIZE) > 1 && (
-                  <div className={styles.paginationRow}>
-                    <span className={styles.paginationInfo}>
-                      Trang {formatInt(runsPage)} /{" "}
-                      {formatInt(Math.max(1, Math.ceil(runsTotal / PAGE_SIZE)))}
-                    </span>
-                    <div className={styles.paginationBtns}>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        shape="app"
-                        disabled={runsPage <= 1 || runsLoading}
-                        onClick={() => {
-                          const p = runsPage - 1;
-                          setRunsPage(p);
-                          void loadRuns(runsTypeFilter, runsChannelFilter, p);
-                        }}
-                      >
-                        Trang trước
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        shape="app"
-                        disabled={runsPage >= Math.ceil(runsTotal / PAGE_SIZE) || runsLoading}
-                        onClick={() => {
-                          const p = runsPage + 1;
-                          setRunsPage(p);
-                          void loadRuns(runsTypeFilter, runsChannelFilter, p);
-                        }}
-                      >
-                        Trang sau
-                      </Button>
                     </div>
+                  </IndexTable>
+                ) : null}
+              </section>
+            ) : null}
+
+            <section className="space-y-3" aria-labelledby="recon-runs-heading">
+              <IndexTable
+                toolbar={
+                  <div className="flex w-full flex-wrap items-center justify-between gap-2">
+                    <h2 id="recon-runs-heading" className="text-sm font-semibold text-foreground">
+                      Lịch sử phiên đối soát ({formatInt(runsTotal)})
+                    </h2>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      disabled={runsLoading}
+                      onClick={() => void loadRuns(runsTypeFilter, runsChannelFilter, runsPage)}
+                    >
+                      <RefreshCw className="size-3.5" aria-hidden="true" />
+                      <span>Làm mới</span>
+                    </Button>
                   </div>
+                }
+                footer={
+                  Math.ceil(runsTotal / PAGE_SIZE) > 1 ? (
+                    <TablePagination
+                      page={runsPage}
+                      totalPages={Math.max(1, Math.ceil(runsTotal / PAGE_SIZE))}
+                      summary={`Trang ${formatInt(runsPage)} / ${formatInt(Math.max(1, Math.ceil(runsTotal / PAGE_SIZE)))}`}
+                      disabled={runsLoading}
+                      onPageChange={(nextPage) => {
+                        setRunsPage(nextPage);
+                        void loadRuns(runsTypeFilter, runsChannelFilter, nextPage);
+                      }}
+                    />
+                  ) : undefined
+                }
+              >
+                <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/35 px-4 py-2.5">
+                  <div className="w-full sm:w-52">
+                    <FilterSelect
+                      value={runsTypeFilter}
+                      onValueChange={(next) => {
+                        const typed = next as "" | "vietqr" | "cod_file";
+                        setRunsTypeFilter(typed);
+                        setRunsPage(1);
+                        void loadRuns(typed, runsChannelFilter, 1);
+                      }}
+                      ariaLabel="Lọc loại phiên đối soát"
+                      options={[
+                        { value: "", label: "Tất cả loại đối soát" },
+                        { value: "vietqr", label: "VietQR hằng ngày" },
+                        { value: "cod_file", label: "Đối soát COD (CSV)" },
+                      ]}
+                    />
+                  </div>
+                  <div className="w-full sm:w-48">
+                    <FilterSelect
+                      value={runsChannelFilter}
+                      onValueChange={(next) => {
+                        const typed = next as SalesChannelFilter;
+                        setRunsChannelFilter(typed);
+                        setRunsPage(1);
+                        void loadRuns(runsTypeFilter, typed, 1);
+                      }}
+                      ariaLabel="Lọc phiên đối soát theo kênh bán"
+                      options={[
+                        { value: "", label: "Tất cả kênh bán" },
+                        { value: "MARKETPLACE", label: "Sàn NexusMart" },
+                        { value: "STOREFRONT", label: "Site riêng" },
+                      ]}
+                    />
+                  </div>
+                </div>
+
+                {runsLoading ? (
+                  <div className="p-4">
+                    <TableLoadingSkeleton rows={4} label="Đang tải lịch sử đối soát..." />
+                  </div>
+                ) : runs.length === 0 ? (
+                  <div className="p-4">
+                    <EmptyState
+                      icon={FileSpreadsheet}
+                      title="Chưa có phiên đối soát nào được ghi nhận"
+                      className="shadow-none"
+                    />
+                  </div>
+                ) : (
+                  <>
+                    <div className="hidden md:block">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Ngày &amp; loại</TableHead>
+                            <TableHead>Đối tác / tệp</TableHead>
+                            <TableHead className="text-right">Khớp / Tổng</TableHead>
+                            <TableHead className="text-right">Mục lệch</TableHead>
+                            <TableHead className="text-right">Tổng khớp</TableHead>
+                            <TableHead>Trạng thái</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {runs.map((run) => {
+                            const issues =
+                              run.amount_mismatch_count +
+                              run.missing_local_count +
+                              run.missing_provider_count +
+                              run.not_delivered_count;
+                            return (
+                              <TableRow key={run.run_id}>
+                                <TableCell>
+                                  <div className="font-medium text-foreground tabular-nums">
+                                    {run.run_date}
+                                  </div>
+                                  <div className="text-xs text-muted-foreground">
+                                    {run.run_type === "cod_file" ? "COD CSV" : "VietQR"}
+                                    {run.created_at
+                                      ? ` · ${formatShortTimeDateVi(run.created_at)}`
+                                      : ""}
+                                  </div>
+                                </TableCell>
+                                <TableCell className="whitespace-normal">
+                                  <div className="font-medium text-foreground">
+                                    {run.run_type === "cod_file"
+                                      ? formatCarrierLabel(run.provider)
+                                      : run.provider || "VietQR"}
+                                  </div>
+                                  {run.file_name ? (
+                                    <div className="text-xs text-muted-foreground">
+                                      {run.file_name}
+                                    </div>
+                                  ) : null}
+                                </TableCell>
+                                <TableCell className="text-right tabular-nums">
+                                  {formatInt(run.matched_count)} / {formatInt(run.total_rows)}
+                                </TableCell>
+                                <TableCell
+                                  className={cn(
+                                    "text-right tabular-nums",
+                                    issues > 0 && "font-semibold text-destructive"
+                                  )}
+                                >
+                                  {formatInt(issues)}
+                                </TableCell>
+                                <TableCell className="text-right tabular-nums">
+                                  {formatVnd(run.total_matched_vnd)}
+                                </TableCell>
+                                <TableCell>
+                                  <StatusBadge
+                                    tone={
+                                      run.status.toUpperCase() === "COMPLETED"
+                                        ? "success"
+                                        : "neutral"
+                                    }
+                                  >
+                                    {run.status.toUpperCase() === "COMPLETED"
+                                      ? "Hoàn tất"
+                                      : run.status}
+                                  </StatusBadge>
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </div>
+
+                    <div className="md:hidden">
+                      {runs.map((run) => (
+                        <IndexRowCard
+                          key={run.run_id}
+                          title={`${run.run_date} · ${run.run_type === "cod_file" ? "COD CSV" : "VietQR"}`}
+                          badge={
+                            <StatusBadge
+                              tone={
+                                run.status.toUpperCase() === "COMPLETED" ? "success" : "neutral"
+                              }
+                            >
+                              {run.status.toUpperCase() === "COMPLETED" ? "Hoàn tất" : run.status}
+                            </StatusBadge>
+                          }
+                          meta={
+                            <>
+                              <span className="font-semibold text-foreground tabular-nums">
+                                {formatVnd(run.total_matched_vnd)}
+                              </span>
+                              <span>·</span>
+                              <span className="tabular-nums">
+                                Khớp {formatInt(run.matched_count)}/{formatInt(run.total_rows)}
+                              </span>
+                              <span>·</span>
+                              <span>{run.file_name || run.provider}</span>
+                            </>
+                          }
+                        />
+                      ))}
+                    </div>
+                  </>
                 )}
-              </>
-            )}
-          </section>
-        </div>
-      )}
+              </IndexTable>
+            </section>
+          </TabsContent>
+        ) : null}
 
-      {/* TAB 3: MISMATCH RECONCILIATION QUEUE */}
-      {mainTab === "queue" && canReadLedger && (
-        <div className={styles.sectionStack}>
-          <div className={shared.toolbar}>
-            <div className={shared.toolbarLeft}>
-              <select
-                className={shared.toolbarSelect}
-                value={queueStatus}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setQueueStatus(next);
-                  setQueuePage(1);
-                  void loadQueue(next, 1);
-                }}
-                aria-label="Lọc trạng thái hàng đợi giao dịch lệch"
-              >
-                <option value="pending">Chờ xử lý</option>
-                <option value="suspended">Đang tạm treo</option>
-                <option value="assigned">Đã gán khớp</option>
-                <option value="refunded">Đã tạo hoàn tiền</option>
-                <option value="">Tất cả trạng thái</option>
-              </select>
-            </div>
-            <div className={shared.toolbarRight}>
-              <span className={shared.resultCount}>{formatInt(queueTotal)} mục</span>
-              <Button
-                variant="outline"
-                size="sm"
-                shape="app"
-                disabled={queueLoading}
-                onClick={() => void loadQueue(queueStatus, queuePage)}
-              >
-                Làm mới
-              </Button>
-            </div>
-          </div>
+        {/* TAB 3: MISMATCH RECONCILIATION QUEUE */}
+        {canReadLedger ? (
+          <TabsContent value="queue" className="space-y-4">
+            <IndexTable
+              toolbar={
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    {formatInt(queueTotal)} mục
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    disabled={queueLoading}
+                    onClick={() => void loadQueue(queueStatus, queuePage)}
+                  >
+                    <RefreshCw className="size-3.5" aria-hidden="true" />
+                    <span>Làm mới</span>
+                  </Button>
+                </div>
+              }
+            >
+              <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/35 px-4 py-2.5">
+                <div className="w-full sm:w-52">
+                  <FilterSelect
+                    value={queueStatus}
+                    onValueChange={(next) => {
+                      setQueueStatus(next);
+                      setQueuePage(1);
+                      void loadQueue(next, 1);
+                    }}
+                    ariaLabel="Lọc trạng thái hàng đợi giao dịch lệch"
+                    options={[
+                      { value: "pending", label: "Chờ xử lý" },
+                      { value: "suspended", label: "Đang tạm treo" },
+                      { value: "assigned", label: "Đã gán khớp" },
+                      { value: "refunded", label: "Đã tạo hoàn tiền" },
+                      { value: "", label: "Tất cả trạng thái" },
+                    ]}
+                  />
+                </div>
+              </div>
 
-          {queueLoading ? (
-            <StateView
-              kind="loading"
-              surface="app"
-              title="Đang tải giao dịch không khớp..."
-              rows={4}
-            />
-          ) : queueItems.length === 0 ? (
-            <p className={shared.emptyRow}>Không có giao dịch không khớp trong trạng thái này.</p>
-          ) : (
-            <>
-              <div className={shared.tableWrap}>
-                <table className={shared.dataTable}>
-                  <thead>
-                    <tr>
-                      <th>Mã tham chiếu / vận đơn</th>
-                      <th>Nguyên nhân</th>
-                      <th className={shared.colNum}>Kỳ vọng</th>
-                      <th className={shared.colNum}>Thực nhận</th>
-                      <th>Trạng thái</th>
-                      <th className={shared.colAction}>Thao tác</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+              {queueLoading ? (
+                <div className="p-4">
+                  <TableLoadingSkeleton rows={4} label="Đang tải giao dịch không khớp..." />
+                </div>
+              ) : queueItems.length === 0 ? (
+                <div className="p-4">
+                  <EmptyState
+                    icon={Scale}
+                    title="Không có giao dịch không khớp trong trạng thái này"
+                    className="shadow-none"
+                  />
+                </div>
+              ) : (
+                <>
+                  <div className="hidden md:block">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Mã tham chiếu / vận đơn</TableHead>
+                          <TableHead>Nguyên nhân</TableHead>
+                          <TableHead className="text-right">Kỳ vọng</TableHead>
+                          <TableHead className="text-right">Thực nhận</TableHead>
+                          <TableHead>Trạng thái</TableHead>
+                          <TableHead className="text-right">Thao tác</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {queueItems.map((item) => {
+                          const meta = getReconciliationQueueStatusMeta(item.resolution_status);
+                          const openQueueSheet = () => {
+                            setQueueAction("ASSIGN");
+                            setQueuePaymentId(item.expected_payment_id || "");
+                            setQueueNote("");
+                            setQueueFormError(null);
+                            setDrawerTarget({ kind: "queue", item });
+                          };
+                          return (
+                            <TableRow
+                              key={item.id}
+                              className="cursor-pointer"
+                              onClick={openQueueSheet}
+                            >
+                              <TableCell className="whitespace-normal">
+                                <div className="font-medium text-foreground tabular-nums">
+                                  {item.tracking_code ||
+                                    item.provider_tx_id ||
+                                    item.id.slice(0, 10)}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {item.provider}
+                                  {item.order_ref ? ` · ${item.order_ref}` : ""}
+                                </div>
+                              </TableCell>
+                              <TableCell className="whitespace-normal">
+                                {formatReconciliationReason(item.reason)}
+                              </TableCell>
+                              <TableCell className="text-right tabular-nums">
+                                {formatVnd(item.expected_amount_vnd)}
+                              </TableCell>
+                              <TableCell className="text-right tabular-nums">
+                                {formatVnd(item.actual_amount_vnd)}
+                              </TableCell>
+                              <TableCell>
+                                <StatusBadge tone={pillToneToStatusTone(meta.tone)}>
+                                  {meta.label}
+                                </StatusBadge>
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="xs"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openQueueSheet();
+                                  }}
+                                >
+                                  Chi tiết
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+
+                  <div className="md:hidden">
                     {queueItems.map((item) => {
                       const meta = getReconciliationQueueStatusMeta(item.resolution_status);
                       return (
-                        <tr
+                        <IndexRowCard
                           key={item.id}
-                          className={shared.rowInteractive}
+                          title={item.tracking_code || item.provider_tx_id || item.id.slice(0, 10)}
+                          badge={
+                            <StatusBadge tone={pillToneToStatusTone(meta.tone)}>
+                              {meta.label}
+                            </StatusBadge>
+                          }
+                          meta={
+                            <>
+                              <span className="font-semibold text-foreground tabular-nums">
+                                {formatVnd(item.actual_amount_vnd)}
+                              </span>
+                              <span>·</span>
+                              <span>{formatReconciliationReason(item.reason)}</span>
+                            </>
+                          }
                           onClick={() => {
                             setQueueAction("ASSIGN");
                             setQueuePaymentId(item.expected_payment_id || "");
@@ -1627,176 +1783,212 @@ function ReconciliationContent({
                             setQueueFormError(null);
                             setDrawerTarget({ kind: "queue", item });
                           }}
-                        >
-                          <td>
-                            <div className={shared.cellPrimary}>
-                              {item.tracking_code || item.provider_tx_id || item.id.slice(0, 10)}
-                            </div>
-                            <div className={shared.cellSub}>
-                              {item.provider}
-                              {item.order_ref ? ` · ${item.order_ref}` : ""}
-                            </div>
-                          </td>
-                          <td>{formatReconciliationReason(item.reason)}</td>
-                          <td className={shared.colNum}>{formatVnd(item.expected_amount_vnd)}</td>
-                          <td className={shared.colNum}>{formatVnd(item.actual_amount_vnd)}</td>
-                          <td>
-                            <StatusPill label={meta.label} tone={meta.tone} />
-                          </td>
-                          <td className={shared.colAction}>
-                            <button
-                              type="button"
-                              className={shared.rowActionBtn}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setQueueAction("ASSIGN");
-                                setQueuePaymentId(item.expected_payment_id || "");
-                                setQueueNote("");
-                                setQueueFormError(null);
-                                setDrawerTarget({ kind: "queue", item });
-                              }}
-                            >
-                              Chi tiết
-                            </button>
-                          </td>
-                        </tr>
+                        />
                       );
                     })}
-                  </tbody>
-                </table>
-              </div>
+                  </div>
+                </>
+              )}
+            </IndexTable>
+          </TabsContent>
+        ) : null}
 
-              <div className={shared.mobileList}>
-                {queueItems.map((item) => {
-                  const meta = getReconciliationQueueStatusMeta(item.resolution_status);
-                  return (
-                    <div key={item.id} className={shared.mobileItem}>
-                      <button
-                        type="button"
-                        className={shared.mobileItemBtn}
-                        onClick={() => {
-                          setQueueAction("ASSIGN");
-                          setQueuePaymentId(item.expected_payment_id || "");
-                          setQueueNote("");
-                          setQueueFormError(null);
-                          setDrawerTarget({ kind: "queue", item });
-                        }}
-                      >
-                        <span className={shared.mobileLine1}>
-                          <span className={shared.mobileIdentity}>
-                            {item.tracking_code || item.provider_tx_id || item.id.slice(0, 10)}
-                          </span>
-                          <span className={shared.mobileMetric}>
-                            {formatVnd(item.actual_amount_vnd)}
-                          </span>
-                        </span>
-                        <span className={shared.mobileLine2}>
-                          <span className={shared.mobileMetaText}>
-                            {formatReconciliationReason(item.reason)}
-                          </span>
-                          <StatusPill label={meta.label} tone={meta.tone} />
-                        </span>
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
-      {/* TAB 4: TWO-STEP REFUNDS (APPROVE / REJECT / SETTLE / MANUAL CREATE) */}
-      {mainTab === "refunds" && canReadRefunds && (
-        <div className={styles.sectionStack}>
-          <div className={shared.toolbar}>
-            <div className={shared.toolbarLeft}>
-              <select
-                className={shared.toolbarSelect}
-                value={refundStatus}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setRefundStatus(next);
-                  setRefundsPage(1);
-                  void loadRefunds(next, refundOrderFilter, 1);
-                }}
-                aria-label="Lọc trạng thái lệnh hoàn tiền"
-              >
-                <option value="">Tất cả trạng thái</option>
-                <option value="PENDING_APPROVAL">Chờ duyệt 2 người</option>
-                <option value="PENDING">Chờ chuyển khoản</option>
-                <option value="MANUAL_REVIEW">Cần xử lý tay</option>
-                <option value="DONE">Đã hoàn tiền</option>
-                <option value="REJECTED">Từ chối duyệt</option>
-                <option value="FAILED">Thất bại</option>
-              </select>
-
-              <div className={shared.searchWrap}>
-                <span className={shared.searchIcon}>
-                  <IconSearch size={14} />
+        {/* TAB 4: TWO-STEP REFUNDS (APPROVE / REJECT / SETTLE / MANUAL CREATE) */}
+        {canReadRefunds ? (
+          <TabsContent value="refunds" className="space-y-4">
+            <IndexTable
+              toolbar={
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {formatInt(refundsTotal)} lệnh
                 </span>
-                <input
-                  type="search"
-                  className={shared.toolbarSearch}
-                  value={refundOrderFilter}
-                  onChange={(e) => setRefundOrderFilter(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
+              }
+              footer={
+                Math.ceil(refundsTotal / PAGE_SIZE) > 1 ? (
+                  <TablePagination
+                    page={refundsPage}
+                    totalPages={Math.max(1, Math.ceil(refundsTotal / PAGE_SIZE))}
+                    summary={`Trang ${formatInt(refundsPage)} / ${formatInt(Math.max(1, Math.ceil(refundsTotal / PAGE_SIZE)))}`}
+                    disabled={refundsLoading}
+                    onPageChange={(nextPage) => {
+                      setRefundsPage(nextPage);
+                      void loadRefunds(refundStatus, refundOrderFilter, nextPage);
+                    }}
+                  />
+                ) : undefined
+              }
+            >
+              <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/35 px-4 py-2.5">
+                <div className="w-full sm:w-52">
+                  <Select
+                    value={refundStatus || ALL_REFUND_SENTINEL}
+                    onValueChange={(v) => {
+                      const next = v === ALL_REFUND_SENTINEL ? "" : v;
+                      setRefundStatus(next);
                       setRefundsPage(1);
-                      void loadRefunds(refundStatus, refundOrderFilter, 1);
-                    }
-                  }}
-                  placeholder="Lọc theo mã đơn hàng (UUID)..."
-                  aria-label="Lọc lệnh hoàn tiền theo mã đơn hàng"
-                />
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                shape="app"
-                disabled={refundsLoading}
-                onClick={() => {
-                  setRefundsPage(1);
-                  void loadRefunds(refundStatus, refundOrderFilter, 1);
-                }}
-              >
-                Lọc
-              </Button>
-            </div>
-            <div className={shared.toolbarRight}>
-              <span className={shared.resultCount}>{formatInt(refundsTotal)} lệnh</span>
-            </div>
-          </div>
+                      void loadRefunds(next, refundOrderFilter, 1);
+                    }}
+                  >
+                    <SelectTrigger
+                      aria-label="Lọc trạng thái lệnh hoàn tiền"
+                      className="w-full bg-card"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ALL_REFUND_SENTINEL}>Tất cả trạng thái</SelectItem>
+                      <SelectItem value="PENDING_APPROVAL">Chờ duyệt 2 người</SelectItem>
+                      <SelectItem value="PENDING">Chờ chuyển khoản</SelectItem>
+                      <SelectItem value="MANUAL_REVIEW">Cần xử lý tay</SelectItem>
+                      <SelectItem value="DONE">Đã hoàn tiền</SelectItem>
+                      <SelectItem value="REJECTED">Từ chối duyệt</SelectItem>
+                      <SelectItem value="FAILED">Thất bại</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
 
-          {refundsLoading ? (
-            <StateView
-              kind="loading"
-              surface="app"
-              title="Đang tải danh sách hoàn tiền..."
-              rows={4}
-            />
-          ) : refunds.length === 0 ? (
-            <p className={shared.emptyRow}>Chưa có lệnh hoàn tiền nào khớp bộ lọc.</p>
-          ) : (
-            <>
-              <div className={shared.tableWrap}>
-                <table className={shared.dataTable}>
-                  <thead>
-                    <tr>
-                      <th>Mã lệnh &amp; đơn hàng</th>
-                      <th>Lý do</th>
-                      <th className={shared.colNum}>Số tiền hoàn</th>
-                      <th>Trạng thái</th>
-                      <th className={shared.colAction}>Thao tác</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+                <div className="relative min-w-0 flex-1 sm:max-w-xs">
+                  <Search
+                    className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <Input
+                    type="search"
+                    value={refundOrderFilter}
+                    onChange={(e) => setRefundOrderFilter(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        setRefundsPage(1);
+                        void loadRefunds(refundStatus, refundOrderFilter, 1);
+                      }
+                    }}
+                    placeholder="Lọc theo mã đơn hàng (UUID)..."
+                    aria-label="Lọc lệnh hoàn tiền theo mã đơn hàng"
+                    className="h-9 bg-card pl-8"
+                  />
+                </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={refundsLoading}
+                  onClick={() => {
+                    setRefundsPage(1);
+                    void loadRefunds(refundStatus, refundOrderFilter, 1);
+                  }}
+                >
+                  Lọc
+                </Button>
+              </div>
+
+              {refundsLoading ? (
+                <div className="p-4">
+                  <TableLoadingSkeleton rows={4} label="Đang tải danh sách hoàn tiền..." />
+                </div>
+              ) : refunds.length === 0 ? (
+                <div className="p-4">
+                  <EmptyState
+                    icon={Wallet}
+                    title="Chưa có lệnh hoàn tiền nào khớp bộ lọc"
+                    className="shadow-none"
+                  />
+                </div>
+              ) : (
+                <>
+                  <div className="hidden md:block">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Mã lệnh &amp; đơn hàng</TableHead>
+                          <TableHead>Lý do</TableHead>
+                          <TableHead className="text-right">Số tiền hoàn</TableHead>
+                          <TableHead>Trạng thái</TableHead>
+                          <TableHead className="text-right">Thao tác</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {refunds.map((rf) => {
+                          const meta = getAdminRefundStatusMeta(rf.status, rf);
+                          const openRefundSheet = () => {
+                            setSettleRefId("");
+                            setSettleNote("");
+                            setApprovalNote("");
+                            setRefundFormError(null);
+                            setDrawerTarget({ kind: "refund", refund: rf });
+                          };
+                          return (
+                            <TableRow
+                              key={rf.refund_id}
+                              className="cursor-pointer"
+                              onClick={openRefundSheet}
+                            >
+                              <TableCell>
+                                <div className="font-medium text-foreground tabular-nums">
+                                  {rf.refund_id.slice(0, 12)}
+                                </div>
+                                <div className="text-xs text-muted-foreground tabular-nums">
+                                  Đơn {rf.order_id.slice(0, 10)}
+                                  {rf.created_at
+                                    ? ` · ${formatShortTimeDateVi(rf.created_at)}`
+                                    : ""}
+                                </div>
+                              </TableCell>
+                              <TableCell className="max-w-[280px] whitespace-normal">
+                                {localizeRefundReason(rf.reason) || EMPTY_DASH}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <Money vnd={rf.amount_vnd} />
+                              </TableCell>
+                              <TableCell>
+                                <StatusBadge tone={refundStatusTone(rf.status)}>
+                                  {meta.label}
+                                </StatusBadge>
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="xs"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openRefundSheet();
+                                  }}
+                                >
+                                  {rf.status === "PENDING_APPROVAL"
+                                    ? "Duyệt"
+                                    : isAdminRefundManuallySettleable(rf)
+                                      ? "Tất toán"
+                                      : "Chi tiết"}
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+
+                  <div className="md:hidden">
                     {refunds.map((rf) => {
                       const meta = getAdminRefundStatusMeta(rf.status, rf);
                       return (
-                        <tr
+                        <IndexRowCard
                           key={rf.refund_id}
-                          className={shared.rowInteractive}
+                          title={rf.refund_id.slice(0, 12)}
+                          badge={
+                            <StatusBadge tone={refundStatusTone(rf.status)}>
+                              {meta.label}
+                            </StatusBadge>
+                          }
+                          meta={
+                            <>
+                              <Money vnd={rf.amount_vnd} size="sm" />
+                              <span>·</span>
+                              <span>
+                                {localizeRefundReason(rf.reason) || rf.order_id.slice(0, 10)}
+                              </span>
+                            </>
+                          }
                           onClick={() => {
                             setSettleRefId("");
                             setSettleNote("");
@@ -1804,959 +1996,741 @@ function ReconciliationContent({
                             setRefundFormError(null);
                             setDrawerTarget({ kind: "refund", refund: rf });
                           }}
-                        >
-                          <td>
-                            <div className={shared.cellPrimary}>{rf.refund_id.slice(0, 12)}</div>
-                            <div className={shared.cellSub}>
-                              Đơn {rf.order_id.slice(0, 10)}
-                              {rf.created_at ? ` · ${formatShortTimeDateVi(rf.created_at)}` : ""}
-                            </div>
-                          </td>
-                          <td>{localizeRefundReason(rf.reason) || EMPTY_DASH}</td>
-                          <td className={shared.colNum}>
-                            <strong>{formatVnd(rf.amount_vnd)}</strong>
-                          </td>
-                          <td>
-                            <StatusPill label={meta.label} tone={meta.tone} />
-                          </td>
-                          <td className={shared.colAction}>
-                            <button
-                              type="button"
-                              className={shared.rowActionBtn}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setSettleRefId("");
-                                setSettleNote("");
-                                setApprovalNote("");
-                                setRefundFormError(null);
-                                setDrawerTarget({ kind: "refund", refund: rf });
-                              }}
-                            >
-                              {rf.status === "PENDING_APPROVAL"
-                                ? "Duyệt"
-                                : isAdminRefundManuallySettleable(rf)
-                                  ? "Tất toán"
-                                  : "Chi tiết"}
-                            </button>
-                          </td>
-                        </tr>
+                        />
                       );
                     })}
-                  </tbody>
-                </table>
-              </div>
+                  </div>
+                </>
+              )}
+            </IndexTable>
+          </TabsContent>
+        ) : null}
 
-              <div className={shared.mobileList}>
-                {refunds.map((rf) => {
-                  const meta = getAdminRefundStatusMeta(rf.status, rf);
-                  return (
-                    <div key={rf.refund_id} className={shared.mobileItem}>
-                      <button
-                        type="button"
-                        className={shared.mobileItemBtn}
-                        onClick={() => {
-                          setSettleRefId("");
-                          setSettleNote("");
-                          setApprovalNote("");
-                          setRefundFormError(null);
-                          setDrawerTarget({ kind: "refund", refund: rf });
-                        }}
-                      >
-                        <span className={shared.mobileLine1}>
-                          <span className={shared.mobileIdentity}>{rf.refund_id.slice(0, 12)}</span>
-                          <span className={shared.mobileMetric}>{formatVnd(rf.amount_vnd)}</span>
-                        </span>
-                        <span className={shared.mobileLine2}>
-                          <span className={shared.mobileMetaText}>
-                            {localizeRefundReason(rf.reason) || rf.order_id.slice(0, 10)}
-                          </span>
-                          <StatusPill label={meta.label} tone={meta.tone} />
-                        </span>
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {Math.ceil(refundsTotal / PAGE_SIZE) > 1 && (
-                <div className={styles.paginationRow}>
-                  <span className={styles.paginationInfo}>
-                    Trang {formatInt(refundsPage)} /{" "}
-                    {formatInt(Math.max(1, Math.ceil(refundsTotal / PAGE_SIZE)))}
+        {/* TAB 5: ORDERS NEEDING MANUAL REVIEW */}
+        {canReadOrders ? (
+          <TabsContent value="needs-review" className="space-y-4">
+            <IndexTable
+              toolbar={
+                <div className="flex w-full flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs text-muted-foreground">
+                    Các đơn phát sinh lỗi hủy vận đơn hoặc cần vận hành rà soát thủ công.
                   </span>
-                  <div className={styles.paginationBtns}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground tabular-nums">
+                      {formatInt(needsReviewTotal)} đơn
+                    </span>
                     <Button
+                      type="button"
                       variant="outline"
-                      size="sm"
-                      shape="app"
-                      disabled={refundsPage <= 1 || refundsLoading}
-                      onClick={() => {
-                        const p = refundsPage - 1;
-                        setRefundsPage(p);
-                        void loadRefunds(refundStatus, refundOrderFilter, p);
-                      }}
+                      size="xs"
+                      disabled={needsReviewLoading}
+                      onClick={() => void loadNeedsReview(needsReviewPage)}
                     >
-                      Trang trước
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      shape="app"
-                      disabled={
-                        refundsPage >= Math.ceil(refundsTotal / PAGE_SIZE) || refundsLoading
-                      }
-                      onClick={() => {
-                        const p = refundsPage + 1;
-                        setRefundsPage(p);
-                        void loadRefunds(refundStatus, refundOrderFilter, p);
-                      }}
-                    >
-                      Trang sau
+                      <RefreshCw className="size-3.5" aria-hidden="true" />
+                      <span>Làm mới</span>
                     </Button>
                   </div>
                 </div>
-              )}
-            </>
-          )}
-        </div>
-      )}
+              }
+              footer={
+                Math.ceil(needsReviewTotal / PAGE_SIZE) > 1 ? (
+                  <TablePagination
+                    page={needsReviewPage}
+                    totalPages={Math.max(1, Math.ceil(needsReviewTotal / PAGE_SIZE))}
+                    summary={`Trang ${formatInt(needsReviewPage)} / ${formatInt(Math.max(1, Math.ceil(needsReviewTotal / PAGE_SIZE)))}`}
+                    disabled={needsReviewLoading}
+                    onPageChange={(nextPage) => {
+                      setNeedsReviewPage(nextPage);
+                      void loadNeedsReview(nextPage);
+                    }}
+                  />
+                ) : undefined
+              }
+            >
+              {needsReviewLoading ? (
+                <div className="p-4">
+                  <TableLoadingSkeleton rows={4} label="Đang tải đơn cần rà soát..." />
+                </div>
+              ) : needsReviewOrders.length === 0 ? (
+                <div className="p-4">
+                  <EmptyState
+                    icon={ClipboardCheck}
+                    title="Hiện không có đơn hàng nào cần rà soát thủ công"
+                    className="shadow-none"
+                  />
+                </div>
+              ) : (
+                <>
+                  <div className="hidden md:block">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Mã đơn</TableHead>
+                          <TableHead>Gian hàng &amp; vận đơn</TableHead>
+                          <TableHead className="text-right">Tổng tiền</TableHead>
+                          <TableHead>Trạng thái</TableHead>
+                          <TableHead className="text-right">Thao tác</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {needsReviewOrders.map((ord) => {
+                          const stMeta = getAdminOrderStatusMeta(ord.status);
+                          const openOrderSheet = () => {
+                            setOrderReviewNote("");
+                            setOrderReviewError(null);
+                            setDrawerTarget({ kind: "needs-review", order: ord });
+                          };
+                          return (
+                            <TableRow
+                              key={ord.id}
+                              className="cursor-pointer"
+                              onClick={openOrderSheet}
+                            >
+                              <TableCell>
+                                <div className="font-medium text-foreground tabular-nums">
+                                  {ord.order_code}
+                                </div>
+                                <div className="text-xs text-muted-foreground tabular-nums">
+                                  {ord.created_at
+                                    ? formatShortTimeDateVi(ord.created_at)
+                                    : EMPTY_DASH}
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <div className="font-medium text-foreground">
+                                  Shop {ord.shop_id.slice(0, 8)}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {ord.tracking_code || getPaymentMethodLabel(ord.payment_method)}
+                                </div>
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <Money vnd={ord.total_payable_vnd} size="sm" />
+                              </TableCell>
+                              <TableCell>
+                                <StatusBadge tone={orderStatusTone(ord.status)}>
+                                  {stMeta.label}
+                                </StatusBadge>
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="xs"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openOrderSheet();
+                                  }}
+                                >
+                                  Rà soát
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
 
-      {/* TAB 5: ORDERS NEEDING MANUAL REVIEW */}
-      {mainTab === "needs-review" && canReadOrders && (
-        <div className={styles.sectionStack}>
-          <div className={shared.toolbar}>
-            <div className={shared.toolbarLeft}>
-              <span className={styles.helperText}>
-                Các đơn phát sinh lỗi hủy vận đơn hoặc cần vận hành rà soát thủ công.
-              </span>
-            </div>
-            <div className={shared.toolbarRight}>
-              <span className={shared.resultCount}>{formatInt(needsReviewTotal)} đơn</span>
-              <Button
-                variant="outline"
-                size="sm"
-                shape="app"
-                disabled={needsReviewLoading}
-                onClick={() => void loadNeedsReview(needsReviewPage)}
-              >
-                Làm mới
-              </Button>
-            </div>
-          </div>
-
-          {needsReviewLoading ? (
-            <StateView kind="loading" surface="app" title="Đang tải đơn cần rà soát..." rows={4} />
-          ) : needsReviewOrders.length === 0 ? (
-            <p className={shared.emptyRow}>Hiện không có đơn hàng nào cần rà soát thủ công.</p>
-          ) : (
-            <>
-              <div className={shared.tableWrap}>
-                <table className={shared.dataTable}>
-                  <thead>
-                    <tr>
-                      <th>Mã đơn</th>
-                      <th>Gian hàng &amp; vận đơn</th>
-                      <th className={shared.colNum}>Tổng tiền</th>
-                      <th>Trạng thái</th>
-                      <th className={shared.colAction}>Thao tác</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+                  <div className="md:hidden">
                     {needsReviewOrders.map((ord) => {
                       const stMeta = getAdminOrderStatusMeta(ord.status);
                       return (
-                        <tr
+                        <IndexRowCard
                           key={ord.id}
-                          className={shared.rowInteractive}
+                          title={ord.order_code}
+                          badge={
+                            <StatusBadge tone={orderStatusTone(ord.status)}>
+                              {stMeta.label}
+                            </StatusBadge>
+                          }
+                          meta={
+                            <>
+                              <Money vnd={ord.total_payable_vnd} size="sm" />
+                              <span>·</span>
+                              <span>{ord.tracking_code || `Shop ${ord.shop_id.slice(0, 8)}`}</span>
+                            </>
+                          }
                           onClick={() => {
                             setOrderReviewNote("");
                             setOrderReviewError(null);
                             setDrawerTarget({ kind: "needs-review", order: ord });
                           }}
-                        >
-                          <td>
-                            <div className={shared.cellPrimary}>{ord.order_code}</div>
-                            <div className={shared.cellSub}>
-                              {ord.created_at ? formatShortTimeDateVi(ord.created_at) : EMPTY_DASH}
-                            </div>
-                          </td>
-                          <td>
-                            <div className={shared.cellPrimary}>Shop {ord.shop_id.slice(0, 8)}</div>
-                            <div className={shared.cellSub}>
-                              {ord.tracking_code || getPaymentMethodLabel(ord.payment_method)}
-                            </div>
-                          </td>
-                          <td className={shared.colNum}>{formatVnd(ord.total_payable_vnd)}</td>
-                          <td>
-                            <StatusPill label={stMeta.label} tone={stMeta.tone} />
-                          </td>
-                          <td className={shared.colAction}>
-                            <button
-                              type="button"
-                              className={shared.rowActionBtn}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setOrderReviewNote("");
-                                setOrderReviewError(null);
-                                setDrawerTarget({ kind: "needs-review", order: ord });
-                              }}
-                            >
-                              Rà soát
-                            </button>
-                          </td>
-                        </tr>
+                        />
                       );
                     })}
-                  </tbody>
-                </table>
-              </div>
+                  </div>
+                </>
+              )}
+            </IndexTable>
+          </TabsContent>
+        ) : null}
+      </Tabs>
 
-              <div className={shared.mobileList}>
-                {needsReviewOrders.map((ord) => {
-                  const stMeta = getAdminOrderStatusMeta(ord.status);
-                  return (
-                    <div key={ord.id} className={shared.mobileItem}>
-                      <button
-                        type="button"
-                        className={shared.mobileItemBtn}
-                        onClick={() => {
-                          setOrderReviewNote("");
-                          setOrderReviewError(null);
-                          setDrawerTarget({ kind: "needs-review", order: ord });
-                        }}
-                      >
-                        <span className={shared.mobileLine1}>
-                          <span className={shared.mobileIdentity}>{ord.order_code}</span>
-                          <span className={shared.mobileMetric}>
-                            {formatVnd(ord.total_payable_vnd)}
-                          </span>
-                        </span>
-                        <span className={shared.mobileLine2}>
-                          <span className={shared.mobileMetaText}>
-                            {ord.tracking_code || `Shop ${ord.shop_id.slice(0, 8)}`}
-                          </span>
-                          <StatusPill label={stMeta.label} tone={stMeta.tone} />
-                        </span>
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
+      {/* COD CSV IMPORT DIALOG */}
+      <CodCsvImportDialog
+        open={codDialogOpen}
+        onOpenChange={setCodDialogOpen}
+        carrierOptions={carrierSelectOptions}
+        codCarrier={codCarrier}
+        onCodCarrierChange={setCodCarrier}
+        codDate={codDate}
+        onCodDateChange={setCodDate}
+        codFile={codFile}
+        onCodFileChange={(file) => {
+          setCodFile(file);
+          setCodError(null);
+        }}
+        codImporting={codImporting}
+        codError={codError}
+        onSubmit={(e) => void handleCodImport(e)}
+      />
 
-              {Math.ceil(needsReviewTotal / PAGE_SIZE) > 1 && (
-                <div className={styles.paginationRow}>
-                  <span className={styles.paginationInfo}>
-                    Trang {formatInt(needsReviewPage)} /{" "}
-                    {formatInt(Math.max(1, Math.ceil(needsReviewTotal / PAGE_SIZE)))}
-                  </span>
-                  <div className={styles.paginationBtns}>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      shape="app"
-                      disabled={needsReviewPage <= 1 || needsReviewLoading}
-                      onClick={() => {
-                        const p = needsReviewPage - 1;
-                        setNeedsReviewPage(p);
-                        void loadNeedsReview(p);
-                      }}
+      {/* UNIFIED RIGHT SHEET */}
+      <Sheet open={Boolean(drawerTarget)} onOpenChange={(open) => !open && setDrawerTarget(null)}>
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
+          {drawerTarget ? (
+            <>
+              <SheetHeader className="border-b border-border pb-4">
+                <div className="flex flex-wrap items-center gap-2 pr-6">
+                  <SheetTitle>
+                    {drawerTarget.kind === "account"
+                      ? drawerTarget.account.account_code
+                      : drawerTarget.kind === "recon"
+                        ? drawerTarget.item.payment_id || "Chi tiết đối soát"
+                        : drawerTarget.kind === "queue"
+                          ? drawerTarget.item.tracking_code ||
+                            drawerTarget.item.provider_tx_id ||
+                            "Giao dịch không khớp"
+                          : drawerTarget.kind === "refund"
+                            ? `Hoàn tiền ${formatVnd(drawerTarget.refund.amount_vnd)}`
+                            : drawerTarget.kind === "create-refund"
+                              ? "Tạo lệnh hoàn tiền thủ công"
+                              : `Đơn ${drawerTarget.order.order_code}`}
+                  </SheetTitle>
+
+                  {drawerTarget.kind === "recon" ? (
+                    <StatusBadge
+                      tone={pillToneToStatusTone(
+                        getReconItemStatusMeta(drawerTarget.item.status).tone
+                      )}
                     >
-                      Trang trước
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      shape="app"
-                      disabled={
-                        needsReviewPage >= Math.ceil(needsReviewTotal / PAGE_SIZE) ||
-                        needsReviewLoading
+                      {getReconItemStatusMeta(drawerTarget.item.status).label}
+                    </StatusBadge>
+                  ) : drawerTarget.kind === "account" ? (
+                    <StatusBadge tone={isBalanced ? "success" : "critical"}>
+                      {isBalanced ? "Cân đối" : "Có chênh lệch"}
+                    </StatusBadge>
+                  ) : drawerTarget.kind === "queue" ? (
+                    <StatusBadge
+                      tone={pillToneToStatusTone(
+                        getReconciliationQueueStatusMeta(drawerTarget.item.resolution_status).tone
+                      )}
+                    >
+                      {getReconciliationQueueStatusMeta(drawerTarget.item.resolution_status).label}
+                    </StatusBadge>
+                  ) : drawerTarget.kind === "refund" ? (
+                    <StatusBadge tone={refundStatusTone(drawerTarget.refund.status)}>
+                      {
+                        getAdminRefundStatusMeta(drawerTarget.refund.status, drawerTarget.refund)
+                          .label
                       }
-                      onClick={() => {
-                        const p = needsReviewPage + 1;
-                        setNeedsReviewPage(p);
-                        void loadNeedsReview(p);
-                      }}
-                    >
-                      Trang sau
-                    </Button>
-                  </div>
+                    </StatusBadge>
+                  ) : drawerTarget.kind === "needs-review" ? (
+                    <StatusBadge tone={orderStatusTone(drawerTarget.order.status)}>
+                      {getAdminOrderStatusMeta(drawerTarget.order.status).label}
+                    </StatusBadge>
+                  ) : null}
                 </div>
-              )}
-            </>
-          )}
-        </div>
-      )}
 
-      {/* UNIFIED DRAWER */}
-      <AdminDrawer
-        open={Boolean(drawerTarget)}
-        onClose={() => setDrawerTarget(null)}
-        title={
-          drawerTarget?.kind === "account"
-            ? drawerTarget.account.account_code
-            : drawerTarget?.kind === "recon"
-              ? drawerTarget.item.payment_id || "Chi tiết đối soát"
-              : drawerTarget?.kind === "queue"
-                ? drawerTarget.item.tracking_code ||
-                  drawerTarget.item.provider_tx_id ||
-                  "Giao dịch không khớp"
-                : drawerTarget?.kind === "refund"
-                  ? `Hoàn tiền ${formatVnd(drawerTarget.refund.amount_vnd)}`
-                  : drawerTarget?.kind === "create-refund"
-                    ? "Tạo lệnh hoàn tiền thủ công"
-                    : drawerTarget?.kind === "needs-review"
-                      ? `Đơn ${drawerTarget.order.order_code}`
-                      : ""
-        }
-        subtitle={
-          drawerTarget?.kind === "account"
-            ? getAccountTypeLabelVi(drawerTarget.account.account_type)
-            : drawerTarget?.kind === "recon"
-              ? `Phiên ${drawerTarget.runId.slice(0, 12)}`
-              : drawerTarget?.kind === "refund"
-                ? `Mã ${drawerTarget.refund.refund_id}`
-                : drawerTarget?.kind === "needs-review"
-                  ? drawerTarget.order.created_at
-                    ? formatDateTimeVi(drawerTarget.order.created_at)
-                    : undefined
-                  : undefined
-        }
-        headerBadge={
-          drawerTarget?.kind === "recon" ? (
-            <StatusPill
-              label={getReconItemStatusMeta(drawerTarget.item.status).label}
-              tone={getReconItemStatusMeta(drawerTarget.item.status).tone}
-            />
-          ) : drawerTarget?.kind === "account" ? (
-            <StatusPill
-              label={isBalanced ? "Cân đối" : "Có chênh lệch"}
-              tone={isBalanced ? "positive" : "negative"}
-            />
-          ) : drawerTarget?.kind === "queue" ? (
-            <StatusPill
-              label={getReconciliationQueueStatusMeta(drawerTarget.item.resolution_status).label}
-              tone={getReconciliationQueueStatusMeta(drawerTarget.item.resolution_status).tone}
-            />
-          ) : drawerTarget?.kind === "refund" ? (
-            <StatusPill
-              label={
-                getAdminRefundStatusMeta(drawerTarget.refund.status, drawerTarget.refund).label
-              }
-              tone={getAdminRefundStatusMeta(drawerTarget.refund.status, drawerTarget.refund).tone}
-            />
-          ) : drawerTarget?.kind === "needs-review" ? (
-            <StatusPill
-              label={getAdminOrderStatusMeta(drawerTarget.order.status).label}
-              tone={getAdminOrderStatusMeta(drawerTarget.order.status).tone}
-            />
-          ) : undefined
-        }
-        width="lg"
-      >
-        {drawerTarget?.kind === "account" && (
-          <div className={shared.detailWell}>
-            <div className={shared.detailGrid}>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Mã tài khoản</span>
-                <span className={`${shared.detailVal} num`}>
-                  {drawerTarget.account.account_code}
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Nhóm tài khoản</span>
-                <span className={shared.detailVal}>
-                  {getAccountTypeLabelVi(drawerTarget.account.account_type)}
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Tổng Ghi nợ</span>
-                <span className={`${shared.detailVal} num`}>
-                  {formatVnd(drawerTarget.account.debit_total_vnd)}
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Tổng Ghi có</span>
-                <span className={`${shared.detailVal} num`}>
-                  {formatVnd(drawerTarget.account.credit_total_vnd)}
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Số dư ròng</span>
-                <span className={`${shared.detailVal} num`}>
-                  {formatVnd(drawerTarget.account.balance_vnd)}
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Phạm vi lọc</span>
-                <span className={shared.detailValPlain}>{activeScopeLabel}</span>
-              </div>
-            </div>
-          </div>
-        )}
+                {drawerTarget.kind === "account" ? (
+                  <SheetDescription>
+                    {getAccountTypeLabelVi(drawerTarget.account.account_type)}
+                  </SheetDescription>
+                ) : drawerTarget.kind === "recon" ? (
+                  <SheetDescription className="tabular-nums">
+                    Phiên {drawerTarget.runId.slice(0, 12)}
+                  </SheetDescription>
+                ) : drawerTarget.kind === "refund" ? (
+                  <SheetDescription className="tabular-nums">
+                    Mã {drawerTarget.refund.refund_id}
+                  </SheetDescription>
+                ) : drawerTarget.kind === "needs-review" && drawerTarget.order.created_at ? (
+                  <SheetDescription className="tabular-nums">
+                    {formatDateTimeVi(drawerTarget.order.created_at)}
+                  </SheetDescription>
+                ) : null}
+              </SheetHeader>
 
-        {drawerTarget?.kind === "recon" && (
-          <div className={shared.detailWell}>
-            <div className={shared.detailGrid}>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Mã giao dịch nội bộ</span>
-                <span className={`${shared.detailVal} num`}>
-                  {drawerTarget.item.payment_id || EMPTY_DASH}
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Mã tham chiếu cổng</span>
-                <span className={`${shared.detailVal} num`}>
-                  {drawerTarget.item.provider_tx_id || EMPTY_DASH}
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Số tiền nội bộ</span>
-                <span className={`${shared.detailVal} num`}>
-                  {formatVnd(drawerTarget.item.local_amount_vnd)}
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Số tiền sao kê</span>
-                <span className={`${shared.detailVal} num`}>
-                  {formatVnd(drawerTarget.item.provider_amount_vnd)}
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Kênh bán</span>
-                <span className={shared.detailValPlain}>
-                  {getOptionalSalesChannelMeta(drawerTarget.item.sales_channel)?.label ?? "—"}
-                </span>
-              </div>
-              <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                <span className={shared.detailKey}>Ghi chú</span>
-                <span className={shared.detailValPlain}>
-                  {formatReconciliationNote(drawerTarget.item.note) || EMPTY_DASH}
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
+              <div className="space-y-4 px-4 pb-6">
+                {drawerTarget.kind === "account" ? (
+                  <DetailGrid>
+                    <DetailItem label="Mã tài khoản" numeric>
+                      {drawerTarget.account.account_code}
+                    </DetailItem>
+                    <DetailItem label="Nhóm tài khoản">
+                      {getAccountTypeLabelVi(drawerTarget.account.account_type)}
+                    </DetailItem>
+                    <DetailItem label="Tổng Ghi nợ" numeric>
+                      {formatVnd(drawerTarget.account.debit_total_vnd)}
+                    </DetailItem>
+                    <DetailItem label="Tổng Ghi có" numeric>
+                      {formatVnd(drawerTarget.account.credit_total_vnd)}
+                    </DetailItem>
+                    <DetailItem label="Số dư ròng" numeric>
+                      {formatVnd(drawerTarget.account.balance_vnd)}
+                    </DetailItem>
+                    <DetailItem label="Phạm vi lọc">{activeScopeLabel}</DetailItem>
+                  </DetailGrid>
+                ) : null}
 
-        {drawerTarget?.kind === "queue" && (
-          <div className={styles.sectionStack}>
-            <div className={shared.detailWell}>
-              <div className={shared.detailGrid}>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Đối tác / nguồn</span>
-                  <span className={shared.detailValPlain}>
-                    {drawerTarget.item.provider}
-                    {drawerTarget.item.source_type ? ` (${drawerTarget.item.source_type})` : ""}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Nguyên nhân</span>
-                  <span className={shared.detailVal}>
-                    {formatReconciliationReason(drawerTarget.item.reason)}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Số tiền kỳ vọng</span>
-                  <span className={`${shared.detailVal} num`}>
-                    {formatVnd(drawerTarget.item.expected_amount_vnd)}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Số tiền thực nhận</span>
-                  <span className={`${shared.detailVal} num`}>
-                    {formatVnd(drawerTarget.item.actual_amount_vnd)}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Mã giao dịch dự kiến</span>
-                  <span className={`${shared.detailValPlain} num`}>
-                    {drawerTarget.item.expected_payment_id || EMPTY_DASH}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Tham chiếu đơn</span>
-                  <span className={`${shared.detailValPlain} num`}>
-                    {drawerTarget.item.order_ref || EMPTY_DASH}
-                  </span>
-                </div>
-                {drawerTarget.item.notes && (
-                  <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                    <span className={shared.detailKey}>Ghi chú</span>
-                    <span className={shared.detailValPlain}>
-                      {formatReconciliationNote(drawerTarget.item.notes)}
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
+                {drawerTarget.kind === "recon" ? (
+                  <DetailGrid>
+                    <DetailItem label="Mã giao dịch nội bộ" numeric>
+                      {drawerTarget.item.payment_id || EMPTY_DASH}
+                    </DetailItem>
+                    <DetailItem label="Mã tham chiếu cổng" numeric>
+                      {drawerTarget.item.provider_tx_id || EMPTY_DASH}
+                    </DetailItem>
+                    <DetailItem label="Số tiền nội bộ" numeric>
+                      {formatVnd(drawerTarget.item.local_amount_vnd)}
+                    </DetailItem>
+                    <DetailItem label="Số tiền sao kê" numeric>
+                      {formatVnd(drawerTarget.item.provider_amount_vnd)}
+                    </DetailItem>
+                    <DetailItem label="Kênh bán">
+                      {getOptionalSalesChannelMeta(drawerTarget.item.sales_channel)?.label ?? "—"}
+                    </DetailItem>
+                    <DetailItem label="Ghi chú" wide>
+                      {formatReconciliationNote(drawerTarget.item.note) || EMPTY_DASH}
+                    </DetailItem>
+                  </DetailGrid>
+                ) : null}
 
-            {canWriteRecon &&
-              ["pending", "suspended"].includes(
-                drawerTarget.item.resolution_status.toLowerCase()
-              ) && (
-                <form
-                  className={styles.drawerSection}
-                  onSubmit={(e) => void handleResolveQueueItem(e, drawerTarget.item)}
-                  noValidate
-                >
-                  <h3 className={styles.drawerSectionTitle}>Xử lý giao dịch lệch</h3>
-                  <div className={styles.formField}>
-                    <label htmlFor="q-action" className={shared.fieldLabel}>
-                      Hướng xử lý
-                    </label>
-                    <select
-                      id="q-action"
-                      className={`${shared.toolbarSelect} ${styles.selectFull}`}
-                      value={queueAction}
-                      disabled={queueSubmitting}
-                      onChange={(e) => {
-                        setQueueAction(e.target.value as GatewayReconciliationAction);
-                        setQueueFormError(null);
-                      }}
-                    >
-                      <option value="ASSIGN">Gán khớp vào giao dịch nội bộ (ASSIGN)</option>
-                      <option value="REFUND">Tạo lệnh hoàn tiền (REFUND)</option>
-                      <option value="SUSPEND">Tạm treo chờ xác minh (SUSPEND)</option>
-                    </select>
-                  </div>
-
-                  {queueAction === "ASSIGN" && (
-                    <div className={styles.formField}>
-                      <label htmlFor="q-payment-id" className={shared.fieldLabel}>
-                        Mã thanh toán nội bộ (payment_id)
-                      </label>
-                      <input
-                        id="q-payment-id"
-                        type="text"
-                        className={shared.textInput}
-                        value={queuePaymentId}
-                        disabled={queueSubmitting}
-                        onChange={(e) => {
-                          setQueuePaymentId(e.target.value);
-                          setQueueFormError(null);
-                        }}
-                        placeholder="Nhập payment_id cần gán khớp..."
-                      />
-                    </div>
-                  )}
-
-                  <div className={styles.formField}>
-                    <label htmlFor="q-note" className={shared.fieldLabel}>
-                      Ghi chú xử lý
-                    </label>
-                    <textarea
-                      id="q-note"
-                      className={shared.textareaInput}
-                      value={queueNote}
-                      disabled={queueSubmitting}
-                      onChange={(e) => setQueueNote(e.target.value)}
-                      placeholder="Ghi rõ lý do gán khớp, hoàn tiền hoặc tạm treo..."
-                    />
-                  </div>
-
-                  {queueFormError && (
-                    <p className={shared.validationError} role="alert">
-                      {queueFormError}
-                    </p>
-                  )}
-
-                  <div className={shared.detailButtons}>
-                    <Button
-                      type="submit"
-                      variant="primary"
-                      size="sm"
-                      shape="app"
-                      loading={queueSubmitting}
-                    >
-                      Xác nhận xử lý
-                    </Button>
-                  </div>
-                </form>
-              )}
-          </div>
-        )}
-
-        {drawerTarget?.kind === "refund" && (
-          <div className={styles.sectionStack}>
-            <div className={shared.detailWell}>
-              <div className={shared.detailGrid}>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Mã đơn hàng</span>
-                  <span className={`${shared.detailValPlain} num`}>
-                    {drawerTarget.refund.order_id}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Mã thanh toán</span>
-                  <span className={`${shared.detailValPlain} num`}>
-                    {drawerTarget.refund.payment_id}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Người khởi tạo</span>
-                  <span className={shared.detailValPlain}>
-                    {formatApprovalActorDisplay(drawerTarget.refund.requested_by)}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Người phê duyệt</span>
-                  <span className={shared.detailValPlain}>
-                    {formatApprovalActorDisplay(drawerTarget.refund.approved_by)}
-                  </span>
-                </div>
-                {drawerTarget.refund.bank_code && (
-                  <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                    <span className={shared.detailKey}>Tài khoản nhận hoàn tiền</span>
-                    <span className={shared.detailValPlain}>
-                      {drawerTarget.refund.bank_code} ·{" "}
-                      {drawerTarget.refund.bank_account_number ||
-                        drawerTarget.refund.bank_account_masked ||
-                        EMPTY_DASH}
-                      {drawerTarget.refund.bank_account_name
-                        ? ` (${drawerTarget.refund.bank_account_name})`
-                        : ""}
-                    </span>
-                  </div>
-                )}
-                {drawerTarget.refund.provider_refund_id && (
-                  <div className={shared.detailField}>
-                    <span className={shared.detailKey}>Mã chuyển khoản tất toán</span>
-                    <span className={`${shared.detailValPlain} num`}>
-                      {drawerTarget.refund.provider_refund_id}
-                    </span>
-                  </div>
-                )}
-                {drawerTarget.refund.settled_at && (
-                  <div className={shared.detailField}>
-                    <span className={shared.detailKey}>Thời gian tất toán</span>
-                    <span className={`${shared.detailValPlain} num`}>
-                      {formatDateTimeVi(drawerTarget.refund.settled_at)}
-                    </span>
-                  </div>
-                )}
-                <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                  <span className={shared.detailKey}>Lý do hoàn tiền</span>
-                  <span className={shared.detailValPlain}>
-                    {localizeRefundReason(drawerTarget.refund.reason) || EMPTY_DASH}
-                  </span>
-                </div>
-                {drawerTarget.refund.approval_note && (
-                  <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                    <span className={shared.detailKey}>Ghi chú duyệt 2 người</span>
-                    <span className={shared.detailValPlain}>
-                      {drawerTarget.refund.approval_note}
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {drawerTarget.refund.status.toUpperCase() === "PENDING_APPROVAL" && (
-              <div className={styles.drawerSection}>
-                <h3 className={styles.drawerSectionTitle}>Phê duyệt 2 người (Maker–Checker)</h3>
-                {canDecideTwoPersonApproval({
-                  actorId: user.id,
-                  actorRole: user.role,
-                  requestedBy: drawerTarget.refund.requested_by,
-                  decideCapability: "refunds.approve",
-                }) ? (
+                {drawerTarget.kind === "queue" ? (
                   <>
-                    <div className={styles.formField}>
-                      <label htmlFor="rf-approval-note" className={shared.fieldLabel}>
-                        Ghi chú phê duyệt (bắt buộc khi từ chối)
-                      </label>
-                      <textarea
-                        id="rf-approval-note"
-                        className={shared.textareaInput}
-                        value={approvalNote}
-                        disabled={refundBusy}
-                        onChange={(e) => {
-                          setApprovalNote(e.target.value);
-                          setRefundFormError(null);
-                        }}
-                        placeholder="Ghi chú kiểm tra chứng từ trước khi duyệt hoặc từ chối..."
-                      />
-                    </div>
-                    {refundFormError && (
-                      <p className={shared.validationError} role="alert">
-                        {refundFormError}
-                      </p>
-                    )}
-                    <div className={shared.detailButtons}>
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        shape="app"
-                        loading={refundBusy}
-                        onClick={() => void handleDecideRefund(drawerTarget.refund, true)}
+                    <DetailGrid>
+                      <DetailItem label="Đối tác / nguồn">
+                        {drawerTarget.item.provider}
+                        {drawerTarget.item.source_type ? ` (${drawerTarget.item.source_type})` : ""}
+                      </DetailItem>
+                      <DetailItem label="Nguyên nhân">
+                        {formatReconciliationReason(drawerTarget.item.reason)}
+                      </DetailItem>
+                      <DetailItem label="Số tiền kỳ vọng" numeric>
+                        {formatVnd(drawerTarget.item.expected_amount_vnd)}
+                      </DetailItem>
+                      <DetailItem label="Số tiền thực nhận" numeric>
+                        {formatVnd(drawerTarget.item.actual_amount_vnd)}
+                      </DetailItem>
+                      <DetailItem label="Mã giao dịch dự kiến" numeric>
+                        {drawerTarget.item.expected_payment_id || EMPTY_DASH}
+                      </DetailItem>
+                      <DetailItem label="Tham chiếu đơn" numeric>
+                        {drawerTarget.item.order_ref || EMPTY_DASH}
+                      </DetailItem>
+                      {drawerTarget.item.notes ? (
+                        <DetailItem label="Ghi chú" wide>
+                          {formatReconciliationNote(drawerTarget.item.notes)}
+                        </DetailItem>
+                      ) : null}
+                    </DetailGrid>
+
+                    {canWriteRecon &&
+                    ["pending", "suspended"].includes(
+                      drawerTarget.item.resolution_status.toLowerCase()
+                    ) ? (
+                      <form
+                        className="space-y-4 rounded-xl border border-border bg-card p-4"
+                        onSubmit={(e) => void handleResolveQueueItem(e, drawerTarget.item)}
+                        noValidate
                       >
-                        Phê duyệt hoàn tiền
-                      </Button>
-                      <Button
-                        variant="danger"
-                        size="sm"
-                        shape="app"
-                        loading={refundBusy}
-                        onClick={() => void handleDecideRefund(drawerTarget.refund, false)}
-                      >
-                        Từ chối
-                      </Button>
-                    </div>
+                        <h3 className="text-sm font-semibold text-foreground">
+                          Xử lý giao dịch lệch
+                        </h3>
+                        <FieldGroup className="gap-3">
+                          <Field className="gap-1.5">
+                            <FieldLabel htmlFor="q-action">Hướng xử lý</FieldLabel>
+                            <Select
+                              value={queueAction}
+                              disabled={queueSubmitting}
+                              onValueChange={(v) => {
+                                setQueueAction(v as GatewayReconciliationAction);
+                                setQueueFormError(null);
+                              }}
+                            >
+                              <SelectTrigger id="q-action" className="w-full bg-card">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="ASSIGN">
+                                  Gán khớp vào giao dịch nội bộ (ASSIGN)
+                                </SelectItem>
+                                <SelectItem value="REFUND">Tạo lệnh hoàn tiền (REFUND)</SelectItem>
+                                <SelectItem value="SUSPEND">
+                                  Tạm treo chờ xác minh (SUSPEND)
+                                </SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </Field>
+
+                          {queueAction === "ASSIGN" ? (
+                            <Field className="gap-1.5">
+                              <FieldLabel htmlFor="q-payment-id">
+                                Mã thanh toán nội bộ (payment_id)
+                              </FieldLabel>
+                              <Input
+                                id="q-payment-id"
+                                type="text"
+                                value={queuePaymentId}
+                                disabled={queueSubmitting}
+                                onChange={(e) => {
+                                  setQueuePaymentId(e.target.value);
+                                  setQueueFormError(null);
+                                }}
+                                placeholder="Nhập payment_id cần gán khớp..."
+                                className="bg-card"
+                              />
+                            </Field>
+                          ) : null}
+
+                          <Field className="gap-1.5">
+                            <FieldLabel htmlFor="q-note">Ghi chú xử lý</FieldLabel>
+                            <Textarea
+                              id="q-note"
+                              rows={3}
+                              value={queueNote}
+                              disabled={queueSubmitting}
+                              onChange={(e) => setQueueNote(e.target.value)}
+                              placeholder="Ghi rõ lý do gán khớp, hoàn tiền hoặc tạm treo..."
+                              className="bg-card"
+                            />
+                          </Field>
+
+                          <FieldError>{queueFormError}</FieldError>
+                        </FieldGroup>
+
+                        <Button type="submit" size="sm" disabled={queueSubmitting}>
+                          {queueSubmitting ? "Đang xử lý..." : "Xác nhận xử lý"}
+                        </Button>
+                      </form>
+                    ) : null}
                   </>
-                ) : (
-                  <div className={styles.warningBanner}>
-                    {drawerTarget.refund.requested_by &&
-                    drawerTarget.refund.requested_by === user.id
-                      ? "Bạn là người khởi tạo lệnh hoàn tiền này; cần quản trị viên hoặc kế toán khác phê duyệt."
-                      : "Tài khoản của bạn không có quyền phê duyệt lệnh hoàn tiền 2 người."}
-                  </div>
-                )}
-              </div>
-            )}
+                ) : null}
 
-            {isAdminWalletRefundAutoPending(drawerTarget.refund) && (
-              <div className={styles.noticeBanner}>
-                Lệnh hoàn tiền về ví ZaloPay đang được cổng thanh toán xử lý tự động; không cần tất
-                toán thủ công.
-              </div>
-            )}
+                {drawerTarget.kind === "refund" ? (
+                  <>
+                    <DetailGrid>
+                      <DetailItem label="Mã đơn hàng" numeric>
+                        {drawerTarget.refund.order_id}
+                      </DetailItem>
+                      <DetailItem label="Mã thanh toán" numeric>
+                        {drawerTarget.refund.payment_id}
+                      </DetailItem>
+                      <DetailItem label="Người khởi tạo">
+                        {formatApprovalActorDisplay(drawerTarget.refund.requested_by)}
+                      </DetailItem>
+                      <DetailItem label="Người phê duyệt">
+                        {formatApprovalActorDisplay(drawerTarget.refund.approved_by)}
+                      </DetailItem>
+                      {drawerTarget.refund.bank_code ? (
+                        <DetailItem label="Tài khoản nhận hoàn tiền" wide>
+                          {drawerTarget.refund.bank_code} ·{" "}
+                          {drawerTarget.refund.bank_account_number ||
+                            drawerTarget.refund.bank_account_masked ||
+                            EMPTY_DASH}
+                          {drawerTarget.refund.bank_account_name
+                            ? ` (${drawerTarget.refund.bank_account_name})`
+                            : ""}
+                        </DetailItem>
+                      ) : null}
+                      {drawerTarget.refund.provider_refund_id ? (
+                        <DetailItem label="Mã chuyển khoản tất toán" numeric>
+                          {drawerTarget.refund.provider_refund_id}
+                        </DetailItem>
+                      ) : null}
+                      {drawerTarget.refund.settled_at ? (
+                        <DetailItem label="Thời gian tất toán" numeric>
+                          {formatDateTimeVi(drawerTarget.refund.settled_at)}
+                        </DetailItem>
+                      ) : null}
+                      <DetailItem label="Lý do hoàn tiền" wide>
+                        {localizeRefundReason(drawerTarget.refund.reason) || EMPTY_DASH}
+                      </DetailItem>
+                      {drawerTarget.refund.approval_note ? (
+                        <DetailItem label="Ghi chú duyệt 2 người" wide>
+                          {drawerTarget.refund.approval_note}
+                        </DetailItem>
+                      ) : null}
+                    </DetailGrid>
 
-            {isAdminRefundManuallySettleable(drawerTarget.refund) && canSettleRefund && (
-              <form
-                className={styles.drawerSection}
-                onSubmit={(e) => void handleSettleRefund(e, drawerTarget.refund)}
-                noValidate
-              >
-                <h3 className={styles.drawerSectionTitle}>Xác nhận tất toán chuyển khoản</h3>
-                <div className={styles.formField}>
-                  <label htmlFor="rf-settle-id" className={shared.fieldLabel}>
-                    Mã giao dịch chuyển khoản ngân hàng
-                  </label>
-                  <input
-                    id="rf-settle-id"
-                    type="text"
-                    className={shared.textInput}
-                    value={settleRefId}
-                    disabled={refundBusy}
-                    onChange={(e) => {
-                      setSettleRefId(e.target.value);
-                      setRefundFormError(null);
-                    }}
-                    placeholder="VD: FT2611250019283"
-                  />
-                </div>
-                <div className={styles.formField}>
-                  <label htmlFor="rf-settle-note" className={shared.fieldLabel}>
-                    Ghi chú kế toán (tùy chọn)
-                  </label>
-                  <input
-                    id="rf-settle-note"
-                    type="text"
-                    className={shared.textInput}
-                    value={settleNote}
-                    disabled={refundBusy}
-                    onChange={(e) => setSettleNote(e.target.value)}
-                    placeholder="Đã đối chiếu sao kê chuyển khoản hoàn tiền..."
-                  />
-                </div>
-                {refundFormError && (
-                  <p className={shared.validationError} role="alert">
-                    {refundFormError}
-                  </p>
-                )}
-                <div className={shared.detailButtons}>
-                  <Button
-                    type="submit"
-                    variant="primary"
-                    size="sm"
-                    shape="app"
-                    loading={refundBusy}
+                    {drawerTarget.refund.status.toUpperCase() === "PENDING_APPROVAL" ? (
+                      <div className="space-y-3 rounded-xl border border-border bg-card p-4">
+                        <h3 className="text-sm font-semibold text-foreground">
+                          Phê duyệt 2 người (Maker–Checker)
+                        </h3>
+                        {canDecideTwoPersonApproval({
+                          actorId: user.id,
+                          actorRole: user.role,
+                          requestedBy: drawerTarget.refund.requested_by,
+                          decideCapability: "refunds.approve",
+                        }) ? (
+                          <>
+                            <Field className="gap-1.5">
+                              <FieldLabel htmlFor="rf-approval-note">
+                                Ghi chú phê duyệt (bắt buộc khi từ chối)
+                              </FieldLabel>
+                              <Textarea
+                                id="rf-approval-note"
+                                rows={3}
+                                value={approvalNote}
+                                disabled={refundBusy}
+                                onChange={(e) => {
+                                  setApprovalNote(e.target.value);
+                                  setRefundFormError(null);
+                                }}
+                                placeholder="Ghi chú kiểm tra chứng từ trước khi duyệt hoặc từ chối..."
+                                className="bg-card"
+                              />
+                            </Field>
+                            <FieldError>{refundFormError}</FieldError>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Button
+                                type="button"
+                                size="sm"
+                                disabled={refundBusy}
+                                onClick={() => void handleDecideRefund(drawerTarget.refund, true)}
+                              >
+                                {refundBusy ? "Đang xử lý..." : "Phê duyệt hoàn tiền"}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="destructive"
+                                size="sm"
+                                disabled={refundBusy}
+                                onClick={() => void handleDecideRefund(drawerTarget.refund, false)}
+                              >
+                                Từ chối
+                              </Button>
+                            </div>
+                          </>
+                        ) : (
+                          <Alert>
+                            <Info className="size-4" aria-hidden="true" />
+                            <AlertDescription>
+                              {drawerTarget.refund.requested_by &&
+                              drawerTarget.refund.requested_by === user.id
+                                ? "Bạn là người khởi tạo lệnh hoàn tiền này; cần quản trị viên hoặc kế toán khác phê duyệt."
+                                : "Tài khoản của bạn không có quyền phê duyệt lệnh hoàn tiền 2 người."}
+                            </AlertDescription>
+                          </Alert>
+                        )}
+                      </div>
+                    ) : null}
+
+                    {isAdminWalletRefundAutoPending(drawerTarget.refund) ? (
+                      <Alert>
+                        <Info className="size-4" aria-hidden="true" />
+                        <AlertDescription>
+                          Lệnh hoàn tiền về ví ZaloPay đang được cổng thanh toán xử lý tự động;
+                          không cần tất toán thủ công.
+                        </AlertDescription>
+                      </Alert>
+                    ) : null}
+
+                    {isAdminRefundManuallySettleable(drawerTarget.refund) && canSettleRefund ? (
+                      <form
+                        className="space-y-4 rounded-xl border border-border bg-card p-4"
+                        onSubmit={(e) => void handleSettleRefund(e, drawerTarget.refund)}
+                        noValidate
+                      >
+                        <h3 className="text-sm font-semibold text-foreground">
+                          Xác nhận tất toán chuyển khoản
+                        </h3>
+                        <FieldGroup className="gap-3">
+                          <Field className="gap-1.5">
+                            <FieldLabel htmlFor="rf-settle-id">
+                              Mã giao dịch chuyển khoản ngân hàng
+                            </FieldLabel>
+                            <Input
+                              id="rf-settle-id"
+                              type="text"
+                              value={settleRefId}
+                              disabled={refundBusy}
+                              onChange={(e) => {
+                                setSettleRefId(e.target.value);
+                                setRefundFormError(null);
+                              }}
+                              placeholder="VD: FT2611250019283"
+                              className="bg-card"
+                            />
+                          </Field>
+                          <Field className="gap-1.5">
+                            <FieldLabel htmlFor="rf-settle-note">
+                              Ghi chú kế toán (tùy chọn)
+                            </FieldLabel>
+                            <Input
+                              id="rf-settle-note"
+                              type="text"
+                              value={settleNote}
+                              disabled={refundBusy}
+                              onChange={(e) => setSettleNote(e.target.value)}
+                              placeholder="Đã đối chiếu sao kê chuyển khoản hoàn tiền..."
+                              className="bg-card"
+                            />
+                          </Field>
+                          <FieldError>{refundFormError}</FieldError>
+                        </FieldGroup>
+                        <Button type="submit" size="sm" disabled={refundBusy}>
+                          {refundBusy ? "Đang xác nhận..." : "Xác nhận đã chuyển khoản"}
+                        </Button>
+                      </form>
+                    ) : null}
+                  </>
+                ) : null}
+
+                {drawerTarget.kind === "create-refund" && canCreateRefund ? (
+                  <form
+                    className="space-y-4"
+                    onSubmit={(e) => void handleCreateManualRefund(e)}
+                    noValidate
                   >
-                    Xác nhận đã chuyển khoản
-                  </Button>
-                </div>
-              </form>
-            )}
-          </div>
-        )}
+                    <FieldGroup className="gap-3.5">
+                      <Field className="gap-1.5">
+                        <FieldLabel htmlFor="new-rf-payment">Mã thanh toán (payment_id)</FieldLabel>
+                        <Input
+                          id="new-rf-payment"
+                          type="text"
+                          value={newRefundPaymentId}
+                          disabled={creatingRefund}
+                          onChange={(e) => setNewRefundPaymentId(e.target.value)}
+                          placeholder="UUID giao dịch thanh toán..."
+                          className="bg-card"
+                        />
+                      </Field>
+                      <Field className="gap-1.5">
+                        <FieldLabel htmlFor="new-rf-order">Mã đơn hàng (order_id)</FieldLabel>
+                        <Input
+                          id="new-rf-order"
+                          type="text"
+                          value={newRefundOrderId}
+                          disabled={creatingRefund}
+                          onChange={(e) => setNewRefundOrderId(e.target.value)}
+                          placeholder="UUID đơn hàng..."
+                          className="bg-card"
+                        />
+                      </Field>
+                      <Field className="gap-1.5">
+                        <FieldLabel htmlFor="new-rf-amount">Số tiền hoàn (VND)</FieldLabel>
+                        <Input
+                          id="new-rf-amount"
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={newRefundAmount}
+                          disabled={creatingRefund}
+                          onChange={(e) => setNewRefundAmount(e.target.value)}
+                          placeholder="VD: 199000"
+                          className="bg-card tabular-nums"
+                        />
+                      </Field>
+                      <Field className="gap-1.5">
+                        <FieldLabel htmlFor="new-rf-reason">Lý do hoàn tiền</FieldLabel>
+                        <Textarea
+                          id="new-rf-reason"
+                          rows={3}
+                          value={newRefundReason}
+                          disabled={creatingRefund}
+                          onChange={(e) => setNewRefundReason(e.target.value)}
+                          placeholder="Ghi rõ căn cứ tạo lệnh hoàn tiền thủ công..."
+                          className="bg-card"
+                        />
+                      </Field>
+                      <FieldError>{createRefundError}</FieldError>
+                    </FieldGroup>
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <Button type="submit" size="sm" disabled={creatingRefund}>
+                        {creatingRefund ? "Đang tạo..." : "Tạo lệnh hoàn tiền"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={creatingRefund}
+                        onClick={() => setDrawerTarget(null)}
+                      >
+                        Hủy
+                      </Button>
+                    </div>
+                  </form>
+                ) : null}
 
-        {drawerTarget?.kind === "create-refund" && canCreateRefund && (
-          <form
-            className={styles.drawerSection}
-            onSubmit={(e) => void handleCreateManualRefund(e)}
-            noValidate
-          >
-            <div className={styles.formField}>
-              <label htmlFor="new-rf-payment" className={shared.fieldLabel}>
-                Mã thanh toán (payment_id)
-              </label>
-              <input
-                id="new-rf-payment"
-                type="text"
-                data-autofocus="true"
-                className={shared.textInput}
-                value={newRefundPaymentId}
-                disabled={creatingRefund}
-                onChange={(e) => setNewRefundPaymentId(e.target.value)}
-                placeholder="UUID giao dịch thanh toán..."
-              />
-            </div>
-            <div className={styles.formField}>
-              <label htmlFor="new-rf-order" className={shared.fieldLabel}>
-                Mã đơn hàng (order_id)
-              </label>
-              <input
-                id="new-rf-order"
-                type="text"
-                className={shared.textInput}
-                value={newRefundOrderId}
-                disabled={creatingRefund}
-                onChange={(e) => setNewRefundOrderId(e.target.value)}
-                placeholder="UUID đơn hàng..."
-              />
-            </div>
-            <div className={styles.formField}>
-              <label htmlFor="new-rf-amount" className={shared.fieldLabel}>
-                Số tiền hoàn (VND)
-              </label>
-              <input
-                id="new-rf-amount"
-                type="number"
-                min={1}
-                step={1}
-                className={shared.textInput}
-                value={newRefundAmount}
-                disabled={creatingRefund}
-                onChange={(e) => setNewRefundAmount(e.target.value)}
-                placeholder="VD: 199000"
-              />
-            </div>
-            <div className={styles.formField}>
-              <label htmlFor="new-rf-reason" className={shared.fieldLabel}>
-                Lý do hoàn tiền
-              </label>
-              <textarea
-                id="new-rf-reason"
-                className={shared.textareaInput}
-                value={newRefundReason}
-                disabled={creatingRefund}
-                onChange={(e) => setNewRefundReason(e.target.value)}
-                placeholder="Ghi rõ căn cứ tạo lệnh hoàn tiền thủ công..."
-              />
-            </div>
-            {createRefundError && (
-              <p className={shared.validationError} role="alert">
-                {createRefundError}
-              </p>
-            )}
-            <div className={shared.detailButtons}>
-              <Button
-                type="submit"
-                variant="primary"
-                size="sm"
-                shape="app"
-                loading={creatingRefund}
-              >
-                Tạo lệnh hoàn tiền
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                shape="app"
-                disabled={creatingRefund}
-                onClick={() => setDrawerTarget(null)}
-              >
-                Hủy
-              </Button>
-            </div>
-          </form>
-        )}
+                {drawerTarget.kind === "needs-review" ? (
+                  <>
+                    <DetailGrid>
+                      <DetailItem label="Mã đơn hàng" numeric>
+                        {drawerTarget.order.order_code}
+                      </DetailItem>
+                      <DetailItem label="Tổng thanh toán" numeric>
+                        {formatVnd(drawerTarget.order.total_payable_vnd)}
+                      </DetailItem>
+                      <DetailItem label="Phương thức thanh toán">
+                        {formatAdminOrderPaymentDisplay(drawerTarget.order)}
+                      </DetailItem>
+                      <DetailItem label="Mã vận đơn" numeric>
+                        {drawerTarget.order.tracking_code || EMPTY_DASH}
+                      </DetailItem>
+                      <DetailItem label="Gian hàng" numeric>
+                        {drawerTarget.order.shop_id}
+                      </DetailItem>
+                      <DetailItem label="Người mua" numeric>
+                        {drawerTarget.order.buyer_id}
+                      </DetailItem>
+                    </DetailGrid>
 
-        {drawerTarget?.kind === "needs-review" && (
-          <div className={styles.sectionStack}>
-            <div className={shared.detailWell}>
-              <div className={shared.detailGrid}>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Mã đơn hàng</span>
-                  <span className={`${shared.detailVal} num`}>{drawerTarget.order.order_code}</span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Tổng thanh toán</span>
-                  <span className={`${shared.detailVal} num`}>
-                    {formatVnd(drawerTarget.order.total_payable_vnd)}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Phương thức thanh toán</span>
-                  <span className={shared.detailValPlain}>
-                    {formatAdminOrderPaymentDisplay(drawerTarget.order)}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Mã vận đơn</span>
-                  <span className={`${shared.detailValPlain} num`}>
-                    {drawerTarget.order.tracking_code || EMPTY_DASH}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Gian hàng</span>
-                  <span className={`${shared.detailValPlain} num`}>
-                    {drawerTarget.order.shop_id}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Người mua</span>
-                  <span className={`${shared.detailValPlain} num`}>
-                    {drawerTarget.order.buyer_id}
-                  </span>
-                </div>
+                    {canResolveOrderReview ? (
+                      <form
+                        className="space-y-4 rounded-xl border border-border bg-card p-4"
+                        onSubmit={(e) => void handleResolveOrderReview(e, drawerTarget.order)}
+                        noValidate
+                      >
+                        <h3 className="text-sm font-semibold text-foreground">
+                          Đánh dấu đã rà soát xong
+                        </h3>
+                        <FieldGroup className="gap-3">
+                          <Field className="gap-1.5">
+                            <FieldLabel htmlFor="ord-review-note">Ghi chú vận hành</FieldLabel>
+                            <Textarea
+                              id="ord-review-note"
+                              rows={3}
+                              value={orderReviewNote}
+                              disabled={orderReviewBusy}
+                              onChange={(e) => setOrderReviewNote(e.target.value)}
+                              placeholder="Ghi kết quả kiểm tra vận đơn và phương án đã xử lý..."
+                              className="bg-card"
+                            />
+                          </Field>
+                          <FieldError>{orderReviewError}</FieldError>
+                        </FieldGroup>
+                        <Button type="submit" size="sm" disabled={orderReviewBusy}>
+                          {orderReviewBusy ? "Đang xác nhận..." : "Xác nhận đã xử lý"}
+                        </Button>
+                      </form>
+                    ) : (
+                      <Alert>
+                        <Info className="size-4" aria-hidden="true" />
+                        <AlertDescription>
+                          Tài khoản hiện tại chỉ có quyền xem đơn cần rà soát.
+                        </AlertDescription>
+                      </Alert>
+                    )}
+                  </>
+                ) : null}
               </div>
-            </div>
-
-            {canResolveOrderReview ? (
-              <form
-                className={styles.drawerSection}
-                onSubmit={(e) => void handleResolveOrderReview(e, drawerTarget.order)}
-                noValidate
-              >
-                <h3 className={styles.drawerSectionTitle}>Đánh dấu đã rà soát xong</h3>
-                <div className={styles.formField}>
-                  <label htmlFor="ord-review-note" className={shared.fieldLabel}>
-                    Ghi chú vận hành
-                  </label>
-                  <textarea
-                    id="ord-review-note"
-                    className={shared.textareaInput}
-                    value={orderReviewNote}
-                    disabled={orderReviewBusy}
-                    onChange={(e) => setOrderReviewNote(e.target.value)}
-                    placeholder="Ghi kết quả kiểm tra vận đơn và phương án đã xử lý..."
-                  />
-                </div>
-                {orderReviewError && (
-                  <p className={shared.validationError} role="alert">
-                    {orderReviewError}
-                  </p>
-                )}
-                <div className={shared.detailButtons}>
-                  <Button
-                    type="submit"
-                    variant="primary"
-                    size="sm"
-                    shape="app"
-                    loading={orderReviewBusy}
-                  >
-                    Xác nhận đã xử lý
-                  </Button>
-                </div>
-              </form>
-            ) : (
-              <p className={styles.helperText}>
-                Tài khoản hiện tại chỉ có quyền xem đơn cần rà soát.
-              </p>
-            )}
-          </div>
-        )}
-      </AdminDrawer>
+            </>
+          ) : null}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

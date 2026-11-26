@@ -1,15 +1,41 @@
 "use client";
 
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, IconSearch, StateView } from "@/components";
+import { FileSearch, RotateCcw, Search } from "lucide-react";
+import {
+  EmptyState,
+  ErrorState,
+  IndexRowCard,
+  IndexTable,
+  PageHeader,
+  StatusBadge,
+} from "@/components/app";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Field, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { api, getErrorMessage } from "@/lib/api";
 import { ADMIN_STAFF_ROLES, getUserRoleLabel } from "@/lib/admin-rbac";
 import { formatDateTimeVi, formatInt } from "@/lib/format";
 import type { PaginatedResponse } from "@/lib/gateway-types";
 import { EMPTY_DASH, formatShortTimeDateVi } from "./adminMeta";
 import { AdminStateGate, AdminSuspenseFallback } from "./AdminStateGate";
-import { AdminDrawer } from "./AdminUi";
-import { StatusPill } from "./StatusPill";
 import type { GwAuditLog } from "./adminApiTypes";
 import { ADMIN_AUDIT_TARGET_TYPE_LABELS, getAdminAuditTargetTypeLabel } from "./types";
 import {
@@ -17,8 +43,14 @@ import {
   filterAuditLogsClientSide,
   getAdminAuditActionLabelVi,
 } from "./AdminAuditHelpers";
-import shared from "./adminShared.module.css";
-import styles from "@/app/(admin)/admin/audit-log/page.module.css";
+import {
+  DetailGrid,
+  DetailItem,
+  FilterSelect,
+  TableLoadingSkeleton,
+  TablePagination,
+  formatPageCountSummary,
+} from "./config/adminUiHelpers";
 
 const PAGE_SIZE = 20;
 
@@ -27,6 +59,14 @@ const TARGET_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
   ...Object.entries(ADMIN_AUDIT_TARGET_TYPE_LABELS).map(([value, label]) => ({
     value,
     label,
+  })),
+];
+
+const ROLE_FILTER_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "all", label: "Tất cả vai trò" },
+  ...ADMIN_STAFF_ROLES.map((r) => ({
+    value: r,
+    label: getUserRoleLabel(r),
   })),
 ];
 
@@ -175,369 +215,366 @@ function AuditLogContent({
   const afterPairs = selectedLog ? parseJsonEntries(selectedLog.after_json) : null;
 
   return (
-    <div className={shared.page}>
-      <header className={shared.titleRow}>
-        <div className={shared.titleBlock}>
-          <h1 className={shared.pageTitle}>Nhật ký kiểm toán</h1>
-        </div>
-        <div className={shared.titleActions}>
-          <span className={shared.resultCount}>{formatInt(total)} bản ghi</span>
-        </div>
-      </header>
+    <div className="space-y-5">
+      <PageHeader
+        title="Nhật ký kiểm toán"
+        badges={
+          <Badge variant="neutral" className="tabular-nums">
+            {formatInt(total)} bản ghi
+          </Badge>
+        }
+        subtitle="Chế độ chỉ đọc — tra cứu lịch sử thao tác quản trị theo phân hệ, thời gian và người thực hiện."
+      />
 
-      <form className={styles.filterForm} onSubmit={handleFilterSubmit} noValidate>
-        <div className={styles.filterField}>
-          <label htmlFor="audit-target-type" className={shared.fieldLabel}>
-            Phân hệ
-          </label>
-          <select
-            id="audit-target-type"
-            className={`${shared.toolbarSelect} ${styles.selectFull}`}
-            value={targetType}
-            onChange={(e) => setTargetType(e.target.value)}
+      <Card>
+        <CardContent className="pt-4">
+          <form
+            className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
+            onSubmit={handleFilterSubmit}
+            noValidate
           >
-            {TARGET_TYPE_OPTIONS.map((opt) => (
-              <option key={opt.value || "__all"} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </div>
+            <Field className="gap-1.5">
+              <FieldLabel htmlFor="audit-target-type">Phân hệ</FieldLabel>
+              <FilterSelect
+                id="audit-target-type"
+                value={targetType}
+                onValueChange={setTargetType}
+                options={TARGET_TYPE_OPTIONS}
+                ariaLabel="Phân hệ"
+              />
+            </Field>
 
-        <div className={styles.filterField}>
-          <label htmlFor="audit-actor-id" className={shared.fieldLabel}>
-            Mã người thực hiện (actor_id)
-          </label>
-          <input
-            id="audit-actor-id"
-            type="text"
-            className={shared.textInput}
-            value={actorId}
-            onChange={(e) => setActorId(e.target.value)}
-            placeholder="UUID người thao tác..."
-          />
-        </div>
+            <Field className="gap-1.5">
+              <FieldLabel htmlFor="audit-actor-id">Mã người thực hiện (actor_id)</FieldLabel>
+              <Input
+                id="audit-actor-id"
+                type="text"
+                value={actorId}
+                onChange={(e) => setActorId(e.target.value)}
+                placeholder="UUID người thao tác..."
+                className="bg-card"
+              />
+            </Field>
 
-        <div className={styles.filterField}>
-          <label htmlFor="audit-from-date" className={shared.fieldLabel}>
-            Từ ngày
-          </label>
-          <input
-            id="audit-from-date"
-            type="date"
-            className={shared.textInput}
-            value={fromDate}
-            onChange={(e) => setFromDate(e.target.value)}
-          />
-        </div>
+            <Field className="gap-1.5">
+              <FieldLabel htmlFor="audit-from-date">Từ ngày</FieldLabel>
+              <Input
+                id="audit-from-date"
+                type="date"
+                value={fromDate}
+                onChange={(e) => setFromDate(e.target.value)}
+                className="bg-card tabular-nums"
+              />
+            </Field>
 
-        <div className={styles.filterField}>
-          <label htmlFor="audit-to-date" className={shared.fieldLabel}>
-            Đến ngày
-          </label>
-          <input
-            id="audit-to-date"
-            type="date"
-            className={shared.textInput}
-            value={toDate}
-            onChange={(e) => setToDate(e.target.value)}
-          />
-        </div>
+            <Field className="gap-1.5">
+              <FieldLabel htmlFor="audit-to-date">Đến ngày</FieldLabel>
+              <Input
+                id="audit-to-date"
+                type="date"
+                value={toDate}
+                onChange={(e) => setToDate(e.target.value)}
+                className="bg-card tabular-nums"
+              />
+            </Field>
 
-        <div className={styles.filterField}>
-          <label htmlFor="audit-target-id" className={shared.fieldLabel}>
-            Mã đối tượng (target_id)
-          </label>
-          <input
-            id="audit-target-id"
-            type="text"
-            className={shared.textInput}
-            value={targetId}
-            onChange={(e) => setTargetId(e.target.value)}
-            placeholder="UUID gian hàng, đơn, hoàn tiền..."
-          />
-        </div>
+            <Field className="gap-1.5">
+              <FieldLabel htmlFor="audit-target-id">Mã đối tượng (target_id)</FieldLabel>
+              <Input
+                id="audit-target-id"
+                type="text"
+                value={targetId}
+                onChange={(e) => setTargetId(e.target.value)}
+                placeholder="UUID gian hàng, đơn, hoàn tiền..."
+                className="bg-card"
+              />
+            </Field>
 
-        <div className={styles.filterField}>
-          <label htmlFor="audit-action-query" className={shared.fieldLabel}>
-            Lọc hành động / lý do (trang hiện tại)
-          </label>
-          <div className={shared.searchWrap}>
-            <span className={shared.searchIcon}>
-              <IconSearch size={14} />
-            </span>
-            <input
-              id="audit-action-query"
-              type="search"
-              className={shared.toolbarSearch}
-              value={actionQuery}
-              onChange={(e) => setActionQuery(e.target.value)}
-              placeholder="Tên hành động, lý do..."
-            />
-          </div>
-        </div>
+            <Field className="gap-1.5 sm:col-span-2 lg:col-span-2">
+              <FieldLabel htmlFor="audit-action-query">
+                Lọc hành động / lý do (trang hiện tại)
+              </FieldLabel>
+              <div className="relative">
+                <Search
+                  className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <Input
+                  id="audit-action-query"
+                  type="search"
+                  value={actionQuery}
+                  onChange={(e) => setActionQuery(e.target.value)}
+                  placeholder="Tên hành động, lý do..."
+                  className="bg-card pl-8"
+                />
+              </div>
+            </Field>
 
-        <div className={styles.filterField}>
-          <label htmlFor="audit-role-filter" className={shared.fieldLabel}>
-            Vai trò thực hiện
-          </label>
-          <select
-            id="audit-role-filter"
-            className={`${shared.toolbarSelect} ${styles.selectFull}`}
-            value={roleFilter}
-            onChange={(e) => setRoleFilter(e.target.value)}
-          >
-            <option value="all">Tất cả vai trò</option>
-            {ADMIN_STAFF_ROLES.map((r) => (
-              <option key={r} value={r}>
-                {getUserRoleLabel(r)}
-              </option>
-            ))}
-          </select>
-        </div>
+            <Field className="gap-1.5">
+              <FieldLabel htmlFor="audit-role-filter">Vai trò thực hiện</FieldLabel>
+              <FilterSelect
+                id="audit-role-filter"
+                value={roleFilter}
+                onValueChange={setRoleFilter}
+                options={ROLE_FILTER_OPTIONS}
+                ariaLabel="Vai trò thực hiện"
+              />
+            </Field>
 
-        <div className={styles.filterActions}>
-          <span className={shared.resultCount}>
-            Hiển thị {formatInt(filtered.length)} / {formatInt(logs.length)} bản ghi trang này
-          </span>
-          <div className={styles.filterBtns}>
-            <Button type="submit" variant="primary" size="sm" shape="app" loading={loading}>
-              Áp dụng bộ lọc
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              shape="app"
-              disabled={loading}
-              onClick={handleResetFilters}
-            >
-              Đặt lại
-            </Button>
-          </div>
-        </div>
-      </form>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 sm:col-span-2 lg:col-span-4">
+              <span className="text-[13px] text-muted-foreground tabular-nums">
+                Hiển thị {formatInt(filtered.length)} / {formatInt(logs.length)} bản ghi trang này
+              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={loading}
+                  onClick={handleResetFilters}
+                >
+                  <RotateCcw className="size-3.5" aria-hidden="true" />
+                  <span>Đặt lại</span>
+                </Button>
+                <Button type="submit" size="sm" disabled={loading}>
+                  {loading ? "Đang lọc..." : "Áp dụng bộ lọc"}
+                </Button>
+              </div>
+            </div>
+          </form>
+        </CardContent>
+      </Card>
 
       {loadError ? (
-        <StateView
-          kind="error"
-          surface="app"
+        <ErrorState
           title="Không thể tải nhật ký kiểm toán"
-          message={loadError}
-          actionLabel="Thử lại"
-          onAction={() => void fetchLogs({ targetType, actorId, targetId, fromDate, toDate, page })}
+          description={loadError}
+          onRetry={() => void fetchLogs({ targetType, actorId, targetId, fromDate, toDate, page })}
         />
       ) : loading ? (
-        <div className={shared.stateWrap}>
-          <StateView kind="loading" surface="app" title="Đang tải nhật ký kiểm toán..." rows={6} />
-        </div>
+        <TableLoadingSkeleton rows={6} label="Đang tải nhật ký kiểm toán..." />
       ) : filtered.length === 0 ? (
-        <p className={shared.emptyRow}>Không tìm thấy bản ghi kiểm toán phù hợp.</p>
+        <EmptyState
+          icon={FileSearch}
+          title="Không tìm thấy bản ghi kiểm toán phù hợp"
+          description="Thử thay đổi khoảng ngày, phân hệ hoặc từ khóa tìm kiếm để xem thêm bản ghi."
+          action={
+            <Button type="button" variant="outline" size="sm" onClick={handleResetFilters}>
+              Đặt lại
+            </Button>
+          }
+        />
       ) : (
-        <>
-          <div className={shared.tableWrap}>
-            <table className={shared.dataTable}>
-              <thead>
-                <tr>
-                  <th>Thời gian</th>
-                  <th>Người thực hiện</th>
-                  <th>Phân hệ</th>
-                  <th>Hành động &amp; lý do</th>
-                  <th className={shared.colNum}>Đối tượng</th>
-                </tr>
-              </thead>
-              <tbody>
+        <IndexTable
+          footer={
+            totalPages > 1 ? (
+              <TablePagination
+                page={page}
+                totalPages={totalPages}
+                summary={formatPageCountSummary(page, totalPages, total, "bản ghi")}
+                disabled={loading}
+                onPageChange={handlePageChange}
+              />
+            ) : (
+              <span className="tabular-nums">
+                Hiển thị {formatInt(filtered.length)} bản ghi (tổng {formatInt(total)})
+              </span>
+            )
+          }
+        >
+          <div className="hidden md:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Thời gian</TableHead>
+                  <TableHead>Người thực hiện</TableHead>
+                  <TableHead>Phân hệ</TableHead>
+                  <TableHead>Hành động &amp; lý do</TableHead>
+                  <TableHead className="text-right">Đối tượng</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {filtered.map((log) => {
                   const selected = selectedLog?.id === log.id;
                   const targetLabel = getAdminAuditTargetTypeLabel(log.target_type);
                   return (
-                    <tr
+                    <TableRow
                       key={log.id}
-                      className={`${shared.rowInteractive} ${selected ? shared.rowSelected : ""}`}
+                      data-state={selected ? "selected" : undefined}
+                      className="cursor-pointer"
                       onClick={() => setSelectedLog(log)}
                     >
-                      <td className={styles.timeCol}>
+                      <TableCell className="text-[13px] text-muted-foreground tabular-nums">
                         {log.created_at ? formatDateTimeVi(log.created_at) : EMPTY_DASH}
-                      </td>
-                      <td>
-                        <div className={shared.cellPrimary}>{getUserRoleLabel(log.actor_role)}</div>
-                        <div className={shared.cellSub}>{log.actor_id.slice(0, 12)}</div>
-                      </td>
-                      <td>
-                        <StatusPill label={targetLabel} tone="neutral" />
-                      </td>
-                      <td className={styles.summaryCol}>
+                      </TableCell>
+                      <TableCell>
+                        <div className="font-medium text-foreground">
+                          {getUserRoleLabel(log.actor_role)}
+                        </div>
+                        <div className="text-xs text-muted-foreground tabular-nums">
+                          {log.actor_id.slice(0, 12)}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <StatusBadge tone="neutral">{targetLabel}</StatusBadge>
+                      </TableCell>
+                      <TableCell className="max-w-[440px] whitespace-normal">
                         <button
                           type="button"
-                          className={shared.rowTriggerBtn}
+                          className="flex flex-col items-start text-left focus-visible:underline focus-visible:outline-none"
                           onClick={(e) => {
                             e.stopPropagation();
                             setSelectedLog(log);
                           }}
                         >
-                          <span className={shared.cellPrimary}>
+                          <span className="font-medium text-foreground">
                             {getAdminAuditActionLabelVi(log.action)}
                           </span>
-                          <span className={shared.cellSub}>{log.reason || log.action}</span>
+                          <span className="line-clamp-2 text-xs text-muted-foreground">
+                            {log.reason || log.action}
+                          </span>
                         </button>
-                      </td>
-                      <td className={styles.targetCol}>
-                        <div className={shared.cellPrimary}>{log.target_id.slice(0, 12)}</div>
-                        <div className={shared.cellSub}>{log.ip_address || EMPTY_DASH}</div>
-                      </td>
-                    </tr>
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        <div className="font-medium text-foreground">
+                          {log.target_id.slice(0, 12)}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {log.ip_address || EMPTY_DASH}
+                        </div>
+                      </TableCell>
+                    </TableRow>
                   );
                 })}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
 
-          <div className={shared.mobileList}>
+          <div className="md:hidden">
             {filtered.map((log) => {
               const targetLabel = getAdminAuditTargetTypeLabel(log.target_type);
               return (
-                <article key={log.id} className={shared.mobileItem}>
-                  <button
-                    type="button"
-                    className={shared.mobileItemBtn}
-                    onClick={() => setSelectedLog(log)}
-                  >
-                    <span className={shared.mobileLine1}>
-                      <span className={shared.mobileIdentity}>
-                        {getAdminAuditActionLabelVi(log.action)}
-                      </span>
-                      <span className={shared.mobileMetric}>
-                        {log.created_at ? formatShortTimeDateVi(log.created_at) : EMPTY_DASH}
-                      </span>
-                    </span>
-                    <span className={shared.mobileLine2}>
-                      <span className={shared.mobileMetaText}>
-                        {[getUserRoleLabel(log.actor_role), log.target_id.slice(0, 10)]
-                          .filter(Boolean)
-                          .join(", ")}
-                      </span>
-                      <StatusPill label={targetLabel} tone="neutral" />
-                    </span>
-                    {log.reason && <span className={styles.mobileAuditSummary}>{log.reason}</span>}
-                  </button>
-                </article>
+                <IndexRowCard
+                  key={log.id}
+                  title={getAdminAuditActionLabelVi(log.action)}
+                  badge={<StatusBadge tone="neutral">{targetLabel}</StatusBadge>}
+                  meta={
+                    <div className="flex w-full flex-col gap-0.5">
+                      <div className="flex flex-wrap items-center gap-x-2">
+                        <span>{getUserRoleLabel(log.actor_role)}</span>
+                        <span>·</span>
+                        <span className="tabular-nums">
+                          {log.created_at ? formatShortTimeDateVi(log.created_at) : EMPTY_DASH}
+                        </span>
+                        {log.target_id ? (
+                          <>
+                            <span>·</span>
+                            <span className="tabular-nums">{log.target_id.slice(0, 10)}</span>
+                          </>
+                        ) : null}
+                      </div>
+                      {log.reason ? (
+                        <span className="line-clamp-2 text-foreground/85">{log.reason}</span>
+                      ) : null}
+                    </div>
+                  }
+                  onClick={() => setSelectedLog(log)}
+                />
               );
             })}
           </div>
-
-          {totalPages > 1 && (
-            <div className={styles.paginationRow}>
-              <span className={styles.paginationInfo}>
-                Trang {formatInt(page)} / {formatInt(totalPages)} ({formatInt(total)} bản ghi)
-              </span>
-              <div className={styles.paginationBtns}>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  shape="app"
-                  disabled={page <= 1 || loading}
-                  onClick={() => handlePageChange(page - 1)}
-                >
-                  Trang trước
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  shape="app"
-                  disabled={page >= totalPages || loading}
-                  onClick={() => handlePageChange(page + 1)}
-                >
-                  Trang sau
-                </Button>
-              </div>
-            </div>
-          )}
-        </>
+        </IndexTable>
       )}
 
-      <AdminDrawer
-        open={Boolean(selectedLog)}
-        onClose={() => setSelectedLog(null)}
-        title={selectedLog ? getAdminAuditActionLabelVi(selectedLog.action) : ""}
-        subtitle={selectedLog?.created_at ? formatDateTimeVi(selectedLog.created_at) : undefined}
-        headerBadge={
-          selectedLog ? (
-            <StatusPill
-              label={getAdminAuditTargetTypeLabel(selectedLog.target_type)}
-              tone="neutral"
-            />
-          ) : undefined
-        }
-      >
-        {selectedLog && (
-          <>
-            <div className={shared.detailWell}>
-              <div className={shared.detailGrid}>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Mã hành động</span>
-                  <span className={`${shared.detailVal} num`}>{selectedLog.action}</span>
+      <Sheet open={Boolean(selectedLog)} onOpenChange={(open) => !open && setSelectedLog(null)}>
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-lg">
+          {selectedLog ? (
+            <>
+              <SheetHeader className="border-b border-border pb-4">
+                <div className="flex flex-wrap items-center gap-2 pr-6">
+                  <SheetTitle>{getAdminAuditActionLabelVi(selectedLog.action)}</SheetTitle>
+                  <StatusBadge tone="neutral">
+                    {getAdminAuditTargetTypeLabel(selectedLog.target_type)}
+                  </StatusBadge>
                 </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Vai trò thực hiện</span>
-                  <span className={shared.detailVal}>
+                {selectedLog.created_at ? (
+                  <SheetDescription className="tabular-nums">
+                    {formatDateTimeVi(selectedLog.created_at)}
+                  </SheetDescription>
+                ) : null}
+              </SheetHeader>
+
+              <div className="space-y-4 px-4 pb-6">
+                <DetailGrid>
+                  <DetailItem label="Mã hành động" numeric>
+                    {selectedLog.action}
+                  </DetailItem>
+                  <DetailItem label="Vai trò thực hiện">
                     {getUserRoleLabel(selectedLog.actor_role)}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Mã người thực hiện</span>
-                  <span className={`${shared.detailValPlain} num`}>{selectedLog.actor_id}</span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Mã đối tượng</span>
-                  <span className={`${shared.detailValPlain} num`}>{selectedLog.target_id}</span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Địa chỉ IP</span>
-                  <span className={`${shared.detailValPlain} num`}>
+                  </DetailItem>
+                  <DetailItem label="Mã người thực hiện" numeric>
+                    {selectedLog.actor_id}
+                  </DetailItem>
+                  <DetailItem label="Mã đối tượng" numeric>
+                    {selectedLog.target_id}
+                  </DetailItem>
+                  <DetailItem label="Địa chỉ IP" numeric>
                     {selectedLog.ip_address || EMPTY_DASH}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Mã bản ghi</span>
-                  <span className={`${shared.detailValPlain} num`}>{selectedLog.id}</span>
-                </div>
-                <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                  <span className={shared.detailKey}>Lý do ghi nhận</span>
-                  <span className={shared.detailValPlain}>{selectedLog.reason || EMPTY_DASH}</span>
-                </div>
-              </div>
-            </div>
+                  </DetailItem>
+                  <DetailItem label="Mã bản ghi" numeric>
+                    {selectedLog.id}
+                  </DetailItem>
+                  <DetailItem label="Lý do ghi nhận" wide>
+                    {selectedLog.reason || EMPTY_DASH}
+                  </DetailItem>
+                </DetailGrid>
 
-            {beforePairs && (
-              <div className={styles.diffBox}>
-                <span className={shared.fieldLabel}>Trạng thái trước thay đổi</span>
-                <dl className={styles.diffList}>
-                  {beforePairs.map(([k, v]) => (
-                    <div key={k} className={styles.diffRow}>
-                      <dt className={styles.diffKey}>{k}</dt>
-                      <dd className={`${styles.diffVal} num`}>{v}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </div>
-            )}
+                {beforePairs ? (
+                  <div className="space-y-2 rounded-lg border border-border bg-muted/35 p-3.5">
+                    <h3 className="text-xs font-semibold text-foreground">
+                      Trạng thái trước thay đổi
+                    </h3>
+                    <dl className="divide-y divide-border">
+                      {beforePairs.map(([k, v]) => (
+                        <div
+                          key={k}
+                          className="grid grid-cols-1 gap-1 py-1.5 text-[13px] first:pt-0 last:pb-0 sm:grid-cols-[minmax(110px,140px)_minmax(0,1fr)] sm:gap-2.5"
+                        >
+                          <dt className="text-muted-foreground [overflow-wrap:anywhere]">{k}</dt>
+                          <dd className="text-foreground tabular-nums [overflow-wrap:anywhere]">
+                            {v}
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </div>
+                ) : null}
 
-            {afterPairs && (
-              <div className={styles.diffBox}>
-                <span className={shared.fieldLabel}>Trạng thái sau thay đổi</span>
-                <dl className={styles.diffList}>
-                  {afterPairs.map(([k, v]) => (
-                    <div key={k} className={styles.diffRow}>
-                      <dt className={styles.diffKey}>{k}</dt>
-                      <dd className={`${styles.diffVal} num`}>{v}</dd>
-                    </div>
-                  ))}
-                </dl>
+                {afterPairs ? (
+                  <div className="space-y-2 rounded-lg border border-border bg-muted/35 p-3.5">
+                    <h3 className="text-xs font-semibold text-foreground">
+                      Trạng thái sau thay đổi
+                    </h3>
+                    <dl className="divide-y divide-border">
+                      {afterPairs.map(([k, v]) => (
+                        <div
+                          key={k}
+                          className="grid grid-cols-1 gap-1 py-1.5 text-[13px] first:pt-0 last:pb-0 sm:grid-cols-[minmax(110px,140px)_minmax(0,1fr)] sm:gap-2.5"
+                        >
+                          <dt className="text-muted-foreground [overflow-wrap:anywhere]">{k}</dt>
+                          <dd className="text-foreground tabular-nums [overflow-wrap:anywhere]">
+                            {v}
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </div>
+                ) : null}
               </div>
-            )}
-          </>
-        )}
-      </AdminDrawer>
+            </>
+          ) : null}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

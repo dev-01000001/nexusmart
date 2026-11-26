@@ -1,7 +1,52 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
-import { Button, IconSearch, StateView } from "@/components";
+import { AlertCircle, CheckCircle2, Info, RefreshCw, Search, UserPlus, Users } from "lucide-react";
+import {
+  EmptyState,
+  ErrorState,
+  IndexRowCard,
+  IndexTable,
+  Money,
+  StatusBadge,
+  orderStatusTone,
+} from "@/components/app";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import {
   ALL_USER_ROLES,
   ASSIGNABLE_USER_ROLES,
@@ -11,7 +56,7 @@ import {
   roleHasCapability,
 } from "@/lib/admin-rbac";
 import { api, getErrorMessage } from "@/lib/api";
-import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
+import { formatDateTimeVi, formatInt } from "@/lib/format";
 import type {
   GatewayCreateStaffResponse,
   GatewayUser,
@@ -22,19 +67,26 @@ import type {
 import { getPaymentMethodLabel } from "@/features/account/orderMeta";
 import { EMPTY_DASH, formatShortTimeDateVi } from "./adminMeta";
 import { useAdminContext } from "./AdminShell";
-import { AdminConfirmDialog, AdminDrawer } from "./AdminUi";
 import { useAdminUser } from "./AdminUserContext";
-import { StatusPill } from "./StatusPill";
 import {
   ADMIN_USER_ROLE_LABELS,
   formatUserActivityEventType,
   getAdminOrderStatusMeta,
   getAdminUserStatusMeta,
 } from "./types";
-import shared from "./adminShared.module.css";
-import styles from "@/app/(admin)/admin/cau-hinh/page.module.css";
+import {
+  ConfirmActionDialog,
+  DetailGrid,
+  DetailItem,
+  FilterSelect,
+  TableLoadingSkeleton,
+  TablePagination,
+  adminUserStatusTone,
+  formatPageCountSummary,
+} from "./config/adminUiHelpers";
 
 const PAGE_SIZE = 20;
+const ALL_ACT_SENTINEL = "__all_act__";
 
 export interface AdminUsersPanelProps {
   initialQuery?: string;
@@ -72,7 +124,7 @@ export function AdminUsersPanel({ initialQuery = "" }: AdminUsersPanelProps) {
   const [staffError, setStaffError] = useState<string | null>(null);
   const [staffSuccessMsg, setStaffSuccessMsg] = useState<string | null>(null);
 
-  // Selected user drawer & mutations
+  // Selected user Sheet & mutations
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [reasonDraft, setReasonDraft] = useState("");
   const [targetRoleDraft, setTargetRoleDraft] = useState<UserRole>("buyer");
@@ -295,626 +347,636 @@ export function AdminUsersPanel({ initialQuery = "" }: AdminUsersPanelProps) {
     canActOnTargetRole(currentRole, selectedUser!.role);
 
   return (
-    <div className={shared.sectionStack}>
-      <section className={shared.panel} aria-labelledby="admin-users-heading">
-        <div className={shared.panelHeader}>
-          <h2 id="admin-users-heading" className={shared.panelTitle}>
-            Người dùng &amp; nhân sự ({formatInt(total)})
-          </h2>
-          <div className={shared.detailButtons}>
-            {canCreateStaff && (
-              <Button
-                variant={showCreateStaff ? "outline" : "primary"}
-                size="sm"
-                shape="app"
-                onClick={() => {
-                  setShowCreateStaff((v) => !v);
-                  setStaffError(null);
-                  setStaffSuccessMsg(null);
-                }}
-              >
-                {showCreateStaff ? "Đóng biểu mẫu" : "Tạo nhân viên"}
-              </Button>
-            )}
-            <Button variant="outline" size="sm" shape="app" onClick={() => void loadUsers()}>
-              Làm mới
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 id="admin-users-heading" className="text-sm font-semibold text-foreground">
+          Người dùng &amp; nhân sự ({formatInt(total)})
+        </h2>
+        <div className="flex flex-wrap items-center gap-2">
+          {canCreateStaff ? (
+            <Button
+              type="button"
+              variant={showCreateStaff ? "outline" : "default"}
+              size="sm"
+              onClick={() => {
+                setShowCreateStaff((v) => !v);
+                setStaffError(null);
+                setStaffSuccessMsg(null);
+              }}
+            >
+              <UserPlus className="size-4" aria-hidden="true" />
+              <span>{showCreateStaff ? "Đóng biểu mẫu" : "Tạo nhân viên"}</span>
             </Button>
-          </div>
+          ) : null}
+          <Button type="button" variant="outline" size="sm" onClick={() => void loadUsers()}>
+            <RefreshCw className="size-3.5" aria-hidden="true" />
+            <span>Làm mới</span>
+          </Button>
         </div>
+      </div>
 
-        {/* Create internal staff form — strictly super_admin, zero password input (F14) */}
-        {canCreateStaff && showCreateStaff && (
-          <form
-            className={shared.detailWell}
-            style={{ marginBottom: 16 }}
-            onSubmit={(e) => void handleCreateStaff(e)}
-            noValidate
-          >
-            <div className={shared.detailHeader}>
-              <div>
-                <h3 className={shared.detailHeading}>Tạo tài khoản nhân viên</h3>
-                <p className={shared.cellSub}>
-                  Hệ thống tự gửi email liên kết đặt mật khẩu tới nhân viên.
-                </p>
-              </div>
-            </div>
+      {/* Create internal staff form — strictly super_admin, zero password input (F14) */}
+      {canCreateStaff && showCreateStaff ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Tạo tài khoản nhân viên</CardTitle>
+            <CardDescription>
+              Hệ thống tự gửi email liên kết đặt mật khẩu tới nhân viên.
+            </CardDescription>
+          </CardHeader>
+          <form onSubmit={(e) => void handleCreateStaff(e)} noValidate>
+            <CardContent className="space-y-4">
+              <FieldGroup className="gap-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <Field className="gap-1.5">
+                    <FieldLabel htmlFor="staff-fullname">Họ và tên</FieldLabel>
+                    <Input
+                      id="staff-fullname"
+                      type="text"
+                      value={staffFullName}
+                      onChange={(e) => setStaffFullName(e.target.value)}
+                      placeholder="Nguyễn Văn An"
+                      required
+                      className="bg-card"
+                    />
+                  </Field>
 
-            <div className={shared.detailGrid}>
-              <div className={shared.detailField}>
-                <label htmlFor="staff-fullname" className={shared.fieldLabel}>
-                  Họ và tên
-                </label>
-                <input
-                  id="staff-fullname"
-                  type="text"
-                  className={shared.textInput}
-                  value={staffFullName}
-                  onChange={(e) => setStaffFullName(e.target.value)}
-                  placeholder="Nguyễn Văn An"
-                  required
-                />
-              </div>
-              <div className={shared.detailField}>
-                <label htmlFor="staff-email" className={shared.fieldLabel}>
-                  Email công việc
-                </label>
-                <input
-                  id="staff-email"
-                  type="email"
-                  className={shared.textInput}
-                  value={staffEmail}
-                  onChange={(e) => setStaffEmail(e.target.value)}
-                  placeholder="nhanvien@nexusmart.vn"
-                  required
-                />
-              </div>
-              <div className={shared.detailField}>
-                <label htmlFor="staff-phone" className={shared.fieldLabel}>
-                  Số điện thoại (tuỳ chọn)
-                </label>
-                <input
-                  id="staff-phone"
-                  type="tel"
-                  className={shared.textInput}
-                  value={staffPhone}
-                  onChange={(e) => setStaffPhone(e.target.value)}
-                  placeholder="0912345678"
-                />
-              </div>
-              <div className={shared.detailField}>
-                <label htmlFor="staff-role" className={shared.fieldLabel}>
-                  Vai trò nội bộ
-                </label>
-                <select
-                  id="staff-role"
-                  className={shared.formSelect}
-                  value={staffRole}
-                  onChange={(e) => setStaffRole(e.target.value as CreatableStaffRole)}
-                >
-                  {CREATABLE_STAFF_ROLES.map((r) => (
-                    <option key={r} value={r}>
-                      {ADMIN_USER_ROLE_LABELS[r] ?? r}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
+                  <Field className="gap-1.5">
+                    <FieldLabel htmlFor="staff-email">Email công việc</FieldLabel>
+                    <Input
+                      id="staff-email"
+                      type="email"
+                      value={staffEmail}
+                      onChange={(e) => setStaffEmail(e.target.value)}
+                      placeholder="nhanvien@nexusmart.vn"
+                      required
+                      className="bg-card"
+                    />
+                  </Field>
 
-            {staffError && (
-              <p className={shared.validationError} role="alert">
-                {staffError}
-              </p>
-            )}
-            {staffSuccessMsg && (
-              <p className={shared.savedStamp} role="status">
-                {staffSuccessMsg}
-              </p>
-            )}
+                  <Field className="gap-1.5">
+                    <FieldLabel htmlFor="staff-phone">Số điện thoại (tuỳ chọn)</FieldLabel>
+                    <Input
+                      id="staff-phone"
+                      type="tel"
+                      value={staffPhone}
+                      onChange={(e) => setStaffPhone(e.target.value)}
+                      placeholder="0912345678"
+                      className="bg-card tabular-nums"
+                    />
+                  </Field>
 
-            <div className={shared.detailButtons}>
-              <Button type="submit" variant="primary" size="sm" shape="app" loading={staffBusy}>
-                Tạo &amp; gửi email đặt mật khẩu
+                  <Field className="gap-1.5">
+                    <FieldLabel htmlFor="staff-role">Vai trò nội bộ</FieldLabel>
+                    <Select
+                      value={staffRole}
+                      onValueChange={(v) => setStaffRole(v as CreatableStaffRole)}
+                    >
+                      <SelectTrigger id="staff-role" className="w-full bg-card">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {CREATABLE_STAFF_ROLES.map((r) => (
+                          <SelectItem key={r} value={r}>
+                            {ADMIN_USER_ROLE_LABELS[r] ?? r}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                </div>
+
+                <FieldError>{staffError}</FieldError>
+
+                {staffSuccessMsg ? (
+                  <Alert role="status">
+                    <CheckCircle2 className="size-4 text-badge-success-ink" aria-hidden="true" />
+                    <AlertDescription>{staffSuccessMsg}</AlertDescription>
+                  </Alert>
+                ) : null}
+              </FieldGroup>
+            </CardContent>
+            <CardFooter className="justify-end border-t border-border pt-3.5">
+              <Button type="submit" size="sm" disabled={staffBusy}>
+                {staffBusy ? "Đang tạo..." : "Tạo & gửi email đặt mật khẩu"}
               </Button>
-            </div>
+            </CardFooter>
           </form>
-        )}
+        </Card>
+      ) : null}
 
+      <IndexTable
+        footer={
+          users.length > 0 ? (
+            <TablePagination
+              page={page}
+              totalPages={totalPages}
+              summary={formatPageCountSummary(page, totalPages, total, "tài khoản")}
+              disabled={loading}
+              onPageChange={(nextPage) => setPage(nextPage)}
+            />
+          ) : undefined
+        }
+      >
         <form
-          className={shared.toolbar}
+          className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/35 px-4 py-2.5"
           onSubmit={(e) => {
             e.preventDefault();
             setPage(1);
             setAppliedQuery(queryInput.trim());
           }}
         >
-          <div className={shared.toolbarLeft}>
-            <div className={shared.searchWrap}>
-              <span className={shared.searchIcon}>
-                <IconSearch size={14} />
-              </span>
-              <input
-                type="search"
-                className={shared.toolbarSearch}
-                value={queryInput}
-                onChange={(e) => setQueryInput(e.target.value)}
-                placeholder="Tìm họ tên, email, SĐT..."
-                aria-label="Tìm người dùng"
-              />
-            </div>
-            <select
-              className={shared.toolbarSelect}
-              value={roleFilter}
-              onChange={(e) => {
-                setRoleFilter(e.target.value);
-                setPage(1);
-              }}
-              aria-label="Lọc vai trò"
-            >
-              <option value="">Tất cả vai trò</option>
-              {ALL_USER_ROLES.map((r) => (
-                <option key={r} value={r}>
-                  {ADMIN_USER_ROLE_LABELS[r] ?? r}
-                </option>
-              ))}
-            </select>
-            <select
-              className={shared.toolbarSelect}
-              value={statusFilter}
-              onChange={(e) => {
-                setStatusFilter(e.target.value);
-                setPage(1);
-              }}
-              aria-label="Lọc trạng thái tài khoản"
-            >
-              <option value="">Tất cả trạng thái</option>
-              <option value="ACTIVE">Hoạt động</option>
-              <option value="PENDING_VERIFICATION">Chờ xác thực</option>
-              <option value="LOCKED">Đã khóa</option>
-            </select>
-            <Button type="submit" variant="primary" size="sm" shape="app">
-              Tìm
-            </Button>
+          <div className="relative min-w-0 flex-1 sm:max-w-xs">
+            <Search
+              className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <Input
+              type="search"
+              value={queryInput}
+              onChange={(e) => setQueryInput(e.target.value)}
+              placeholder="Tìm họ tên, email, SĐT..."
+              aria-label="Tìm người dùng"
+              className="h-9 bg-card pl-8"
+            />
           </div>
-          <span className={shared.resultCount}>
-            Trang {formatInt(page)} / {formatInt(totalPages)}
-          </span>
+
+          <div className="w-full sm:w-44">
+            <FilterSelect
+              value={roleFilter}
+              onValueChange={(v) => {
+                setRoleFilter(v);
+                setPage(1);
+              }}
+              ariaLabel="Lọc vai trò"
+              options={[
+                { value: "", label: "Tất cả vai trò" },
+                ...ALL_USER_ROLES.map((r) => ({
+                  value: r,
+                  label: ADMIN_USER_ROLE_LABELS[r] ?? r,
+                })),
+              ]}
+            />
+          </div>
+
+          <div className="w-full sm:w-44">
+            <FilterSelect
+              value={statusFilter}
+              onValueChange={(v) => {
+                setStatusFilter(v);
+                setPage(1);
+              }}
+              ariaLabel="Lọc trạng thái tài khoản"
+              options={[
+                { value: "", label: "Tất cả trạng thái" },
+                { value: "ACTIVE", label: "Hoạt động" },
+                { value: "PENDING_VERIFICATION", label: "Chờ xác thực" },
+                { value: "LOCKED", label: "Đã khóa" },
+              ]}
+            />
+          </div>
+
+          <Button type="submit" size="sm">
+            Tìm
+          </Button>
         </form>
 
         {loading ? (
-          <div className={shared.stateWrap}>
-            <StateView
-              kind="loading"
-              surface="app"
-              title="Đang tải danh sách người dùng..."
-              rows={4}
-            />
+          <div className="p-4">
+            <TableLoadingSkeleton rows={4} label="Đang tải danh sách người dùng..." />
           </div>
         ) : errorMsg ? (
-          <div className={shared.stateWrap}>
-            <StateView
-              kind="error"
-              surface="app"
+          <div className="p-4">
+            <ErrorState
               title="Không thể tải danh sách người dùng"
-              message={errorMsg}
-              actionLabel="Thử lại"
-              onAction={() => void loadUsers()}
+              description={errorMsg}
+              onRetry={() => void loadUsers()}
+              className="shadow-none"
             />
           </div>
         ) : users.length === 0 ? (
-          <p className={shared.emptyRow}>Không tìm thấy tài khoản nào khớp bộ lọc.</p>
+          <div className="p-4">
+            <EmptyState
+              icon={Users}
+              title="Không tìm thấy tài khoản nào khớp bộ lọc"
+              className="shadow-none"
+            />
+          </div>
         ) : (
           <>
-            <div className={shared.tableWrap} style={{ marginTop: 14 }}>
-              <table className={shared.dataTable}>
-                <thead>
-                  <tr>
-                    <th>Tài khoản</th>
-                    <th>Vai trò</th>
-                    <th>Trạng thái</th>
-                    <th>Ngày tạo</th>
-                    <th className={shared.colAction}>Thao tác</th>
-                  </tr>
-                </thead>
-                <tbody>
+            <div className="hidden md:block">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Tài khoản</TableHead>
+                    <TableHead>Vai trò</TableHead>
+                    <TableHead>Trạng thái</TableHead>
+                    <TableHead>Ngày tạo</TableHead>
+                    <TableHead className="text-right">Thao tác</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {users.map((u) => {
                     const stMeta = getAdminUserStatusMeta(u.status);
                     const isSelected = selectedUser?.id === u.id;
                     const isSelf = u.id === currentUserId;
                     return (
-                      <tr
+                      <TableRow
                         key={u.id}
-                        className={`${shared.rowInteractive} ${isSelected ? shared.rowSelected : ""}`}
+                        data-state={isSelected ? "selected" : undefined}
+                        className="cursor-pointer"
                         onClick={() => handleOpenUser(u)}
                       >
-                        <td>
+                        <TableCell className="whitespace-normal">
                           <button
                             type="button"
-                            className={shared.rowTriggerBtn}
+                            className="flex flex-col items-start text-left focus-visible:underline focus-visible:outline-none"
                             onClick={(e) => {
                               e.stopPropagation();
                               handleOpenUser(u);
                             }}
                           >
-                            <span className={shared.cellPrimary}>
-                              {u.full_name || u.email}
-                              {isSelf && <span className={styles.selfTag}>Bạn</span>}
+                            <span className="inline-flex flex-wrap items-center gap-1.5 font-medium text-foreground">
+                              <span>{u.full_name || u.email}</span>
+                              {isSelf ? (
+                                <Badge variant="info" className="px-2 py-0 text-[11px]">
+                                  Bạn
+                                </Badge>
+                              ) : null}
                             </span>
-                            <span className={shared.cellSub}>
+                            <span className="text-xs text-muted-foreground tabular-nums">
                               {u.email}
                               {u.phone ? ` · ${u.phone}` : ""}
                             </span>
                           </button>
-                        </td>
-                        <td>{ADMIN_USER_ROLE_LABELS[u.role] ?? u.role}</td>
-                        <td>
-                          <StatusPill label={stMeta.label} tone={stMeta.tone} />
-                        </td>
-                        <td>{u.created_at ? formatDateTimeVi(u.created_at) : EMPTY_DASH}</td>
-                        <td className={shared.colAction}>
-                          <button
+                        </TableCell>
+                        <TableCell>{ADMIN_USER_ROLE_LABELS[u.role] ?? u.role}</TableCell>
+                        <TableCell>
+                          <StatusBadge tone={adminUserStatusTone(u.status)}>
+                            {stMeta.label}
+                          </StatusBadge>
+                        </TableCell>
+                        <TableCell className="text-[13px] text-muted-foreground tabular-nums">
+                          {u.created_at ? formatDateTimeVi(u.created_at) : EMPTY_DASH}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
                             type="button"
-                            className={shared.rowActionBtn}
+                            variant="outline"
+                            size="xs"
                             onClick={(e) => {
                               e.stopPropagation();
                               handleOpenUser(u);
                             }}
                           >
                             Chi tiết
-                          </button>
-                        </td>
-                      </tr>
+                          </Button>
+                        </TableCell>
+                      </TableRow>
                     );
                   })}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             </div>
 
-            <div className={shared.mobileList}>
+            <div className="md:hidden">
               {users.map((u) => {
                 const stMeta = getAdminUserStatusMeta(u.status);
                 return (
-                  <article key={u.id} className={shared.mobileItem}>
-                    <button
-                      type="button"
-                      className={shared.mobileItemBtn}
-                      onClick={() => handleOpenUser(u)}
-                    >
-                      <span className={shared.mobileLine1}>
-                        <span className={shared.mobileIdentity}>{u.full_name || u.email}</span>
-                        <StatusPill label={stMeta.label} tone={stMeta.tone} />
-                      </span>
-                      <span className={shared.mobileLine2}>
-                        <span className={shared.mobileMetaText}>
-                          {u.email} · {ADMIN_USER_ROLE_LABELS[u.role] ?? u.role}
-                        </span>
-                      </span>
-                    </button>
-                  </article>
+                  <IndexRowCard
+                    key={u.id}
+                    title={u.full_name || u.email}
+                    badge={
+                      <StatusBadge tone={adminUserStatusTone(u.status)}>{stMeta.label}</StatusBadge>
+                    }
+                    meta={
+                      <>
+                        <span>{u.email}</span>
+                        <span>·</span>
+                        <span>{ADMIN_USER_ROLE_LABELS[u.role] ?? u.role}</span>
+                      </>
+                    }
+                    onClick={() => handleOpenUser(u)}
+                  />
                 );
               })}
             </div>
-
-            <div className={styles.paginationRow}>
-              <Button
-                variant="outline"
-                size="sm"
-                shape="app"
-                disabled={page <= 1}
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-              >
-                Trang trước
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                shape="app"
-                disabled={page >= totalPages}
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              >
-                Trang sau
-              </Button>
-            </div>
           </>
         )}
-      </section>
+      </IndexTable>
 
-      {/* User inspection, RoleRank actions & Activity Log Drawer */}
-      <AdminDrawer
-        open={Boolean(selectedUser)}
-        onClose={() => setSelectedUserId(null)}
-        title={selectedUser?.full_name || selectedUser?.email || ""}
-        subtitle={
-          selectedUser
-            ? `${selectedUser.email} · ${ADMIN_USER_ROLE_LABELS[selectedUser.role] ?? selectedUser.role}`
-            : undefined
-        }
-        headerBadge={
-          selectedUser ? (
-            <StatusPill
-              label={getAdminUserStatusMeta(selectedUser.status).label}
-              tone={getAdminUserStatusMeta(selectedUser.status).tone}
-            />
-          ) : undefined
-        }
-        width="lg"
-      >
-        {selectedUser && (
-          <>
-            <div className={shared.detailWell}>
-              <div className={shared.detailGrid}>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Mã tài khoản</span>
-                  <span className={`${shared.detailValPlain} num`}>{selectedUser.id}</span>
+      {/* User inspection, RoleRank actions & Activity Log Sheet */}
+      <Sheet open={Boolean(selectedUser)} onOpenChange={(open) => !open && setSelectedUserId(null)}>
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
+          {selectedUser ? (
+            <>
+              <SheetHeader className="border-b border-border pb-4">
+                <div className="flex flex-wrap items-center gap-2 pr-6">
+                  <SheetTitle>{selectedUser.full_name || selectedUser.email}</SheetTitle>
+                  <StatusBadge tone={adminUserStatusTone(selectedUser.status)}>
+                    {getAdminUserStatusMeta(selectedUser.status).label}
+                  </StatusBadge>
                 </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Số điện thoại</span>
-                  <span className={`${shared.detailValPlain} num`}>
+                <SheetDescription>
+                  {selectedUser.email} ·{" "}
+                  {ADMIN_USER_ROLE_LABELS[selectedUser.role] ?? selectedUser.role}
+                </SheetDescription>
+              </SheetHeader>
+
+              <div className="space-y-4 px-4 pb-6">
+                <DetailGrid>
+                  <DetailItem label="Mã tài khoản" numeric>
+                    {selectedUser.id}
+                  </DetailItem>
+                  <DetailItem label="Số điện thoại" numeric>
                     {selectedUser.phone || EMPTY_DASH}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Xác thực SĐT</span>
-                  <span className={shared.detailValPlain}>
+                  </DetailItem>
+                  <DetailItem label="Xác thực SĐT">
                     {selectedUser.phone_verified ? "Đã xác thực" : "Chưa xác thực"}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Từ chối nhận COD</span>
-                  <span className={`${shared.detailVal} num`}>
+                  </DetailItem>
+                  <DetailItem label="Từ chối nhận COD" numeric>
                     {formatInt(
                       activities?.cod_rejected_count ?? selectedUser.cod_rejected_count ?? 0
                     )}
-                  </span>
-                </div>
-              </div>
+                  </DetailItem>
+                </DetailGrid>
 
-              {selectedUser.status === "LOCKED" && selectedUser.lock_reason && (
-                <p className={shared.validationError}>
-                  Lý do đang khóa: {selectedUser.lock_reason}
-                </p>
-              )}
+                {selectedUser.status === "LOCKED" && selectedUser.lock_reason ? (
+                  <Alert variant="destructive">
+                    <AlertCircle className="size-4" aria-hidden="true" />
+                    <AlertDescription>Lý do đang khóa: {selectedUser.lock_reason}</AlertDescription>
+                  </Alert>
+                ) : null}
 
-              {canModifySelectedRole || canModifySelectedStatus ? (
-                <div className={shared.detailActionBar}>
-                  <div className={shared.detailGrid}>
-                    {canModifySelectedRole && (
-                      <div className={shared.detailField}>
-                        <label htmlFor="usr-role-sel" className={shared.fieldLabel}>
-                          Đổi vai trò
-                        </label>
-                        <select
-                          id="usr-role-sel"
-                          className={shared.formSelect}
-                          value={targetRoleDraft}
-                          disabled={actionBusy || selectedUser.role === "super_admin"}
-                          onChange={(e) => setTargetRoleDraft(e.target.value as UserRole)}
+                {canModifySelectedRole || canModifySelectedStatus ? (
+                  <div className="space-y-3 rounded-lg border border-border bg-card p-4">
+                    <FieldGroup className="gap-3">
+                      {canModifySelectedRole ? (
+                        <Field className="gap-1.5">
+                          <FieldLabel htmlFor="usr-role-sel">Đổi vai trò</FieldLabel>
+                          <Select
+                            value={targetRoleDraft}
+                            disabled={actionBusy || selectedUser.role === "super_admin"}
+                            onValueChange={(v) => setTargetRoleDraft(v as UserRole)}
+                          >
+                            <SelectTrigger id="usr-role-sel" className="w-full bg-card">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {ASSIGNABLE_USER_ROLES.map((r) => (
+                                <SelectItem key={r} value={r}>
+                                  {ADMIN_USER_ROLE_LABELS[r] ?? r}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </Field>
+                      ) : null}
+
+                      <Field className="gap-1.5">
+                        <FieldLabel htmlFor="usr-reason">
+                          Lý do thao tác (tối thiểu 4 ký tự)
+                        </FieldLabel>
+                        <Input
+                          id="usr-reason"
+                          type="text"
+                          value={reasonDraft}
+                          onChange={(e) => setReasonDraft(e.target.value)}
+                          placeholder="Nhập lý do khóa/mở hoặc đổi vai trò..."
+                          className="bg-card"
+                        />
+                      </Field>
+                    </FieldGroup>
+
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      {canModifySelectedRole ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={actionBusy}
+                          onClick={() => void handleUpdateRole(selectedUser)}
                         >
-                          {ASSIGNABLE_USER_ROLES.map((r) => (
-                            <option key={r} value={r}>
-                              {ADMIN_USER_ROLE_LABELS[r] ?? r}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
-                    <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                      <label htmlFor="usr-reason" className={shared.fieldLabel}>
-                        Lý do thao tác (tối thiểu 4 ký tự)
-                      </label>
-                      <input
-                        id="usr-reason"
-                        type="text"
-                        className={shared.textInput}
-                        value={reasonDraft}
-                        onChange={(e) => setReasonDraft(e.target.value)}
-                        placeholder="Nhập lý do khóa/mở hoặc đổi vai trò..."
-                      />
+                          Lưu vai trò mới
+                        </Button>
+                      ) : null}
+                      {canModifySelectedStatus ? (
+                        selectedUser.status === "LOCKED" ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={actionBusy}
+                            onClick={() => void handleUpdateStatus(selectedUser, "ACTIVE")}
+                          >
+                            Mở khóa tài khoản
+                          </Button>
+                        ) : (
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="sm"
+                            disabled={actionBusy}
+                            onClick={() => handleRequestLock(selectedUser)}
+                          >
+                            Khóa tài khoản
+                          </Button>
+                        )
+                      ) : null}
                     </div>
                   </div>
+                ) : (
+                  <Alert>
+                    <Info className="size-4" aria-hidden="true" />
+                    <AlertDescription>
+                      {selectedUser.id === currentUserId
+                        ? "Không thể tự thay đổi vai trò hoặc khóa chính tài khoản đang đăng nhập."
+                        : !canActOnTargetRole(currentRole, selectedUser.role)
+                          ? "Không thể thao tác với tài khoản có vai trò ngang cấp hoặc cao hơn."
+                          : "Chỉ có quyền xem hồ sơ và nhật ký hoạt động."}
+                    </AlertDescription>
+                  </Alert>
+                )}
 
-                  <div className={shared.detailButtons}>
-                    {canModifySelectedRole && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        shape="app"
-                        disabled={actionBusy}
-                        onClick={() => void handleUpdateRole(selectedUser)}
+                <Separator />
+
+                {/* User Activity Log & Recent Orders (F13) */}
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-sm font-semibold text-foreground">Nhật ký hoạt động</h3>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Select
+                        value={activityCategory || ALL_ACT_SENTINEL}
+                        onValueChange={(v) => setActivityCategory(v === ALL_ACT_SENTINEL ? "" : v)}
                       >
-                        Lưu vai trò mới
+                        <SelectTrigger
+                          size="sm"
+                          aria-label="Lọc nhóm hoạt động người dùng"
+                          className="w-44 bg-card"
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={ALL_ACT_SENTINEL}>Tất cả sự kiện</SelectItem>
+                          <SelectItem value="auth">Đăng nhập &amp; mật khẩu</SelectItem>
+                          <SelectItem value="profile">Hồ sơ cá nhân</SelectItem>
+                          <SelectItem value="phone">Xác minh SĐT</SelectItem>
+                          <SelectItem value="status">Trạng thái tài khoản</SelectItem>
+                          <SelectItem value="role">Vai trò &amp; nhân sự</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="xs"
+                        onClick={() => void loadUserActivities(selectedUser.id, activityCategory)}
+                      >
+                        Tải lại
                       </Button>
-                    )}
-                    {canModifySelectedStatus &&
-                      (selectedUser.status === "LOCKED" ? (
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          shape="app"
-                          disabled={actionBusy}
-                          onClick={() => void handleUpdateStatus(selectedUser, "ACTIVE")}
-                        >
-                          Mở khóa tài khoản
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="danger"
-                          size="sm"
-                          shape="app"
-                          disabled={actionBusy}
-                          onClick={() => handleRequestLock(selectedUser)}
-                        >
-                          Khóa tài khoản
-                        </Button>
-                      ))}
-                  </div>
-                </div>
-              ) : (
-                <p className={shared.savedStamp}>
-                  {selectedUser.id === currentUserId
-                    ? "Không thể tự thay đổi vai trò hoặc khóa chính tài khoản đang đăng nhập."
-                    : !canActOnTargetRole(currentRole, selectedUser.role)
-                      ? "Không thể thao tác với tài khoản có vai trò ngang cấp hoặc cao hơn."
-                      : "Chỉ có quyền xem hồ sơ và nhật ký hoạt động."}
-                </p>
-              )}
-            </div>
-
-            {/* User Activity Log & Recent Orders (F13) */}
-            <div className={shared.detailWellCard}>
-              <div className={shared.detailHeader}>
-                <h3 className={shared.detailHeading}>Nhật ký hoạt động</h3>
-                <div className={shared.detailHeaderMeta}>
-                  <select
-                    className={shared.toolbarSelect}
-                    value={activityCategory}
-                    onChange={(e) => setActivityCategory(e.target.value)}
-                    aria-label="Lọc nhóm hoạt động người dùng"
-                  >
-                    <option value="">Tất cả sự kiện</option>
-                    <option value="auth">Đăng nhập &amp; mật khẩu</option>
-                    <option value="profile">Hồ sơ cá nhân</option>
-                    <option value="phone">Xác minh SĐT</option>
-                    <option value="status">Trạng thái tài khoản</option>
-                    <option value="role">Vai trò &amp; nhân sự</option>
-                  </select>
-                  <button
-                    type="button"
-                    className={shared.rowActionBtn}
-                    onClick={() => void loadUserActivities(selectedUser.id, activityCategory)}
-                  >
-                    Tải lại
-                  </button>
-                </div>
-              </div>
-
-              {activitiesLoading ? (
-                <p className={shared.savedStamp}>Đang tải nhật ký hoạt động...</p>
-              ) : activitiesError ? (
-                <p className={shared.validationError} role="alert">
-                  {activitiesError}
-                </p>
-              ) : !activities || activities.items.length === 0 ? (
-                <p className={shared.savedStamp}>Chưa ghi nhận sự kiện hoạt động nào.</p>
-              ) : (
-                <>
-                  <div className={shared.tableWrap}>
-                    <table className={shared.dataTable}>
-                      <thead>
-                        <tr>
-                          <th>Thời điểm</th>
-                          <th>Sự kiện</th>
-                          <th>IP</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {activities.items.map((act) => (
-                          <tr key={act.id}>
-                            <td className="num">
-                              {act.created_at ? formatDateTimeVi(act.created_at) : EMPTY_DASH}
-                            </td>
-                            <td>{formatUserActivityEventType(act.event_type)}</td>
-                            <td className="num">{act.ip_address || EMPTY_DASH}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <div className={shared.mobileList}>
-                    {activities.items.map((act) => (
-                      <div key={act.id} className={shared.mobileItem}>
-                        <div className={shared.mobileLine1}>
-                          <span className={shared.mobileIdentity}>
-                            {formatUserActivityEventType(act.event_type)}
-                          </span>
-                          <span className={shared.mobileMetric}>
-                            {act.created_at ? formatShortTimeDateVi(act.created_at) : EMPTY_DASH}
-                          </span>
-                        </div>
-                        <div className={shared.mobileLine2}>
-                          <span className={shared.mobileMetaText}>
-                            IP {act.ip_address || EMPTY_DASH}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              )}
-
-              {activities &&
-                Array.isArray(activities.recent_orders) &&
-                activities.recent_orders.length > 0 && (
-                  <div className={shared.sectionStack}>
-                    <h4 className={shared.detailHeading}>
-                      Đơn hàng gần đây ({formatInt(activities.recent_orders.length)})
-                    </h4>
-                    <div className={shared.tableWrap}>
-                      <table className={shared.dataTable}>
-                        <thead>
-                          <tr>
-                            <th>Mã đơn</th>
-                            <th>Thanh toán</th>
-                            <th className={shared.colNum}>Tổng tiền</th>
-                            <th>Trạng thái</th>
-                            <th>Ngày đặt</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {activities.recent_orders.map((ord) => {
-                            const ordMeta = getAdminOrderStatusMeta(ord.status);
-                            return (
-                              <tr key={ord.id}>
-                                <td className="num">{ord.order_code}</td>
-                                <td>{getPaymentMethodLabel(ord.payment_method)}</td>
-                                <td className={shared.colNum}>
-                                  {formatVnd(ord.total_payable_vnd)}
-                                </td>
-                                <td>
-                                  <StatusPill label={ordMeta.label} tone={ordMeta.tone} />
-                                </td>
-                                <td className="num">
-                                  {ord.created_at ? formatDateTimeVi(ord.created_at) : EMPTY_DASH}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
                     </div>
+                  </div>
 
-                    <div className={shared.mobileList}>
-                      {activities.recent_orders.map((ord) => {
-                        const ordMeta = getAdminOrderStatusMeta(ord.status);
-                        return (
-                          <div key={ord.id} className={shared.mobileItem}>
-                            <div className={shared.mobileLine1}>
-                              <span className={shared.mobileIdentity}>{ord.order_code}</span>
-                              <span className={shared.mobileMetric}>
-                                {formatVnd(ord.total_payable_vnd)}
+                  {activitiesLoading ? (
+                    <p className="text-[13px] text-muted-foreground">
+                      Đang tải nhật ký hoạt động...
+                    </p>
+                  ) : activitiesError ? (
+                    <FieldError>{activitiesError}</FieldError>
+                  ) : !activities || activities.items.length === 0 ? (
+                    <p className="rounded-lg border border-border bg-muted/35 p-4 text-center text-[13px] text-muted-foreground">
+                      Chưa ghi nhận sự kiện hoạt động nào.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="hidden overflow-hidden rounded-lg border border-border sm:block">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Thời điểm</TableHead>
+                              <TableHead>Sự kiện</TableHead>
+                              <TableHead>IP</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {activities.items.map((act) => (
+                              <TableRow key={act.id}>
+                                <TableCell className="text-xs text-muted-foreground tabular-nums">
+                                  {act.created_at ? formatDateTimeVi(act.created_at) : EMPTY_DASH}
+                                </TableCell>
+                                <TableCell className="whitespace-normal">
+                                  {formatUserActivityEventType(act.event_type)}
+                                </TableCell>
+                                <TableCell className="text-xs text-muted-foreground tabular-nums">
+                                  {act.ip_address || EMPTY_DASH}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+
+                      <div className="divide-y divide-border rounded-lg border border-border sm:hidden">
+                        {activities.items.map((act) => (
+                          <div key={act.id} className="space-y-0.5 p-3">
+                            <div className="flex items-start justify-between gap-2 text-[13px]">
+                              <span className="font-medium text-foreground">
+                                {formatUserActivityEventType(act.event_type)}
+                              </span>
+                              <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                                {act.created_at
+                                  ? formatShortTimeDateVi(act.created_at)
+                                  : EMPTY_DASH}
                               </span>
                             </div>
-                            <div className={shared.mobileLine2}>
-                              <span className={shared.mobileMetaText}>
-                                {getPaymentMethodLabel(ord.payment_method)}
-                                {ord.created_at
-                                  ? ` · ${formatShortTimeDateVi(ord.created_at)}`
-                                  : ""}
-                              </span>
-                              <StatusPill label={ordMeta.label} tone={ordMeta.tone} />
+                            <div className="text-xs text-muted-foreground tabular-nums">
+                              IP {act.ip_address || EMPTY_DASH}
                             </div>
                           </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-            </div>
-          </>
-        )}
-      </AdminDrawer>
+                        ))}
+                      </div>
+                    </>
+                  )}
 
-      <AdminConfirmDialog
+                  {activities &&
+                  Array.isArray(activities.recent_orders) &&
+                  activities.recent_orders.length > 0 ? (
+                    <div className="space-y-2.5 pt-2">
+                      <h4 className="text-sm font-semibold text-foreground">
+                        Đơn hàng gần đây ({formatInt(activities.recent_orders.length)})
+                      </h4>
+                      <div className="hidden overflow-hidden rounded-lg border border-border sm:block">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Mã đơn</TableHead>
+                              <TableHead>Thanh toán</TableHead>
+                              <TableHead className="text-right">Tổng tiền</TableHead>
+                              <TableHead>Trạng thái</TableHead>
+                              <TableHead>Ngày đặt</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {activities.recent_orders.map((ord) => {
+                              const ordMeta = getAdminOrderStatusMeta(ord.status);
+                              return (
+                                <TableRow key={ord.id}>
+                                  <TableCell className="font-medium tabular-nums">
+                                    {ord.order_code}
+                                  </TableCell>
+                                  <TableCell>{getPaymentMethodLabel(ord.payment_method)}</TableCell>
+                                  <TableCell className="text-right">
+                                    <Money vnd={ord.total_payable_vnd} size="sm" />
+                                  </TableCell>
+                                  <TableCell>
+                                    <StatusBadge tone={orderStatusTone(ord.status)}>
+                                      {ordMeta.label}
+                                    </StatusBadge>
+                                  </TableCell>
+                                  <TableCell className="text-xs text-muted-foreground tabular-nums">
+                                    {ord.created_at ? formatDateTimeVi(ord.created_at) : EMPTY_DASH}
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                      </div>
+
+                      <div className="divide-y divide-border rounded-lg border border-border sm:hidden">
+                        {activities.recent_orders.map((ord) => {
+                          const ordMeta = getAdminOrderStatusMeta(ord.status);
+                          return (
+                            <div key={ord.id} className="space-y-1 p-3">
+                              <div className="flex items-center justify-between gap-2 text-[13px]">
+                                <span className="font-semibold text-foreground tabular-nums">
+                                  {ord.order_code}
+                                </span>
+                                <Money vnd={ord.total_payable_vnd} size="sm" />
+                              </div>
+                              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                                <span>
+                                  {getPaymentMethodLabel(ord.payment_method)}
+                                  {ord.created_at
+                                    ? ` · ${formatShortTimeDateVi(ord.created_at)}`
+                                    : ""}
+                                </span>
+                                <StatusBadge tone={orderStatusTone(ord.status)}>
+                                  {ordMeta.label}
+                                </StatusBadge>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </>
+          ) : null}
+        </SheetContent>
+      </Sheet>
+
+      <ConfirmActionDialog
         open={Boolean(confirmLockTarget)}
         title="Xác nhận khóa tài khoản"
         description={
@@ -923,6 +985,7 @@ export function AdminUsersPanel({ initialQuery = "" }: AdminUsersPanelProps) {
             : ""
         }
         confirmLabel="Xác nhận khóa"
+        confirmVariant="destructive"
         busy={actionBusy}
         onCancel={() => setConfirmLockTarget(null)}
         onConfirm={() => {

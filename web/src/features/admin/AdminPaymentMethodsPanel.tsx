@@ -1,7 +1,15 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
-import { Button, StateView } from "@/components";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertCircle, Info, RefreshCw } from "lucide-react";
+import { ErrorState, SaveBar, StatusBadge } from "@/components/app";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardFooter } from "@/components/ui/card";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { ApiError, api, getErrorMessage } from "@/lib/api";
 import { GATEWAY_PAYMENT_METHOD_LABELS, formatDateTimeVi, formatVnd } from "@/lib/format";
 import type {
@@ -11,8 +19,7 @@ import type {
 } from "@/lib/gateway-types";
 import { useAdminContext } from "./AdminShell";
 import { useAdminCapability } from "./AdminUserContext";
-import { StatusPill } from "./StatusPill";
-import shared from "./adminShared.module.css";
+import { TableLoadingSkeleton } from "./config/adminUiHelpers";
 
 interface MethodDraft {
   enabled: boolean;
@@ -27,18 +34,34 @@ function getMethodTitle(method: string): string {
   return GATEWAY_PAYMENT_METHOD_LABELS[key] ?? method;
 }
 
+function buildDraftFromConfig(cfg: GatewayPaymentMethodConfig): MethodDraft {
+  return {
+    enabled: Boolean(cfg.enabled),
+    minOrderStr: String(Math.max(0, Math.trunc(cfg.min_order_vnd || 0))),
+    maxOrderStr: String(Math.max(0, Math.trunc(cfg.max_order_vnd || 0))),
+    expiryMinutesStr: String(Math.max(0, Math.trunc(cfg.expiry_minutes || 0))),
+    note: "",
+  };
+}
+
 function buildDraftMap(list: GatewayPaymentMethodConfig[]): Record<string, MethodDraft> {
   const map: Record<string, MethodDraft> = {};
   for (const cfg of list) {
-    map[cfg.method] = {
-      enabled: Boolean(cfg.enabled),
-      minOrderStr: String(Math.max(0, Math.trunc(cfg.min_order_vnd || 0))),
-      maxOrderStr: String(Math.max(0, Math.trunc(cfg.max_order_vnd || 0))),
-      expiryMinutesStr: String(Math.max(0, Math.trunc(cfg.expiry_minutes || 0))),
-      note: "",
-    };
+    map[cfg.method] = buildDraftFromConfig(cfg);
   }
   return map;
+}
+
+function isMethodDirty(cfg: GatewayPaymentMethodConfig, draft?: MethodDraft): boolean {
+  if (!draft) return false;
+  const base = buildDraftFromConfig(cfg);
+  return (
+    draft.enabled !== base.enabled ||
+    draft.minOrderStr !== base.minOrderStr ||
+    draft.maxOrderStr !== base.maxOrderStr ||
+    draft.expiryMinutesStr !== base.expiryMinutesStr ||
+    draft.note.trim().length > 0
+  );
 }
 
 export function AdminPaymentMethodsPanel() {
@@ -50,6 +73,7 @@ export function AdminPaymentMethodsPanel() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [savingMethod, setSavingMethod] = useState<string | null>(null);
+  const [savingAll, setSavingAll] = useState(false);
   const [conflictMethod, setConflictMethod] = useState<string | null>(null);
   const [methodErrors, setMethodErrors] = useState<Record<string, string>>({});
 
@@ -88,12 +112,18 @@ export function AdminPaymentMethodsPanel() {
         ...patch,
       },
     }));
+    setMethodErrors((prev) => {
+      if (!prev[method]) return prev;
+      const next = { ...prev };
+      delete next[method];
+      return next;
+    });
   };
 
-  const handleSave = async (cfg: GatewayPaymentMethodConfig) => {
-    if (!canWrite || savingMethod) return;
+  const handleSave = async (cfg: GatewayPaymentMethodConfig): Promise<boolean> => {
+    if (!canWrite || savingMethod) return false;
     const draft = drafts[cfg.method];
-    if (!draft) return;
+    if (!draft) return false;
 
     const minVnd = Math.trunc(Number(draft.minOrderStr));
     const maxVnd = Math.trunc(Number(draft.maxOrderStr));
@@ -104,28 +134,28 @@ export function AdminPaymentMethodsPanel() {
         ...prev,
         [cfg.method]: "Giá trị đơn tối thiểu phải là số nguyên VND không âm.",
       }));
-      return;
+      return false;
     }
     if (!Number.isFinite(maxVnd) || maxVnd < 0) {
       setMethodErrors((prev) => ({
         ...prev,
         [cfg.method]: "Giá trị đơn tối đa phải là số nguyên VND không âm (0 = không giới hạn).",
       }));
-      return;
+      return false;
     }
     if (maxVnd > 0 && minVnd > maxVnd) {
       setMethodErrors((prev) => ({
         ...prev,
         [cfg.method]: "Giá trị tối thiểu không được lớn hơn giá trị tối đa.",
       }));
-      return;
+      return false;
     }
     if (!Number.isFinite(expiryMinutes) || expiryMinutes < 0 || expiryMinutes > 1440) {
       setMethodErrors((prev) => ({
         ...prev,
         [cfg.method]: "Thời hạn giữ đơn phải từ 0 đến 1440 phút.",
       }));
-      return;
+      return false;
     }
 
     const enabledOthers = methods.filter((m) => m.method !== cfg.method && m.enabled).length;
@@ -134,7 +164,7 @@ export function AdminPaymentMethodsPanel() {
         ...prev,
         [cfg.method]: "Phải giữ ít nhất một phương thức thanh toán đang bật.",
       }));
-      return;
+      return false;
     }
 
     setSavingMethod(cfg.method);
@@ -164,18 +194,13 @@ export function AdminPaymentMethodsPanel() {
         setMethods((prev) => prev.map((m) => (m.method === cfg.method ? res.method : m)));
         setDrafts((prev) => ({
           ...prev,
-          [cfg.method]: {
-            enabled: Boolean(res.method.enabled),
-            minOrderStr: String(Math.max(0, Math.trunc(res.method.min_order_vnd || 0))),
-            maxOrderStr: String(Math.max(0, Math.trunc(res.method.max_order_vnd || 0))),
-            expiryMinutesStr: String(Math.max(0, Math.trunc(res.method.expiry_minutes || 0))),
-            note: "",
-          },
+          [cfg.method]: buildDraftFromConfig(res.method),
         }));
       } else {
         await loadMethods();
       }
       showToast(`Đã cập nhật cấu hình ${getMethodTitle(cfg.method)}.`);
+      return true;
     } catch (err) {
       if (
         err instanceof ApiError &&
@@ -196,243 +221,270 @@ export function AdminPaymentMethodsPanel() {
           [cfg.method]: getErrorMessage(err, "Không thể lưu cấu hình phương thức thanh toán."),
         }));
       }
+      return false;
     } finally {
       setSavingMethod(null);
     }
   };
 
+  const dirtyMethods = useMemo(
+    () => methods.filter((cfg) => isMethodDirty(cfg, drafts[cfg.method])),
+    [methods, drafts]
+  );
+
+  const handleSaveAllDirty = async () => {
+    if (!canWrite || savingAll || dirtyMethods.length === 0) return;
+    setSavingAll(true);
+    try {
+      for (const cfg of dirtyMethods) {
+        const ok = await handleSave(cfg);
+        if (!ok) break;
+      }
+    } finally {
+      setSavingAll(false);
+    }
+  };
+
+  const handleDiscardAll = () => {
+    setDrafts(buildDraftMap(methods));
+    setMethodErrors({});
+    setConflictMethod(null);
+  };
+
   if (loading) {
-    return (
-      <div className={shared.stateWrap}>
-        <StateView
-          kind="loading"
-          surface="app"
-          title="Đang tải cấu hình cổng thanh toán..."
-          rows={4}
-        />
-      </div>
-    );
+    return <TableLoadingSkeleton rows={4} label="Đang tải cấu hình cổng thanh toán..." />;
   }
 
   if (errorMsg) {
     return (
-      <div className={shared.stateWrap}>
-        <StateView
-          kind="error"
-          surface="app"
-          title="Không thể tải cấu hình cổng thanh toán"
-          message={errorMsg}
-          actionLabel="Thử lại"
-          onAction={() => void loadMethods()}
-        />
-      </div>
+      <ErrorState
+        title="Không thể tải cấu hình cổng thanh toán"
+        description={errorMsg}
+        onRetry={() => void loadMethods()}
+      />
     );
   }
 
   const enabledCount = methods.filter((m) => m.enabled).length;
 
   return (
-    <div className={shared.sectionStack}>
-      <section className={shared.panel} aria-labelledby="pm-config-heading">
-        <div className={shared.panelHeader}>
-          <div>
-            <h2 id="pm-config-heading" className={shared.panelTitle}>
-              Cổng thanh toán ({enabledCount}/{methods.length} đang bật)
-            </h2>
-          </div>
-          <Button variant="outline" size="sm" shape="app" onClick={() => void loadMethods()}>
-            Làm mới
-          </Button>
-        </div>
+    <div className="max-w-[800px] space-y-6">
+      {canWrite ? (
+        <SaveBar
+          visible={dirtyMethods.length > 0}
+          saving={savingAll || Boolean(savingMethod)}
+          message={`Có ${dirtyMethods.length} cổng thanh toán chưa lưu thay đổi`}
+          onDiscard={handleDiscardAll}
+          onSave={() => void handleSaveAllDirty()}
+        />
+      ) : null}
 
-        {!canWrite && (
-          <p className={shared.savedStamp} style={{ marginBottom: 12 }}>
-            Chỉ có quyền xem cấu hình phương thức thanh toán.
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 id="pm-config-heading" className="text-sm font-semibold text-foreground">
+            Cổng thanh toán ({enabledCount}/{methods.length} đang bật)
+          </h2>
+          <p className="text-[13px] text-muted-foreground">
+            Điều chỉnh trạng thái bật/tắt, hạn mức đơn hàng và thời hạn giữ đơn cho từng cổng.
           </p>
-        )}
+        </div>
+        <Button type="button" variant="outline" size="sm" onClick={() => void loadMethods()}>
+          <RefreshCw className="size-3.5" aria-hidden="true" />
+          <span>Làm mới</span>
+        </Button>
+      </div>
 
-        {conflictMethod && (
-          <div className={shared.detailWell} role="alert" style={{ marginBottom: 16 }}>
-            <p className={shared.validationError}>
+      {!canWrite ? (
+        <Alert>
+          <Info className="size-4" aria-hidden="true" />
+          <AlertDescription>Chỉ có quyền xem cấu hình phương thức thanh toán.</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {conflictMethod ? (
+        <Alert variant="destructive">
+          <AlertCircle className="size-4" aria-hidden="true" />
+          <AlertDescription className="flex w-full flex-wrap items-center justify-between gap-2">
+            <span>
               Cấu hình phương thức <strong>{getMethodTitle(conflictMethod)}</strong> đã thay đổi từ
               phiên khác. Vui lòng tải lại dữ liệu mới nhất trước khi lưu.
-            </p>
-            <div>
-              <Button variant="primary" size="sm" shape="app" onClick={() => void loadMethods()}>
-                Tải lại cấu hình mới nhất
-              </Button>
-            </div>
-          </div>
-        )}
+            </span>
+            <Button type="button" size="xs" onClick={() => void loadMethods()}>
+              Tải lại cấu hình mới nhất
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
-        <div className={shared.sectionStack}>
-          {methods.map((cfg) => {
-            const draft = drafts[cfg.method] ?? {
-              enabled: cfg.enabled,
-              minOrderStr: String(cfg.min_order_vnd ?? 0),
-              maxOrderStr: String(cfg.max_order_vnd ?? 0),
-              expiryMinutesStr: String(cfg.expiry_minutes ?? 0),
-              note: "",
-            };
-            const isSaving = savingMethod === cfg.method;
-            const errText = methodErrors[cfg.method];
-            const isCod = cfg.method.toUpperCase() === "COD";
+      <div className="space-y-6">
+        {methods.map((cfg, idx) => {
+          const draft = drafts[cfg.method] ?? buildDraftFromConfig(cfg);
+          const isSaving = savingMethod === cfg.method;
+          const errText = methodErrors[cfg.method];
+          const isCod = cfg.method.toUpperCase() === "COD";
 
-            return (
-              <form
-                key={cfg.method}
-                className={shared.detailWell}
-                noValidate
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void handleSave(cfg);
-                }}
+          return (
+            <React.Fragment key={cfg.method}>
+              {idx > 0 ? <Separator /> : null}
+              <section
+                aria-labelledby={`pm-heading-${cfg.method}`}
+                className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] md:items-start"
               >
-                <div className={shared.detailHeader}>
-                  <div>
-                    <h3 className={shared.detailHeading}>{getMethodTitle(cfg.method)}</h3>
-                    <p className={shared.cellSub}>
-                      Phiên bản v{cfg.version}
-                      {cfg.updated_at ? ` · Cập nhật ${formatDateTimeVi(cfg.updated_at)}` : ""}
-                      {cfg.credential_preview ? ` · Chứng thực: ${cfg.credential_preview}` : ""}
-                    </p>
-                  </div>
-                  <div className={shared.detailHeaderMeta}>
-                    {typeof cfg.credentials_configured === "boolean" && !isCod && (
-                      <StatusPill
-                        label={cfg.credentials_configured ? "Đã cấu hình khóa" : "Chế độ mô phỏng"}
-                        tone={cfg.credentials_configured ? "positive" : "neutral"}
-                      />
-                    )}
-                    <StatusPill
-                      label={draft.enabled ? "Đang bật" : "Đang tắt"}
-                      tone={draft.enabled ? "positive" : "warning"}
-                    />
-                  </div>
-                </div>
-
-                <div className={shared.detailGrid}>
-                  <div className={shared.detailField}>
-                    <span className={shared.fieldLabel}>Trạng thái</span>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, minHeight: 38 }}>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={draft.enabled}
-                        aria-label={`Bật hoặc tắt ${getMethodTitle(cfg.method)}`}
-                        disabled={!canWrite || isSaving}
-                        className={`${shared.toggleBtn} ${draft.enabled ? shared.toggleBtnOn : ""}`}
-                        onClick={() => updateDraft(cfg.method, { enabled: !draft.enabled })}
-                      >
-                        <span className={shared.toggleKnob} />
-                      </button>
-                      <span className={shared.detailValPlain}>
-                        {draft.enabled ? "Cho phép đặt đơn" : "Tạm tắt"}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className={shared.detailField}>
-                    <label htmlFor={`pm-min-${cfg.method}`} className={shared.fieldLabel}>
-                      Đơn tối thiểu (VND)
-                    </label>
-                    <input
-                      id={`pm-min-${cfg.method}`}
-                      type="number"
-                      min={0}
-                      step={1}
-                      disabled={!canWrite || isSaving}
-                      className={shared.textInput}
-                      value={draft.minOrderStr}
-                      onChange={(e) => updateDraft(cfg.method, { minOrderStr: e.target.value })}
-                    />
-                    <span className={shared.cellSub}>
-                      {Number(draft.minOrderStr) > 0
-                        ? formatVnd(Math.trunc(Number(draft.minOrderStr)))
-                        : "Không giới hạn dưới"}
-                    </span>
-                  </div>
-
-                  <div className={shared.detailField}>
-                    <label htmlFor={`pm-max-${cfg.method}`} className={shared.fieldLabel}>
-                      Đơn tối đa (VND, 0 = không giới hạn)
-                    </label>
-                    <input
-                      id={`pm-max-${cfg.method}`}
-                      type="number"
-                      min={0}
-                      step={1}
-                      disabled={!canWrite || isSaving}
-                      className={shared.textInput}
-                      value={draft.maxOrderStr}
-                      onChange={(e) => updateDraft(cfg.method, { maxOrderStr: e.target.value })}
-                    />
-                    <span className={shared.cellSub}>
-                      {Number(draft.maxOrderStr) > 0
-                        ? formatVnd(Math.trunc(Number(draft.maxOrderStr)))
-                        : "Không giới hạn trên"}
-                    </span>
-                  </div>
-
-                  <div className={shared.detailField}>
-                    <label htmlFor={`pm-exp-${cfg.method}`} className={shared.fieldLabel}>
-                      Hạn giữ đơn chờ thanh toán (phút)
-                    </label>
-                    <input
-                      id={`pm-exp-${cfg.method}`}
-                      type="number"
-                      min={0}
-                      max={1440}
-                      step={1}
-                      disabled={!canWrite || isSaving || isCod}
-                      className={shared.textInput}
-                      value={draft.expiryMinutesStr}
-                      onChange={(e) =>
-                        updateDraft(cfg.method, { expiryMinutesStr: e.target.value })
-                      }
-                    />
-                  </div>
-
-                  <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                    <label htmlFor={`pm-note-${cfg.method}`} className={shared.fieldLabel}>
-                      Ghi chú thay đổi
-                    </label>
-                    <input
-                      id={`pm-note-${cfg.method}`}
-                      type="text"
-                      disabled={!canWrite || isSaving}
-                      className={shared.textInput}
-                      value={draft.note}
-                      onChange={(e) => updateDraft(cfg.method, { note: e.target.value })}
-                      placeholder="Nhập lý do điều chỉnh cấu hình..."
-                    />
-                  </div>
-                </div>
-
-                {errText && (
-                  <p className={shared.validationError} role="alert">
-                    {errText}
-                  </p>
-                )}
-
-                {canWrite && (
-                  <div className={shared.detailButtons}>
-                    <Button
-                      type="submit"
-                      variant="primary"
-                      size="sm"
-                      shape="app"
-                      loading={isSaving}
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3
+                      id={`pm-heading-${cfg.method}`}
+                      className="text-sm font-semibold text-foreground"
                     >
-                      Lưu cấu hình {cfg.method}
-                    </Button>
+                      {getMethodTitle(cfg.method)}
+                    </h3>
+                    <StatusBadge tone={draft.enabled ? "success" : "warning"}>
+                      {draft.enabled ? "Đang bật" : "Đang tắt"}
+                    </StatusBadge>
                   </div>
-                )}
-              </form>
-            );
-          })}
-        </div>
-      </section>
+
+                  {typeof cfg.credentials_configured === "boolean" && !isCod ? (
+                    <div>
+                      <StatusBadge tone={cfg.credentials_configured ? "success" : "neutral"}>
+                        {cfg.credentials_configured ? "Đã cấu hình khóa" : "Chế độ mô phỏng"}
+                      </StatusBadge>
+                    </div>
+                  ) : null}
+
+                  <p className="text-xs leading-[18px] text-muted-foreground tabular-nums">
+                    Phiên bản v{cfg.version}
+                    {cfg.updated_at ? ` · Cập nhật ${formatDateTimeVi(cfg.updated_at)}` : ""}
+                    {cfg.credential_preview ? ` · Chứng thực: ${cfg.credential_preview}` : ""}
+                  </p>
+                </div>
+
+                <Card>
+                  <form
+                    noValidate
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void handleSave(cfg);
+                    }}
+                  >
+                    <CardContent className="space-y-4 pt-4">
+                      <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/35 px-3.5 py-2.5">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium text-foreground">Trạng thái</div>
+                          <div className="text-xs text-muted-foreground">
+                            {draft.enabled ? "Cho phép đặt đơn" : "Tạm tắt"}
+                          </div>
+                        </div>
+                        <Switch
+                          checked={draft.enabled}
+                          disabled={!canWrite || isSaving || savingAll}
+                          aria-label={`Bật hoặc tắt ${getMethodTitle(cfg.method)}`}
+                          onCheckedChange={(checked) =>
+                            updateDraft(cfg.method, { enabled: checked })
+                          }
+                        />
+                      </div>
+
+                      <FieldGroup className="gap-4">
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                          <Field className="gap-1.5">
+                            <FieldLabel htmlFor={`pm-min-${cfg.method}`}>
+                              Đơn tối thiểu (VND)
+                            </FieldLabel>
+                            <Input
+                              id={`pm-min-${cfg.method}`}
+                              type="number"
+                              min={0}
+                              step={1}
+                              disabled={!canWrite || isSaving || savingAll}
+                              value={draft.minOrderStr}
+                              onChange={(e) =>
+                                updateDraft(cfg.method, { minOrderStr: e.target.value })
+                              }
+                              className="bg-card tabular-nums"
+                            />
+                            <FieldDescription className="text-xs tabular-nums">
+                              {Number(draft.minOrderStr) > 0
+                                ? formatVnd(Math.trunc(Number(draft.minOrderStr)))
+                                : "Không giới hạn dưới"}
+                            </FieldDescription>
+                          </Field>
+
+                          <Field className="gap-1.5">
+                            <FieldLabel htmlFor={`pm-max-${cfg.method}`}>
+                              Đơn tối đa (VND, 0 = không giới hạn)
+                            </FieldLabel>
+                            <Input
+                              id={`pm-max-${cfg.method}`}
+                              type="number"
+                              min={0}
+                              step={1}
+                              disabled={!canWrite || isSaving || savingAll}
+                              value={draft.maxOrderStr}
+                              onChange={(e) =>
+                                updateDraft(cfg.method, { maxOrderStr: e.target.value })
+                              }
+                              className="bg-card tabular-nums"
+                            />
+                            <FieldDescription className="text-xs tabular-nums">
+                              {Number(draft.maxOrderStr) > 0
+                                ? formatVnd(Math.trunc(Number(draft.maxOrderStr)))
+                                : "Không giới hạn trên"}
+                            </FieldDescription>
+                          </Field>
+                        </div>
+
+                        <Field className="gap-1.5">
+                          <FieldLabel htmlFor={`pm-exp-${cfg.method}`}>
+                            Hạn giữ đơn chờ thanh toán (phút)
+                          </FieldLabel>
+                          <Input
+                            id={`pm-exp-${cfg.method}`}
+                            type="number"
+                            min={0}
+                            max={1440}
+                            step={1}
+                            disabled={!canWrite || isSaving || savingAll || isCod}
+                            value={draft.expiryMinutesStr}
+                            onChange={(e) =>
+                              updateDraft(cfg.method, { expiryMinutesStr: e.target.value })
+                            }
+                            className="max-w-44 bg-card tabular-nums"
+                          />
+                        </Field>
+
+                        <Field className="gap-1.5">
+                          <FieldLabel htmlFor={`pm-note-${cfg.method}`}>
+                            Ghi chú thay đổi
+                          </FieldLabel>
+                          <Input
+                            id={`pm-note-${cfg.method}`}
+                            type="text"
+                            disabled={!canWrite || isSaving || savingAll}
+                            value={draft.note}
+                            onChange={(e) => updateDraft(cfg.method, { note: e.target.value })}
+                            placeholder="Nhập lý do điều chỉnh cấu hình..."
+                            className="bg-card"
+                          />
+                        </Field>
+
+                        <FieldError>{errText}</FieldError>
+                      </FieldGroup>
+                    </CardContent>
+
+                    {canWrite ? (
+                      <CardFooter className="justify-end border-t border-border pt-3.5">
+                        <Button type="submit" size="sm" disabled={isSaving || savingAll}>
+                          {isSaving ? "Đang lưu..." : `Lưu cấu hình ${cfg.method}`}
+                        </Button>
+                      </CardFooter>
+                    ) : null}
+                  </form>
+                </Card>
+              </section>
+            </React.Fragment>
+          );
+        })}
+      </div>
     </div>
   );
 }
