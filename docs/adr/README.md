@@ -22,12 +22,13 @@ Mẫu ADR: [0000-template.md](0000-template.md).
 | [0006](0006-ai-assistant-llm-rag-guardrails.md) | Trợ lý AI — nhà cung cấp LLM, embedding tiếng Việt, RAG và guardrail | Chấp nhận | 2026-11-24 |
 | [0007](0007-observability-and-aiops-engine.md) | Hệ thống giám sát (Observability) và AIOps engine bằng Rust | Chấp nhận | 2026-11-24 |
 | [0008](0008-kubernetes-cicd-and-backup.md) | Nơi triển khai Kubernetes, CI/CD và sao lưu cơ sở dữ liệu | Chấp nhận | 2026-11-24 |
+| [0009](0009-email-provider-resend.md) | Nhà cung cấp gửi email giao dịch cho `services/notification` (SMTP / Resend) | Đề xuất, chờ chủ dự án duyệt | 2026-11-26 |
 
 ## Kiến trúc hợp nhất nhánh
 
 | Số | Tên | Trạng thái | Ngày |
 | --- | --- | --- | --- |
-| [0010](0010-unify-main-and-phase-0b.md) | Hợp nhất nhánh `main` (kèm `3b-3`) và nhánh `phase-0b` | Đề xuất, chờ chủ dự án duyệt | 2026-11-25 |
+| [0010](0010-unify-main-and-phase-0b.md) | Hợp nhất nhánh `main` (kèm `3b-3`) và nhánh `phase-0b` | Đã duyệt (chủ dự án, 2026-11-26) | 2026-11-25 |
 
 > ADR 0004–0008 chuyển sang **Chấp nhận** ngày `2026-11-24` theo uỷ quyền của chủ dự án trong `.agents/briefs/fix/w3-plan.md` §1.1 (chủ dự án không duyệt riêng từng ADR) sau khi tra lại phiên bản và bảo mật. Các cổng còn giữ (push, khoá/tiền/lần gọi thật LLM, sandbox thật, token Telegram, đo RAM B4, tra lại GHSA SeaweedFS trước B2) ghi chi tiết trong từng ADR.
 

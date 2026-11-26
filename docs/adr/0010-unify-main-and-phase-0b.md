@@ -1,6 +1,6 @@
 # ADR-0010: Hợp nhất nhánh `main` (kèm `3b-3`) và nhánh `phase-0b`
 
-- **Trạng thái**: Đề xuất, chờ chủ dự án duyệt
+- **Trạng thái**: Đã duyệt (chủ dự án, 2026-11-26)
 - **Ngày**: 2026-11-25
 
 ## Bối cảnh
@@ -20,12 +20,12 @@
 
 ## Quyết định
 
-- **Đề xuất**: Áp dụng 6 quyết định hợp nhất sau; toàn bộ là **đề xuất, chờ chủ dự án duyệt** trước khi merge vào `main`:
+- **Quyết định**: Áp dụng 6 quyết định hợp nhất sau (**đã được chủ dự án duyệt ngày 2026-11-26** và đã merge vào `main`):
 
 ### 1. Đánh số lại migration của `main`/`3b-3` nối sau `phase-0b` (ngoại lệ một lần của `AGENTS.md` mục 9)
 
 - Giữ nguyên **từng byte** tất cả file migration đã áp dụng trên nhánh `phase-0b`.
-- Đổi số và thích ứng các file migration của `main`/`3b-3` nối tiếp sau số cao nhất của `phase-0b`, giữ đúng thứ tự gốc của `main`, đảm bảo chạy idempotent trên cả DB trống lẫn DB mang lịch sử `phase-0b`. Việc đổi tên/thích ứng các file migration của `main` là **ngoại lệ có ghi nhận của quy tắc mục 9 trong `AGENTS.md`**, cần chủ dự án duyệt cùng ADR này trước khi merge.
+- Đổi số và thích ứng các file migration của `main`/`3b-3` nối tiếp sau số cao nhất của `phase-0b`, giữ đúng thứ tự gốc của `main`, đảm bảo chạy idempotent trên cả DB trống lẫn DB mang lịch sử `phase-0b`. Việc đổi tên/thích ứng các file migration của `main` là **ngoại lệ có ghi nhận của quy tắc mục 9 trong `AGENTS.md`**, đã được chủ dự án duyệt cùng ADR này (2026-11-26).
 - Các điều chỉnh dữ liệu quan trọng khi nâng cấp từ `phase-0b`:
   - `services/order/migrations/0008_returns_and_lifecycle.sql`: ánh xạ 4 trạng thái đổi trả cũ của `phase-0b` sang máy trạng thái 10 bước của `main` (không dùng nhánh `ELSE 'CLOSED'`), đóng các return của đơn `COMPLETED`/`CANCELLED` chưa hoàn thành `CLOSED`, giữ `REJECTED` còn khiếu nại `OPEN` thành `ESCALATED`, gỡ FK `ON DELETE CASCADE` ở `complaints` và giữ nguyên bảng `complaints` chỉ-đọc, bảo toàn `refund_amount_vnd`, chép `seller_note`/`reverse_tracking_code`/`reverse_label_url`, đồng bộ `orders.refunded_vnd` chống hoàn tiền hai lần.
   - `services/payment/migrations/0005_refund_settlement_and_reconciliation.sql`: thêm điều kiện `AND r.provider_refund_id IS NULL` khi đưa các khoản hoàn `completed` chưa có bút toán `refund_settle` về `pending` để không hạ các khoản hoàn ZaloPay đã chi của `phase-0b` (các khoản VietQR chuyển về `pending` cần kế toán rà tay trước khi settle, xem [docs/UPGRADE_FROM_PHASE_0B.md](../UPGRADE_FROM_PHASE_0B.md)).
@@ -140,8 +140,8 @@
 - `services/gateway` sử dụng `services/gateway/internal/middleware/clientip.go` của `main`, đọc `TRUSTED_PROXIES` (mặc định `172.31.250.0/28`, có fallback `TRUSTED_PROXY_CIDRS`), nhờ đó chỉ tin `X-Forwarded-For` đi từ container `web` và chặn hoàn toàn giả mạo IP từ ngoài host hoặc container khác.
 - Cổng mặc định thống nhất: `GATEWAY_PORT=8080`, `WEB_PORT=3300`.
 
-- **Phụ thuộc**: Cần chủ dự án duyệt ngoại lệ đổi số migration (`AGENTS.md` mục 9) và rà soát danh sách hoàn tiền VietQR `completed → pending` của `payment 0005` trước khi triển khai production.
-- **Chủ dự án quyết**: *(chờ duyệt)*
+- **Phụ thuộc**: Ngoại lệ đổi số migration (`AGENTS.md` mục 9) đã được duyệt; vẫn cần rà soát danh sách hoàn tiền VietQR `completed → pending` của `payment 0005` trước khi triển khai production.
+- **Chủ dự án quyết**: Đã duyệt (2026-11-26).
 
 ## Hệ quả
 
@@ -152,4 +152,4 @@
 - **Tiêu cực / Đánh đổi & Việc hoãn lại**:
   - DB dev cũ tạo theo lịch sử `main` (chưa có các migration `phase-0b` ở số đầu) cần dựng lại volume sạch vì số migration `main` đã tịnh tiến.
   - Sau nâng cấp từ `phase-0b` phải chạy `POST /api/v1/admin/search/reindex` một lần (vì Meilisearch đổi lên `v1.58.0` / volume mới `meilisearch_v1_58_data`), dọn consumer NATS cũ `search-product-indexer-v1`, và rà tay các khoản hoàn VietQR bị `payment 0005` chuyển về `pending`.
-  - Chưa triển khai trong đợt gộp này: ZaloPay live mode, chuyển `assistant` sang `OrderService.GetSellerReport`, siết `ChatService.ExchangeWSTicket` bằng service token, kênh/quyền riêng cho khiếu nại không kèm đổi trả, giao diện lịch sử tìm kiếm trên `(site)`.
+  - Chưa triển khai trong đợt gộp này: ZaloPay live mode, kênh/quyền riêng cho khiếu nại không kèm đổi trả, giao diện lịch sử tìm kiếm trên `(site)` (mục chuyển `assistant` sang `OrderService.GetSellerReport` đã hoàn tất ở đợt p2). Riêng `ChatService.ExchangeWSTicket` được giữ public có chủ ý vì gateway không giữ `SERVICE_JWT_SECRET`; vé ngẫu nhiên 256-bit, dùng một lần (Redis `GETDEL`), hết hạn ngắn (`CHAT_WS_TICKET_TTL`, mặc định `60s`).

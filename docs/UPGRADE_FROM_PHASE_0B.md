@@ -5,6 +5,15 @@
 
 ---
 
+## Trước khi deploy
+
+- **Thu hẹp `TRUSTED_PROXIES` của `gateway`:** Giá trị mặc định trong `deploy/helm/gateway/values.yaml` hiện để rộng (`10.0.0.0/8,172.16.0.0/12`). Trước khi deploy staging/production, bắt buộc ghi đè về đúng CIDR pod của `ingress-nginx` và `web` trên cụm đích để các pod khác không thể giả mạo `X-Forwarded-For` hoặc vào bucket `rl:bff`.
+- **Thiết lập `NetworkPolicy` ở cấp cụm** *(không kèm manifest sẵn trong repo vì phụ thuộc CNI/namespace và nơi triển khai chưa chốt)*:
+  - Chỉ cho phép pod `ingress-nginx` kết nối vào `web:3000` (chặn truy cập trực tiếp từ pod khác tới `web:3000` khi `TRUST_PROXY_HEADERS=true`).
+  - Chỉ cho phép `web`, `ingress-nginx`, `assistant`, và `Prometheus` (scrape `/metrics`) kết nối vào `gateway:8080`.
+
+---
+
 ## Bước 1 — Dừng ghi & Sao lưu toàn bộ cơ sở dữ liệu
 
 1. Dừng lưu lượng ghi (hoặc dừng các container ứng dụng `web`, `gateway`, 12 microservice) trong khi giữ `postgres` và `search-postgres` chạy để dump sạch.
@@ -36,6 +45,7 @@ Kiểm tra đối chiếu với `deploy/k8s/create-secrets.sh` (khi triển khai
 | `PAYMENT_WEBHOOK_SECRET`, `SHIPPING_WEBHOOK_SECRET` | Khóa HMAC-SHA256 thật cho webhook thanh toán & vận chuyển. |
 | `PAYOS_CLIENT_ID`, `PAYOS_API_KEY`, `PAYOS_CHECKSUM_KEY` (hoặc `SEPAY_API_TOKEN`) | Bắt buộc tương ứng với `VIETQR_MODE=payos` hoặc `VIETQR_MODE=sepay`. |
 | `COOKIE_SECURE`, `SHIPPING_TEST_FAULT_INJECTION`, `APP_ORIGIN` | Production phải đặt `COOKIE_SECURE=true`, `SHIPPING_TEST_FAULT_INJECTION=false`; `TRUSTED_PROXIES` chỉ gồm CIDR reverse proxy/mạng `bff` tin cậy. |
+| `TRUST_PROXY_HEADERS` | **Bắt buộc `true` ở production** (chỉ bật khi `web` đứng sau reverse proxy tin cậy); proxy phía trước **phải ghi đè** (không nối thêm) `X-Forwarded-Proto` và `X-Forwarded-For` (hoặc `X-Real-IP`), đồng thời CIDR của proxy/`web` phải nằm trong `TRUSTED_PROXIES` của `gateway` để quét `X-Forwarded-For` phải→trái. `web` **không bao giờ tin `X-Forwarded-Host`** (luôn lấy host/tenant từ header `Host`, khớp mặc định giữ nguyên `Host` của `ingress-nginx`). Khi `TRUST_PROXY_HEADERS=false`, `web` không chuyển tiếp IP khách nên mọi lưu lượng trình duyệt qua `web` dùng chung bucket theo IP container `web` (mọi yêu cầu ghi 300/phút qua `RATE_LIMIT_IP_PER_MIN`, quên/đặt lại mật khẩu 10/phút qua `RATE_LIMIT_AUTH_PER_MIN`, tra cứu đơn 10/phút qua `RATE_LIMIT_ORDER_LOOKUP_PER_MIN`), dễ gây lỗi `429` hàng loạt — do đó production bắt buộc đặt `true`. |
 | `PUBLIC_GATEWAY_URL`, `CHAT_WS_URL` *(mới, để trống ở dev)* | Bắt buộc đặt URL `https://` / `wss://` công khai ở production (không dùng host nội bộ như `gateway-bff`) để chat realtime chạy qua HTTPS và khớp CSP `connect-src`. |
 | `ORDER_COD_REQUIRE_PHONE_VERIFIED` *(mới, mặc định `true`)* | Lưu ý: OTP SĐT hiện đang mock qua email/Mailpit — cần tích hợp nhà cung cấp SMS thật trước khi bật xác minh SĐT bắt buộc ở production. |
 
@@ -87,7 +97,7 @@ Khởi động toàn bộ cụm dịch vụ bản mới (mọi service tự ch�
 - `product`: chạy nối tiếp `000004` → `000013` (`000013` giải phóng `flash_sale_stock_reservations` cũ và đặt `flash_sale_reserved_stock = 0`).
 - `promotion`: chạy nối tiếp `003` → `007` (bảng `promotion_schema_migrations`).
 - `order`: chạy nối tiếp `0005` → `0021` (`0008_returns_and_lifecycle.sql` ánh xạ dữ liệu `return_requests`, `complaints` và `orders.status` từ `phase-0b`; giữ bảng `complaints` chỉ-đọc).
-- `payment`: chạy nối tiếp `0004` → `0017` (`sqlx::migrate!` kiểm checksum các file `0001..0003` nguyên vẹn).
+- `payment`: chạy nối tiếp `0004` → `0018` (`sqlx::migrate!` kiểm checksum các file `0001..0003` nguyên vẹn; `0018_backfill_phase0b_zalopay_refund_settle.sql` tự động bù idempotent bút toán `refund_settle` cho các khoản hoàn ZaloPay đã chi ở `phase-0b`).
 - `shipping`: bảng `schema_migrations` tự bootstrap nhận diện DB `phase-0b` qua cột `shipments.direction` (không chạy lại `000002_return_shipments.sql`), sau đó chạy `000003` → `000008`.
 - `notification`: chạy `000003` → `000005` (SQL idempotent).
 - `search`: chạy `000002_w3b3_search_schema.sql` trên `search_db`.
@@ -100,6 +110,7 @@ Kiểm tra `/healthz` và `/readyz` trên toàn bộ service (`8080..8091`, và 
 
 > **CẢNH BÁO — KHÔNG CHUYỂN TIỀN LẦN HAI:**
 > Migration `services/payment/migrations/0005_refund_settlement_and_reconciliation.sql` đưa các khoản hoàn tiền cũ có `status = 'completed'`, `provider_refund_id IS NULL` và chưa có bút toán `refund_settle` về trạng thái `pending` để hoàn tất quy trình sổ cái 2 bước (riêng hoàn ZaloPay đã chi có `provider_refund_id IS NOT NULL` được giữ nguyên `completed`).
+> Migration `services/payment/migrations/0018_backfill_phase0b_zalopay_refund_settle.sql` tự động bù idempotent giao dịch sổ cái `refund_settle` (`Debit refund_payable` / `Credit gateway_clearing`) cho các khoản hoàn ZaloPay `phase-0b` đã giữ `completed` này (không đụng VietQR `provider_refund_id IS NULL`, COD hoặc DB đi lên từ `main`), nên vận hành **chỉ cần rà tay các khoản hoàn VietQR** bên dưới.
 
 1. Đối chiếu danh sách đã xuất ở Bước 1 với danh sách `GET /api/v1/admin/refunds?status=PENDING` (hoặc truy vấn `payment_db`):
    ```sql
