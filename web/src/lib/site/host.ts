@@ -343,7 +343,7 @@ export function isApiPath(pathname: string): boolean {
 }
 
 const SITE_PROTECTED_PREFIXES = ["/tai-khoan", "/don-hang", "/thanh-toan/cho"] as const;
-const ROOT_PROTECTED_PREFIXES = ["/seller", "/admin"] as const;
+const ROOT_PROTECTED_PREFIXES = ["/seller", "/admin", "/design"] as const;
 
 /** Pages that require a session: buyer account/orders on a site, seller/admin on the root. */
 export function isProtectedPagePath(pathname: string, hostKind: "root" | "site"): boolean {

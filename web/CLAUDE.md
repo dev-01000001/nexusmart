@@ -9,10 +9,15 @@ Next.js 15 (`^15.5.29`) App Router, React 19 (`^19.1.0`), TypeScript 5.8 (`^5.8.
 
 ## Giao diện và Style
 
-- Dùng CSS Modules cùng `src/styles/tokens.css` (bảng màu Frost & Slate) và `src/styles/globals.css`, font biến thiên duy nhất **Archivo variable** (`--font-archivo` nạp ở `src/app/layout.tsx`).
-- Trên site gian hàng, toàn bộ token được ánh xạ sang biến `--site-*` trong `src/features/site/site.module.css` (hỗ trợ cả chế độ sáng và tối `[data-site-theme-mode="dark"]` qua 8 template JSON v2).
-- Không dùng Tailwind, không cài thư viện UI/icon/state ngoài (`package.json` chỉ có runtime deps `next`, `react`, `react-dom`). Giữ bề mặt phẳng, không gradient hay shadow tĩnh.
+- Nguồn thiết kế là `.agents/briefs/shadcn-redesign/design.md` (xem thêm `docs/adr/0011-shadcn-ui-tailwind-v4.md` và skill `design-system`).
+- Khu vực đã chuyển dùng **shadcn/ui** (`src/components/ui`) + pattern ứng dụng (`src/components/app`) trên **Tailwind CSS v4** (`src/styles/ui.css`, **chưa bật preflight tới phase 5**).
+- Màu dùng qua lớp biến `--ui-*` (tên Tailwind chuẩn `bg-primary`, `text-muted-foreground`… ánh xạ sang `--ui-*`); font **Inter** (`--font-inter`) cho phần ứng dụng; mọi vùng mới bọc trong `UiScope` (`data-ui` + portal container).
+- **Cấm trộn** Tailwind và CSS Module trong một component. Khu vực chưa chuyển vẫn dùng CSS Module + `src/styles/tokens.css` / `src/styles/globals.css` (site gian hàng dùng `--site-*` qua 8 template JSON v2, font Archivo), không tự ý sửa.
+- `src/components/ui` và `src/components/app` **đóng băng sau phase 0**: các swarm khu vực không chạy `shadcn add` hay tự sửa hai thư mục này; thiếu gì thì báo lại.
+- Phần ứng dụng được dùng 3 bậc bóng nhẹ theo spec §6.3 (`shadow-card`, `shadow-button`, `shadow-overlay`, không gradient); site gian hàng vẫn giữ bề mặt phẳng (chỉ nổi ở overlay). Ngoại lệ (2026-11-26): riêng trang chủ nền tảng `/` (`PlatformHome*`, component con trang chủ và nhánh `data-home="true"` của `PlatformHeader`) được dùng gradient, quầng sáng `radial-gradient`, `mask-image` và `box-shadow` qua token `--home-*` và font Inter; `(site)`, `(seller)`, `(admin)` và các trang `(shop)` khác giữ nguyên luật bề mặt phẳng và font Archivo ở phần chưa chuyển.
+- Phụ thuộc UI runtime được phép thêm: `tailwindcss`, `@tailwindcss/postcss`, `tw-animate-css`, `class-variance-authority`, `clsx`, `tailwind-merge`, `radix-ui`, `lucide-react`, `cmdk`, `sonner` (không cài `next-themes`, `recharts`, `@tanstack/react-table`, `react-hook-form`, `zod`, `react-day-picker`, `vaul`, `input-otp`).
 - Chữ hiển thị cho người mua viết bằng tiếng Việt tự nhiên, không để lộ thuật ngữ kỹ thuật nội bộ (JWT, HMAC, Saga, Redis Lua, sandbox, sổ cái ghi kép, optimistic locking).
+- Mọi màn hình mới hoặc đổi bố cục phải soát trực quan bằng Playwright ở 3 khổ `390px` / `768px` / `1440px`.
 
 ## Lệnh kiểm tra
 

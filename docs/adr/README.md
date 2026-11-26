@@ -23,6 +23,7 @@ Mẫu ADR: [0000-template.md](0000-template.md).
 | [0007](0007-observability-and-aiops-engine.md) | Hệ thống giám sát (Observability) và AIOps engine bằng Rust | Chấp nhận | 2026-11-24 |
 | [0008](0008-kubernetes-cicd-and-backup.md) | Nơi triển khai Kubernetes, CI/CD và sao lưu cơ sở dữ liệu | Chấp nhận | 2026-11-24 |
 | [0009](0009-email-provider-resend.md) | Nhà cung cấp gửi email giao dịch cho `services/notification` (SMTP / Resend) | Đề xuất, chờ chủ dự án duyệt | 2026-11-26 |
+| [0011](0011-shadcn-ui-tailwind-v4.md) | Hệ thống UI `shadcn/ui` + Tailwind CSS v4 cho `web/` | Đã duyệt (chủ dự án, 2026-11-26) | 2026-11-26 |
 
 ## Kiến trúc hợp nhất nhánh
 

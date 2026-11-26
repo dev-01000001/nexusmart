@@ -156,6 +156,24 @@ export function resolveSiteFontStack(_fontFamily?: SiteFontFamily | string): str
   return SITE_FONT_STACK;
 }
 
+export const SITE_UI_FONT_STACKS: Record<SiteFontFamily, string> = {
+  "work-sans": "var(--font-site-work-sans), system-ui, sans-serif",
+  "be-vietnam-pro": "var(--font-site-be-vietnam-pro), system-ui, sans-serif",
+  inter: "var(--font-inter), system-ui, sans-serif",
+  "ibm-plex-sans": "var(--font-site-ibm-plex-sans), system-ui, sans-serif",
+  "plus-jakarta-sans": "var(--font-site-plus-jakarta-sans), system-ui, sans-serif",
+};
+
+export function resolveSiteUiFontStack(fontFamily?: string | null): string {
+  if (typeof fontFamily === "string") {
+    const clean = fontFamily.trim().toLowerCase() as SiteFontFamily;
+    if (Object.prototype.hasOwnProperty.call(SITE_UI_FONT_STACKS, clean)) {
+      return SITE_UI_FONT_STACKS[clean];
+    }
+  }
+  return SITE_UI_FONT_STACKS[DEFAULT_SITE_THEME.font_family];
+}
+
 export interface SiteThemeVars {
   "--site-bg": string;
   "--site-surface": string;
@@ -225,5 +243,105 @@ export function buildSiteThemeVars(theme: SiteTheme | undefined | null): SiteThe
     "--site-band-bg": bandBg,
     "--site-band-ink": bandInk,
     "--site-font": resolveSiteFontStack(theme?.font_family),
+  };
+}
+
+export type SiteUiThemeInput =
+  (SiteTheme & { radius?: string | null; density?: string | null }) | null | undefined;
+
+export function siteRadiusToCss(radius?: string | null): string {
+  switch ((radius ?? "").trim().toLowerCase()) {
+    case "sm":
+      return "4px";
+    case "md":
+      return "8px";
+    case "lg":
+      return "16px";
+    case "none":
+    default:
+      return "0px";
+  }
+}
+
+export interface SiteUiVars {
+  "--ui-background": string;
+  "--ui-foreground": string;
+  "--ui-card": string;
+  "--ui-card-foreground": string;
+  "--ui-popover": string;
+  "--ui-popover-foreground": string;
+  "--ui-primary": string;
+  "--ui-primary-foreground": string;
+  "--ui-secondary": string;
+  "--ui-secondary-foreground": string;
+  "--ui-muted": string;
+  "--ui-muted-foreground": string;
+  "--ui-accent": string;
+  "--ui-accent-foreground": string;
+  "--ui-brand": string;
+  "--ui-brand-foreground": string;
+  "--ui-border": string;
+  "--ui-input": string;
+  "--ui-ring": string;
+  "--ui-radius": string;
+  "--ui-font": string;
+}
+
+export function buildSiteUiVars(theme: SiteUiThemeInput): SiteUiVars {
+  const bg = normalizeHexColor(theme?.bg_color, DEFAULT_SITE_THEME.bg_color);
+  const surface = normalizeHexColor(theme?.surface_color, DEFAULT_SITE_THEME.surface_color);
+  const ink = normalizeHexColor(theme?.text_color, DEFAULT_SITE_THEME.text_color);
+  const accent = normalizeHexColor(theme?.accent_color, DEFAULT_SITE_THEME.accent_color);
+  const accentInk = normalizeHexColor(
+    theme?.accent_text_color,
+    DEFAULT_SITE_THEME.accent_text_color
+  );
+
+  const ring = contrastRatio(accent, bg) >= 3 ? accent : ink;
+  const secondary = mixHex(ink, bg, 0.08);
+  const muted = mixHex(ink, bg, 0.06);
+  const accentHover = mixHex(ink, bg, 0.1);
+  const border = mixHex(ink, bg, 0.14);
+
+  let mutedForeground = ink;
+  for (let pct = 70; pct < 100; pct += 5) {
+    const candidate = mixHex(ink, bg, pct / 100);
+    if (contrastRatio(candidate, bg) >= 4.5 && contrastRatio(candidate, surface) >= 4.5) {
+      mutedForeground = candidate;
+      break;
+    }
+  }
+
+  let input = ink;
+  for (let pct = 45; pct < 100; pct += 5) {
+    const candidate = mixHex(ink, bg, pct / 100);
+    if (contrastRatio(candidate, bg) >= 3) {
+      input = candidate;
+      break;
+    }
+  }
+
+  return {
+    "--ui-background": bg,
+    "--ui-foreground": ink,
+    "--ui-card": surface,
+    "--ui-card-foreground": ink,
+    "--ui-popover": surface,
+    "--ui-popover-foreground": ink,
+    "--ui-primary": accent,
+    "--ui-primary-foreground": accentInk,
+    "--ui-secondary": secondary,
+    "--ui-secondary-foreground": ink,
+    "--ui-muted": muted,
+    "--ui-muted-foreground": mutedForeground,
+    "--ui-accent": accentHover,
+    "--ui-accent-foreground": ink,
+    "--ui-brand": accent,
+    "--ui-brand-foreground": accentInk,
+    "--ui-border": border,
+    "--ui-input": input,
+    "--ui-ring": ring,
+    "--ui-radius": siteRadiusToCss(theme?.radius),
+    "--ui-font": resolveSiteUiFontStack(theme?.font_family),
   };
 }

@@ -3,7 +3,9 @@ import { Archivo } from "next/font/google";
 import { RevealObserver } from "@/components/Reveal";
 import { SessionProvider } from "@/components/SessionProvider";
 import { StoreProvider } from "@/context/StoreContext";
+import { fontVariableClassNames } from "@/lib/fonts";
 import { getSession, type SessionUser } from "@/lib/server/session";
+import "@/styles/ui.css";
 import "@/styles/tokens.css";
 import "@/styles/globals.css";
 
@@ -38,7 +40,11 @@ export default async function RootLayout({
   }
 
   return (
-    <html lang="vi" className={archivo.variable} suppressHydrationWarning>
+    <html
+      lang="vi"
+      className={`${archivo.variable} ${fontVariableClassNames}`}
+      suppressHydrationWarning
+    >
       <head>
         <script
           dangerouslySetInnerHTML={{
