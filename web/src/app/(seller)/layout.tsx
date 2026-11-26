@@ -1,5 +1,6 @@
 import React from "react";
-import { StateView } from "@/components";
+import { ErrorState } from "@/components/app";
+import { UiScope } from "@/components/ui/ui-scope";
 import { SELLER_ORDERS_PAGE_SIZE, resolveSellerPendingOrdersCount } from "@/lib/a8-types";
 import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
@@ -15,7 +16,7 @@ import {
 } from "@/features/seller/sellerServer";
 import { loadSellerSiteSummaryServer } from "@/features/seller/site/siteServer";
 import { summarizeSellerSite } from "@/features/seller/site/siteSummary";
-import styles from "./layout.module.css";
+import "@/styles/ui.css";
 
 export const dynamic = "force-dynamic";
 
@@ -37,18 +38,15 @@ export default async function SellerLayout({ children }: { children: React.React
   } catch (err) {
     if (err instanceof GatewayError) {
       return (
-        <div className={styles.shell}>
-          <main className={styles.canvas}>
-            <StateView
-              kind="error"
-              surface="app"
+        <UiScope className="flex min-h-svh items-center justify-center bg-background p-6 text-sm text-foreground">
+          <main className="w-full max-w-md">
+            <ErrorState
               title="Chưa thể xác minh phiên người bán"
-              message={SAFE_MESSAGES[err.kind]}
-              actionLabel="Tải lại"
-              actionHref="/seller"
+              description={SAFE_MESSAGES[err.kind]}
+              retryHref="/seller"
             />
           </main>
-        </div>
+        </UiScope>
       );
     }
     throw err;

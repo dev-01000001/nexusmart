@@ -2,7 +2,22 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Button, IconCheck, IconPlus, IconRefresh } from "@/components";
+import { AlertCircle, Check, Plus, RefreshCw } from "lucide-react";
+import { PageHeader, StatusBadge } from "@/components/app";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError, getErrorMessage } from "@/lib/api";
 import { formatDateTimeVi } from "@/lib/format";
 import type { GwProvince, GwWard } from "@/features/commerce/types";
@@ -12,12 +27,11 @@ import {
   getShopStatusInfo,
   isShopInfoRequested,
 } from "@/features/account/orderMeta";
+import { resolveSellerShopTone } from "./ops/sellerTone";
 import type { GwSellerShop } from "./sellerApiTypes";
 import { validateShopRegisterInput } from "./sellerValidation";
 import type { SellerAddress } from "./sellerReturns";
 import { useSellerContext } from "./SellerShell";
-import { statusPillClass } from "./SellerUiPrimitives";
-import common from "./SellerCommon.module.css";
 
 export interface SellerShopOnboardingProps {
   user: SessionUser;
@@ -244,426 +258,397 @@ export function SellerShopOnboarding({
   const canSubmit = canSubmitShopApplication(shop);
   const isResubmitting = Boolean(shop && canSubmit);
   const statusMeta = shop ? getShopStatusInfo(shop.status, shop.rejection_reason) : null;
+  const shopTone = shop ? resolveSellerShopTone(shop.status, shop.rejection_reason) : "neutral";
   const isPlainPending = Boolean(shop && shop.status === "PENDING" && !infoRequested);
   const isRejected = shop?.status === "REJECTED";
   const isActive = shop?.status === "ACTIVE";
   const reasonText = (shop?.rejection_reason ?? "").trim();
 
   return (
-    <div className={common.page}>
-      <header className={common.pageHeader}>
-        <div className={common.headerText}>
-          <h1 className={common.title}>{shop ? "Hồ sơ gian hàng" : "Đăng ký mở gian hàng"}</h1>
-        </div>
-        {shop && (
-          <div className={common.headerActions}>
+    <div className="mx-auto max-w-[820px] space-y-6">
+      <PageHeader
+        title={shop ? "Hồ sơ gian hàng" : "Đăng ký mở gian hàng"}
+        subtitle="Hoàn tất thông tin gian hàng và địa chỉ kho lấy hàng để quản trị viên duyệt mở bán."
+        badges={
+          shop && statusMeta ? <StatusBadge tone={shopTone}>{statusMeta.label}</StatusBadge> : null
+        }
+        primaryAction={
+          shop ? (
             <Button
+              type="button"
               variant="outline"
               size="sm"
-              shape="app"
               disabled={checkingStatus}
               onClick={() => void handleRefreshShopStatus()}
             >
-              <IconRefresh size={14} />
+              <RefreshCw
+                className={checkingStatus ? "size-4 animate-spin" : "size-4"}
+                aria-hidden="true"
+              />
               <span>{checkingStatus ? "Đang kiểm tra..." : "Kiểm tra lại trạng thái"}</span>
             </Button>
-          </div>
-        )}
-      </header>
+          ) : null
+        }
+      />
 
-      {shop && statusMeta && (
-        <section className={common.card} aria-label="Trạng thái phê duyệt gian hàng">
-          <div className={common.cardHeader}>
-            <h2 className={common.cardTitle}>{shop.name}</h2>
-            <span className={statusPillClass(statusMeta.tone)}>{statusMeta.label}</span>
-          </div>
+      {shop && statusMeta ? (
+        <section aria-label="Trạng thái phê duyệt gian hàng" className="space-y-4">
+          {infoRequested ? (
+            <Alert variant="destructive">
+              <AlertCircle className="size-4" aria-hidden="true" />
+              <AlertTitle>Yêu cầu bổ sung thông tin: {reasonText}</AlertTitle>
+              <AlertDescription>{statusMeta.description}</AlertDescription>
+            </Alert>
+          ) : null}
 
-          {infoRequested && (
-            <>
-              <p className={common.fieldError} role="alert" style={{ marginBottom: 8 }}>
-                Yêu cầu bổ sung thông tin: {reasonText}
-              </p>
-              <p className={common.cardMeta} style={{ marginBottom: 12 }}>
-                {statusMeta.description}
-              </p>
-            </>
-          )}
-          {isPlainPending && (
-            <p className={common.cardMeta} style={{ marginBottom: 12 }}>
-              Hồ sơ mở gian hàng đã được ghi nhận và đang chờ quản trị viên xét duyệt. Bạn có thể
-              bấm Kiểm tra lại trạng thái sau khi nhận thông báo duyệt.
-            </p>
-          )}
-          {isRejected && (
-            <>
-              <p className={common.fieldError} role="alert" style={{ marginBottom: 8 }}>
+          {isRejected ? (
+            <Alert variant="destructive">
+              <AlertCircle className="size-4" aria-hidden="true" />
+              <AlertTitle>
                 Hồ sơ gian hàng chưa được duyệt{reasonText ? `: ${reasonText}` : "."}
-              </p>
-              <p className={common.cardMeta} style={{ marginBottom: 12 }}>
-                {statusMeta.description}
-              </p>
-            </>
-          )}
-          {isActive && (
-            <p className={common.cardMeta} style={{ marginBottom: 12 }}>
-              Gian hàng đã hoạt động. Nhấn nút bên trên để đồng bộ phiên và vào bảng điều khiển.
-            </p>
-          )}
+              </AlertTitle>
+              <AlertDescription>{statusMeta.description}</AlertDescription>
+            </Alert>
+          ) : null}
 
-          <div style={{ display: "grid", gap: 8, fontSize: 14 }}>
-            <div>
-              <span className={common.cardMeta}>Số điện thoại liên hệ: </span>
-              <strong>{shop.contact_phone || "—"}</strong>
-            </div>
-            {shop.business_license_doc && (
-              <div>
-                <span className={common.cardMeta}>Giấy phép kinh doanh: </span>
-                <span>{shop.business_license_doc}</span>
-              </div>
-            )}
-            {shop.description && (
-              <div>
-                <span className={common.cardMeta}>Mô tả: </span>
-                <span>{shop.description}</span>
-              </div>
-            )}
-            {shop.created_at && (
-              <div>
-                <span className={common.cardMeta}>Ngày gửi hồ sơ: </span>
-                <span>{formatDateTimeVi(shop.created_at)}</span>
-              </div>
-            )}
-          </div>
+          <Card>
+            <CardHeader className="flex-row items-center justify-between gap-2">
+              <CardTitle>{shop.name}</CardTitle>
+              <StatusBadge tone={shopTone}>{statusMeta.label}</StatusBadge>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {isPlainPending ? (
+                <p className="text-[13px] leading-[18px] text-muted-foreground">
+                  Hồ sơ mở gian hàng đã được ghi nhận và đang chờ quản trị viên xét duyệt. Bạn có
+                  thể bấm Kiểm tra lại trạng thái sau khi nhận thông báo duyệt.
+                </p>
+              ) : null}
+              {isActive ? (
+                <p className="text-[13px] leading-[18px] text-muted-foreground">
+                  Gian hàng đã hoạt động. Nhấn nút bên trên để đồng bộ phiên và vào bảng điều khiển.
+                </p>
+              ) : null}
 
-          {!canSubmit && formError && (
-            <p className={common.fieldError} role="alert" style={{ marginTop: 12 }}>
-              {formError}
-            </p>
-          )}
-        </section>
-      )}
-
-      {canSubmit && (
-        <>
-          <form
-            className={common.card}
-            onSubmit={(e) => void handleRegisterShop(e)}
-            aria-label={
-              isResubmitting
-                ? "Biểu mẫu cập nhật và nộp lại hồ sơ gian hàng"
-                : "Biểu mẫu đăng ký mở gian hàng"
-            }
-          >
-            <div className={common.cardHeader}>
-              <h2 className={common.cardTitle}>
-                {isResubmitting ? "Cập nhật và nộp lại hồ sơ" : "Thông tin gian hàng"}
-              </h2>
-              <span className={common.cardMeta}>
-                Hồ sơ sẽ được quản trị viên duyệt trước khi mở bán
-              </span>
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-                  gap: 14,
-                }}
-              >
-                <div className={common.field}>
-                  <label htmlFor="shop-reg-name" className={common.fieldLabel}>
-                    Tên gian hàng
-                  </label>
-                  <input
-                    id="shop-reg-name"
-                    type="text"
-                    className={common.textInput}
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="Ví dụ: Xưởng May Bạch Đằng"
-                    maxLength={120}
-                    required
-                  />
+              <dl className="grid grid-cols-1 gap-2.5 text-sm sm:grid-cols-2">
+                <div>
+                  <dt className="text-xs text-muted-foreground">Số điện thoại liên hệ</dt>
+                  <dd className="mt-0.5 font-medium text-foreground tabular-nums">
+                    {shop.contact_phone || "—"}
+                  </dd>
                 </div>
-                <div className={common.field}>
-                  <label htmlFor="shop-reg-phone" className={common.fieldLabel}>
-                    Số điện thoại liên hệ
-                  </label>
-                  <input
-                    id="shop-reg-phone"
-                    type="tel"
-                    className={common.textInput}
-                    value={contactPhone}
-                    onChange={(e) => setContactPhone(e.target.value)}
-                    placeholder="Ví dụ: 0912345678"
-                    maxLength={20}
-                    required
-                  />
-                </div>
-              </div>
+                {shop.business_license_doc ? (
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Giấy phép kinh doanh</dt>
+                    <dd className="mt-0.5 font-medium text-foreground">
+                      {shop.business_license_doc}
+                    </dd>
+                  </div>
+                ) : null}
+                {shop.created_at ? (
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Ngày gửi hồ sơ</dt>
+                    <dd className="mt-0.5 text-foreground tabular-nums">
+                      {formatDateTimeVi(shop.created_at)}
+                    </dd>
+                  </div>
+                ) : null}
+                {shop.description ? (
+                  <div className="sm:col-span-2">
+                    <dt className="text-xs text-muted-foreground">Mô tả</dt>
+                    <dd className="mt-0.5 text-foreground">{shop.description}</dd>
+                  </div>
+                ) : null}
+              </dl>
 
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-                  gap: 14,
-                }}
-              >
-                <div className={common.field}>
-                  <label htmlFor="shop-reg-slug" className={common.fieldLabel}>
-                    Đường dẫn gian hàng (tùy chọn)
-                  </label>
-                  <input
-                    id="shop-reg-slug"
-                    type="text"
-                    className={common.textInput}
-                    value={slug}
-                    onChange={(e) => setSlug(e.target.value)}
-                    placeholder="xuong-may-bach-dang"
-                    maxLength={80}
-                  />
-                </div>
-                <div className={common.field}>
-                  <label htmlFor="shop-reg-license" className={common.fieldLabel}>
-                    Giấy phép kinh doanh
-                  </label>
-                  <input
-                    id="shop-reg-license"
-                    type="text"
-                    className={common.textInput}
-                    value={businessLicenseDoc}
-                    onChange={(e) => setBusinessLicenseDoc(e.target.value)}
-                    placeholder="Mã số ĐKKD hoặc liên kết chứng từ"
-                    maxLength={500}
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className={common.field}>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 8,
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <label htmlFor="shop-reg-pickup" className={common.fieldLabel}>
-                    Địa chỉ kho lấy hàng
-                  </label>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    shape="app"
-                    onClick={() => setShowAddrForm((prev) => !prev)}
-                  >
-                    <IconPlus size={14} />
-                    <span>{showAddrForm ? "Đóng mẫu địa chỉ" : "Thêm địa chỉ kho"}</span>
-                  </Button>
-                </div>
-                {addresses.length > 0 ? (
-                  <select
-                    id="shop-reg-pickup"
-                    className={common.textInput}
-                    value={pickupAddressId}
-                    onChange={(e) => setPickupAddressId(e.target.value)}
-                    required
-                  >
-                    {addresses.map((addr) => (
-                      <option key={addr.id} value={addr.id}>
-                        {addr.recipient_name} · {addr.recipient_phone} — {addr.street_address},{" "}
-                        {addr.ward_name}, {addr.province_name}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <span className={common.fieldHint}>
-                    Tài khoản chưa có địa chỉ kho. Vui lòng tạo địa chỉ kho lấy hàng bên dưới trước
-                    khi gửi đăng ký.
-                  </span>
-                )}
-              </div>
-
-              <div className={common.field}>
-                <label htmlFor="shop-reg-desc" className={common.fieldLabel}>
-                  Mô tả gian hàng (tùy chọn)
-                </label>
-                <textarea
-                  id="shop-reg-desc"
-                  className={common.textArea}
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Ngành hàng chính và thông tin giới thiệu ngắn..."
-                  maxLength={1000}
-                />
-              </div>
-
-              {formError && (
-                <p className={common.fieldError} role="alert">
+              {!canSubmit && formError ? (
+                <p className="text-sm font-medium text-destructive" role="alert">
                   {formError}
                 </p>
-              )}
+              ) : null}
+            </CardContent>
+          </Card>
+        </section>
+      ) : null}
 
-              <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                <Button
-                  type="submit"
-                  variant="ink"
-                  size="sm"
-                  shape="app"
-                  disabled={submitting || !pickupAddressId}
-                >
-                  <IconCheck size={14} />
-                  <span>
-                    {submitting
-                      ? "Đang gửi hồ sơ..."
-                      : isResubmitting
-                        ? "Nộp lại hồ sơ gian hàng"
-                        : "Gửi đăng ký mở gian hàng"}
-                  </span>
-                </Button>
-              </div>
+      {canSubmit ? (
+        <>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+            <div className="space-y-1">
+              <h2 className="text-sm font-semibold text-foreground">
+                {isResubmitting ? "Cập nhật và nộp lại hồ sơ" : "Thông tin gian hàng"}
+              </h2>
+              <p className="text-[13px] leading-[18px] text-muted-foreground">
+                Hồ sơ sẽ được quản trị viên duyệt trước khi mở bán. Tên gian hàng và số điện thoại
+                hiển thị trên hoá đơn giao hàng.
+              </p>
             </div>
-          </form>
 
-          {showAddrForm && (
-            <form
-              className={common.card}
-              onSubmit={(e) => void handleCreateAddress(e)}
-              aria-label="Thêm địa chỉ kho lấy hàng"
-            >
-              <div className={common.cardHeader}>
-                <h2 className={common.cardTitle}>Thêm địa chỉ kho lấy hàng</h2>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-                    gap: 14,
-                  }}
+            <Card>
+              <CardContent>
+                <form
+                  onSubmit={(e) => void handleRegisterShop(e)}
+                  aria-label={
+                    isResubmitting
+                      ? "Biểu mẫu cập nhật và nộp lại hồ sơ gian hàng"
+                      : "Biểu mẫu đăng ký mở gian hàng"
+                  }
+                  className="space-y-4"
                 >
-                  <div className={common.field}>
-                    <label htmlFor="addr-name" className={common.fieldLabel}>
-                      Người liên hệ kho
-                    </label>
-                    <input
-                      id="addr-name"
-                      type="text"
-                      className={common.textInput}
-                      value={addrRecipient}
-                      onChange={(e) => setAddrRecipient(e.target.value)}
-                      required
-                    />
-                  </div>
-                  <div className={common.field}>
-                    <label htmlFor="addr-phone" className={common.fieldLabel}>
-                      Số điện thoại kho
-                    </label>
-                    <input
-                      id="addr-phone"
-                      type="tel"
-                      className={common.textInput}
-                      value={addrPhone}
-                      onChange={(e) => setAddrPhone(e.target.value)}
-                      required
-                    />
-                  </div>
-                </div>
+                  <FieldGroup className="gap-4">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <Field>
+                        <FieldLabel htmlFor="shop-reg-name">Tên gian hàng</FieldLabel>
+                        <Input
+                          id="shop-reg-name"
+                          type="text"
+                          value={name}
+                          onChange={(e) => setName(e.target.value)}
+                          placeholder="Ví dụ: Xưởng May Bạch Đằng"
+                          maxLength={120}
+                          required
+                        />
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor="shop-reg-phone">Số điện thoại liên hệ</FieldLabel>
+                        <Input
+                          id="shop-reg-phone"
+                          type="tel"
+                          value={contactPhone}
+                          onChange={(e) => setContactPhone(e.target.value)}
+                          placeholder="Ví dụ: 0912345678"
+                          maxLength={20}
+                          required
+                        />
+                      </Field>
+                    </div>
 
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-                    gap: 14,
-                  }}
-                >
-                  <div className={common.field}>
-                    <label htmlFor="addr-prov" className={common.fieldLabel}>
-                      Tỉnh / Thành phố
-                    </label>
-                    <select
-                      id="addr-prov"
-                      className={common.textInput}
-                      value={addrProvinceCode}
-                      onChange={(e) => setAddrProvinceCode(e.target.value)}
-                      required
-                    >
-                      <option value="">Chọn tỉnh / thành phố</option>
-                      {provinces.map((p) => (
-                        <option key={p.code} value={p.code}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className={common.field}>
-                    <label htmlFor="addr-ward" className={common.fieldLabel}>
-                      Phường / Xã
-                    </label>
-                    <select
-                      id="addr-ward"
-                      className={common.textInput}
-                      value={addrWardCode}
-                      onChange={(e) => setAddrWardCode(e.target.value)}
-                      disabled={!addrProvinceCode}
-                      required
-                    >
-                      <option value="">Chọn phường / xã</option>
-                      {wards.map((w) => (
-                        <option key={w.code} value={w.code}>
-                          {w.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <Field>
+                        <FieldLabel htmlFor="shop-reg-slug">
+                          Đường dẫn gian hàng (tùy chọn)
+                        </FieldLabel>
+                        <Input
+                          id="shop-reg-slug"
+                          type="text"
+                          value={slug}
+                          onChange={(e) => setSlug(e.target.value)}
+                          placeholder="xuong-may-bach-dang"
+                          maxLength={80}
+                        />
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor="shop-reg-license">Giấy phép kinh doanh</FieldLabel>
+                        <Input
+                          id="shop-reg-license"
+                          type="text"
+                          value={businessLicenseDoc}
+                          onChange={(e) => setBusinessLicenseDoc(e.target.value)}
+                          placeholder="Mã số ĐKKD hoặc liên kết chứng từ"
+                          maxLength={500}
+                          required
+                        />
+                      </Field>
+                    </div>
 
-                <div className={common.field}>
-                  <label htmlFor="addr-street" className={common.fieldLabel}>
-                    Số nhà, tên đường
-                  </label>
-                  <input
-                    id="addr-street"
-                    type="text"
-                    className={common.textInput}
-                    value={addrStreet}
-                    onChange={(e) => setAddrStreet(e.target.value)}
-                    placeholder="Ví dụ: 120 Nguyễn Trãi"
-                    required
-                  />
-                </div>
+                    <Field>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <FieldLabel htmlFor="shop-reg-pickup">Địa chỉ kho lấy hàng</FieldLabel>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="xs"
+                          onClick={() => setShowAddrForm((prev) => !prev)}
+                        >
+                          <Plus className="size-3.5" aria-hidden="true" />
+                          <span>{showAddrForm ? "Đóng mẫu địa chỉ" : "Thêm địa chỉ kho"}</span>
+                        </Button>
+                      </div>
+                      {addresses.length > 0 ? (
+                        <Select value={pickupAddressId} onValueChange={setPickupAddressId}>
+                          <SelectTrigger id="shop-reg-pickup" className="w-full bg-card">
+                            <SelectValue placeholder="Chọn địa chỉ kho lấy hàng" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {addresses.map((addr) => (
+                              <SelectItem key={addr.id} value={addr.id}>
+                                {addr.recipient_name} · {addr.recipient_phone} —{" "}
+                                {addr.street_address}, {addr.ward_name}, {addr.province_name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <FieldDescription>
+                          Tài khoản chưa có địa chỉ kho. Vui lòng tạo địa chỉ kho lấy hàng bên dưới
+                          trước khi gửi đăng ký.
+                        </FieldDescription>
+                      )}
+                    </Field>
 
-                {addrError && (
-                  <p className={common.fieldError} role="alert">
-                    {addrError}
-                  </p>
-                )}
+                    <Field>
+                      <FieldLabel htmlFor="shop-reg-desc">Mô tả gian hàng (tùy chọn)</FieldLabel>
+                      <Textarea
+                        id="shop-reg-desc"
+                        rows={3}
+                        value={description}
+                        onChange={(e) => setDescription(e.target.value)}
+                        placeholder="Ngành hàng chính và thông tin giới thiệu ngắn..."
+                        maxLength={1000}
+                      />
+                    </Field>
+                  </FieldGroup>
 
-                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                  {addresses.length > 0 && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      shape="app"
-                      onClick={() => setShowAddrForm(false)}
-                    >
-                      Hủy
+                  {formError ? <FieldError role="alert">{formError}</FieldError> : null}
+
+                  <div className="flex justify-end pt-1">
+                    <Button type="submit" size="sm" disabled={submitting || !pickupAddressId}>
+                      <Check className="size-4" aria-hidden="true" />
+                      <span>
+                        {submitting
+                          ? "Đang gửi hồ sơ..."
+                          : isResubmitting
+                            ? "Nộp lại hồ sơ gian hàng"
+                            : "Gửi đăng ký mở gian hàng"}
+                      </span>
                     </Button>
-                  )}
-                  <Button type="submit" variant="ink" size="sm" shape="app" disabled={addrSaving}>
-                    <span>{addrSaving ? "Đang lưu..." : "Lưu địa chỉ kho"}</span>
-                  </Button>
+                  </div>
+                </form>
+              </CardContent>
+            </Card>
+          </div>
+
+          {showAddrForm ? (
+            <>
+              <Separator />
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+                <div className="space-y-1">
+                  <h2 className="text-sm font-semibold text-foreground">
+                    Thêm địa chỉ kho lấy hàng
+                  </h2>
+                  <p className="text-[13px] leading-[18px] text-muted-foreground">
+                    Dùng để hãng vận chuyển đến lấy kiện và tính cước giao hàng chính xác theo 2 cấp
+                    hành chính.
+                  </p>
                 </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Địa chỉ kho mới</CardTitle>
+                    <CardDescription>
+                      Điền đầy đủ người liên hệ và địa chỉ thực tế của kho.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <form
+                      onSubmit={(e) => void handleCreateAddress(e)}
+                      aria-label="Thêm địa chỉ kho lấy hàng"
+                      className="space-y-4"
+                    >
+                      <FieldGroup className="gap-4">
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                          <Field>
+                            <FieldLabel htmlFor="addr-name">Người liên hệ kho</FieldLabel>
+                            <Input
+                              id="addr-name"
+                              type="text"
+                              value={addrRecipient}
+                              onChange={(e) => setAddrRecipient(e.target.value)}
+                              required
+                            />
+                          </Field>
+                          <Field>
+                            <FieldLabel htmlFor="addr-phone">Số điện thoại kho</FieldLabel>
+                            <Input
+                              id="addr-phone"
+                              type="tel"
+                              value={addrPhone}
+                              onChange={(e) => setAddrPhone(e.target.value)}
+                              required
+                            />
+                          </Field>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                          <Field>
+                            <FieldLabel htmlFor="addr-prov">Tỉnh / Thành phố</FieldLabel>
+                            <Select
+                              value={addrProvinceCode || undefined}
+                              onValueChange={(val) => {
+                                setAddrProvinceCode(val);
+                                setAddrWardCode("");
+                              }}
+                            >
+                              <SelectTrigger id="addr-prov" className="w-full bg-card">
+                                <SelectValue placeholder="Chọn tỉnh / thành phố" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {provinces.map((p) => (
+                                  <SelectItem key={p.code} value={p.code}>
+                                    {p.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </Field>
+                          <Field>
+                            <FieldLabel htmlFor="addr-ward">Phường / Xã</FieldLabel>
+                            <Select
+                              value={addrWardCode || undefined}
+                              onValueChange={setAddrWardCode}
+                              disabled={!addrProvinceCode}
+                            >
+                              <SelectTrigger id="addr-ward" className="w-full bg-card">
+                                <SelectValue placeholder="Chọn phường / xã" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {wards.map((w) => (
+                                  <SelectItem key={w.code} value={w.code}>
+                                    {w.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </Field>
+                        </div>
+
+                        <Field>
+                          <FieldLabel htmlFor="addr-street">Số nhà, tên đường</FieldLabel>
+                          <Input
+                            id="addr-street"
+                            type="text"
+                            value={addrStreet}
+                            onChange={(e) => setAddrStreet(e.target.value)}
+                            placeholder="Ví dụ: 120 Nguyễn Trãi"
+                            required
+                          />
+                        </Field>
+                      </FieldGroup>
+
+                      {addrError ? <FieldError role="alert">{addrError}</FieldError> : null}
+
+                      <div className="flex flex-wrap justify-end gap-2 pt-1">
+                        {addresses.length > 0 ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setShowAddrForm(false)}
+                          >
+                            Hủy
+                          </Button>
+                        ) : null}
+                        <Button type="submit" size="sm" disabled={addrSaving}>
+                          {addrSaving ? "Đang lưu..." : "Lưu địa chỉ kho"}
+                        </Button>
+                      </div>
+                    </form>
+                  </CardContent>
+                </Card>
               </div>
-            </form>
-          )}
+            </>
+          ) : null}
         </>
-      )}
+      ) : null}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import React from "react";
 import { formatVnDateOffset } from "@/lib/format";
+import { loadSellerSiteDomainsServer } from "@/lib/server/domains";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { SellerOverviewClient } from "@/features/seller/SellerOverviewClient";
 import { SellerShopOnboarding } from "@/features/seller/SellerShopOnboarding";
@@ -7,6 +8,7 @@ import {
   loadMyShop,
   loadSellerAddresses,
   loadSellerBalance,
+  loadSellerBankAccount,
   loadSellerOrders,
   loadSellerPendingReturnsCount,
   loadSellerProducts,
@@ -44,23 +46,40 @@ export default async function SellerOverviewPage() {
   const defaultFrom = formatVnDateOffset(-29);
   const defaultTo = formatVnDateOffset(0);
 
-  const [ordersRes, productsRes, balanceRes, reportRes, pendingReturnsCount] = await Promise.all([
+  const [
+    ordersRes,
+    productsRes,
+    balanceRes,
+    reportRes,
+    pendingReturnsCount,
+    bankAccountRes,
+    domainsRes,
+  ] = await Promise.all([
     loadSellerOrders(100),
     loadSellerProducts(100),
     loadSellerBalance(),
     loadSellerReport(defaultFrom, defaultTo, 10),
     loadSellerPendingReturnsCount(),
+    loadSellerBankAccount(),
+    loadSellerSiteDomainsServer(),
   ]);
 
   const loadError = ordersRes.error ?? productsRes.error;
+  const productsTotal = productsRes.data?.total ?? productsRes.data?.items?.length ?? 0;
 
   return (
     <SellerSuspense>
       <SellerOverviewClient
         initialOrders={ordersRes.data?.items ?? []}
         initialProducts={productsRes.data?.items ?? []}
+        productsTotal={productsTotal}
+        productsError={productsRes.error}
         initialBalance={balanceRes.data}
         balanceError={balanceRes.error}
+        initialBankAccount={bankAccountRes.data}
+        bankAccountError={bankAccountRes.error}
+        initialDomains={domainsRes.domains}
+        domainsError={domainsRes.error}
         initialReport={reportRes.data}
         initialReportError={reportRes.error}
         initialFromDate={defaultFrom}

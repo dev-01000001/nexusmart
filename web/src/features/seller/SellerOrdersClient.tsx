@@ -3,7 +3,57 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Button, IconCheck, IconRefresh, IconSearch, StateView } from "@/components";
+import {
+  Check,
+  Printer,
+  RefreshCw,
+  Search,
+  ShoppingBag,
+  SlidersHorizontal,
+  Truck,
+  X,
+} from "lucide-react";
+import {
+  EmptyState,
+  ErrorState,
+  IndexRowCard,
+  IndexTable,
+  Money,
+  PageHeader,
+  StatusBadge,
+  shipmentJobTone,
+  type IndexTableTab,
+  type StatusTone,
+} from "@/components/app";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { api, apiBlob, getErrorMessage } from "@/lib/api";
 import {
   GATEWAY_ORDER_STATUS_LABELS,
@@ -37,6 +87,8 @@ import {
   type SalesChannelFilter,
 } from "@/lib/salesChannel";
 import { buildShippingLabelHref } from "@/features/account/orderMeta";
+import { cn } from "@/lib/utils";
+import { resolveSellerOrderTone } from "./ops/sellerTone";
 import {
   CARRIER_OPTIONS,
   buildCarrierSelectOptions,
@@ -56,9 +108,6 @@ import {
 } from "./sellerApiTypes";
 import { SellerOrderQuickDrawer } from "./SellerOrderQuickDrawer";
 import { useSellerContext } from "./SellerShell";
-import { SellerDrawer, statusPillClass } from "./SellerUiPrimitives";
-import common from "./SellerCommon.module.css";
-import styles from "@/app/(seller)/seller/don-hang/page.module.css";
 
 interface SelectedOrderMeta {
   order_code: string;
@@ -95,6 +144,9 @@ function mapStatusParamToFilter(rawStatus: string | null): SellerOrderFilterKey 
   if (rawStatus === "OTHER" || rawStatus === "CANCELLED" || rawStatus === "tra_huy") return "OTHER";
   return "all";
 }
+
+const CHANNEL_ALL_VALUE = "__ALL__";
+const CARRIER_KEEP_VALUE = "__KEEP__";
 
 const CHANNEL_FILTER_OPTIONS: ReadonlyArray<{ value: SalesChannelFilter; label: string }> = [
   { value: "", label: "Mọi kênh bán" },
@@ -133,6 +185,7 @@ export function SellerOrdersClient({
   const [paymentFilter, setPaymentFilter] = useState<"all" | "COD" | "VIETQR" | "ZALOPAY">("all");
   const [channelFilter, setChannelFilter] = useState<SalesChannelFilter>(initialChannel);
   const [dueBeforeDate, setDueBeforeDate] = useState("");
+  const [filtersOpen, setFiltersOpen] = useState(true);
 
   const [busyOrderId, setBusyOrderId] = useState<string | null>(null);
   const [confirmBatchBusy, setConfirmBatchBusy] = useState(false);
@@ -263,7 +316,6 @@ export function SellerOrdersClient({
 
   useEffect(() => {
     if (uiState) return;
-    // Skip redundant initial mount fetch when SSR already loaded default unfiltered page 1 cleanly
     const isDefaultUnfiltered =
       page === 1 &&
       filter === "all" &&
@@ -714,7 +766,7 @@ export function SellerOrdersClient({
     setPage(1);
   };
 
-  const countCards: Array<{ key: SellerOrderFilterKey; label: string; count: number }> = [
+  const orderTabs: IndexTableTab[] = [
     { key: "all", label: "Tất cả", count: counts.all },
     { key: "CONFIRMED", label: GATEWAY_ORDER_STATUS_LABELS.CONFIRMED, count: counts.CONFIRMED },
     { key: "PREPARING", label: GATEWAY_ORDER_STATUS_LABELS.PREPARING, count: counts.PREPARING },
@@ -733,249 +785,120 @@ export function SellerOrdersClient({
   );
 
   return (
-    <div className={common.page}>
-      <header className={common.pageHeader}>
-        <div className={common.headerText}>
-          <h1 className={common.title}>Đơn hàng</h1>
-        </div>
-        <div className={common.headerActions}>
+    <div className="space-y-4">
+      <PageHeader
+        title="Đơn hàng"
+        secondaryActions={
           <Button
-            variant="outline"
+            type="button"
+            variant="secondary"
             size="sm"
-            shape="app"
             disabled={loading}
             onClick={() => void loadOrders()}
           >
-            <IconRefresh size={14} />
+            <RefreshCw className={cn("size-3.5", loading && "animate-spin")} aria-hidden="true" />
             <span>Làm mới</span>
           </Button>
-          {pageConfirmedCount > 0 && (
+        }
+        primaryAction={
+          pageConfirmedCount > 0 ? (
             <Button
-              variant="ink"
+              type="button"
               size="sm"
-              shape="app"
               disabled={confirmBatchBusy}
               onClick={() => void handleConfirmPagePending()}
             >
-              <IconCheck size={14} />
+              <Check className="size-4" aria-hidden="true" />
               <span>
                 {confirmBatchBusy
                   ? "Đang xác nhận..."
                   : `Xác nhận chờ (${formatInt(pageConfirmedCount)})`}
               </span>
             </Button>
-          )}
-        </div>
-      </header>
+          ) : null
+        }
+      />
 
-      {(uiState === "loading" || (!uiState && loading && orders.length === 0)) && (
-        <StateView
-          kind="loading"
-          surface="app"
-          skeletonVariant="table"
-          title="Đang tải danh sách đơn hàng..."
-          rows={5}
-        />
-      )}
+      {uiState === "loading" || (!uiState && loading && orders.length === 0) ? (
+        <Card role="status" aria-label="Đang tải danh sách đơn hàng...">
+          <CardContent className="space-y-3 py-5">
+            <Skeleton className="h-8 w-full" />
+            {Array.from({ length: 5 }).map((_, idx) => (
+              <Skeleton key={idx} className="h-12 w-full" />
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
 
-      {(uiState === "error" || (!uiState && !loading && errorMsg)) && (
-        <StateView
-          kind="error"
-          surface="app"
+      {uiState === "error" || (!uiState && !loading && errorMsg) ? (
+        <ErrorState
           title="Không thể tải danh sách đơn hàng"
-          message={errorMsg ?? "Kết nối đến hệ thống xử lý đơn hàng tạm gián đoạn."}
-          actionLabel="Thử lại"
-          onAction={() => void loadOrders()}
+          description={errorMsg ?? "Kết nối đến hệ thống xử lý đơn hàng tạm gián đoạn."}
+          onRetry={() => void loadOrders()}
         />
-      )}
+      ) : null}
 
-      {uiState === "empty" && (
-        <StateView
-          kind="empty"
-          surface="app"
+      {uiState === "empty" ? (
+        <EmptyState
+          icon={ShoppingBag}
           title="Chưa có đơn hàng nào"
-          message="Khi người mua đặt hàng từ gian hàng, đơn sẽ xuất hiện tại đây."
-          actionLabel="Xem sản phẩm"
-          actionHref="/seller/san-pham"
+          description="Khi người mua đặt hàng từ gian hàng, đơn sẽ xuất hiện tại đây."
+          action={
+            <Button size="sm" asChild>
+              <Link href="/seller/san-pham">Xem sản phẩm</Link>
+            </Button>
+          }
         />
-      )}
+      ) : null}
 
-      {!uiState && !(loading && orders.length === 0) && !errorMsg && (
+      {!uiState && !(loading && orders.length === 0) && !errorMsg ? (
         <>
-          <div className={common.countCards6} role="tablist" aria-label="Lọc theo trạng thái đơn">
-            {countCards.map((c) => {
-              const selected = filter === c.key;
-              return (
-                <button
-                  key={c.key}
-                  type="button"
-                  role="tab"
-                  aria-selected={selected}
-                  className={`${common.countCard} ${selected ? common.countCardSelected : ""}`}
-                  onClick={() => {
-                    setFilter(c.key);
-                    setPage(1);
-                  }}
-                >
-                  <span className={common.countCardLabel}>{c.label}</span>
-                  <span className={common.countCardValue}>{formatInt(c.count)}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          <div className={common.chipScroller} role="tablist" aria-label="Lọc theo trạng thái đơn">
-            {countCards.map((c) => {
-              const selected = filter === c.key;
-              return (
-                <button
-                  key={`m-${c.key}`}
-                  type="button"
-                  role="tab"
-                  aria-selected={selected}
-                  className={`${common.chipBtn} ${selected ? common.chipBtnActive : ""}`}
-                  onClick={() => {
-                    setFilter(c.key);
-                    setPage(1);
-                  }}
-                >
-                  <span>{c.label}</span>
-                  <span className={common.chipCount}>{formatInt(c.count)}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          {selectedOrderIds.length > 0 && (
-            <section className={styles.batchBar} aria-label="Thao tác hàng loạt đơn hàng">
-              <div className={styles.batchBarInfo}>
-                <strong className="num">
-                  Đã chọn {formatInt(selectedOrderIds.length)}/{MAX_BATCH_SHIP_ORDERS} đơn
-                </strong>
-                <span className={styles.queueMeta}>
-                  ({formatInt(selectedTrackingCodes.length)} đã có vận đơn)
-                </span>
-                <button
-                  type="button"
-                  className={styles.rowDetailLink}
-                  onClick={handleClearSelection}
-                >
-                  Bỏ chọn
-                </button>
-              </div>
-              <div className={styles.batchBarControls}>
-                <select
-                  className={common.filterSelect}
-                  value={batchCarrierCode}
-                  onChange={(e) => {
-                    const nextCarrier = e.target.value;
-                    setBatchCarrierCode(nextCarrier);
-                    const opt = CARRIER_OPTIONS.find((c) => c.carrierCode === nextCarrier);
-                    setBatchServiceCode(opt?.services[0]?.serviceCode ?? "");
-                  }}
-                  aria-label="Hãng vận chuyển hàng loạt"
-                >
-                  <option value="">Giữ hãng theo từng đơn</option>
-                  {CARRIER_OPTIONS.map((c) => (
-                    <option key={c.carrierCode} value={c.carrierCode}>
-                      {c.carrierLabel}
-                    </option>
-                  ))}
-                </select>
-                {activeBatchCarrier && (
-                  <select
-                    className={common.filterSelect}
-                    value={batchServiceCode}
-                    onChange={(e) => setBatchServiceCode(e.target.value)}
-                    aria-label="Gói dịch vụ vận chuyển hàng loạt"
-                  >
-                    {activeBatchCarrier.services.map((s) => (
-                      <option key={s.serviceCode} value={s.serviceCode}>
-                        {s.serviceLabel}
-                      </option>
-                    ))}
-                  </select>
-                )}
-                <Button
-                  variant="ink"
-                  size="sm"
-                  shape="app"
-                  disabled={batchShipBusy}
-                  onClick={() => void handleBatchShip()}
-                >
-                  {batchShipBusy ? "Đang xếp hàng..." : "Tạo vận đơn hàng loạt"}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  shape="app"
-                  disabled={pickingBusy}
-                  onClick={() => void handleLoadPickingList()}
-                >
-                  {pickingBusy ? "Đang tổng hợp..." : "In danh sách nhặt hàng"}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  shape="app"
-                  disabled={pdfBusy || selectedTrackingCodes.length === 0}
-                  onClick={() => void handleBatchLabelsPdf()}
-                >
-                  {pdfBusy
-                    ? "Đang xuất PDF..."
-                    : `In nhãn gộp PDF (${formatInt(selectedTrackingCodes.length)})`}
-                </Button>
-              </div>
-            </section>
-          )}
-
-          {batchShipResult && (
-            <section className={common.card} aria-label="Kết quả tạo vận đơn hàng loạt">
-              <div className={common.cardHeader}>
-                <div>
-                  <h2 className={common.cardTitle}>
-                    Kết quả lô vận đơn:{" "}
-                    <span className="num">{formatInt(batchShipResult.queued_count)}</span> đã xếp
-                    hàng · <span className="num">{formatInt(batchShipResult.skipped_count)}</span>{" "}
-                    bỏ qua
-                  </h2>
-                </div>
-                <div className={styles.actionGroup}>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    shape="app"
-                    onClick={() => {
-                      pollCountRef.current = 0;
-                      void pollBatchProgress();
-                    }}
-                  >
-                    Cập nhật tiến độ
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    shape="app"
-                    onClick={() => {
-                      setBatchShipResult(null);
-                      setBatchTrackedById({});
-                    }}
-                  >
-                    Đóng
-                  </Button>
-                </div>
-              </div>
-              <div className={common.tableWrap}>
-                <table className={common.dataTable}>
-                  <thead>
-                    <tr>
-                      <th>Mã đơn</th>
-                      <th>Kết quả lô</th>
-                      <th>Trạng thái xử lý</th>
-                      <th>Chi tiết</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+          {/* Batch Ship Result Card */}
+          {batchShipResult ? (
+            <Card aria-label="Kết quả tạo vận đơn hàng loạt">
+              <CardHeader>
+                <CardTitle className="tabular-nums">
+                  Kết quả lô vận đơn: {formatInt(batchShipResult.queued_count)} đã xếp hàng ·{" "}
+                  {formatInt(batchShipResult.skipped_count)} bỏ qua
+                </CardTitle>
+                <CardAction>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      onClick={() => {
+                        pollCountRef.current = 0;
+                        void pollBatchProgress();
+                      }}
+                    >
+                      Cập nhật tiến độ
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => {
+                        setBatchShipResult(null);
+                        setBatchTrackedById({});
+                      }}
+                    >
+                      Đóng
+                    </Button>
+                  </div>
+                </CardAction>
+              </CardHeader>
+              <CardContent className="px-0 pb-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Mã đơn</TableHead>
+                      <TableHead>Kết quả lô</TableHead>
+                      <TableHead>Trạng thái xử lý</TableHead>
+                      <TableHead>Chi tiết</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     {(batchShipResult.results ?? []).map((item) => {
                       const liveOrder = ordersById.get(item.order_id);
                       const trackedOrder = batchTrackedById[item.order_id];
@@ -991,16 +914,16 @@ export function SellerOrdersClient({
                       const isQueuedOutcome = item.outcome === "QUEUED";
 
                       let progressLabel = "Bỏ qua";
-                      let progressTone: "neutral" | "warn" | "pos" | "neg" = "neutral";
+                      let progressTone: StatusTone = "neutral";
                       if (liveTracking) {
                         progressLabel = `Đã có mã: ${liveTracking}`;
-                        progressTone = "pos";
+                        progressTone = "success";
                       } else if (liveJobStatus === "FAILED") {
                         progressLabel = "Tạo vận đơn thất bại";
-                        progressTone = "neg";
+                        progressTone = shipmentJobTone("FAILED");
                       } else if (isQueuedOutcome || liveJobStatus === "QUEUED") {
                         progressLabel = "Đang chờ tạo vận đơn";
-                        progressTone = "warn";
+                        progressTone = shipmentJobTone("QUEUED");
                       }
 
                       const detailText = isQueuedOutcome
@@ -1012,161 +935,395 @@ export function SellerOrdersClient({
                         : translateBatchShipReasonCode(item.reason_code);
 
                       return (
-                        <tr key={item.order_id}>
-                          <td>
+                        <TableRow key={item.order_id}>
+                          <TableCell>
                             <Link
                               href={`/seller/don-hang/${item.order_id}`}
-                              className={common.cellLink}
+                              className="font-semibold text-foreground hover:text-brand hover:underline"
                             >
                               {item.order_code || item.order_id.slice(0, 8)}
                             </Link>
-                          </td>
-                          <td>
-                            <span className={statusPillClass(isQueuedOutcome ? "warn" : "neg")}>
+                          </TableCell>
+                          <TableCell>
+                            <StatusBadge tone={isQueuedOutcome ? "info" : "critical"}>
                               {isQueuedOutcome ? "Đã xếp hàng" : "Bỏ qua"}
-                            </span>
-                          </td>
-                          <td>
-                            <span className={statusPillClass(progressTone)}>{progressLabel}</span>
-                          </td>
-                          <td>{detailText}</td>
-                        </tr>
+                            </StatusBadge>
+                          </TableCell>
+                          <TableCell>
+                            <StatusBadge tone={progressTone}>{progressLabel}</StatusBadge>
+                          </TableCell>
+                          <TableCell className="whitespace-normal text-[13px] text-muted-foreground">
+                            {detailText}
+                          </TableCell>
+                        </TableRow>
                       );
                     })}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          )}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          ) : null}
 
-          <section className={common.card} aria-label="Bảng đơn hàng gian hàng">
-            <div className={common.toolbar} style={{ marginBottom: 14 }}>
-              <div className={common.toolbarLeft}>
-                <div className={common.searchWrap}>
-                  <span className={common.searchIcon}>
-                    <IconSearch size={14} />
+          <IndexTable
+            tabs={orderTabs}
+            activeTab={filter}
+            onTabChange={(nextKey) => {
+              setFilter(nextKey as SellerOrderFilterKey);
+              setPage(1);
+            }}
+            toolbar={
+              <div className="flex items-center gap-2">
+                <span className="hidden text-xs text-muted-foreground tabular-nums sm:inline">
+                  {loading
+                    ? "Đang tải..."
+                    : `Hiển thị ${formatInt(startIndex)}–${formatInt(endIndex)} / ${formatInt(total)}`}
+                </span>
+                <Button
+                  type="button"
+                  variant={filtersOpen ? "secondary" : "outline"}
+                  size="icon-sm"
+                  aria-label="Ẩn hoặc hiện bộ lọc đơn hàng"
+                  aria-expanded={filtersOpen}
+                  onClick={() => setFiltersOpen((v) => !v)}
+                >
+                  <SlidersHorizontal className="size-4" aria-hidden="true" />
+                </Button>
+              </div>
+            }
+            selection={
+              selectedOrderIds.length > 0
+                ? {
+                    count: selectedOrderIds.length,
+                    onClear: handleClearSelection,
+                    actions: (
+                      <>
+                        <span className="text-xs text-muted-foreground tabular-nums">
+                          ({formatInt(selectedTrackingCodes.length)}/{MAX_BATCH_SHIP_ORDERS} đã có
+                          vận đơn)
+                        </span>
+                        <Select
+                          value={batchCarrierCode || CARRIER_KEEP_VALUE}
+                          onValueChange={(val) => {
+                            const nextCarrier = val === CARRIER_KEEP_VALUE ? "" : val;
+                            setBatchCarrierCode(nextCarrier);
+                            const opt = CARRIER_OPTIONS.find((c) => c.carrierCode === nextCarrier);
+                            setBatchServiceCode(opt?.services[0]?.serviceCode ?? "");
+                          }}
+                        >
+                          <SelectTrigger
+                            aria-label="Hãng vận chuyển hàng loạt"
+                            className="h-8 w-auto min-w-[160px] bg-card text-xs"
+                          >
+                            <SelectValue>
+                              {batchCarrierCode
+                                ? (CARRIER_OPTIONS.find((c) => c.carrierCode === batchCarrierCode)
+                                    ?.carrierLabel ?? batchCarrierCode)
+                                : "Giữ hãng theo từng đơn"}
+                            </SelectValue>
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value={CARRIER_KEEP_VALUE}>
+                              Giữ hãng theo từng đơn
+                            </SelectItem>
+                            {CARRIER_OPTIONS.map((c) => (
+                              <SelectItem key={c.carrierCode} value={c.carrierCode}>
+                                {c.carrierLabel}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        {activeBatchCarrier ? (
+                          <Select value={batchServiceCode} onValueChange={setBatchServiceCode}>
+                            <SelectTrigger
+                              aria-label="Gói dịch vụ vận chuyển hàng loạt"
+                              className="h-8 w-auto min-w-[140px] bg-card text-xs"
+                            >
+                              <SelectValue>
+                                {activeBatchCarrier.services.find(
+                                  (s) => s.serviceCode === batchServiceCode
+                                )?.serviceLabel ?? batchServiceCode}
+                              </SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                              {activeBatchCarrier.services.map((s) => (
+                                <SelectItem key={s.serviceCode} value={s.serviceCode}>
+                                  {s.serviceLabel}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : null}
+                        <Button
+                          type="button"
+                          size="xs"
+                          disabled={batchShipBusy}
+                          onClick={() => void handleBatchShip()}
+                        >
+                          <Truck className="size-3.5" aria-hidden="true" />
+                          <span>
+                            {batchShipBusy ? "Đang xếp hàng..." : "Tạo vận đơn hàng loạt"}
+                          </span>
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="xs"
+                          disabled={pickingBusy}
+                          onClick={() => void handleLoadPickingList()}
+                        >
+                          {pickingBusy ? "Đang tổng hợp..." : "In danh sách nhặt hàng"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="xs"
+                          disabled={pdfBusy || selectedTrackingCodes.length === 0}
+                          onClick={() => void handleBatchLabelsPdf()}
+                        >
+                          <Printer className="size-3.5" aria-hidden="true" />
+                          <span>
+                            {pdfBusy
+                              ? "Đang xuất PDF..."
+                              : `In nhãn gộp PDF (${formatInt(selectedTrackingCodes.length)})`}
+                          </span>
+                        </Button>
+                      </>
+                    ),
+                  }
+                : undefined
+            }
+            footer={
+              orders.length > 0 ? (
+                <>
+                  <span className="tabular-nums">
+                    Trang {formatInt(page)} / {formatInt(totalPages)} · Tổng {formatInt(total)} đơn
                   </span>
-                  <input
+                  <div
+                    className="flex flex-wrap items-center gap-1.5"
+                    aria-label="Phân trang đơn hàng"
+                  >
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      disabled={page <= 1 || loading}
+                      onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    >
+                      Trang trước
+                    </Button>
+                    {pageButtons.map((pNum, idx) => {
+                      const prevNum = pageButtons[idx - 1];
+                      const showGap = prevNum != null && pNum - prevNum > 1;
+                      return (
+                        <React.Fragment key={pNum}>
+                          {showGap ? <span className="px-1 text-muted-foreground">…</span> : null}
+                          <Button
+                            type="button"
+                            size="xs"
+                            variant={pNum === page ? "default" : "outline"}
+                            aria-current={pNum === page ? "page" : undefined}
+                            disabled={loading}
+                            onClick={() => setPage(pNum)}
+                            className="min-w-7 tabular-nums"
+                          >
+                            {formatInt(pNum)}
+                          </Button>
+                        </React.Fragment>
+                      );
+                    })}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      disabled={page >= totalPages || loading}
+                      onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    >
+                      Trang sau
+                    </Button>
+                  </div>
+                </>
+              ) : null
+            }
+          >
+            {/* Search & Filters Bar */}
+            {filtersOpen ? (
+              <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/40 px-3 py-2.5 md:px-4">
+                <div className="relative min-w-[200px] flex-1 sm:max-w-xs">
+                  <Search
+                    className="pointer-events-none absolute top-2 left-2.5 size-4 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <Input
                     type="search"
-                    className={common.searchInput}
                     value={queryInput}
                     onChange={(e) => setQueryInput(e.target.value)}
                     placeholder="Tìm mã đơn, tên khách, mã vận đơn..."
                     aria-label="Tìm kiếm đơn hàng"
+                    className="h-8 bg-card pl-8 text-[13px]"
                   />
                 </div>
 
-                <select
-                  className={common.filterSelect}
+                <Select
                   value={carrierFilter}
-                  onChange={(e) => {
-                    setCarrierFilter(e.target.value);
+                  onValueChange={(val) => {
+                    setCarrierFilter(val);
                     setPage(1);
                   }}
-                  aria-label="Lọc theo hãng vận chuyển"
                 >
-                  <option value="all">Mọi hãng vận chuyển</option>
-                  {CARRIER_OPTIONS.map((c) => (
-                    <option key={c.carrierCode} value={c.carrierCode}>
-                      {c.carrierLabel}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger
+                    aria-label="Lọc theo hãng vận chuyển"
+                    className="h-8 w-full bg-card text-[13px] sm:w-auto sm:min-w-[160px]"
+                  >
+                    <SelectValue>
+                      {carrierFilter === "all"
+                        ? "Mọi hãng vận chuyển"
+                        : (CARRIER_OPTIONS.find((c) => c.carrierCode === carrierFilter)
+                            ?.carrierLabel ?? carrierFilter)}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Mọi hãng vận chuyển</SelectItem>
+                    {CARRIER_OPTIONS.map((c) => (
+                      <SelectItem key={c.carrierCode} value={c.carrierCode}>
+                        {c.carrierLabel}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
 
-                <select
-                  className={common.filterSelect}
+                <Select
                   value={paymentFilter}
-                  onChange={(e) => {
-                    setPaymentFilter(e.target.value as "all" | "COD" | "VIETQR" | "ZALOPAY");
+                  onValueChange={(val) => {
+                    setPaymentFilter(val as "all" | "COD" | "VIETQR" | "ZALOPAY");
                     setPage(1);
                   }}
-                  aria-label="Lọc theo phương thức thanh toán"
                 >
-                  <option value="all">Mọi hình thức thanh toán</option>
-                  <option value="COD">Thu hộ COD</option>
-                  <option value="VIETQR">VietQR</option>
-                  <option value="ZALOPAY">Ví ZaloPay</option>
-                </select>
+                  <SelectTrigger
+                    aria-label="Lọc theo phương thức thanh toán"
+                    className="h-8 w-full bg-card text-[13px] sm:w-auto sm:min-w-[165px]"
+                  >
+                    <SelectValue>
+                      {paymentFilter === "all"
+                        ? "Mọi hình thức thanh toán"
+                        : paymentFilter === "COD"
+                          ? "Thu hộ COD"
+                          : paymentFilter === "VIETQR"
+                            ? "VietQR"
+                            : "Ví ZaloPay"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Mọi hình thức thanh toán</SelectItem>
+                    <SelectItem value="COD">Thu hộ COD</SelectItem>
+                    <SelectItem value="VIETQR">VietQR</SelectItem>
+                    <SelectItem value="ZALOPAY">Ví ZaloPay</SelectItem>
+                  </SelectContent>
+                </Select>
 
-                <select
-                  className={common.filterSelect}
-                  value={channelFilter}
-                  onChange={(e) => {
-                    setChannelFilter(e.target.value as SalesChannelFilter);
+                <Select
+                  value={channelFilter || CHANNEL_ALL_VALUE}
+                  onValueChange={(val) => {
+                    setChannelFilter((val === CHANNEL_ALL_VALUE ? "" : val) as SalesChannelFilter);
                     setPage(1);
                   }}
-                  aria-label="Lọc theo kênh bán"
                 >
-                  {CHANNEL_FILTER_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger
+                    aria-label="Lọc theo kênh bán"
+                    className="h-8 w-full bg-card text-[13px] sm:w-auto sm:min-w-[140px]"
+                  >
+                    <SelectValue>
+                      {CHANNEL_FILTER_OPTIONS.find(
+                        (opt) =>
+                          (opt.value || CHANNEL_ALL_VALUE) === (channelFilter || CHANNEL_ALL_VALUE)
+                      )?.label ?? "Mọi kênh bán"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CHANNEL_FILTER_OPTIONS.map((opt) => (
+                      <SelectItem
+                        key={opt.value || CHANNEL_ALL_VALUE}
+                        value={opt.value || CHANNEL_ALL_VALUE}
+                      >
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
 
-                <label className={styles.dateFilterWrap}>
-                  <span className={styles.queueMeta}>Hạn giao trước:</span>
-                  <input
+                <label className="inline-flex w-full items-center gap-1.5 text-xs text-muted-foreground sm:w-auto">
+                  <span className="shrink-0">Hạn giao trước:</span>
+                  <Input
                     type="date"
-                    className={styles.dateFilterInput}
                     value={dueBeforeDate}
                     onChange={(e) => {
                       setDueBeforeDate(e.target.value);
                       setPage(1);
                     }}
                     aria-label="Lọc theo hạn giao trước ngày"
+                    className="h-8 flex-1 bg-card text-[13px] tabular-nums sm:w-auto"
                   />
                 </label>
 
-                {hasActiveFilters && (
-                  <button
-                    type="button"
-                    className={styles.rowDetailLink}
-                    onClick={handleResetFilters}
-                  >
-                    Xóa lọc
-                  </button>
-                )}
+                {hasActiveFilters ? (
+                  <Button type="button" variant="ghost" size="xs" onClick={handleResetFilters}>
+                    <X className="size-3.5" aria-hidden="true" />
+                    <span>Xóa lọc</span>
+                  </Button>
+                ) : null}
               </div>
-              <span className={common.toolbarMeta}>
-                {loading
-                  ? "Đang tải..."
-                  : `Hiển thị ${formatInt(startIndex)}–${formatInt(endIndex)} / ${formatInt(total)}`}
-              </span>
-            </div>
+            ) : null}
 
             {orders.length === 0 ? (
-              <div className={common.inlineEmpty}>
-                {counts.all === 0
-                  ? "Gian hàng chưa phát sinh đơn hàng nào."
-                  : "Không có đơn hàng nào khớp bộ lọc hiện tại."}
+              <div className="px-6 py-12 text-center">
+                <p className="text-sm text-muted-foreground">
+                  {counts.all === 0
+                    ? "Gian hàng chưa phát sinh đơn hàng nào."
+                    : "Không có đơn hàng nào khớp bộ lọc hiện tại."}
+                </p>
+                {hasActiveFilters ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-3"
+                    onClick={handleResetFilters}
+                  >
+                    Xóa bộ lọc
+                  </Button>
+                ) : null}
               </div>
             ) : (
               <>
-                <div className={`${common.tableWrap} ${common.tableWrapDesktop}`}>
-                  <table className={`${common.dataTable} ${styles.ordersTable}`}>
-                    <thead>
-                      <tr>
-                        <th className={styles.checkCol}>
-                          <input
-                            type="checkbox"
-                            className={styles.rowCheckbox}
+                {/* Desktop Table */}
+                <div className="hidden md:block">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-10">
+                          <Checkbox
                             checked={allPageSelected}
-                            onChange={handleToggleSelectPage}
+                            onCheckedChange={() => handleToggleSelectPage()}
                             aria-label="Chọn tất cả đơn hàng trên trang này"
                           />
-                        </th>
-                        <th>Đơn hàng</th>
-                        <th>Người nhận</th>
-                        <th>Sản phẩm &amp; vận chuyển</th>
-                        <th className={common.numCol}>Thực nhận</th>
-                        <th>Trạng thái</th>
-                        <th className={`${common.numCol} ${styles.actionCol}`}>Thao tác</th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                        </TableHead>
+                        <TableHead>Đơn hàng</TableHead>
+                        <TableHead>Người nhận</TableHead>
+                        <TableHead>Sản phẩm &amp; vận chuyển</TableHead>
+                        <TableHead className="text-right">Thực nhận</TableHead>
+                        <TableHead>Trạng thái</TableHead>
+                        <TableHead className="sticky right-0 z-10 border-l border-border bg-card text-right">
+                          Thao tác
+                        </TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
                       {orders.map((o) => {
                         const meta = getSellerOrderStatusMeta(
+                          o.status,
+                          o.shipment_job_status,
+                          o.tracking_code
+                        );
+                        const tone = resolveSellerOrderTone(
                           o.status,
                           o.shipment_job_status,
                           o.tracking_code
@@ -1191,94 +1348,106 @@ export function SellerOrdersClient({
 
                         return (
                           <React.Fragment key={o.id}>
-                            <tr className={isSelected ? common.rowSelected : undefined}>
-                              <td className={styles.checkCol}>
-                                <input
-                                  type="checkbox"
-                                  className={styles.rowCheckbox}
+                            <TableRow
+                              data-state={isSelected ? "selected" : undefined}
+                              className="group cursor-pointer"
+                              onClick={() => setDrawerOrderId(o.id)}
+                            >
+                              <TableCell onClick={(e) => e.stopPropagation()}>
+                                <Checkbox
                                   checked={isSelected}
-                                  onChange={() => handleToggleSelectOrder(o)}
+                                  onCheckedChange={() => handleToggleSelectOrder(o)}
                                   aria-label={`Chọn đơn ${o.order_code}`}
                                 />
-                              </td>
-                              <td>
-                                <div className={styles.orderIdentity}>
-                                  {thumb && (
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex items-center gap-2.5">
+                                  {thumb ? (
                                     <img
                                       src={thumb}
                                       alt=""
-                                      className={styles.orderThumb}
-                                      width={32}
-                                      height={40}
+                                      className="hidden size-9 shrink-0 rounded-md border border-border bg-muted object-cover xl:block"
                                     />
-                                  )}
-                                  <div className={styles.orderMetaStack}>
-                                    <button
-                                      type="button"
-                                      className={`${common.rowTriggerBtn} ${styles.orderCodeBtn}`}
-                                      onClick={() => setDrawerOrderId(o.id)}
-                                    >
-                                      {o.order_code}
-                                    </button>
-                                    <span
-                                      className={`${common.channelTag} ${common.channelTagCompact} ${
-                                        channel === "STOREFRONT" ? common.channelTagStorefront : ""
-                                      } ${styles.orderChannelInline}`}
-                                    >
-                                      {channelBadge.shortLabel}
-                                    </span>
-                                    {o.created_at && (
-                                      <span className={`${common.cellSub} ${styles.orderDateSub}`}>
+                                  ) : null}
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5">
+                                      <button
+                                        type="button"
+                                        className="font-semibold text-foreground hover:text-brand hover:underline"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setDrawerOrderId(o.id);
+                                        }}
+                                      >
+                                        {o.order_code}
+                                      </button>
+                                      <Badge
+                                        variant={channel === "STOREFRONT" ? "info" : "secondary"}
+                                        className="rounded-sm px-1.5 py-0 text-[11px]"
+                                      >
+                                        {channelBadge.shortLabel}
+                                      </Badge>
+                                    </div>
+                                    {o.created_at ? (
+                                      <div className="text-xs text-muted-foreground tabular-nums">
                                         {formatDateTimeVi(o.created_at)}
-                                      </span>
-                                    )}
+                                      </div>
+                                    ) : null}
                                   </div>
                                 </div>
-                              </td>
-                              <td className={styles.buyerCell}>
-                                <span className={styles.buyerName}>
+                              </TableCell>
+                              <TableCell className="max-w-[140px]">
+                                <div className="truncate font-medium text-foreground">
                                   {o.shipping_address?.recipient_name || "Người mua"}
-                                </span>
-                                <span className={styles.buyerProvince}>
+                                </div>
+                                <div className="truncate text-xs text-muted-foreground">
                                   {o.shipping_address?.province_name || "—"}
-                                </span>
-                              </td>
-                              <td className={styles.itemColCell}>
-                                <span
-                                  className={styles.itemSummaryCell}
+                                </div>
+                              </TableCell>
+                              <TableCell className="max-w-[200px] xl:max-w-[240px]">
+                                <div
+                                  className="truncate text-foreground"
                                   title={summarizeOrderItems(o.items)}
                                 >
                                   {summarizeOrderItems(o.items)}
-                                </span>
-                                <span className={styles.itemSubCell} title={subText}>
+                                </div>
+                                <div
+                                  className="truncate text-xs text-muted-foreground"
+                                  title={subText}
+                                >
                                   {subText}
-                                </span>
-                              </td>
-                              <td className={common.numCol}>
-                                <strong>{formatVnd(netVnd)}</strong>
-                                <span className={common.cellSub}>
+                                </div>
+                              </TableCell>
+                              <TableCell className="text-right tabular-nums">
+                                <Money vnd={netVnd} />
+                                <div className="text-xs text-muted-foreground">
                                   Hàng: {formatVnd(o.subtotal_vnd)}
-                                </span>
-                              </td>
-                              <td>
-                                <span className={statusPillClass(meta.tone)}>{meta.label}</span>
-                              </td>
-                              <td className={`${common.numCol} ${styles.actionCol}`}>
-                                <div className={styles.actionGroup}>
-                                  {canConfirm && (
-                                    <button
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <StatusBadge tone={tone}>{meta.label}</StatusBadge>
+                              </TableCell>
+                              <TableCell
+                                className="sticky right-0 z-10 border-l border-border bg-card text-right group-hover:bg-accent/65"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <div className="inline-flex flex-wrap items-center justify-end gap-1.5">
+                                  {canConfirm ? (
+                                    <Button
                                       type="button"
-                                      className={styles.rowAdvanceBtn}
+                                      variant={canShip ? "outline" : "default"}
+                                      size="xs"
                                       disabled={isBusy}
                                       onClick={() => void handleConfirmOrder(o)}
                                     >
                                       {isBusy ? "..." : "Xác nhận"}
-                                    </button>
-                                  )}
-                                  {canShip && (
-                                    <button
+                                    </Button>
+                                  ) : null}
+                                  {canShip ? (
+                                    <Button
                                       type="button"
-                                      className={styles.rowAdvanceBtn}
+                                      size="xs"
+                                      variant={showShipDrawer ? "secondary" : "default"}
                                       disabled={isBusy}
                                       onClick={() => handleToggleShipDrawer(o)}
                                     >
@@ -1287,64 +1456,77 @@ export function SellerOrdersClient({
                                         : isQueuedOrFailed
                                           ? "Thử tạo lại ngay"
                                           : "Tạo vận đơn"}
-                                    </button>
-                                  )}
-                                  {labelHref && (
-                                    <a
-                                      href={labelHref}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className={styles.rowDetailLink}
-                                      title="Mở nhãn vận đơn ở tab mới — nhấn Ctrl+P để in"
-                                    >
-                                      In nhãn
-                                    </a>
-                                  )}
-                                  <Link
-                                    href={`/seller/don-hang/${o.id}`}
-                                    className={styles.rowDetailLink}
-                                  >
-                                    Chi tiết
-                                  </Link>
+                                    </Button>
+                                  ) : null}
+                                  {labelHref ? (
+                                    <Button variant="outline" size="xs" asChild>
+                                      <a
+                                        href={labelHref}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        title="Mở nhãn vận đơn ở tab mới — nhấn Ctrl+P để in"
+                                      >
+                                        In nhãn
+                                      </a>
+                                    </Button>
+                                  ) : null}
+                                  <Button variant="outline" size="xs" asChild>
+                                    <Link href={`/seller/don-hang/${o.id}`}>Chi tiết</Link>
+                                  </Button>
                                 </div>
-                              </td>
-                            </tr>
-                            {showShipDrawer && (
-                              <tr>
-                                <td colSpan={7} className={styles.shipDrawer}>
-                                  <div className={styles.shipFormRow}>
-                                    <span className={styles.queueMeta}>
-                                      Tạo vận đơn cho đơn <strong>{o.order_code}</strong>
+                              </TableCell>
+                            </TableRow>
+                            {showShipDrawer ? (
+                              <TableRow className="bg-muted/50 hover:bg-muted/50">
+                                <TableCell colSpan={7} className="py-3">
+                                  <div className="flex flex-wrap items-center justify-between gap-3">
+                                    <span className="text-[13px] text-muted-foreground">
+                                      Tạo vận đơn cho đơn{" "}
+                                      <strong className="text-foreground">{o.order_code}</strong>
                                     </span>
-                                    <div className={styles.shipFormControls}>
-                                      <select
-                                        className={common.filterSelect}
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <Select
                                         value={carrierCode}
-                                        onChange={(e) => handleCarrierChange(e.target.value)}
-                                        aria-label="Chọn đơn vị vận chuyển"
+                                        onValueChange={handleCarrierChange}
                                       >
-                                        {carrierOptions.map((c) => (
-                                          <option key={c.carrierCode} value={c.carrierCode}>
-                                            {c.carrierLabel}
-                                          </option>
-                                        ))}
-                                      </select>
-                                      <select
-                                        className={common.filterSelect}
-                                        value={serviceCode}
-                                        onChange={(e) => setServiceCode(e.target.value)}
-                                        aria-label="Chọn gói dịch vụ vận chuyển"
-                                      >
-                                        {activeCarrierOption.services.map((s) => (
-                                          <option key={s.serviceCode} value={s.serviceCode}>
-                                            {s.serviceLabel}
-                                          </option>
-                                        ))}
-                                      </select>
+                                        <SelectTrigger
+                                          aria-label="Chọn đơn vị vận chuyển"
+                                          className="h-8 w-auto min-w-[160px] bg-card text-xs"
+                                        >
+                                          <SelectValue>
+                                            {activeCarrierOption.carrierLabel}
+                                          </SelectValue>
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          {carrierOptions.map((c) => (
+                                            <SelectItem key={c.carrierCode} value={c.carrierCode}>
+                                              {c.carrierLabel}
+                                            </SelectItem>
+                                          ))}
+                                        </SelectContent>
+                                      </Select>
+                                      <Select value={serviceCode} onValueChange={setServiceCode}>
+                                        <SelectTrigger
+                                          aria-label="Chọn gói dịch vụ vận chuyển"
+                                          className="h-8 w-auto min-w-[150px] bg-card text-xs"
+                                        >
+                                          <SelectValue>
+                                            {activeCarrierOption.services.find(
+                                              (s) => s.serviceCode === serviceCode
+                                            )?.serviceLabel ?? serviceCode}
+                                          </SelectValue>
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          {activeCarrierOption.services.map((s) => (
+                                            <SelectItem key={s.serviceCode} value={s.serviceCode}>
+                                              {s.serviceLabel}
+                                            </SelectItem>
+                                          ))}
+                                        </SelectContent>
+                                      </Select>
                                       <Button
-                                        variant="ink"
-                                        size="sm"
-                                        shape="app"
+                                        type="button"
+                                        size="xs"
                                         disabled={isBusy}
                                         onClick={() => void handleShipOrder(o)}
                                       >
@@ -1352,30 +1534,39 @@ export function SellerOrdersClient({
                                       </Button>
                                     </div>
                                   </div>
-                                </td>
-                              </tr>
-                            )}
+                                </TableCell>
+                              </TableRow>
+                            ) : null}
                           </React.Fragment>
                         );
                       })}
-                    </tbody>
-                  </table>
+                    </TableBody>
+                  </Table>
                 </div>
 
-                <div className={common.mobileList}>
-                  <div className={styles.mobileSelectAllRow}>
-                    <label className={styles.mobileCheckLabel}>
-                      <input
-                        type="checkbox"
-                        className={styles.rowCheckbox}
-                        checked={allPageSelected}
-                        onChange={handleToggleSelectPage}
-                      />
-                      <span>Chọn tất cả trang này ({formatInt(orders.length)})</span>
+                {/* Mobile Card List (< 768px) */}
+                <div className="md:hidden">
+                  <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-4 py-2.5">
+                    <Checkbox
+                      id="mobile-select-all-orders"
+                      checked={allPageSelected}
+                      onCheckedChange={() => handleToggleSelectPage()}
+                    />
+                    <label
+                      htmlFor="mobile-select-all-orders"
+                      className="cursor-pointer text-[13px] font-medium text-foreground"
+                    >
+                      Chọn tất cả trang này ({formatInt(orders.length)})
                     </label>
                   </div>
+
                   {orders.map((o) => {
                     const meta = getSellerOrderStatusMeta(
+                      o.status,
+                      o.shipment_job_status,
+                      o.tracking_code
+                    );
+                    const tone = resolveSellerOrderTone(
                       o.status,
                       o.shipment_job_status,
                       o.tracking_code
@@ -1389,55 +1580,55 @@ export function SellerOrdersClient({
                     const showShipDrawer = shippingOrderId === o.id;
                     const isSelected = selectedSet.has(o.id);
                     const labelHref = buildShippingLabelHref(o.tracking_code);
+
                     return (
-                      <div key={o.id} className={common.mobileRow}>
-                        <div className={common.mobileRowTop}>
-                          <div className={styles.mobileRowLead}>
-                            <input
-                              type="checkbox"
-                              className={styles.rowCheckbox}
+                      <div key={o.id} className="border-b border-border last:border-b-0">
+                        <IndexRowCard
+                          leading={
+                            <Checkbox
                               checked={isSelected}
-                              onChange={() => handleToggleSelectOrder(o)}
+                              onCheckedChange={() => handleToggleSelectOrder(o)}
                               aria-label={`Chọn đơn ${o.order_code}`}
                             />
-                            <div>
-                              <Link
-                                href={`/seller/don-hang/${o.id}`}
-                                className={styles.mobileOrderCode}
-                              >
-                                {o.order_code}
-                              </Link>
-                              <span className={common.cellSub}>
-                                {o.shipping_address?.recipient_name || "Người mua"} ·{" "}
-                                {o.shipping_address?.province_name || "—"}
-                              </span>
-                            </div>
-                          </div>
-                          <span className={styles.mobileOrderTotal}>
-                            {formatVnd(computeSellerNetReceivable(o))}
-                          </span>
-                        </div>
-                        <p className={styles.mobileOrderSummary}>
-                          {summarizeOrderItems(o.items)}
-                          {o.tracking_code ? ` · ${o.tracking_code}` : ""}
-                        </p>
-                        <div className={common.mobileRowMeta}>
-                          <span className={statusPillClass(meta.tone)}>{meta.label}</span>
-                          <div className={styles.actionGroup}>
-                            {canConfirm && (
-                              <button
+                          }
+                          title={o.order_code}
+                          badge={<StatusBadge tone={tone}>{meta.label}</StatusBadge>}
+                          meta={
+                            <>
+                              <Money vnd={computeSellerNetReceivable(o)} size="sm" />
+                              <span>·</span>
+                              <span>{o.shipping_address?.recipient_name || "Người mua"}</span>
+                              <span>·</span>
+                              <span>{o.shipping_address?.province_name || "—"}</span>
+                            </>
+                          }
+                          onClick={() => setDrawerOrderId(o.id)}
+                          className="border-b-0 pb-2"
+                        />
+                        <div className="space-y-2 px-4 pb-3 pl-11">
+                          <p className="line-clamp-2 text-xs text-muted-foreground">
+                            {summarizeOrderItems(o.items)}
+                            {o.tracking_code ? ` · ${o.tracking_code}` : ""}
+                          </p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            {canConfirm ? (
+                              <Button
                                 type="button"
-                                className={styles.rowAdvanceBtn}
+                                variant={canShip ? "outline" : "default"}
+                                size="xs"
+                                className="min-h-10"
                                 disabled={isBusy}
                                 onClick={() => void handleConfirmOrder(o)}
                               >
                                 {isBusy ? "..." : "Xác nhận"}
-                              </button>
-                            )}
-                            {canShip && (
-                              <button
+                              </Button>
+                            ) : null}
+                            {canShip ? (
+                              <Button
                                 type="button"
-                                className={styles.rowAdvanceBtn}
+                                size="xs"
+                                className="min-h-10"
+                                variant={showShipDrawer ? "secondary" : "default"}
                                 disabled={isBusy}
                                 onClick={() => handleToggleShipDrawer(o)}
                               >
@@ -1446,112 +1637,71 @@ export function SellerOrdersClient({
                                   : isQueuedOrFailed
                                     ? "Thử tạo lại ngay"
                                     : "Tạo vận đơn"}
-                              </button>
-                            )}
-                            {labelHref && (
-                              <a
-                                href={labelHref}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className={styles.rowDetailLink}
-                              >
-                                In nhãn
-                              </a>
-                            )}
-                            <Link
-                              href={`/seller/don-hang/${o.id}`}
-                              className={styles.rowDetailLink}
-                            >
-                              Chi tiết
-                            </Link>
-                          </div>
-                        </div>
-                        {showShipDrawer && (
-                          <div className={styles.shipMobileBox}>
-                            <select
-                              className={common.filterSelect}
-                              value={carrierCode}
-                              onChange={(e) => handleCarrierChange(e.target.value)}
-                            >
-                              {carrierOptions.map((c) => (
-                                <option key={c.carrierCode} value={c.carrierCode}>
-                                  {c.carrierLabel}
-                                </option>
-                              ))}
-                            </select>
-                            <select
-                              className={common.filterSelect}
-                              value={serviceCode}
-                              onChange={(e) => setServiceCode(e.target.value)}
-                            >
-                              {activeCarrierOption.services.map((s) => (
-                                <option key={s.serviceCode} value={s.serviceCode}>
-                                  {s.serviceLabel}
-                                </option>
-                              ))}
-                            </select>
-                            <Button
-                              variant="ink"
-                              size="sm"
-                              shape="app"
-                              disabled={isBusy}
-                              onClick={() => void handleShipOrder(o)}
-                            >
-                              {isBusy ? "Đang tạo..." : "Xác nhận tạo vận đơn"}
+                              </Button>
+                            ) : null}
+                            {labelHref ? (
+                              <Button variant="outline" size="xs" className="min-h-10" asChild>
+                                <a href={labelHref} target="_blank" rel="noopener noreferrer">
+                                  In nhãn
+                                </a>
+                              </Button>
+                            ) : null}
+                            <Button variant="outline" size="xs" className="min-h-10" asChild>
+                              <Link href={`/seller/don-hang/${o.id}`}>Chi tiết</Link>
                             </Button>
                           </div>
-                        )}
+
+                          {showShipDrawer ? (
+                            <div className="space-y-2 rounded-lg border border-border bg-muted/50 p-3">
+                              <Select value={carrierCode} onValueChange={handleCarrierChange}>
+                                <SelectTrigger className="w-full bg-card">
+                                  <SelectValue>{activeCarrierOption.carrierLabel}</SelectValue>
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {carrierOptions.map((c) => (
+                                    <SelectItem key={c.carrierCode} value={c.carrierCode}>
+                                      {c.carrierLabel}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <Select value={serviceCode} onValueChange={setServiceCode}>
+                                <SelectTrigger className="w-full bg-card">
+                                  <SelectValue>
+                                    {activeCarrierOption.services.find(
+                                      (s) => s.serviceCode === serviceCode
+                                    )?.serviceLabel ?? serviceCode}
+                                  </SelectValue>
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {activeCarrierOption.services.map((s) => (
+                                    <SelectItem key={s.serviceCode} value={s.serviceCode}>
+                                      {s.serviceLabel}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <Button
+                                type="button"
+                                size="sm"
+                                className="min-h-10 w-full"
+                                disabled={isBusy}
+                                onClick={() => void handleShipOrder(o)}
+                              >
+                                {isBusy ? "Đang tạo..." : "Xác nhận tạo vận đơn"}
+                              </Button>
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
                     );
                   })}
                 </div>
-
-                <div className={styles.paginationBar} aria-label="Phân trang đơn hàng">
-                  <span className={`${common.cardMeta} num`}>
-                    Trang {formatInt(page)} / {formatInt(totalPages)} · Tổng {formatInt(total)} đơn
-                  </span>
-                  <div className={styles.paginationControls}>
-                    <button
-                      type="button"
-                      className={styles.pageBtn}
-                      disabled={page <= 1 || loading}
-                      onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    >
-                      Trang trước
-                    </button>
-                    {pageButtons.map((pNum, idx) => {
-                      const prevNum = pageButtons[idx - 1];
-                      const showGap = prevNum != null && pNum - prevNum > 1;
-                      return (
-                        <React.Fragment key={pNum}>
-                          {showGap && <span className={styles.pageEllipsis}>…</span>}
-                          <button
-                            type="button"
-                            className={`${styles.pageBtn} ${pNum === page ? styles.pageBtnActive : ""}`}
-                            aria-current={pNum === page ? "page" : undefined}
-                            disabled={loading}
-                            onClick={() => setPage(pNum)}
-                          >
-                            {formatInt(pNum)}
-                          </button>
-                        </React.Fragment>
-                      );
-                    })}
-                    <button
-                      type="button"
-                      className={styles.pageBtn}
-                      disabled={page >= totalPages || loading}
-                      onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                    >
-                      Trang sau
-                    </button>
-                  </div>
-                </div>
               </>
             )}
-          </section>
+          </IndexTable>
         </>
-      )}
+      ) : null}
 
       <SellerOrderQuickDrawer
         order={drawerOrder}
@@ -1575,61 +1725,66 @@ export function SellerOrdersClient({
         }}
       />
 
-      <SellerDrawer
-        open={Boolean(pickingList)}
-        onClose={() => setPickingList(null)}
-        title="Danh sách nhặt hàng theo SKU"
-        subtitle={
-          pickingList
-            ? `${formatInt(pickingList.order_count)} đơn hàng · Tổng ${formatInt(pickingList.total_units)} sản phẩm`
-            : undefined
-        }
-        footer={
-          <div className={styles.actionGroup}>
-            <Button variant="ink" size="sm" shape="app" onClick={() => window.print()}>
-              In danh sách
-            </Button>
-            <Button variant="outline" size="sm" shape="app" onClick={() => setPickingList(null)}>
+      {/* Picking List Sheet */}
+      <Sheet open={Boolean(pickingList)} onOpenChange={(open) => !open && setPickingList(null)}>
+        <SheetContent side="right" className="w-full gap-0 p-0 sm:max-w-lg">
+          <SheetHeader className="border-b border-border px-5 py-4 pr-12">
+            <SheetTitle>Danh sách nhặt hàng theo SKU</SheetTitle>
+            {pickingList ? (
+              <SheetDescription className="tabular-nums">
+                {formatInt(pickingList.order_count)} đơn hàng · Tổng{" "}
+                {formatInt(pickingList.total_units)} sản phẩm
+              </SheetDescription>
+            ) : null}
+          </SheetHeader>
+          <div className="flex-1 overflow-y-auto px-5 py-4">
+            {pickingList && pickingList.items.length === 0 ? (
+              <p className="py-8 text-center text-sm text-muted-foreground">
+                Không có sản phẩm nào trong các đơn đã chọn.
+              </p>
+            ) : pickingList ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Sản phẩm &amp; biến thể</TableHead>
+                    <TableHead className="text-right">Tổng SL</TableHead>
+                    <TableHead className="text-right">Số đơn</TableHead>
+                    <TableHead>Mã đơn</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {pickingList.items.map((item) => (
+                    <TableRow key={item.sku_id}>
+                      <TableCell className="whitespace-normal">
+                        <div className="font-medium text-foreground">{item.product_name}</div>
+                        <div className="text-xs text-muted-foreground">{item.sku_name}</div>
+                      </TableCell>
+                      <TableCell className="text-right font-semibold tabular-nums">
+                        {formatInt(item.total_quantity)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatInt(item.order_count)}
+                      </TableCell>
+                      <TableCell className="break-words whitespace-normal text-xs text-muted-foreground">
+                        {(item.order_codes ?? []).join(", ") || "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : null}
+          </div>
+          <SheetFooter className="flex-row justify-end gap-2 border-t border-border px-5 py-3.5">
+            <Button type="button" variant="outline" size="sm" onClick={() => setPickingList(null)}>
               Đóng
             </Button>
-          </div>
-        }
-      >
-        {pickingList &&
-          (pickingList.items.length === 0 ? (
-            <div className={common.inlineEmpty}>Không có sản phẩm nào trong các đơn đã chọn.</div>
-          ) : (
-            <div className={common.tableWrap}>
-              <table className={common.dataTable}>
-                <thead>
-                  <tr>
-                    <th>Sản phẩm &amp; biến thể</th>
-                    <th className={common.numCol}>Tổng SL</th>
-                    <th className={common.numCol}>Số đơn</th>
-                    <th>Mã đơn</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pickingList.items.map((item) => (
-                    <tr key={item.sku_id}>
-                      <td>
-                        <strong>{item.product_name}</strong>
-                        <span className={common.cellSub}>{item.sku_name}</span>
-                      </td>
-                      <td className={common.numCol}>
-                        <strong>{formatInt(item.total_quantity)}</strong>
-                      </td>
-                      <td className={common.numCol}>{formatInt(item.order_count)}</td>
-                      <td className={styles.orderCodesCell}>
-                        {(item.order_codes ?? []).join(", ") || "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ))}
-      </SellerDrawer>
+            <Button type="button" size="sm" onClick={() => window.print()}>
+              <Printer className="size-3.5" aria-hidden="true" />
+              <span>In danh sách</span>
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

@@ -3,18 +3,38 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { ChevronRight, Download, Package, Plus, ShoppingBag, Wallet } from "lucide-react";
 import {
-  BarList,
-  Button,
-  IconChevronRight,
-  IconDownload,
-  IconPackage,
-  IconPlus,
-  StateView,
-} from "@/components";
+  EmptyState,
+  ErrorState,
+  IndexRowCard,
+  KpiChartCard,
+  LineChart,
+  MetricStrip,
+  Money,
+  PageHeader,
+  SetupGuide,
+  StatusBadge,
+  type SetupGuideStep,
+} from "@/components/app";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, apiBlob, ApiError, getErrorMessage } from "@/lib/api";
 import {
   formatBpsPercent,
+  formatCompactVnd,
   formatDayMonthVi,
   formatInt,
   formatVnDateOffset,
@@ -22,23 +42,25 @@ import {
   validateReportDateRange,
 } from "@/lib/format";
 import { getSalesChannelMeta } from "@/lib/salesChannel";
+import type { SiteDomainDTO } from "@/lib/site/domains";
+import { cn } from "@/lib/utils";
+import { deriveSellerSetupSteps } from "./ops/sellerSetup";
+import { resolveSellerOrderTone } from "./ops/sellerTone";
 import { SellerOrderQuickDrawer } from "./SellerOrderQuickDrawer";
 import { SellerTrendChart } from "./SellerTrendChart";
 import { useSellerContext } from "./SellerShell";
 import { SellerSiteStatus } from "./SellerSiteStatus";
-import { statusPillClass } from "./SellerUiPrimitives";
 import {
   getNextBackendOrderAction,
   getSellerOrderStatusMeta,
   summarizeOrderItems,
   type GwSellerBalance,
+  type GwSellerBankAccount,
   type GwSellerOrder,
   type GwSellerProduct,
   type GwSellerReport,
 } from "./sellerApiTypes";
 import { parseUiState, translateSellerShipError } from "./types";
-import common from "./SellerCommon.module.css";
-import styles from "@/app/(seller)/seller/page.module.css";
 
 type MetricTabKey = "netRevenue" | "gmv" | "orders";
 
@@ -75,8 +97,14 @@ function formatShortIsoDay(isoDate: string): string {
 export interface SellerOverviewClientProps {
   initialOrders: GwSellerOrder[];
   initialProducts: GwSellerProduct[];
+  productsTotal?: number;
+  productsError?: string | null;
   initialBalance: GwSellerBalance | null;
   balanceError?: string | null;
+  initialBankAccount?: GwSellerBankAccount | null;
+  bankAccountError?: string | null;
+  initialDomains?: SiteDomainDTO[];
+  domainsError?: string | null;
   initialReport: GwSellerReport | null;
   initialReportError?: string | null;
   initialFromDate: string;
@@ -88,8 +116,14 @@ export interface SellerOverviewClientProps {
 export function SellerOverviewClient({
   initialOrders,
   initialProducts,
+  productsTotal,
+  productsError = null,
   initialBalance,
   balanceError = null,
+  initialBankAccount = null,
+  bankAccountError = null,
+  initialDomains = [],
+  domainsError = null,
   initialReport,
   initialReportError = null,
   initialFromDate,
@@ -100,7 +134,7 @@ export function SellerOverviewClient({
   const router = useRouter();
   const searchParams = useSearchParams();
   const uiState = parseUiState(searchParams.get("state"));
-  const { showToast } = useSellerContext();
+  const { shop, site, showToast } = useSellerContext();
 
   const [orders, setOrders] = useState<GwSellerOrder[]>(initialOrders);
   const [busyOrderId, setBusyOrderId] = useState<string | null>(null);
@@ -170,6 +204,15 @@ export function SellerOverviewClient({
     setToDate(nextTo);
   };
 
+  const activePresetDays = useMemo(() => {
+    const today = formatVnDateOffset(0);
+    if (toDate !== today) return null;
+    for (const days of [7, 30, 90] as const) {
+      if (fromDate === formatVnDateOffset(-(days - 1))) return days;
+    }
+    return null;
+  }, [fromDate, toDate]);
+
   const handleExportCsv = async () => {
     const check = validateReportDateRange(fromDate, toDate);
     if (!check.ok) {
@@ -232,6 +275,10 @@ export function SellerOverviewClient({
   const packingCount = orders.filter((o) => o.status.toUpperCase() === "PREPARING").length;
 
   const dailyPoints = useMemo(() => report?.daily ?? [], [report]);
+  const dailyLabels = useMemo(
+    () => dailyPoints.map((d) => formatShortIsoDay(d.date)),
+    [dailyPoints]
+  );
 
   const chartConfig = useMemo(() => {
     if (activeTab === "orders") {
@@ -283,6 +330,89 @@ export function SellerOverviewClient({
     [orders, drawerOrderId]
   );
 
+  const setupSteps = useMemo<SetupGuideStep[]>(() => {
+    const descriptors = deriveSellerSetupSteps({
+      productsCount: productsTotal ?? initialProducts.length,
+      productsError,
+      bankAccount: initialBankAccount,
+      bankAccountError,
+      site,
+      domains: initialDomains,
+      domainsError,
+    });
+
+    return descriptors.map((step) => {
+      if (step.id === "product") {
+        return {
+          ...step,
+          primary: (
+            <Button size="sm" asChild>
+              <Link href="/seller/san-pham/moi">Thêm sản phẩm</Link>
+            </Button>
+          ),
+          secondary: (
+            <Button size="sm" variant="ghost" asChild>
+              <Link href="/seller/san-pham">Nhập CSV</Link>
+            </Button>
+          ),
+          image: {
+            src: "/banners/campaign-everyday.jpg",
+            alt: "Thêm sản phẩm lên gian hàng NexusMart",
+          },
+        };
+      }
+      if (step.id === "bank") {
+        return {
+          ...step,
+          primary: (
+            <Button size="sm" asChild>
+              <Link href="/seller/tai-chinh">Thêm tài khoản</Link>
+            </Button>
+          ),
+          image: {
+            src: "/banners/vietnam-workshop.jpg",
+            alt: "Tài khoản ngân hàng nhận tiền đối soát",
+          },
+        };
+      }
+      if (step.id === "site") {
+        return {
+          ...step,
+          primary: (
+            <Button size="sm" asChild>
+              <Link href="/seller/site">Mở Site Studio</Link>
+            </Button>
+          ),
+          image: {
+            src: "/banners/campaign-office.jpg",
+            alt: "Chọn mẫu giao diện và xuất bản site bán hàng",
+          },
+        };
+      }
+      return {
+        ...step,
+        primary: (
+          <Button size="sm" variant="outline" asChild>
+            <Link href="/seller/site/ten-mien">Thêm tên miền</Link>
+          </Button>
+        ),
+        image: {
+          src: "/banners/campaign-green-fiber.jpg",
+          alt: "Gắn tên miền riêng cho site gian hàng",
+        },
+      };
+    });
+  }, [
+    productsTotal,
+    initialProducts.length,
+    productsError,
+    initialBankAccount,
+    bankAccountError,
+    site,
+    initialDomains,
+    domainsError,
+  ]);
+
   const handleQuickAction = async (order: GwSellerOrder) => {
     const action = getNextBackendOrderAction(
       order.status,
@@ -322,6 +452,10 @@ export function SellerOverviewClient({
   const availableVnd = initialBalance?.available_vnd ?? 0;
   const pendingVnd = initialBalance?.pending_vnd ?? 0;
   const totalFeesVnd = (report?.commission_vnd ?? 0) + (report?.payment_fee_vnd ?? 0);
+  const maxTopProductRevenue = useMemo(
+    () => Math.max(1, ...(report?.top_products ?? []).map((p) => p.revenue_vnd)),
+    [report?.top_products]
+  );
 
   const todayTasks = [
     {
@@ -354,112 +488,146 @@ export function SellerOverviewClient({
     },
   ];
 
+  const isActiveShop = shop?.status === "ACTIVE";
+
   return (
-    <div className={common.page}>
-      <header className={common.pageHeader}>
-        <h1 className={common.title}>Tổng quan</h1>
-        <div className={common.headerActions}>
-          <Button variant="outline" size="sm" shape="app" href="/seller/san-pham/moi">
-            <IconPlus size={14} />
-            <span>Thêm sản phẩm</span>
+    <div className="space-y-5">
+      <PageHeader
+        title="Tổng quan"
+        secondaryActions={
+          <Button variant="secondary" size="sm" asChild>
+            <Link href="/seller/san-pham/moi">
+              <Plus className="size-4" aria-hidden="true" />
+              <span>Thêm sản phẩm</span>
+            </Link>
           </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            shape="app"
-            href={
-              pendingConfirmCount > 0 ? "/seller/don-hang?status=CONFIRMED" : "/seller/don-hang"
-            }
-          >
-            {pendingConfirmCount > 0
-              ? `Xác nhận đơn (${formatInt(pendingConfirmCount)})`
-              : "Đơn hàng"}
+        }
+        primaryAction={
+          <Button size="sm" asChild>
+            <Link
+              href={
+                pendingConfirmCount > 0 ? "/seller/don-hang?status=CONFIRMED" : "/seller/don-hang"
+              }
+            >
+              {pendingConfirmCount > 0
+                ? `Xác nhận đơn (${formatInt(pendingConfirmCount)})`
+                : "Đơn hàng"}
+            </Link>
           </Button>
-        </div>
-      </header>
+        }
+      />
+
+      {isActiveShop ? (
+        <SetupGuide
+          title="Hướng dẫn thiết lập"
+          steps={setupSteps}
+          storageKey="nm.seller.setupGuide.v1"
+        />
+      ) : null}
 
       <SellerSiteStatus />
 
-      {uiState === "loading" && (
-        <StateView
-          kind="loading"
-          surface="app"
-          skeletonVariant="table"
-          title="Đang tải tổng quan..."
-          rows={5}
-        />
-      )}
+      {uiState === "loading" ? (
+        <Card role="status" aria-label="Đang tải tổng quan...">
+          <CardContent className="space-y-3 py-5">
+            <Skeleton className="h-5 w-44" />
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <Skeleton className="h-32 w-full" />
+              <Skeleton className="h-32 w-full" />
+              <Skeleton className="h-32 w-full" />
+            </div>
+            <Skeleton className="h-48 w-full" />
+          </CardContent>
+        </Card>
+      ) : null}
 
-      {(uiState === "error" || (loadError && !uiState)) && (
-        <StateView
-          kind="error"
-          surface="app"
+      {uiState === "error" || (loadError && !uiState) ? (
+        <ErrorState
           title="Không thể tải tổng quan"
-          message={loadError ?? "Kết nối dịch vụ đơn hàng tạm gián đoạn."}
-          actionLabel="Tải lại"
-          onAction={() => router.refresh()}
+          description={loadError ?? "Kết nối dịch vụ đơn hàng tạm gián đoạn."}
+          onRetry={() => router.refresh()}
         />
-      )}
+      ) : null}
 
-      {uiState === "empty" && (
-        <StateView
-          kind="empty"
-          surface="app"
+      {uiState === "empty" ? (
+        <EmptyState
+          icon={ShoppingBag}
           title="Chưa có đơn hàng trong kỳ chọn."
-          actionLabel="Thêm sản phẩm"
-          actionHref="/seller/san-pham/moi"
+          description="Chia sẻ địa chỉ site gian hàng hoặc thêm sản phẩm mới để bắt đầu nhận đơn đầu tiên."
+          action={
+            <Button size="sm" asChild>
+              <Link href="/seller/san-pham/moi">Thêm sản phẩm</Link>
+            </Button>
+          }
         />
-      )}
+      ) : null}
 
-      {!uiState && !loadError && (
+      {!uiState && !loadError ? (
         <>
           {/* 1. Today's Action Queue */}
-          <section aria-labelledby="today-queue-heading" className={styles.todaySection}>
-            <div className={styles.sectionHeadRow}>
-              <h2 id="today-queue-heading" className={common.cardTitle}>
+          <section aria-labelledby="today-queue-heading" className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 id="today-queue-heading" className="text-sm font-semibold text-foreground">
                 Hôm nay cần làm gì?
               </h2>
-              <Link href="/seller/tai-chinh" className={styles.balancePillLink}>
+              <Link
+                href="/seller/tai-chinh"
+                className="inline-flex flex-wrap items-baseline gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-[13px] text-muted-foreground shadow-card transition-colors hover:border-brand/50 hover:text-foreground"
+              >
+                <Wallet className="size-3.5 self-center text-brand" aria-hidden="true" />
                 <span>Khả dụng</span>
                 {initialBalance ? (
                   <>
-                    <strong
-                      className="num"
-                      data-reveal="count"
-                      data-count-to={availableVnd}
-                      data-count-format="vnd"
-                    >
+                    <strong className="font-semibold text-foreground tabular-nums">
                       {formatVnd(availableVnd)}
                     </strong>
-                    {pendingVnd > 0 && (
-                      <span className={styles.balancePendingSub}>
-                        (Tạm giữ <span className="num">{formatVnd(pendingVnd)}</span>)
+                    {pendingVnd > 0 ? (
+                      <span className="text-xs text-muted-foreground tabular-nums">
+                        (Tạm giữ {formatVnd(pendingVnd)})
                       </span>
-                    )}
+                    ) : null}
                   </>
                 ) : (
-                  <span className={styles.balancePendingSub}>
+                  <span className="text-xs text-muted-foreground">
                     {balanceError ? "Đang chờ đồng bộ" : "0₫"}
                   </span>
                 )}
               </Link>
             </div>
 
-            <div className={styles.taskGrid}>
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               {todayTasks.map((task) => (
                 <Link
                   key={task.key}
                   href={task.href}
-                  className={`${styles.taskTile} ${task.urgent ? styles.taskTileActive : ""}`}
+                  className={cn(
+                    "group flex min-h-[88px] flex-col justify-between gap-2 rounded-xl bg-card p-4 shadow-card transition-colors hover:bg-accent/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    task.urgent && "ring-1 ring-brand/25"
+                  )}
                 >
-                  <div className={styles.taskTileTop}>
-                    <span className={styles.taskLabel}>{task.label}</span>
-                    <IconChevronRight size={14} className={styles.taskArrow} />
+                  <div className="flex items-center justify-between gap-2">
+                    <span
+                      className={cn(
+                        "text-[13px] font-medium",
+                        task.urgent ? "text-foreground" : "text-muted-foreground"
+                      )}
+                    >
+                      {task.label}
+                    </span>
+                    <ChevronRight
+                      className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-brand"
+                      aria-hidden="true"
+                    />
                   </div>
                   <strong
-                    className={`${styles.taskCount} num ${task.count === 0 ? styles.taskCountZero : ""}`}
-                    data-reveal="count"
-                    data-count-to={task.count}
+                    className={cn(
+                      "text-2xl leading-8 font-semibold tracking-tight tabular-nums",
+                      task.urgent
+                        ? "text-brand"
+                        : task.count === 0
+                          ? "font-medium text-muted-foreground"
+                          : "text-foreground"
+                    )}
                   >
                     {formatInt(task.count)}
                   </strong>
@@ -469,275 +637,344 @@ export function SellerOverviewClient({
           </section>
 
           {/* 2. Date-Range Report Filter Bar + CSV Export */}
-          <section className={common.card} aria-label="Bộ lọc kỳ báo cáo gian hàng">
-            <div className={styles.reportDateBar}>
-              <div className={styles.reportDateControls}>
-                <div className={common.segmented} role="group" aria-label="Chọn nhanh kỳ báo cáo">
-                  {(
-                    [
-                      [7, "7 ngày"],
-                      [30, "30 ngày"],
-                      [90, "90 ngày"],
-                    ] as const
-                  ).map(([days, label]) => (
-                    <button
-                      key={days}
-                      type="button"
-                      className={common.segmentedBtn}
-                      onClick={() => applyPresetDays(days)}
+          <Card className="py-0" aria-label="Bộ lọc kỳ báo cáo gian hàng">
+            <CardContent className="space-y-2 py-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div
+                    role="group"
+                    aria-label="Chọn nhanh kỳ báo cáo"
+                    className="inline-flex items-center gap-1 rounded-lg bg-muted p-1"
+                  >
+                    {(
+                      [
+                        [7, "7 ngày"],
+                        [30, "30 ngày"],
+                        [90, "90 ngày"],
+                      ] as const
+                    ).map(([days, label]) => (
+                      <Button
+                        key={days}
+                        type="button"
+                        size="xs"
+                        variant={activePresetDays === days ? "default" : "ghost"}
+                        onClick={() => applyPresetDays(days)}
+                      >
+                        {label}
+                      </Button>
+                    ))}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label
+                      htmlFor="rep-from"
+                      className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground"
                     >
-                      {label}
-                    </button>
-                  ))}
+                      <span>Từ</span>
+                      <Input
+                        id="rep-from"
+                        type="date"
+                        value={fromDate}
+                        onChange={(e) => setFromDate(e.target.value)}
+                        className="h-8 w-auto bg-card text-[13px] tabular-nums"
+                      />
+                    </label>
+                    <label
+                      htmlFor="rep-to"
+                      className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground"
+                    >
+                      <span>Đến</span>
+                      <Input
+                        id="rep-to"
+                        type="date"
+                        value={toDate}
+                        onChange={(e) => setToDate(e.target.value)}
+                        className="h-8 w-auto bg-card text-[13px] tabular-nums"
+                      />
+                    </label>
+                  </div>
                 </div>
 
-                <div className={styles.reportDateField}>
-                  <label className={styles.reportDateLabel} htmlFor="rep-from">
-                    Từ
-                  </label>
-                  <input
-                    id="rep-from"
-                    type="date"
-                    className={styles.reportDateInput}
-                    value={fromDate}
-                    onChange={(e) => setFromDate(e.target.value)}
-                  />
-                </div>
-                <div className={styles.reportDateField}>
-                  <label className={styles.reportDateLabel} htmlFor="rep-to">
-                    Đến
-                  </label>
-                  <input
-                    id="rep-to"
-                    type="date"
-                    className={styles.reportDateInput}
-                    value={toDate}
-                    onChange={(e) => setToDate(e.target.value)}
-                  />
-                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={exportingCsv}
+                  onClick={() => void handleExportCsv()}
+                >
+                  <Download className="size-4" aria-hidden="true" />
+                  <span>{exportingCsv ? "Đang xuất..." : "Xuất CSV"}</span>
+                </Button>
               </div>
+              {rangeError ? (
+                <p className="text-xs font-medium text-destructive" role="alert">
+                  {rangeError}
+                </p>
+              ) : null}
+            </CardContent>
+          </Card>
 
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                shape="app"
-                disabled={exportingCsv}
-                onClick={() => void handleExportCsv()}
-              >
-                <IconDownload size={14} />
-                <span>{exportingCsv ? "Đang xuất..." : "Xuất CSV"}</span>
-              </Button>
-            </div>
-            {rangeError && (
-              <p className={common.fieldError} role="alert" style={{ marginTop: 8 }}>
-                {rangeError}
-              </p>
-            )}
-          </section>
-
-          {/* 3. Report KPIs + Trend Chart + Top Products */}
+          {/* 3. Report KPIs (A4 KpiChartCard Grid) + Detailed Trend Chart + Top Products */}
           {reportLoading ? (
-            <StateView
-              kind="loading"
-              surface="app"
-              title="Đang tổng hợp báo cáo doanh thu..."
-              rows={4}
-            />
+            <Card role="status" aria-label="Đang tổng hợp báo cáo doanh thu...">
+              <CardContent className="space-y-3 py-5">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                  <Skeleton className="h-48 w-full" />
+                  <Skeleton className="h-48 w-full" />
+                  <Skeleton className="h-48 w-full" />
+                </div>
+              </CardContent>
+            </Card>
           ) : reportError ? (
-            <StateView
-              kind="error"
-              surface="app"
+            <ErrorState
               title="Không thể tải báo cáo doanh thu"
-              message={reportError}
-              actionLabel="Thử lại"
-              onAction={() => void loadReport(fromDate, toDate)}
+              description={reportError}
+              onRetry={() => void loadReport(fromDate, toDate)}
             />
-          ) : (
-            report && (
-              <>
-                <section className={common.balanceStrip} aria-label="Tổng hợp báo cáo kỳ chọn">
-                  <div className={common.balanceCell}>
-                    <span className={common.balanceLabel}>Tổng GMV</span>
-                    <span className={`${common.balanceValue} num`}>
-                      {formatVnd(report.gmv_vnd)}
-                    </span>
-                    <span className={common.balanceCaption}>
-                      {formatInt(report.total_orders)} đơn trong kỳ
-                    </span>
-                  </div>
-                  <div className={common.balanceCell}>
-                    <span className={common.balanceLabel}>Doanh thu thuần</span>
-                    <span className={`${common.balanceValue} num`}>
-                      {formatVnd(report.net_revenue_vnd)}
-                    </span>
-                    <span className={common.balanceCaption}>
-                      {formatInt(report.completed_orders)} đơn hoàn tất
-                    </span>
-                  </div>
-                  <div className={common.balanceCell}>
-                    <span className={common.balanceLabel}>Phí sàn &amp; thanh toán</span>
-                    <span className={`${common.balanceValue} num`}>{formatVnd(totalFeesVnd)}</span>
-                    <span className={common.balanceCaption}>
-                      Hoa hồng {formatVnd(report.commission_vnd)} · Thanh toán{" "}
-                      {formatVnd(report.payment_fee_vnd)}
-                    </span>
-                  </div>
-                  <div className={common.balanceCell}>
-                    <span className={common.balanceLabel}>Tỷ lệ hủy / trả hàng</span>
-                    <span className={`${common.balanceValue} num`}>
-                      {formatBpsPercent(report.cancel_rate_bps)} /{" "}
-                      {formatBpsPercent(report.return_rate_bps)}
-                    </span>
-                    <span className={common.balanceCaption}>
-                      {formatInt(report.cancelled_orders)} hủy · {formatInt(report.returned_orders)}{" "}
-                      trả hàng
-                    </span>
-                  </div>
-                </section>
-
-                <section className={common.cardFlush} aria-label="Biểu đồ báo cáo doanh thu">
-                  <div className={styles.kpiTabs} role="tablist" aria-label="Chỉ số theo ngày">
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={activeTab === "netRevenue"}
-                      className={`${styles.kpiTab} ${activeTab === "netRevenue" ? styles.kpiTabActive : ""}`}
-                      onClick={() => setActiveTab("netRevenue")}
-                    >
-                      <span className={styles.kpiTabLabel}>Doanh thu thuần</span>
-                      <span className={styles.kpiTabRow}>
-                        <span className={`${styles.kpiTabValue} num`}>
-                          {formatVnd(report.net_revenue_vnd)}
-                        </span>
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={activeTab === "gmv"}
-                      className={`${styles.kpiTab} ${activeTab === "gmv" ? styles.kpiTabActive : ""}`}
-                      onClick={() => setActiveTab("gmv")}
-                    >
-                      <span className={styles.kpiTabLabel}>Tổng GMV</span>
-                      <span className={styles.kpiTabRow}>
-                        <span className={`${styles.kpiTabValue} num`}>
-                          {formatVnd(report.gmv_vnd)}
-                        </span>
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={activeTab === "orders"}
-                      className={`${styles.kpiTab} ${activeTab === "orders" ? styles.kpiTabActive : ""}`}
-                      onClick={() => setActiveTab("orders")}
-                    >
-                      <span className={styles.kpiTabLabel}>Số đơn hàng</span>
-                      <span className={styles.kpiTabRow}>
-                        <span className={`${styles.kpiTabValue} num`}>
-                          {formatInt(report.total_orders)}
-                        </span>
-                      </span>
-                    </button>
-                  </div>
-
-                  <div className={styles.chartBody}>
-                    <div className={styles.chartCaption}>
-                      <h2 className={styles.chartHeading}>{chartConfig.metricName}</h2>
-                      <span className={styles.chartPeriod}>Tối đa 366 ngày</span>
-                    </div>
-
-                    {dailyPoints.length > 0 ? (
-                      <SellerTrendChart
-                        ariaLabel={chartConfig.metricName}
-                        points={chartConfig.points}
-                        valueKind={chartConfig.valueKind}
-                        currentLegend={chartConfig.currentLegend}
+          ) : report ? (
+            <>
+              <section
+                aria-label="Tổng hợp báo cáo kỳ chọn"
+                className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"
+              >
+                <KpiChartCard
+                  title="Doanh thu thuần"
+                  tooltip="Doanh thu gian hàng thực nhận sau khi trừ chiết khấu gian hàng, hoa hồng sàn và phí thanh toán trong kỳ chọn."
+                  value={formatVnd(report.net_revenue_vnd)}
+                  chart={
+                    dailyPoints.length > 0 ? (
+                      <LineChart
+                        labels={dailyLabels}
+                        series={[
+                          {
+                            name: "Doanh thu thuần",
+                            values: dailyPoints.map((d) => d.net_revenue_vnd),
+                          },
+                        ]}
+                        height={156}
+                        showArea
+                        formatValue={formatVnd}
+                        formatTick={formatCompactVnd}
+                        ariaLabel={`Biểu đồ doanh thu thuần từ ${fromDate} đến ${toDate}`}
                       />
                     ) : (
-                      <div className={common.inlineEmpty}>
-                        Chưa có dữ liệu theo ngày trong khoảng thời gian đã chọn.
-                      </div>
-                    )}
+                      <p className="py-8 text-center text-xs text-muted-foreground">
+                        Chưa có dữ liệu theo ngày trong kỳ chọn.
+                      </p>
+                    )
+                  }
+                  footer={`${formatInt(report.completed_orders)} đơn hoàn tất · ${fromDate} → ${toDate}`}
+                />
 
-                    {(report.orders_by_status ?? []).length > 0 && (
-                      <div className={styles.statusPillStrip}>
-                        {report.orders_by_status.map((row) => {
-                          const meta = getSellerOrderStatusMeta(row.status);
-                          return (
-                            <span key={row.status} className={statusPillClass(meta.tone)}>
-                              {meta.label}: {formatInt(row.count)}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    )}
+                <KpiChartCard
+                  title="Tổng GMV"
+                  tooltip="Tổng giá trị hàng hoá phát sinh trong khoảng ngày đã chọn trước khi trừ phí sàn và thanh toán."
+                  value={formatVnd(report.gmv_vnd)}
+                  chart={
+                    dailyPoints.length > 0 ? (
+                      <LineChart
+                        labels={dailyLabels}
+                        series={[
+                          {
+                            name: "Tổng GMV",
+                            values: dailyPoints.map((d) => d.gmv_vnd),
+                          },
+                        ]}
+                        height={156}
+                        showArea
+                        formatValue={formatVnd}
+                        formatTick={formatCompactVnd}
+                        ariaLabel={`Biểu đồ tổng GMV từ ${fromDate} đến ${toDate}`}
+                      />
+                    ) : (
+                      <p className="py-8 text-center text-xs text-muted-foreground">
+                        Chưa có dữ liệu theo ngày trong kỳ chọn.
+                      </p>
+                    )
+                  }
+                  footer={`${formatInt(report.total_orders)} đơn trong kỳ · ${fromDate} → ${toDate}`}
+                />
+
+                <KpiChartCard
+                  title="Số đơn hàng"
+                  tooltip="Tổng số đơn hàng được tạo tại gian hàng trong khoảng ngày đã chọn."
+                  value={formatInt(report.total_orders)}
+                  chart={
+                    dailyPoints.length > 0 ? (
+                      <LineChart
+                        labels={dailyLabels}
+                        series={[
+                          {
+                            name: "Số đơn hàng",
+                            values: dailyPoints.map((d) => d.order_count),
+                          },
+                        ]}
+                        height={156}
+                        formatValue={formatInt}
+                        ariaLabel={`Biểu đồ số đơn hàng từ ${fromDate} đến ${toDate}`}
+                      />
+                    ) : (
+                      <p className="py-8 text-center text-xs text-muted-foreground">
+                        Chưa có dữ liệu theo ngày trong kỳ chọn.
+                      </p>
+                    )
+                  }
+                  footer={`Hoàn tất ${formatInt(report.completed_orders)} · Hủy ${formatInt(report.cancelled_orders)} · Trả ${formatInt(report.returned_orders)}`}
+                />
+              </section>
+
+              <MetricStrip
+                items={[
+                  {
+                    label: "Phí sàn & thanh toán",
+                    value: formatVnd(totalFeesVnd),
+                    hint: `Hoa hồng ${formatVnd(report.commission_vnd)} · Thanh toán ${formatVnd(report.payment_fee_vnd)}`,
+                  },
+                  {
+                    label: "Tỷ lệ hủy / trả hàng",
+                    value: `${formatBpsPercent(report.cancel_rate_bps)} / ${formatBpsPercent(report.return_rate_bps)}`,
+                    hint: `${formatInt(report.cancelled_orders)} hủy · ${formatInt(report.returned_orders)} trả hàng`,
+                  },
+                ]}
+              />
+
+              <Card aria-label="Biểu đồ báo cáo doanh thu">
+                <CardHeader className="gap-3 border-b border-border pb-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <CardTitle>{chartConfig.metricName}</CardTitle>
+                      <p className="mt-0.5 text-xs text-muted-foreground">Tối đa 366 ngày</p>
+                    </div>
+                    <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as MetricTabKey)}>
+                      <TabsList aria-label="Chỉ số theo ngày">
+                        <TabsTrigger value="netRevenue">Doanh thu thuần</TabsTrigger>
+                        <TabsTrigger value="gmv">Tổng GMV</TabsTrigger>
+                        <TabsTrigger value="orders">Số đơn hàng</TabsTrigger>
+                      </TabsList>
+                    </Tabs>
                   </div>
-                </section>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {dailyPoints.length > 0 ? (
+                    <SellerTrendChart
+                      ariaLabel={chartConfig.metricName}
+                      points={chartConfig.points}
+                      valueKind={chartConfig.valueKind}
+                      currentLegend={chartConfig.currentLegend}
+                    />
+                  ) : (
+                    <p className="py-6 text-center text-sm text-muted-foreground">
+                      Chưa có dữ liệu theo ngày trong khoảng thời gian đã chọn.
+                    </p>
+                  )}
 
-                <section className={common.card} aria-labelledby="seller-top-products-heading">
-                  <div className={common.cardHeader}>
-                    <h2 id="seller-top-products-heading" className={common.cardTitle}>
-                      Top sản phẩm bán chạy ({formatInt(report.top_products?.length ?? 0)})
-                    </h2>
-                    <span className={common.cardMeta}>
+                  {(report.orders_by_status ?? []).length > 0 ? (
+                    <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+                      {report.orders_by_status.map((row) => {
+                        const meta = getSellerOrderStatusMeta(row.status);
+                        return (
+                          <StatusBadge key={row.status} tone={resolveSellerOrderTone(row.status)}>
+                            {meta.label}: {formatInt(row.count)}
+                          </StatusBadge>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </CardContent>
+              </Card>
+
+              <Card aria-labelledby="seller-top-products-heading">
+                <CardHeader>
+                  <CardTitle id="seller-top-products-heading">
+                    Top sản phẩm bán chạy ({formatInt(report.top_products?.length ?? 0)})
+                  </CardTitle>
+                  <CardAction>
+                    <span className="text-xs text-muted-foreground tabular-nums">
                       {report.from_date} → {report.to_date}
                     </span>
-                  </div>
-
+                  </CardAction>
+                </CardHeader>
+                <CardContent>
                   {(report.top_products ?? []).length === 0 ? (
-                    <div className={common.inlineEmpty}>
+                    <p className="py-4 text-center text-sm text-muted-foreground">
                       Chưa có sản phẩm nào phát sinh doanh số trong kỳ chọn.
-                    </div>
+                    </p>
                   ) : (
-                    <BarList
-                      rows={report.top_products.map((item) => ({
-                        label: item.product_name,
-                        subLabel: `${formatInt(item.units_sold)} sản phẩm đã bán`,
-                        value: item.revenue_vnd,
-                      }))}
-                      formatValue={formatVnd}
-                    />
+                    <div className="space-y-3">
+                      {report.top_products.map((item) => {
+                        const pct = Math.max(
+                          4,
+                          Math.round((item.revenue_vnd / maxTopProductRevenue) * 100)
+                        );
+                        return (
+                          <div key={item.product_id || item.product_name} className="space-y-1.5">
+                            <div className="flex items-baseline justify-between gap-3 text-sm">
+                              <div className="min-w-0 flex-1">
+                                <div className="truncate font-medium text-foreground">
+                                  {item.product_name}
+                                </div>
+                                <div className="text-xs text-muted-foreground tabular-nums">
+                                  {formatInt(item.units_sold)} sản phẩm đã bán
+                                </div>
+                              </div>
+                              <Money vnd={item.revenue_vnd} className="shrink-0" />
+                            </div>
+                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                              <div
+                                className="h-full rounded-full bg-brand"
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
-                </section>
-              </>
-            )
-          )}
+                </CardContent>
+              </Card>
+            </>
+          ) : null}
 
           {/* 4. Recent Orders Table */}
-          <section className={common.card} aria-labelledby="recent-orders-heading">
-            <div className={common.cardHeader}>
-              <h2 id="recent-orders-heading" className={common.cardTitle}>
-                Đơn hàng mới
-              </h2>
-              <Link href="/seller/don-hang" className={common.cardLink}>
-                <span>Tất cả ({formatInt(orders.length)})</span>
-                <IconChevronRight size={14} />
-              </Link>
-            </div>
+          <Card aria-labelledby="recent-orders-heading" className="gap-0 overflow-hidden py-0">
+            <CardHeader className="border-b border-border py-4">
+              <CardTitle id="recent-orders-heading">Đơn hàng mới</CardTitle>
+              <CardAction>
+                <Button variant="link" size="xs" asChild className="text-brand">
+                  <Link href="/seller/don-hang">
+                    <span>Tất cả ({formatInt(orders.length)})</span>
+                    <ChevronRight className="size-3.5" aria-hidden="true" />
+                  </Link>
+                </Button>
+              </CardAction>
+            </CardHeader>
 
             {recentOrders.length === 0 ? (
-              <div className={common.inlineEmpty}>Chưa có đơn hàng nào.</div>
+              <CardContent className="py-8 text-center text-sm text-muted-foreground">
+                Chưa có đơn hàng nào.
+              </CardContent>
             ) : (
               <>
-                <div className={`${common.tableWrap} ${common.tableWrapDesktop}`}>
-                  <table className={common.dataTable}>
-                    <thead>
-                      <tr>
-                        <th>Đơn hàng</th>
-                        <th>Người nhận</th>
-                        <th>Kênh</th>
-                        <th className={common.numCol}>Tiền hàng</th>
-                        <th>Trạng thái</th>
-                        <th className={common.numCol}>Thao tác</th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                <div className="hidden md:block">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Đơn hàng</TableHead>
+                        <TableHead>Người nhận</TableHead>
+                        <TableHead>Kênh</TableHead>
+                        <TableHead className="text-right">Tiền hàng</TableHead>
+                        <TableHead>Trạng thái</TableHead>
+                        <TableHead className="text-right">Thao tác</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
                       {recentOrders.map((order) => {
                         const meta = getSellerOrderStatusMeta(
+                          order.status,
+                          order.shipment_job_status,
+                          order.tracking_code
+                        );
+                        const tone = resolveSellerOrderTone(
                           order.status,
                           order.shipment_job_status,
                           order.tracking_code
@@ -755,95 +992,109 @@ export function SellerOverviewClient({
                         const province = order.shipping_address?.province_name || "";
 
                         return (
-                          <tr key={order.id}>
-                            <td>
-                              <div className={styles.orderLeadCell}>
+                          <TableRow
+                            key={order.id}
+                            className="cursor-pointer"
+                            onClick={() => setDrawerOrderId(order.id)}
+                          >
+                            <TableCell className="max-w-[280px]">
+                              <div className="flex items-center gap-3">
                                 {thumb ? (
                                   <img
                                     src={thumb}
                                     alt={firstItem?.product_name || order.order_code}
-                                    className={styles.orderThumb}
-                                    width={34}
-                                    height={44}
+                                    className="size-10 shrink-0 rounded-md border border-border bg-muted object-cover"
                                   />
                                 ) : (
                                   <span
-                                    className={`${common.thumbPlaceholder} ${styles.orderThumb}`}
+                                    className="flex size-10 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-muted-foreground"
                                     aria-hidden="true"
                                   >
-                                    <IconPackage size={15} />
+                                    <Package className="size-4" />
                                   </span>
                                 )}
-                                <div className={styles.opInfo}>
+                                <div className="min-w-0 flex-1">
                                   <button
                                     type="button"
-                                    className={common.rowTriggerBtn}
-                                    onClick={() => setDrawerOrderId(order.id)}
+                                    className="font-semibold text-foreground hover:text-brand hover:underline"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setDrawerOrderId(order.id);
+                                    }}
                                   >
                                     {order.order_code}
                                   </button>
-                                  <span className={styles.opSecondary}>
+                                  <div className="truncate text-xs text-muted-foreground">
                                     {summarizeOrderItems(order.items)}
-                                  </span>
+                                  </div>
                                 </div>
                               </div>
-                            </td>
-                            <td className={styles.buyerCell}>
-                              <span className={styles.buyerName} title={recipient}>
+                            </TableCell>
+                            <TableCell className="max-w-[160px]">
+                              <div
+                                className="truncate font-medium text-foreground"
+                                title={recipient}
+                              >
                                 {recipient}
-                              </span>
-                              {province && (
-                                <span className={styles.buyerSub} title={province}>
+                              </div>
+                              {province ? (
+                                <div
+                                  className="truncate text-xs text-muted-foreground"
+                                  title={province}
+                                >
                                   {province}
-                                </span>
-                              )}
-                            </td>
-                            <td>
-                              <span
-                                className={`${common.channelTag} ${channelMeta.isStorefront ? common.channelTagStorefront : ""}`}
+                                </div>
+                              ) : null}
+                            </TableCell>
+                            <TableCell>
+                              <Badge
+                                variant={channelMeta.isStorefront ? "info" : "secondary"}
+                                className="rounded-md"
                                 data-sales-channel={channelMeta.value}
                               >
                                 {channelMeta.label}
-                              </span>
-                            </td>
-                            <td className={common.numCol}>
-                              <strong>{formatVnd(order.subtotal_vnd)}</strong>
-                            </td>
-                            <td>
-                              <span className={statusPillClass(meta.tone)}>{meta.label}</span>
-                            </td>
-                            <td className={common.numCol}>
-                              <div className={common.rowHoverActions}>
-                                {nextAction && (
-                                  <button
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Money vnd={order.subtotal_vnd} />
+                            </TableCell>
+                            <TableCell>
+                              <StatusBadge tone={tone}>{meta.label}</StatusBadge>
+                            </TableCell>
+                            <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                              <div className="inline-flex items-center justify-end gap-1.5">
+                                {nextAction ? (
+                                  <Button
                                     type="button"
-                                    className={styles.inlinePrimaryBtn}
+                                    size="xs"
                                     disabled={busyOrderId === order.id}
                                     onClick={() => void handleQuickAction(order)}
                                   >
                                     {busyOrderId === order.id
                                       ? "Đang lưu..."
                                       : nextAction.shortLabel}
-                                  </button>
-                                )}
-                                <Link
-                                  href={`/seller/don-hang/${order.id}`}
-                                  className={styles.inlineActionBtn}
-                                >
-                                  Chi tiết
-                                </Link>
+                                  </Button>
+                                ) : null}
+                                <Button variant="outline" size="xs" asChild>
+                                  <Link href={`/seller/don-hang/${order.id}`}>Chi tiết</Link>
+                                </Button>
                               </div>
-                            </td>
-                          </tr>
+                            </TableCell>
+                          </TableRow>
                         );
                       })}
-                    </tbody>
-                  </table>
+                    </TableBody>
+                  </Table>
                 </div>
 
-                <div className={common.mobileList}>
+                <div className="md:hidden">
                   {recentOrders.map((order) => {
                     const meta = getSellerOrderStatusMeta(
+                      order.status,
+                      order.shipment_job_status,
+                      order.tracking_code
+                    );
+                    const tone = resolveSellerOrderTone(
                       order.status,
                       order.shipment_job_status,
                       order.tracking_code
@@ -855,37 +1106,37 @@ export function SellerOverviewClient({
                     );
                     const recipient = order.shipping_address?.recipient_name || "Người mua";
                     return (
-                      <div key={order.id} className={common.mobileRow}>
-                        <div className={common.mobileRowTop}>
-                          <div>
-                            <Link href={`/seller/don-hang/${order.id}`} className={common.cellLink}>
-                              {order.order_code}
-                            </Link>
-                            <span className={common.cellSub}>{recipient}</span>
-                          </div>
-                          <strong className="num">{formatVnd(order.subtotal_vnd)}</strong>
-                        </div>
-                        <p className={styles.opSecondary}>{summarizeOrderItems(order.items)}</p>
-                        <div className={common.mobileRowMeta}>
-                          <span className={statusPillClass(meta.tone)}>{meta.label}</span>
-                          <div className={styles.opRight}>
-                            {nextAction && (
-                              <button
-                                type="button"
-                                className={styles.inlinePrimaryBtn}
-                                disabled={busyOrderId === order.id}
-                                onClick={() => void handleQuickAction(order)}
-                              >
-                                {busyOrderId === order.id ? "Đang lưu..." : nextAction.shortLabel}
-                              </button>
-                            )}
-                            <Link
-                              href={`/seller/don-hang/${order.id}`}
-                              className={styles.inlineActionBtn}
+                      <div key={order.id} className="border-b border-border last:border-b-0">
+                        <IndexRowCard
+                          title={order.order_code}
+                          badge={<StatusBadge tone={tone}>{meta.label}</StatusBadge>}
+                          meta={
+                            <>
+                              <Money vnd={order.subtotal_vnd} size="sm" />
+                              <span>·</span>
+                              <span>{recipient}</span>
+                              <span>·</span>
+                              <span className="truncate">{summarizeOrderItems(order.items)}</span>
+                            </>
+                          }
+                          onClick={() => setDrawerOrderId(order.id)}
+                          className="border-b-0 pb-2"
+                        />
+                        <div className="flex flex-wrap items-center justify-end gap-2 px-4 pb-3">
+                          {nextAction ? (
+                            <Button
+                              type="button"
+                              size="xs"
+                              className="min-h-9"
+                              disabled={busyOrderId === order.id}
+                              onClick={() => void handleQuickAction(order)}
                             >
-                              Chi tiết
-                            </Link>
-                          </div>
+                              {busyOrderId === order.id ? "Đang lưu..." : nextAction.shortLabel}
+                            </Button>
+                          ) : null}
+                          <Button variant="outline" size="xs" className="min-h-9" asChild>
+                            <Link href={`/seller/don-hang/${order.id}`}>Chi tiết</Link>
+                          </Button>
                         </div>
                       </div>
                     );
@@ -893,78 +1144,80 @@ export function SellerOverviewClient({
                 </div>
               </>
             )}
-          </section>
+          </Card>
 
           {/* 5. Low-Stock SKU Alert Strip */}
-          {topLowStock.length > 0 && (
-            <section className={common.card} aria-labelledby="op-stock-heading">
-              <div className={common.cardHeader}>
-                <h2 id="op-stock-heading" className={common.cardTitle}>
+          {topLowStock.length > 0 ? (
+            <Card aria-labelledby="op-stock-heading" className="gap-0 overflow-hidden py-0">
+              <CardHeader className="border-b border-border py-4">
+                <CardTitle id="op-stock-heading">
                   SKU sắp hết tồn ({formatInt(lowStockAlerts.length)})
-                </h2>
-                <Link href="/seller/san-pham?filter=LOW_OOS" className={common.cardLink}>
-                  <span>Kho sản phẩm</span>
-                  <IconChevronRight size={14} />
-                </Link>
-              </div>
-
-              <div className={styles.opRows}>
+                </CardTitle>
+                <CardAction>
+                  <Button variant="link" size="xs" asChild className="text-brand">
+                    <Link href="/seller/san-pham?filter=LOW_OOS">
+                      <span>Kho sản phẩm</span>
+                      <ChevronRight className="size-3.5" aria-hidden="true" />
+                    </Link>
+                  </Button>
+                </CardAction>
+              </CardHeader>
+              <CardContent className="divide-y divide-border px-4 py-0 md:px-5">
                 {topLowStock.map((alert) => (
-                  <div key={alert.skuId} className={`${styles.opRow} ${common.rowHoverParent}`}>
-                    <div className={styles.opRowMain}>
+                  <div
+                    key={alert.skuId}
+                    className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="flex min-w-0 flex-1 items-center gap-3">
                       {alert.image ? (
                         <img
                           src={alert.image}
                           alt={alert.productName}
-                          className={styles.opThumb}
-                          width={34}
-                          height={44}
+                          className="size-10 shrink-0 rounded-md border border-border bg-muted object-cover"
                         />
                       ) : (
                         <span
-                          className={`${common.thumbPlaceholder} ${styles.opThumb}`}
+                          className="flex size-10 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-muted-foreground"
                           aria-hidden="true"
                         >
-                          <IconPackage size={15} />
+                          <Package className="size-4" />
                         </span>
                       )}
-                      <div className={styles.opInfo}>
+                      <div className="min-w-0 flex-1">
                         <Link
                           href={`/seller/san-pham/${alert.productId}`}
-                          className={styles.opPrimary}
+                          className="block truncate text-sm font-medium text-foreground hover:text-brand hover:underline"
                         >
                           {alert.productName} ({alert.skuLabel})
                         </Link>
-                        <span className={styles.opSecondary}>
+                        <span className="block truncate text-xs text-muted-foreground tabular-nums">
                           {alert.skuCode}, {formatVnd(alert.priceVnd)}
                         </span>
                       </div>
                     </div>
 
-                    <div className={styles.opRight}>
+                    <div className="flex shrink-0 items-center justify-between gap-3 sm:justify-end">
                       <span
-                        className={`${styles.opMoney} ${alert.availableStock === 0 ? styles.opStockCrit : ""}`}
+                        className={cn(
+                          "text-sm font-semibold tabular-nums",
+                          alert.availableStock === 0 ? "text-destructive" : "text-foreground"
+                        )}
                       >
                         {alert.availableStock === 0
                           ? "Hết hàng"
                           : `Còn ${formatInt(alert.availableStock)}`}
                       </span>
-                      <div className={common.rowHoverActions}>
-                        <Link
-                          href={`/seller/san-pham/${alert.productId}`}
-                          className={styles.inlineActionBtn}
-                        >
-                          Xem sản phẩm
-                        </Link>
-                      </div>
+                      <Button variant="outline" size="xs" asChild>
+                        <Link href={`/seller/san-pham/${alert.productId}`}>Xem sản phẩm</Link>
+                      </Button>
                     </div>
                   </div>
                 ))}
-              </div>
-            </section>
-          )}
+              </CardContent>
+            </Card>
+          ) : null}
         </>
-      )}
+      ) : null}
 
       <SellerOrderQuickDrawer
         order={drawerOrder}

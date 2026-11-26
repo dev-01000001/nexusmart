@@ -1,8 +1,44 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Button, IconArrowUpRight, IconRefresh, IconSearch, StateView } from "@/components";
+import { ExternalLink, Plus, RefreshCw, RotateCcw, Search, Trash2 } from "lucide-react";
+import {
+  EmptyState,
+  ErrorState,
+  IndexRowCard,
+  IndexTable,
+  Money,
+  PageHeader,
+  StatusBadge,
+  Timeline,
+  type IndexTableTab,
+  type TimelineItem,
+} from "@/components/app";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import { ApiError, api, getErrorMessage } from "@/lib/api";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import type { ReturnSellerDecision } from "@/lib/gateway-types";
@@ -16,12 +52,11 @@ import {
   parseSafeEvidenceUrl,
   validateEvidenceUrls,
 } from "@/features/account/orderMeta";
+import { cn } from "@/lib/utils";
+import { resolveSellerReturnTone } from "./ops/sellerTone";
 import type { GwSellerReturnRequest } from "./sellerApiTypes";
 import { useSellerContext } from "./SellerShell";
-import { SellerDrawer, statusPillClass } from "./SellerUiPrimitives";
 import { SHOP_PICKUP_ADDRESS_REQUIRED_SELLER_MESSAGE, parseUiState } from "./types";
-import common from "./SellerCommon.module.css";
-import styles from "@/app/(seller)/seller/tra-hang/page.module.css";
 
 type ReturnFilterKey = "all" | "PENDING" | "RETURNING" | "RECEIVED" | "ESCALATED" | "DONE";
 
@@ -53,7 +88,7 @@ export function SellerReturnsClient({ initialReturns, loadError }: SellerReturns
   const [query, setQuery] = useState("");
   const [drawerReturnId, setDrawerReturnId] = useState<string | null>(initialSelectedParam);
 
-  // Action form state inside drawer
+  // Action form state inside Sheet
   const [responseNote, setResponseNote] = useState("");
   const [evidenceUrls, setEvidenceUrls] = useState<string[]>([""]);
   const [disputeReason, setDisputeReason] = useState("");
@@ -254,7 +289,7 @@ export function SellerReturnsClient({ initialReturns, loadError }: SellerReturns
     }
   };
 
-  const countCards: Array<{ key: ReturnFilterKey; label: string; count: number }> = [
+  const returnTabs: IndexTableTab[] = [
     { key: "all", label: "Tất cả", count: counts.all },
     { key: "PENDING", label: "Chờ phản hồi", count: counts.PENDING },
     { key: "RETURNING", label: "Đang gửi trả", count: counts.RETURNING },
@@ -267,617 +302,595 @@ export function SellerReturnsClient({ initialReturns, loadError }: SellerReturns
     ? normalizeEnumSuffix(activeReturn.status, "RETURN_STATUS_")
     : "";
 
+  const activeTimelineItems: TimelineItem[] = (activeReturn?.events ?? []).map((ev) => {
+    const toInfo = getReturnStatusInfo(ev.to_status);
+    const localized = localizeTimelineNote(ev.note);
+    return {
+      id: ev.id,
+      at: ev.created_at ? formatDateTimeVi(ev.created_at) : EMPTY_DASH,
+      title: toInfo.label,
+      description: localized || undefined,
+    };
+  });
+
   return (
-    <div className={common.page}>
-      <header className={common.pageHeader}>
-        <div className={common.headerText}>
-          <h1 className={common.title}>Trả hàng &amp; hoàn tiền</h1>
-        </div>
-        <div className={common.headerActions}>
+    <div className="space-y-4">
+      <PageHeader
+        title="Trả hàng & hoàn tiền"
+        secondaryActions={
+          <Button variant="secondary" size="sm" asChild>
+            <Link href="/seller/don-hang">
+              <span>Đơn hàng</span>
+              <ExternalLink className="size-3.5" aria-hidden="true" />
+            </Link>
+          </Button>
+        }
+        primaryAction={
           <Button
+            type="button"
             variant="outline"
             size="sm"
-            shape="app"
             disabled={refreshing}
             onClick={() => void reloadReturns()}
           >
-            <IconRefresh size={14} />
+            <RefreshCw
+              className={cn("size-3.5", refreshing && "animate-spin")}
+              aria-hidden="true"
+            />
             <span>{refreshing ? "Đang tải..." : "Làm mới"}</span>
           </Button>
-          <Button variant="outline" size="sm" shape="app" href="/seller/don-hang">
-            <span>Đơn hàng</span>
-            <IconArrowUpRight size={14} />
-          </Button>
-        </div>
-      </header>
+        }
+      />
 
-      {uiState === "loading" && (
-        <StateView
-          kind="loading"
-          surface="app"
-          skeletonVariant="table"
-          title="Đang tải danh sách yêu cầu trả hàng..."
-          rows={5}
-        />
-      )}
+      {uiState === "loading" ? (
+        <Card role="status" aria-label="Đang tải danh sách yêu cầu trả hàng...">
+          <CardContent className="space-y-3 py-5">
+            {Array.from({ length: 5 }).map((_, idx) => (
+              <Skeleton key={idx} className="h-12 w-full" />
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
 
-      {(uiState === "error" || (!uiState && errorMsg)) && (
-        <StateView
-          kind="error"
-          surface="app"
+      {uiState === "error" || (!uiState && errorMsg) ? (
+        <ErrorState
           title="Không thể tải danh sách trả hàng"
-          message={errorMsg ?? "Hệ thống xử lý trả hàng tạm gián đoạn."}
-          actionLabel="Thử lại"
-          onAction={() => void reloadReturns()}
+          description={errorMsg ?? "Hệ thống xử lý trả hàng tạm gián đoạn."}
+          onRetry={() => void reloadReturns()}
         />
-      )}
+      ) : null}
 
-      {uiState === "empty" && (
-        <StateView
-          kind="empty"
-          surface="app"
+      {uiState === "empty" ? (
+        <EmptyState
+          icon={RotateCcw}
           title="Chưa có yêu cầu trả hàng nào"
-          message="Khi người mua gửi yêu cầu trả hàng, hồ sơ sẽ hiển thị tại đây."
-          actionLabel="Xem đơn hàng"
-          actionHref="/seller/don-hang"
+          description="Khi người mua gửi yêu cầu trả hàng, hồ sơ sẽ hiển thị tại đây."
+          action={
+            <Button size="sm" asChild>
+              <Link href="/seller/don-hang">Xem đơn hàng</Link>
+            </Button>
+          }
         />
-      )}
+      ) : null}
 
-      {!uiState && !errorMsg && (
-        <>
-          <div className={common.countCards6} role="tablist" aria-label="Lọc trạng thái trả hàng">
-            {countCards.map((c) => {
-              const selected = filter === c.key;
-              return (
-                <button
-                  key={c.key}
-                  type="button"
-                  role="tab"
-                  aria-selected={selected}
-                  className={`${common.countCard} ${selected ? common.countCardSelected : ""}`}
-                  onClick={() => setFilter(c.key)}
-                >
-                  <span className={common.countCardLabel}>{c.label}</span>
-                  <span className={common.countCardValue}>{formatInt(c.count)}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          <div className={common.chipScroller} role="tablist" aria-label="Lọc trạng thái trả hàng">
-            {countCards.map((c) => {
-              const selected = filter === c.key;
-              return (
-                <button
-                  key={`m-${c.key}`}
-                  type="button"
-                  role="tab"
-                  aria-selected={selected}
-                  className={`${common.chipBtn} ${selected ? common.chipBtnActive : ""}`}
-                  onClick={() => setFilter(c.key)}
-                >
-                  <span>{c.label}</span>
-                  <span className={common.chipCount}>{formatInt(c.count)}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          <section className={common.card} aria-label="Danh sách yêu cầu trả hàng">
-            <div className={common.toolbar} style={{ marginBottom: 14 }}>
-              <div className={common.toolbarLeft}>
-                <div className={common.searchWrap}>
-                  <span className={common.searchIcon}>
-                    <IconSearch size={14} />
-                  </span>
-                  <input
-                    type="search"
-                    className={common.searchInput}
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    placeholder="Tìm mã đơn, lý do, mã vận đơn trả..."
-                    aria-label="Tìm yêu cầu trả hàng"
-                  />
-                </div>
-              </div>
-              <span className={common.toolbarMeta}>
-                {formatInt(filtered.length)} / {formatInt(returns.length)} yêu cầu
-              </span>
+      {!uiState && !errorMsg ? (
+        <IndexTable
+          tabs={returnTabs}
+          activeTab={filter}
+          onTabChange={(nextKey) => setFilter(nextKey as ReturnFilterKey)}
+          toolbar={
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {formatInt(filtered.length)} / {formatInt(returns.length)} yêu cầu
+            </span>
+          }
+        >
+          <div className="border-b border-border bg-muted/40 px-3 py-2.5 md:px-4">
+            <div className="relative max-w-sm">
+              <Search
+                className="pointer-events-none absolute top-2 left-2.5 size-4 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <Input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Tìm mã đơn, lý do, mã vận đơn trả..."
+                aria-label="Tìm yêu cầu trả hàng"
+                className="h-8 bg-card pl-8 text-[13px]"
+              />
             </div>
+          </div>
 
-            {filtered.length === 0 ? (
-              <div className={common.inlineEmpty}>
-                {returns.length === 0
-                  ? "Chưa có yêu cầu trả hàng nào."
-                  : "Không có yêu cầu trả hàng nào khớp bộ lọc hiện tại."}
-              </div>
-            ) : (
-              <>
-                <div className={`${common.tableWrap} ${common.tableWrapDesktop}`}>
-                  <table className={common.dataTable}>
-                    <thead>
-                      <tr>
-                        <th>Mã đơn &amp; lý do</th>
-                        <th className={common.numCol}>Hoàn dự kiến</th>
-                        <th>Vận đơn trả</th>
-                        <th>Hạn xử lý</th>
-                        <th>Trạng thái</th>
-                        <th className={common.numCol}>Thao tác</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filtered.map((ret) => {
-                        const meta = getReturnStatusInfo(ret.status);
-                        const isSelected = drawerReturnId === ret.id;
-                        return (
-                          <tr key={ret.id} className={isSelected ? common.rowSelected : undefined}>
-                            <td>
-                              <button
-                                type="button"
-                                className={common.rowTriggerBtn}
-                                onClick={() => openReturnDrawer(ret)}
-                              >
-                                {ret.order_code || ret.order_id.slice(0, 8)}
-                              </button>
-                              <span className={`${common.cellSub} ${styles.reasonEllipsis}`}>
-                                {ret.reason}
-                              </span>
-                            </td>
-                            <td className={common.numCol}>
-                              <strong>{formatVnd(ret.refund_amount_vnd)}</strong>
-                            </td>
-                            <td>{ret.return_tracking_code || EMPTY_DASH}</td>
-                            <td>
-                              {ret.deadline_at ? formatDateTimeVi(ret.deadline_at) : EMPTY_DASH}
-                            </td>
-                            <td>
-                              <span className={statusPillClass(meta.tone)}>{meta.label}</span>
-                            </td>
-                            <td className={common.numCol}>
-                              <div className={common.rowHoverActions}>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  shape="app"
-                                  onClick={() => openReturnDrawer(ret)}
-                                >
-                                  Chi tiết
-                                </Button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className={common.mobileList}>
-                  {filtered.map((ret) => {
-                    const meta = getReturnStatusInfo(ret.status);
-                    return (
-                      <div key={ret.id} className={common.mobileRow}>
-                        <div className={common.mobileRowTop}>
-                          <div>
+          {filtered.length === 0 ? (
+            <div className="px-6 py-12 text-center text-sm text-muted-foreground">
+              {returns.length === 0
+                ? "Chưa có yêu cầu trả hàng nào."
+                : "Không có yêu cầu trả hàng nào khớp bộ lọc hiện tại."}
+            </div>
+          ) : (
+            <>
+              {/* Desktop Table */}
+              <div className="hidden md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Mã đơn &amp; lý do</TableHead>
+                      <TableHead className="text-right">Hoàn dự kiến</TableHead>
+                      <TableHead>Vận đơn trả</TableHead>
+                      <TableHead>Hạn xử lý</TableHead>
+                      <TableHead>Trạng thái</TableHead>
+                      <TableHead className="text-right">Thao tác</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filtered.map((ret) => {
+                      const meta = getReturnStatusInfo(ret.status);
+                      const tone = resolveSellerReturnTone(ret.status);
+                      const isSelected = drawerReturnId === ret.id;
+                      return (
+                        <TableRow
+                          key={ret.id}
+                          data-state={isSelected ? "selected" : undefined}
+                          className="cursor-pointer"
+                          onClick={() => openReturnDrawer(ret)}
+                        >
+                          <TableCell className="max-w-[280px]">
                             <button
                               type="button"
-                              className={common.rowTriggerBtn}
-                              onClick={() => openReturnDrawer(ret)}
+                              className="font-semibold text-foreground hover:text-brand hover:underline"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openReturnDrawer(ret);
+                              }}
                             >
                               {ret.order_code || ret.order_id.slice(0, 8)}
                             </button>
-                            <span className={common.cellSub}>{ret.reason}</span>
-                          </div>
-                          <strong className="num">{formatVnd(ret.refund_amount_vnd)}</strong>
-                        </div>
-                        <div className={common.mobileRowMeta}>
-                          <span className={statusPillClass(meta.tone)}>{meta.label}</span>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            shape="app"
-                            onClick={() => openReturnDrawer(ret)}
-                          >
-                            Xử lý
-                          </Button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </>
-            )}
-          </section>
-        </>
-      )}
-
-      <SellerDrawer
-        open={Boolean(activeReturn)}
-        onClose={closeDrawer}
-        title={activeReturn ? `Yêu cầu trả hàng · ${activeReturn.order_code}` : "Chi tiết trả hàng"}
-        subtitle={activeReturn ? getReturnStatusInfo(activeReturn.status).label : undefined}
-        footer={
-          activeReturn ? (
-            <div className={styles.drawerFooterRow}>
-              <Button
-                variant="outline"
-                size="sm"
-                shape="app"
-                href={`/seller/don-hang/${encodeURIComponent(activeReturn.order_id)}`}
-              >
-                <span>Mở chi tiết đơn</span>
-                <IconArrowUpRight size={14} />
-              </Button>
-              <Button variant="ghost" size="sm" shape="app" onClick={closeDrawer}>
-                Đóng
-              </Button>
-            </div>
-          ) : undefined
-        }
-      >
-        {activeReturn && (
-          <div className={styles.detailStack}>
-            <div className={styles.infoGrid}>
-              <div className={styles.infoItem}>
-                <span className={styles.infoKey}>Trạng thái</span>
-                <div>
-                  <span className={statusPillClass(getReturnStatusInfo(activeReturn.status).tone)}>
-                    {getReturnStatusInfo(activeReturn.status).label}
-                  </span>
-                </div>
-              </div>
-              <div className={styles.infoItem}>
-                <span className={styles.infoKey}>Hoàn dự kiến</span>
-                <span className={`${styles.infoVal} num`}>
-                  {formatVnd(activeReturn.refund_amount_vnd)}
-                </span>
-              </div>
-              <div className={styles.infoItem}>
-                <span className={styles.infoKey}>Hạn xử lý kế tiếp</span>
-                <span className={styles.infoVal}>
-                  {activeReturn.deadline_at
-                    ? formatDateTimeVi(activeReturn.deadline_at)
-                    : EMPTY_DASH}
-                </span>
-              </div>
-              <div className={styles.infoItem}>
-                <span className={styles.infoKey}>Phí trả hàng</span>
-                <span className={styles.infoVal}>
-                  {activeReturn.return_fee_vnd > 0
-                    ? `${formatVnd(activeReturn.return_fee_vnd)} · `
-                    : ""}
-                  {getReturnFeeBearerLabel(activeReturn.return_fee_bearer)}
-                </span>
-              </div>
-              <div className={styles.infoItem}>
-                <span className={styles.infoKey}>Vận đơn chiều trả</span>
-                <span className={styles.infoVal}>
-                  {activeReturn.return_tracking_code ? (
-                    <>
-                      <span>{activeReturn.return_tracking_code}</span>
-                      {(() => {
-                        const labelHref = buildShippingLabelHref(activeReturn.return_tracking_code);
-                        if (!labelHref) return null;
-                        return (
-                          <>
-                            {" · "}
-                            <a
-                              href={labelHref}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className={common.cardLink}
-                              title="Mở nhãn trả hàng ở tab mới — nhấn Ctrl+P để in"
+                            <div className="truncate text-xs text-muted-foreground">
+                              {ret.reason}
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Money vnd={ret.refund_amount_vnd} />
+                          </TableCell>
+                          <TableCell className="font-mono text-xs text-foreground">
+                            {ret.return_tracking_code || EMPTY_DASH}
+                          </TableCell>
+                          <TableCell className="text-xs text-muted-foreground tabular-nums">
+                            {ret.deadline_at ? formatDateTimeVi(ret.deadline_at) : EMPTY_DASH}
+                          </TableCell>
+                          <TableCell>
+                            <StatusBadge tone={tone}>{meta.label}</StatusBadge>
+                          </TableCell>
+                          <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="xs"
+                              onClick={() => openReturnDrawer(ret)}
                             >
-                              In nhãn trả hàng
-                            </a>
+                              Chi tiết
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+
+              {/* Mobile Card List */}
+              <div className="md:hidden">
+                {filtered.map((ret) => {
+                  const meta = getReturnStatusInfo(ret.status);
+                  const tone = resolveSellerReturnTone(ret.status);
+                  return (
+                    <div key={ret.id} className="border-b border-border last:border-b-0">
+                      <IndexRowCard
+                        title={ret.order_code || ret.order_id.slice(0, 8)}
+                        badge={<StatusBadge tone={tone}>{meta.label}</StatusBadge>}
+                        meta={
+                          <>
+                            <Money vnd={ret.refund_amount_vnd} size="sm" />
+                            <span>·</span>
+                            <span className="truncate">{ret.reason}</span>
                           </>
-                        );
-                      })()}
-                    </>
-                  ) : (
-                    EMPTY_DASH
-                  )}
-                </span>
-              </div>
-            </div>
-
-            <div className={styles.well}>
-              <span className={styles.wellHeading}>Nội dung từ người mua</span>
-              <p className={styles.wellText}>{activeReturn.reason}</p>
-              {(() => {
-                const buyerLinks = (activeReturn.evidence_urls ?? [])
-                  .map((u) => parseSafeEvidenceUrl(u))
-                  .filter((x): x is NonNullable<typeof x> => x !== null);
-                if (buyerLinks.length === 0) return null;
-                return (
-                  <div className={styles.evidenceList}>
-                    <span className={styles.infoKey}>Bằng chứng người mua</span>
-                    {buyerLinks.map((ev, idx) => (
-                      <a
-                        key={`${ev.href}-${idx}`}
-                        href={ev.href}
-                        target="_blank"
-                        rel="noopener noreferrer nofollow"
-                        className={styles.evidenceLink}
-                      >
-                        Bằng chứng #{idx + 1} ({ev.hostname})
-                      </a>
-                    ))}
-                  </div>
-                );
-              })()}
-              {(activeReturn.seller_response || activeReturn.seller_note) && (
-                <p className={styles.wellText}>
-                  <strong>Phản hồi gian hàng:</strong>{" "}
-                  {activeReturn.seller_response || activeReturn.seller_note}
-                </p>
-              )}
-              {(() => {
-                const sellerLinks = (activeReturn.seller_evidence_urls ?? [])
-                  .map((u) => parseSafeEvidenceUrl(u))
-                  .filter((x): x is NonNullable<typeof x> => x !== null);
-                if (sellerLinks.length === 0) return null;
-                return (
-                  <div className={styles.evidenceList}>
-                    <span className={styles.infoKey}>Chứng từ gian hàng</span>
-                    {sellerLinks.map((ev, idx) => (
-                      <a
-                        key={`${ev.href}-${idx}`}
-                        href={ev.href}
-                        target="_blank"
-                        rel="noopener noreferrer nofollow"
-                        className={styles.evidenceLink}
-                      >
-                        Chứng từ #{idx + 1} ({ev.hostname})
-                      </a>
-                    ))}
-                  </div>
-                );
-              })()}
-              {activeReturn.dispute_reason && (
-                <p className={styles.wellText}>
-                  <strong>Nội dung tranh chấp:</strong> {activeReturn.dispute_reason}
-                </p>
-              )}
-              {activeReturn.admin_note && (
-                <p className={styles.wellText}>
-                  <strong>Kết luận quản trị viên:</strong> {activeReturn.admin_note}
-                </p>
-              )}
-            </div>
-
-            {/* PENDING: ACCEPT_RETURN, ACCEPT_REFUND, or REJECT */}
-            {activeStatusKey === "PENDING" && (
-              <div className={styles.well}>
-                <span className={styles.wellHeading}>Phản hồi yêu cầu</span>
-                <div className={common.field}>
-                  <label htmlFor="seller-ret-note" className={common.fieldLabel}>
-                    Ghi chú phản hồi (bắt buộc nếu từ chối)
-                  </label>
-                  <textarea
-                    id="seller-ret-note"
-                    className={common.textArea}
-                    value={responseNote}
-                    onChange={(e) => setResponseNote(e.target.value)}
-                    placeholder="Nhập hướng dẫn gửi trả hoặc lý do từ chối..."
-                    disabled={busy}
-                  />
-                </div>
-
-                <div className={common.field}>
-                  <span className={common.fieldLabel}>
-                    Liên kết chứng từ (tối đa {MAX_EVIDENCE_URLS})
-                  </span>
-                  {evidenceUrls.map((url, idx) => (
-                    <div key={`sel-ev-${idx}`} className={styles.urlRow}>
-                      <input
-                        type="url"
-                        className={common.textInput}
-                        value={url}
-                        onChange={(e) => {
-                          const next = [...evidenceUrls];
-                          next[idx] = e.target.value;
-                          setEvidenceUrls(next);
-                        }}
-                        placeholder="https://..."
-                        aria-label={`Liên kết chứng từ ${idx + 1}`}
-                        disabled={busy}
+                        }
+                        onClick={() => openReturnDrawer(ret)}
+                        className="border-b-0 pb-2"
                       />
-                      {evidenceUrls.length > 1 && (
+                      <div className="flex justify-end px-4 pb-3">
                         <Button
                           type="button"
                           variant="outline"
-                          size="sm"
-                          shape="app"
-                          disabled={busy}
-                          onClick={() => setEvidenceUrls(evidenceUrls.filter((_, i) => i !== idx))}
+                          size="xs"
+                          className="min-h-10"
+                          onClick={() => openReturnDrawer(ret)}
                         >
-                          Xóa
+                          Xử lý
                         </Button>
-                      )}
+                      </div>
                     </div>
-                  ))}
-                  {evidenceUrls.length < MAX_EVIDENCE_URLS && (
-                    <div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        shape="app"
-                        disabled={busy}
-                        onClick={() => setEvidenceUrls([...evidenceUrls, ""])}
-                      >
-                        Thêm liên kết
-                      </Button>
-                    </div>
-                  )}
-                </div>
-
-                {formError && (
-                  <p className={common.fieldError} role="alert">
-                    {formError}
-                  </p>
-                )}
-
-                <div className={styles.actionRow}>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    shape="app"
-                    disabled={busy}
-                    onClick={() => void handleRespond(activeReturn, "REJECT")}
-                  >
-                    Từ chối
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    shape="app"
-                    disabled={busy}
-                    onClick={() => void handleRespond(activeReturn, "ACCEPT_REFUND")}
-                  >
-                    Hoàn tiền ngay
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ink"
-                    size="sm"
-                    shape="app"
-                    disabled={busy}
-                    onClick={() => void handleRespond(activeReturn, "ACCEPT_RETURN")}
-                  >
-                    {busy ? "Đang xử lý..." : "Yêu cầu trả hàng về"}
-                  </Button>
-                </div>
+                  );
+                })}
               </div>
-            )}
+            </>
+          )}
+        </IndexTable>
+      ) : null}
 
-            {/* RECEIVED: Confirm received or Dispute */}
-            {activeStatusKey === "RECEIVED" && (
-              <div className={styles.well}>
-                <span className={styles.wellHeading}>Kiểm tra hàng trả về kho</span>
-                <div className={common.field}>
-                  <label htmlFor="seller-dispute-reason" className={common.fieldLabel}>
-                    Lý do báo hàng sai (chỉ nhập khi khiếu nại)
-                  </label>
-                  <textarea
-                    id="seller-dispute-reason"
-                    className={common.textArea}
-                    value={disputeReason}
-                    onChange={(e) => setDisputeReason(e.target.value)}
-                    placeholder="Mô tả sai khác giữa kiện hàng nhận về và đơn gốc..."
-                    disabled={busy}
-                  />
+      {/* Detail & Actions Sheet */}
+      <Sheet open={Boolean(activeReturn)} onOpenChange={(open) => !open && closeDrawer()}>
+        <SheetContent side="right" className="w-full gap-0 p-0 sm:max-w-lg">
+          {activeReturn ? (
+            <>
+              <SheetHeader className="border-b border-border px-5 py-4 pr-12">
+                <div className="flex flex-wrap items-center gap-2">
+                  <SheetTitle className="text-base font-semibold">
+                    Yêu cầu trả hàng · {activeReturn.order_code}
+                  </SheetTitle>
+                  <StatusBadge tone={resolveSellerReturnTone(activeReturn.status)}>
+                    {getReturnStatusInfo(activeReturn.status).label}
+                  </StatusBadge>
                 </div>
+                <SheetDescription className="text-xs">
+                  {getReturnStatusInfo(activeReturn.status).label}
+                </SheetDescription>
+              </SheetHeader>
 
-                <div className={common.field}>
-                  <span className={common.fieldLabel}>
-                    Bằng chứng mở kiện trả (tối đa {MAX_EVIDENCE_URLS})
-                  </span>
-                  {disputeUrls.map((url, idx) => (
-                    <div key={`sel-disp-${idx}`} className={styles.urlRow}>
-                      <input
-                        type="url"
-                        className={common.textInput}
-                        value={url}
-                        onChange={(e) => {
-                          const next = [...disputeUrls];
-                          next[idx] = e.target.value;
-                          setDisputeUrls(next);
-                        }}
-                        placeholder="https://..."
-                        aria-label={`Liên kết bằng chứng báo hàng sai ${idx + 1}`}
-                        disabled={busy}
-                      />
-                      {disputeUrls.length > 1 && (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          shape="app"
-                          disabled={busy}
-                          onClick={() => setDisputeUrls(disputeUrls.filter((_, i) => i !== idx))}
-                        >
-                          Xóa
-                        </Button>
-                      )}
-                    </div>
-                  ))}
-                  {disputeUrls.length < MAX_EVIDENCE_URLS && (
-                    <div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        shape="app"
-                        disabled={busy}
-                        onClick={() => setDisputeUrls([...disputeUrls, ""])}
-                      >
-                        Thêm liên kết
-                      </Button>
-                    </div>
-                  )}
-                </div>
-
-                {formError && (
-                  <p className={common.fieldError} role="alert">
-                    {formError}
-                  </p>
-                )}
-
-                <div className={styles.actionRow}>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    shape="app"
-                    disabled={busy}
-                    onClick={() => void handleDisputeGoods(activeReturn)}
-                  >
-                    Báo hàng sai
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ink"
-                    size="sm"
-                    shape="app"
-                    disabled={busy}
-                    onClick={() => void handleConfirmReceived(activeReturn)}
-                  >
-                    {busy ? "Đang xử lý..." : "Xác nhận đã nhận đúng hàng"}
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            {/* Timeline */}
-            {Array.isArray(activeReturn.events) && activeReturn.events.length > 0 && (
-              <div className={styles.well}>
-                <span className={styles.wellHeading}>Lịch sử xử lý</span>
-                <div className={styles.timelineList}>
-                  {activeReturn.events.map((ev) => {
-                    const toInfo = getReturnStatusInfo(ev.to_status);
-                    const localized = localizeTimelineNote(ev.note);
-                    return (
-                      <div key={ev.id} className={styles.timelineItem}>
-                        <div className={styles.timelineHead}>
-                          <span className={styles.timelineTitle}>{toInfo.label}</span>
-                          <span className={styles.timelineTime}>
-                            {ev.created_at ? formatDateTimeVi(ev.created_at) : EMPTY_DASH}
+              <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4 text-sm">
+                {/* Summary metadata */}
+                <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Hoàn dự kiến</dt>
+                    <dd className="mt-0.5">
+                      <Money vnd={activeReturn.refund_amount_vnd} />
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Hạn xử lý kế tiếp</dt>
+                    <dd className="mt-0.5 text-[13px] font-medium text-foreground tabular-nums">
+                      {activeReturn.deadline_at
+                        ? formatDateTimeVi(activeReturn.deadline_at)
+                        : EMPTY_DASH}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Phí trả hàng</dt>
+                    <dd className="mt-0.5 text-[13px] font-medium text-foreground tabular-nums">
+                      {activeReturn.return_fee_vnd > 0
+                        ? `${formatVnd(activeReturn.return_fee_vnd)} · `
+                        : ""}
+                      {getReturnFeeBearerLabel(activeReturn.return_fee_bearer)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Vận đơn chiều trả</dt>
+                    <dd className="mt-0.5 text-[13px] font-medium text-foreground">
+                      {activeReturn.return_tracking_code ? (
+                        <span className="inline-flex flex-wrap items-center gap-1.5">
+                          <span className="font-mono text-xs">
+                            {activeReturn.return_tracking_code}
                           </span>
-                        </div>
-                        {localized && <span className={styles.timelineNote}>{localized}</span>}
+                          {(() => {
+                            const labelHref = buildShippingLabelHref(
+                              activeReturn.return_tracking_code
+                            );
+                            if (!labelHref) return null;
+                            return (
+                              <a
+                                href={labelHref}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-xs font-medium text-brand hover:underline"
+                                title="Mở nhãn trả hàng ở tab mới — nhấn Ctrl+P để in"
+                              >
+                                In nhãn trả hàng
+                              </a>
+                            );
+                          })()}
+                        </span>
+                      ) : (
+                        EMPTY_DASH
+                      )}
+                    </dd>
+                  </div>
+                </dl>
+
+                <Separator />
+
+                {/* Buyer & seller notes */}
+                <div className="space-y-2.5 rounded-lg border border-border bg-muted/40 p-3.5 text-[13px]">
+                  <h3 className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+                    Nội dung từ người mua
+                  </h3>
+                  <p className="text-foreground">{activeReturn.reason}</p>
+
+                  {(() => {
+                    const buyerLinks = (activeReturn.evidence_urls ?? [])
+                      .map((u) => parseSafeEvidenceUrl(u))
+                      .filter((x): x is NonNullable<typeof x> => x !== null);
+                    if (buyerLinks.length === 0) return null;
+                    return (
+                      <div className="space-y-1 pt-1">
+                        <div className="text-xs text-muted-foreground">Bằng chứng người mua</div>
+                        {buyerLinks.map((ev, idx) => (
+                          <a
+                            key={`${ev.href}-${idx}`}
+                            href={ev.href}
+                            target="_blank"
+                            rel="noopener noreferrer nofollow"
+                            className="block break-all text-xs font-medium text-brand hover:underline"
+                          >
+                            Bằng chứng #{idx + 1} ({ev.hostname})
+                          </a>
+                        ))}
                       </div>
                     );
-                  })}
+                  })()}
+
+                  {activeReturn.seller_response || activeReturn.seller_note ? (
+                    <p className="pt-1 text-foreground">
+                      <strong>Phản hồi gian hàng:</strong>{" "}
+                      {activeReturn.seller_response || activeReturn.seller_note}
+                    </p>
+                  ) : null}
+
+                  {(() => {
+                    const sellerLinks = (activeReturn.seller_evidence_urls ?? [])
+                      .map((u) => parseSafeEvidenceUrl(u))
+                      .filter((x): x is NonNullable<typeof x> => x !== null);
+                    if (sellerLinks.length === 0) return null;
+                    return (
+                      <div className="space-y-1 pt-1">
+                        <div className="text-xs text-muted-foreground">Chứng từ gian hàng</div>
+                        {sellerLinks.map((ev, idx) => (
+                          <a
+                            key={`${ev.href}-${idx}`}
+                            href={ev.href}
+                            target="_blank"
+                            rel="noopener noreferrer nofollow"
+                            className="block break-all text-xs font-medium text-brand hover:underline"
+                          >
+                            Chứng từ #{idx + 1} ({ev.hostname})
+                          </a>
+                        ))}
+                      </div>
+                    );
+                  })()}
+
+                  {activeReturn.dispute_reason ? (
+                    <p className="pt-1 text-foreground">
+                      <strong>Nội dung tranh chấp:</strong> {activeReturn.dispute_reason}
+                    </p>
+                  ) : null}
+
+                  {activeReturn.admin_note ? (
+                    <p className="pt-1 text-foreground">
+                      <strong>Kết luận quản trị viên:</strong> {activeReturn.admin_note}
+                    </p>
+                  ) : null}
                 </div>
+
+                {/* PENDING: ACCEPT_RETURN, ACCEPT_REFUND, or REJECT */}
+                {activeStatusKey === "PENDING" ? (
+                  <div className="space-y-3 rounded-lg border border-border bg-card p-3.5">
+                    <h3 className="text-sm font-semibold text-foreground">Phản hồi yêu cầu</h3>
+                    <Field>
+                      <FieldLabel htmlFor="seller-ret-note">
+                        Ghi chú phản hồi (bắt buộc nếu từ chối)
+                      </FieldLabel>
+                      <Textarea
+                        id="seller-ret-note"
+                        rows={3}
+                        value={responseNote}
+                        onChange={(e) => setResponseNote(e.target.value)}
+                        placeholder="Nhập hướng dẫn gửi trả hoặc lý do từ chối..."
+                        disabled={busy}
+                      />
+                    </Field>
+
+                    <Field>
+                      <FieldLabel>Liên kết chứng từ (tối đa {MAX_EVIDENCE_URLS})</FieldLabel>
+                      <div className="space-y-2">
+                        {evidenceUrls.map((url, idx) => (
+                          <div key={`sel-ev-${idx}`} className="flex items-center gap-2">
+                            <Input
+                              type="url"
+                              value={url}
+                              onChange={(e) => {
+                                const next = [...evidenceUrls];
+                                next[idx] = e.target.value;
+                                setEvidenceUrls(next);
+                              }}
+                              placeholder="https://..."
+                              aria-label={`Liên kết chứng từ ${idx + 1}`}
+                              disabled={busy}
+                            />
+                            {evidenceUrls.length > 1 ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="icon-sm"
+                                disabled={busy}
+                                aria-label="Xóa liên kết chứng từ"
+                                onClick={() =>
+                                  setEvidenceUrls(evidenceUrls.filter((_, i) => i !== idx))
+                                }
+                              >
+                                <Trash2 className="size-3.5" aria-hidden="true" />
+                              </Button>
+                            ) : null}
+                          </div>
+                        ))}
+                        {evidenceUrls.length < MAX_EVIDENCE_URLS ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="xs"
+                            disabled={busy}
+                            onClick={() => setEvidenceUrls([...evidenceUrls, ""])}
+                          >
+                            <Plus className="size-3.5" aria-hidden="true" />
+                            <span>Thêm liên kết</span>
+                          </Button>
+                        ) : null}
+                      </div>
+                    </Field>
+
+                    {formError ? <FieldError role="alert">{formError}</FieldError> : null}
+
+                    <div className="flex flex-wrap justify-end gap-2 pt-1">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => void handleRespond(activeReturn, "REJECT")}
+                      >
+                        Từ chối
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => void handleRespond(activeReturn, "ACCEPT_REFUND")}
+                      >
+                        Hoàn tiền ngay
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => void handleRespond(activeReturn, "ACCEPT_RETURN")}
+                      >
+                        {busy ? "Đang xử lý..." : "Yêu cầu trả hàng về"}
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* RECEIVED: Confirm received or Dispute */}
+                {activeStatusKey === "RECEIVED" ? (
+                  <div className="space-y-3 rounded-lg border border-border bg-card p-3.5">
+                    <h3 className="text-sm font-semibold text-foreground">
+                      Kiểm tra hàng trả về kho
+                    </h3>
+                    <Field>
+                      <FieldLabel htmlFor="seller-dispute-reason">
+                        Lý do báo hàng sai (chỉ nhập khi khiếu nại)
+                      </FieldLabel>
+                      <Textarea
+                        id="seller-dispute-reason"
+                        rows={3}
+                        value={disputeReason}
+                        onChange={(e) => setDisputeReason(e.target.value)}
+                        placeholder="Mô tả sai khác giữa kiện hàng nhận về và đơn gốc..."
+                        disabled={busy}
+                      />
+                    </Field>
+
+                    <Field>
+                      <FieldLabel>Bằng chứng mở kiện trả (tối đa {MAX_EVIDENCE_URLS})</FieldLabel>
+                      <div className="space-y-2">
+                        {disputeUrls.map((url, idx) => (
+                          <div key={`sel-disp-${idx}`} className="flex items-center gap-2">
+                            <Input
+                              type="url"
+                              value={url}
+                              onChange={(e) => {
+                                const next = [...disputeUrls];
+                                next[idx] = e.target.value;
+                                setDisputeUrls(next);
+                              }}
+                              placeholder="https://..."
+                              aria-label={`Liên kết bằng chứng báo hàng sai ${idx + 1}`}
+                              disabled={busy}
+                            />
+                            {disputeUrls.length > 1 ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="icon-sm"
+                                disabled={busy}
+                                aria-label="Xóa liên kết bằng chứng"
+                                onClick={() =>
+                                  setDisputeUrls(disputeUrls.filter((_, i) => i !== idx))
+                                }
+                              >
+                                <Trash2 className="size-3.5" aria-hidden="true" />
+                              </Button>
+                            ) : null}
+                          </div>
+                        ))}
+                        {disputeUrls.length < MAX_EVIDENCE_URLS ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="xs"
+                            disabled={busy}
+                            onClick={() => setDisputeUrls([...disputeUrls, ""])}
+                          >
+                            <Plus className="size-3.5" aria-hidden="true" />
+                            <span>Thêm liên kết</span>
+                          </Button>
+                        ) : null}
+                      </div>
+                    </Field>
+
+                    {formError ? <FieldError role="alert">{formError}</FieldError> : null}
+
+                    <div className="flex flex-wrap justify-end gap-2 pt-1">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => void handleDisputeGoods(activeReturn)}
+                      >
+                        Báo hàng sai
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => void handleConfirmReceived(activeReturn)}
+                      >
+                        {busy ? "Đang xử lý..." : "Xác nhận đã nhận đúng hàng"}
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* Timeline */}
+                {activeTimelineItems.length > 0 ? (
+                  <div className="space-y-2.5">
+                    <h3 className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+                      Lịch sử xử lý
+                    </h3>
+                    <Timeline items={activeTimelineItems} />
+                  </div>
+                ) : null}
               </div>
-            )}
-          </div>
-        )}
-      </SellerDrawer>
+
+              <SheetFooter className="flex-row items-center justify-between gap-2 border-t border-border bg-card px-5 py-3.5">
+                <Button variant="outline" size="sm" asChild>
+                  <Link
+                    href={`/seller/don-hang/${encodeURIComponent(activeReturn.order_id)}`}
+                    onClick={closeDrawer}
+                  >
+                    <span>Mở chi tiết đơn</span>
+                    <ExternalLink className="size-3.5" aria-hidden="true" />
+                  </Link>
+                </Button>
+                <Button type="button" variant="ghost" size="sm" onClick={closeDrawer}>
+                  Đóng
+                </Button>
+              </SheetFooter>
+            </>
+          ) : null}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

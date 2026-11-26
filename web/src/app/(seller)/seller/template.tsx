@@ -1,6 +1,7 @@
 import React from "react";
-import { PageTransition } from "@/components/PageTransition";
 
 export default function SellerTemplate({ children }: { children: React.ReactNode }) {
-  return <PageTransition fast>{children}</PageTransition>;
+  return (
+    <div className="animate-in fade-in duration-150 motion-reduce:animate-none">{children}</div>
+  );
 }

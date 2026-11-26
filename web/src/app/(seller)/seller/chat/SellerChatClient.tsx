@@ -3,21 +3,38 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
-  Button,
-  IconAlert,
-  IconArrowLeft,
-  IconArrowUpRight,
-  IconPackage,
-  IconRefresh,
-  IconSearch,
-  IconSend,
-  IconSpark,
-  IconUser,
-  StateView,
-} from "@/components";
+  AlertTriangle,
+  ArrowLeft,
+  ExternalLink,
+  Image as ImageIcon,
+  MessageSquare,
+  Package,
+  RefreshCw,
+  Search,
+  Send,
+  ShoppingBag,
+  Sparkles,
+  User,
+} from "lucide-react";
+import { EmptyState, ErrorState, PageHeader, StatusBadge, type StatusTone } from "@/components/app";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTimeVi, formatInt, formatTimeVi, formatVnd } from "@/lib/format";
 import { sanitizeSafeUrl } from "@/lib/site/theme";
+import { cn } from "@/lib/utils";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { useSellerContext } from "@/features/seller/SellerShell";
 import {
@@ -42,8 +59,6 @@ import {
   type ChatMessageKind,
   type WsIncomingEvent,
 } from "@/features/chat/chatTypes";
-import common from "@/features/seller/SellerCommon.module.css";
-import styles from "./page.module.css";
 
 const QUICK_REPLIES = [
   {
@@ -60,11 +75,16 @@ const QUICK_REPLIES = [
   },
 ];
 
-const AVATAR_TINTS = ["#e3edf0", "#e6efe8", "#efeae1", "#e5ecf2"];
+const AVATAR_TONE_CLASSES = [
+  "bg-badge-info-bg text-badge-info-ink",
+  "bg-badge-success-bg text-badge-success-ink",
+  "bg-badge-attention-bg text-badge-attention-ink",
+  "bg-badge-neutral-bg text-badge-neutral-ink",
+];
 
 type AttachMode = "none" | "image" | "product" | "order";
 type ThreadFilter = "all" | "unread";
-type MobilePane = "list" | "thread" | "context";
+type MobilePane = "list" | "thread";
 
 interface ConversationsApiResponse {
   conversations?: unknown[];
@@ -118,17 +138,17 @@ function extractSuggestionStrings(raw: unknown): string[] {
 
 function connectionStatusMeta(status: ChatConnectionStatus): {
   label: string;
-  tone: "online" | "sync" | "idle";
+  tone: StatusTone;
 } {
   switch (status) {
     case "connected":
-      return { label: "Trực tuyến", tone: "online" };
+      return { label: "Trực tuyến", tone: "success" };
     case "connecting":
-      return { label: "Đang kết nối", tone: "sync" };
+      return { label: "Đang kết nối", tone: "attention" };
     case "reconnecting":
-      return { label: "Đang đồng bộ lại", tone: "sync" };
+      return { label: "Đang đồng bộ lại", tone: "attention" };
     default:
-      return { label: "Kết nối tiêu chuẩn", tone: "idle" };
+      return { label: "Kết nối tiêu chuẩn", tone: "neutral" };
   }
 }
 
@@ -149,18 +169,7 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
   const [threadFilter, setThreadFilter] = useState<ThreadFilter>("all");
   const [selectedId, setSelectedId] = useState<string>("");
   const [mobilePane, setMobilePane] = useState<MobilePane>("list");
-  const [contextOpenTablet, setContextOpenTablet] = useState(false);
-
-  useEffect(() => {
-    if (!contextOpenTablet) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setContextOpenTablet(false);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [contextOpenTablet]);
+  const [contextSheetOpen, setContextSheetOpen] = useState(false);
 
   const [messagesByConv, setMessagesByConv] = useState<Record<string, ChatMessageDTO[]>>({});
   const [loadingMessages, setLoadingMessages] = useState(false);
@@ -479,7 +488,6 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
     [activeConv, messagesByConv]
   );
 
-  // Extract real order & product references from loaded conversation messages for Column 3
   const referencedEntities = useMemo(() => {
     const orders: Array<{ id: string; label: string }> = [];
     const products: Array<{ id: string; name: string; priceVnd?: number; image?: string }> = [];
@@ -702,7 +710,7 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
   const handlePickReply = (text: string) => {
     setDraft(text);
     setMobilePane("thread");
-    setContextOpenTablet(false);
+    setContextSheetOpen(false);
     composerInputRef.current?.focus();
   };
 
@@ -713,157 +721,353 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
 
   const statusInfo = connectionStatusMeta(connStatus);
 
-  return (
-    <div className={common.page}>
-      <header className={common.pageHeader}>
-        <div className={common.headerText}>
-          <h1 className={common.title}>Tin nhắn</h1>
+  const renderContextBody = () => {
+    if (!activeConv) {
+      return (
+        <p className="p-4 text-[13px] text-muted-foreground">
+          Chọn hội thoại để xem ngữ cảnh khách hàng.
+        </p>
+      );
+    }
+
+    return (
+      <div className="space-y-4 p-4 text-[13px]">
+        <div className="space-y-3">
+          <div className="flex items-center gap-2.5">
+            <Avatar className="size-9 shrink-0">
+              <AvatarFallback className={cn("text-xs font-semibold", AVATAR_TONE_CLASSES[0])}>
+                {getInitials(activeConv.buyer_name)}
+              </AvatarFallback>
+            </Avatar>
+            <div className="min-w-0 flex-1">
+              <div className="truncate font-semibold text-foreground">{activeConv.buyer_name}</div>
+              <div className="truncate text-xs text-muted-foreground">
+                {activeConv.site_host || shopDisplayName}
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-1.5 rounded-lg border border-border bg-card p-3 tabular-nums">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-muted-foreground">Tin nhắn</span>
+              <strong className="font-semibold text-foreground">
+                {formatInt(activeMessages.length)}
+              </strong>
+            </div>
+            {activeConv.last_message_at ? (
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-muted-foreground">Gần nhất</span>
+                <strong className="font-semibold text-foreground">
+                  {formatTimeVi(activeConv.last_message_at)}
+                </strong>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Button variant="outline" size="xs" className="justify-between bg-card" asChild>
+              <Link href="/seller/don-hang">
+                <span>Đơn hàng gian hàng</span>
+                <ExternalLink className="size-3.5" aria-hidden="true" />
+              </Link>
+            </Button>
+            <Button variant="outline" size="xs" className="justify-between bg-card" asChild>
+              <Link href="/seller/ho-so?tab=autoreply">
+                <span>Trả lời tự động</span>
+                <ExternalLink className="size-3.5" aria-hidden="true" />
+              </Link>
+            </Button>
+          </div>
         </div>
-        <div className={common.headerActions}>
-          <span className={styles.connBadge}>
-            <span
-              className={`${styles.connDot} ${
-                statusInfo.tone === "online"
-                  ? styles.connDotOnline
-                  : statusInfo.tone === "sync"
-                    ? styles.connDotSync
-                    : styles.connDotIdle
-              }`}
-              aria-hidden="true"
-            />
-            <span>{statusInfo.label}</span>
-          </span>
+
+        <Separator />
+
+        <div className="space-y-2">
+          <h3 className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+            Đơn &amp; Sản phẩm đã nhắc
+          </h3>
+          {referencedEntities.orders.length === 0 && referencedEntities.products.length === 0 ? (
+            <div className="space-y-2 text-xs text-muted-foreground">
+              <p>Chưa có thẻ đơn/sản phẩm trong hội thoại.</p>
+              <div className="flex flex-wrap gap-1.5">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={() => {
+                    setAttachMode("product");
+                    setMobilePane("thread");
+                    setContextSheetOpen(false);
+                  }}
+                >
+                  Gửi SP
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={() => {
+                    setAttachMode("order");
+                    setMobilePane("thread");
+                    setContextSheetOpen(false);
+                  }}
+                >
+                  Gửi đơn
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {referencedEntities.orders.map((ord) => (
+                <Link
+                  key={`ctx-ord-${ord.id}`}
+                  href={`/seller/don-hang/${encodeURIComponent(ord.id)}`}
+                  className="flex items-center gap-2.5 rounded-lg border border-border bg-card p-2.5 transition-colors hover:border-brand/50"
+                >
+                  <ShoppingBag className="size-4 shrink-0 text-brand" aria-hidden="true" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-semibold text-foreground">{ord.label}</div>
+                    <div className="text-xs text-muted-foreground">Mở chi tiết đơn</div>
+                  </div>
+                </Link>
+              ))}
+              {referencedEntities.products.map((prod) => (
+                <Link
+                  key={`ctx-prod-${prod.id}`}
+                  href={`/seller/san-pham/${encodeURIComponent(prod.id)}`}
+                  className="flex items-center gap-2.5 rounded-lg border border-border bg-card p-2.5 transition-colors hover:border-brand/50"
+                >
+                  {prod.image ? (
+                    <img
+                      src={prod.image}
+                      alt={prod.name}
+                      className="size-9 shrink-0 rounded-md border border-border bg-muted object-cover"
+                    />
+                  ) : (
+                    <Package className="size-4 shrink-0 text-brand" aria-hidden="true" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-semibold text-foreground">{prod.name}</div>
+                    {prod.priceVnd !== undefined ? (
+                      <div className="text-xs text-muted-foreground tabular-nums">
+                        {formatVnd(prod.priceVnd)}
+                      </div>
+                    ) : null}
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <Separator />
+
+        <div className="space-y-2">
+          <h3 className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+            Mẫu trả lời nhanh
+          </h3>
+          <div className="space-y-2">
+            {QUICK_REPLIES.map((tpl) => (
+              <button
+                key={tpl.label}
+                type="button"
+                onClick={() => handlePickReply(tpl.text)}
+                className="flex w-full flex-col gap-0.5 rounded-lg border border-border bg-card p-2.5 text-left transition-colors hover:border-brand/50 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <span className="text-xs font-semibold text-foreground">{tpl.label}</span>
+                <span className="line-clamp-2 text-xs text-muted-foreground">{tpl.text}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-4">
+      <PageHeader
+        title="Tin nhắn"
+        badges={<StatusBadge tone={statusInfo.tone}>{statusInfo.label}</StatusBadge>}
+        primaryAction={
           <Button
+            type="button"
             variant="outline"
             size="sm"
-            shape="app"
             onClick={() => void loadConversations()}
             disabled={loadingConversations}
           >
-            <IconRefresh size={14} />
+            <RefreshCw
+              className={cn("size-3.5", loadingConversations && "animate-spin")}
+              aria-hidden="true"
+            />
             <span>Làm mới</span>
           </Button>
-        </div>
-      </header>
+        }
+      />
 
-      {loadingConversations && (
-        <StateView
-          kind="loading"
-          surface="app"
-          skeletonVariant="table"
-          title="Đang tải hộp thư khách hàng..."
-          rows={5}
-        />
-      )}
+      {loadingConversations ? (
+        <Card role="status" aria-label="Đang tải hộp thư khách hàng...">
+          <CardContent className="space-y-3 py-5">
+            {Array.from({ length: 5 }).map((_, idx) => (
+              <Skeleton key={idx} className="h-12 w-full" />
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
 
-      {!loadingConversations && conversationsError && (
-        <StateView
-          kind="error"
-          surface="app"
+      {!loadingConversations && conversationsError ? (
+        <ErrorState
           title="Không thể kết nối hộp thư"
-          message={conversationsError}
-          actionLabel="Thử lại"
-          onAction={() => void loadConversations()}
+          description={conversationsError}
+          onRetry={() => void loadConversations()}
         />
-      )}
+      ) : null}
 
-      {!loadingConversations && !conversationsError && conversations.length === 0 && (
-        <StateView
-          kind="empty"
-          surface="app"
+      {!loadingConversations && !conversationsError && conversations.length === 0 ? (
+        <EmptyState
+          icon={MessageSquare}
           title="Chưa có tin nhắn khách hàng"
-          message="Khi người mua nhắn hỏi về sản phẩm, kích cỡ hoặc đơn hàng, hội thoại sẽ hiển thị tại đây."
-          actionLabel="Xem đơn hàng"
-          actionHref="/seller/don-hang"
+          description="Khi người mua nhắn hỏi về sản phẩm, kích cỡ hoặc đơn hàng, hội thoại sẽ hiển thị tại đây."
+          action={
+            <Button size="sm" asChild>
+              <Link href="/seller/don-hang">Xem đơn hàng</Link>
+            </Button>
+          }
         />
-      )}
+      ) : null}
 
-      {!loadingConversations && !conversationsError && conversations.length > 0 && (
-        <section className={styles.inboxShell} aria-label="Hộp thư 3 cột người bán">
+      {!loadingConversations && !conversationsError && conversations.length > 0 ? (
+        <section
+          aria-label="Hộp thư khách hàng"
+          className="grid h-[clamp(520px,calc(100svh-180px),740px)] grid-cols-1 overflow-hidden rounded-xl bg-card shadow-card md:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)_272px]"
+        >
           {/* Column 1: Conversations List */}
           <div
-            className={`${styles.threadPane} ${mobilePane !== "list" ? styles.paneHiddenMobile : ""}`}
+            className={cn(
+              "flex min-h-0 flex-col border-border md:border-r",
+              mobilePane !== "list" ? "hidden md:flex" : "flex"
+            )}
           >
-            <div className={styles.threadPaneHead}>
-              <div className={common.searchWrap} style={{ width: "100%" }}>
-                <span className={common.searchIcon}>
-                  <IconSearch size={14} />
-                </span>
-                <input
+            <div className="space-y-2 border-b border-border p-3">
+              <div className="relative">
+                <Search
+                  className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <Input
                   type="search"
-                  className={common.searchInput}
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="Tìm khách hoặc tin nhắn..."
                   aria-label="Tìm hội thoại khách hàng"
+                  className="h-9 bg-card pl-8 text-[13px]"
                 />
               </div>
 
-              <div className={styles.filterRow} role="tablist" aria-label="Lọc hội thoại">
-                <button
+              <div role="tablist" aria-label="Lọc hội thoại" className="flex items-center gap-1.5">
+                <Button
                   type="button"
                   role="tab"
                   aria-selected={threadFilter === "all"}
-                  className={`${styles.filterTab} ${threadFilter === "all" ? styles.filterTabActive : ""}`}
+                  size="xs"
+                  variant={threadFilter === "all" ? "default" : "secondary"}
                   onClick={() => setThreadFilter("all")}
+                  className="tabular-nums"
                 >
                   Tất cả ({formatInt(conversations.length)})
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
                   role="tab"
                   aria-selected={threadFilter === "unread"}
-                  className={`${styles.filterTab} ${threadFilter === "unread" ? styles.filterTabActive : ""}`}
+                  size="xs"
+                  variant={threadFilter === "unread" ? "default" : "secondary"}
                   onClick={() => setThreadFilter("unread")}
+                  className="tabular-nums"
                 >
                   Chưa đọc ({formatInt(unreadTotal)})
-                </button>
+                </Button>
               </div>
             </div>
 
-            <div className={styles.threadList} role="listbox" aria-label="Danh sách hội thoại">
+            <div
+              role="listbox"
+              aria-label="Danh sách hội thoại"
+              className="flex-1 divide-y divide-border overflow-y-auto"
+            >
               {filteredConversations.length === 0 ? (
-                <div className={styles.emptyPaneHint}>
-                  <p className={common.cardMeta}>Không có hội thoại phù hợp.</p>
-                </div>
+                <p className="p-5 text-center text-[13px] text-muted-foreground">
+                  Không có hội thoại phù hợp.
+                </p>
               ) : (
                 filteredConversations.map((conv, idx) => {
                   const isSelected = activeConv?.id === conv.id;
+                  const unread = conv.unread_count > 0;
                   return (
                     <button
                       key={conv.id}
                       type="button"
                       role="option"
                       aria-selected={isSelected}
-                      className={`${styles.threadItem} ${isSelected ? styles.threadItemSelected : ""}`}
                       onClick={() => handleSelectThread(conv.id)}
+                      className={cn(
+                        "flex w-full items-start gap-2.5 px-3 py-3 text-left transition-colors hover:bg-accent/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                        isSelected && "bg-accent/75"
+                      )}
                     >
                       <span
-                        className={styles.avatar}
-                        style={{ backgroundColor: AVATAR_TINTS[idx % AVATAR_TINTS.length] }}
                         aria-hidden="true"
-                      >
-                        {getInitials(conv.buyer_name)}
-                      </span>
-                      <span className={styles.threadBody}>
-                        <span className={styles.threadTop}>
-                          <span className={styles.threadName}>{conv.buyer_name}</span>
-                          {conv.last_message_at && (
-                            <span className={styles.threadTime}>
+                        className={cn(
+                          "mt-2 size-2 shrink-0 rounded-full",
+                          unread ? "bg-brand" : "bg-transparent"
+                        )}
+                      />
+                      <Avatar className="size-8 shrink-0">
+                        <AvatarFallback
+                          className={cn(
+                            "text-xs font-semibold",
+                            AVATAR_TONE_CLASSES[idx % AVATAR_TONE_CLASSES.length]
+                          )}
+                        >
+                          {getInitials(conv.buyer_name)}
+                        </AvatarFallback>
+                      </Avatar>
+                      <span className="min-w-0 flex-1 space-y-0.5">
+                        <span className="flex items-baseline justify-between gap-2">
+                          <span
+                            className={cn(
+                              "truncate text-sm",
+                              unread
+                                ? "font-semibold text-foreground"
+                                : "font-medium text-foreground"
+                            )}
+                          >
+                            {conv.buyer_name}
+                          </span>
+                          {conv.last_message_at ? (
+                            <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
                               {formatTimeVi(conv.last_message_at)}
                             </span>
-                          )}
+                          ) : null}
                         </span>
-                        <span className={styles.threadSnippet}>
+                        <span
+                          className={cn(
+                            "block truncate text-xs",
+                            unread ? "font-medium text-foreground" : "text-muted-foreground"
+                          )}
+                        >
                           {conv.last_message_preview || "Chưa có tin nhắn"}
                         </span>
-                        <span className={styles.threadMetaRow}>
-                          <span className={styles.threadProdTag}>
+                        <span className="flex items-center justify-between gap-2 pt-0.5">
+                          <span className="truncate text-[11px] text-muted-foreground">
                             {conv.site_host || shopDisplayName}
                           </span>
-                          {conv.unread_count > 0 && (
-                            <span className={styles.unreadCount}>{conv.unread_count}</span>
-                          )}
+                          {unread ? (
+                            <Badge variant="info" className="px-1.5 py-0 text-[11px] tabular-nums">
+                              {conv.unread_count}
+                            </Badge>
+                          ) : null}
                         </span>
                       </span>
                     </button>
@@ -875,57 +1079,61 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
 
           {/* Column 2: Active Message Stream & Composer */}
           <div
-            className={`${styles.chatPane} ${mobilePane !== "thread" ? styles.paneHiddenMobile : ""}`}
+            className={cn(
+              "flex min-h-0 min-w-0 flex-col",
+              mobilePane !== "thread" ? "hidden md:flex" : "flex"
+            )}
           >
             {activeConv ? (
               <>
-                <div className={styles.chatHeader}>
-                  <div className={styles.chatHeaderLeft}>
-                    <button
+                <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Button
                       type="button"
-                      className={styles.mobileBackBtn}
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="Quay lại danh sách hội thoại"
                       onClick={() => setMobilePane("list")}
+                      className="md:hidden"
                     >
-                      <IconArrowLeft size={14} />
-                      <span>Danh sách</span>
-                    </button>
-                    <div className={styles.chatBuyerText}>
-                      <h2 className={styles.chatBuyerName}>{activeConv.buyer_name}</h2>
-                      <p className={styles.chatBuyerSub}>
+                      <ArrowLeft className="size-4" aria-hidden="true" />
+                    </Button>
+                    <div className="min-w-0">
+                      <h2 className="truncate text-sm font-semibold text-foreground">
+                        {activeConv.buyer_name}
+                      </h2>
+                      <p className="truncate text-xs text-muted-foreground">
                         {activeConv.site_host || shopDisplayName}
                       </p>
                     </div>
                   </div>
-                  <div className={styles.chatHeaderRight}>
-                    <button
-                      type="button"
-                      className={styles.contextToggleBtn}
-                      aria-expanded={contextOpenTablet}
-                      onClick={() => {
-                        setContextOpenTablet((prev) => !prev);
-                        setMobilePane("context");
-                      }}
-                    >
-                      <IconUser size={14} />
-                      <span>Ngữ cảnh</span>
-                    </button>
-                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    className="xl:hidden"
+                    onClick={() => setContextSheetOpen(true)}
+                  >
+                    <User className="size-3.5" aria-hidden="true" />
+                    <span>Ngữ cảnh</span>
+                  </Button>
                 </div>
 
-                <div className={styles.messages} aria-live="polite">
+                <div className="flex-1 space-y-3 overflow-y-auto p-4" aria-live="polite">
                   {loadingMessages && activeMessages.length === 0 ? (
-                    <p className={common.cardMeta}>Đang tải tin nhắn...</p>
+                    <div className="space-y-2.5">
+                      <Skeleton className="h-12 w-2/3" />
+                      <Skeleton className="ml-auto h-12 w-1/2" />
+                      <Skeleton className="h-12 w-3/5" />
+                    </div>
                   ) : messagesError && activeMessages.length === 0 ? (
-                    <StateView
-                      kind="error"
-                      surface="app"
+                    <ErrorState
                       title="Không thể tải tin nhắn"
-                      message={messagesError}
-                      actionLabel="Thử lại"
-                      onAction={() => void loadMessages(activeConv.id)}
+                      description={messagesError}
+                      onRetry={() => void loadMessages(activeConv.id)}
                     />
                   ) : activeMessages.length === 0 ? (
-                    <p className={common.cardMeta}>
+                    <p className="py-8 text-center text-[13px] text-muted-foreground">
                       Chưa có tin nhắn. Gửi lời chào đến khách hàng ngay bên dưới.
                     </p>
                   ) : (
@@ -934,17 +1142,25 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                       return (
                         <div
                           key={msg.id}
-                          className={`${styles.msgGroup} ${sellerSent ? styles.msgSeller : styles.msgBuyer}`}
+                          className={cn(
+                            "flex max-w-[82%] flex-col gap-1",
+                            sellerSent ? "ml-auto items-end" : "mr-auto items-start"
+                          )}
                         >
                           <div
-                            className={`${styles.bubble} ${sellerSent ? styles.bubbleSeller : styles.bubbleBuyer}`}
+                            className={cn(
+                              "rounded-xl px-3.5 py-2.5 text-sm break-words",
+                              sellerSent
+                                ? "bg-primary text-primary-foreground"
+                                : "bg-muted text-foreground"
+                            )}
                           >
                             {msg.kind === "image" ? (
                               (() => {
                                 const safeImg = sanitizeSafeUrl(msg.body);
                                 if (!safeImg) {
                                   return (
-                                    <span className={styles.msgFallback}>
+                                    <span className="text-xs opacity-80">
                                       Ảnh đính kèm không hợp lệ.
                                     </span>
                                   );
@@ -954,12 +1170,12 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                                     href={safeImg}
                                     target="_blank"
                                     rel="noopener noreferrer"
-                                    className={styles.msgImageLink}
+                                    className="block"
                                   >
                                     <img
                                       src={safeImg}
                                       alt="Ảnh đính kèm trong hội thoại"
-                                      className={styles.msgImage}
+                                      className="max-h-60 max-w-[240px] rounded-md object-cover"
                                     />
                                   </a>
                                 );
@@ -970,25 +1186,25 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                                 return (
                                   <Link
                                     href={`/seller/san-pham/${encodeURIComponent(msg.ref_id)}`}
-                                    className={styles.refCard}
+                                    className="flex min-w-[190px] items-center gap-2.5"
                                   >
-                                    {card.image && (
+                                    {card.image ? (
                                       <img
                                         src={card.image}
                                         alt={card.name}
-                                        className={styles.refThumb}
-                                        width={38}
-                                        height={46}
+                                        className="size-10 shrink-0 rounded-md bg-card object-cover"
                                       />
-                                    )}
-                                    <span className={styles.refCardText}>
-                                      <span className={styles.refCardKind}>Sản phẩm</span>
-                                      <span className={styles.refCardTitle}>{card.name}</span>
-                                      {card.priceVnd !== undefined && (
-                                        <span className={styles.refCardSub}>
+                                    ) : null}
+                                    <span className="min-w-0 flex-1 space-y-0.5 text-xs">
+                                      <span className="block opacity-75">Sản phẩm</span>
+                                      <span className="block truncate font-semibold">
+                                        {card.name}
+                                      </span>
+                                      {card.priceVnd !== undefined ? (
+                                        <span className="block tabular-nums opacity-90">
                                           {formatVnd(card.priceVnd)}
                                         </span>
-                                      )}
+                                      ) : null}
                                     </span>
                                   </Link>
                                 );
@@ -999,24 +1215,26 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                                 return (
                                   <Link
                                     href={`/seller/don-hang/${encodeURIComponent(msg.ref_id)}`}
-                                    className={styles.refCard}
+                                    className="flex min-w-[190px] items-center gap-2.5"
                                   >
-                                    <span className={styles.refIconBox}>
-                                      <IconPackage size={15} />
+                                    <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary-foreground/15">
+                                      <Package className="size-4" aria-hidden="true" />
                                     </span>
-                                    <span className={styles.refCardText}>
-                                      <span className={styles.refCardKind}>Đơn hàng</span>
-                                      <span className={styles.refCardTitle}>{card.label}</span>
-                                      <span className={styles.refCardSub}>Mở chi tiết đơn</span>
+                                    <span className="min-w-0 flex-1 space-y-0.5 text-xs">
+                                      <span className="block opacity-75">Đơn hàng</span>
+                                      <span className="block truncate font-semibold">
+                                        {card.label}
+                                      </span>
+                                      <span className="block opacity-85">Mở chi tiết đơn</span>
                                     </span>
                                   </Link>
                                 );
                               })()
                             ) : (
-                              <span className={styles.msgText}>{msg.body}</span>
+                              <span className="whitespace-pre-wrap">{msg.body}</span>
                             )}
                           </div>
-                          <span className={styles.msgMeta}>
+                          <span className="text-[11px] text-muted-foreground tabular-nums">
                             {sellerSent
                               ? msg.is_auto_reply
                                 ? "Trả lời tự động"
@@ -1031,81 +1249,96 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                   <div ref={messagesEndRef} />
                 </div>
 
-                {aiSuggestions.length > 0 && (
-                  <div className={styles.aiSuggestBox} aria-label="Gợi ý trả lời từ trợ lý AI">
-                    <div className={styles.aiSuggestHead}>
-                      <span className={styles.aiSuggestLabel}>
-                        <IconSpark size={13} />
+                {aiSuggestions.length > 0 ? (
+                  <div
+                    aria-label="Gợi ý trả lời từ trợ lý AI"
+                    className="space-y-2 border-t border-border bg-badge-info-bg/45 px-4 py-2.5"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand">
+                        <Sparkles className="size-3.5" aria-hidden="true" />
                         <span>Gợi ý AI, nhấn để điền vào ô nhập</span>
                       </span>
-                      <button
+                      <Button
                         type="button"
-                        className={styles.aiDismissBtn}
+                        variant="ghost"
+                        size="xs"
                         onClick={() => setAiSuggestions([])}
                       >
                         Ẩn
-                      </button>
+                      </Button>
                     </div>
-                    <div className={styles.aiChipList}>
+                    <div className="flex flex-col gap-1.5">
                       {aiSuggestions.map((suggestion, idx) => (
                         <button
                           key={`${idx}-${suggestion.slice(0, 16)}`}
                           type="button"
-                          className={styles.aiChipBtn}
                           onClick={() => handlePickReply(suggestion)}
+                          className="rounded-lg border border-border bg-card px-3 py-2 text-left text-xs text-foreground transition-colors hover:bg-accent/55"
                         >
                           {suggestion}
                         </button>
                       ))}
                     </div>
                   </div>
-                )}
+                ) : null}
 
-                {aiError && (
-                  <div className={styles.inlineNotice} role="status">
+                {aiError ? (
+                  <div
+                    role="status"
+                    className="border-t border-border bg-muted px-4 py-2 text-xs text-muted-foreground"
+                  >
                     {aiError}
                   </div>
-                )}
+                ) : null}
 
-                {offPlatformCheck.flagged && (
-                  <div className={styles.safetyNotice} role="note">
-                    <IconAlert size={14} />
+                {offPlatformCheck.flagged ? (
+                  <div
+                    role="note"
+                    className="flex items-center gap-2 border-t border-border bg-badge-warning-bg px-4 py-2 text-xs text-badge-warning-ink"
+                  >
+                    <AlertTriangle className="size-3.5 shrink-0" aria-hidden="true" />
                     <span>Tránh trao đổi số điện thoại hoặc dẫn khách giao dịch ngoài sàn.</span>
                   </div>
-                )}
+                ) : null}
 
-                {sendError && (
-                  <div className={styles.sendErrorBar} role="alert">
+                {sendError ? (
+                  <div
+                    role="alert"
+                    className="border-t border-border bg-badge-critical-bg px-4 py-2 text-xs font-medium text-badge-critical-ink"
+                  >
                     {sendError}
                   </div>
-                )}
+                ) : null}
 
-                {attachMode !== "none" && (
-                  <form className={styles.attachBar} onSubmit={handleSendAttachment}>
+                {attachMode !== "none" ? (
+                  <form
+                    onSubmit={handleSendAttachment}
+                    className="flex flex-wrap items-center gap-2 border-t border-border bg-muted/40 px-4 py-2.5"
+                  >
                     {attachMode === "image" ? (
-                      <input
+                      <Input
                         type="text"
-                        className={styles.attachInput}
                         value={attachUrl}
                         onChange={(e) => setAttachUrl(e.target.value)}
                         placeholder="Liên kết ảnh (/products/... hoặc https://...)"
                         aria-label="Liên kết ảnh cần gửi"
+                        className="h-8 min-w-[180px] flex-1 bg-card text-xs"
                       />
                     ) : (
                       <>
-                        <input
+                        <Input
                           type="text"
-                          className={styles.attachInput}
                           value={attachRefId}
                           onChange={(e) => setAttachRefId(e.target.value)}
                           placeholder={
                             attachMode === "product" ? "Mã sản phẩm (ID)..." : "Mã đơn hàng (ID)..."
                           }
                           aria-label={attachMode === "product" ? "Mã sản phẩm" : "Mã đơn hàng"}
+                          className="h-8 min-w-[140px] flex-1 bg-card text-xs"
                         />
-                        <input
+                        <Input
                           type="text"
-                          className={styles.attachInput}
                           value={attachLabel}
                           onChange={(e) => setAttachLabel(e.target.value)}
                           placeholder={
@@ -1114,257 +1347,125 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                               : "Ghi chú mã đơn (tùy chọn)"
                           }
                           aria-label="Mô tả đính kèm"
+                          className="h-8 min-w-[140px] flex-1 bg-card text-xs"
                         />
                       </>
                     )}
-                    <Button type="submit" variant="ink" size="sm" shape="app" disabled={sending}>
+                    <Button type="submit" size="xs" disabled={sending}>
                       Gửi thẻ
                     </Button>
-                    <button
+                    <Button
                       type="button"
-                      className={styles.aiDismissBtn}
+                      variant="ghost"
+                      size="xs"
                       onClick={() => {
                         setAttachMode("none");
                         setSendError(null);
                       }}
                     >
                       Hủy
-                    </button>
+                    </Button>
                   </form>
-                )}
+                ) : null}
 
-                <form className={styles.composerArea} onSubmit={handleSendText}>
-                  <div className={styles.composerTools}>
-                    <button
+                <form
+                  onSubmit={handleSendText}
+                  className="space-y-2 border-t border-border px-4 py-3"
+                >
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Button
                       type="button"
-                      className={styles.aiTriggerBtn}
+                      variant="outline"
+                      size="xs"
                       onClick={() => void handleSuggestAiReplies()}
                       disabled={aiLoading}
+                      className="border-brand/40 text-brand hover:bg-badge-info-bg/40"
                     >
-                      <IconSpark size={13} />
+                      <Sparkles className="size-3.5" aria-hidden="true" />
                       <span>{aiLoading ? "Đang tạo..." : "Gợi ý AI"}</span>
-                    </button>
-
-                    <button
+                    </Button>
+                    <Button
                       type="button"
-                      className={`${styles.toolChipBtn} ${attachMode === "image" ? styles.toolChipActive : ""}`}
+                      variant={attachMode === "image" ? "default" : "outline"}
+                      size="xs"
                       onClick={() => setAttachMode((m) => (m === "image" ? "none" : "image"))}
                     >
-                      Ảnh
-                    </button>
-                    <button
+                      <ImageIcon className="size-3.5" aria-hidden="true" />
+                      <span>Ảnh</span>
+                    </Button>
+                    <Button
                       type="button"
-                      className={`${styles.toolChipBtn} ${attachMode === "product" ? styles.toolChipActive : ""}`}
+                      variant={attachMode === "product" ? "default" : "outline"}
+                      size="xs"
                       onClick={() => setAttachMode((m) => (m === "product" ? "none" : "product"))}
                     >
-                      Sản phẩm
-                    </button>
-                    <button
+                      <span>Sản phẩm</span>
+                    </Button>
+                    <Button
                       type="button"
-                      className={`${styles.toolChipBtn} ${attachMode === "order" ? styles.toolChipActive : ""}`}
+                      variant={attachMode === "order" ? "default" : "outline"}
+                      size="xs"
                       onClick={() => setAttachMode((m) => (m === "order" ? "none" : "order"))}
                     >
-                      Đơn hàng
-                    </button>
+                      <span>Đơn hàng</span>
+                    </Button>
                   </div>
 
-                  <div className={styles.composerRow}>
-                    <input
+                  <div className="flex items-center gap-2">
+                    <Input
                       ref={composerInputRef}
                       type="text"
-                      className={styles.composerInput}
                       value={draft}
                       onChange={(e) => setDraft(e.target.value)}
                       placeholder={`Nhắn cho ${activeConv.buyer_name}...`}
                       aria-label="Nhập nội dung phản hồi"
                       maxLength={2000}
+                      className="h-10 bg-card"
                     />
                     <Button
                       type="submit"
-                      variant="ink"
                       size="sm"
-                      shape="app"
+                      className="h-10 shrink-0"
                       disabled={!draft.trim() || sending}
                     >
-                      <IconSend size={14} />
+                      <Send className="size-4" aria-hidden="true" />
                       <span>Gửi</span>
                     </Button>
                   </div>
                 </form>
               </>
             ) : (
-              <div className={styles.emptyPaneHint}>
-                <p className={common.cardMeta}>Chọn hội thoại bên trái để xem và phản hồi.</p>
+              <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">
+                Chọn hội thoại bên trái để xem và phản hồi.
               </div>
             )}
           </div>
 
-          {/* Column 3: Customer, Order/Product Context & Quick Templates Rail */}
+          {/* Column 3: Desktop Context Rail (>= 1280px) */}
           <aside
-            className={`${styles.contextPane} ${contextOpenTablet ? styles.contextPaneOpenTablet : ""} ${mobilePane !== "context" ? styles.paneHiddenMobile : ""}`}
             aria-label="Ngữ cảnh khách hàng và đơn hàng"
+            className="hidden min-h-0 flex-col border-l border-border bg-muted/35 xl:flex"
           >
-            {activeConv ? (
-              <>
-                <div className={styles.contextHead}>
-                  <button
-                    type="button"
-                    className={styles.mobileBackBtn}
-                    onClick={() => {
-                      setMobilePane("thread");
-                      setContextOpenTablet(false);
-                    }}
-                  >
-                    <IconArrowLeft size={14} />
-                    <span>Hội thoại</span>
-                  </button>
-                  <span className={styles.contextHeadTitle}>Ngữ cảnh khách</span>
-                </div>
-
-                <div className={styles.contextScroll}>
-                  <div className={styles.contextSection}>
-                    <div className={styles.contextCustomer}>
-                      <span
-                        className={styles.avatar}
-                        style={{ backgroundColor: AVATAR_TINTS[0] }}
-                        aria-hidden="true"
-                      >
-                        {getInitials(activeConv.buyer_name)}
-                      </span>
-                      <div className={styles.contextCustomerText}>
-                        <strong className={styles.contextName}>{activeConv.buyer_name}</strong>
-                        <span className={styles.contextSub}>
-                          {activeConv.site_host || shopDisplayName}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className={styles.contextKv}>
-                      <div className={styles.contextKvRow}>
-                        <span>Tin nhắn</span>
-                        <strong className="num">{formatInt(activeMessages.length)}</strong>
-                      </div>
-                      {activeConv.last_message_at && (
-                        <div className={styles.contextKvRow}>
-                          <span>Gần nhất</span>
-                          <strong className="num">
-                            {formatTimeVi(activeConv.last_message_at)}
-                          </strong>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className={styles.contextLinkStack}>
-                      <Link href="/seller/don-hang" className={styles.contextNavLink}>
-                        <span>Đơn hàng gian hàng</span>
-                        <IconArrowUpRight size={13} />
-                      </Link>
-                      <Link href="/seller/ho-so?tab=autoreply" className={styles.contextNavLink}>
-                        <span>Trả lời tự động</span>
-                        <IconArrowUpRight size={13} />
-                      </Link>
-                    </div>
-                  </div>
-
-                  <div className={styles.contextSection}>
-                    <h3 className={styles.contextSecTitle}>Đơn &amp; Sản phẩm đã nhắc</h3>
-                    {referencedEntities.orders.length === 0 &&
-                    referencedEntities.products.length === 0 ? (
-                      <div className={styles.contextEmpty}>
-                        <span>Chưa có thẻ đơn/sản phẩm trong hội thoại.</span>
-                        <div className={styles.contextQuickAttach}>
-                          <button
-                            type="button"
-                            className={styles.toolChipBtn}
-                            onClick={() => {
-                              setAttachMode("product");
-                              setMobilePane("thread");
-                              setContextOpenTablet(false);
-                            }}
-                          >
-                            Gửi SP
-                          </button>
-                          <button
-                            type="button"
-                            className={styles.toolChipBtn}
-                            onClick={() => {
-                              setAttachMode("order");
-                              setMobilePane("thread");
-                              setContextOpenTablet(false);
-                            }}
-                          >
-                            Gửi đơn
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className={styles.contextRefList}>
-                        {referencedEntities.orders.map((ord) => (
-                          <Link
-                            key={`ctx-ord-${ord.id}`}
-                            href={`/seller/don-hang/${encodeURIComponent(ord.id)}`}
-                            className={styles.contextRefCard}
-                          >
-                            <IconPackage size={15} />
-                            <span className={styles.contextRefText}>
-                              <strong>{ord.label}</strong>
-                              <span>Mở chi tiết đơn</span>
-                            </span>
-                          </Link>
-                        ))}
-                        {referencedEntities.products.map((prod) => (
-                          <Link
-                            key={`ctx-prod-${prod.id}`}
-                            href={`/seller/san-pham/${encodeURIComponent(prod.id)}`}
-                            className={styles.contextRefCard}
-                          >
-                            {prod.image && (
-                              <img
-                                src={prod.image}
-                                alt={prod.name}
-                                className={styles.contextRefThumb}
-                                width={34}
-                                height={42}
-                              />
-                            )}
-                            <span className={styles.contextRefText}>
-                              <strong>{prod.name}</strong>
-                              {prod.priceVnd !== undefined && (
-                                <span className="num">{formatVnd(prod.priceVnd)}</span>
-                              )}
-                            </span>
-                          </Link>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className={styles.contextSection}>
-                    <h3 className={styles.contextSecTitle}>Mẫu trả lời nhanh</h3>
-                    <div className={styles.quickTemplateStack}>
-                      {QUICK_REPLIES.map((tpl) => (
-                        <button
-                          key={tpl.label}
-                          type="button"
-                          className={styles.quickTemplateBtn}
-                          onClick={() => handlePickReply(tpl.text)}
-                        >
-                          <span className={styles.quickTemplateTitle}>{tpl.label}</span>
-                          <span className={styles.quickTemplatePreview}>{tpl.text}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className={styles.emptyPaneHint}>
-                <p className={common.cardMeta}>Chọn hội thoại để xem ngữ cảnh khách hàng.</p>
-              </div>
-            )}
+            <div className="border-b border-border px-4 py-3 text-sm font-semibold text-foreground">
+              Ngữ cảnh khách
+            </div>
+            <div className="flex-1 overflow-y-auto">{renderContextBody()}</div>
           </aside>
         </section>
-      )}
+      ) : null}
+
+      {/* Mobile / Tablet Context Sheet (< 1280px) */}
+      <Sheet open={contextSheetOpen} onOpenChange={setContextSheetOpen}>
+        <SheetContent side="right" className="w-full gap-0 p-0 sm:max-w-sm">
+          <SheetHeader className="border-b border-border px-4 py-3.5 pr-12">
+            <SheetTitle>Ngữ cảnh khách</SheetTitle>
+            <SheetDescription className="text-xs">
+              Thông tin hội thoại, đơn liên quan và mẫu trả lời nhanh.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="flex-1 overflow-y-auto">{renderContextBody()}</div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
