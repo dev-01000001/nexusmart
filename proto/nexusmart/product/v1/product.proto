@@ -216,6 +216,8 @@ message GetProductResponse {
   string discontinued_category_id = 3;
   // Populated ONLY when the discontinued product's current status is HIDDEN (empty for REJECTED or soft-deleted) (E13).
   string discontinued_name = 4;
+  // Owning shop ID of the discontinued product so multi-tenant storefronts can isolate stubs by shop.
+  string discontinued_shop_id = 5;
 }
 
 message ListProductsRequest {

@@ -523,10 +523,14 @@ message ReleasePromotionResponse {
 
 // Releases reserved promotions for one shop sub-order within a checkout group.
 // order_id is the checkout group ID passed to ReservePromotion; idempotent per (order_id, shop_id).
+// sub_order_id (orders.id) is used to look up and claw back order_completed_reward coins (falls back to order_id).
+// When clawback_only is true, ONLY reward coins are clawed back without releasing vouchers/coins/flash-sale slots/usage.
 message ReleasePromotionShopRequest {
   string order_id = 1;
   string shop_id = 2;
   string reason = 3;
+  string sub_order_id = 4;
+  bool clawback_only = 5;
 }
 
 message ReleasePromotionShopResponse {
