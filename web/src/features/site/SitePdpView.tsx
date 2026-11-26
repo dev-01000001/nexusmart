@@ -1,8 +1,10 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { Minus, Plus, ShoppingBag, Star } from "lucide-react";
 import type { FlashSaleItem } from "@/data/flash-sale";
 import type { Product, SizeCode } from "@/data/products";
 import type { Voucher } from "@/data/vouchers";
@@ -13,12 +15,37 @@ import type {
   GatewayProvince,
   GatewayWard,
 } from "@/lib/gateway-types";
+import { Money } from "@/components/app/Money";
+import { useSession } from "@/components/SessionProvider";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { Badge } from "@/components/ui/badge";
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { useStore } from "@/context/StoreContext";
 import { api } from "@/lib/api";
 import { getFlashSaleSkuDetail, type SiteFlashSaleItem } from "@/lib/catalog-map";
-import { IconBag, IconCheck, IconClose } from "@/components/Icons";
-import { useSession } from "@/components/SessionProvider";
-import { useModalFocusTrap } from "@/components/modalFocus";
-import { useStore } from "@/context/StoreContext";
 import {
   formatCarrierLabel,
   formatDateVi,
@@ -28,18 +55,27 @@ import {
   formatVnd,
 } from "@/lib/format";
 import type { SitePublicShopDTO } from "@/lib/site/types";
-import { ProductReviewSummary } from "@/features/assistant";
+import { cn } from "@/lib/utils";
+import { ProductReviewSummary } from "@/features/assistant/ProductReviewSummary";
 import { resolveSkuEffectivePromotion } from "@/features/checkout/helpers";
 import { formatServiceLabel } from "@/features/commerce/cartEnrich";
-import shared from "@/features/commerce/commerce.module.css";
 import { parseSafeReviewImageUrl } from "@/features/product/reviewHelpers";
 import { useSitePathname } from "./SiteChrome";
 import { SiteProductCard } from "./SiteProductCard";
-import { SiteRenderer } from "./SiteRenderer";
 import type { PdpPageConfig, SiteCardStyle, SiteTemplateConfig } from "./templateTypes";
 import { sanitizeSafeImageUrl } from "./templateValidator";
-import styles from "./site.module.css";
-import tplStyles from "./siteTemplates.module.css";
+
+const SiteRenderer = dynamic(() => import("./SiteRenderer").then((mod) => mod.SiteRenderer));
+
+const CartConfirmSheet = dynamic(
+  () => import("./catalog/CartConfirmSheet").then((mod) => mod.CartConfirmSheet),
+  { ssr: false }
+);
+
+const PdpShippingSelects = dynamic(
+  () => import("./catalog/PdpShippingSelects").then((mod) => mod.PdpShippingSelects),
+  { ssr: false }
+);
 
 export interface SitePdpViewProps {
   brandName: string;
@@ -125,12 +161,8 @@ export function SitePdpView({
   const [qty, setQty] = useState<number>(1);
   const [busyAction, setBusyAction] = useState<"add" | "buy" | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [drawerClosing, setDrawerClosing] = useState(false);
+  const [drawerMounted, setDrawerMounted] = useState(false);
   const [addedNotice, setAddedNotice] = useState<string | null>(null);
-  const cartDrawerRef = useRef<HTMLElement | null>(null);
-  const cartTriggerRef = useRef<HTMLElement | null>(null);
-  const drawerRestoreFocusRef = useRef(true);
-  const drawerCloseTimerRef = useRef<number | null>(null);
 
   const selectedSku = useMemo(() => {
     return (
@@ -175,6 +207,7 @@ export function SitePdpView({
   const [shipIsEstimated, setShipIsEstimated] = useState<boolean>(false);
   const [loadingShipQuote, setLoadingShipQuote] = useState<boolean>(false);
   const [shipQuoteError, setShipQuoteError] = useState<string | null>(null);
+  const [shippingOpened, setShippingOpened] = useState<boolean>(false);
 
   // Real buyer reviews state (GET /api/products/[id]/reviews)
   const backendProductId = product.backendId || product.id;
@@ -184,6 +217,13 @@ export function SitePdpView({
   const [reviewStarFilter, setReviewStarFilter] = useState<number>(0);
   const [reviewPage, setReviewPage] = useState<number>(1);
   const [loadingReviews, setLoadingReviews] = useState<boolean>(false);
+
+  const [openAccordions, setOpenAccordions] = useState<string[]>(() => {
+    const initial: string[] = [];
+    if (layout !== "one-page-drawer") initial.push("specs");
+    if ((initialReviews?.review_count ?? 0) > 0) initial.push("reviews");
+    return initial;
+  });
 
   useEffect(() => {
     if (previewMode || !shipProvinceCode) {
@@ -285,36 +325,6 @@ export function SitePdpView({
     [product.colors]
   );
 
-  const closeDrawer = useCallback(
-    (restoreFocus = true) => {
-      if (!drawerOpen || drawerClosing) return;
-      drawerRestoreFocusRef.current = restoreFocus;
-      setDrawerClosing(true);
-      drawerCloseTimerRef.current = window.setTimeout(() => {
-        drawerCloseTimerRef.current = null;
-        setDrawerOpen(false);
-        setDrawerClosing(false);
-      }, 180);
-    },
-    [drawerOpen, drawerClosing]
-  );
-
-  useEffect(() => {
-    return () => {
-      if (drawerCloseTimerRef.current !== null) {
-        window.clearTimeout(drawerCloseTimerRef.current);
-      }
-    };
-  }, []);
-
-  useModalFocusTrap({
-    open: !previewMode && drawerOpen && !drawerClosing,
-    containerRef: cartDrawerRef,
-    onEscape: () => closeDrawer(true),
-    shouldRestoreFocusRef: drawerRestoreFocusRef,
-    returnFocusToRef: cartTriggerRef,
-  });
-
   const handleSelectColor = (colorCode: string, colorImgRaw?: string) => {
     setSelectedColor(colorCode);
     const colorImg = sanitizeSafeImageUrl(colorImgRaw);
@@ -325,7 +335,7 @@ export function SitePdpView({
     setAddedNotice(null);
   };
 
-  const handleCartAction = async (mode: "add" | "buy", triggerEl?: HTMLElement | null) => {
+  const handleCartAction = async (mode: "add" | "buy") => {
     if (previewMode) {
       setAddedNotice(
         mode === "buy"
@@ -335,11 +345,6 @@ export function SitePdpView({
       return;
     }
     if (!skuId || maxStock <= 0 || busyAction) return;
-    if (mode === "add") {
-      cartTriggerRef.current =
-        triggerEl ??
-        (document.activeElement instanceof HTMLElement ? document.activeElement : null);
-    }
     setBusyAction(mode);
     setAddedNotice(null);
     try {
@@ -360,12 +365,7 @@ export function SitePdpView({
           return;
         }
         setAddedNotice(res.message || "Đã thêm vào giỏ hàng.");
-        if (drawerCloseTimerRef.current !== null) {
-          window.clearTimeout(drawerCloseTimerRef.current);
-          drawerCloseTimerRef.current = null;
-        }
-        drawerRestoreFocusRef.current = true;
-        setDrawerClosing(false);
+        setDrawerMounted(true);
         setDrawerOpen(true);
       }
     } finally {
@@ -385,7 +385,7 @@ export function SitePdpView({
   );
 
   const renderCrossfadeFrame = (frameClass: string) => (
-    <div className={`${frameClass} ${tplStyles.pdpCrossfadeFrame}`}>
+    <div className={cn("relative w-full overflow-hidden rounded-lg bg-muted", frameClass)}>
       {crossfadeGallery.map((src, idx) => {
         const isCurrent = src === activeImage;
         return (
@@ -396,9 +396,10 @@ export function SitePdpView({
             aria-hidden={!isCurrent}
             width={896}
             height={1200}
-            className={`${tplStyles.pdpCrossfadeImg} ${
-              isCurrent ? tplStyles.pdpCrossfadeImgActive : ""
-            }`}
+            className={cn(
+              "absolute inset-0 block size-full object-cover object-[center_16%] transition-opacity duration-300 ease-out",
+              isCurrent ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+            )}
             loading={idx === 0 ? "eager" : "lazy"}
           />
         );
@@ -406,21 +407,35 @@ export function SitePdpView({
     </div>
   );
 
-  const renderThumbStrip = (rowClass: string) =>
+  const renderThumbStrip = (className?: string) =>
     gallery.length > 1 ? (
-      <div className={rowClass}>
-        {gallery.slice(0, 4).map((src, idx) => (
-          <button
-            key={src}
-            type="button"
-            className={`${styles.pdpThumbBtn} ${activeImage === src ? styles.pdpThumbActive : ""}`}
-            onClick={() => setActiveImage(src)}
-            aria-label={`Xem ảnh ${idx + 1}`}
-            aria-pressed={activeImage === src}
-          >
-            <img src={src} alt="" width={240} height={320} className={styles.pdpMainImg} />
-          </button>
-        ))}
+      <div className={cn("grid grid-cols-4 gap-2.5", className)}>
+        {gallery.slice(0, 4).map((src, idx) => {
+          const active = activeImage === src;
+          return (
+            <button
+              key={src}
+              type="button"
+              className={cn(
+                "relative aspect-[3/4] overflow-hidden rounded-md border bg-muted transition-all",
+                active
+                  ? "border-primary ring-2 ring-ring/40"
+                  : "border-border opacity-80 hover:opacity-100"
+              )}
+              onClick={() => setActiveImage(src)}
+              aria-label={`Xem ảnh ${idx + 1}`}
+              aria-pressed={active}
+            >
+              <img
+                src={src}
+                alt=""
+                width={240}
+                height={320}
+                className="block size-full object-cover object-[center_16%]"
+              />
+            </button>
+          );
+        })}
       </div>
     ) : null;
 
@@ -432,48 +447,51 @@ export function SitePdpView({
 
     if (isDense) {
       return (
-        <div className={styles.pdpMediaCol}>
-          {renderCrossfadeFrame(tplStyles.pdpCompactMainFrame)}
-          {renderThumbStrip(styles.pdpThumbRow)}
+        <div className="flex min-w-0 flex-col gap-3">
+          {renderCrossfadeFrame("aspect-[4/5] max-h-[480px]")}
+          {renderThumbStrip()}
         </div>
       );
     }
 
     if (isLuxury) {
       return (
-        <div className={styles.pdpMediaCol}>
-          <div className={tplStyles.pdpLuxuryFrame}>
-            {renderCrossfadeFrame(styles.pdpMainFrame)}
+        <div className="flex min-w-0 flex-col gap-3">
+          <div className="rounded-lg border border-border bg-card p-3.5 md:p-6">
+            {renderCrossfadeFrame("aspect-[3/4]")}
           </div>
-          {renderThumbStrip(styles.pdpThumbRow)}
+          {renderThumbStrip()}
         </div>
       );
     }
 
     if (isThumbnails) {
       return (
-        <div className={styles.pdpMediaCol}>
-          {renderCrossfadeFrame(styles.pdpMainFrame)}
-          {renderThumbStrip(styles.pdpThumbRow)}
+        <div className="flex min-w-0 flex-col gap-3">
+          {renderCrossfadeFrame("aspect-[3/4]")}
+          {renderThumbStrip()}
         </div>
       );
     }
 
     // Stacked vertical scrolling photography gallery (lead crossfade frame + tall stacked secondary frames)
     return (
-      <div className={tplStyles.pdpStackedGallery}>
-        {renderCrossfadeFrame(styles.pdpMainFrame)}
-        {renderThumbStrip(tplStyles.pdpMobileThumbRow)}
+      <div className="flex min-w-0 flex-col gap-3.5">
+        {renderCrossfadeFrame("aspect-[3/4]")}
+        {renderThumbStrip("md:hidden")}
 
-        {/* Desktop vertical scroll continuation frames */}
         {secondaryGallery.map((src, idx) => (
-          <figure key={src} className={tplStyles.pdpScrollPhoto} data-reveal="clip">
+          <figure
+            key={src}
+            className="hidden aspect-[3/4] w-full overflow-hidden rounded-lg bg-muted md:block"
+            data-reveal="clip"
+          >
             <img
               src={src}
               alt={`${product.name} góc ${idx + 2}`}
               width={896}
               height={1200}
-              className={styles.pdpMainImg}
+              className="block size-full object-cover object-[center_16%]"
               loading="lazy"
             />
           </figure>
@@ -486,65 +504,74 @@ export function SitePdpView({
     if (!showSkuTable && layout !== "sku-order-matrix") return null;
     if (product.skus.length === 0) return null;
     return (
-      <div className={tplStyles.pdpSkuMatrixWrap}>
-        <h2 className={styles.pdpOptionLabel}>Bảng biến thể SKU</h2>
-        <div className={tplStyles.tableScrollWrap}>
-          <table className={tplStyles.skuTable}>
-            <thead>
-              <tr>
-                <th>Mã SKU</th>
-                <th>Màu</th>
-                <th>Size</th>
-                <th>Giá</th>
-                <th>Tồn</th>
-                <th>Chọn</th>
-              </tr>
-            </thead>
-            <tbody>
+      <section className="mt-8 flex flex-col gap-3" aria-labelledby="pdp-sku-matrix-heading">
+        <h2
+          id="pdp-sku-matrix-heading"
+          className="text-sm font-semibold tracking-tight text-foreground"
+        >
+          Bảng biến thể SKU
+        </h2>
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
+          <Table>
+            <TableHeader>
+              <TableRow className="bg-muted/50 hover:bg-muted/50">
+                <TableHead>Mã SKU</TableHead>
+                <TableHead>Màu</TableHead>
+                <TableHead>Size</TableHead>
+                <TableHead>Giá</TableHead>
+                <TableHead>Tồn</TableHead>
+                <TableHead>Chọn</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {product.skus.map((sku) => {
                 const color = colorNameMap.get(sku.colorCode);
                 const isSelected = sku.colorCode === selectedColor && sku.size === selectedSize;
                 const available = sku.stock > 0;
                 return (
-                  <tr
+                  <TableRow
                     key={`${sku.skuCode}-${sku.colorCode}-${sku.size}`}
-                    className={`${available ? tplStyles.skuTableRowInteractive : ""} ${
-                      isSelected ? tplStyles.skuTableRowActive : ""
-                    }`}
+                    data-state={isSelected ? "selected" : undefined}
+                    className={cn(available && "cursor-pointer")}
                     onClick={() => {
                       if (!available) return;
                       handleSelectColor(sku.colorCode, color?.image);
                       setSelectedSize(sku.size);
                     }}
                   >
-                    <td className={`${tplStyles.skuCodeMono} num`}>{sku.skuCode}</td>
-                    <td>
-                      <span className={tplStyles.colorSwatchInline}>
+                    <TableCell className="font-mono text-xs text-muted-foreground">
+                      {sku.skuCode}
+                    </TableCell>
+                    <TableCell>
+                      <span className="inline-flex items-center gap-2">
                         <span
-                          className={tplStyles.colorDot}
+                          className="size-3 shrink-0 rounded-full border border-foreground/25"
                           style={{ backgroundColor: color?.hex ?? "#1F3038" }}
                           aria-hidden="true"
                         />
                         <span>{color?.name ?? sku.colorCode}</span>
                       </span>
-                    </td>
-                    <td>{sku.size}</td>
-                    <td className="num">{formatVnd(sku.price)}</td>
-                    <td className="num">{formatInt(sku.stock)}</td>
-                    <td>
-                      <span
-                        className={`${tplStyles.stockBadge} ${!available ? tplStyles.stockBadgeOut : ""}`}
+                    </TableCell>
+                    <TableCell>{sku.size}</TableCell>
+                    <TableCell>
+                      <Money vnd={sku.price} size="sm" />
+                    </TableCell>
+                    <TableCell className="tabular-nums">{formatInt(sku.stock)}</TableCell>
+                    <TableCell>
+                      <Badge
+                        variant={isSelected ? "default" : available ? "secondary" : "neutral"}
+                        className="rounded-sm"
                       >
                         {isSelected ? "Đang chọn" : available ? "Chọn" : "Hết"}
-                      </span>
-                    </td>
-                  </tr>
+                      </Badge>
+                    </TableCell>
+                  </TableRow>
                 );
               })}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
-      </div>
+      </section>
     );
   };
 
@@ -586,122 +613,113 @@ export function SitePdpView({
   const showSpecAccordion =
     Boolean(descriptionText) || accordionSpecs.length > 0 || highlights.length > 0;
 
+  const handleAccordionChange = (values: string[]) => {
+    setOpenAccordions(values);
+    if (values.includes("shipping")) {
+      setShippingOpened(true);
+    }
+  };
+
   const renderAccordions = () => (
-    <div className={tplStyles.pdpAccordions}>
+    <Accordion
+      type="multiple"
+      value={openAccordions}
+      onValueChange={handleAccordionChange}
+      className="flex flex-col gap-2"
+    >
       {showSpecAccordion && (
-        <details className={tplStyles.pdpDetails} open={layout !== "one-page-drawer"}>
-          <summary className={tplStyles.pdpSummary}>
-            <span>Thông số & chất liệu</span>
-            <span className={tplStyles.accordionPlus} aria-hidden="true" />
-          </summary>
-          <div className={tplStyles.pdpDetailsBody}>
-            {descriptionText && <p className={styles.prosePara}>{descriptionText}</p>}
+        <AccordionItem
+          value="specs"
+          className="rounded-lg border border-border bg-background px-4 last:border-b"
+        >
+          <AccordionTrigger className="min-h-12 py-3.5 text-[15px] font-semibold text-foreground hover:no-underline">
+            Thông số &amp; chất liệu
+          </AccordionTrigger>
+          <AccordionContent className="space-y-3 pb-4 text-sm leading-6 text-foreground/90">
+            {descriptionText && <p className="max-w-[66ch]">{descriptionText}</p>}
             {accordionSpecs.length > 0 && (
-              <dl className={tplStyles.pdpSpecGrid}>
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5">
                 {accordionSpecs.map((item) => (
-                  <div key={item.key} className={tplStyles.pdpSpecItem}>
-                    <dt>{item.label}</dt>
-                    <dd className={item.isNum ? "num" : undefined}>{item.value}</dd>
+                  <div key={item.key} className="flex flex-col gap-0.5">
+                    <dt className="text-xs text-muted-foreground">{item.label}</dt>
+                    <dd
+                      className={cn(
+                        "text-sm font-semibold text-foreground",
+                        item.isNum && "tabular-nums"
+                      )}
+                    >
+                      {item.value}
+                    </dd>
                   </div>
                 ))}
               </dl>
             )}
             {highlights.length > 0 && (
-              <ul className={styles.pdpDetailList}>
+              <ul className="list-disc space-y-1 pl-5 text-sm text-foreground/90">
                 {highlights.map((item, idx) => (
                   <li key={idx}>{item}</li>
                 ))}
               </ul>
             )}
-          </div>
-        </details>
+          </AccordionContent>
+        </AccordionItem>
       )}
 
-      <details className={tplStyles.pdpDetails}>
-        <summary className={tplStyles.pdpSummary}>
-          <span>Đổi trả & giao hàng</span>
-          <span className={tplStyles.accordionPlus} aria-hidden="true" />
-        </summary>
-        <div className={tplStyles.pdpDetailsBody}>
-          <p className={styles.prosePara}>
+      <AccordionItem
+        value="shipping"
+        className="rounded-lg border border-border bg-background px-4 last:border-b"
+      >
+        <AccordionTrigger className="min-h-12 py-3.5 text-[15px] font-semibold text-foreground hover:no-underline">
+          Đổi trả &amp; giao hàng
+        </AccordionTrigger>
+        <AccordionContent className="space-y-3.5 pb-4 text-sm leading-6 text-foreground/90">
+          <p className="max-w-[66ch]">
             Đổi size tận nhà trong 45 ngày. Hỗ trợ COD, chuyển khoản VietQR hoặc Ví ZaloPay trực
             tiếp tại {brandName}.
           </p>
 
           {!previewMode && provinces.length > 0 && skuId && (
-            <div style={{ marginTop: 12, marginBottom: 12 }}>
-              <p className={shared.fieldLabel} style={{ marginBottom: 8 }}>
-                Ước tính phí vận chuyển
-              </p>
-              <div className={shared.formGrid}>
-                <div className={shared.field}>
-                  <select
-                    aria-label="Chọn Tỉnh/Thành phố ước tính phí ship"
-                    className={shared.select}
-                    value={shipProvinceCode}
-                    onChange={(e) => setShipProvinceCode(e.target.value)}
-                  >
-                    <option value="">Chọn Tỉnh / Thành phố</option>
-                    {provinces.map((p) => (
-                      <option key={p.code} value={p.code}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className={shared.field}>
-                  <select
-                    aria-label="Chọn Phường/Xã ước tính phí ship"
-                    className={shared.select}
-                    value={shipWardCode}
-                    onChange={(e) => setShipWardCode(e.target.value)}
-                    disabled={!shipProvinceCode || loadingShipWards}
-                  >
-                    <option value="">
-                      {loadingShipWards ? "Đang tải phường/xã..." : "Chọn Phường / Xã"}
-                    </option>
-                    {shipWards.map((w) => (
-                      <option key={w.code} value={w.code}>
-                        {w.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+            <div className="space-y-2.5 rounded-lg border border-border bg-card p-3.5">
+              <p className="text-[13px] font-semibold text-foreground">Ước tính phí vận chuyển</p>
+
+              {shippingOpened && (
+                <PdpShippingSelects
+                  provinces={provinces}
+                  wards={shipWards}
+                  provinceCode={shipProvinceCode}
+                  wardCode={shipWardCode}
+                  loadingWards={loadingShipWards}
+                  onProvinceChange={setShipProvinceCode}
+                  onWardChange={setShipWardCode}
+                />
+              )}
 
               {loadingShipQuote && (
-                <p className={tplStyles.pdpMutedNote} style={{ marginTop: 8 }}>
-                  Đang tính phí giao hàng...
-                </p>
+                <p className="text-[13px] text-muted-foreground">Đang tính phí giao hàng...</p>
               )}
               {shipQuoteError && (
-                <p className={shared.fieldError} style={{ marginTop: 8 }} role="alert">
+                <p className="text-[13px] font-medium text-destructive" role="alert">
                   {shipQuoteError}
                 </p>
               )}
               {!loadingShipQuote && shipQuotes.length > 0 && (
-                <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+                <div className="flex flex-col gap-2 pt-1">
                   {shipQuotes.map((q) => (
                     <div
                       key={`${q.carrier_code}-${q.service_code}`}
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        gap: 12,
-                        fontSize: 14,
-                      }}
+                      className="flex flex-wrap items-baseline justify-between gap-2 text-sm"
                     >
-                      <span>
+                      <span className="text-foreground">
                         <strong>{formatCarrierLabel(q.carrier_code, q.carrier_name)}</strong> (
                         {formatServiceLabel(q.service_code, q.service_name)} · dự kiến{" "}
-                        <span className="num">{q.estimated_days}</span> ngày)
+                        <span className="tabular-nums">{q.estimated_days}</span> ngày)
                         {q.cod_supported === false && " · Không hỗ trợ COD"}
                       </span>
-                      <strong className="num">{formatVnd(q.fee_vnd)}</strong>
+                      <Money vnd={q.fee_vnd} size="sm" />
                     </div>
                   ))}
                   {shipIsEstimated && (
-                    <p className={tplStyles.pdpMutedNote}>
+                    <p className="text-xs text-muted-foreground">
                       Mức phí tạm tính; phí chính xác được xác nhận ở bước thanh toán.
                     </p>
                   )}
@@ -711,309 +729,354 @@ export function SitePdpView({
           )}
 
           {!previewMode && (
-            <Link href="/chinh-sach" className={styles.sectionLink}>
+            <Link
+              href="/chinh-sach"
+              className="inline-flex min-h-9 items-center text-sm font-semibold text-brand underline-offset-4 hover:underline"
+            >
               Xem chính sách đầy đủ
             </Link>
           )}
-        </div>
-      </details>
+        </AccordionContent>
+      </AccordionItem>
 
       {!previewMode && (
-        <details className={tplStyles.pdpDetails} open={(reviewsData?.review_count ?? 0) > 0}>
-          <summary className={tplStyles.pdpSummary}>
+        <AccordionItem
+          value="reviews"
+          className="rounded-lg border border-border bg-background px-4 last:border-b"
+        >
+          <AccordionTrigger className="min-h-12 py-3.5 text-[15px] font-semibold text-foreground hover:no-underline">
             <span>
               Đánh giá khách hàng
               {(reviewsData?.review_count ?? 0) > 0 && (
-                <span className="num">
+                <span className="font-normal text-muted-foreground tabular-nums">
                   {" "}
                   ({formatRatingFromX100(reviewsData!.rating_avg_x100)} ★ ·{" "}
                   {formatInt(reviewsData!.review_count)})
                 </span>
               )}
             </span>
-            <span className={tplStyles.accordionPlus} aria-hidden="true" />
-          </summary>
-          <div className={tplStyles.pdpDetailsBody}>
+          </AccordionTrigger>
+          <AccordionContent className="space-y-4 pb-4">
             <ProductReviewSummary productId={backendProductId} productName={product.name} />
 
-            {reviewsData && reviewsData.review_count > 0 ? (
-              <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 12 }}>
-                <div className={shared.formActions}>
-                  {[0, 5, 4, 3, 2, 1].map((star) => {
-                    const active = reviewStarFilter === star;
-                    return (
-                      <button
-                        key={star}
-                        type="button"
-                        aria-pressed={active}
-                        className={`${shared.statusTag} ${
-                          active ? shared.toneWarn : shared.toneNeutral
-                        }`}
-                        disabled={loadingReviews}
-                        onClick={() => {
-                          setReviewStarFilter(star);
-                          setReviewPage(1);
-                          void fetchReviewsPage(1, star);
-                        }}
-                      >
-                        {star === 0 ? "Tất cả" : `${star} ★`}
-                      </button>
-                    );
-                  })}
-                </div>
+            <Card className="gap-3.5 rounded-lg border border-border py-4 shadow-none">
+              <CardContent className="space-y-4 px-4">
+                {reviewsData && reviewsData.review_count > 0 ? (
+                  <>
+                    <div
+                      className="flex flex-wrap items-center gap-1.5"
+                      role="group"
+                      aria-label="Lọc đánh giá theo số sao"
+                    >
+                      {[0, 5, 4, 3, 2, 1].map((star) => {
+                        const active = reviewStarFilter === star;
+                        return (
+                          <Button
+                            key={star}
+                            type="button"
+                            size="sm"
+                            variant={active ? "default" : "outline"}
+                            aria-pressed={active}
+                            disabled={loadingReviews}
+                            className="min-h-9 px-2.5 text-xs shadow-none"
+                            onClick={() => {
+                              setReviewStarFilter(star);
+                              setReviewPage(1);
+                              void fetchReviewsPage(1, star);
+                            }}
+                          >
+                            {star === 0 ? "Tất cả" : `${star} ★`}
+                          </Button>
+                        );
+                      })}
+                    </div>
 
-                {loadingReviews ? (
-                  <p className={tplStyles.pdpMutedNote}>Đang tải đánh giá...</p>
-                ) : reviewsData.items.length === 0 ? (
-                  <p className={tplStyles.pdpMutedNote}>Chưa có đánh giá ở mức sao này.</p>
-                ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                    {reviewsData.items.map((rev) => (
-                      <article
-                        key={rev.id}
-                        style={{
-                          paddingTop: 10,
-                          borderTop: "1px solid var(--border)",
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 6,
-                        }}
-                      >
-                        <div
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            gap: 8,
-                            flexWrap: "wrap",
-                            fontSize: 14,
+                    {loadingReviews ? (
+                      <p className="text-[13px] text-muted-foreground">Đang tải đánh giá...</p>
+                    ) : reviewsData.items.length === 0 ? (
+                      <p className="text-[13px] text-muted-foreground">
+                        Chưa có đánh giá ở mức sao này.
+                      </p>
+                    ) : (
+                      <div className="divide-y divide-border">
+                        {reviewsData.items.map((rev) => (
+                          <article
+                            key={rev.id}
+                            className="flex flex-col gap-1.5 py-3 first:pt-0 last:pb-0"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                              <strong className="font-semibold text-foreground">
+                                {rev.buyer_name || "Khách mua hàng"}
+                              </strong>
+                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground tabular-nums">
+                                <Star
+                                  className="size-3.5 fill-current text-brand"
+                                  aria-hidden="true"
+                                />
+                                <span>{rev.rating}/5</span>
+                                {rev.created_at ? ` · ${formatDateVi(rev.created_at)}` : ""}
+                              </span>
+                            </div>
+                            {rev.sku_name && (
+                              <span className="text-xs text-muted-foreground">
+                                Phân loại: {rev.sku_name}
+                              </span>
+                            )}
+                            {rev.comment && (
+                              <p className="text-sm leading-6 text-foreground/90">{rev.comment}</p>
+                            )}
+                            {Array.isArray(rev.image_urls) && rev.image_urls.length > 0 && (
+                              <div className="flex flex-wrap gap-2 pt-1">
+                                {rev.image_urls.map((rawUrl, idx) => {
+                                  const safe = parseSafeReviewImageUrl(rawUrl);
+                                  if (!safe) return null;
+                                  return (
+                                    <img
+                                      key={safe}
+                                      src={safe}
+                                      alt={`Ảnh đánh giá ${idx + 1}`}
+                                      width={64}
+                                      height={64}
+                                      referrerPolicy="no-referrer"
+                                      loading="lazy"
+                                      className="size-16 rounded-md border border-border object-cover"
+                                    />
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </article>
+                        ))}
+                      </div>
+                    )}
+
+                    {reviewsData.total > reviewsData.page_size && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="min-h-9 shadow-none"
+                          disabled={loadingReviews || reviewPage <= 1}
+                          onClick={() => {
+                            const prev = Math.max(1, reviewPage - 1);
+                            setReviewPage(prev);
+                            void fetchReviewsPage(prev, reviewStarFilter);
                           }}
                         >
-                          <strong>{rev.buyer_name || "Khách mua hàng"}</strong>
-                          <span className="num">
-                            {rev.rating}/5 ★
-                            {rev.created_at ? ` · ${formatDateVi(rev.created_at)}` : ""}
-                          </span>
-                        </div>
-                        {rev.sku_name && (
-                          <span className={tplStyles.pdpMutedNote}>Phân loại: {rev.sku_name}</span>
-                        )}
-                        {rev.comment && <p className={styles.prosePara}>{rev.comment}</p>}
-                        {Array.isArray(rev.image_urls) && rev.image_urls.length > 0 && (
-                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                            {rev.image_urls.map((rawUrl, idx) => {
-                              const safe = parseSafeReviewImageUrl(rawUrl);
-                              if (!safe) return null;
-                              return (
-                                <img
-                                  key={safe}
-                                  src={safe}
-                                  alt={`Ảnh đánh giá ${idx + 1}`}
-                                  width={64}
-                                  height={64}
-                                  referrerPolicy="no-referrer"
-                                  loading="lazy"
-                                  style={{
-                                    width: 64,
-                                    height: 64,
-                                    objectFit: "cover",
-                                    borderRadius: 4,
-                                    border: "1px solid var(--border)",
-                                  }}
-                                />
-                              );
-                            })}
-                          </div>
-                        )}
-                      </article>
-                    ))}
-                  </div>
+                          Trang trước
+                        </Button>
+                        <span className="text-xs text-muted-foreground tabular-nums">
+                          Trang {reviewPage}/{Math.ceil(reviewsData.total / reviewsData.page_size)}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="min-h-9 shadow-none"
+                          disabled={
+                            loadingReviews ||
+                            reviewPage >= Math.ceil(reviewsData.total / reviewsData.page_size)
+                          }
+                          onClick={() => {
+                            const next = reviewPage + 1;
+                            setReviewPage(next);
+                            void fetchReviewsPage(next, reviewStarFilter);
+                          }}
+                        >
+                          Trang sau
+                        </Button>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-[13px] text-muted-foreground">
+                    Chưa có đánh giá nào. Đánh giá chỉ được gửi từ đơn hàng đã hoàn tất.
+                  </p>
                 )}
-
-                {reviewsData.total > reviewsData.page_size && (
-                  <div className={shared.formActions}>
-                    <button
-                      type="button"
-                      className={shared.copyBtn}
-                      disabled={loadingReviews || reviewPage <= 1}
-                      onClick={() => {
-                        const prev = Math.max(1, reviewPage - 1);
-                        setReviewPage(prev);
-                        void fetchReviewsPage(prev, reviewStarFilter);
-                      }}
-                    >
-                      Trang trước
-                    </button>
-                    <span className={`${tplStyles.pdpMutedNote} num`}>
-                      Trang {reviewPage}/{Math.ceil(reviewsData.total / reviewsData.page_size)}
-                    </span>
-                    <button
-                      type="button"
-                      className={shared.copyBtn}
-                      disabled={
-                        loadingReviews ||
-                        reviewPage >= Math.ceil(reviewsData.total / reviewsData.page_size)
-                      }
-                      onClick={() => {
-                        const next = reviewPage + 1;
-                        setReviewPage(next);
-                        void fetchReviewsPage(next, reviewStarFilter);
-                      }}
-                    >
-                      Trang sau
-                    </button>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <p className={tplStyles.pdpMutedNote}>
-                Chưa có đánh giá nào. Đánh giá chỉ được gửi từ đơn hàng đã hoàn tất.
-              </p>
-            )}
-          </div>
-        </details>
+              </CardContent>
+            </Card>
+          </AccordionContent>
+        </AccordionItem>
       )}
-    </div>
+    </Accordion>
   );
 
   const renderBuyboxContent = () => (
     <>
-      <div className={tplStyles.pdpTitleBlock}>
-        <h1 className={styles.pdpTitle}>{product.name}</h1>
+      <div className="flex flex-col gap-2.5">
+        <h1
+          className={cn(
+            "text-[clamp(24px,2.8vw,34px)] leading-[1.14] tracking-[-0.02em] text-foreground",
+            layout === "luxury-framed" ? "font-normal tracking-[0.015em]" : "font-semibold"
+          )}
+        >
+          {product.name}
+        </h1>
 
-        <div className={styles.pdpPriceWrap}>
-          <span className={`${styles.pdpPrice} num`}>{formatVnd(displayPrice)}</span>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <Money
+            vnd={displayPrice}
+            compareAtVnd={hasDiscount ? comparePrice : undefined}
+            size="lg"
+          />
           {hasDiscount && comparePrice ? (
-            <>
-              <span className={`${styles.productOriginalPrice} num`}>
-                {formatVnd(comparePrice)}
-              </span>
-              <span className={`${tplStyles.pdpDiscountText} num`}>
-                {formatDiscountPercent(comparePrice, displayPrice)}
-              </span>
-            </>
+            <Badge variant="default" className="rounded-sm tabular-nums">
+              {formatDiscountPercent(comparePrice, displayPrice)}
+            </Badge>
           ) : null}
           {effectivePromo.kind === "flash" && (
-            <span className={`${shared.statusTag} ${shared.toneWarn}`}>
+            <Badge variant="warning" className="rounded-sm tabular-nums">
               {skuFlashDetail && skuFlashDetail.totalQuota > 0
                 ? `Flash sale · Còn ${formatInt(skuFlashDetail.remainingQuota)}/${formatInt(skuFlashDetail.totalQuota)} suất`
                 : "Flash sale"}
-            </span>
+            </Badge>
           )}
           {effectivePromo.kind === "shop_discount" && (
-            <span className={`${shared.statusTag} ${shared.tonePos}`}>
+            <Badge variant="success" className="rounded-sm">
               {effectivePromo.programName || "Giảm giá gian hàng"}
-            </span>
+            </Badge>
           )}
         </div>
       </div>
 
       {layout === "sport-telemetry" && (
-        <div className={tplStyles.pdpTelemetryStrip}>
-          <div className={tplStyles.pdpTelemetryBadge}>
-            <span className={tplStyles.pdpStoryLabel}>Định lượng</span>
-            <span className={`${tplStyles.pdpStoryVal} num`}>
+        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+          <div className="flex flex-col gap-1 rounded-lg border border-border bg-background px-3.5 py-3">
+            <span className="text-xs text-muted-foreground">Định lượng</span>
+            <span className="text-[15px] font-semibold text-foreground tabular-nums">
               {product.gsm > 0 ? `${product.gsm}gsm` : "Siêu nhẹ"}
             </span>
           </div>
-          <div className={tplStyles.pdpTelemetryBadge}>
-            <span className={tplStyles.pdpStoryLabel}>Phom dáng</span>
-            <span className={tplStyles.pdpStoryVal}>{product.fit || "Athletic"}</span>
+          <div className="flex flex-col gap-1 rounded-lg border border-border bg-background px-3.5 py-3">
+            <span className="text-xs text-muted-foreground">Phom dáng</span>
+            <span className="text-[15px] font-semibold text-foreground">
+              {product.fit || "Athletic"}
+            </span>
           </div>
-          <div className={tplStyles.pdpTelemetryBadge}>
-            <span className={tplStyles.pdpStoryLabel}>Sẵn kho</span>
-            <span className={`${tplStyles.pdpStoryVal} num`}>{formatInt(maxStock)}</span>
+          <div className="flex flex-col gap-1 rounded-lg border border-border bg-background px-3.5 py-3">
+            <span className="text-xs text-muted-foreground">Sẵn kho</span>
+            <span className="text-[15px] font-semibold text-foreground tabular-nums">
+              {formatInt(maxStock)}
+            </span>
           </div>
         </div>
       )}
 
       {product.colors.length > 0 && (
-        <div className={styles.pdpOptionGroup}>
-          <span className={styles.pdpOptionLabel}>
-            Màu sắc: {colorNameMap.get(selectedColor)?.name ?? selectedColor}
+        <div className="flex flex-col gap-2">
+          <span className="text-[13px] font-semibold text-muted-foreground">
+            Màu sắc:{" "}
+            <span className="text-foreground">
+              {colorNameMap.get(selectedColor)?.name ?? selectedColor}
+            </span>
           </span>
-          <div className={styles.pdpOptionList}>
-            {product.colors.map((color) => {
-              const active = color.code === selectedColor;
-              return (
-                <button
-                  key={color.code}
-                  type="button"
-                  className={`${tplStyles.pdpColorBtn} ${
-                    active ? tplStyles.pdpColorBtnActive : ""
-                  }`}
-                  aria-pressed={active}
-                  onClick={() => handleSelectColor(color.code, color.image)}
-                >
-                  <span
-                    className={tplStyles.pdpColorSwatch}
-                    style={{ backgroundColor: color.hex }}
-                    aria-hidden="true"
-                  />
-                  <span>{color.name}</span>
-                </button>
-              );
-            })}
-          </div>
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            spacing={2}
+            value={selectedColor}
+            onValueChange={(nextColor) => {
+              if (!nextColor) return;
+              const match = colorNameMap.get(nextColor);
+              handleSelectColor(nextColor, match?.image);
+            }}
+            className="flex w-full flex-wrap justify-start gap-2"
+            aria-label="Chọn màu sắc"
+          >
+            {product.colors.map((color) => (
+              <ToggleGroupItem
+                key={color.code}
+                value={color.code}
+                className="min-h-11 gap-2 rounded-md border border-border bg-background px-3.5 text-sm font-medium text-foreground shadow-none data-[state=on]:border-primary data-[state=on]:bg-accent data-[state=on]:font-semibold data-[state=on]:text-accent-foreground"
+              >
+                <span
+                  className="size-3.5 shrink-0 rounded-full border border-foreground/25"
+                  style={{ backgroundColor: color.hex }}
+                  aria-hidden="true"
+                />
+                <span>{color.name}</span>
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
         </div>
       )}
 
       {/* CRITICAL E2E INVARIANT: span "Kích cỡ: ..." and size buttons MUST share the same parent container */}
       {product.sizes.length > 0 && (
-        <div className={styles.pdpOptionGroup}>
-          <span className={styles.pdpOptionLabel}>Kích cỡ: {selectedSize}</span>
-          <div className={tplStyles.pdpSizeGrid}>
+        <div className="flex flex-col gap-2">
+          <span className="text-[13px] font-semibold text-muted-foreground">
+            Kích cỡ: <span className="text-foreground">{selectedSize}</span>
+          </span>
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            spacing={2}
+            value={String(selectedSize)}
+            onValueChange={(nextSize) => {
+              if (!nextSize) return;
+              setSelectedSize(nextSize);
+              setQty(1);
+              setAddedNotice(null);
+            }}
+            className="flex w-full flex-wrap justify-start gap-2"
+            aria-label="Chọn kích cỡ"
+          >
             {product.sizes.map((size) => {
               const skuMatch = product.skus.find(
                 (s) => s.colorCode === selectedColor && s.size === size
               );
               const available = (skuMatch?.stock ?? 0) > 0;
-              const active = size === selectedSize;
               return (
-                <button
+                <ToggleGroupItem
                   key={size}
-                  type="button"
+                  value={size}
                   disabled={!available}
-                  aria-pressed={active}
-                  className={`${tplStyles.pdpSizeTile} ${
-                    active ? tplStyles.pdpSizeTileActive : ""
-                  }`}
-                  onClick={() => {
-                    setSelectedSize(size);
-                    setQty(1);
-                    setAddedNotice(null);
-                  }}
+                  className={cn(
+                    "min-h-11 min-w-[60px] rounded-md border border-border bg-background px-3.5 text-sm font-medium text-foreground shadow-none data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:font-semibold data-[state=on]:text-primary-foreground",
+                    !available && "cursor-not-allowed line-through opacity-40"
+                  )}
                 >
                   {size}
-                </button>
+                </ToggleGroupItem>
               );
             })}
-          </div>
+          </ToggleGroup>
         </div>
       )}
 
-      <div className={styles.pdpQtyRow}>
-        <div className={styles.qtyStepper} data-ui="">
-          <button
+      <div className="flex flex-wrap items-center gap-3.5">
+        <div className="inline-flex items-center rounded-md border border-border bg-background">
+          <Button
             type="button"
-            className={styles.qtyBtn}
+            variant="ghost"
+            size="icon"
+            className="size-10 rounded-r-none"
             disabled={clampedQty <= 1 || maxStock <= 0}
             onClick={() => setQty((q) => Math.max(1, q - 1))}
             aria-label="Giảm số lượng"
           >
-            −
-          </button>
-          <span className={`${styles.qtyValue} num`}>{clampedQty}</span>
-          <button
+            <Minus className="size-4" aria-hidden="true" />
+          </Button>
+          <span className="w-10 text-center text-sm font-semibold tabular-nums">{clampedQty}</span>
+          <Button
             type="button"
-            className={styles.qtyBtn}
+            variant="ghost"
+            size="icon"
+            className="size-10 rounded-l-none"
             disabled={maxStock <= 0 || clampedQty >= maxStock}
             onClick={() => setQty((q) => Math.min(maxStock, q + 1))}
             aria-label="Tăng số lượng"
           >
-            +
-          </button>
+            <Plus className="size-4" aria-hidden="true" />
+          </Button>
         </div>
-        <span className={`${styles.productStockTag} num`}>
+        <span
+          className={cn(
+            "text-sm font-medium tabular-nums",
+            maxStock > 0 ? "text-muted-foreground" : "text-destructive"
+          )}
+        >
           {maxStock > 0
             ? `Còn ${formatInt(maxStock)} sản phẩm sẵn giao`
             : "Phân loại này tạm hết hàng"}
@@ -1021,63 +1084,81 @@ export function SitePdpView({
       </div>
 
       {showVouchers && validShopVouchers.length > 0 && (
-        <div className={styles.pdpShopVoucherBox}>
-          <div className={tplStyles.pdpVoucherHead}>
-            <span className={styles.pdpOptionLabel}>Mã ưu đãi {brandName}</span>
+        <div className="flex flex-col gap-2.5 rounded-lg border border-border bg-background p-3.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[13px] font-semibold text-foreground">Mã ưu đãi {brandName}</span>
             {!previewMode && (
-              <Link href="/voucher" className={styles.sectionLink}>
+              <Link
+                href="/voucher"
+                className="text-xs font-semibold text-brand underline-offset-4 hover:underline"
+              >
                 Lưu mã
               </Link>
             )}
           </div>
-          <div className={tplStyles.pdpVoucherPills}>
+          <div className="flex flex-wrap gap-2">
             {validShopVouchers.slice(0, 3).map((v) => (
-              <span key={v.id || v.code} className={tplStyles.pdpVoucherChip}>
-                <strong>{v.code}</strong>,{" "}
-                {v.discountType === "percent"
-                  ? `giảm ${v.discountValue}%`
-                  : `giảm ${formatVnd(v.discountValue)}`}
-                {v.minOrderValue > 0 ? ` (đơn từ ${formatVnd(v.minOrderValue)})` : ""}
-              </span>
+              <Badge
+                key={v.id || v.code}
+                variant="secondary"
+                className="h-auto rounded-sm px-2.5 py-1 text-left text-xs leading-relaxed font-normal whitespace-normal"
+              >
+                <span>
+                  <strong className="font-semibold">{v.code}</strong>,{" "}
+                  {v.discountType === "percent"
+                    ? `giảm ${v.discountValue}%`
+                    : `giảm ${formatVnd(v.discountValue)}`}
+                  {v.minOrderValue > 0 ? ` (đơn từ ${formatVnd(v.minOrderValue)})` : ""}
+                </span>
+              </Badge>
             ))}
           </div>
         </div>
       )}
 
-      <div className={styles.pdpCtaStack}>
+      <div className="flex flex-col gap-2.5">
         {maxStock > 0 && (skuId || previewMode) ? (
-          <>
-            <button
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+            <Button
               type="button"
-              className={styles.btnPrimary}
+              size="lg"
+              className="min-h-11 w-full font-semibold shadow-none"
               disabled={busyAction !== null}
-              onClick={(e) => void handleCartAction("add", e.currentTarget)}
+              onClick={() => void handleCartAction("add")}
             >
               {busyAction === "add" ? "Đang thêm..." : "Thêm vào giỏ"}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              className={styles.btnSecondary}
+              variant="outline"
+              size="lg"
+              className="min-h-11 w-full font-semibold shadow-none"
               disabled={busyAction !== null}
               onClick={() => void handleCartAction("buy")}
             >
               {busyAction === "buy"
                 ? "Đang chuyển..."
                 : `Mua ngay (${formatVnd(displayPrice * clampedQty)})`}
-            </button>
-          </>
+            </Button>
+          </div>
         ) : (
-          <button type="button" className={styles.btnPrimary} disabled>
+          <Button type="button" size="lg" className="min-h-11 w-full shadow-none" disabled>
             Tạm hết hàng
-          </button>
+          </Button>
         )}
 
         {addedNotice && !drawerOpen && (
-          <p className={styles.pdpAddedNotice} role="status">
+          <p
+            className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/60 px-3.5 py-2.5 text-sm text-foreground"
+            role="status"
+          >
             <span>{addedNotice}</span>
             {!previewMode && (
-              <Link href="/gio-hang" className={styles.sectionLink}>
-                Mở giỏ hàng
+              <Link
+                href="/gio-hang"
+                className="font-semibold text-brand underline-offset-4 hover:underline"
+              >
+                Xem giỏ hàng
               </Link>
             )}
           </p>
@@ -1092,12 +1173,12 @@ export function SitePdpView({
     layout === "dense-spec" || layout === "sku-order-matrix" || layout === "one-page-drawer";
   const relatedGridClass =
     relatedProducts.length <= 1
-      ? tplStyles.gridSingle
+      ? "grid grid-cols-1"
       : relatedProducts.length === 2
-        ? tplStyles.gridCols2
+        ? "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:gap-8"
         : relatedProducts.length === 3
-          ? tplStyles.gridCols3
-          : tplStyles.gridCols4;
+          ? "grid grid-cols-2 gap-4 lg:grid-cols-3 lg:gap-6"
+          : "grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4 lg:gap-6";
 
   const activeColorName = colorNameMap.get(selectedColor)?.name ?? selectedColor;
   const mobileVariantLabel = [activeColorName, selectedSize].filter(Boolean).join(", ");
@@ -1109,49 +1190,86 @@ export function SitePdpView({
     .filter(Boolean)
     .join(", ");
 
-  return (
-    <div data-pdp-layout={layout} data-pdp-gallery={galleryStyle} className={tplStyles.pdpRoot}>
-      <section className={styles.siteSection} style={{ paddingTop: 20 }}>
-        <div className={tplStyles.container}>
-          <nav className={styles.breadcrumb} aria-label="Đường dẫn trang">
-            {previewMode ? (
-              <span className={styles.breadcrumbLink}>Trang chủ</span>
-            ) : (
-              <Link href="/" className={styles.breadcrumbLink}>
-                Trang chủ
-              </Link>
-            )}
-            <span aria-hidden="true">/</span>
-            {previewMode ? (
-              <span className={styles.breadcrumbLink}>Sản phẩm</span>
-            ) : (
-              <Link href="/san-pham" className={styles.breadcrumbLink}>
-                Sản phẩm
-              </Link>
-            )}
-            <span className={styles.breadcrumbTailSep} aria-hidden="true">
-              /
-            </span>
-            <span className={styles.breadcrumbCurrent}>{product.name}</span>
-          </nav>
+  const storyColsClass =
+    storySpecs.length === 1
+      ? "grid-cols-1"
+      : storySpecs.length === 2
+        ? "grid-cols-1 sm:grid-cols-2"
+        : storySpecs.length === 3
+          ? "grid-cols-1 sm:grid-cols-3"
+          : "grid-cols-2 lg:grid-cols-4";
 
-          <div className={useDenseTwoCol ? tplStyles.pdpDenseGrid : tplStyles.pdpEditorialGrid}>
+  return (
+    <div
+      data-pdp-layout={layout}
+      data-pdp-gallery={galleryStyle}
+      className={cn("w-full text-foreground", !previewMode && "pb-20 md:pb-0")}
+    >
+      <section className="w-full pt-5 pb-[clamp(36px,4.5vw,60px)]">
+        <div className="mx-auto w-full max-w-[var(--site-max-w,1260px)] px-[clamp(1rem,2.2vw,2rem)]">
+          <Breadcrumb className="mb-5">
+            <BreadcrumbList>
+              <BreadcrumbItem>
+                {previewMode ? (
+                  <span>Trang chủ</span>
+                ) : (
+                  <BreadcrumbLink asChild>
+                    <Link href="/">Trang chủ</Link>
+                  </BreadcrumbLink>
+                )}
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                {previewMode ? (
+                  <span>Sản phẩm</span>
+                ) : (
+                  <BreadcrumbLink asChild>
+                    <Link href="/san-pham">Sản phẩm</Link>
+                  </BreadcrumbLink>
+                )}
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem className="min-w-0">
+                <BreadcrumbPage className="truncate font-medium">{product.name}</BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
+
+          <div
+            className={cn(
+              "grid grid-cols-1 items-start gap-6 lg:gap-10",
+              useDenseTwoCol
+                ? "lg:grid-cols-[minmax(0,5.5fr)_minmax(0,6.5fr)]"
+                : "lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] lg:gap-12"
+            )}
+          >
             {renderGallery()}
-            <div className={tplStyles.pdpStickyBuybox}>{renderBuyboxContent()}</div>
+
+            <div className="flex min-w-0 flex-col gap-5 rounded-lg border border-border bg-card p-5 lg:sticky lg:top-20 lg:p-7">
+              {renderBuyboxContent()}
+            </div>
           </div>
 
           {renderSkuMatrixTable()}
 
           {storySpecs.length > 0 && (
             <div
-              className={tplStyles.pdpStoryBand}
+              className={cn(
+                "mt-7 grid gap-4 rounded-lg border border-border bg-card p-5 md:p-7",
+                storyColsClass
+              )}
               data-cols={storySpecs.length}
               data-reveal="rows"
             >
               {storySpecs.map((item) => (
-                <div key={item.key} className={tplStyles.pdpStoryCell}>
-                  <span className={tplStyles.pdpStoryLabel}>{item.label}</span>
-                  <span className={`${tplStyles.pdpStoryVal}${item.isNum ? " num" : ""}`}>
+                <div key={item.key} className="flex flex-col gap-1">
+                  <span className="text-[13px] text-muted-foreground">{item.label}</span>
+                  <span
+                    className={cn(
+                      "text-[15px] font-semibold text-foreground",
+                      item.isNum && "tabular-nums"
+                    )}
+                  >
                     {item.value}
                   </span>
                 </div>
@@ -1173,16 +1291,25 @@ export function SitePdpView({
       )}
 
       {showRelated && relatedProducts.length > 0 && (
-        <section className={`${styles.siteSection} ${styles.siteSectionSurface}`}>
-          <div className={tplStyles.container}>
-            <div className={styles.sectionHead}>
-              <div className={styles.sectionHeadCopy}>
-                <h2 className={styles.sectionTitle}>Sản phẩm cùng cửa hàng</h2>
-              </div>
+        <section
+          className="w-full border-t border-border bg-card py-[clamp(36px,4.8vw,64px)]"
+          aria-labelledby="pdp-related-heading"
+        >
+          <div className="mx-auto w-full max-w-[var(--site-max-w,1260px)] px-[clamp(1rem,2.2vw,2rem)]">
+            <div className="mb-6 flex flex-wrap items-baseline justify-between gap-3">
+              <h2
+                id="pdp-related-heading"
+                className="text-xl font-semibold tracking-tight text-foreground"
+              >
+                Sản phẩm cùng cửa hàng
+              </h2>
               {previewMode ? (
-                <span className={styles.sectionLink}>Xem tất cả</span>
+                <span className="text-sm font-semibold text-brand">Xem tất cả</span>
               ) : (
-                <Link href="/san-pham" className={styles.sectionLink}>
+                <Link
+                  href="/san-pham"
+                  className="text-sm font-semibold text-brand underline-offset-4 hover:underline"
+                >
                   Xem tất cả
                 </Link>
               )}
@@ -1205,112 +1332,52 @@ export function SitePdpView({
 
       {/* Mobile sticky buy bar (hidden on desktop; unified support dock lifts above it via :has) */}
       {!previewMode && (
-        <div className={tplStyles.pdpMobileBuyBar} data-mobile-buybar="">
-          <div className={tplStyles.pdpMobileBuyPrice}>
-            <span className={`${tplStyles.pdpMobilePriceVal} num`}>{formatVnd(displayPrice)}</span>
+        <div
+          className="fixed inset-x-0 bottom-0 z-40 flex items-center justify-between gap-3 border-t border-border bg-card px-3.5 py-2.5 pb-[calc(0.625rem+env(safe-area-inset-bottom,0px))] md:hidden"
+          data-mobile-buybar=""
+        >
+          <div className="flex min-w-0 flex-col">
+            <Money vnd={displayPrice} size="md" />
             {mobileVariantLabel && (
-              <span className={tplStyles.pdpMobileVariantVal}>{mobileVariantLabel}</span>
+              <span className="truncate text-xs text-muted-foreground">{mobileVariantLabel}</span>
             )}
           </div>
-          <div className={tplStyles.pdpMobileBuyActions}>
-            <button
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
               type="button"
-              className={tplStyles.pdpMobileBagBtn}
+              variant="outline"
+              size="icon"
+              className="size-11 shadow-none"
               disabled={maxStock <= 0 || !skuId || busyAction !== null}
-              onClick={(e) => void handleCartAction("add", e.currentTarget)}
+              onClick={() => void handleCartAction("add")}
               aria-label="Cho vào giỏ"
             >
-              <IconBag size={18} />
-            </button>
-            <button
+              <ShoppingBag className="size-[18px]" aria-hidden="true" />
+            </Button>
+            <Button
               type="button"
-              className={tplStyles.pdpMobilePrimaryBtn}
+              className="min-h-11 px-5 text-[15px] font-semibold shadow-none"
               disabled={maxStock <= 0 || !skuId || busyAction !== null}
               onClick={() => void handleCartAction("buy")}
             >
               {maxStock <= 0 ? "Hết hàng" : busyAction === "buy" ? "Đang chuyển..." : "Mua ngay"}
-            </button>
+            </Button>
           </div>
         </div>
       )}
 
-      {/* Slide-right Add-to-Cart confirmation drawer */}
-      {drawerOpen && (
-        <div
-          className={`${styles.siteDrawerBackdrop} ${
-            drawerClosing ? styles.siteDrawerBackdropClosing : ""
-          }`}
-          role="presentation"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) closeDrawer(true);
-          }}
-        >
-          <aside
-            ref={cartDrawerRef}
-            tabIndex={-1}
-            className={`${tplStyles.cartConfirmDrawer} ${
-              drawerClosing ? styles.siteDrawerPanelClosing : ""
-            }`}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Đã thêm vào giỏ hàng"
-          >
-            <header className={tplStyles.cartConfirmHead}>
-              <span className={tplStyles.cartConfirmStatus}>
-                <IconCheck size={16} />
-                <span>Đã thêm vào giỏ</span>
-              </span>
-              <button
-                type="button"
-                className={styles.siteDrawerClose}
-                onClick={() => closeDrawer(true)}
-                aria-label="Đóng thông báo giỏ hàng"
-              >
-                <IconClose size={18} />
-              </button>
-            </header>
-
-            <div className={tplStyles.cartConfirmItem}>
-              <img
-                src={activeImage}
-                alt={product.name}
-                width={84}
-                height={112}
-                className={tplStyles.cartConfirmThumb}
-              />
-              <div className={tplStyles.cartConfirmMeta}>
-                <p className={tplStyles.cartConfirmName}>{product.name}</p>
-                <p className={tplStyles.cartConfirmVariant}>{drawerVariantLabel}</p>
-                <p className={`${tplStyles.cartConfirmPrice} num`}>
-                  {formatVnd(displayPrice * clampedQty)}
-                </p>
-              </div>
-            </div>
-
-            {addedNotice && (
-              <p className={tplStyles.pdpMutedNote} role="status">
-                {addedNotice}
-              </p>
-            )}
-
-            <div className={tplStyles.cartConfirmActions}>
-              <Link
-                href="/gio-hang"
-                className={styles.btnPrimary}
-                onClick={() => closeDrawer(false)}
-              >
-                Mở giỏ hàng
-              </Link>
-              <button
-                type="button"
-                className={styles.btnSecondary}
-                onClick={() => closeDrawer(true)}
-              >
-                Tiếp tục xem
-              </button>
-            </div>
-          </aside>
-        </div>
+      {/* Lazy-loaded slide-right Add-to-Cart confirmation Sheet */}
+      {drawerMounted && (
+        <CartConfirmSheet
+          open={drawerOpen}
+          onOpenChange={setDrawerOpen}
+          brandName={brandName}
+          productName={product.name}
+          imageSrc={activeImage}
+          variantLabel={drawerVariantLabel}
+          subtotalVnd={displayPrice * clampedQty}
+          addedNotice={addedNotice}
+        />
       )}
     </div>
   );

@@ -1,8 +1,9 @@
 "use client";
 
 import React, { useState } from "react";
-import styles from "./site.module.css";
-import tplStyles from "./siteTemplates.module.css";
+import { ChevronDown, ChevronUp } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 export interface CollapsibleProseProps {
   paragraphs: string[];
@@ -19,27 +20,30 @@ export function CollapsibleProse({ paragraphs, previewChars = 180 }: Collapsible
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className={tplStyles.collapsibleWrap}>
-      <div
-        className={`${tplStyles.collapsibleBody} ${
-          needsToggle && !expanded ? tplStyles.collapsibleClamped : ""
-        }`}
-      >
+    <div className="flex flex-col items-start gap-2.5">
+      <div className={cn("flex flex-col gap-2.5", needsToggle && !expanded && "line-clamp-3")}>
         {paragraphs.map((para, idx) => (
-          <p key={idx} className={styles.prosePara}>
+          <p key={idx} className="max-w-[68ch] text-sm leading-6 text-foreground/90">
             {para}
           </p>
         ))}
       </div>
       {needsToggle && (
-        <button
+        <Button
           type="button"
-          className={tplStyles.collapsibleBtn}
+          variant="link"
+          size="sm"
+          className="h-auto min-h-10 gap-1 px-0 text-sm font-semibold text-brand"
           aria-expanded={expanded}
           onClick={() => setExpanded((v) => !v)}
         >
-          {expanded ? "Thu gọn" : "Xem thêm"}
-        </button>
+          <span>{expanded ? "Thu gọn" : "Xem thêm"}</span>
+          {expanded ? (
+            <ChevronUp className="size-4" aria-hidden="true" />
+          ) : (
+            <ChevronDown className="size-4" aria-hidden="true" />
+          )}
+        </Button>
       )}
     </div>
   );

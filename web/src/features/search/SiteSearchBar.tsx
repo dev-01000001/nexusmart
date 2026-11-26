@@ -1,9 +1,13 @@
 "use client";
 
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import { IconClock, IconClose, IconSearch } from "@/components";
-import { formatVnd } from "@/lib/format";
+import { Clock, Command, Search, X } from "lucide-react";
+import { Money } from "@/components/app/Money";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   addRecentSearch,
   normalizeSuggestResponse,
@@ -12,7 +16,11 @@ import {
   type SearchSuggestion,
   type SiteSearchBarProps,
 } from "./searchTypes";
-import styles from "./SiteSearchBar.module.css";
+
+const SiteSearchCommandDialog = dynamic(
+  () => import("./SiteSearchCommandDialog").then((mod) => mod.SiteSearchCommandDialog),
+  { ssr: false }
+);
 
 interface DropdownOption {
   id: string;
@@ -46,6 +54,8 @@ export function SiteSearchBar({
 
   const [value, setValue] = useState(initialQuery);
   const [open, setOpen] = useState(false);
+  const [commandMounted, setCommandMounted] = useState(false);
+  const [commandOpen, setCommandOpen] = useState(false);
   const [suggestions, setSuggestions] = useState<SearchSuggestion[]>([]);
   const [loading, setLoading] = useState(false);
   const [recentQueries, setRecentQueries] = useState<string[]>([]);
@@ -81,7 +91,7 @@ export function SiteSearchBar({
     [storageKey]
   );
 
-  // Close dropdown when clicking outside.
+  // Close inline dropdown when clicking outside.
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
@@ -93,10 +103,24 @@ export function SiteSearchBar({
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, []);
 
-  // Debounced live suggestions with AbortController.
+  // Keyboard shortcut Cmd/Ctrl+K opens lazy CommandDialog when bar is in main page flow.
+  useEffect(() => {
+    const handleGlobalKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "k") return;
+      if (rootRef.current?.closest('[role="dialog"]')) return;
+      event.preventDefault();
+      setOpen(false);
+      setCommandMounted(true);
+      setCommandOpen((prev) => !prev);
+    };
+    window.addEventListener("keydown", handleGlobalKey);
+    return () => window.removeEventListener("keydown", handleGlobalKey);
+  }, []);
+
+  // Debounced live suggestions with AbortController (active for either inline dropdown or CommandDialog).
   useEffect(() => {
     const trimmed = value.trim();
-    if (!open || !trimmed) {
+    if ((!open && !commandOpen) || !trimmed) {
       setSuggestions([]);
       setLoading(false);
       return;
@@ -135,7 +159,7 @@ export function SiteSearchBar({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [value, open]);
+  }, [value, open, commandOpen]);
 
   const trimmedValue = value.trim();
   const isShowingRecent = trimmedValue.length === 0;
@@ -160,13 +184,15 @@ export function SiteSearchBar({
     setActiveIndex(-1);
   }, [options.length, trimmedValue]);
 
-  const showDropdown = open && (options.length > 0 || (!isShowingRecent && loading));
+  const showDropdown =
+    open && !commandOpen && (options.length > 0 || (!isShowingRecent && loading));
 
   const executeSearch = useCallback(
     (rawQuery: string) => {
       const clean = rawQuery.trim();
       setValue(clean);
       setOpen(false);
+      setCommandOpen(false);
       setActiveIndex(-1);
 
       if (clean) {
@@ -178,6 +204,16 @@ export function SiteSearchBar({
       onNavigate?.(clean);
     },
     [onNavigate, persistRecent, recentQueries, router]
+  );
+
+  const handleQuickLink = useCallback(
+    (href: string) => {
+      setOpen(false);
+      setCommandOpen(false);
+      router.push(href);
+      onNavigate?.("");
+    },
+    [onNavigate, router]
   );
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -228,24 +264,26 @@ export function SiteSearchBar({
     inputRef.current?.focus();
   };
 
-  const handleClearHistory = (event: React.MouseEvent<HTMLButtonElement>) => {
-    event.preventDefault();
+  const handleClearHistory = (event?: React.MouseEvent<HTMLButtonElement>) => {
+    event?.preventDefault();
     persistRecent([]);
     setActiveIndex(-1);
     inputRef.current?.focus();
   };
 
+  const handleOpenCommand = () => {
+    setOpen(false);
+    setCommandMounted(true);
+    setCommandOpen(true);
+  };
+
   const activeOptionId =
     showDropdown && activeIndex >= 0 && options[activeIndex] ? options[activeIndex].id : undefined;
 
-  const rootClass = [styles.root, compact ? styles.compact : "", className ?? ""]
-    .filter(Boolean)
-    .join(" ");
-
   return (
-    <div ref={rootRef} className={rootClass}>
+    <div ref={rootRef} className={cn("relative w-full min-w-0", className)}>
       <form
-        className={styles.form}
+        className="flex w-full min-w-0 items-stretch gap-2"
         role="search"
         aria-label={`Tìm kiếm tại ${brandName}`}
         onSubmit={handleSubmit}
@@ -253,10 +291,16 @@ export function SiteSearchBar({
         <label htmlFor={inputId} className="sr-only">
           Tìm kiếm sản phẩm tại {brandName}
         </label>
-        <div className={styles.inputWrap}>
-          <span className={styles.leadingIcon} aria-hidden="true">
-            <IconSearch size={compact ? 15 : 17} />
-          </span>
+
+        <div className="relative flex min-w-0 flex-1 items-center">
+          <Search
+            className={cn(
+              "pointer-events-none absolute left-3 text-muted-foreground",
+              compact ? "size-4" : "size-[18px]"
+            )}
+            aria-hidden="true"
+          />
+
           <input
             ref={inputRef}
             id={inputId}
@@ -269,7 +313,10 @@ export function SiteSearchBar({
             autoComplete="off"
             spellCheck={false}
             maxLength={200}
-            className={styles.searchInput}
+            className={cn(
+              "w-full min-w-0 rounded-md border border-input bg-card text-foreground transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none [&::-webkit-search-cancel-button]:appearance-none",
+              compact ? "h-10 pr-20 pl-9 text-sm" : "h-11 pr-24 pl-10 text-[15px]"
+            )}
             placeholder={placeholder ?? `Tìm sản phẩm tại ${brandName}...`}
             value={value}
             onFocus={() => setOpen(true)}
@@ -279,39 +326,71 @@ export function SiteSearchBar({
             }}
             onKeyDown={handleKeyDown}
           />
-          {value.length > 0 && (
-            <button
+
+          <div className="absolute right-1.5 flex items-center gap-0.5">
+            {value.length > 0 && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="size-8 text-muted-foreground hover:text-foreground"
+                onClick={handleClearInput}
+                aria-label="Xóa từ khóa"
+              >
+                <X className="size-4" aria-hidden="true" />
+              </Button>
+            )}
+
+            <Button
               type="button"
-              className={styles.clearBtn}
-              onClick={handleClearInput}
-              aria-label="Xóa từ khóa"
+              variant="ghost"
+              size="sm"
+              className="h-8 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+              onClick={handleOpenCommand}
+              aria-label={`Mở hộp thoại tìm nhanh tại ${brandName}`}
+              title="Tìm nhanh (⌘K)"
             >
-              <IconClose size={14} />
-            </button>
-          )}
+              <Command className="size-3.5" aria-hidden="true" />
+              <span className="hidden sm:inline">K</span>
+            </Button>
+          </div>
         </div>
-        <button type="submit" className={styles.submitBtn}>
+
+        <Button
+          type="submit"
+          className={cn(
+            "shrink-0 font-semibold whitespace-nowrap shadow-none",
+            compact ? "h-10 px-4 text-sm" : "h-11 px-5 text-[15px]"
+          )}
+        >
           {compact ? "Tìm" : "Tìm kiếm"}
-        </button>
+        </Button>
       </form>
 
       {showDropdown && (
-        <div className={styles.dropdown} data-ui="search-suggest">
+        <div
+          className="absolute top-[calc(100%+6px)] right-0 left-0 z-50 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-overlay"
+          data-slot="search-suggest"
+        >
           {isShowingRecent ? (
-            <div className={styles.dropdownHead}>
-              <span className={styles.dropdownTitle}>Tìm kiếm gần đây</span>
-              <button
+            <div className="flex items-center justify-between gap-3 border-b border-border bg-muted/60 px-3.5 py-2.5">
+              <span className="text-[13px] font-semibold text-muted-foreground">
+                Tìm kiếm gần đây
+              </span>
+              <Button
                 type="button"
-                className={styles.clearHistoryBtn}
+                variant="link"
+                size="sm"
+                className="h-auto p-0 text-[13px] font-semibold text-brand"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={handleClearHistory}
               >
                 Xóa lịch sử
-              </button>
+              </Button>
             </div>
           ) : (
-            <div className={styles.dropdownHead}>
-              <span className={styles.dropdownTitle}>
+            <div className="flex items-center justify-between gap-3 border-b border-border bg-muted/60 px-3.5 py-2.5">
+              <span className="text-[13px] font-semibold text-muted-foreground">
                 {loading && options.length === 0 ? "Đang tìm gợi ý..." : "Gợi ý tìm kiếm"}
               </span>
             </div>
@@ -322,7 +401,7 @@ export function SiteSearchBar({
               id={listboxId}
               role="listbox"
               aria-label={isShowingRecent ? "Tìm kiếm gần đây" : "Gợi ý tìm kiếm"}
-              className={styles.optionList}
+              className="max-h-80 overflow-y-auto py-1"
             >
               {options.map((opt, idx) => {
                 const isActive = idx === activeIndex;
@@ -332,27 +411,36 @@ export function SiteSearchBar({
                     id={opt.id}
                     role="option"
                     aria-selected={isActive}
-                    className={`${styles.optionRow} ${isActive ? styles.optionRowActive : ""}`}
+                    className={cn(
+                      "flex min-h-11 cursor-pointer items-center justify-between gap-3 px-3.5 py-2.5 text-sm transition-colors",
+                      isActive
+                        ? "bg-accent text-accent-foreground"
+                        : "text-foreground hover:bg-accent/70 hover:text-accent-foreground"
+                    )}
                     onMouseEnter={() => setActiveIndex(idx)}
                     onMouseDown={(e) => {
                       e.preventDefault();
                       executeSearch(opt.text);
                     }}
                   >
-                    <span className={styles.optionMain}>
-                      <span className={styles.optionIcon} aria-hidden="true">
-                        {opt.kind === "recent" ? <IconClock size={14} /> : <IconSearch size={14} />}
+                    <span className="flex min-w-0 flex-1 items-center gap-2.5">
+                      <span className="shrink-0 text-muted-foreground" aria-hidden="true">
+                        {opt.kind === "recent" ? (
+                          <Clock className="size-4" />
+                        ) : (
+                          <Search className="size-4" />
+                        )}
                       </span>
-                      <span className={styles.optionText}>{opt.text}</span>
+                      <span className="truncate text-[15px]">{opt.text}</span>
                     </span>
-                    <span className={styles.optionAside}>
+                    <span className="flex shrink-0 items-center gap-2">
                       {opt.minPriceVnd && opt.minPriceVnd > 0 ? (
-                        <span className={`${styles.optionPrice} num`}>
-                          {formatVnd(opt.minPriceVnd)}
-                        </span>
+                        <Money vnd={opt.minPriceVnd} size="sm" />
                       ) : null}
                       {opt.kind !== "recent" && (
-                        <span className={styles.optionKind}>{KIND_LABELS[opt.kind]}</span>
+                        <Badge variant="secondary" className="rounded-sm px-1.5 py-0 text-[11px]">
+                          {KIND_LABELS[opt.kind]}
+                        </Badge>
                       )}
                     </span>
                   </li>
@@ -361,6 +449,22 @@ export function SiteSearchBar({
             </ul>
           )}
         </div>
+      )}
+
+      {commandMounted && (
+        <SiteSearchCommandDialog
+          open={commandOpen}
+          onOpenChange={setCommandOpen}
+          brandName={brandName}
+          query={value}
+          onQueryChange={setValue}
+          suggestions={suggestions}
+          loading={loading}
+          recentQueries={recentQueries}
+          onSelectQuery={executeSearch}
+          onClearHistory={() => handleClearHistory()}
+          onQuickLink={handleQuickLink}
+        />
       )}
     </div>
   );

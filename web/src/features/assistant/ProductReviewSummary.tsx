@@ -1,16 +1,18 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { IconCheck, IconSpark, IconStar } from "@/components/Icons";
+import { AlertCircle, Check, Sparkles, Star } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import { formatInt } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import {
   normalizeReviewSummary,
   shouldDisplayReviewSummary,
   type ProductReviewSummaryProps,
   type ReviewSummaryDTO,
 } from "./assistantTypes";
-import styles from "./ProductReviewSummary.module.css";
 
 export function ProductReviewSummary({
   productId,
@@ -56,73 +58,114 @@ export function ProductReviewSummary({
   const hasCons = summary.cons.length > 0;
 
   return (
-    <section
-      className={`${styles.card} ${className ?? ""}`}
-      data-ui="review-summary"
+    <Card
+      className={cn(
+        "gap-3.5 rounded-lg border border-border bg-muted/50 py-4 shadow-none",
+        className
+      )}
+      data-slot="review-summary"
       aria-label={
         productName ? `Tóm tắt đánh giá cho ${productName}` : "Tóm tắt đánh giá do AI tổng hợp"
       }
     >
-      <div className={styles.header}>
-        <div className={styles.titleRow}>
-          <span className={styles.iconWrap} aria-hidden="true">
-            <IconSpark size={15} />
+      <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2.5 px-4 pb-0 md:px-5">
+        <div className="flex items-center gap-2">
+          <span
+            className="inline-flex size-7 shrink-0 items-center justify-center rounded-md bg-primary/12 text-brand"
+            aria-hidden="true"
+          >
+            <Sparkles className="size-4" />
           </span>
-          <h3 className={styles.heading}>Tóm tắt đánh giá do AI tổng hợp</h3>
+          <CardTitle className="text-[15px] leading-snug font-semibold text-foreground">
+            Tóm tắt đánh giá do AI tổng hợp
+          </CardTitle>
         </div>
 
-        <div className={styles.metaRow}>
+        <div className="flex flex-wrap items-center gap-2 tabular-nums">
           {summary.averageRating > 0 && (
-            <span className={styles.ratingBadge}>
-              <IconStar size={13} filled />
+            <Badge
+              variant="secondary"
+              className="gap-1 rounded-sm px-2 py-0.5 text-xs font-semibold"
+            >
+              <Star className="size-3.5 fill-current text-brand" aria-hidden="true" />
               <span>{summary.averageRating.toFixed(1).replace(".", ",")}/5</span>
-            </span>
+            </Badge>
           )}
-          <span className={styles.countText}>
+          <span className="text-[13px] text-muted-foreground">
             Tổng hợp từ {formatInt(summary.reviewCount)} đánh giá
           </span>
         </div>
-      </div>
+      </CardHeader>
 
-      {summary.summary && <p className={styles.overview}>{summary.summary}</p>}
+      <CardContent className="space-y-3.5 px-4 md:px-5">
+        {summary.summary && (
+          <p className="max-w-[72ch] text-sm leading-6 text-foreground">{summary.summary}</p>
+        )}
 
-      {(hasPros || hasCons) && (
-        <div className={`${styles.columns} ${hasPros && hasCons ? styles.columnsTwo : ""}`}>
-          {hasPros && (
-            <div className={styles.listCol}>
-              <h4 className={styles.listHeadingPos}>Ưu điểm nổi bật</h4>
-              <ul className={styles.bulletList}>
-                {summary.pros.map((item) => (
-                  <li key={item} className={styles.bulletItem}>
-                    <span className={styles.posMark} aria-hidden="true">
-                      <IconCheck size={13} />
-                    </span>
-                    <span>{item}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+        {(hasPros || hasCons) && (
+          <div className={cn("grid grid-cols-1 gap-3", hasPros && hasCons && "sm:grid-cols-2")}>
+            {hasPros && (
+              <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3.5">
+                <h4 className="inline-flex items-center gap-1.5 text-sm font-semibold text-badge-success-ink">
+                  <span
+                    className="inline-flex size-5 items-center justify-center rounded-full bg-badge-success-bg text-badge-success-ink"
+                    aria-hidden="true"
+                  >
+                    <Check className="size-3" />
+                  </span>
+                  <span>Ưu điểm nổi bật</span>
+                </h4>
+                <ul className="flex flex-col gap-1.5">
+                  {summary.pros.map((item) => (
+                    <li
+                      key={item}
+                      className="flex items-start gap-2 text-sm leading-5 text-foreground"
+                    >
+                      <Check
+                        className="mt-0.5 size-3.5 shrink-0 text-badge-success-ink"
+                        aria-hidden="true"
+                      />
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
-          {hasCons && (
-            <div className={styles.listCol}>
-              <h4 className={styles.listHeadingWarn}>Điểm cần lưu ý</h4>
-              <ul className={styles.bulletList}>
-                {summary.cons.map((item) => (
-                  <li key={item} className={styles.bulletItem}>
-                    <span className={styles.warnDot} aria-hidden="true" />
-                    <span>{item}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      )}
+            {hasCons && (
+              <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3.5">
+                <h4 className="inline-flex items-center gap-1.5 text-sm font-semibold text-badge-warning-ink">
+                  <span
+                    className="inline-flex size-5 items-center justify-center rounded-full bg-badge-warning-bg text-badge-warning-ink"
+                    aria-hidden="true"
+                  >
+                    <AlertCircle className="size-3" />
+                  </span>
+                  <span>Điểm cần lưu ý</span>
+                </h4>
+                <ul className="flex flex-col gap-1.5">
+                  {summary.cons.map((item) => (
+                    <li
+                      key={item}
+                      className="flex items-start gap-2 text-sm leading-5 text-foreground"
+                    >
+                      <span
+                        className="mt-2 size-1.5 shrink-0 rounded-full bg-badge-warning-ink"
+                        aria-hidden="true"
+                      />
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
 
-      <p className={styles.footnote}>
-        Nội dung được tổng hợp tự động từ nhận xét thực tế của người mua trên cửa hàng.
-      </p>
-    </section>
+        <p className="text-[13px] leading-[18px] text-muted-foreground">
+          Nội dung được tổng hợp tự động từ nhận xét thực tế của người mua trên cửa hàng.
+        </p>
+      </CardContent>
+    </Card>
   );
 }

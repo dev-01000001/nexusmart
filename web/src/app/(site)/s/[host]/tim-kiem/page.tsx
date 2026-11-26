@@ -2,7 +2,7 @@ import React from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { buildSiteMetadata } from "@/lib/site/seo";
-import { SiteSearchResults } from "@/features/search";
+import { SiteSearchResults } from "@/features/search/SiteSearchResults";
 import { loadSiteContext, loadSiteTemplateBundle } from "@/features/site/siteContext.server";
 
 export const dynamic = "force-dynamic";

@@ -1,12 +1,36 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { IconClose, IconFilter, StateView } from "@/components";
-import { useModalFocusTrap } from "@/components/modalFocus";
+import { SearchX, SlidersHorizontal, X } from "lucide-react";
+import { EmptyState } from "@/components/app/EmptyState";
+import { ErrorState } from "@/components/app/ErrorState";
+import { Money } from "@/components/app/Money";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationEllipsis,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { formatDiscountPercent, formatInt, formatVnd } from "@/lib/format";
 import { searchProducts, suggestSpelling } from "@/lib/search";
+import { cn } from "@/lib/utils";
+import { SearchFilterControls } from "./SearchFilterControls";
 import { SiteSearchBar } from "./SiteSearchBar";
 import {
   buildSearchFilterUrl,
@@ -24,7 +48,11 @@ import {
   type SearchSort,
   type SiteSearchResultsProps,
 } from "./searchTypes";
-import styles from "./SiteSearchResults.module.css";
+
+const SearchFilterSheet = dynamic(
+  () => import("./SearchFilterSheet").then((mod) => mod.SearchFilterSheet),
+  { ssr: false }
+);
 
 const FALLBACK_IMAGE = "/banners/fabric-closeup.jpg";
 
@@ -82,9 +110,7 @@ export function SiteSearchResults({
   const [page, setPage] = useState(() => Math.max(1, Math.trunc(initialPage || 1)));
   const [retryTick, setRetryTick] = useState(0);
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [sheetClosing, setSheetClosing] = useState(false);
-  const filterSheetRef = useRef<HTMLElement | null>(null);
-  const sheetCloseTimerRef = useRef<number | null>(null);
+  const [sheetMounted, setSheetMounted] = useState(false);
 
   const [result, setResult] = useState<NormalizedSearchResponse>(() => {
     if (Array.isArray(fallbackProducts)) {
@@ -135,39 +161,6 @@ export function SiteSearchResults({
     });
     router.replace(nextUrl, { scroll: false });
   }, [query, category, minPrice, maxPrice, sort, page, router]);
-
-  const openSheet = useCallback(() => {
-    if (sheetCloseTimerRef.current !== null) {
-      window.clearTimeout(sheetCloseTimerRef.current);
-      sheetCloseTimerRef.current = null;
-    }
-    setSheetClosing(false);
-    setSheetOpen(true);
-  }, []);
-
-  const closeSheet = useCallback(() => {
-    if (!sheetOpen || sheetClosing) return;
-    setSheetClosing(true);
-    sheetCloseTimerRef.current = window.setTimeout(() => {
-      sheetCloseTimerRef.current = null;
-      setSheetOpen(false);
-      setSheetClosing(false);
-    }, 180);
-  }, [sheetOpen, sheetClosing]);
-
-  useEffect(() => {
-    return () => {
-      if (sheetCloseTimerRef.current !== null) {
-        window.clearTimeout(sheetCloseTimerRef.current);
-      }
-    };
-  }, []);
-
-  useModalFocusTrap({
-    open: sheetOpen && !sheetClosing,
-    containerRef: filterSheetRef,
-    onEscape: closeSheet,
-  });
 
   useEffect(() => {
     const controller = new AbortController();
@@ -343,25 +336,50 @@ export function SiteSearchResults({
     return found?.id ?? "";
   }, [minPrice, maxPrice]);
 
+  const handleOpenFilterSheet = () => {
+    setSheetMounted(true);
+    setSheetOpen(true);
+  };
+
   const gridClass =
     result.items.length === 1
-      ? styles.productGridSingle
+      ? "grid grid-cols-1"
       : result.items.length === 2
-        ? styles.productGridTwo
+        ? "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:gap-7"
         : result.items.length === 3
-          ? styles.productGridThree
-          : styles.productGrid;
+          ? "grid grid-cols-2 gap-4 lg:grid-cols-3 lg:gap-6"
+          : "grid grid-cols-2 gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 lg:gap-6";
+
+  const sharedFilterProps = {
+    categoryFacets,
+    category,
+    onSelectCategory: (next: string) => {
+      setCategory(next);
+      setPage(1);
+    },
+    activePresetId,
+    onSelectPricePreset: handleSelectPricePreset,
+    minPriceInput,
+    maxPriceInput,
+    onMinPriceInputChange: setMinPriceInput,
+    onMaxPriceInputChange: setMaxPriceInput,
+    onApplyPrice: handleApplyPrice,
+    priceInputError,
+  };
 
   return (
-    <div className={styles.page}>
-      <section className={styles.headerBand}>
-        <div className={styles.headerCopy}>
-          <h1 className={styles.pageTitle}>
+    <div className="mx-auto flex w-full max-w-[var(--site-max-w,1260px)] flex-col gap-6 px-[clamp(1rem,2.2vw,2rem)] pt-[clamp(24px,3.2vw,44px)] pb-[clamp(48px,6vw,80px)] text-foreground">
+      <section className="flex flex-col gap-4" aria-labelledby="site-search-heading">
+        <div className="flex flex-col gap-1.5">
+          <h1
+            id="site-search-heading"
+            className="text-[clamp(26px,3.6vw,42px)] leading-[1.1] font-semibold tracking-[-0.025em] text-foreground"
+          >
             {query.trim() ? `Kết quả cho “${query.trim()}”` : `Tìm kiếm tại ${brandName}`}
           </h1>
         </div>
 
-        <div className={styles.searchBarWrap}>
+        <div className="w-full max-w-2xl">
           <SiteSearchBar
             brandName={brandName}
             shopId={shopId}
@@ -372,438 +390,461 @@ export function SiteSearchResults({
         </div>
       </section>
 
-      <section className={styles.toolbarBand} aria-label="Bộ lọc và sắp xếp">
-        <div className={styles.toolbarLeft}>
-          <button
-            type="button"
-            className={styles.filterSheetBtn}
-            aria-expanded={sheetOpen}
-            onClick={openSheet}
-          >
-            <IconFilter size={15} />
-            <span>Bộ lọc</span>
-            {activeFilterCount > 0 && (
-              <span className={`${styles.filterBadge} num`}>{activeFilterCount}</span>
-            )}
-          </button>
-
-          <span className={`${styles.resultCount} num`} aria-live="polite">
-            {loading && !hasLoadedOnce ? "Đang tìm..." : `${formatInt(result.total)} kết quả`}
-          </span>
-        </div>
-
-        <div className={styles.toolbarRight}>
-          <label htmlFor="site-search-sort" className="sr-only">
-            Sắp xếp
-          </label>
-          <select
-            id="site-search-sort"
-            className={styles.sortSelect}
-            value={sort}
-            onChange={(e) => {
-              setSort(normalizeSearchSort(e.target.value));
-              setPage(1);
-            }}
-          >
-            {VALID_SEARCH_SORTS.map((key) => (
-              <option key={key} value={key}>
-                {SEARCH_SORT_LABELS[key]}
-              </option>
-            ))}
-          </select>
-        </div>
-      </section>
-
-      {hasActiveFilters && (
-        <div className={styles.activeChipRow}>
-          {query.trim() && (
-            <button
-              type="button"
-              className={styles.activeChip}
-              aria-label={`Bỏ lọc từ khóa ${query.trim()}`}
-              onClick={() => {
-                setQuery("");
-                setPage(1);
-              }}
-            >
-              <span>“{query.trim()}”</span>
-              <IconClose size={13} />
-            </button>
-          )}
-          {category && (
-            <button
-              type="button"
-              className={styles.activeChip}
-              aria-label={`Bỏ lọc danh mục ${categoryLabelBySlug.get(category) ?? category}`}
-              onClick={() => {
-                setCategory("");
-                setPage(1);
-              }}
-            >
-              <span>{categoryLabelBySlug.get(category) ?? category}</span>
-              <IconClose size={13} />
-            </button>
-          )}
-          {(minPrice !== undefined || maxPrice !== undefined) && (
-            <button
-              type="button"
-              className={`${styles.activeChip} num`}
-              aria-label={`Bỏ lọc khoảng giá ${minPrice !== undefined ? formatVnd(minPrice) : "0₫"} đến ${maxPrice !== undefined ? formatVnd(maxPrice) : "không giới hạn"}`}
-              onClick={() => handleSelectPricePreset(undefined, undefined)}
-            >
-              <span>
-                {minPrice !== undefined ? formatVnd(minPrice) : "0₫"} đến{" "}
-                {maxPrice !== undefined ? formatVnd(maxPrice) : "∞"}
-              </span>
-              <IconClose size={13} />
-            </button>
-          )}
-          {sort !== "relevance" && (
-            <button
-              type="button"
-              className={styles.activeChip}
-              aria-label={`Bỏ lọc sắp xếp ${SEARCH_SORT_LABELS[sort]}`}
-              onClick={() => {
-                setSort("relevance");
-                setPage(1);
-              }}
-            >
-              <span>{SEARCH_SORT_LABELS[sort]}</span>
-              <IconClose size={13} />
-            </button>
-          )}
-          <button type="button" className={styles.resetFiltersBtn} onClick={handleResetAll}>
-            Xóa tất cả
-          </button>
-        </div>
-      )}
-
-      {spellingSuggestion && (
-        <p className={styles.spellingBanner} role="status">
-          <span>Có phải bạn muốn tìm</span>
-          <button
-            type="button"
-            className={styles.spellingBtn}
-            onClick={() => handleSearchNavigate(spellingSuggestion)}
-          >
-            {spellingSuggestion}
-          </button>
-          <span>?</span>
-        </p>
-      )}
-
-      <section className={styles.resultsSection} aria-busy={loading}>
-        {loading && !hasLoadedOnce ? (
-          <StateView
-            kind="loading"
-            surface="shop"
-            skeletonVariant="cards"
-            title="Đang tải kết quả..."
-            rows={4}
-          />
-        ) : errorMessage ? (
-          <StateView
-            kind="error"
-            title="Chưa tải được kết quả"
-            message={errorMessage}
-            actionLabel="Thử lại"
-            onAction={() => setRetryTick((t) => t + 1)}
-          />
-        ) : result.items.length === 0 ? (
-          <div className={styles.emptyPanel}>
-            <h2 className={styles.emptyTitle}>Không có sản phẩm khớp yêu cầu</h2>
-            <p className={styles.emptyBody}>Thử đổi từ khóa ngắn hơn hoặc bỏ bớt bộ lọc.</p>
-            <div className={styles.emptyActions}>
-              {hasActiveFilters && (
-                <button type="button" className={styles.btnPrimary} onClick={handleResetAll}>
-                  Xóa bộ lọc
-                </button>
-              )}
-              <Link href="/san-pham" className={styles.btnSecondary}>
-                Tất cả sản phẩm
-              </Link>
-            </div>
-          </div>
-        ) : (
-          <>
-            <div className={`${gridClass} ${loading ? styles.productGridLoading : ""}`}>
-              {result.items.map((item, idx) => {
-                const href = `/san-pham/${encodeURIComponent(item.slug || item.id)}`;
-                const primaryImg = sanitizeSearchImageUrl(item.image) || FALLBACK_IMAGE;
-                const secondaryImg =
-                  item.images.map(sanitizeSearchImageUrl).find((u) => u && u !== primaryImg) ||
-                  null;
-                const hasDiscount =
-                  typeof item.originalPriceVnd === "number" &&
-                  item.originalPriceVnd > item.priceVnd;
-                const stockNotice = !item.inStock
-                  ? "Tạm hết hàng"
-                  : item.totalStock > 0 && item.totalStock <= 5
-                    ? `Còn ${formatInt(item.totalStock)}`
-                    : "";
-
-                return (
-                  <article
-                    key={item.id}
-                    className={`${styles.productCard} ${
-                      result.items.length === 1 ? styles.productCardWide : ""
-                    }`}
-                    data-has-hover={secondaryImg ? "true" : "false"}
-                  >
-                    <Link
-                      href={href}
-                      className={styles.cardMediaLink}
-                      tabIndex={-1}
-                      aria-hidden="true"
-                    >
-                      <img
-                        src={primaryImg}
-                        alt={item.name}
-                        width={896}
-                        height={1200}
-                        className={styles.cardImgPrimary}
-                        loading={idx < 4 ? "eager" : "lazy"}
-                      />
-                      {secondaryImg && (
-                        <img
-                          src={secondaryImg}
-                          alt=""
-                          aria-hidden="true"
-                          width={896}
-                          height={1200}
-                          className={styles.cardImgSecondary}
-                          loading="lazy"
-                        />
-                      )}
-                    </Link>
-
-                    <div className={styles.cardBody}>
-                      <div className={styles.cardTopMeta}>
-                        {item.isFlashSale ? (
-                          <span className={styles.cardTagText}>Flash sale</span>
-                        ) : hasDiscount && item.originalPriceVnd ? (
-                          <span className={`${styles.cardTagText} num`}>
-                            {formatDiscountPercent(item.originalPriceVnd, item.priceVnd)}
-                          </span>
-                        ) : null}
-                      </div>
-
-                      <div className={styles.cardPriceRow}>
-                        <span className={`${styles.cardPrice} num`}>
-                          {formatVnd(item.priceVnd)}
-                        </span>
-                        {hasDiscount && item.originalPriceVnd && (
-                          <span className={`${styles.cardOriginalPrice} num`}>
-                            {formatVnd(item.originalPriceVnd)}
-                          </span>
-                        )}
-                        {stockNotice && (
-                          <span className={`${styles.cardStock} num`}>{stockNotice}</span>
-                        )}
-                      </div>
-
-                      {/* Keep title link as the LAST a[href^="/san-pham/"] inside article */}
-                      <Link href={href} className={styles.cardName}>
-                        {item.name}
-                      </Link>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-
-            {totalPages > 1 && (
-              <nav className={styles.paginationBar} aria-label="Phân trang kết quả tìm kiếm">
-                <span className={`${styles.paginationInfo} num`}>
-                  Trang {safePage} / {totalPages}
-                </span>
-                <div className={styles.paginationControls}>
-                  <button
-                    type="button"
-                    className={styles.pageBtn}
-                    disabled={safePage <= 1}
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  >
-                    Trước
-                  </button>
-
-                  {pageNumbers.map((entry, idx) =>
-                    entry === "ellipsis" ? (
-                      <span key={`e-${idx}`} className={styles.pageEllipsis} aria-hidden="true">
-                        …
-                      </span>
-                    ) : (
-                      <button
-                        key={entry}
-                        type="button"
-                        className={`${styles.pageNumBtn} num ${
-                          entry === safePage ? styles.pageNumBtnActive : ""
-                        }`}
-                        aria-current={entry === safePage ? "page" : undefined}
-                        onClick={() => setPage(entry)}
-                      >
-                        {entry}
-                      </button>
-                    )
-                  )}
-
-                  <button
-                    type="button"
-                    className={styles.pageBtn}
-                    disabled={safePage >= totalPages}
-                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                  >
-                    Sau
-                  </button>
-                </div>
-              </nav>
-            )}
-          </>
-        )}
-      </section>
-
-      {/* Filter Sheet */}
-      {sheetOpen && (
-        <div
-          className={`${styles.sheetBackdrop} ${sheetClosing ? styles.sheetBackdropClosing : ""}`}
-          role="presentation"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) closeSheet();
-          }}
+      <div className="grid grid-cols-1 items-start gap-7 lg:grid-cols-[248px_minmax(0,1fr)]">
+        {/* Desktop left filter sidebar (>= 1024px) */}
+        <aside
+          className="sticky top-20 hidden rounded-lg border border-border bg-card p-5 lg:block"
+          aria-label="Bộ lọc kết quả tìm kiếm"
         >
-          <aside
-            ref={filterSheetRef}
-            tabIndex={-1}
-            className={`${styles.sheetPanel} ${sheetClosing ? styles.sheetPanelClosing : ""}`}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Bộ lọc kết quả tìm kiếm"
-          >
-            <header className={styles.sheetHead}>
-              <span className={styles.sheetTitle}>Bộ lọc</span>
-              <button
+          <div className="mb-4 flex items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold text-foreground">Bộ lọc</h2>
+            {sheetFilterCount > 0 && (
+              <Button
                 type="button"
-                className={styles.sheetClose}
-                onClick={closeSheet}
-                aria-label="Đóng bộ lọc"
+                variant="link"
+                size="sm"
+                className="h-auto p-0 text-xs font-semibold text-brand"
+                onClick={handleResetSheetFilters}
               >
-                <IconClose size={18} />
-              </button>
-            </header>
+                Xóa lọc
+              </Button>
+            )}
+          </div>
+          <SearchFilterControls idPrefix="search-sidebar" {...sharedFilterProps} />
+        </aside>
 
-            <div className={styles.sheetBody}>
-              {categoryFacets.length > 0 && (
-                <div className={styles.filterSection}>
-                  <span className={styles.filterGroupLabel}>Danh mục</span>
-                  <div className={styles.chipRow} role="group" aria-label="Lọc theo danh mục">
-                    <button
-                      type="button"
-                      className={`${styles.chip} ${category === "" ? styles.chipActive : ""}`}
-                      onClick={() => {
-                        setCategory("");
-                        setPage(1);
-                      }}
-                    >
-                      Tất cả
-                    </button>
-                    {categoryFacets.map((facet) => (
-                      <button
-                        key={facet.value}
-                        type="button"
-                        className={`${styles.chip} ${category === facet.value ? styles.chipActive : ""}`}
-                        onClick={() => {
-                          setCategory(facet.value);
-                          setPage(1);
-                        }}
-                      >
-                        <span>{facet.label}</span>
-                        {facet.count > 0 && (
-                          <span className={`${styles.chipCount} num`}>
-                            ({formatInt(facet.count)})
-                          </span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <div className={styles.filterSection}>
-                <span className={styles.filterGroupLabel}>Khoảng giá</span>
-                <div className={styles.chipRow} role="group" aria-label="Chọn nhanh khoảng giá">
-                  {SEARCH_PRICE_PRESETS.map((preset) => (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      className={`${styles.chip} ${
-                        activePresetId === preset.id ? styles.chipActive : ""
-                      }`}
-                      onClick={() => handleSelectPricePreset(preset.minPrice, preset.maxPrice)}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
-
-                <form className={styles.priceForm} onSubmit={handleApplyPrice} noValidate>
-                  <label htmlFor="search-min-price" className="sr-only">
-                    Giá từ (VND)
-                  </label>
-                  <input
-                    id="search-min-price"
-                    type="text"
-                    inputMode="numeric"
-                    className={`${styles.priceInput} num`}
-                    placeholder="Từ (VND)"
-                    value={minPriceInput}
-                    onChange={(e) => setMinPriceInput(e.target.value)}
-                  />
-                  <span className={styles.priceRangeSep} aria-hidden="true">
-                    đến
-                  </span>
-                  <label htmlFor="search-max-price" className="sr-only">
-                    Giá đến (VND)
-                  </label>
-                  <input
-                    id="search-max-price"
-                    type="text"
-                    inputMode="numeric"
-                    className={`${styles.priceInput} num`}
-                    placeholder="Đến (VND)"
-                    value={maxPriceInput}
-                    onChange={(e) => setMaxPriceInput(e.target.value)}
-                  />
-                  <button type="submit" className={styles.applyPriceBtn}>
-                    Áp dụng
-                  </button>
-                </form>
-                {priceInputError && (
-                  <p className={styles.priceError} role="alert">
-                    {priceInputError}
-                  </p>
+        {/* Results column */}
+        <div className="flex min-w-0 flex-col gap-5">
+          <section
+            className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3.5"
+            aria-label="Bộ lọc và sắp xếp"
+          >
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                className="min-h-10 gap-2 shadow-none lg:hidden"
+                aria-expanded={sheetOpen}
+                onClick={handleOpenFilterSheet}
+              >
+                <SlidersHorizontal className="size-4" aria-hidden="true" />
+                <span>Bộ lọc</span>
+                {activeFilterCount > 0 && (
+                  <Badge variant="default" className="px-1.5 py-0 text-[11px] tabular-nums">
+                    {activeFilterCount}
+                  </Badge>
                 )}
-              </div>
+              </Button>
+
+              <span className="text-sm text-muted-foreground tabular-nums" aria-live="polite">
+                {loading && !hasLoadedOnce ? "Đang tìm..." : `${formatInt(result.total)} kết quả`}
+              </span>
             </div>
 
-            <footer className={styles.sheetFoot}>
-              {sheetFilterCount > 0 && (
-                <button
+            <div className="flex items-center gap-2">
+              <label htmlFor="site-search-sort" className="sr-only">
+                Sắp xếp
+              </label>
+              <Select
+                value={sort}
+                onValueChange={(next) => {
+                  setSort(normalizeSearchSort(next));
+                  setPage(1);
+                }}
+              >
+                <SelectTrigger
+                  id="site-search-sort"
+                  aria-label="Sắp xếp kết quả"
+                  className="h-10 min-w-[176px] bg-card shadow-none"
+                >
+                  <SelectValue placeholder="Sắp xếp" />
+                </SelectTrigger>
+                <SelectContent>
+                  {VALID_SEARCH_SORTS.map((key) => (
+                    <SelectItem key={key} value={key}>
+                      {SEARCH_SORT_LABELS[key]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </section>
+
+          {hasActiveFilters && (
+            <div className="flex flex-wrap items-center gap-2">
+              {query.trim() && (
+                <Button
                   type="button"
-                  className={styles.btnSecondary}
+                  variant="secondary"
+                  size="sm"
+                  className="min-h-9 gap-1.5 rounded-full px-3 text-[13px] shadow-none"
+                  aria-label={`Bỏ lọc từ khóa ${query.trim()}`}
                   onClick={() => {
-                    handleResetSheetFilters();
-                    closeSheet();
+                    setQuery("");
+                    setPage(1);
                   }}
                 >
-                  Xóa lọc
-                </button>
+                  <span>“{query.trim()}”</span>
+                  <X className="size-3.5" aria-hidden="true" />
+                </Button>
               )}
-              <button type="button" className={styles.btnPrimary} onClick={closeSheet}>
-                Xem {formatInt(result.total)} kết quả
-              </button>
-            </footer>
-          </aside>
+              {category && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="min-h-9 gap-1.5 rounded-full px-3 text-[13px] shadow-none"
+                  aria-label={`Bỏ lọc danh mục ${categoryLabelBySlug.get(category) ?? category}`}
+                  onClick={() => {
+                    setCategory("");
+                    setPage(1);
+                  }}
+                >
+                  <span>{categoryLabelBySlug.get(category) ?? category}</span>
+                  <X className="size-3.5" aria-hidden="true" />
+                </Button>
+              )}
+              {(minPrice !== undefined || maxPrice !== undefined) && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="min-h-9 gap-1.5 rounded-full px-3 text-[13px] tabular-nums shadow-none"
+                  aria-label={`Bỏ lọc khoảng giá ${minPrice !== undefined ? formatVnd(minPrice) : "0₫"} đến ${maxPrice !== undefined ? formatVnd(maxPrice) : "không giới hạn"}`}
+                  onClick={() => handleSelectPricePreset(undefined, undefined)}
+                >
+                  <span>
+                    {minPrice !== undefined ? formatVnd(minPrice) : "0₫"} đến{" "}
+                    {maxPrice !== undefined ? formatVnd(maxPrice) : "∞"}
+                  </span>
+                  <X className="size-3.5" aria-hidden="true" />
+                </Button>
+              )}
+              {sort !== "relevance" && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="min-h-9 gap-1.5 rounded-full px-3 text-[13px] shadow-none"
+                  aria-label={`Bỏ lọc sắp xếp ${SEARCH_SORT_LABELS[sort]}`}
+                  onClick={() => {
+                    setSort("relevance");
+                    setPage(1);
+                  }}
+                >
+                  <span>{SEARCH_SORT_LABELS[sort]}</span>
+                  <X className="size-3.5" aria-hidden="true" />
+                </Button>
+              )}
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                className="min-h-9 px-2 text-[13px] font-semibold text-brand"
+                onClick={handleResetAll}
+              >
+                Xóa tất cả
+              </Button>
+            </div>
+          )}
+
+          {spellingSuggestion && (
+            <p
+              className="flex flex-wrap items-center gap-1.5 rounded-lg border border-border bg-muted px-4 py-3 text-sm text-foreground"
+              role="status"
+            >
+              <span>Có phải bạn muốn tìm</span>
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                className="h-auto p-0 text-sm font-semibold text-brand underline"
+                onClick={() => handleSearchNavigate(spellingSuggestion)}
+              >
+                {spellingSuggestion}
+              </Button>
+              <span>?</span>
+            </p>
+          )}
+
+          <section className="flex flex-col gap-7" aria-busy={loading}>
+            {loading && !hasLoadedOnce ? (
+              <div
+                className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-4"
+                aria-label="Đang tải kết quả tìm kiếm"
+              >
+                {Array.from({ length: 8 }).map((_, idx) => (
+                  <div key={idx} className="flex flex-col gap-2.5">
+                    <Skeleton className="aspect-[3/4] w-full rounded-lg" />
+                    <Skeleton className="h-4 w-5/6" />
+                    <Skeleton className="h-4 w-1/2" />
+                  </div>
+                ))}
+              </div>
+            ) : errorMessage ? (
+              <ErrorState
+                title="Chưa tải được kết quả"
+                description={errorMessage}
+                onRetry={() => setRetryTick((t) => t + 1)}
+                className="rounded-lg border border-border shadow-none"
+              />
+            ) : result.items.length === 0 ? (
+              <EmptyState
+                icon={SearchX}
+                title="Không có sản phẩm khớp yêu cầu"
+                description="Thử đổi từ khóa ngắn hơn hoặc bỏ bớt bộ lọc."
+                className="rounded-lg border border-border shadow-none"
+                action={
+                  <div className="flex flex-wrap items-center justify-center gap-2.5">
+                    {hasActiveFilters && (
+                      <Button
+                        type="button"
+                        className="min-h-10 shadow-none"
+                        onClick={handleResetAll}
+                      >
+                        Xóa bộ lọc
+                      </Button>
+                    )}
+                    <Button variant="outline" className="min-h-10 shadow-none" asChild>
+                      <Link href="/san-pham">Tất cả sản phẩm</Link>
+                    </Button>
+                  </div>
+                }
+              />
+            ) : (
+              <>
+                <div
+                  className={cn(gridClass, loading && "opacity-60 transition-opacity duration-150")}
+                >
+                  {result.items.map((item, idx) => {
+                    const href = `/san-pham/${encodeURIComponent(item.slug || item.id)}`;
+                    const primaryImg = sanitizeSearchImageUrl(item.image) || FALLBACK_IMAGE;
+                    const secondaryImg =
+                      item.images.map(sanitizeSearchImageUrl).find((u) => u && u !== primaryImg) ||
+                      null;
+                    const hasDiscount =
+                      typeof item.originalPriceVnd === "number" &&
+                      item.originalPriceVnd > item.priceVnd;
+                    const stockNotice = !item.inStock
+                      ? "Tạm hết hàng"
+                      : item.totalStock > 0 && item.totalStock <= 5
+                        ? `Còn ${formatInt(item.totalStock)}`
+                        : "";
+                    const isWide = result.items.length === 1;
+
+                    return (
+                      <article
+                        key={item.id}
+                        className={cn(
+                          "group min-w-0",
+                          isWide
+                            ? "grid grid-cols-1 items-center gap-5 rounded-lg border border-border bg-card p-4 md:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] md:gap-8 md:p-5"
+                            : "flex flex-col bg-transparent"
+                        )}
+                        data-has-hover={secondaryImg ? "true" : "false"}
+                      >
+                        <Link
+                          href={href}
+                          className={cn(
+                            "relative block w-full overflow-hidden rounded-lg bg-muted",
+                            isWide ? "aspect-[4/3]" : "aspect-[3/4]"
+                          )}
+                          tabIndex={-1}
+                          aria-hidden="true"
+                        >
+                          <img
+                            src={primaryImg}
+                            alt={item.name}
+                            width={896}
+                            height={1200}
+                            loading={idx < 4 ? "eager" : "lazy"}
+                            className={cn(
+                              "absolute inset-0 block size-full object-cover object-[center_16%] transition-all duration-300 ease-out",
+                              secondaryImg
+                                ? "group-hover:opacity-0 group-focus-within:opacity-0"
+                                : "group-hover:scale-[1.035]"
+                            )}
+                          />
+                          {secondaryImg && (
+                            <img
+                              src={secondaryImg}
+                              alt=""
+                              aria-hidden="true"
+                              width={896}
+                              height={1200}
+                              loading="lazy"
+                              className="absolute inset-0 block size-full scale-[1.035] object-cover object-[center_16%] opacity-0 transition-all duration-300 ease-out group-hover:scale-[1.015] group-hover:opacity-100 group-focus-within:scale-[1.015] group-focus-within:opacity-100"
+                            />
+                          )}
+                          {(item.isFlashSale || (hasDiscount && item.originalPriceVnd)) && (
+                            <div className="pointer-events-none absolute top-2.5 left-2.5 z-10">
+                              {item.isFlashSale ? (
+                                <Badge
+                                  variant="warning"
+                                  className="rounded-sm px-2 py-0.5 text-[11px] font-semibold"
+                                >
+                                  Flash sale
+                                </Badge>
+                              ) : item.originalPriceVnd ? (
+                                <Badge
+                                  variant="default"
+                                  className="rounded-sm px-2 py-0.5 text-[11px] font-semibold tabular-nums"
+                                >
+                                  {formatDiscountPercent(item.originalPriceVnd, item.priceVnd)}
+                                </Badge>
+                              ) : null}
+                            </div>
+                          )}
+                        </Link>
+
+                        <div
+                          className={cn(
+                            "flex min-w-0 flex-1 flex-col gap-1.5",
+                            isWide ? "p-1" : "px-0.5 pt-3 pb-1"
+                          )}
+                        >
+                          {isWide && item.description && (
+                            <p className="line-clamp-2 text-sm leading-5 text-muted-foreground">
+                              {item.description}
+                            </p>
+                          )}
+
+                          <div className="mt-auto flex flex-wrap items-baseline justify-between gap-x-2.5 gap-y-1 pt-0.5">
+                            <Money
+                              vnd={item.priceVnd}
+                              compareAtVnd={hasDiscount ? item.originalPriceVnd : undefined}
+                              size={isWide ? "lg" : "md"}
+                            />
+                            {stockNotice && (
+                              <span
+                                className={cn(
+                                  "text-xs font-medium tabular-nums",
+                                  !item.inStock ? "text-destructive" : "text-brand"
+                                )}
+                              >
+                                {stockNotice}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Keep title link as the LAST a[href^="/san-pham/"] inside article */}
+                          <Link
+                            href={href}
+                            className={cn(
+                              "order-first line-clamp-2 text-foreground transition-colors hover:text-brand",
+                              isWide
+                                ? "text-lg leading-snug font-semibold"
+                                : "text-[15px] leading-snug font-medium"
+                            )}
+                          >
+                            {item.name}
+                          </Link>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+
+                {totalPages > 1 && (
+                  <div className="flex flex-col items-center justify-between gap-3 border-t border-border pt-5 sm:flex-row">
+                    <span className="text-sm text-muted-foreground tabular-nums">
+                      Trang {safePage} / {totalPages}
+                    </span>
+                    <Pagination className="mx-0 w-auto">
+                      <PaginationContent>
+                        <PaginationItem>
+                          <PaginationPrevious
+                            href={buildSearchFilterUrl({
+                              q: query,
+                              category,
+                              minPrice,
+                              maxPrice,
+                              sort,
+                              page: Math.max(1, safePage - 1),
+                            })}
+                            aria-disabled={safePage <= 1}
+                            tabIndex={safePage <= 1 ? -1 : undefined}
+                            className={cn(
+                              "min-h-10",
+                              safePage <= 1 && "pointer-events-none opacity-45"
+                            )}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              if (safePage > 1) setPage((p) => Math.max(1, p - 1));
+                            }}
+                          />
+                        </PaginationItem>
+
+                        {pageNumbers.map((entry, idx) => (
+                          <PaginationItem key={entry === "ellipsis" ? `e-${idx}` : entry}>
+                            {entry === "ellipsis" ? (
+                              <PaginationEllipsis />
+                            ) : (
+                              <PaginationLink
+                                href={buildSearchFilterUrl({
+                                  q: query,
+                                  category,
+                                  minPrice,
+                                  maxPrice,
+                                  sort,
+                                  page: entry,
+                                })}
+                                isActive={entry === safePage}
+                                className="min-h-10 min-w-10 tabular-nums"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  setPage(entry);
+                                }}
+                              >
+                                {entry}
+                              </PaginationLink>
+                            )}
+                          </PaginationItem>
+                        ))}
+
+                        <PaginationItem>
+                          <PaginationNext
+                            href={buildSearchFilterUrl({
+                              q: query,
+                              category,
+                              minPrice,
+                              maxPrice,
+                              sort,
+                              page: Math.min(totalPages, safePage + 1),
+                            })}
+                            aria-disabled={safePage >= totalPages}
+                            tabIndex={safePage >= totalPages ? -1 : undefined}
+                            className={cn(
+                              "min-h-10",
+                              safePage >= totalPages && "pointer-events-none opacity-45"
+                            )}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              if (safePage < totalPages)
+                                setPage((p) => Math.min(totalPages, p + 1));
+                            }}
+                          />
+                        </PaginationItem>
+                      </PaginationContent>
+                    </Pagination>
+                  </div>
+                )}
+              </>
+            )}
+          </section>
         </div>
+      </div>
+
+      {/* Mobile/tablet filter Sheet (lazy-loaded via next/dynamic) */}
+      {sheetMounted && (
+        <SearchFilterSheet
+          open={sheetOpen}
+          onOpenChange={setSheetOpen}
+          sheetFilterCount={sheetFilterCount}
+          totalResults={result.total}
+          onResetSheetFilters={handleResetSheetFilters}
+          {...sharedFilterProps}
+        />
       )}
     </div>
   );
