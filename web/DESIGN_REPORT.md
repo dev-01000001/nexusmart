@@ -7,7 +7,7 @@ Tài liệu tóm tắt nhanh cho kỹ sư mới vào dự án về kiến trúc 
 ### Ý tưởng
 
 - Host gốc nền tảng (`(shop)`) giữ bề mặt yên tĩnh (Frost & Slate), nhường vai trò nổi bật cho từng cửa hàng độc lập (`(site)`): mỗi cửa hàng mang bảng màu, mật độ và nhịp riêng theo cấu hình xuất bản.
-- Hero trang chủ (`HeroLiveDoor`) cho phép gõ tên thương hiệu để xem thử cửa hàng mẫu trực tiếp kèm gợi ý tên miền phụ.
+- Trang chủ nền tảng (`PlatformHome`) dùng bố cục tối kiểu trang giới thiệu nền tảng với chữ hiển thị nét mảnh, dẫn từ hero ảnh nền toàn chiều rộng kèm 2 nút hành động qua danh bạ gian hàng khảm bo góc, năng lực vận hành và thanh toán, tới bước gõ tên thương hiệu (`SubdomainPreview`).
 
 ### Font chữ
 
@@ -43,7 +43,7 @@ Tài liệu tóm tắt nhanh cho kỹ sư mới vào dự án về kiến trúc 
   - `one-page-launch` (Một trang / Landing): header neo mục lục trong trang (`anchor-minimal`), dẫn mạch theo chiến dịch ra mắt.
   - `multi-sku-catalog` (Catalog nhiều SKU): thanh điều hướng gắn lối tắt bảng SKU (`catalog-rail`), thẻ hàng ngang gọn (`compact-row`) kèm ma trận biến thể.
 - **Trang chi tiết sản phẩm (PDP, `web/src/features/site/SitePdpView.tsx`)**: mỗi thông số thật (chất liệu, định lượng, phom dáng, xuất xứ) chỉ hiện đúng một nơi theo cấu hình `pages.pdp.show_story_band` — bật thì hiện ở dải thông số, tắt thì gom vào accordion "Thông số & chất liệu" (bố cục `sport-telemetry` tự lọc định lượng và phom dáng đã đưa lên dải đầu).
-- **Trang chủ nền tảng**: hero gõ tên thương hiệu (`HeroLiveDoor`), khối 3 bước ghim cuộn (`PlatformPinnedStory`), khối khung dệt (`AmbientLoomVideo`), danh bạ gian hàng lấy dữ liệu thật, chân trang nền tối.
+- **Trang chủ nền tảng (`web/src/features/platform/PlatformHome.tsx`)**: bố cục tối gồm hero ảnh nền + 2 nút hành động, danh bạ gian hàng khảm bo góc đè đáy hero (hiện 4 thẻ mẫu khi danh bạ trống), thẻ trợ lý AI, 3 thẻ "Một nơi cho cả cửa hàng" (`StorefrontStageMini`, đơn hàng, tính phí giao hàng 34 tỉnh thành), khối thanh toán COD/VietQR (`VietQrSvg`), khối "Dành cho mọi quy mô", FAQ, khối "Lên sóng trong ba bước" kèm ô gõ tên thương hiệu `SubdomainPreview`, và chân trang nền tối 4 cột (`PlatformFooter`).
 - **Giỏ hàng và thanh toán**: giỏ chia hai cột kèm thanh hoàn tác 5 giây khi xóa dòng; thanh toán một trang gồm ba bước tự thu gọn (địa chỉ, vận chuyển, COD/VietQR) và cột tóm tắt cố định.
 - **Kênh người bán (`/seller`)**: khung chữ L nền `--bg-2` bọc tờ nội dung trắng `--bg-0`, thanh bên thu gọn `236px`/`64px` (đổi thành thanh đáy 5 mục ở màn nhỏ), ngăn trượt `SellerDrawer`, Site Studio xem trước trong `iframe` (`web/src/features/seller/site/SitePreviewFrame.tsx`) theo 3 khung `1440`/`768`/`390`. Khung `iframe` lọc bỏ class `js` qua `stripPreviewJsClass` và chèn CSS nền để mọi `[data-reveal]`/`[data-rise]` hiện sẵn vì không có `RevealObserver`.
 - **Cổng quản trị (`/admin`)**: cùng ngôn ngữ khung giấy trắng, thanh trên có tìm kiếm lệnh nhanh `⌘K`/`Ctrl+K`, trang chủ ưu tiên hàng đợi cần xử lý, hỗ trợ phím `J`/`K` chuyển dòng nhanh ở duyệt gian hàng và kiểm duyệt sản phẩm.

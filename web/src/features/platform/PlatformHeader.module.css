@@ -43,6 +43,128 @@
   background: var(--bg-0);
 }
 
+/* Home-only dark header: transparent over hero, solid --ink-1 on scroll */
+.headerShell[data-home="true"] {
+  color: var(--band-dark-ink);
+}
+
+.headerShell[data-home="true"][data-surface="transparent"] {
+  background: transparent;
+}
+
+.headerShell[data-home="true"][data-surface="solid"],
+.headerShell[data-home="true"][data-surface="flat"] {
+  background: var(--ink-1);
+}
+
+.headerShell[data-home="true"] .inner {
+  max-width: var(--container-max);
+  margin-inline: auto;
+}
+
+.headerShell[data-home="true"] .brand {
+  color: var(--band-dark-ink);
+}
+
+.headerShell[data-home="true"] .brandWord {
+  font-stretch: 100%;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.headerShell[data-home="true"] .navLink {
+  color: color-mix(in srgb, var(--band-dark-ink) 86%, transparent);
+}
+
+.headerShell[data-home="true"] .navLink:hover,
+.headerShell[data-home="true"] .navLinkActive {
+  color: var(--band-dark-ink);
+}
+
+.headerShell[data-home="true"] .loginLink {
+  color: var(--band-dark-ink);
+  border-radius: var(--radius-pill);
+}
+
+.headerShell[data-home="true"] .loginLink:hover {
+  color: var(--band-dark-ink);
+  background: color-mix(in srgb, var(--band-dark-ink) 12%, transparent);
+}
+
+.headerShell[data-home="true"] .ctaPrimary,
+.headerShell[data-home="true"] .ctaMobile {
+  background: var(--bg-0);
+  color: var(--ink-1);
+}
+
+.headerShell[data-home="true"] .ctaPrimary:hover,
+.headerShell[data-home="true"] .ctaMobile:hover {
+  background: var(--bg-2);
+}
+
+.headerShell[data-home="true"] .accountBtn {
+  background: var(--band-dark-surface);
+  color: var(--band-dark-ink);
+}
+
+.headerShell[data-home="true"] .accountBtn:hover,
+.headerShell[data-home="true"] .accountBtnActive {
+  background: var(--band-dark-elevated);
+}
+
+.headerShell[data-home="true"] .userDropdown[data-ui] {
+  background: var(--band-dark);
+  border-color: var(--band-dark-elevated);
+  box-shadow: none;
+  border-radius: var(--radius-panel);
+  overflow: hidden;
+}
+
+.headerShell[data-home="true"] .dropdownHead {
+  background: var(--band-dark-surface);
+}
+
+.headerShell[data-home="true"] .dropdownName {
+  color: var(--band-dark-ink);
+}
+
+.headerShell[data-home="true"] .dropdownEmail {
+  color: var(--band-dark-muted);
+}
+
+.headerShell[data-home="true"] .dropdownLink {
+  color: var(--band-dark-ink);
+  border-radius: var(--radius-card);
+}
+
+.headerShell[data-home="true"] .dropdownLink:hover {
+  background: var(--band-dark-surface);
+  color: var(--band-dark-accent);
+}
+
+.headerShell[data-home="true"] .dropdownFoot {
+  background: var(--ink-1);
+}
+
+.headerShell[data-home="true"] .logoutBtn {
+  color: color-mix(in srgb, var(--negative) 45%, var(--bg-0));
+  border-radius: var(--radius-card);
+}
+
+.headerShell[data-home="true"] .logoutBtn:hover {
+  background: var(--band-dark-surface);
+}
+
+.headerShell[data-home="true"] .menuBtn {
+  background: color-mix(in srgb, var(--band-dark-ink) 14%, var(--ink-1));
+  color: var(--band-dark-ink);
+}
+
+.headerShell[data-home="true"] :focus-visible {
+  outline: 2px solid var(--band-dark-accent);
+  outline-offset: 2px;
+}
+
 .headerShell[data-hidden="true"] {
   transform: translateY(-105%);
   transition:

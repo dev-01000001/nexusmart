@@ -179,12 +179,13 @@ export function PlatformHeader() {
         ref={headerRef}
         className={styles.headerShell}
         data-surface={surfaceState}
+        data-home={isHome ? "true" : undefined}
         data-hidden={hidden && !drawerOpen ? "true" : "false"}
       >
         <div className={styles.inner}>
           <Link href="/" className={styles.brand} aria-label="NexusMart trang chủ">
-            <NexusMark size={20} />
-            <span className={`${styles.brandWord} type-wide`}>NexusMart</span>
+            <NexusMark size={20} accentColor={isHome ? "var(--band-dark-accent)" : undefined} />
+            <span className={`${styles.brandWord}${isHome ? "" : " type-wide"}`}>NexusMart</span>
           </Link>
 
           <nav className={styles.navDesktop} aria-label="Điều hướng nền tảng">

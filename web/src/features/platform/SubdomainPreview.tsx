@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo } from "react";
-import { Button } from "@/components/Button";
+import Link from "next/link";
 import { checkSubdomain, suggestSubdomain } from "./subdomain";
 import styles from "./SubdomainPreview.module.css";
 
@@ -22,16 +22,20 @@ export function SubdomainPreview({ rootDomain, value, onValueChange }: Subdomain
   const shopName = value !== undefined ? value : internalValue;
   const setShopName = onValueChange ?? setInternalValue;
 
-  const status = useMemo(() => {
-    return checkSubdomain(suggestSubdomain(shopName));
-  }, [shopName]);
+  const suggested = useMemo(() => suggestSubdomain(shopName), [shopName]);
+  const status = useMemo(() => checkSubdomain(suggested), [suggested]);
 
   const ctaHref =
     status === "ok" && shopName.trim()
       ? `/dang-ky?role=seller&ten=${encodeURIComponent(shopName.trim())}`
       : "/dang-ky?role=seller";
 
-  const statusText = status === "empty" ? "" : CHECK_COPY[status];
+  const statusText =
+    status === "empty"
+      ? ""
+      : status === "ok"
+        ? `${suggested}.${rootDomain} — ${CHECK_COPY.ok}`
+        : CHECK_COPY[status];
 
   return (
     <div className={styles.wrap}>
@@ -57,9 +61,9 @@ export function SubdomainPreview({ rootDomain, value, onValueChange }: Subdomain
           </span>
         </div>
 
-        <Button variant="primary" size="lg" shape="pill" href={ctaHref} className={styles.cta}>
+        <Link href={ctaHref} className={styles.cta}>
           Mở gian hàng
-        </Button>
+        </Link>
       </div>
 
       <p

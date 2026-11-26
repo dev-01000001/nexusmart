@@ -114,6 +114,7 @@
   --step-small: clamp(0.8125rem, 0.8rem + 0.1vw, 0.875rem);
   --step-body: clamp(1rem, 0.98rem + 0.18vw, 1.125rem);
   --step-lead: clamp(1.25rem, 1.12rem + 0.6vw, 1.625rem);
+  --step-subhead: clamp(1.375rem, 1.15rem + 1.1vw, 2.25rem);
   --step-head: clamp(2rem, 1.35rem + 2.8vw, 3.75rem);
   --step-display: clamp(3rem, 1.8rem + 4.8vw, 5.5rem);
 
@@ -138,6 +139,7 @@
   --space-10: 112px;
 
   /* Page & app layout geometry */
+  --container-max: 1200px;
   --margin: clamp(1rem, 2.2vw, 2rem);
   --gutter: clamp(1rem, 2vw, 2rem);
   --section: clamp(4.5rem, 9vw, 8.5rem);
@@ -153,11 +155,15 @@
 
   /* Radii · public 0 or pill; app 8/6px; sheet 16px */
   --radius-shop: 0px;
+  --radius-tail: 4px;
   --radius-pill: 9999px;
   --radius-card: 8px;
   --radius-control: 6px;
   --radius-chip: 6px;
+  --radius-panel: 12px;
   --radius-sheet: 16px;
+  --radius-band: 40px;
+  --radius-band-sm: 28px;
 
   /* Motion tokens (CSS-first, zero elastic bounce) */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);

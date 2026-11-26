@@ -1,77 +1,98 @@
-/* Integrated hero door control: inline [brand].[rootDomain] field + primary CTA on one row when wide enough. */
+/* Dark-surface subdomain preview input + pill CTA. */
 
 .wrap {
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .controlRow {
   display: flex;
   flex-wrap: wrap;
   align-items: stretch;
-  gap: 10px;
+  gap: var(--space-3);
   width: 100%;
 }
 
 .inputGroup {
-  flex: 1 1 280px;
+  flex: 1 1 260px;
   min-width: 0;
-  min-height: 52px;
-  background: var(--bg-0);
-  border: 1px solid var(--control);
-  border-radius: var(--radius-shop);
+  min-height: var(--row-height);
+  background: var(--ink-1);
+  border: 1px solid var(--band-dark-elevated);
+  border-radius: var(--radius-pill);
   display: flex;
   align-items: center;
-  padding: 0 14px;
-  gap: 2px;
+  padding: 0 var(--space-5);
+  gap: var(--space-1);
   transition: border-color var(--t-hover) var(--ease-out);
 }
 
 .inputGroup:focus-within {
-  border-color: var(--accent);
+  border-color: var(--band-dark-accent);
 }
 
 input.input {
-  flex: 1 1 100px;
+  flex: 1 1 90px;
   min-width: 0;
-  height: 50px;
+  height: var(--row-height);
   border: 0;
   background: transparent;
-  color: var(--ink-1);
-  font-size: 16px;
-  font-weight: 500;
+  color: var(--band-dark-ink);
+  font-size: var(--fs-section);
+  font-weight: 400;
   padding: 0;
   outline: none;
 }
 
 input.input::placeholder {
-  color: var(--muted);
+  color: color-mix(in srgb, var(--band-dark-ink) 50%, var(--ink-1));
   font-weight: 400;
 }
 
 .domainSuffix {
   flex: none;
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--ink-3);
+  font-size: var(--fs-body);
+  font-weight: 400;
+  color: var(--band-dark-muted);
   white-space: nowrap;
   user-select: none;
 }
 
 .cta {
   flex: 0 0 auto;
-  min-height: 52px;
-  padding-inline: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--row-height);
+  padding: 0 var(--space-6);
+  border-radius: var(--radius-pill);
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-size: var(--fs-body);
+  font-weight: 600;
   white-space: nowrap;
+  transition:
+    background-color var(--t-hover) var(--ease-out),
+    transform var(--t-press) var(--ease-out);
+}
+
+.cta:hover {
+  background: var(--bg-2);
+}
+
+.cta:active {
+  transform: scale(0.98);
 }
 
 .status {
-  min-height: 20px;
+  min-height: var(--space-5);
   font-size: var(--step-small);
-  line-height: 1.4;
+  line-height: 1.45;
+  padding-inline: var(--space-1);
   transition: opacity var(--t-hover) var(--ease-out);
+  word-break: break-word;
 }
 
 .statusEmpty {
@@ -79,23 +100,23 @@ input.input::placeholder {
 }
 
 .statusOk {
-  color: var(--positive);
+  color: var(--band-dark-accent);
   font-weight: 500;
 }
 
 .statusWarn {
-  color: var(--amber-ink);
+  color: color-mix(in srgb, var(--amber) 45%, var(--bg-0));
   font-weight: 500;
 }
 
 @media (max-width: 520px) {
   .inputGroup {
     flex: 1 1 100%;
-    padding: 0 12px;
+    padding: 0 var(--space-4);
   }
 
   .domainSuffix {
-    font-size: 13px;
+    font-size: var(--fs-small);
   }
 
   .cta {

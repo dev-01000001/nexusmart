@@ -1,304 +1,404 @@
-/* Directory = Row of Expanding Doors (78svh edge-to-edge) + large-type hover-anchored list.
-   Zero gradients (solid architectural plinth ensures >= 14:1 contrast), zero resting shadows. */
+/* Directory section: dark overlapping rounded top (--ink-1), two-tone thin heading,
+   asymmetric wide/narrow mosaic strip, horizontal scroll-snap on narrow viewports. */
 
 .band {
+  position: relative;
+  z-index: 2;
   width: 100%;
-  background: var(--bg-0);
-  padding: clamp(56px, 7vw, 96px) 0 clamp(48px, 6vw, 84px);
-  scroll-margin-top: 76px;
+  margin-top: calc(var(--radius-band) * -1);
+  border-radius: var(--radius-band) var(--radius-band) 0 0;
+  background: var(--ink-1);
+  color: var(--band-dark-ink);
+  padding: calc(var(--section) * 0.6) 0 calc(var(--section) / 2);
+  scroll-margin-top: var(--space-9);
+}
+
+.inner {
+  width: 100%;
+  max-width: var(--container-max);
+  margin-inline: auto;
+  padding-inline: var(--margin);
   display: flex;
   flex-direction: column;
-  gap: clamp(24px, 3vw, 36px);
+  gap: var(--space-8);
 }
 
 .head {
-  padding-inline: var(--margin);
   display: flex;
-  align-items: baseline;
+  align-items: flex-end;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 12px 24px;
+  gap: var(--space-4) var(--space-7);
 }
 
 .heading {
   font-size: var(--step-head);
-  color: var(--ink-1);
+  font-stretch: 100%;
+  font-weight: 300;
+  letter-spacing: -0.025em;
+  line-height: 1.08;
+  max-width: 980px;
+  text-wrap: pretty;
+}
+
+.headingPrimary {
+  color: var(--band-dark-ink);
+}
+
+.headingSecondary {
+  color: color-mix(in srgb, var(--band-dark-ink) 55%, var(--ink-1));
 }
 
 .count {
   font-size: var(--step-small);
   font-weight: 500;
-  color: var(--ink-3);
+  color: var(--band-dark-muted);
+  white-space: nowrap;
 }
 
-.stateWrap {
-  padding-inline: var(--margin);
-}
-
-/* Full-bleed vertical expanding door row (<= 6 panels) */
-.doorsStage {
-  width: 100%;
-  display: grid;
-  grid-template-columns: var(--door-cols, repeat(4, 1fr));
-  gap: 2px;
-  background: var(--bg-0);
-  transition: grid-template-columns 700ms var(--ease-expo);
-}
-
-.door {
-  position: relative;
-  height: clamp(460px, 78svh, 760px);
+.stack {
   display: flex;
   flex-direction: column;
+  gap: var(--space-6);
+}
+
+/* Mosaic grid: wide / narrow / wide asymmetric rhythm */
+.mosaic {
+  display: grid;
+  grid-template-columns: 1.35fr 0.82fr 1.35fr;
+  gap: var(--gap);
+}
+
+.mosaic[data-count="1"] {
+  grid-template-columns: minmax(0, 640px);
+}
+
+.mosaic[data-count="2"] {
+  grid-template-columns: 1.35fr 1fr;
+}
+
+.mosaic[data-count="3"] {
+  grid-template-columns: 1.35fr 0.78fr 1.35fr;
+}
+
+.mosaic[data-count="4"] {
+  grid-template-columns: 1.32fr 0.84fr 1.32fr 0.84fr;
+}
+
+.mosaic[data-count="5"],
+.mosaic[data-count="6"] {
+  grid-template-columns: 1.35fr 0.78fr 1.35fr;
+}
+
+.siteCard,
+.templateCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  color: var(--band-dark-ink);
+}
+
+.cardMedia {
+  position: relative;
+  width: 100%;
+  height: clamp(290px, 28vw, 390px);
+  border-radius: var(--radius-sheet);
   overflow: hidden;
   background: var(--band-dark);
-  color: var(--band-dark-ink);
-  min-width: 0;
 }
 
-.doorMedia {
-  position: relative;
-  flex: 1;
-  width: 100%;
-  overflow: hidden;
-}
-
-.doorImg {
+.cardImg {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: center 22%;
-  transition: transform 700ms var(--ease-expo);
+  object-position: center 20%;
+  transition: transform var(--t-page) var(--ease-expo);
 }
 
-.door:hover .doorImg,
-.door:focus-visible .doorImg,
-.doorActive .doorImg {
-  transform: scale(1.04);
+.siteCard:hover .cardImg,
+.siteCard:focus-visible .cardImg {
+  transform: scale(1.03);
 }
 
-.doorFallback {
+.cardFallback {
   width: 100%;
   height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: color-mix(in srgb, var(--band-dark-ink) 28%, transparent);
+  color: color-mix(in srgb, var(--band-dark-ink) 32%, transparent);
 }
 
-.doorMonogram {
-  font-size: clamp(5rem, 11vw, 10rem);
+.cardMonogram {
+  font-size: var(--step-display);
+  font-weight: 300;
 }
 
-.doorFallbackLogo {
-  width: 88px;
-  height: 88px;
+.cardFallbackLogo {
+  width: var(--space-9);
+  height: var(--space-9);
   object-fit: cover;
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-panel);
 }
 
-.doorPlinth {
-  flex: none;
-  background: var(--ink-1);
-  color: var(--band-dark-ink);
-  padding: 20px clamp(16px, 2vw, 26px) 22px;
+.cardMeta {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  transition: background-color var(--t-ui) var(--ease-out);
-}
-
-.door:hover .doorPlinth,
-.door:focus-visible .doorPlinth,
-.doorActive .doorPlinth {
-  background: var(--accent);
-  color: var(--accent-ink);
-}
-
-.doorTitleRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.doorIdentity {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
+  gap: var(--space-1);
+  padding-inline: 2px;
   min-width: 0;
 }
 
-.doorLogo {
-  width: 24px;
-  height: 24px;
+.cardTitleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.cardIdentity {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.cardLogo {
+  width: 22px;
+  height: 22px;
   object-fit: cover;
   border-radius: var(--radius-control);
   flex: none;
   background: var(--bg-0);
 }
 
-.doorName {
-  font-size: clamp(1.35rem, 2.2vw, 2.15rem);
-  color: inherit;
+.cardName {
+  font-size: var(--fs-section);
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--band-dark-ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.doorArrow {
+.cardArrow {
   flex: none;
   display: inline-flex;
-  transition: transform var(--t-hover) var(--ease-expo);
+  color: var(--band-dark-muted);
+  transition:
+    transform var(--t-hover) var(--ease-expo),
+    color var(--t-hover) var(--ease-out);
 }
 
-.door:hover .doorArrow,
-.door:focus-visible .doorArrow {
+.siteCard:hover .cardArrow,
+.siteCard:focus-visible .cardArrow {
   transform: translate(2px, -2px);
+  color: var(--band-dark-accent);
 }
 
-.doorHost {
-  font-size: var(--step-small);
-  color: color-mix(in srgb, currentColor 80%, transparent);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.doorTagline {
-  font-size: 14px;
+.cardHost {
+  font-size: var(--fs-body);
   line-height: 1.4;
-  color: color-mix(in srgb, currentColor 88%, transparent);
+  color: var(--band-dark-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding-top: 2px;
 }
 
-/* Sites 7+: large typographic list with hover-anchored cover thumbnail */
-.extraList {
-  padding-inline: var(--margin);
-  margin-top: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+/* Template card distinction */
+.templateLabel {
+  font-size: var(--fs-small);
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--band-dark-accent);
 }
 
-.extraRow {
-  position: relative;
+.paletteDots {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+}
+
+.paletteDot {
+  width: var(--space-3);
+  height: var(--space-3);
+  border-radius: var(--radius-pill);
+  border: 1px solid color-mix(in srgb, var(--band-dark-ink) 28%, transparent);
+  display: block;
+}
+
+/* Empty & error banners on dark */
+.emptyBar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  padding: 22px 0;
+  flex-wrap: wrap;
+  gap: var(--space-4) var(--space-6);
+  padding: var(--card-pad) var(--pad);
+  border-radius: var(--radius-sheet);
+  background: var(--band-dark);
+}
+
+.emptyCopy {
+  font-size: var(--fs-section);
+  line-height: 1.5;
+  color: var(--band-dark-muted);
+}
+
+.emptyCta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 var(--space-5);
+  border-radius: var(--radius-pill);
+  background: var(--bg-0);
   color: var(--ink-1);
-  transition: color var(--t-hover) var(--ease-out);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background-color var(--t-hover) var(--ease-out);
+}
+
+.emptyCta:hover {
+  background: var(--bg-2);
+}
+
+.errorBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-5);
+  padding: var(--space-4) var(--card-pad);
+  border-radius: var(--radius-sheet);
+  background: var(--band-dark);
+  border: 1px solid var(--band-dark-elevated);
+}
+
+.errorCopy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.errorIcon {
+  flex: none;
+  color: color-mix(in srgb, var(--amber) 45%, var(--bg-0));
+}
+
+.errorTitle {
+  font-size: var(--fs-body);
+  font-weight: 500;
+  color: var(--band-dark-ink);
+}
+
+.errorBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 40px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-pill);
+  background: var(--band-dark-surface);
+  color: var(--band-dark-ink);
+  font-size: var(--fs-body);
+  font-weight: 500;
+  transition: background-color var(--t-hover) var(--ease-out);
+}
+
+.errorBtn:hover {
+  background: var(--band-dark-elevated);
+}
+
+/* Sites 7+ compact list on dark */
+.extraList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.extraRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--card-pad);
+  border-radius: var(--radius-panel);
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
+  transition: background-color var(--t-hover) var(--ease-out);
 }
 
 .extraRow:hover,
 .extraRow:focus-visible {
-  color: var(--accent);
+  background: var(--band-dark-surface);
 }
 
 .extraMain {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   min-width: 0;
   flex: 1;
 }
 
 .extraName {
-  font-size: clamp(1.5rem, 2.6vw, 2.5rem);
-  color: inherit;
+  font-size: var(--fs-section);
+  font-weight: 500;
+  color: var(--band-dark-ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .extraTagline {
-  font-size: 15px;
-  color: var(--ink-3);
+  font-size: var(--fs-body);
+  color: var(--band-dark-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 56ch;
 }
 
 .extraRight {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 14px;
+  gap: var(--space-3);
   flex: none;
 }
 
 .extraHost {
-  font-size: var(--step-small);
-  color: var(--ink-3);
+  font-size: var(--fs-body);
+  color: var(--band-dark-muted);
 }
 
 .extraArrow {
+  color: var(--band-dark-accent);
   transition: transform var(--t-hover) var(--ease-expo);
 }
 
 .extraRow:hover .extraArrow,
 .extraRow:focus-visible .extraArrow {
-  transform: translate(3px, -3px);
+  transform: translate(2px, -2px);
 }
 
-.extraPreview {
-  position: absolute;
-  right: clamp(180px, 22vw, 310px);
-  top: 50%;
-  width: 220px;
-  height: 136px;
-  transform: translateY(-50%) scale(0.95);
-  clip-path: inset(12% 0 12% 0);
-  opacity: 0;
-  pointer-events: none;
-  z-index: 5;
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition:
-    opacity 220ms var(--ease-out),
-    transform 320ms var(--ease-expo),
-    clip-path 320ms var(--ease-expo);
-}
-
-.extraRow:hover .extraPreview,
-.extraRow:focus-visible .extraPreview {
-  opacity: 1;
-  transform: translateY(-50%) scale(1);
-  clip-path: inset(0 0 0 0);
-}
-
-.extraPreviewImg {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.extraPreviewLetter {
-  font-size: 3rem;
-  color: var(--band-dark-ink);
-}
-
-/* Pagination */
+/* Dark pagination */
 .pager {
-  padding: 12px var(--margin) 0;
+  padding-top: var(--space-2);
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .pageNumbers {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
@@ -311,74 +411,86 @@
   justify-content: center;
   min-width: 44px;
   min-height: 44px;
-  padding: 0 16px;
+  padding: 0 var(--space-4);
   border-radius: var(--radius-pill);
-  font-size: 14px;
+  font-size: var(--fs-body);
   font-weight: 500;
 }
 
 .pageBtn,
 .pageNum {
-  background: var(--bg-2);
-  color: var(--ink-1);
+  background: var(--band-dark);
+  color: var(--band-dark-ink);
   transition: background-color var(--t-hover) var(--ease-out);
 }
 
 .pageBtn:hover,
 .pageNum:hover {
-  background: var(--bg-3);
+  background: var(--band-dark-surface);
 }
 
 .pageNumActive {
-  background: var(--ink-1);
-  color: var(--bg-0);
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-weight: 600;
 }
 
 .pageBtnDisabled {
-  background: var(--bg-1);
-  color: var(--muted);
+  background: color-mix(in srgb, var(--band-dark) 55%, var(--ink-1));
+  color: color-mix(in srgb, var(--band-dark-ink) 45%, var(--ink-1));
 }
 
 .pageGap {
-  padding: 0 6px;
-  font-size: 14px;
-  color: var(--muted);
+  padding: 0 var(--space-2);
+  font-size: var(--fs-body);
+  color: var(--band-dark-muted);
 }
 
-/* Mobile: horizontal snap strip */
-@media (max-width: 820px) {
-  .doorsStage {
+@media (max-width: 960px) {
+  .band {
+    border-radius: var(--radius-band-sm) var(--radius-band-sm) 0 0;
+    margin-top: calc(var(--radius-band-sm) * -1);
+  }
+
+  .inner {
+    gap: var(--space-7);
+  }
+
+  .mosaic,
+  .mosaic[data-count="2"],
+  .mosaic[data-count="3"],
+  .mosaic[data-count="4"],
+  .mosaic[data-count="5"],
+  .mosaic[data-count="6"] {
     display: flex;
     overflow-x: auto;
     scroll-snap-type: x mandatory;
-    gap: 12px;
-    padding-inline: var(--margin);
+    gap: var(--space-3);
+    padding-bottom: var(--space-1);
     scrollbar-width: none;
-    transition: none;
   }
 
-  .doorsStage::-webkit-scrollbar {
+  .mosaic::-webkit-scrollbar {
     display: none;
   }
 
-  .door {
-    flex: 0 0 82vw;
-    height: 62svh;
-    min-height: 380px;
-    scroll-snap-align: center;
+  .siteCard,
+  .templateCard {
+    flex: 0 0 min(78vw, 310px);
+    scroll-snap-align: start;
   }
 
-  .doorsStage:has(> .door:only-child) .door {
+  .mosaic[data-count="1"] .siteCard {
     flex: 0 0 100%;
   }
 
-  .extraPreview {
-    display: none;
+  .cardMedia {
+    height: 300px;
   }
 
   .extraRow {
     flex-direction: column;
     align-items: flex-start;
-    gap: 6px;
+    gap: var(--space-2);
   }
 }

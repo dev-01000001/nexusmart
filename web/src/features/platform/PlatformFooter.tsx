@@ -1,57 +1,85 @@
 import React from "react";
 import Link from "next/link";
+import { NexusMark } from "@/components/Icons";
 import styles from "./PlatformFooter.module.css";
 
 export function PlatformFooter() {
   return (
     <footer className={styles.footer}>
-      <div className={styles.topRow}>
-        <div className={styles.metaCol}>
-          <span className={styles.metaText}>Nền tảng cửa hàng độc lập</span>
-          <a href="mailto:hotro@nexusmart.vn" className={styles.metaLink}>
-            hotro@nexusmart.vn
-          </a>
+      <div className={styles.inner}>
+        <div className={styles.topGrid}>
+          <div className={styles.brandCol}>
+            <Link href="/" className={styles.brandLink} aria-label="NexusMart trang chủ">
+              <NexusMark size={28} accentColor="var(--band-dark-accent)" />
+              <span className={styles.brandName}>NexusMart</span>
+            </Link>
+          </div>
+
+          <nav className={styles.columns} aria-label="Liên kết chân trang">
+            <div className={styles.col}>
+              <p className={styles.colTitle}>NexusMart</p>
+              <ul className={styles.colList}>
+                <li>
+                  <Link href="/ve-nexusmart" className={styles.link}>
+                    Về NexusMart
+                  </Link>
+                </li>
+                <li>
+                  <Link href="/tro-giup" className={styles.link}>
+                    Trợ giúp
+                  </Link>
+                </li>
+              </ul>
+            </div>
+
+            <div className={styles.col}>
+              <p className={styles.colTitle}>Người bán</p>
+              <ul className={styles.colList}>
+                <li>
+                  <Link href="/dang-ky?role=seller" className={styles.link}>
+                    Mở gian hàng
+                  </Link>
+                </li>
+                <li>
+                  <Link href="/seller" className={styles.link}>
+                    Kênh người bán
+                  </Link>
+                </li>
+                <li>
+                  <Link href="/dang-nhap" className={styles.link}>
+                    Đăng nhập
+                  </Link>
+                </li>
+              </ul>
+            </div>
+
+            <div className={styles.col}>
+              <p className={styles.colTitle}>Mua sắm</p>
+              <ul className={styles.colList}>
+                <li>
+                  <Link href="/#danh-ba-gian-hang" className={styles.link}>
+                    Các cửa hàng
+                  </Link>
+                </li>
+              </ul>
+            </div>
+
+            <div className={styles.col}>
+              <p className={styles.colTitle}>Liên hệ</p>
+              <ul className={styles.colList}>
+                <li>
+                  <a href="mailto:hotro@nexusmart.vn" className={styles.link}>
+                    hotro@nexusmart.vn
+                  </a>
+                </li>
+              </ul>
+            </div>
+          </nav>
         </div>
 
-        <nav className={styles.navRow} aria-label="Liên kết chân trang">
-          <Link href="/#danh-ba-gian-hang" className={styles.navLink}>
-            Cửa hàng
-          </Link>
-          <Link href="/ve-nexusmart" className={styles.navLink}>
-            Về NexusMart
-          </Link>
-          <Link href="/tro-giup" className={styles.navLink}>
-            Trợ giúp
-          </Link>
-          <Link href="/seller" className={styles.navLink}>
-            Kênh người bán
-          </Link>
-        </nav>
-
-        <div className={styles.rightCol}>
-          <Link href="/dang-nhap" className={styles.navLink}>
-            Đăng nhập
-          </Link>
-          <span className={`${styles.year} num`}>© 2026</span>
+        <div className={styles.bottomRow}>
+          <p className={`${styles.copyright} num`}>© 2026 NexusMart · Nền tảng cửa hàng độc lập</p>
         </div>
-      </div>
-
-      <div className={styles.wordmarkWrap} aria-hidden="true">
-        <svg
-          viewBox="0 0 1000 156"
-          className={styles.wordmarkSvg}
-          preserveAspectRatio="xMidYMid meet"
-        >
-          <text
-            x="0"
-            y="132"
-            textLength="1000"
-            lengthAdjust="spacingAndGlyphs"
-            className={`${styles.wordmarkText} type-wide`}
-          >
-            NexusMart
-          </text>
-        </svg>
       </div>
     </footer>
   );

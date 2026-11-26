@@ -1,113 +1,139 @@
-/* Quiet architectural footer with edge-to-edge (--margin to --margin) Archivo wide NexusMart wordmark. */
+/* Platform footer: dark multi-column navigation aligned to --container-max.
+   Collapses cleanly to logo-on-top + 2-column link grid on narrow viewports (<= 600px). */
 
 .footer {
   width: 100%;
-  background: var(--band-dark);
+  background: var(--ink-1);
   color: var(--band-dark-ink);
-  padding: clamp(32px, 4vw, 52px) var(--margin) clamp(16px, 2.2vw, 28px);
-  display: flex;
-  flex-direction: column;
-  gap: clamp(32px, 5vw, 60px);
-  overflow: hidden;
+  padding: calc(var(--section) * 0.65) 0 var(--space-8);
 }
 
-.topRow {
+.footer :focus-visible {
+  outline: 2px solid var(--band-dark-accent);
+  outline-offset: 2px;
+}
+
+.inner {
+  width: 100%;
+  max-width: var(--container-max);
+  margin-inline: auto;
+  padding-inline: var(--margin);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.topGrid {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: minmax(160px, 1.15fr) minmax(0, 3.85fr);
+  gap: var(--gutter);
+  align-items: start;
+}
+
+.brandCol {
+  display: flex;
+  align-items: flex-start;
+}
+
+.brandLink {
+  display: inline-flex;
   align-items: center;
-  gap: 16px 24px;
-  font-size: 14px;
+  gap: var(--space-3);
+  min-height: var(--control-height);
+  color: var(--band-dark-ink);
+  transition: opacity var(--t-hover) var(--ease-out);
+}
+
+.brandLink:hover {
+  opacity: 0.8;
+}
+
+.brandName {
+  font-size: var(--step-body);
+  font-stretch: 100%;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--gutter);
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.colTitle {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--band-dark-ink);
+  line-height: 1.35;
+}
+
+.colList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--space-7);
+  font-size: var(--fs-body);
+  font-weight: 400;
+  color: var(--band-dark-muted);
+  transition: color var(--t-hover) var(--ease-out);
+  overflow-wrap: anywhere;
+}
+
+.link:hover {
+  color: var(--band-dark-ink);
+}
+
+.bottomRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-6);
+}
+
+.copyright {
+  font-size: var(--fs-body);
+  color: color-mix(in srgb, var(--band-dark-ink) 64%, var(--ink-1));
   line-height: 1.5;
 }
 
-.metaCol {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 18px;
-}
-
-.metaText {
-  color: var(--band-dark-muted);
-}
-
-.metaLink {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  padding-block: 2px;
-  color: var(--band-dark-ink);
-  font-weight: 500;
-  transition: color var(--t-hover) var(--ease-out);
-}
-
-.metaLink:hover {
-  color: var(--band-dark-accent);
-}
-
-.navRow {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
-  gap: 8px 24px;
-}
-
-.navLink {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  padding-block: 2px;
-  color: var(--band-dark-ink);
-  font-weight: 500;
-  transition: color var(--t-hover) var(--ease-out);
-}
-
-.navLink:hover {
-  color: var(--band-dark-accent);
-}
-
-.rightCol {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 18px;
-}
-
-.year {
-  color: var(--band-dark-muted);
-}
-
-.wordmarkWrap {
-  width: 100%;
-  line-height: 0;
-  user-select: none;
-}
-
-.wordmarkSvg {
-  display: block;
-  width: 100%;
-  height: auto;
-  overflow: visible;
-}
-
-.wordmarkText {
-  fill: var(--band-dark-ink);
-  font-size: 158px;
-  letter-spacing: -0.02em;
-}
-
 @media (max-width: 900px) {
-  .topRow {
+  .topGrid {
     grid-template-columns: 1fr;
-    gap: 18px;
+    gap: var(--space-7);
   }
 
-  .navRow {
-    justify-content: flex-start;
+  .columns {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-6) var(--space-5);
+  }
+}
+
+@media (max-width: 600px) {
+  .footer {
+    padding: var(--space-8) 0 var(--space-7);
   }
 
-  .rightCol {
-    justify-content: flex-start;
+  .inner {
+    gap: var(--space-7);
+  }
+
+  .columns {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-6) var(--space-4);
   }
 }

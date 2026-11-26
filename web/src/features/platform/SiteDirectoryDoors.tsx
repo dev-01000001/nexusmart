@@ -1,21 +1,24 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React from "react";
 import { useRouter } from "next/navigation";
-import { IconArrowUpRight } from "@/components/Icons";
-import { StateView } from "@/components/StateView";
+import { IconAlert, IconArrowUpRight, IconRefresh } from "@/components/Icons";
 import type { DirectorySite } from "./directoryModel";
 import styles from "./SiteDirectorySection.module.css";
 
 export function DirectoryErrorState() {
   const router = useRouter();
   return (
-    <StateView
-      kind="error"
-      title="Chưa thể tải danh bạ lúc này."
-      actionLabel="Tải lại"
-      onAction={() => router.refresh()}
-    />
+    <div className={styles.errorBanner} role="alert">
+      <div className={styles.errorCopy}>
+        <IconAlert size={18} className={styles.errorIcon} />
+        <p className={styles.errorTitle}>Chưa thể tải danh bạ lúc này.</p>
+      </div>
+      <button type="button" className={styles.errorBtn} onClick={() => router.refresh()}>
+        <IconRefresh size={14} />
+        <span>Tải lại</span>
+      </button>
+    </div>
   );
 }
 
@@ -24,99 +27,74 @@ export interface SiteDirectoryDoorsProps {
   extra: DirectorySite[];
 }
 
-const FALLBACK_TONES = ["#1f3038", "#233935", "#2c2a32", "#1e3440", "#2f332c", "#26313a"] as const;
+const FALLBACK_TONES = [
+  "var(--band-dark)",
+  "var(--band-dark-surface)",
+  "color-mix(in srgb, var(--accent) 20%, var(--ink-1))",
+  "var(--band-dark)",
+  "var(--band-dark-surface)",
+  "color-mix(in srgb, var(--accent) 16%, var(--ink-1))",
+] as const;
 
 export function SiteDirectoryDoors({ doors, extra }: SiteDirectoryDoorsProps) {
-  const [activeDoor, setActiveDoor] = useState<number | null>(null);
-
-  const gridTemplateColumns = useMemo(() => {
-    const count = doors.length;
-    if (count <= 1) return "1fr";
-    if (activeDoor === null || activeDoor < 0 || activeDoor >= count) {
-      return Array.from({ length: count }, () => "1fr").join(" ");
-    }
-    const expanded = count === 2 ? "1.65fr" : count === 3 ? "2fr" : "2.35fr";
-    const resting = count === 2 ? "0.75fr" : "0.78fr";
-    return Array.from({ length: count }, (_, idx) =>
-      idx === activeDoor ? expanded : resting
-    ).join(" ");
-  }, [doors.length, activeDoor]);
-
   return (
     <>
-      <div
-        className={styles.doorsStage}
-        style={{ "--door-cols": gridTemplateColumns } as React.CSSProperties}
-        onMouseLeave={() => setActiveDoor(null)}
-      >
+      <div className={styles.mosaic} data-count={doors.length} data-reveal="rows">
         {doors.map((site, idx) => {
-          const isExpanded = activeDoor === idx;
           const monogram = site.name.trim().slice(0, 1).toUpperCase() || "N";
           const fallbackBg = FALLBACK_TONES[idx % FALLBACK_TONES.length];
 
           return (
-            <a
-              key={site.siteId}
-              href={site.origin}
-              className={`${styles.door} ${isExpanded ? styles.doorActive : ""}`}
-              onMouseEnter={() => setActiveDoor(idx)}
-              onFocus={() => setActiveDoor(idx)}
-              onBlur={(e) => {
-                if (!e.currentTarget.parentElement?.contains(e.relatedTarget as Node | null)) {
-                  setActiveDoor(null);
-                }
-              }}
-            >
-              <div className={styles.doorMedia} style={{ background: fallbackBg }}>
+            <a key={site.siteId} href={site.origin} className={styles.siteCard}>
+              <div className={styles.cardMedia} style={{ background: fallbackBg }}>
                 {site.coverUrl ? (
                   <img
                     src={site.coverUrl}
                     alt={`Ảnh bìa cửa hàng ${site.name}`}
-                    width={1280}
-                    height={900}
+                    width={960}
+                    height={720}
                     loading="lazy"
-                    className={styles.doorImg}
+                    className={styles.cardImg}
                   />
                 ) : site.logoUrl ? (
-                  <div className={styles.doorFallback}>
+                  <div className={styles.cardFallback}>
                     <img
                       src={site.logoUrl}
                       alt={`Biểu trưng ${site.name}`}
-                      width={88}
-                      height={88}
+                      width={80}
+                      height={80}
                       loading="lazy"
-                      className={styles.doorFallbackLogo}
+                      className={styles.cardFallbackLogo}
                     />
                   </div>
                 ) : (
-                  <div className={styles.doorFallback} aria-hidden="true">
-                    <span className={`${styles.doorMonogram} type-poster`}>{monogram}</span>
+                  <div className={styles.cardFallback} aria-hidden="true">
+                    <span className={styles.cardMonogram}>{monogram}</span>
                   </div>
                 )}
               </div>
 
-              <div className={styles.doorPlinth}>
-                <div className={styles.doorTitleRow}>
-                  <div className={styles.doorIdentity}>
+              <div className={styles.cardMeta}>
+                <div className={styles.cardTitleRow}>
+                  <div className={styles.cardIdentity}>
                     {site.logoUrl && (
                       <img
                         src={site.logoUrl}
                         alt=""
-                        width={24}
-                        height={24}
+                        width={22}
+                        height={22}
                         loading="lazy"
-                        className={styles.doorLogo}
+                        className={styles.cardLogo}
                         aria-hidden="true"
                       />
                     )}
-                    <h3 className={`${styles.doorName} type-tight`}>{site.name}</h3>
+                    <h3 className={styles.cardName}>{site.name}</h3>
                   </div>
-                  <span className={styles.doorArrow} aria-hidden="true">
-                    <IconArrowUpRight size={18} />
+                  <span className={styles.cardArrow} aria-hidden="true">
+                    <IconArrowUpRight size={16} />
                   </span>
                 </div>
-                <p className={styles.doorHost}>{site.host}</p>
-                {site.tagline && <p className={styles.doorTagline}>{site.tagline}</p>}
+                <p className={styles.cardHost}>{site.host}</p>
               </div>
             </a>
           );
@@ -125,39 +103,18 @@ export function SiteDirectoryDoors({ doors, extra }: SiteDirectoryDoorsProps) {
 
       {extra.length > 0 && (
         <ul className={styles.extraList} data-reveal="rows">
-          {extra.map((site, idx) => (
+          {extra.map((site) => (
             <li key={site.siteId}>
               <a href={site.origin} className={styles.extraRow}>
                 <div className={styles.extraMain}>
-                  <span className={`${styles.extraName} type-tight`}>{site.name}</span>
+                  <span className={styles.extraName}>{site.name}</span>
                   {site.tagline && <span className={styles.extraTagline}>{site.tagline}</span>}
                 </div>
 
                 <div className={styles.extraRight}>
                   <span className={styles.extraHost}>{site.host}</span>
-                  <IconArrowUpRight size={18} className={styles.extraArrow} />
+                  <IconArrowUpRight size={16} className={styles.extraArrow} />
                 </div>
-
-                <span
-                  className={styles.extraPreview}
-                  style={{ background: FALLBACK_TONES[idx % FALLBACK_TONES.length] }}
-                  aria-hidden="true"
-                >
-                  {site.coverUrl || site.logoUrl ? (
-                    <img
-                      src={site.coverUrl || site.logoUrl}
-                      alt=""
-                      width={260}
-                      height={164}
-                      loading="lazy"
-                      className={styles.extraPreviewImg}
-                    />
-                  ) : (
-                    <span className={`${styles.extraPreviewLetter} type-poster`}>
-                      {site.name.trim().slice(0, 1).toUpperCase() || "N"}
-                    </span>
-                  )}
-                </span>
               </a>
             </li>
           ))}
