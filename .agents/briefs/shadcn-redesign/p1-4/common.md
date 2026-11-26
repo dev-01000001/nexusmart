@@ -34,6 +34,15 @@ Quy tắc dự án: `AGENTS.md`, `web/CLAUDE.md`, skill `design-system`.
 - Màu chỉ qua tên Tailwind ánh xạ `--ui-*` (`bg-background`, `text-muted-foreground`, `border-border`, `bg-primary`…).
   Không hex rời. Site gian hàng lấy màu từ biến site (§11.1).
 
+### Import từng file, không qua barrel (site gian hàng; bổ sung 27/11)
+- Trong `app/(site)/**` và `features/{site,search,commerce,account,chat,assistant}/**`, **không** import từ barrel
+  `@/components/app` hay `@/features/site`. Import thẳng file: `@/components/app/Money`, `@/components/app/EmptyState`,
+  `@/features/site/SitePdpView`…
+- Lý do (đo trên bản build 27/11): barrel `@/components/app` kéo cả `AppShell` (cmdk, DropdownMenu, Tooltip, Sheet…),
+  barrel `@/features/site` kéo cả `SiteRenderer`, vào mọi trang site. Trang chủ site và PDP lên 366 kB, vượt ngân sách
+  296 kB.
+- Kiểm: `rg -n 'from "@/components/app"|from "@/features/site"' <file của bạn>` phải rỗng.
+
 ### Không thêm phụ thuộc
 - Cấm `npm install` / `npm uninstall`.
 
