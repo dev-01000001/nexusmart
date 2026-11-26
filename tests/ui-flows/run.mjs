@@ -9,6 +9,7 @@ import { buildSellerFlows } from "./seller.mjs";
 import { buildAdminFlows } from "./admin.mjs";
 import { buildPlatformFlows } from "./platform.mjs";
 import { buildSiteFlows } from "./site.mjs";
+import { buildTemplatesFlows } from "./templates.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (name, def = "") => {
@@ -21,10 +22,16 @@ const area = opt("area");
 const only = opt("only");
 const sitesArg = opt("site");
 
-const VALID_AREAS = new Set(["seller", "admin", "platform", "site"]);
+const VALID_AREAS = new Set([
+  "seller",
+  "admin",
+  "platform",
+  "site",
+  "templates",
+]);
 if (!port || !VALID_AREAS.has(area)) {
   console.error(
-    "Usage: node tests/ui-flows/run.mjs --port <n> --area seller|admin|platform|site [--only <pattern>] [--site s1,s2]",
+    "Usage: node tests/ui-flows/run.mjs --port <n> --area seller|admin|platform|site|templates [--only <pattern>] [--site s1,s2]",
   );
   process.exit(2);
 }
@@ -52,6 +59,11 @@ try {
       browser,
       port,
       sites,
+    }));
+  } else if (area === "templates") {
+    ({ flows: results, cleanup } = await buildTemplatesFlows({
+      browser,
+      port,
     }));
   }
 
