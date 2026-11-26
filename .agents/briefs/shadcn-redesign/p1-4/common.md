@@ -105,9 +105,9 @@ File của mình thôi dùng chúng là đủ. Claude dọn ở vòng cuối.
 | S2b quản trị: cấu hình + tiền | flash sale, đối soát, cấu hình (7 tab), audit log |
 | S3 nền tảng + đăng nhập | `(shop)/**`, `features/platform/**`, `AuthForms.*` (cây trang chủ để vòng sau) |
 | S4a site: shell + mẫu | layout site, `SiteShell` / `SiteChrome` / `SiteRenderer`, trang chủ, giới thiệu, chính sách, lỗi, `theme.ts` (font) |
-| S4b site: danh mục + PDP + tìm kiếm | `san-pham/**`, `tim-kiem`, `SitePdpView` / `SiteCatalogView` / `SiteSearchView` / `SiteProductCard`, `features/search/**` |
+| S4b site: danh mục + PDP + tìm kiếm | `san-pham/**`, `tim-kiem`, `SitePdpView` / `SiteCatalogView` / `SiteSearchView` / `SiteProductCard`, `features/search/**`, `features/assistant/ProductReviewSummary.*` |
 | S4c site: giỏ + thanh toán | `gio-hang`, `thanh-toan/**`, `flash-sale`, `voucher`, `features/commerce/**` (trừ `OrderLookupView.*`) |
-| S4d site: đơn + tài khoản + widget | `don-hang/**`, `tra-cuu-*`, `tai-khoan`, 4 trang auth của site, `features/account/**` (trừ `AuthForms.*`), `OrderLookupView.*`, `features/chat/**`, `features/assistant/**` |
+| S4d site: đơn + tài khoản + widget | `don-hang/**`, `tra-cuu-*`, `tai-khoan`, 4 trang auth của site, `features/account/**` (trừ `AuthForms.*`), `OrderLookupView.*`, `features/chat/**`, `features/assistant/**` (trừ `ProductReviewSummary.*`) |
 | S9 QA | `tests/**`, `web/scripts/*.test.mjs` |
 
 Danh sách file chính xác nằm trong brief riêng. File không có trong danh sách của bạn là **cấm**.
