@@ -23,7 +23,7 @@ func TestE2E_RateLimit_Real429AndNoXFFBypass(t *testing.T) {
 		}
 		rCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if _, err := ResetRateLimitKeys(rCtx, env.cfg.RedisAddr); err != nil {
+		if _, err := ResetRateLimitKeys(rCtx, env.cfg.RedisAddr, env.cfg.RedisPassword); err != nil {
 			t.Fatalf("reset rl:* keys (%s) on %s: %v", label, env.cfg.RedisAddr, err)
 		}
 	}

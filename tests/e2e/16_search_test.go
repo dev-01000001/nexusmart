@@ -70,13 +70,13 @@ func registerRateLimitResetCleanup(t *testing.T, env *testEnv) {
 		return
 	}
 	rCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	_, _ = ResetRateLimitKeys(rCtx, env.cfg.RedisAddr)
+	_, _ = ResetRateLimitKeys(rCtx, env.cfg.RedisAddr, env.cfg.RedisPassword)
 	cancel()
 
 	t.Cleanup(func() {
 		cCtx, cCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cCancel()
-		_, _ = ResetRateLimitKeys(cCtx, env.cfg.RedisAddr)
+		_, _ = ResetRateLimitKeys(cCtx, env.cfg.RedisAddr, env.cfg.RedisPassword)
 	})
 }
 

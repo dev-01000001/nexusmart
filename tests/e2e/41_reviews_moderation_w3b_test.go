@@ -1,10 +1,8 @@
 package e2e
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -58,33 +56,19 @@ func w3b41AlphaTag(env *testEnv) string {
 	return b.String()
 }
 
-// w3b41RedisCmd sends a minimal RESP command to Redis using stdlib net.TCP (zero extra dependencies).
-func w3b41RedisCmd(t *testing.T, addr string, args ...string) string {
+// w3b41RedisCmd sends a minimal RESP2 command to Redis via the shared auth-aware helper.
+func w3b41RedisCmd(t *testing.T, addr, password string, args ...string) string {
 	t.Helper()
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if len(args) == 0 {
+		t.Fatal("redis command requires at least one argument")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	val, err := RedisDo(ctx, addr, password, args...)
 	if err != nil {
-		t.Fatalf("dial redis %s: %v", addr, err)
+		t.Fatalf("redis command %s: %v", args[0], err)
 	}
-	defer func() { _ = conn.Close() }()
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-
-	var req strings.Builder
-	fmt.Fprintf(&req, "*%d\r\n", len(args))
-	for _, a := range args {
-		fmt.Fprintf(&req, "$%d\r\n%s\r\n", len(a), a)
-	}
-	if _, err := conn.Write([]byte(req.String())); err != nil {
-		t.Fatalf("write redis command %v: %v", args[0], err)
-	}
-	rd := bufio.NewReader(conn)
-	line, err := rd.ReadString('\n')
-	if err != nil {
-		t.Fatalf("read redis reply for %v: %v", args[0], err)
-	}
-	if strings.HasPrefix(line, "-") {
-		t.Fatalf("redis error for %v: %s", args[0], strings.TrimSpace(line))
-	}
-	return strings.TrimSpace(line)
+	return fmt.Sprint(val)
 }
 
 func w3b41HideProduct(t *testing.T, env *testEnv, seller *sellerFixture, prod ProductDTO) {
@@ -361,16 +345,11 @@ func TestE2E_W3B_CartUnavailableAndCheckoutBlock(t *testing.T) {
 	// 4. E3: SKU_NOT_FOUND (phantom SKU in Redis hash not present in Product DB) is flagged and removable.
 	phantomSKU := uuid.NewString()
 	cartKey := "cart:" + buyer.UserID
-	w3b41RedisCmd(t, env.cfg.RedisAddr, "HSET", cartKey, phantomSKU, `{"quantity":1,"added_price_vnd":99000,"selected":true}`)
+	w3b41RedisCmd(t, env.cfg.RedisAddr, env.cfg.RedisPassword, "HSET", cartKey, phantomSKU, `{"quantity":1,"added_price_vnd":99000,"selected":true}`)
 	t.Cleanup(func() {
-		conn, err := net.DialTimeout("tcp", env.cfg.RedisAddr, 3*time.Second)
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
-		cmd := fmt.Sprintf("*3\r\n$4\r\nHDEL\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(cartKey), cartKey, len(phantomSKU), phantomSKU)
-		_, _ = conn.Write([]byte(cmd))
+		cCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_, _ = RedisDo(cCtx, env.cfg.RedisAddr, env.cfg.RedisPassword, "HDEL", cartKey, phantomSKU)
 	})
 
 	phantomCart := getCart()

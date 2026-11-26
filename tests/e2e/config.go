@@ -44,6 +44,7 @@ type Config struct {
 
 	NATSURL         string
 	RedisAddr       string
+	RedisPassword   string
 	UserDatabaseURL string
 	MailpitURL      string
 	SiteRootDomain  string
@@ -117,6 +118,7 @@ func LoadConfig() Config {
 
 		NATSURL:         envOr("NATS_URL", "nats://localhost:4222"),
 		RedisAddr:       defaultRedisAddr(gatewayURL),
+		RedisPassword:   strings.TrimSpace(os.Getenv("REDIS_PASSWORD")),
 		UserDatabaseURL: defaultUserDatabaseURL(gatewayURL),
 		MailpitURL:      envOr("MAILPIT_URL", "http://localhost:8025"),
 		SiteRootDomain:  strings.ToLower(envOr("SITE_ROOT_DOMAIN", "nexusmart.localhost")),

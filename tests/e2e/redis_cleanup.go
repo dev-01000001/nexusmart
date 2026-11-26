@@ -11,35 +11,44 @@ import (
 	"time"
 )
 
+type respSimpleString string
+
 // ResetRateLimitKeys deletes gateway rate-limit keys (rl:*) from Redis using minimal raw RESP2 over TCP
 // so back-to-back test runs stay deterministic without adding runtime dependencies or relaxing stack limits.
-func ResetRateLimitKeys(ctx context.Context, redisAddr string) (int, error) {
-	return DeleteRedisKeysByPattern(ctx, redisAddr, "rl:*")
+func ResetRateLimitKeys(ctx context.Context, redisAddr, redisPassword string) (int, error) {
+	return DeleteRedisKeysByPattern(ctx, redisAddr, redisPassword, "rl:*")
 }
 
-// DeleteRedisKeysByPattern scans and deletes Redis keys matching pattern via raw RESP2.
-func DeleteRedisKeysByPattern(ctx context.Context, redisAddr, pattern string) (int, error) {
-	addr := strings.TrimSpace(redisAddr)
-	if addr == "" {
-		return 0, nil
+// RedisDo executes a single Redis command over raw RESP2, authenticating with AUTH when redisPassword is non-empty.
+func RedisDo(ctx context.Context, redisAddr, redisPassword string, args ...string) (any, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("empty redis command")
 	}
-
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	conn, r, err := dialRedis(ctx, redisAddr, redisPassword)
 	if err != nil {
-		return 0, fmt.Errorf("dial redis %s: %w", addr, err)
+		return nil, err
 	}
 	defer func() { _ = conn.Close() }()
 
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		deadline = time.Now().Add(10 * time.Second)
+	val, err := respDo(conn, r, args...)
+	if err != nil {
+		return nil, fmt.Errorf("redis %s: %w", args[0], err)
 	}
-	if err := conn.SetDeadline(deadline); err != nil {
-		return 0, fmt.Errorf("set redis deadline: %w", err)
+	return val, nil
+}
+
+// DeleteRedisKeysByPattern scans and deletes Redis keys matching pattern via raw RESP2.
+func DeleteRedisKeysByPattern(ctx context.Context, redisAddr, redisPassword, pattern string) (int, error) {
+	if strings.TrimSpace(redisAddr) == "" {
+		return 0, nil
 	}
 
-	r := bufio.NewReader(conn)
+	conn, r, err := dialRedis(ctx, redisAddr, redisPassword)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = conn.Close() }()
+
 	cursor := "0"
 	deleted := 0
 
@@ -89,7 +98,49 @@ func DeleteRedisKeysByPattern(ctx context.Context, redisAddr, pattern string) (i
 	return deleted, nil
 }
 
+func dialRedis(ctx context.Context, redisAddr, redisPassword string) (net.Conn, *bufio.Reader, error) {
+	addr := strings.TrimSpace(redisAddr)
+	if addr == "" {
+		return nil, nil, fmt.Errorf("empty redis address")
+	}
+
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("dial redis %s: %w", addr, err)
+	}
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(10 * time.Second)
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		_ = conn.Close()
+		return nil, nil, fmt.Errorf("set redis deadline: %w", err)
+	}
+
+	r := bufio.NewReader(conn)
+	if redisPassword != "" {
+		val, err := respDo(conn, r, "AUTH", redisPassword)
+		if err != nil {
+			_ = conn.Close()
+			if strings.Contains(err.Error(), redisPassword) {
+				return nil, nil, fmt.Errorf("redis AUTH failed")
+			}
+			return nil, nil, fmt.Errorf("redis AUTH: %w", err)
+		}
+		if s, ok := val.(respSimpleString); !ok || s != "OK" {
+			_ = conn.Close()
+			return nil, nil, fmt.Errorf("redis AUTH: unexpected reply (want +OK)")
+		}
+	}
+	return conn, r, nil
+}
+
 func respDo(w io.Writer, r *bufio.Reader, args ...string) (any, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("empty redis command")
+	}
 	var b strings.Builder
 	b.WriteString("*")
 	b.WriteString(strconv.Itoa(len(args)))
@@ -121,7 +172,7 @@ func respReadValue(r *bufio.Reader) (any, error) {
 
 	switch prefix {
 	case '+':
-		return payload, nil
+		return respSimpleString(payload), nil
 	case '-':
 		return nil, fmt.Errorf("redis error: %s", payload)
 	case ':':

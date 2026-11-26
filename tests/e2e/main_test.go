@@ -16,7 +16,7 @@ func TestMain(m *testing.M) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if _, err := ResetRateLimitKeys(ctx, cfg.RedisAddr); err != nil {
+		if _, err := ResetRateLimitKeys(ctx, cfg.RedisAddr, cfg.RedisPassword); err != nil {
 			fmt.Fprintf(os.Stderr, "[e2e] warning: reset rate-limit keys (%s) on %s failed: %v\n", phase, cfg.RedisAddr, err)
 		}
 	}

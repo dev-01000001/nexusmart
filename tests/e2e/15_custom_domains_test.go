@@ -129,7 +129,7 @@ func TestE2E_CustomDomains_LifecycleValidationRBACAndPrimary(t *testing.T) {
 		}
 		rCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_, _ = ResetRateLimitKeys(rCtx, env.cfg.RedisAddr)
+		_, _ = ResetRateLimitKeys(rCtx, env.cfg.RedisAddr, env.cfg.RedisPassword)
 	}
 
 	// Start with a fresh rate-limit window and register Redis reset first so LIFO t.Cleanup

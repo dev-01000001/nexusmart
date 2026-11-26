@@ -48,7 +48,7 @@ func TestE2E_FlashSaleStockReserve_Phase2b(t *testing.T) {
 		}
 		rCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_, _ = ResetRateLimitKeys(rCtx, env.cfg.RedisAddr)
+		_, _ = ResetRateLimitKeys(rCtx, env.cfg.RedisAddr, env.cfg.RedisPassword)
 	}
 	resetRL()
 	t.Cleanup(resetRL)
