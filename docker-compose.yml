@@ -55,13 +55,31 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    command:
+      - sh
+      - -c
+      - |
+        set -- docker-entrypoint.sh redis-server --appendonly yes
+        if [ -n "$$REDIS_PASSWORD" ]; then
+          set -- "$$@" --requirepass "$$REDIS_PASSWORD"
+        fi
+        exec "$$@"
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        - CMD-SHELL
+        - |
+          if [ -n "$$REDIS_PASSWORD" ]; then
+            out=$$(REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping)
+          else
+            out=$$(redis-cli ping)
+          fi
+          [ "$$out" = "PONG" ]
       interval: 5s
       timeout: 3s
       retries: 15
@@ -119,6 +137,7 @@ services:
       HTTP_PORT: "8081"
       DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@postgres:5432/user_db?sslmode=disable
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       NATS_URL: ${NATS_URL:-nats://nats:4222}
       NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
@@ -206,6 +225,7 @@ services:
       GRPC_PORT: "50053"
       HTTP_PORT: "8083"
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       PRODUCT_GRPC_ADDR: product:50052
       USER_GRPC_ADDR: user:50051
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
@@ -238,6 +258,7 @@ services:
       HTTP_PORT: "8084"
       DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@postgres:5432/promotion_db?sslmode=disable
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       NATS_URL: ${NATS_URL:-nats://nats:4222}
       NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
       PRODUCT_GRPC_ADDR: product:50052
@@ -329,6 +350,7 @@ services:
       HTTP_PORT: "8087"
       DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@postgres:5432/shipping_db?sslmode=disable
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       USER_GRPC_ADDR: user:50051
       NATS_URL: ${NATS_URL:-nats://nats:4222}
       NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
@@ -391,6 +413,8 @@ services:
       SMTP_HOST: ${SMTP_HOST:-mailpit}
       SMTP_PORT: ${SMTP_PORT:-1025}
       SMTP_FROM: ${SMTP_FROM:-no-reply@nexusmart.local}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       USER_GRPC_ADDR: user:50051
       WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:${WEB_PORT:-3300}}
       SITE_URL_SCHEME: ${SITE_URL_SCHEME:-https}
@@ -489,6 +513,7 @@ services:
       HTTP_PORT: "8089"
       DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@search-postgres:5432/search_db?sslmode=disable
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       NATS_URL: ${NATS_URL:-nats://nats:4222}
       NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
       NATS_DLQ_STREAM: ${NATS_DLQ_STREAM:-NEXUSMART_DLQ}
@@ -550,6 +575,7 @@ services:
       SEARCH_GRPC_ADDR: search:50059
       PRODUCT_GRPC_ADDR: product:50052
       CHAT_GRPC_ADDR: chat:50060
+      ORDER_GRPC_ADDR: order:50055
       LLM_MODE: ${LLM_MODE:-mock}
       LLM_MODEL: ${LLM_MODEL:-claude-opus-5-5}
       LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-}
@@ -630,8 +656,10 @@ services:
       SERVICE_NAME: gateway
       HTTP_PORT: "8080"
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       JWT_SECRET: ${JWT_SECRET:-dev-only-nexusmart-hs256-secret-change-me}
       RATE_LIMIT_IP_PER_MIN: ${RATE_LIMIT_IP_PER_MIN:-300}
+      RATE_LIMIT_BFF_PER_MIN: ${RATE_LIMIT_BFF_PER_MIN:-6000}
       RATE_LIMIT_USER_PER_MIN: ${RATE_LIMIT_USER_PER_MIN:-180}
       RATE_LIMIT_FLASH_SALE_PER_MIN: ${RATE_LIMIT_FLASH_SALE_PER_MIN:-60}
       RATE_LIMIT_AUTH_PER_MIN: ${RATE_LIMIT_AUTH_PER_MIN:-10}
@@ -722,6 +750,7 @@ services:
       CHAT_WS_URL: ${CHAT_WS_URL:-}
       GATEWAY_TIMEOUT_MS: ${GATEWAY_TIMEOUT_MS:-8000}
       COOKIE_SECURE: ${COOKIE_SECURE:-${WEB_COOKIE_SECURE:-false}}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
       APP_ORIGIN: ${APP_ORIGIN:-${WEB_APP_ORIGIN:-}}
       SITE_ROOT_DOMAIN: ${SITE_ROOT_DOMAIN:-nexusmart.localhost}
       REFRESH_TOKEN_TTL_SECONDS: ${REFRESH_TOKEN_TTL_SECONDS:-604800}
@@ -756,6 +785,7 @@ services:
       GOCACHE: /tmp/go-build
       GATEWAY_URL: http://gateway:8080
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       USER_HTTP_URL: http://user:8081
       PRODUCT_HTTP_URL: http://product:8082
       CART_HTTP_URL: http://cart:8083
@@ -816,6 +846,7 @@ services:
       MAILPIT_URL: http://mailpit:8025
       GATEWAY_URL: http://gateway:8080
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:-dev-only-payment-webhook-hmac-secret}
       SHIPPING_WEBHOOK_SECRET: ${SHIPPING_WEBHOOK_SECRET:-dev-only-shipping-webhook-hmac-secret}
       ZALOPAY_APP_ID: ${ZALOPAY_APP_ID:-}

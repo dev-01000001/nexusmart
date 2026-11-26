@@ -110,6 +110,7 @@ config:
   SEARCH_GRPC_ADDR: "search:50059"
   PRODUCT_GRPC_ADDR: "product:50052"
   CHAT_GRPC_ADDR: "chat:50060"
+  ORDER_GRPC_ADDR: "order:50055"
   LLM_MODE: "mock"
   LLM_MODEL: "claude-opus-5-5"
   LLM_TIMEOUT: "45s"

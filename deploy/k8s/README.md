@@ -68,6 +68,7 @@ export PAYOS_API_KEY="..."
 export PAYOS_CHECKSUM_KEY="..."
 export SHIPPING_WEBHOOK_SECRET="..."
 export MEILI_MASTER_KEY="..."
+export SMTP_PASSWORD="..."
 ./deploy/k8s/create-secrets.sh nexusmart-production
 ```
 

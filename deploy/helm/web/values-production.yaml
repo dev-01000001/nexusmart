@@ -39,6 +39,8 @@ ingress:
 
 config:
   COOKIE_SECURE: "true"
+  # ingress-nginx overwrites X-Forwarded-For by default when use-forwarded-headers=false.
+  TRUST_PROXY_HEADERS: "true"
   APP_ORIGIN: "https://nexusmart.vn"
   SITE_ROOT_DOMAIN: "nexusmart.vn"
   PUBLIC_GATEWAY_URL: "https://api.nexusmart.vn"

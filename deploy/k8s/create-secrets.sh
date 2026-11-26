@@ -134,6 +134,7 @@ if [[ "${NAMESPACE}" == "nexusmart-production" ]]; then
   require_prod_var SHIPPING_WEBHOOK_SECRET
   require_prod_var SHIPPING_CONFIG_KEY "required by shipping carrier secret encryption (32-byte base64)"
   require_prod_var MEILI_MASTER_KEY
+  require_prod_var SMTP_PASSWORD "required by notification Resend SMTP"
 
   case "${VIETQR_MODE_NORM}" in
     payos)
@@ -176,6 +177,12 @@ PAYOS_CHECKSUM_KEY="$(optional_env PAYOS_CHECKSUM_KEY)"
 SEPAY_API_TOKEN="$(optional_env SEPAY_API_TOKEN)"
 
 # Optional third-party sandbox/live credentials (empty in mock mode).
+if [[ "${NAMESPACE}" == "nexusmart-production" ]]; then
+  SMTP_PASSWORD="$(optional_env SMTP_PASSWORD)"
+else
+  # Staging/local ConfigMap omits SMTP_USERNAME (Mailpit); keep SMTP_PASSWORD empty to avoid credential mismatch.
+  SMTP_PASSWORD=""
+fi
 CF_API_TOKEN="$(optional_env CF_API_TOKEN)"
 CF_ZONE_ID="$(optional_env CF_ZONE_ID)"
 GHN_TOKEN="$(optional_env GHN_TOKEN)"
@@ -283,10 +290,12 @@ apply_secret nexusmart-shipping-secret \
 apply_secret nexusmart-notification-secret \
   --from-literal="DATABASE_URL=$(db_url notification_db)" \
   --from-literal="JWT_SECRET=${JWT_SECRET}" \
-  --from-literal="SERVICE_JWT_SECRET=${SERVICE_JWT_SECRET}"
+  --from-literal="SERVICE_JWT_SECRET=${SERVICE_JWT_SECRET}" \
+  --from-literal="SMTP_PASSWORD=${SMTP_PASSWORD}"
 
 apply_secret nexusmart-search-secret \
   --from-literal="DATABASE_URL=$(db_url search_db)" \
+  --from-literal="REDIS_PASSWORD=${REDIS_PASSWORD}" \
   --from-literal="MEILI_MASTER_KEY=${MEILI_MASTER_KEY}" \
   --from-literal="EMBEDDING_API_KEY=${EMBEDDING_API_KEY}" \
   --from-literal="JWT_SECRET=${JWT_SECRET}" \

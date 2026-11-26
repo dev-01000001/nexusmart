@@ -34,6 +34,8 @@ ingress:
 
 config:
   COOKIE_SECURE: "false"
+  # ingress-nginx overwrites X-Forwarded-For by default when use-forwarded-headers=false.
+  TRUST_PROXY_HEADERS: "true"
   APP_ORIGIN: "https://staging.nexusmart.local"
   SITE_ROOT_DOMAIN: "staging.nexusmart.local"
   # Replace *.local with a real public HTTPS/WSS domain in external staging (config.ts rejects .local hosts).
