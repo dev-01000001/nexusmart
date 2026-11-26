@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
 import React from "react";
 import { LoginForm } from "@/features/account/AuthForms";
-import { PlatformAuthShell } from "@/features/platform/PlatformAuthShell";
-import styles from "./page.module.css";
+import { PlatformAuthFrame } from "@/features/platform/auth/PlatformAuthFrame";
 
 export const metadata: Metadata = {
   title: "Đăng nhập",
@@ -12,14 +11,12 @@ export const metadata: Metadata = {
 
 export default function PlatformLoginPage() {
   return (
-    <div className={styles.page}>
-      <PlatformAuthShell mode="login" title="Đăng nhập" initialRole="seller">
-        <LoginForm
-          variant="platform"
-          buyerHref="/#danh-ba-gian-hang"
-          registerHref="/dang-ky?role=seller"
-        />
-      </PlatformAuthShell>
-    </div>
+    <PlatformAuthFrame mode="login" title="Đăng nhập" initialRole="seller">
+      <LoginForm
+        variant="platform"
+        buyerHref="/#danh-ba-gian-hang"
+        registerHref="/dang-ky?role=seller"
+      />
+    </PlatformAuthFrame>
   );
 }

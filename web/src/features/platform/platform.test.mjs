@@ -175,20 +175,17 @@ test("platform seller registration routes /dang-ky?role=seller -> OTP -> /seller
   assert.equal(resolveAfterRegisterHref("seller"), "/seller");
   assert.equal(resolveAfterRegisterHref("buyer"), undefined);
 
-  const shellSrc = readFileSync(resolve(__dirname, "PlatformAuthShell.tsx"), "utf8");
+  const shellSrc = readFileSync(resolve(__dirname, "auth/PlatformAuthFrame.tsx"), "utf8");
   assert.ok(
     shellSrc.includes("resolveAfterRegisterHref") &&
       shellSrc.includes("afterRegisterHref={afterRegisterHref}"),
-    "PlatformRegisterShell must pass afterRegisterHref to RegisterForm for seller registration"
+    "PlatformRegisterFrame must pass afterRegisterHref to RegisterForm for seller registration"
   );
 
-  const regPageSrc = readFileSync(
-    resolve(__dirname, "../../app/(shop)/dang-ky/page.tsx"),
-    "utf8"
-  );
+  const regPageSrc = readFileSync(resolve(__dirname, "../../app/(shop)/dang-ky/page.tsx"), "utf8");
   assert.ok(
     regPageSrc.includes('roleParam !== "buyer"') &&
       regPageSrc.includes('initialRole={isSellerIntent ? "seller" : "buyer"}'),
-    "/dang-ky?role=seller must pass initialRole='seller' to PlatformRegisterShell"
+    "/dang-ky?role=seller must pass initialRole='seller' to PlatformRegisterFrame"
   );
 });

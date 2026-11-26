@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
 import React from "react";
+import { PlatformRegisterFrame } from "@/features/platform/auth/PlatformAuthFrame";
 import { directoryContext } from "@/features/platform/directory.server";
-import { PlatformRegisterShell } from "@/features/platform/PlatformAuthShell";
-import styles from "./page.module.css";
 
 export const dynamic = "force-dynamic";
 
@@ -32,12 +31,10 @@ export default async function PlatformRegisterPage({ searchParams }: PlatformReg
   const suggestedShopName = firstParam(params.ten).slice(0, 64);
 
   return (
-    <div className={styles.page}>
-      <PlatformRegisterShell
-        initialRole={isSellerIntent ? "seller" : "buyer"}
-        suggestedShopName={suggestedShopName}
-        rootDomain={ctx.rootDomain}
-      />
-    </div>
+    <PlatformRegisterFrame
+      initialRole={isSellerIntent ? "seller" : "buyer"}
+      suggestedShopName={suggestedShopName}
+      rootDomain={ctx.rootDomain}
+    />
   );
 }
