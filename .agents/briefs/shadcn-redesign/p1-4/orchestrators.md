@@ -50,12 +50,16 @@ lượt trước đã có `AGY_EXIT`, đánh số tăng dần (`run2`, `run3`…
 
 ```bash
 s=s1a; n=2; cid=$(jq -r .conversation_id $R/$s/run$((n-1)).json)
-systemd-run --user --scope --quiet --slice=nm3b.slice -p MemoryMax=3G ./scripts/agy.sh --output-format json \
+systemd-run --user --scope --quiet --slice=nm3b.slice -p MemoryMax=3G -p OOMPolicy=continue ./scripts/agy.sh --output-format json \
   --conversation "$cid" -p "<phát hiện cụ thể: file:dòng, kịch bản lỗi, tiêu chí phải đạt, lệnh kiểm phải xanh>" \
   > $R/$s/run$n.json 2> $R/$s/run$n.err; echo "AGY_EXIT=$?" >> $R/$s/run$n.err
 ```
 
-Nếu `AGY_EXIT` khác 0 hoặc `conversation_id` rỗng, mở phiên agy mới bằng brief cũ cộng phần còn thiếu, không dùng `-c`.
+Luôn giữ `-p OOMPolicy=continue`. Mặc định systemd dừng **cả** scope khi kernel OOM giết một tiến trình con (tsc,
+Chromium), nên cả swarm chết theo. Đêm 26/11, S2a, S3 và S4b đã chết như vậy.
+
+Nếu `AGY_EXIT` khác 0 và có `conversation_id`, chạy tiếp đúng phiên đó với lời nhắc "lượt trước bị ngắt; đọc progress.md
+rồi làm tiếp". Nếu `conversation_id` rỗng, mở phiên agy mới bằng brief cũ cộng phần còn thiếu, không dùng `-c`.
 
 ## 4. Review và nghiệm thu
 
