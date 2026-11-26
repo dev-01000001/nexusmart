@@ -1,5 +1,5 @@
 import React from "react";
-import { StateView } from "@/components";
+import { ErrorState, PageHeader } from "@/components/app";
 import { roleHasCapability } from "@/lib/admin-rbac";
 import { formatVnDateOffset } from "@/lib/format";
 import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
@@ -21,7 +21,6 @@ import {
   type GwLedgerSummary,
 } from "@/features/admin/adminApiTypes";
 import { AdminOverviewClient } from "@/features/admin/AdminOverviewClient";
-import shared from "@/features/admin/adminShared.module.css";
 
 export const dynamic = "force-dynamic";
 
@@ -32,22 +31,13 @@ export default async function AdminOverviewPage() {
   } catch (err) {
     if (err instanceof GatewayError) {
       return (
-        <div className={shared.page}>
-          <header className={shared.titleRow}>
-            <div className={shared.titleBlock}>
-              <h1 className={shared.pageTitle}>Tổng quan quản trị</h1>
-            </div>
-          </header>
-          <div className={shared.stateWrap}>
-            <StateView
-              kind="error"
-              surface="app"
-              title="Chưa thể xác minh phiên quản trị"
-              message={SAFE_MESSAGES[err.kind]}
-              actionLabel="Tải lại"
-              actionHref="/admin"
-            />
-          </div>
+        <div className="space-y-5">
+          <PageHeader title="Tổng quan quản trị" />
+          <ErrorState
+            title="Chưa thể xác minh phiên quản trị"
+            description={SAFE_MESSAGES[err.kind]}
+            retryHref="/admin"
+          />
         </div>
       );
     }

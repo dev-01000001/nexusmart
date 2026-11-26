@@ -2,14 +2,37 @@
 
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { ExternalLink, Globe, RefreshCw, Search } from "lucide-react";
 import {
-  Button,
-  IconArrowUpRight,
-  IconGlobe,
-  IconRefresh,
-  IconSearch,
-  StateView,
-} from "@/components";
+  EmptyState,
+  ErrorState,
+  IndexRowCard,
+  IndexTable,
+  MetricStrip,
+  PageHeader,
+  StatusBadge,
+  siteStatusTone,
+} from "@/components/app";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { api, ApiError } from "@/lib/api";
 import { roleHasCapability } from "@/lib/admin-rbac";
 import { formatDateTimeVi, formatInt } from "@/lib/format";
@@ -18,18 +41,24 @@ import {
   getDomainStatusMeta,
   type SiteDomainDTO,
 } from "@/lib/site/domains";
+import { cn } from "@/lib/utils";
 import { EMPTY_DASH } from "@/features/admin/adminMeta";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { useAdminContext } from "@/features/admin/AdminShell";
-import { AdminConfirmDialog, AdminDrawer, SlidingTabBar } from "@/features/admin/AdminUi";
-import { StatusPill } from "@/features/admin/StatusPill";
-import shared from "@/features/admin/adminShared.module.css";
+import {
+  AdminConfirmActionDialog,
+  AdminDetailField,
+  AdminDetailGrid,
+  AdminPaginationBar,
+} from "@/features/admin/ops/AdminOpsPrimitives";
+import { adminDomainStatusTone } from "@/features/admin/ops/adminTones";
 import type { AdminSitesListResponse, GwSite } from "@/features/seller/site/siteEditorTypes";
 import { getSiteStatusMeta } from "@/features/seller/site/siteEditorUtils";
 import { buildPublicSiteUrl } from "@/features/seller/site/siteSummary";
-import styles from "./AdminSitesClient.module.css";
 
 type SiteFilterTab = "all" | "PUBLISHED" | "DRAFT" | "SUSPENDED";
+
+const SITES_PAGE_SIZE = 15;
 
 interface ShopDomainsCacheEntry {
   domains: SiteDomainDTO[];
@@ -68,6 +97,7 @@ function AdminSitesContent({
   const [sites, setSites] = useState<GwSite[]>(initialSites);
   const [activeTab, setActiveTab] = useState<SiteFilterTab>("all");
   const [query, setQuery] = useState(initialQuery);
+  const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(initialSelected);
   const [drawerOpen, setDrawerOpen] = useState(Boolean(initialSelected));
   const [reasonDrafts, setReasonDrafts] = useState<Record<string, string>>({});
@@ -124,6 +154,13 @@ function AdminSitesContent({
       );
     });
   }, [sites, activeTab, query, resolveShopName]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / SITES_PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pagedSites = useMemo(() => {
+    const start = (safePage - 1) * SITES_PAGE_SIZE;
+    return filtered.slice(start, start + SITES_PAGE_SIZE);
+  }, [filtered, safePage]);
 
   const activeSite = useMemo(() => {
     if (!selectedId) return null;
@@ -312,24 +349,22 @@ function AdminSitesContent({
 
   if (loadError) {
     return (
-      <div className={shared.page}>
-        <StateView
-          kind="error"
-          surface="app"
+      <div className="space-y-5">
+        <PageHeader title="Site gian hàng" />
+        <ErrorState
           title="Không thể tải danh sách site gian hàng"
-          message={loadError}
-          actionLabel="Thử lại"
-          onAction={() => router.refresh()}
+          description={loadError}
+          onRetry={() => router.refresh()}
         />
       </div>
     );
   }
 
-  const tabs: Array<{ id: SiteFilterTab; label: string; count: number }> = [
-    { id: "all", label: "Tất cả", count: counts.all },
-    { id: "PUBLISHED", label: "Đang hoạt động", count: counts.PUBLISHED },
-    { id: "DRAFT", label: "Bản nháp", count: counts.DRAFT },
-    { id: "SUSPENDED", label: "Tạm khóa", count: counts.SUSPENDED },
+  const tabs = [
+    { key: "all", label: "Tất cả", count: counts.all },
+    { key: "PUBLISHED", label: "Đang hoạt động", count: counts.PUBLISHED },
+    { key: "DRAFT", label: "Bản nháp", count: counts.DRAFT },
+    { key: "SUSPENDED", label: "Tạm khóa", count: counts.SUSPENDED },
   ];
 
   const renderDrawerBody = (site: GwSite) => {
@@ -349,93 +384,87 @@ function AdminSitesContent({
     const domainsLoading = !domainState || domainState.loading;
 
     return (
-      <>
-        <div className={shared.detailWell}>
-          <div className={shared.detailGrid}>
-            <div className={shared.detailField}>
-              <span className={shared.detailKey}>Gian hàng</span>
-              <span className={shared.detailVal}>{shopName}</span>
-            </div>
-            <div className={shared.detailField}>
-              <span className={shared.detailKey}>Tên miền phụ</span>
-              <span className={shared.detailVal}>{site.subdomain || EMPTY_DASH}</span>
-            </div>
-            <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-              <span className={shared.detailKey}>Địa chỉ đầy đủ</span>
-              {isPublished ? (
-                <a
-                  href={buildPublicSiteUrl(fullHost, requestHost, requestProto) || "#"}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className={styles.hostLink}
-                >
-                  <span>{fullHost}</span>
-                  <IconArrowUpRight size={14} />
-                </a>
-              ) : (
-                <span className={styles.hostPlain}>{fullHost}</span>
-              )}
-            </div>
-            <div className={shared.detailField}>
-              <span className={shared.detailKey}>Phiên bản xuất bản</span>
-              <span className={`${shared.detailValPlain} num`}>{versionText}</span>
-            </div>
-            <div className={shared.detailField}>
-              <span className={shared.detailKey}>Xuất bản gần nhất</span>
-              <span className={`${shared.detailValPlain} num`}>
-                {site.published_at ? formatDateTimeVi(site.published_at) : EMPTY_DASH}
-              </span>
-            </div>
-            <div className={shared.detailField}>
-              <span className={shared.detailKey}>Cập nhật gần nhất</span>
-              <span className={`${shared.detailValPlain} num`}>
-                {site.updated_at ? formatDateTimeVi(site.updated_at) : EMPTY_DASH}
-              </span>
-            </div>
-            {site.suspended_reason && (
-              <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                <span className={shared.detailKey}>Lý do tạm khóa hiện tại</span>
-                <span className={styles.reasonText}>{site.suspended_reason}</span>
-              </div>
+      <div className="space-y-5 px-4 pb-6">
+        <AdminDetailGrid>
+          <AdminDetailField label="Gian hàng">{shopName}</AdminDetailField>
+          <AdminDetailField label="Tên miền phụ">{site.subdomain || EMPTY_DASH}</AdminDetailField>
+          <AdminDetailField label="Địa chỉ đầy đủ" wide>
+            {isPublished ? (
+              <a
+                href={buildPublicSiteUrl(fullHost, requestHost, requestProto) || "#"}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 font-medium text-brand hover:underline"
+              >
+                <span>{fullHost}</span>
+                <ExternalLink className="size-3.5 shrink-0" aria-hidden="true" />
+              </a>
+            ) : (
+              <span>{fullHost}</span>
             )}
-          </div>
-        </div>
+          </AdminDetailField>
+          <AdminDetailField label="Phiên bản xuất bản" mono>
+            {versionText}
+          </AdminDetailField>
+          <AdminDetailField label="Xuất bản gần nhất" mono>
+            {site.published_at ? formatDateTimeVi(site.published_at) : EMPTY_DASH}
+          </AdminDetailField>
+          <AdminDetailField label="Cập nhật gần nhất" mono wide>
+            {site.updated_at ? formatDateTimeVi(site.updated_at) : EMPTY_DASH}
+          </AdminDetailField>
+          {site.suspended_reason && (
+            <AdminDetailField label="Lý do tạm khóa hiện tại" wide>
+              <span className="font-medium text-destructive">{site.suspended_reason}</span>
+            </AdminDetailField>
+          )}
+        </AdminDetailGrid>
 
-        <div className={styles.domainsSection} aria-label="Tên miền của site">
-          <div className={styles.domainsHeader}>
-            <h3 className={styles.domainsTitle}>
-              <IconGlobe size={15} />
+        <Separator />
+
+        <div className="space-y-3" aria-label="Tên miền của site">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="inline-flex items-center gap-1.5 text-sm font-semibold text-foreground">
+              <Globe className="size-4 text-brand" aria-hidden="true" />
               <span>Tên miền của site</span>
             </h3>
-            <button
+            <Button
               type="button"
-              className={styles.domainsReloadBtn}
+              variant="outline"
+              size="xs"
               disabled={domainsLoading}
               onClick={() => void loadShopDomains(site.shop_id, true)}
             >
-              <IconRefresh size={13} />
+              <RefreshCw
+                className={cn("size-3.5", domainsLoading && "animate-spin")}
+                aria-hidden="true"
+              />
               <span>{domainsLoading ? "Đang tải..." : "Tải lại"}</span>
-            </button>
+            </Button>
           </div>
 
           {domainsLoading && !domainState?.loaded ? (
-            <p className={styles.domainsStateText}>Đang tải danh sách tên miền...</p>
+            <p className="text-xs text-muted-foreground">Đang tải danh sách tên miền...</p>
           ) : domainState?.error ? (
-            <div className={styles.domainsErrorRow} role="alert">
+            <div
+              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-badge-critical-bg/40 p-3 text-xs text-destructive"
+              role="alert"
+            >
               <span>{domainState.error}</span>
               <Button
+                type="button"
                 variant="outline"
-                size="sm"
-                shape="app"
+                size="xs"
                 onClick={() => void loadShopDomains(site.shop_id, true)}
               >
                 Thử lại
               </Button>
             </div>
           ) : !domainState || domainState.domains.length === 0 ? (
-            <p className={styles.domainsStateText}>Chưa có bản ghi tên miền nào cho site này.</p>
+            <p className="text-xs text-muted-foreground">
+              Chưa có bản ghi tên miền nào cho site này.
+            </p>
           ) : (
-            <div className={styles.domainsList}>
+            <div className="space-y-2">
               {domainState.domains.map((domain) => {
                 const domainMeta = getDomainStatusMeta(domain.status);
                 const isCustom = domain.kind === "CUSTOM";
@@ -446,44 +475,48 @@ function AdminSitesContent({
                     : "";
 
                 return (
-                  <div key={domain.id} className={styles.domainItem}>
-                    <div className={styles.domainRowMain}>
-                      <div className={styles.domainIdentity}>
-                        <div className={styles.domainHostRow}>
-                          <span className={styles.domainHost}>{domain.host}</span>
-                          {domain.is_primary && (
-                            <span
-                              className={`${shared.channelBadge} ${shared.channelBadgeStorefront}`}
-                            >
-                              Địa chỉ chính
-                            </span>
-                          )}
-                        </div>
-                        <div className={styles.domainMetaRow}>
-                          <span>
-                            {domain.kind === "SUBDOMAIN" ? "Tên miền mặc định" : "Tên miền riêng"}
-                          </span>
-                          <span className={styles.domainMetaItem}>
-                            Xác minh:{" "}
-                            {domain.verified_at ? formatDateTimeVi(domain.verified_at) : EMPTY_DASH}
-                          </span>
-                        </div>
-                        {errorText && <span className={styles.domainErrorNote}>{errorText}</span>}
+                  <div
+                    key={domain.id}
+                    className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[13px] font-medium text-foreground [overflow-wrap:anywhere]">
+                          {domain.host}
+                        </span>
+                        {domain.is_primary && <Badge variant="info">Địa chỉ chính</Badge>}
                       </div>
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                        <span>
+                          {domain.kind === "SUBDOMAIN" ? "Tên miền mặc định" : "Tên miền riêng"}
+                        </span>
+                        <span>·</span>
+                        <span className="tabular-nums">
+                          Xác minh:{" "}
+                          {domain.verified_at ? formatDateTimeVi(domain.verified_at) : EMPTY_DASH}
+                        </span>
+                      </div>
+                      {errorText && (
+                        <p className="text-xs font-medium text-destructive">{errorText}</p>
+                      )}
+                    </div>
 
-                      <div className={styles.domainRight}>
-                        <StatusPill label={domainMeta.label} tone={domainMeta.adminTone} />
-                        {isCustom && canWriteDomains && (
-                          <button
-                            type="button"
-                            className={`${shared.rowActionBtn} ${shared.rowActionBtnDanger}`}
-                            disabled={Boolean(removingDomainKey)}
-                            onClick={() => setConfirmRemoveDomain({ site, domain })}
-                          >
-                            Gỡ tên miền
-                          </button>
-                        )}
-                      </div>
+                    <div className="flex shrink-0 flex-wrap items-center gap-2">
+                      <StatusBadge tone={adminDomainStatusTone(domain.status)}>
+                        {domainMeta.label}
+                      </StatusBadge>
+                      {isCustom && canWriteDomains && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="xs"
+                          disabled={Boolean(removingDomainKey)}
+                          className="text-destructive hover:bg-badge-critical-bg/60 hover:text-destructive"
+                          onClick={() => setConfirmRemoveDomain({ site, domain })}
+                        >
+                          Gỡ tên miền
+                        </Button>
+                      )}
                     </div>
                   </div>
                 );
@@ -493,236 +526,278 @@ function AdminSitesContent({
         </div>
 
         {canSuspendSite && (
-          <div className={shared.detailActionBar}>
-            <div className={shared.detailNoteGroup}>
-              <label htmlFor={`site-reason-${site.id}`} className={shared.fieldLabel}>
-                {isSuspended ? "Ghi chú mở khóa site (tùy chọn)" : "Lý do tạm khóa site (bắt buộc)"}
-              </label>
-              <input
-                id={`site-reason-${site.id}`}
-                type="text"
-                className={shared.textInput}
-                value={draftReason}
-                onChange={(e) => {
-                  setReasonDrafts((prev) => ({ ...prev, [site.id]: e.target.value }));
-                  if (showReasonError) setReasonErrorId(null);
-                }}
-                placeholder={
-                  isSuspended
-                    ? "Nhập ghi chú mở khóa cho nhật ký quản trị..."
-                    : "Nhập lý do cụ thể trước khi tạm khóa..."
-                }
-              />
-              {showReasonError && (
-                <span className={shared.validationError}>
-                  Vui lòng nhập lý do cụ thể trước khi tạm khóa site.
-                </span>
-              )}
-            </div>
+          <>
+            <Separator />
+            <div className="space-y-3 rounded-lg border border-border bg-card p-4">
+              <Field>
+                <FieldLabel htmlFor={`site-reason-${site.id}`}>
+                  {isSuspended
+                    ? "Ghi chú mở khóa site (tùy chọn)"
+                    : "Lý do tạm khóa site (bắt buộc)"}
+                </FieldLabel>
+                <Input
+                  id={`site-reason-${site.id}`}
+                  type="text"
+                  value={draftReason}
+                  onChange={(e) => {
+                    setReasonDrafts((prev) => ({ ...prev, [site.id]: e.target.value }));
+                    if (showReasonError) setReasonErrorId(null);
+                  }}
+                  placeholder={
+                    isSuspended
+                      ? "Nhập ghi chú mở khóa cho nhật ký quản trị..."
+                      : "Nhập lý do cụ thể trước khi tạm khóa..."
+                  }
+                />
+                {showReasonError && (
+                  <FieldError>Vui lòng nhập lý do cụ thể trước khi tạm khóa site.</FieldError>
+                )}
+              </Field>
 
-            <div className={shared.detailButtons}>
-              {isSuspended ? (
-                <Button
-                  variant="primary"
-                  size="sm"
-                  shape="app"
-                  loading={isBusy}
-                  onClick={() => void handleToggleSuspend(site, false)}
-                >
-                  Mở khóa
-                </Button>
-              ) : (
-                <Button
-                  variant="danger"
-                  size="sm"
-                  shape="app"
-                  disabled={isBusy}
-                  onClick={() => handleRequestSuspend(site)}
-                >
-                  Tạm khóa
-                </Button>
-              )}
+              <div className="flex flex-wrap items-center gap-2">
+                {isSuspended ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={isBusy}
+                    onClick={() => void handleToggleSuspend(site, false)}
+                  >
+                    {isBusy ? "Đang mở khóa..." : "Mở khóa"}
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    disabled={isBusy}
+                    onClick={() => handleRequestSuspend(site)}
+                  >
+                    Tạm khóa
+                  </Button>
+                )}
+              </div>
             </div>
-          </div>
+          </>
         )}
-      </>
+      </div>
     );
   };
 
   return (
-    <div className={shared.page}>
-      <header className={shared.titleRow}>
-        <div className={shared.titleBlock}>
-          <h1 className={shared.pageTitle}>Site gian hàng</h1>
-        </div>
-        <div className={shared.titleActions}>
+    <div className="space-y-5">
+      <PageHeader
+        title="Site gian hàng"
+        subtitle={`Quản lý tên miền phụ (*.${rootDomain}), tên miền riêng và trạng thái xuất bản.`}
+        primaryAction={
           <Button
-            variant="outline"
+            type="button"
+            variant="secondary"
             size="sm"
-            shape="app"
-            loading={refreshing}
+            disabled={refreshing}
             onClick={() => void handleRefresh()}
           >
-            <IconRefresh size={14} />
-            <span>Làm mới</span>
+            <RefreshCw className={cn("size-4", refreshing && "animate-spin")} aria-hidden="true" />
+            <span>{refreshing ? "Đang tải..." : "Làm mới"}</span>
           </Button>
-        </div>
-      </header>
-
-      <SlidingTabBar
-        tabs={tabs}
-        activeId={activeTab}
-        onChange={setActiveTab}
-        ariaLabel="Lọc trạng thái site gian hàng"
-        rightSlot={<span className={shared.resultCount}>*.{rootDomain}</span>}
+        }
       />
 
-      <div className={shared.toolbar}>
-        <div className={shared.toolbarLeft}>
-          <div className={shared.searchWrap}>
-            <span className={shared.searchIcon}>
-              <IconSearch size={14} />
-            </span>
-            <input
+      <MetricStrip
+        className="md:grid-flow-row md:grid-cols-2 md:divide-x-0 lg:grid-flow-col lg:auto-cols-fr lg:divide-x"
+        items={[
+          { label: "Tổng site", value: formatInt(counts.all) },
+          { label: "Đang hoạt động", value: formatInt(counts.PUBLISHED) },
+          { label: "Bản nháp", value: formatInt(counts.DRAFT) },
+          { label: "Tạm khóa", value: formatInt(counts.SUSPENDED) },
+        ]}
+      />
+
+      <IndexTable
+        tabs={tabs}
+        activeTab={activeTab}
+        onTabChange={(next) => {
+          setActiveTab(next as SiteFilterTab);
+          setPage(1);
+        }}
+        toolbar={
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {formatInt(filtered.length)} site · *.{rootDomain}
+          </span>
+        }
+        footer={
+          filtered.length > 0 ? (
+            <AdminPaginationBar
+              page={safePage}
+              totalPages={totalPages}
+              totalItems={filtered.length}
+              itemLabel="site"
+              onPageChange={setPage}
+            />
+          ) : undefined
+        }
+      >
+        <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/35 px-4 py-2.5">
+          <div className="relative min-w-0 flex-1 sm:max-w-sm">
+            <Search
+              className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <Input
               type="search"
-              className={shared.toolbarSearch}
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setPage(1);
+              }}
               placeholder="Tìm tên gian hàng, tên miền phụ..."
               aria-label="Tìm kiếm site gian hàng"
+              className="h-9 bg-card pl-8"
             />
           </div>
         </div>
-        <div className={shared.toolbarRight}>
-          <span className={shared.resultCount}>{formatInt(filtered.length)} site</span>
-        </div>
-      </div>
 
-      {filtered.length === 0 ? (
-        <p className={shared.emptyRow}>Không tìm thấy site gian hàng phù hợp.</p>
-      ) : (
-        <>
-          <div className={shared.tableWrap}>
-            <table className={shared.dataTable}>
-              <thead>
-                <tr>
-                  <th>Gian hàng</th>
-                  <th>Tên miền phụ &amp; Địa chỉ</th>
-                  <th>Trạng thái</th>
-                  <th className={shared.colNum}>Phiên bản</th>
-                  <th>Cập nhật</th>
-                  <th className={shared.colAction}>Thao tác</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((site) => {
-                  const statusMeta = getSiteStatusMeta(site.status);
-                  const isSelected = drawerOpen && activeSite?.id === site.id;
-                  const shopName = resolveShopName(site);
-                  const fullHost = site.primary_host || `${site.subdomain}.${rootDomain}`;
-                  const isSuspended = site.status.toUpperCase() === "SUSPENDED";
-                  const versionLabel = site.published_version_number
-                    ? `v${site.published_version_number}`
-                    : site.published_version_id
-                      ? "Đã xuất bản"
-                      : "Chưa có";
-
-                  return (
-                    <tr
-                      key={site.id}
-                      className={`${shared.rowInteractive} ${isSelected ? shared.rowSelected : ""}`}
-                      onClick={() => openSiteDrawer(site)}
-                    >
-                      <td>
-                        <div className={shared.cellPrimary}>{shopName}</div>
-                        <div className={shared.cellSub}>{site.shop_id.slice(0, 12)}</div>
-                      </td>
-                      <td>
-                        <div className={shared.cellPrimary}>{site.subdomain}</div>
-                        <div className={shared.cellSub}>{fullHost}</div>
-                      </td>
-                      <td>
-                        <StatusPill label={statusMeta.label} tone={statusMeta.adminTone} />
-                      </td>
-                      <td className={shared.colNum}>
-                        <span
-                          className={
-                            site.published_version_id ? styles.versionTag : styles.versionMuted
-                          }
-                        >
-                          {versionLabel}
-                        </span>
-                      </td>
-                      <td>{site.updated_at ? formatDateTimeVi(site.updated_at) : EMPTY_DASH}</td>
-                      <td className={shared.colAction}>
-                        <button
-                          type="button"
-                          className={shared.rowActionBtn}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openSiteDrawer(site);
-                          }}
-                        >
-                          {canSuspendSite
-                            ? isSuspended
-                              ? "Mở khóa"
-                              : "Quản lý / Khóa"
-                            : "Xem chi tiết"}
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+        {filtered.length === 0 ? (
+          <div className="p-4">
+            <EmptyState
+              icon={Globe}
+              title="Không tìm thấy site gian hàng phù hợp"
+              description="Thử chọn bộ lọc trạng thái khác hoặc thay đổi từ khóa tìm kiếm."
+              className="shadow-none"
+            />
           </div>
+        ) : (
+          <>
+            <div className="hidden md:block">
+              <Table aria-label="Danh sách site gian hàng">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Gian hàng</TableHead>
+                    <TableHead className="hidden lg:table-cell">
+                      Tên miền phụ &amp; Địa chỉ
+                    </TableHead>
+                    <TableHead>Trạng thái</TableHead>
+                    <TableHead className="hidden text-right lg:table-cell">Phiên bản</TableHead>
+                    <TableHead className="hidden xl:table-cell">Cập nhật</TableHead>
+                    <TableHead className="text-right">Thao tác</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {pagedSites.map((site) => {
+                    const statusMeta = getSiteStatusMeta(site.status);
+                    const isSelected = drawerOpen && activeSite?.id === site.id;
+                    const shopName = resolveShopName(site);
+                    const fullHost = site.primary_host || `${site.subdomain}.${rootDomain}`;
+                    const isSuspended = site.status.toUpperCase() === "SUSPENDED";
+                    const versionLabel = site.published_version_number
+                      ? `v${site.published_version_number}`
+                      : site.published_version_id
+                        ? "Đã xuất bản"
+                        : "Chưa có";
 
-          <div className={shared.mobileList}>
-            {filtered.map((site) => {
-              const statusMeta = getSiteStatusMeta(site.status);
-              const shopName = resolveShopName(site);
-              const fullHost = site.primary_host || `${site.subdomain}.${rootDomain}`;
-              return (
-                <div key={site.id} className={shared.mobileItem}>
-                  <button
-                    type="button"
-                    className={shared.mobileItemBtn}
+                    return (
+                      <TableRow
+                        key={site.id}
+                        data-state={isSelected ? "selected" : undefined}
+                        className="cursor-pointer"
+                        onClick={() => openSiteDrawer(site)}
+                      >
+                        <TableCell className="max-w-[240px] whitespace-normal">
+                          <div className="font-medium text-foreground">{shopName}</div>
+                          <div className="truncate text-xs text-muted-foreground lg:hidden">
+                            {fullHost}
+                          </div>
+                          <div className="hidden text-xs text-muted-foreground tabular-nums lg:block">
+                            {site.shop_id.slice(0, 12)}
+                          </div>
+                        </TableCell>
+                        <TableCell className="hidden max-w-[260px] whitespace-normal lg:table-cell">
+                          <div className="font-medium text-foreground">{site.subdomain}</div>
+                          <div className="truncate text-xs text-muted-foreground">{fullHost}</div>
+                        </TableCell>
+                        <TableCell>
+                          <StatusBadge tone={siteStatusTone(site.status)}>
+                            {statusMeta.label}
+                          </StatusBadge>
+                        </TableCell>
+                        <TableCell className="hidden text-right tabular-nums lg:table-cell">
+                          {site.published_version_id ? (
+                            <Badge variant="secondary" className="rounded-md font-mono">
+                              {versionLabel}
+                            </Badge>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">{versionLabel}</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="hidden text-xs text-muted-foreground tabular-nums xl:table-cell">
+                          {site.updated_at ? formatDateTimeVi(site.updated_at) : EMPTY_DASH}
+                        </TableCell>
+                        <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="xs"
+                            onClick={() => openSiteDrawer(site)}
+                          >
+                            {canSuspendSite
+                              ? isSuspended
+                                ? "Mở khóa"
+                                : "Quản lý / Khóa"
+                              : "Xem chi tiết"}
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="md:hidden">
+              {pagedSites.map((site) => {
+                const statusMeta = getSiteStatusMeta(site.status);
+                const shopName = resolveShopName(site);
+                const fullHost = site.primary_host || `${site.subdomain}.${rootDomain}`;
+                return (
+                  <IndexRowCard
+                    key={site.id}
+                    title={shopName}
+                    badge={
+                      <StatusBadge tone={siteStatusTone(site.status)}>
+                        {statusMeta.label}
+                      </StatusBadge>
+                    }
+                    meta={<span>{fullHost}</span>}
                     onClick={() => openSiteDrawer(site)}
-                  >
-                    <span className={shared.mobileLine1}>
-                      <span className={shared.mobileIdentity}>{shopName}</span>
-                      <StatusPill label={statusMeta.label} tone={statusMeta.adminTone} />
-                    </span>
-                    <span className={shared.mobileLine2}>
-                      <span className={shared.mobileMetaText}>{fullHost}</span>
-                    </span>
-                  </button>
+                  />
+                );
+              })}
+            </div>
+          </>
+        )}
+      </IndexTable>
+
+      <Sheet open={drawerOpen && Boolean(activeSite)} onOpenChange={setDrawerOpen}>
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
+          {activeSite ? (
+            <>
+              <SheetHeader className="border-b border-border pr-12">
+                <div className="flex flex-wrap items-center gap-2">
+                  <SheetTitle>{resolveShopName(activeSite)}</SheetTitle>
+                  <StatusBadge tone={siteStatusTone(activeSite.status)}>
+                    {getSiteStatusMeta(activeSite.status).label}
+                  </StatusBadge>
                 </div>
-              );
-            })}
-          </div>
-        </>
-      )}
+                <SheetDescription>
+                  {activeSite.primary_host || `${activeSite.subdomain}.${rootDomain}`}
+                </SheetDescription>
+              </SheetHeader>
+              {renderDrawerBody(activeSite)}
+            </>
+          ) : null}
+        </SheetContent>
+      </Sheet>
 
-      {activeSite && (
-        <AdminDrawer
-          open={drawerOpen}
-          onClose={() => setDrawerOpen(false)}
-          title={resolveShopName(activeSite)}
-          subtitle={activeSite.primary_host || `${activeSite.subdomain}.${rootDomain}`}
-          headerBadge={
-            <StatusPill
-              label={getSiteStatusMeta(activeSite.status).label}
-              tone={getSiteStatusMeta(activeSite.status).adminTone}
-            />
-          }
-          width="lg"
-        >
-          {renderDrawerBody(activeSite)}
-        </AdminDrawer>
-      )}
-
-      <AdminConfirmDialog
+      <AdminConfirmActionDialog
         open={canWriteDomains && Boolean(confirmRemoveDomain)}
         title="Xác nhận gỡ tên miền riêng"
         description={
@@ -731,6 +806,7 @@ function AdminSitesContent({
             : ""
         }
         confirmLabel="Xác nhận gỡ"
+        confirmVariant="destructive"
         busy={Boolean(removingDomainKey)}
         onCancel={() => setConfirmRemoveDomain(null)}
         onConfirm={() => {
@@ -740,7 +816,7 @@ function AdminSitesContent({
         }}
       />
 
-      <AdminConfirmDialog
+      <AdminConfirmActionDialog
         open={canSuspendSite && Boolean(confirmSuspendSite)}
         title="Xác nhận tạm khóa site"
         description={
@@ -749,6 +825,7 @@ function AdminSitesContent({
             : ""
         }
         confirmLabel="Xác nhận tạm khóa"
+        confirmVariant="destructive"
         busy={Boolean(confirmSuspendSite && busyId === confirmSuspendSite.id)}
         onCancel={() => setConfirmSuspendSite(null)}
         onConfirm={() => {
@@ -758,11 +835,11 @@ function AdminSitesContent({
         }}
       >
         {confirmSuspendSite && (
-          <div className={styles.confirmReasonBox}>
+          <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs">
             Lý do: {reasonDrafts[confirmSuspendSite.id]}
           </div>
         )}
-      </AdminConfirmDialog>
+      </AdminConfirmActionDialog>
     </div>
   );
 }

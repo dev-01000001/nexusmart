@@ -1,6 +1,37 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { RefreshCw, Search, ShieldBan } from "lucide-react";
+import {
+  EmptyState,
+  ErrorState,
+  IndexRowCard,
+  IndexTable,
+  StatusBadge,
+  productStatusTone,
+} from "@/components/app";
+import { Button } from "@/components/ui/button";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import type {
   GatewayBannedKeyword,
   GatewayBannedKeywordAction,
@@ -10,7 +41,6 @@ import type {
 } from "@/lib/gateway-types";
 import { api, getErrorMessage } from "@/lib/api";
 import { roleHasCapability } from "@/lib/admin-rbac";
-import { Button, IconSearch, StateView } from "@/components";
 import { formatDateTimeVi, formatInt } from "@/lib/format";
 import {
   type RescanAggregateProgress,
@@ -18,10 +48,13 @@ import {
   runBannedKeywordRescanBatches,
 } from "./bannedKeywordsHelper";
 import { getAdminProductStatusMeta } from "./types";
-import { StatusPill } from "./StatusPill";
 import { useAdminContext } from "./AdminShell";
-import shared from "./adminShared.module.css";
-import styles from "@/app/(admin)/admin/kiem-duyet/page.module.css";
+import {
+  AdminConfirmActionDialog,
+  AdminDetailField,
+  AdminDetailGrid,
+} from "./ops/AdminOpsPrimitives";
+import { adminBannedActionTone } from "./ops/adminTones";
 
 interface Props {
   onMutated?: () => void;
@@ -40,11 +73,11 @@ function formatCategoryLabel(category: string): string {
   return found ? found.label : category || "Nhóm khác";
 }
 
-function formatActionPill(action: string): { label: string; tone: "negative" | "warning" } {
+function formatActionLabel(action: string): string {
   if (action.toUpperCase() === "BLOCK") {
-    return { label: "Chặn (BLOCK)", tone: "negative" };
+    return "Chặn (BLOCK)";
   }
-  return { label: "Gắn cờ duyệt (REVIEW)", tone: "warning" };
+  return "Gắn cờ duyệt (REVIEW)";
 }
 
 export function AdminBannedKeywordsTab({ onMutated }: Props) {
@@ -82,7 +115,9 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
   const [editActive, setEditActive] = useState(true);
   const [editError, setEditError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmDeleteKeyword, setConfirmDeleteKeyword] = useState<GatewayBannedKeyword | null>(
+    null
+  );
 
   const [dryRun, setDryRun] = useState(true);
   const [rescanning, setRescanning] = useState(false);
@@ -279,11 +314,12 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
       await api<{ ok: boolean }>(`/api/admin/banned-keywords/${encodeURIComponent(kw.id)}`, {
         method: "DELETE",
       });
-      setConfirmDeleteId(null);
+      setConfirmDeleteKeyword(null);
       await loadKeywords();
       onMutated?.();
       showToast(`Đã xóa từ khoá cấm "${kw.term}".`);
     } catch (err) {
+      setConfirmDeleteKeyword(null);
       showToast(getErrorMessage(err, "Không thể xóa từ khoá cấm."));
     } finally {
       setBusyId(null);
@@ -355,240 +391,238 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
   };
 
   return (
-    <div className={styles.sectionStack}>
+    <div className="space-y-5">
       {canWriteKeywords && (
-        <section className={shared.panel} aria-labelledby="kw-create-heading">
-          <div className={shared.panelHeader}>
-            <h2 id="kw-create-heading" className={shared.panelTitle}>
+        <Card aria-labelledby="kw-create-heading">
+          <CardHeader className="border-b border-border pb-3">
+            <CardTitle id="kw-create-heading">
               Thêm quy tắc từ khoá cấm &amp; xem trước ảnh hưởng
-            </h2>
-            <span className={shared.panelMeta}>Tối đa 120 ký tự</span>
-          </div>
+            </CardTitle>
+            <CardAction>
+              <span className="text-xs text-muted-foreground">Tối đa 120 ký tự</span>
+            </CardAction>
+          </CardHeader>
+          <CardContent className="space-y-4 pt-4">
+            <form
+              onSubmit={(e) => void handleCreate(e)}
+              noValidate
+              className="grid grid-cols-1 gap-4 md:grid-cols-3"
+            >
+              <Field>
+                <FieldLabel htmlFor="kw-new-term">Cụm từ cấm</FieldLabel>
+                <Input
+                  id="kw-new-term"
+                  type="text"
+                  value={newTerm}
+                  onChange={(e) => {
+                    setNewTerm(e.target.value);
+                    if (formError) setFormError(null);
+                  }}
+                  placeholder="Ví dụ: hàng giả, zalo riêng, chuyển khoản ngoài..."
+                  maxLength={120}
+                />
+              </Field>
 
-          <form onSubmit={(e) => void handleCreate(e)} noValidate className={shared.detailGrid}>
-            <div className={shared.detailField}>
-              <label htmlFor="kw-new-term" className={shared.fieldLabel}>
-                Cụm từ cấm
-              </label>
-              <input
-                id="kw-new-term"
-                type="text"
-                className={shared.textInput}
-                value={newTerm}
-                onChange={(e) => {
-                  setNewTerm(e.target.value);
-                  if (formError) setFormError(null);
-                }}
-                placeholder="Ví dụ: hàng giả, zalo riêng, chuyển khoản ngoài..."
-                maxLength={120}
-              />
-            </div>
+              <Field>
+                <FieldLabel htmlFor="kw-new-category">Nhóm vi phạm</FieldLabel>
+                <Select value={newCategory} onValueChange={setNewCategory}>
+                  <SelectTrigger id="kw-new-category" className="w-full bg-card">
+                    <SelectValue>{formatCategoryLabel(newCategory)}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {KEYWORD_CATEGORIES.map((cat) => (
+                      <SelectItem key={cat.value} value={cat.value}>
+                        {cat.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
 
-            <div className={shared.detailField}>
-              <label htmlFor="kw-new-category" className={shared.fieldLabel}>
-                Nhóm vi phạm
-              </label>
-              <select
-                id="kw-new-category"
-                className={`${shared.toolbarSelect} ${styles.selectControl}`}
-                value={newCategory}
-                onChange={(e) => setNewCategory(e.target.value)}
-              >
-                {KEYWORD_CATEGORIES.map((cat) => (
-                  <option key={cat.value} value={cat.value}>
-                    {cat.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+              <Field>
+                <FieldLabel htmlFor="kw-new-action">Hành động áp dụng</FieldLabel>
+                <Select
+                  value={newAction}
+                  onValueChange={(val) => setNewAction(val as GatewayBannedKeywordAction)}
+                >
+                  <SelectTrigger id="kw-new-action" className="w-full bg-card">
+                    <SelectValue>
+                      {newAction === "BLOCK"
+                        ? "Chặn đăng bán & đánh giá (BLOCK)"
+                        : "Gắn cờ chuyển duyệt thủ công (REVIEW)"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="BLOCK">Chặn đăng bán &amp; đánh giá (BLOCK)</SelectItem>
+                    <SelectItem value="REVIEW">Gắn cờ chuyển duyệt thủ công (REVIEW)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
 
-            <div className={shared.detailField}>
-              <label htmlFor="kw-new-action" className={shared.fieldLabel}>
-                Hành động áp dụng
-              </label>
-              <select
-                id="kw-new-action"
-                className={`${shared.toolbarSelect} ${styles.selectControl}`}
-                value={newAction}
-                onChange={(e) => setNewAction(e.target.value as GatewayBannedKeywordAction)}
-              >
-                <option value="BLOCK">Chặn đăng bán &amp; đánh giá (BLOCK)</option>
-                <option value="REVIEW">Gắn cờ chuyển duyệt thủ công (REVIEW)</option>
-              </select>
-            </div>
+              {formError && (
+                <div className="md:col-span-3">
+                  <FieldError>{formError}</FieldError>
+                </div>
+              )}
 
-            {formError && (
-              <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                <p className={shared.validationError} role="alert">
-                  {formError}
-                </p>
-              </div>
-            )}
-
-            <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-              <div className={shared.detailButtons}>
+              <div className="flex flex-wrap items-center gap-2 md:col-span-3">
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
-                  shape="app"
                   disabled={previewLoading || submitting}
                   onClick={() => void handlePreview()}
                 >
                   {previewLoading ? "Đang kiểm tra..." : "Xem trước ảnh hưởng"}
                 </Button>
-                <Button
-                  type="submit"
-                  variant="primary"
-                  size="sm"
-                  shape="app"
-                  disabled={submitting || previewLoading}
-                >
+                <Button type="submit" size="sm" disabled={submitting || previewLoading}>
                   {submitting ? "Đang lưu..." : "Lưu từ khoá cấm"}
                 </Button>
               </div>
-            </div>
-          </form>
+            </form>
 
-          {previewResult && (
-            <div className={shared.detailWell}>
-              <div className={shared.detailHeader}>
-                <h3 className={shared.detailHeading}>
-                  Kết quả xem trước: {formatInt(previewResult.affected_count)} sản phẩm bị ảnh hưởng
-                </h3>
-                <span className={shared.panelMeta}>
-                  Hiển thị tối đa {formatInt(previewResult.samples?.length ?? 0)} mẫu
-                </span>
+            {previewResult && (
+              <div className="space-y-3 rounded-lg border border-border bg-muted/35 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold text-foreground">
+                    Kết quả xem trước: {formatInt(previewResult.affected_count)} sản phẩm bị ảnh
+                    hưởng
+                  </h3>
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    Hiển thị tối đa {formatInt(previewResult.samples?.length ?? 0)} mẫu
+                  </span>
+                </div>
+                {(previewResult.samples?.length ?? 0) === 0 ? (
+                  <p className="text-[13px] text-muted-foreground">
+                    Không có sản phẩm đang bán hoặc chờ duyệt nào khớp với cụm từ này.
+                  </p>
+                ) : (
+                  <>
+                    <div className="hidden overflow-x-auto rounded-lg border border-border bg-card md:block">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Sản phẩm</TableHead>
+                            <TableHead>Trạng thái</TableHead>
+                            <TableHead>Từ khớp</TableHead>
+                            <TableHead>Mức xử lý</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {previewResult.samples.map((s) => {
+                            const statusMeta = getAdminProductStatusMeta(s.status);
+                            return (
+                              <TableRow key={s.product_id}>
+                                <TableCell>
+                                  <div className="font-medium text-foreground">{s.name}</div>
+                                  <div className="text-xs text-muted-foreground">/{s.slug}</div>
+                                </TableCell>
+                                <TableCell>
+                                  <StatusBadge tone={productStatusTone(s.status)}>
+                                    {statusMeta.label}
+                                  </StatusBadge>
+                                </TableCell>
+                                <TableCell>{(s.matched_terms ?? []).join(", ") || "—"}</TableCell>
+                                <TableCell>
+                                  <StatusBadge tone={adminBannedActionTone(s.highest_action)}>
+                                    {formatActionLabel(s.highest_action)}
+                                  </StatusBadge>
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </div>
+                    <div className="overflow-hidden rounded-lg border border-border bg-card md:hidden">
+                      {previewResult.samples.map((s) => {
+                        const statusMeta = getAdminProductStatusMeta(s.status);
+                        return (
+                          <IndexRowCard
+                            key={s.product_id}
+                            title={s.name}
+                            badge={
+                              <StatusBadge tone={adminBannedActionTone(s.highest_action)}>
+                                {formatActionLabel(s.highest_action)}
+                              </StatusBadge>
+                            }
+                            meta={
+                              <span>
+                                Trạng thái: {statusMeta.label} · Khớp:{" "}
+                                {(s.matched_terms ?? []).join(", ")}
+                              </span>
+                            }
+                          />
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
               </div>
-              {(previewResult.samples?.length ?? 0) === 0 ? (
-                <p className={shared.detailValPlain}>
-                  Không có sản phẩm đang bán hoặc chờ duyệt nào khớp với cụm từ này.
-                </p>
-              ) : (
-                <>
-                  <div className={shared.tableWrap}>
-                    <table className={shared.dataTable}>
-                      <thead>
-                        <tr>
-                          <th>Sản phẩm</th>
-                          <th>Trạng thái</th>
-                          <th>Từ khớp</th>
-                          <th>Mức xử lý</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {previewResult.samples.map((s) => {
-                          const statusMeta = getAdminProductStatusMeta(s.status);
-                          const actMeta = formatActionPill(s.highest_action);
-                          return (
-                            <tr key={s.product_id}>
-                              <td>
-                                <div className={shared.cellPrimary}>{s.name}</div>
-                                <div className={shared.cellSub}>/{s.slug}</div>
-                              </td>
-                              <td>
-                                <StatusPill label={statusMeta.label} tone={statusMeta.tone} />
-                              </td>
-                              <td>{(s.matched_terms ?? []).join(", ") || "—"}</td>
-                              <td>
-                                <StatusPill label={actMeta.label} tone={actMeta.tone} />
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                  <div className={shared.mobileList}>
-                    {previewResult.samples.map((s) => {
-                      const statusMeta = getAdminProductStatusMeta(s.status);
-                      const actMeta = formatActionPill(s.highest_action);
-                      return (
-                        <article key={s.product_id} className={shared.mobileItem}>
-                          <div className={shared.mobileLine1}>
-                            <span className={shared.mobileIdentity}>{s.name}</span>
-                            <StatusPill label={actMeta.label} tone={actMeta.tone} />
-                          </div>
-                          <div className={shared.mobileLine2}>
-                            <span className={shared.mobileMetaText}>
-                              Trạng thái: {statusMeta.label} · Khớp:{" "}
-                              {(s.matched_terms ?? []).join(", ")}
-                            </span>
-                          </div>
-                        </article>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-        </section>
+            )}
+          </CardContent>
+        </Card>
       )}
 
       {canWriteKeywords && (
-        <section className={shared.panel} aria-labelledby="kw-rescan-heading">
-          <div className={shared.panelHeader}>
-            <h2 id="kw-rescan-heading" className={shared.panelTitle}>
+        <Card aria-labelledby="kw-rescan-heading">
+          <CardHeader className="border-b border-border pb-3">
+            <CardTitle id="kw-rescan-heading">
               Quét lại sản phẩm đang bán theo từ khoá cấm
-            </h2>
-            <span className={shared.panelMeta}>Lô 500 sản phẩm</span>
-          </div>
+            </CardTitle>
+            <CardAction>
+              <span className="text-xs text-muted-foreground">Lô 500 sản phẩm</span>
+            </CardAction>
+          </CardHeader>
+          <CardContent className="space-y-4 pt-4">
+            <p className="text-[13px] text-muted-foreground">
+              Quy tắc BLOCK chuyển sản phẩm sang từ chối; quy tắc REVIEW chuyển về hàng đợi chờ
+              duyệt.
+            </p>
 
-          <p className={styles.helperText}>
-            Quy tắc BLOCK chuyển sản phẩm sang từ chối; quy tắc REVIEW chuyển về hàng đợi chờ duyệt.
-          </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="kw-rescan-dry-run"
+                  checked={dryRun}
+                  onCheckedChange={(checked) => setDryRun(Boolean(checked))}
+                  disabled={rescanning}
+                />
+                <Label htmlFor="kw-rescan-dry-run" className="cursor-pointer font-normal">
+                  Chạy thử (chỉ thống kê, không đổi trạng thái)
+                </Label>
+              </div>
 
-          <div className={shared.detailButtons}>
-            <label className={styles.inlineCheck}>
-              <input
-                type="checkbox"
-                checked={dryRun}
-                onChange={(e) => setDryRun(e.target.checked)}
-                disabled={rescanning}
-              />
-              <span>Chạy thử (chỉ thống kê, không đổi trạng thái)</span>
-            </label>
-
-            <Button
-              type="button"
-              variant={dryRun ? "outline" : "danger"}
-              size="sm"
-              shape="app"
-              disabled={rescanning}
-              onClick={() => void handleRescan()}
-            >
-              {rescanning
-                ? `Đang quét lô ${rescanProgress ? rescanProgress.batches + 1 : 1}...`
-                : dryRun
-                  ? "Chạy thử quét lại"
-                  : "Quét lại sản phẩm"}
-            </Button>
-            {rescanning && (
               <Button
                 type="button"
-                variant="outline"
+                variant={dryRun ? "outline" : "destructive"}
                 size="sm"
-                shape="app"
-                onClick={handleStopRescan}
+                disabled={rescanning}
+                onClick={() => void handleRescan()}
               >
-                Dừng
+                {rescanning
+                  ? `Đang quét lô ${rescanProgress ? rescanProgress.batches + 1 : 1}...`
+                  : dryRun
+                    ? "Chạy thử quét lại"
+                    : "Quét lại sản phẩm"}
               </Button>
+              {rescanning && (
+                <Button type="button" variant="outline" size="sm" onClick={handleStopRescan}>
+                  Dừng
+                </Button>
+              )}
+            </div>
+
+            {rescanError && (
+              <p className="text-[13px] font-medium text-destructive" role="alert">
+                {rescanError}
+              </p>
             )}
-          </div>
 
-          {rescanError && (
-            <p className={shared.validationError} role="alert">
-              {rescanError}
-            </p>
-          )}
-
-          {rescanProgress && (
-            <div className={shared.detailWell}>
-              <div className={shared.detailGrid}>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Tiến độ quét</span>
-                  <span className={shared.detailVal}>
+            {rescanProgress && (
+              <div className="space-y-3">
+                <AdminDetailGrid className="sm:grid-cols-3">
+                  <AdminDetailField label="Tiến độ quét">
                     {rescanning
                       ? `Đang quét (${formatInt(rescanProgress.batches)} lô)`
                       : rescanStatus === "interrupted"
@@ -596,520 +630,532 @@ export function AdminBannedKeywordsTab({ onMutated }: Props) {
                         : rescanStatus === "stopped"
                           ? `Đã dừng sau ${formatInt(rescanProgress.batches)} lô`
                           : `Hoàn tất (${formatInt(rescanProgress.batches)} lô)`}
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Đã quét</span>
-                  <span className={`${shared.detailVal} num`}>
+                  </AdminDetailField>
+                  <AdminDetailField label="Đã quét" mono>
                     {formatInt(rescanProgress.scannedCount)} sản phẩm
-                  </span>
-                </div>
-                <div className={shared.detailField}>
-                  <span className={shared.detailKey}>Chặn / Gắn cờ duyệt</span>
-                  <span className={`${shared.detailVal} num`}>
+                  </AdminDetailField>
+                  <AdminDetailField label="Chặn / Gắn cờ duyệt" mono>
                     {formatInt(rescanProgress.blockedCount)} chặn ·{" "}
                     {formatInt(rescanProgress.flaggedCount)} gắn cờ
-                  </span>
-                </div>
-              </div>
+                  </AdminDetailField>
+                </AdminDetailGrid>
 
-              {rescanProgress.samples.length > 0 && (
-                <>
-                  <div className={shared.tableWrap}>
-                    <table className={shared.dataTable}>
-                      <thead>
-                        <tr>
-                          <th>Sản phẩm (tối đa 20 mẫu)</th>
-                          <th>Trạng thái trước quét</th>
-                          <th>Từ khoá khớp</th>
-                          <th>Mức xử lý</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {rescanProgress.samples.map((s) => {
-                          const statusMeta = getAdminProductStatusMeta(s.status);
-                          const actMeta = formatActionPill(s.highest_action);
-                          return (
-                            <tr key={s.product_id}>
-                              <td>
-                                <div className={shared.cellPrimary}>{s.name}</div>
-                                <div className={shared.cellSub}>/{s.slug}</div>
-                              </td>
-                              <td>
-                                <StatusPill label={statusMeta.label} tone={statusMeta.tone} />
-                              </td>
-                              <td>{(s.matched_terms ?? []).join(", ") || "—"}</td>
-                              <td>
-                                <StatusPill label={actMeta.label} tone={actMeta.tone} />
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                  <div className={shared.mobileList}>
-                    {rescanProgress.samples.map((s) => {
-                      const statusMeta = getAdminProductStatusMeta(s.status);
-                      const actMeta = formatActionPill(s.highest_action);
-                      return (
-                        <article key={s.product_id} className={shared.mobileItem}>
-                          <div className={shared.mobileLine1}>
-                            <span className={shared.mobileIdentity}>{s.name}</span>
-                            <StatusPill label={actMeta.label} tone={actMeta.tone} />
-                          </div>
-                          <div className={shared.mobileLine2}>
-                            <span className={shared.mobileMetaText}>
-                              Trước quét: {statusMeta.label} · {(s.matched_terms ?? []).join(", ")}
-                            </span>
-                          </div>
-                        </article>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-        </section>
+                {rescanProgress.samples.length > 0 && (
+                  <>
+                    <div className="hidden overflow-x-auto rounded-lg border border-border md:block">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Sản phẩm (tối đa 20 mẫu)</TableHead>
+                            <TableHead>Trạng thái trước quét</TableHead>
+                            <TableHead>Từ khoá khớp</TableHead>
+                            <TableHead>Mức xử lý</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {rescanProgress.samples.map((s) => {
+                            const statusMeta = getAdminProductStatusMeta(s.status);
+                            return (
+                              <TableRow key={s.product_id}>
+                                <TableCell>
+                                  <div className="font-medium text-foreground">{s.name}</div>
+                                  <div className="text-xs text-muted-foreground">/{s.slug}</div>
+                                </TableCell>
+                                <TableCell>
+                                  <StatusBadge tone={productStatusTone(s.status)}>
+                                    {statusMeta.label}
+                                  </StatusBadge>
+                                </TableCell>
+                                <TableCell>{(s.matched_terms ?? []).join(", ") || "—"}</TableCell>
+                                <TableCell>
+                                  <StatusBadge tone={adminBannedActionTone(s.highest_action)}>
+                                    {formatActionLabel(s.highest_action)}
+                                  </StatusBadge>
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </div>
+                    <div className="overflow-hidden rounded-lg border border-border md:hidden">
+                      {rescanProgress.samples.map((s) => {
+                        const statusMeta = getAdminProductStatusMeta(s.status);
+                        return (
+                          <IndexRowCard
+                            key={s.product_id}
+                            title={s.name}
+                            badge={
+                              <StatusBadge tone={adminBannedActionTone(s.highest_action)}>
+                                {formatActionLabel(s.highest_action)}
+                              </StatusBadge>
+                            }
+                            meta={
+                              <span>
+                                Trước quét: {statusMeta.label} ·{" "}
+                                {(s.matched_terms ?? []).join(", ")}
+                              </span>
+                            }
+                          />
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
       )}
 
-      <section className={shared.panel} aria-labelledby="kw-list-heading">
-        <div className={shared.panelHeader}>
-          <h2 id="kw-list-heading" className={shared.panelTitle}>
-            Danh sách từ khoá cấm ({formatInt(total)})
-          </h2>
-          <Button variant="outline" size="sm" shape="app" onClick={() => void loadKeywords()}>
-            Làm mới
-          </Button>
-        </div>
+      <section aria-labelledby="kw-list-heading">
+        <IndexTable
+          toolbar={
+            <div className="flex w-full flex-wrap items-center justify-between gap-2">
+              <h2 id="kw-list-heading" className="text-sm font-semibold text-foreground">
+                Danh sách từ khoá cấm ({formatInt(total)})
+              </h2>
+              <Button type="button" variant="outline" size="xs" onClick={() => void loadKeywords()}>
+                <RefreshCw className="size-3.5" aria-hidden="true" />
+                <span>Làm mới</span>
+              </Button>
+            </div>
+          }
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/35 px-4 py-2.5">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              <div className="relative min-w-0 flex-1 sm:max-w-xs">
+                <Search
+                  className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <Input
+                  type="search"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Tìm từ khoá cấm..."
+                  aria-label="Tìm từ khoá cấm"
+                  className="h-9 bg-card pl-8"
+                />
+              </div>
 
-        <div className={shared.toolbar}>
-          <div className={shared.toolbarLeft}>
-            <div className={shared.searchWrap}>
-              <span className={shared.searchIcon}>
-                <IconSearch size={14} />
-              </span>
-              <input
-                type="search"
-                className={shared.toolbarSearch}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Tìm từ khoá cấm..."
-                aria-label="Tìm từ khoá cấm"
-              />
+              <Select
+                value={actionFilter || "ALL"}
+                onValueChange={(val) =>
+                  setActionFilter((val === "ALL" ? "" : val) as "" | GatewayBannedKeywordAction)
+                }
+              >
+                <SelectTrigger className="w-full bg-card sm:w-48" aria-label="Lọc theo hành động">
+                  <SelectValue>
+                    {actionFilter ? formatActionLabel(actionFilter) : "Tất cả hành động"}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">Tất cả hành động</SelectItem>
+                  <SelectItem value="BLOCK">Chặn (BLOCK)</SelectItem>
+                  <SelectItem value="REVIEW">Gắn cờ duyệt (REVIEW)</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
-            <select
-              className={shared.toolbarSelect}
-              value={actionFilter}
-              onChange={(e) => setActionFilter(e.target.value as "" | GatewayBannedKeywordAction)}
-              aria-label="Lọc theo hành động"
-            >
-              <option value="">Tất cả hành động</option>
-              <option value="BLOCK">Chặn (BLOCK)</option>
-              <option value="REVIEW">Gắn cờ duyệt (REVIEW)</option>
-            </select>
-          </div>
-
-          <div className={shared.toolbarRight}>
-            <label className={styles.inlineCheck}>
-              <input
-                type="checkbox"
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="kw-include-inactive"
                 checked={includeInactive}
-                onChange={(e) => setIncludeInactive(e.target.checked)}
+                onCheckedChange={(checked) => setIncludeInactive(Boolean(checked))}
               />
-              <span>Hiện cả quy tắc đã tắt</span>
-            </label>
+              <Label htmlFor="kw-include-inactive" className="cursor-pointer text-xs font-normal">
+                Hiện cả quy tắc đã tắt
+              </Label>
+            </div>
           </div>
-        </div>
 
-        {editError && (
-          <p className={shared.validationError} role="alert">
-            {editError}
-          </p>
-        )}
+          {editError && (
+            <div className="border-b border-border bg-badge-critical-bg/40 px-4 py-2.5">
+              <p className="text-[13px] font-medium text-destructive" role="alert">
+                {editError}
+              </p>
+            </div>
+          )}
 
-        {loading ? (
-          <div className={shared.stateWrap}>
-            <StateView
-              kind="loading"
-              surface="app"
-              title="Đang tải danh sách từ khoá cấm..."
-              rows={4}
-            />
-          </div>
-        ) : errorMsg ? (
-          <div className={shared.stateWrap}>
-            <StateView
-              kind="error"
-              surface="app"
-              title="Không thể tải từ khoá cấm"
-              message={errorMsg}
-              actionLabel="Thử lại"
-              onAction={() => void loadKeywords()}
-            />
-          </div>
-        ) : items.length === 0 ? (
-          <p className={shared.emptyRow}>Chưa có từ khoá cấm nào khớp bộ lọc hiện tại.</p>
-        ) : (
-          <>
-            <div className={shared.tableWrap}>
-              <table className={shared.dataTable}>
-                <thead>
-                  <tr>
-                    <th>Từ khoá</th>
-                    <th>Nhóm vi phạm</th>
-                    <th>Hành động</th>
-                    <th>Hiệu lực</th>
-                    <th className={shared.colAction}>Thao tác</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((kw) => {
-                    const isEditing = editingId === kw.id;
-                    const isBusy = busyId === kw.id;
-                    const actMeta = formatActionPill(kw.action);
-                    return (
-                      <tr key={kw.id}>
-                        <td>
-                          {isEditing ? (
-                            <input
-                              type="text"
-                              className={shared.textInput}
-                              value={editTerm}
-                              onChange={(e) => setEditTerm(e.target.value)}
-                              aria-label="Sửa cụm từ cấm"
-                            />
-                          ) : (
-                            <>
-                              <div className={shared.cellPrimary}>{kw.term}</div>
-                              <div className={shared.cellSub}>
-                                Chuẩn hóa: {kw.normalized_term}
-                                {kw.updated_at ? ` · ${formatDateTimeVi(kw.updated_at)}` : ""}
+          {loading ? (
+            <div className="space-y-2.5 p-5" role="status" aria-live="polite">
+              <p className="text-xs text-muted-foreground">Đang tải danh sách từ khoá cấm...</p>
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="h-10 w-full rounded-md" />
+              ))}
+            </div>
+          ) : errorMsg ? (
+            <div className="p-4">
+              <ErrorState
+                title="Không thể tải từ khoá cấm"
+                description={errorMsg}
+                onRetry={() => void loadKeywords()}
+                className="shadow-none"
+              />
+            </div>
+          ) : items.length === 0 ? (
+            <div className="p-4">
+              <EmptyState
+                icon={ShieldBan}
+                title="Chưa có từ khoá cấm nào khớp bộ lọc hiện tại"
+                description="Thêm quy tắc từ khoá mới ở khung trên hoặc mở rộng bộ lọc."
+                className="shadow-none"
+              />
+            </div>
+          ) : (
+            <>
+              <div className="hidden md:block">
+                <Table aria-labelledby="kw-list-heading">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Từ khoá</TableHead>
+                      <TableHead>Nhóm vi phạm</TableHead>
+                      <TableHead>Hành động</TableHead>
+                      <TableHead>Hiệu lực</TableHead>
+                      <TableHead className="text-right">Thao tác</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {items.map((kw) => {
+                      const isEditing = editingId === kw.id;
+                      const isBusy = busyId === kw.id;
+                      return (
+                        <TableRow key={kw.id}>
+                          <TableCell className="max-w-[260px] whitespace-normal">
+                            {isEditing ? (
+                              <Input
+                                type="text"
+                                className="h-8 bg-card"
+                                value={editTerm}
+                                onChange={(e) => setEditTerm(e.target.value)}
+                                aria-label="Sửa cụm từ cấm"
+                              />
+                            ) : (
+                              <>
+                                <div className="font-medium text-foreground">{kw.term}</div>
+                                <div className="text-xs text-muted-foreground tabular-nums">
+                                  Chuẩn hóa: {kw.normalized_term}
+                                  {kw.updated_at ? ` · ${formatDateTimeVi(kw.updated_at)}` : ""}
+                                </div>
+                              </>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {isEditing ? (
+                              <Select value={editCategory} onValueChange={setEditCategory}>
+                                <SelectTrigger
+                                  className="h-8 w-52 bg-card"
+                                  aria-label="Sửa nhóm vi phạm"
+                                >
+                                  <SelectValue>{formatCategoryLabel(editCategory)}</SelectValue>
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {KEYWORD_CATEGORIES.map((c) => (
+                                    <SelectItem key={c.value} value={c.value}>
+                                      {c.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            ) : (
+                              formatCategoryLabel(kw.category)
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {isEditing ? (
+                              <Select
+                                value={editAction}
+                                onValueChange={(val) =>
+                                  setEditAction(val as GatewayBannedKeywordAction)
+                                }
+                              >
+                                <SelectTrigger
+                                  className="h-8 w-44 bg-card"
+                                  aria-label="Sửa hành động"
+                                >
+                                  <SelectValue>{formatActionLabel(editAction)}</SelectValue>
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="BLOCK">Chặn (BLOCK)</SelectItem>
+                                  <SelectItem value="REVIEW">Gắn cờ duyệt (REVIEW)</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            ) : (
+                              <StatusBadge tone={adminBannedActionTone(kw.action)}>
+                                {formatActionLabel(kw.action)}
+                              </StatusBadge>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {isEditing ? (
+                              <div className="flex items-center gap-2">
+                                <Checkbox
+                                  id={`kw-edit-active-${kw.id}`}
+                                  checked={editActive}
+                                  onCheckedChange={(checked) => setEditActive(Boolean(checked))}
+                                />
+                                <Label
+                                  htmlFor={`kw-edit-active-${kw.id}`}
+                                  className="cursor-pointer text-xs font-normal"
+                                >
+                                  {editActive ? "Đang bật" : "Đã tắt"}
+                                </Label>
                               </div>
-                            </>
-                          )}
-                        </td>
-                        <td>
-                          {isEditing ? (
-                            <select
-                              className={shared.toolbarSelect}
-                              value={editCategory}
-                              onChange={(e) => setEditCategory(e.target.value)}
-                              aria-label="Sửa nhóm vi phạm"
-                            >
-                              {KEYWORD_CATEGORIES.map((c) => (
-                                <option key={c.value} value={c.value}>
-                                  {c.label}
-                                </option>
-                              ))}
-                            </select>
-                          ) : (
-                            formatCategoryLabel(kw.category)
-                          )}
-                        </td>
-                        <td>
-                          {isEditing ? (
-                            <select
-                              className={shared.toolbarSelect}
-                              value={editAction}
-                              onChange={(e) =>
-                                setEditAction(e.target.value as GatewayBannedKeywordAction)
-                              }
-                              aria-label="Sửa hành động"
-                            >
-                              <option value="BLOCK">Chặn (BLOCK)</option>
-                              <option value="REVIEW">Gắn cờ duyệt (REVIEW)</option>
-                            </select>
-                          ) : (
-                            <StatusPill label={actMeta.label} tone={actMeta.tone} />
-                          )}
-                        </td>
-                        <td>
-                          {isEditing ? (
-                            <label className={styles.inlineCheck}>
-                              <input
-                                type="checkbox"
-                                checked={editActive}
-                                onChange={(e) => setEditActive(e.target.checked)}
-                              />
-                              <span>{editActive ? "Đang bật" : "Đã tắt"}</span>
-                            </label>
-                          ) : canWriteKeywords ? (
-                            <label className={styles.inlineCheck}>
-                              <input
-                                type="checkbox"
-                                checked={kw.is_active}
-                                disabled={isBusy}
-                                onChange={() => void handleToggleActive(kw)}
-                                aria-label={`Bật hoặc tắt từ khoá ${kw.term}`}
-                              />
-                              <span>{kw.is_active ? "Đang bật" : "Đã tắt"}</span>
-                            </label>
-                          ) : (
-                            <StatusPill
-                              label={kw.is_active ? "Đang bật" : "Đã tắt"}
-                              tone={kw.is_active ? "positive" : "neutral"}
-                            />
-                          )}
-                        </td>
-                        <td className={shared.colAction}>
-                          {canWriteKeywords ? (
-                            <div className={styles.actionRow}>
-                              {isEditing ? (
-                                <>
-                                  <Button
-                                    variant="primary"
-                                    size="sm"
-                                    shape="app"
-                                    disabled={isBusy}
-                                    onClick={() => void handleSaveEdit(kw.id)}
-                                  >
-                                    {isBusy ? "Lưu..." : "Lưu"}
-                                  </Button>
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    shape="app"
-                                    onClick={() => {
-                                      setEditingId(null);
-                                      setEditError(null);
-                                    }}
-                                  >
-                                    Hủy
-                                  </Button>
-                                </>
-                              ) : (
-                                <>
-                                  <button
-                                    type="button"
-                                    className={shared.rowActionBtn}
-                                    disabled={isBusy}
-                                    onClick={() => startEdit(kw)}
-                                  >
-                                    Sửa
-                                  </button>
-                                  {confirmDeleteId === kw.id ? (
-                                    <>
-                                      <Button
-                                        variant="danger"
-                                        size="sm"
-                                        shape="app"
-                                        disabled={isBusy}
-                                        onClick={() => void handleDelete(kw)}
-                                      >
-                                        Xác nhận xóa
-                                      </Button>
-                                      <button
-                                        type="button"
-                                        className={shared.rowActionBtn}
-                                        onClick={() => setConfirmDeleteId(null)}
-                                      >
-                                        Giữ lại
-                                      </button>
-                                    </>
-                                  ) : (
-                                    <button
+                            ) : canWriteKeywords ? (
+                              <div className="flex items-center gap-2">
+                                <Checkbox
+                                  id={`kw-active-${kw.id}`}
+                                  checked={kw.is_active}
+                                  disabled={isBusy}
+                                  onCheckedChange={() => void handleToggleActive(kw)}
+                                  aria-label={`Bật hoặc tắt từ khoá ${kw.term}`}
+                                />
+                                <Label
+                                  htmlFor={`kw-active-${kw.id}`}
+                                  className="cursor-pointer text-xs font-normal"
+                                >
+                                  {kw.is_active ? "Đang bật" : "Đã tắt"}
+                                </Label>
+                              </div>
+                            ) : (
+                              <StatusBadge tone={kw.is_active ? "success" : "neutral"}>
+                                {kw.is_active ? "Đang bật" : "Đã tắt"}
+                              </StatusBadge>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {canWriteKeywords ? (
+                              <div className="inline-flex items-center gap-1.5">
+                                {isEditing ? (
+                                  <>
+                                    <Button
                                       type="button"
-                                      className={`${shared.rowActionBtn} ${shared.rowActionBtnDanger}`}
+                                      size="xs"
                                       disabled={isBusy}
-                                      onClick={() => setConfirmDeleteId(kw.id)}
+                                      onClick={() => void handleSaveEdit(kw.id)}
+                                    >
+                                      {isBusy ? "Lưu..." : "Lưu"}
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="xs"
+                                      onClick={() => {
+                                        setEditingId(null);
+                                        setEditError(null);
+                                      }}
+                                    >
+                                      Hủy
+                                    </Button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="xs"
+                                      disabled={isBusy}
+                                      onClick={() => startEdit(kw)}
+                                    >
+                                      Sửa
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="xs"
+                                      disabled={isBusy}
+                                      className="text-destructive hover:bg-badge-critical-bg/60 hover:text-destructive"
+                                      onClick={() => setConfirmDeleteKeyword(kw)}
                                     >
                                       Xóa
-                                    </button>
-                                  )}
-                                </>
-                              )}
-                            </div>
-                          ) : (
-                            <span className={shared.cellSub}>Chỉ xem</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                                    </Button>
+                                  </>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">Chỉ xem</span>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
 
-            <div className={shared.mobileList}>
-              {items.map((kw) => {
-                const isEditing = editingId === kw.id;
-                const isBusy = busyId === kw.id;
-                const actMeta = formatActionPill(kw.action);
-                return (
-                  <article key={kw.id} className={shared.mobileItem}>
-                    {isEditing ? (
-                      <div className={shared.detailGrid}>
-                        <div className={shared.detailField}>
-                          <label htmlFor={`m-kw-term-${kw.id}`} className={shared.fieldLabel}>
-                            Từ khoá cấm
-                          </label>
-                          <input
-                            id={`m-kw-term-${kw.id}`}
-                            type="text"
-                            className={shared.textInput}
-                            value={editTerm}
-                            onChange={(e) => setEditTerm(e.target.value)}
-                          />
-                        </div>
-                        <div className={shared.detailField}>
-                          <label htmlFor={`m-kw-cat-${kw.id}`} className={shared.fieldLabel}>
-                            Nhóm vi phạm
-                          </label>
-                          <select
-                            id={`m-kw-cat-${kw.id}`}
-                            className={`${shared.toolbarSelect} ${styles.selectControl}`}
-                            value={editCategory}
-                            onChange={(e) => setEditCategory(e.target.value)}
-                          >
-                            {KEYWORD_CATEGORIES.map((c) => (
-                              <option key={c.value} value={c.value}>
-                                {c.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className={shared.detailField}>
-                          <label htmlFor={`m-kw-act-${kw.id}`} className={shared.fieldLabel}>
-                            Hành động
-                          </label>
-                          <select
-                            id={`m-kw-act-${kw.id}`}
-                            className={`${shared.toolbarSelect} ${styles.selectControl}`}
-                            value={editAction}
-                            onChange={(e) =>
-                              setEditAction(e.target.value as GatewayBannedKeywordAction)
-                            }
-                          >
-                            <option value="BLOCK">Chặn (BLOCK)</option>
-                            <option value="REVIEW">Gắn cờ duyệt (REVIEW)</option>
-                          </select>
-                        </div>
-                        <div className={shared.detailField}>
-                          <label
-                            htmlFor={`m-kw-edit-active-${kw.id}`}
-                            className={styles.inlineCheck}
-                          >
-                            <input
-                              id={`m-kw-edit-active-${kw.id}`}
-                              type="checkbox"
-                              checked={editActive}
-                              onChange={(e) => setEditActive(e.target.checked)}
+              <div className="divide-y divide-border md:hidden">
+                {items.map((kw) => {
+                  const isEditing = editingId === kw.id;
+                  const isBusy = busyId === kw.id;
+                  return (
+                    <article key={kw.id} className="space-y-2.5 p-4">
+                      {isEditing ? (
+                        <div className="space-y-3">
+                          <Field>
+                            <FieldLabel htmlFor={`m-kw-term-${kw.id}`}>Từ khoá cấm</FieldLabel>
+                            <Input
+                              id={`m-kw-term-${kw.id}`}
+                              type="text"
+                              value={editTerm}
+                              onChange={(e) => setEditTerm(e.target.value)}
                             />
-                            <span>{editActive ? "Đang bật" : "Đã tắt"}</span>
-                          </label>
-                        </div>
-                        {editError && (
-                          <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                            <p className={shared.validationError} role="alert">
-                              {editError}
-                            </p>
+                          </Field>
+                          <Field>
+                            <FieldLabel htmlFor={`m-kw-cat-${kw.id}`}>Nhóm vi phạm</FieldLabel>
+                            <Select value={editCategory} onValueChange={setEditCategory}>
+                              <SelectTrigger id={`m-kw-cat-${kw.id}`} className="w-full bg-card">
+                                <SelectValue>{formatCategoryLabel(editCategory)}</SelectValue>
+                              </SelectTrigger>
+                              <SelectContent>
+                                {KEYWORD_CATEGORIES.map((c) => (
+                                  <SelectItem key={c.value} value={c.value}>
+                                    {c.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </Field>
+                          <Field>
+                            <FieldLabel htmlFor={`m-kw-act-${kw.id}`}>Hành động</FieldLabel>
+                            <Select
+                              value={editAction}
+                              onValueChange={(val) =>
+                                setEditAction(val as GatewayBannedKeywordAction)
+                              }
+                            >
+                              <SelectTrigger id={`m-kw-act-${kw.id}`} className="w-full bg-card">
+                                <SelectValue>{formatActionLabel(editAction)}</SelectValue>
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="BLOCK">Chặn (BLOCK)</SelectItem>
+                                <SelectItem value="REVIEW">Gắn cờ duyệt (REVIEW)</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </Field>
+                          <div className="flex items-center gap-2">
+                            <Checkbox
+                              id={`m-kw-edit-active-${kw.id}`}
+                              checked={editActive}
+                              onCheckedChange={(checked) => setEditActive(Boolean(checked))}
+                            />
+                            <Label
+                              htmlFor={`m-kw-edit-active-${kw.id}`}
+                              className="cursor-pointer font-normal"
+                            >
+                              {editActive ? "Đang bật" : "Đã tắt"}
+                            </Label>
                           </div>
-                        )}
-                        <div className={shared.detailButtons}>
-                          <Button
-                            variant="primary"
-                            size="sm"
-                            shape="app"
-                            disabled={isBusy}
-                            onClick={() => void handleSaveEdit(kw.id)}
-                          >
-                            {isBusy ? "Lưu..." : "Lưu"}
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            shape="app"
-                            onClick={() => {
-                              setEditingId(null);
-                              setEditError(null);
-                            }}
-                          >
-                            Hủy
-                          </Button>
+                          {editError && <FieldError>{editError}</FieldError>}
+                          <div className="flex items-center gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              disabled={isBusy}
+                              onClick={() => void handleSaveEdit(kw.id)}
+                            >
+                              {isBusy ? "Lưu..." : "Lưu"}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                setEditingId(null);
+                                setEditError(null);
+                              }}
+                            >
+                              Hủy
+                            </Button>
+                          </div>
                         </div>
-                      </div>
-                    ) : (
-                      <>
-                        <div className={shared.mobileLine1}>
-                          <span className={shared.mobileIdentity}>{kw.term}</span>
-                          <StatusPill label={actMeta.label} tone={actMeta.tone} />
-                        </div>
-                        <div className={shared.mobileLine2}>
-                          <span className={shared.mobileMetaText}>
-                            {formatCategoryLabel(kw.category)} ·{" "}
-                            {kw.is_active ? "Đang bật" : "Đã tắt"}
-                          </span>
-                          {canWriteKeywords && (
-                            <label className={styles.inlineCheck}>
-                              <input
-                                type="checkbox"
-                                checked={kw.is_active}
-                                disabled={isBusy}
-                                onChange={() => void handleToggleActive(kw)}
-                                aria-label={`Bật hoặc tắt từ khoá ${kw.term}`}
-                              />
-                              <span>Bật</span>
-                            </label>
-                          )}
-                        </div>
-                        <div className={shared.mobileLine2}>
-                          <span className={shared.mobileMetaText}>
-                            Chuẩn hóa: {kw.normalized_term}
-                          </span>
-                          {canWriteKeywords && (
-                            <div className={shared.detailButtons}>
-                              <button
-                                type="button"
-                                className={shared.rowActionBtn}
-                                disabled={isBusy}
-                                onClick={() => startEdit(kw)}
-                              >
-                                Sửa
-                              </button>
-                              {confirmDeleteId === kw.id ? (
-                                <>
-                                  <Button
-                                    variant="danger"
-                                    size="sm"
-                                    shape="app"
-                                    disabled={isBusy}
-                                    onClick={() => void handleDelete(kw)}
-                                  >
-                                    Xác nhận xóa
-                                  </Button>
-                                  <button
-                                    type="button"
-                                    className={shared.rowActionBtn}
-                                    onClick={() => setConfirmDeleteId(null)}
-                                  >
-                                    Giữ lại
-                                  </button>
-                                </>
-                              ) : (
-                                <button
-                                  type="button"
-                                  className={`${shared.rowActionBtn} ${shared.rowActionBtnDanger}`}
+                      ) : (
+                        <>
+                          <div className="flex items-start justify-between gap-2">
+                            <span className="font-medium text-foreground [overflow-wrap:anywhere]">
+                              {kw.term}
+                            </span>
+                            <StatusBadge tone={adminBannedActionTone(kw.action)}>
+                              {formatActionLabel(kw.action)}
+                            </StatusBadge>
+                          </div>
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                            <span>
+                              {formatCategoryLabel(kw.category)} ·{" "}
+                              {kw.is_active ? "Đang bật" : "Đã tắt"}
+                            </span>
+                            {canWriteKeywords && (
+                              <div className="flex items-center gap-1.5">
+                                <Checkbox
+                                  id={`m-kw-active-${kw.id}`}
+                                  checked={kw.is_active}
                                   disabled={isBusy}
-                                  onClick={() => setConfirmDeleteId(kw.id)}
+                                  onCheckedChange={() => void handleToggleActive(kw)}
+                                  aria-label={`Bật hoặc tắt từ khoá ${kw.term}`}
+                                />
+                                <Label
+                                  htmlFor={`m-kw-active-${kw.id}`}
+                                  className="cursor-pointer text-xs font-normal"
+                                >
+                                  Bật
+                                </Label>
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                            <span>Chuẩn hóa: {kw.normalized_term}</span>
+                            {canWriteKeywords && (
+                              <div className="flex items-center gap-1.5">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="xs"
+                                  disabled={isBusy}
+                                  onClick={() => startEdit(kw)}
+                                >
+                                  Sửa
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="xs"
+                                  disabled={isBusy}
+                                  className="text-destructive hover:bg-badge-critical-bg/60 hover:text-destructive"
+                                  onClick={() => setConfirmDeleteKeyword(kw)}
                                 >
                                   Xóa
-                                </button>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </>
-                    )}
-                  </article>
-                );
-              })}
-            </div>
-          </>
-        )}
+                                </Button>
+                              </div>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </IndexTable>
       </section>
+
+      <AdminConfirmActionDialog
+        open={Boolean(confirmDeleteKeyword)}
+        title="Xác nhận xóa từ khoá cấm"
+        description={
+          confirmDeleteKeyword
+            ? `Xóa quy tắc từ khoá cấm "${confirmDeleteKeyword.term}"? Sản phẩm mới sẽ không còn bị lọc theo cụm từ này.`
+            : ""
+        }
+        confirmLabel="Xác nhận xóa"
+        cancelLabel="Giữ lại"
+        confirmVariant="destructive"
+        busy={Boolean(confirmDeleteKeyword && busyId === confirmDeleteKeyword.id)}
+        onCancel={() => setConfirmDeleteKeyword(null)}
+        onConfirm={() => {
+          if (confirmDeleteKeyword) void handleDelete(confirmDeleteKeyword);
+        }}
+      />
     </div>
   );
 }

@@ -3,8 +3,57 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Button, IconChevronLeft, IconChevronRight, IconSearch, StateView } from "@/components";
-import { hasOpenModal } from "@/components/modalFocus";
+import {
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  Flag,
+  Info,
+  RefreshCw,
+  Search,
+} from "lucide-react";
+import {
+  EmptyState,
+  ErrorState,
+  IndexRowCard,
+  IndexTable,
+  MetricStrip,
+  Money,
+  PageHeader,
+  StatusBadge,
+  Timeline,
+} from "@/components/app";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import { api, getErrorMessage } from "@/lib/api";
 import { roleHasCapability } from "@/lib/admin-rbac";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
@@ -14,6 +63,7 @@ import type {
   ReturnAdminDecision,
   ReturnFeeBearer,
 } from "@/lib/gateway-types";
+import { cn } from "@/lib/utils";
 import {
   buildShippingLabelHref,
   getTimelineEventTitle,
@@ -24,8 +74,6 @@ import {
 import { EMPTY_DASH, formatShortTimeDateVi } from "./adminMeta";
 import { AdminStateGate, AdminSuspenseFallback } from "./AdminStateGate";
 import { useAdminContext } from "./AdminShell";
-import { AdminDrawer, SlidingTabBar, isEditableElement } from "./AdminUi";
-import { StatusPill } from "./StatusPill";
 import { getAdminReturnStatusMeta } from "./types";
 import {
   canAdminResolveReturn,
@@ -33,8 +81,15 @@ import {
   getReturnFeeBearerLabelVi,
   validateReturnResolveInput,
 } from "./AdminReturnsHelpers";
-import shared from "./adminShared.module.css";
-import styles from "@/app/(admin)/admin/khieu-nai/page.module.css";
+import {
+  AdminDetailField,
+  AdminDetailGrid,
+  AdminKbdHint,
+  AdminPaginationBar,
+  hasOpenRadixDialog,
+  isEditableTarget,
+} from "./ops/AdminOpsPrimitives";
+import { adminReturnStatusTone } from "./ops/adminTones";
 
 type ReturnFilterTab =
   | ""
@@ -118,12 +173,12 @@ function ReturnsWorkspace({
   const [loadError, setLoadError] = useState<string | null>(initialLoadError);
 
   const [query, setQuery] = useState(initialQuery);
-  const [selectedId, setSelectedId] = useState<string | null>(
-    initialSelected ?? initialItems[0]?.id ?? null
-  );
+  const [selectedId, setSelectedId] = useState<string | null>(initialSelected);
   const [detailById, setDetailById] = useState<Record<string, GatewayReturnRequest>>({});
   const [loadingDetailId, setLoadingDetailId] = useState<string | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(
+    Boolean(initialSelected && initialItems.some((r) => r.id === initialSelected))
+  );
 
   const [decision, setDecision] = useState<ReturnAdminDecision>("REFUND");
   const [feeBearer, setFeeBearer] = useState<ReturnFeeBearer>("SELLER");
@@ -131,10 +186,8 @@ function ReturnsWorkspace({
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const rowRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const listAbortRef = useRef<AbortController | null>(null);
   const detailAbortRef = useRef<AbortController | null>(null);
-  const deepLinkHandledRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -166,9 +219,7 @@ function ReturnsWorkspace({
       setTotal(res.total ?? list.length);
       if (nextStatus === "ESCALATED") setEscalatedCount(res.total ?? list.length);
       if (nextStatus === "EVIDENCE_REQUESTED") setEvidenceCount(res.total ?? list.length);
-      setSelectedId((prev) =>
-        prev && list.some((r) => r.id === prev) ? prev : (list[0]?.id ?? null)
-      );
+      setSelectedId((prev) => (prev && list.some((r) => r.id === prev) ? prev : null));
     } catch (err) {
       if (controller.signal.aborted) return;
       setLoadError(getErrorMessage(err, "Không thể tải danh sách yêu cầu trả hàng lúc này."));
@@ -221,33 +272,24 @@ function ReturnsWorkspace({
   }, [items, query]);
 
   const activeIndex = useMemo(() => {
-    if (filteredItems.length === 0) return -1;
-    if (selectedId) {
-      const idx = filteredItems.findIndex((r) => r.id === selectedId);
-      if (idx >= 0) return idx;
-    }
-    return 0;
+    if (!selectedId) return -1;
+    return filteredItems.findIndex((r) => r.id === selectedId);
   }, [filteredItems, selectedId]);
 
-  const activeListItem = activeIndex >= 0 ? filteredItems[activeIndex] : null;
+  const activeListItem = useMemo(() => {
+    if (!selectedId) return null;
+    return (
+      filteredItems.find((r) => r.id === selectedId) ??
+      items.find((r) => r.id === selectedId) ??
+      null
+    );
+  }, [filteredItems, items, selectedId]);
+
   const activeReturn = activeListItem ? (detailById[activeListItem.id] ?? activeListItem) : null;
 
   useEffect(() => {
-    if (deepLinkHandledRef.current) return;
-    deepLinkHandledRef.current = true;
-    if (
-      initialSelected &&
-      typeof window !== "undefined" &&
-      window.innerWidth <= 960 &&
-      initialItems.some((r) => r.id === initialSelected)
-    ) {
-      setDrawerOpen(true);
-    }
-  }, [initialSelected, initialItems]);
-
-  useEffect(() => {
-    if (!activeListItem) {
-      if (drawerOpen) setDrawerOpen(false);
+    if (!drawerOpen || !activeListItem) {
+      if (!activeListItem && drawerOpen) setDrawerOpen(false);
       return;
     }
     if (!detailById[activeListItem.id]) {
@@ -262,6 +304,11 @@ function ReturnsWorkspace({
     setFeeBearer("SELLER");
   }, [activeReturn?.id]);
 
+  const openReturnSheet = useCallback((item: GatewayReturnRequest) => {
+    setSelectedId(item.id);
+    setDrawerOpen(true);
+  }, []);
+
   const stepSelection = useCallback(
     (delta: 1 | -1) => {
       if (filteredItems.length === 0) return;
@@ -270,23 +317,30 @@ function ReturnsWorkspace({
       const nextItem = filteredItems[nextIdx];
       if (!nextItem) return;
       setSelectedId(nextItem.id);
-      rowRefs.current.get(nextItem.id)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     },
     [filteredItems, activeIndex]
   );
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || isEditableElement(e.target) || hasOpenModal()) {
+      if (
+        e.metaKey ||
+        e.ctrlKey ||
+        e.altKey ||
+        isEditableTarget(e.target) ||
+        hasOpenRadixDialog()
+      ) {
         return;
       }
       const key = e.key.toLowerCase();
       if (key === "j") {
         e.preventDefault();
         stepSelection(1);
+        setDrawerOpen(true);
       } else if (key === "k") {
         e.preventDefault();
         stepSelection(-1);
+        setDrawerOpen(true);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -354,24 +408,25 @@ function ReturnsWorkspace({
       .map((raw) => parseSafeEvidenceUrl(raw))
       .filter((item): item is NonNullable<typeof item> => item !== null);
     return (
-      <div className={styles.evidenceGroup}>
-        <span className={shared.fieldLabel}>
+      <div className="space-y-1.5">
+        <div className="text-xs font-medium text-muted-foreground">
           {label} ({formatInt(safeLinks.length)})
-        </span>
+        </div>
         {safeLinks.length === 0 ? (
-          <span className={styles.fieldHint}>Chưa đính kèm bằng chứng.</span>
+          <p className="text-xs text-muted-foreground">Chưa đính kèm bằng chứng.</p>
         ) : (
-          <ul className={styles.evidenceList}>
+          <ul className="flex flex-wrap gap-2">
             {safeLinks.map((link, idx) => (
               <li key={`${link.href}-${idx}`}>
                 <a
                   href={link.href}
                   target="_blank"
                   rel="noopener noreferrer nofollow"
-                  className={styles.evidenceLink}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-brand hover:bg-accent"
                 >
                   <span>Bằng chứng #{idx + 1}</span>
-                  <span className={styles.evidenceHost}>({link.hostname})</span>
+                  <span className="text-muted-foreground">({link.hostname})</span>
+                  <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
                 </a>
               </li>
             ))}
@@ -381,509 +436,567 @@ function ReturnsWorkspace({
     );
   };
 
-  const renderInspector = (ret: GatewayReturnRequest, inDrawer = false) => {
-    const meta = getAdminReturnStatusMeta(ret.status);
+  const renderInspector = (ret: GatewayReturnRequest) => {
     const resolvable = canAdminResolveReturn(ret.status);
     const labelHref = buildShippingLabelHref(ret.return_tracking_code, ret.order_id);
     const isRefundingStage =
       ret.status.toUpperCase() === "REFUNDING" || ret.status.toUpperCase() === "REFUNDED";
-    const noteId = `ret-note-${inDrawer ? "drawer" : "pane"}-${ret.id}`;
-    const feeId = `ret-fee-${inDrawer ? "drawer" : "pane"}-${ret.id}`;
+    const noteId = `ret-note-drawer-${ret.id}`;
+    const feeId = `ret-fee-drawer-${ret.id}`;
+
+    const timelineItems = (ret.events ?? []).map((ev) => {
+      const evMeta = getAdminReturnStatusMeta(ev.to_status);
+      const title = isAddressUpdatedTimelineNote(ev.note)
+        ? getTimelineEventTitle({
+            from_status: ev.from_status,
+            to_status: ev.to_status,
+            note: ev.note,
+          })
+        : evMeta.label;
+      return {
+        id: ev.id,
+        at: ev.created_at ? formatShortTimeDateVi(ev.created_at) : EMPTY_DASH,
+        title,
+        description: ev.note ? localizeTimelineNote(ev.note) : undefined,
+      };
+    });
 
     return (
-      <div
-        key={ret.id}
-        className={`${inDrawer ? styles.drawerContent : shared.detailWellCard} ${shared.inspectorSlide}`}
-      >
-        {!inDrawer && (
-          <div className={shared.detailHeader}>
-            <div>
-              <h2 className={shared.detailHeading}>
-                Đơn {ret.order_code || ret.order_id.slice(0, 8)}
-              </h2>
-              <span className={shared.cellSub}>
-                Mã yêu cầu {ret.id.slice(0, 12)}
-                {ret.created_at ? `, tạo lúc ${formatDateTimeVi(ret.created_at)}` : ""}
-              </span>
-            </div>
-            <div className={shared.detailHeaderMeta}>
-              <StatusPill label={meta.label} tone={meta.tone} />
-              <div className={styles.stepperBtns}>
-                <button
-                  type="button"
-                  className={styles.stepperBtn}
-                  disabled={activeIndex <= 0}
-                  onClick={() => stepSelection(-1)}
-                  aria-label="Hồ sơ trước (K)"
-                  title="Hồ sơ trước (K)"
-                >
-                  <IconChevronLeft size={14} />
-                </button>
-                <button
-                  type="button"
-                  className={styles.stepperBtn}
-                  disabled={activeIndex >= filteredItems.length - 1}
-                  onClick={() => stepSelection(1)}
-                  aria-label="Hồ sơ tiếp theo (J)"
-                  title="Hồ sơ tiếp theo (J)"
-                >
-                  <IconChevronRight size={14} />
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className={shared.detailWell}>
-          <div className={shared.detailGrid}>
-            <div className={shared.detailField}>
-              <span className={shared.detailKey}>Số tiền hoàn dự kiến</span>
-              <span className={`${shared.detailVal} num`}>
-                {ret.refund_amount_vnd > 0 ? formatVnd(ret.refund_amount_vnd) : EMPTY_DASH}
-              </span>
-            </div>
-            <div className={shared.detailField}>
-              <span className={shared.detailKey}>Phí hoàn hàng</span>
-              <span className={shared.detailValPlain}>
-                {ret.return_fee_vnd > 0 ? `${formatVnd(ret.return_fee_vnd)} · ` : ""}
-                {getReturnFeeBearerLabelVi(ret.return_fee_bearer)}
-              </span>
-            </div>
-            <div className={shared.detailField}>
-              <span className={shared.detailKey}>Người mua</span>
-              <span className={`${shared.detailValPlain} num`}>{ret.buyer_id.slice(0, 12)}</span>
-            </div>
-            <div className={shared.detailField}>
-              <span className={shared.detailKey}>Gian hàng</span>
-              <span className={`${shared.detailValPlain} num`}>{ret.shop_id.slice(0, 12)}</span>
-            </div>
-            <div className={shared.detailField}>
-              <span className={shared.detailKey}>Tình trạng hàng trả</span>
-              <span className={shared.detailValPlain}>
-                {ret.goods_received ? "Gian hàng đã nhận hàng trả" : "Chưa nhận hàng trả"}
-              </span>
-            </div>
-            <div className={shared.detailField}>
-              <span className={shared.detailKey}>Hạn xử lý</span>
-              <span className={`${shared.detailValPlain} num`}>
-                {ret.deadline_at ? formatDateTimeVi(ret.deadline_at) : EMPTY_DASH}
-              </span>
-            </div>
-            {ret.return_tracking_code && (
-              <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
-                <span className={shared.detailKey}>Vận đơn hoàn hàng</span>
-                <span className={`${shared.detailValPlain} num`}>
-                  {ret.return_tracking_code}
-                  {labelHref && (
-                    <>
-                      {" · "}
-                      <a
-                        href={labelHref}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className={styles.noticeLink}
-                        title="Mở nhãn vận đơn ở tab mới — nhấn Ctrl+P để in"
-                      >
-                        In nhãn vận đơn (Ctrl+P)
-                      </a>
-                    </>
-                  )}
-                </span>
-              </div>
+      <div key={ret.id} className="space-y-5 px-4 pb-6">
+        <AdminDetailGrid>
+          <AdminDetailField label="Số tiền hoàn dự kiến" mono>
+            {ret.refund_amount_vnd > 0 ? (
+              <Money vnd={ret.refund_amount_vnd} size="sm" />
+            ) : (
+              EMPTY_DASH
             )}
-          </div>
-        </div>
+          </AdminDetailField>
+          <AdminDetailField label="Phí hoàn hàng">
+            {ret.return_fee_vnd > 0 ? `${formatVnd(ret.return_fee_vnd)} · ` : ""}
+            {getReturnFeeBearerLabelVi(ret.return_fee_bearer)}
+          </AdminDetailField>
+          <AdminDetailField label="Người mua" mono>
+            {ret.buyer_id.slice(0, 12)}
+          </AdminDetailField>
+          <AdminDetailField label="Gian hàng" mono>
+            {ret.shop_id.slice(0, 12)}
+          </AdminDetailField>
+          <AdminDetailField label="Tình trạng hàng trả">
+            {ret.goods_received ? "Gian hàng đã nhận hàng trả" : "Chưa nhận hàng trả"}
+          </AdminDetailField>
+          <AdminDetailField label="Hạn xử lý" mono>
+            {ret.deadline_at ? formatDateTimeVi(ret.deadline_at) : EMPTY_DASH}
+          </AdminDetailField>
+          {ret.return_tracking_code && (
+            <AdminDetailField label="Vận đơn hoàn hàng" mono wide>
+              <span>{ret.return_tracking_code}</span>
+              {labelHref && (
+                <>
+                  {" · "}
+                  <a
+                    href={labelHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-medium text-brand hover:underline"
+                    title="Mở nhãn vận đơn ở tab mới — nhấn Ctrl+P để in"
+                  >
+                    In nhãn vận đơn (Ctrl+P)
+                  </a>
+                </>
+              )}
+            </AdminDetailField>
+          )}
+        </AdminDetailGrid>
 
-        <div className={styles.reasonBlock}>
-          <div className={styles.statementBox}>
-            <span className={styles.statementTitle}>Lý do người mua yêu cầu trả hàng</span>
-            <p className={styles.statementBody}>{ret.reason || "Chưa có mô tả chi tiết."}</p>
+        {/* Statements */}
+        <div className="space-y-2.5">
+          <div className="rounded-lg border border-border bg-muted/30 p-3">
+            <div className="text-xs font-medium text-muted-foreground">
+              Lý do người mua yêu cầu trả hàng
+            </div>
+            <p className="mt-1 text-[13px] text-foreground [overflow-wrap:anywhere]">
+              {ret.reason || "Chưa có mô tả chi tiết."}
+            </p>
           </div>
           {ret.seller_response && (
-            <div className={styles.statementBox}>
-              <span className={styles.statementTitle}>Phản hồi từ gian hàng</span>
-              <p className={styles.statementBody}>{ret.seller_response}</p>
+            <div className="rounded-lg border border-border bg-muted/30 p-3">
+              <div className="text-xs font-medium text-muted-foreground">Phản hồi từ gian hàng</div>
+              <p className="mt-1 text-[13px] text-foreground [overflow-wrap:anywhere]">
+                {ret.seller_response}
+              </p>
             </div>
           )}
           {ret.dispute_reason && (
-            <div className={styles.statementBox}>
-              <span className={styles.statementTitle}>Nội dung khiếu nại lên sàn</span>
-              <p className={styles.statementBody}>{ret.dispute_reason}</p>
+            <div className="rounded-lg border border-border bg-badge-critical-bg/30 p-3">
+              <div className="text-xs font-medium text-badge-critical-ink">
+                Nội dung khiếu nại lên sàn
+              </div>
+              <p className="mt-1 text-[13px] text-foreground [overflow-wrap:anywhere]">
+                {ret.dispute_reason}
+              </p>
             </div>
           )}
           {ret.admin_note && (
-            <div className={styles.statementBox}>
-              <span className={styles.statementTitle}>Ghi chú quản trị viên</span>
-              <p className={styles.statementBody}>{ret.admin_note}</p>
+            <div className="rounded-lg border border-border bg-muted/30 p-3">
+              <div className="text-xs font-medium text-muted-foreground">Ghi chú quản trị viên</div>
+              <p className="mt-1 text-[13px] text-foreground [overflow-wrap:anywhere]">
+                {ret.admin_note}
+              </p>
             </div>
           )}
         </div>
 
-        {renderEvidenceLinks("Bằng chứng người mua", ret.evidence_urls)}
-        {renderEvidenceLinks("Bằng chứng gian hàng", ret.seller_evidence_urls)}
+        {/* Evidence */}
+        <div className="space-y-3">
+          {renderEvidenceLinks("Bằng chứng người mua", ret.evidence_urls)}
+          {renderEvidenceLinks("Bằng chứng gian hàng", ret.seller_evidence_urls)}
+        </div>
 
         {isRefundingStage && (
-          <div className={styles.noticeBanner} role="status">
-            <span>
-              Các lệnh hoàn tiền giá trị lớn tự động chuyển sang quy trình duyệt 2 người
-              (maker–checker) trước khi tất toán.
-            </span>
-            {canOpenRefunds && (
-              <Link href="/admin/doi-soat?tab=refunds" className={styles.noticeLink}>
-                Theo dõi &amp; duyệt lệnh hoàn tiền tại Đối soát
-              </Link>
-            )}
-          </div>
+          <Alert>
+            <Info className="size-4 text-brand" aria-hidden="true" />
+            <AlertDescription className="space-y-1.5">
+              <p>
+                Các lệnh hoàn tiền giá trị lớn tự động chuyển sang quy trình duyệt 2 người
+                (maker–checker) trước khi tất toán.
+              </p>
+              {canOpenRefunds && (
+                <Link
+                  href="/admin/doi-soat?tab=refunds"
+                  className="inline-block font-medium text-brand hover:underline"
+                >
+                  Theo dõi &amp; duyệt lệnh hoàn tiền tại Đối soát →
+                </Link>
+              )}
+            </AlertDescription>
+          </Alert>
         )}
 
         {loadingDetailId === ret.id && (
-          <span className={styles.fieldHint}>Đang tải chi tiết lịch sử xử lý...</span>
+          <p className="text-xs text-muted-foreground">Đang tải chi tiết lịch sử xử lý...</p>
         )}
 
-        {(ret.events?.length ?? 0) > 0 && (
-          <div className={styles.evidenceGroup}>
-            <span className={shared.fieldLabel}>Diễn biến xử lý</span>
-            <ul className={styles.timelineList}>
-              {ret.events.map((ev) => {
-                const evMeta = getAdminReturnStatusMeta(ev.to_status);
-                const title = isAddressUpdatedTimelineNote(ev.note)
-                  ? getTimelineEventTitle({
-                      from_status: ev.from_status,
-                      to_status: ev.to_status,
-                      note: ev.note,
-                    })
-                  : evMeta.label;
-                return (
-                  <li key={ev.id} className={styles.timelineItem}>
-                    <div className={styles.timelineHead}>
-                      <span className={styles.timelineActor}>{title}</span>
-                      <span className={styles.timelineTime}>
-                        {ev.created_at ? formatShortTimeDateVi(ev.created_at) : EMPTY_DASH}
-                      </span>
-                    </div>
-                    {ev.note && (
-                      <p className={styles.timelineNote}>{localizeTimelineNote(ev.note)}</p>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
+        {timelineItems.length > 0 && (
+          <>
+            <Separator />
+            <div className="space-y-2.5">
+              <h3 className="text-sm font-semibold text-foreground">Diễn biến xử lý</h3>
+              <Timeline items={timelineItems} />
+            </div>
+          </>
         )}
 
         {resolvable && canResolve && (
-          <form
-            className={styles.decisionForm}
-            onSubmit={(e) => void handleResolveSubmit(e, ret)}
-            noValidate
-          >
-            <h3 className={styles.decisionHeading}>Quyết định phân xử</h3>
-
-            <div
-              className={styles.radioGroup}
-              role="radiogroup"
-              aria-label="Chọn quyết định phân xử trả hàng"
+          <>
+            <Separator />
+            <form
+              className="space-y-4 rounded-lg border border-border bg-card p-4"
+              onSubmit={(e) => void handleResolveSubmit(e, ret)}
+              noValidate
             >
-              {DECISION_OPTIONS.map((opt) => {
-                const disabled = opt.value === "RETURN_AND_REFUND" && Boolean(ret.goods_received);
-                const checked = decision === opt.value;
-                return (
-                  <label
-                    key={opt.value}
-                    className={`${styles.radioOption} ${checked ? styles.radioOptionSelected : ""} ${disabled ? styles.radioOptionDisabled : ""}`}
-                  >
-                    <input
-                      type="radio"
-                      name={`return-decision-${inDrawer ? "drawer" : "pane"}-${ret.id}`}
-                      value={opt.value}
-                      checked={checked}
-                      disabled={disabled || submitting}
-                      onChange={() => {
-                        setDecision(opt.value);
-                        setFormError(null);
-                      }}
-                      className={styles.radioInput}
-                    />
-                    <span className={styles.radioText}>
-                      <span className={styles.radioTitle}>{opt.title}</span>
-                      <span className={styles.radioHint}>
-                        {disabled
-                          ? "Gian hàng đã nhận hàng trả nên không tạo lại vận đơn."
-                          : opt.hint}
-                      </span>
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
+              <h3 className="text-sm font-semibold text-foreground">Quyết định phân xử</h3>
 
-            {(decision === "REFUND" || decision === "RETURN_AND_REFUND") && (
-              <div className={styles.formField}>
-                <label htmlFor={feeId} className={shared.fieldLabel}>
-                  Bên chịu phí hoàn hàng
-                </label>
-                <select
-                  id={feeId}
-                  className={shared.toolbarSelect}
-                  value={feeBearer}
-                  disabled={submitting}
-                  onChange={(e) => setFeeBearer(e.target.value as ReturnFeeBearer)}
-                >
-                  {FEE_BEARER_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-                <span className={styles.fieldHint}>
-                  Lệnh hoàn tiền vượt ngưỡng tự động chuyển duyệt 2 người tại màn hình Đối soát.
-                </span>
-              </div>
-            )}
-
-            <div className={styles.formField}>
-              <label htmlFor={noteId} className={shared.fieldLabel}>
-                {decision === "REQUEST_EVIDENCE"
-                  ? "Nội dung yêu cầu bổ sung bằng chứng (bắt buộc)"
-                  : decision === "REJECT"
-                    ? "Lý do từ chối khiếu nại (bắt buộc)"
-                    : "Ghi chú phân xử (lưu nhật ký kiểm toán)"}
-              </label>
-              <textarea
-                id={noteId}
-                className={shared.textareaInput}
-                value={note}
-                disabled={submitting}
-                onChange={(e) => {
-                  setNote(e.target.value);
+              <RadioGroup
+                value={decision}
+                onValueChange={(val) => {
+                  setDecision(val as ReturnAdminDecision);
                   setFormError(null);
                 }}
-                placeholder={
-                  decision === "REQUEST_EVIDENCE"
-                    ? "Nêu rõ ảnh/video cần người mua bổ sung trong 3 ngày..."
-                    : "Ghi rõ căn cứ bằng chứng và hướng xử lý..."
-                }
-              />
-            </div>
+                aria-label="Chọn quyết định phân xử trả hàng"
+                className="space-y-2"
+              >
+                {DECISION_OPTIONS.map((opt) => {
+                  const disabled = opt.value === "RETURN_AND_REFUND" && Boolean(ret.goods_received);
+                  const checked = decision === opt.value;
+                  const optId = `ret-decision-${ret.id}-${opt.value}`;
+                  return (
+                    <Label
+                      key={opt.value}
+                      htmlFor={optId}
+                      className={cn(
+                        "flex cursor-pointer items-start gap-3 rounded-lg border border-border p-3 font-normal transition-colors",
+                        checked && "border-brand bg-brand/5",
+                        disabled && "cursor-not-allowed opacity-55"
+                      )}
+                    >
+                      <RadioGroupItem
+                        id={optId}
+                        value={opt.value}
+                        disabled={disabled || submitting}
+                        className="mt-0.5 shrink-0"
+                      />
+                      <span className="min-w-0 flex-1 space-y-0.5">
+                        <span className="block text-[13px] font-medium text-foreground">
+                          {opt.title}
+                        </span>
+                        <span className="block text-xs text-muted-foreground">
+                          {disabled
+                            ? "Gian hàng đã nhận hàng trả nên không tạo lại vận đơn."
+                            : opt.hint}
+                        </span>
+                      </span>
+                    </Label>
+                  );
+                })}
+              </RadioGroup>
 
-            {formError && (
-              <p className={shared.validationError} role="alert">
-                {formError}
-              </p>
-            )}
+              {(decision === "REFUND" || decision === "RETURN_AND_REFUND") && (
+                <Field>
+                  <FieldLabel htmlFor={feeId}>Bên chịu phí hoàn hàng</FieldLabel>
+                  <Select
+                    value={feeBearer}
+                    disabled={submitting}
+                    onValueChange={(val) => setFeeBearer(val as ReturnFeeBearer)}
+                  >
+                    <SelectTrigger id={feeId} className="w-full bg-card">
+                      <SelectValue>
+                        {FEE_BEARER_OPTIONS.find((opt) => opt.value === feeBearer)?.label}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {FEE_BEARER_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>
+                    Lệnh hoàn tiền vượt ngưỡng tự động chuyển duyệt 2 người tại màn hình Đối soát.
+                  </FieldDescription>
+                </Field>
+              )}
 
-            <div className={styles.formActions}>
-              <Button type="submit" variant="primary" size="sm" shape="app" loading={submitting}>
-                Xác nhận phân xử
-              </Button>
-            </div>
-          </form>
+              <Field>
+                <FieldLabel htmlFor={noteId}>
+                  {decision === "REQUEST_EVIDENCE"
+                    ? "Nội dung yêu cầu bổ sung bằng chứng (bắt buộc)"
+                    : decision === "REJECT"
+                      ? "Lý do từ chối khiếu nại (bắt buộc)"
+                      : "Ghi chú phân xử (lưu nhật ký kiểm toán)"}
+                </FieldLabel>
+                <Textarea
+                  id={noteId}
+                  rows={3}
+                  value={note}
+                  disabled={submitting}
+                  onChange={(e) => {
+                    setNote(e.target.value);
+                    setFormError(null);
+                  }}
+                  placeholder={
+                    decision === "REQUEST_EVIDENCE"
+                      ? "Nêu rõ ảnh/video cần người mua bổ sung trong 3 ngày..."
+                      : "Ghi rõ căn cứ bằng chứng và hướng xử lý..."
+                  }
+                />
+              </Field>
+
+              {formError && <FieldError>{formError}</FieldError>}
+
+              <div className="flex items-center justify-end gap-2">
+                <Button type="submit" size="sm" disabled={submitting}>
+                  {submitting ? "Đang gửi..." : "Xác nhận phân xử"}
+                </Button>
+              </div>
+            </form>
+          </>
         )}
 
         {resolvable && !canResolve && (
-          <p className={styles.fieldHint}>Tài khoản của bạn chỉ có quyền xem hồ sơ khiếu nại.</p>
+          <p className="text-xs text-muted-foreground">
+            Tài khoản của bạn chỉ có quyền xem hồ sơ khiếu nại.
+          </p>
         )}
       </div>
     );
   };
 
-  const tabs: Array<{ id: ReturnFilterTab; label: string; count?: number }> = [
-    { id: "", label: "Tất cả", count: statusTab === "" ? total : undefined },
-    { id: "ESCALATED", label: "Cần phân xử", count: escalatedCount },
-    { id: "EVIDENCE_REQUESTED", label: "Chờ bằng chứng", count: evidenceCount },
-    { id: "PENDING", label: "Chờ shop" },
-    { id: "AWAITING_SHIPMENT", label: "Chờ gửi trả" },
-    { id: "RECEIVED", label: "Shop đã nhận" },
-    { id: "REFUNDING", label: "Đang hoàn tiền" },
-    { id: "REFUNDED", label: "Đã hoàn tiền" },
-    { id: "CLOSED", label: "Đã đóng" },
+  const tabs = [
+    { key: "", label: "Tất cả", count: statusTab === "" ? total : undefined },
+    { key: "ESCALATED", label: "Cần phân xử", count: escalatedCount },
+    { key: "EVIDENCE_REQUESTED", label: "Chờ bằng chứng", count: evidenceCount },
+    { key: "PENDING", label: "Chờ shop" },
+    { key: "AWAITING_SHIPMENT", label: "Chờ gửi trả" },
+    { key: "RECEIVED", label: "Shop đã nhận" },
+    { key: "REFUNDING", label: "Đang hoàn tiền" },
+    { key: "REFUNDED", label: "Đã hoàn tiền" },
+    { key: "CLOSED", label: "Đã đóng" },
   ];
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
-    <div className={shared.page}>
-      <header className={shared.titleRow}>
-        <div className={shared.titleBlock}>
-          <h1 className={shared.pageTitle}>Khiếu nại &amp; trả hàng</h1>
-        </div>
-        <div className={shared.titleActions}>
-          <span className={shared.kbdHint} aria-label="Phím tắt chuyển hồ sơ">
-            <kbd className={shared.kbdKey}>J</kbd>
-            <kbd className={shared.kbdKey}>K</kbd>
-            <span>chuyển hồ sơ</span>
-          </span>
-        </div>
-      </header>
-
-      <SlidingTabBar
-        tabs={tabs}
-        activeId={statusTab}
-        onChange={handleTabChange}
-        ariaLabel="Lọc trạng thái yêu cầu trả hàng"
+    <div className="space-y-5">
+      <PageHeader
+        title="Khiếu nại & trả hàng"
+        subtitle="Xem chứng từ người mua và gian hàng, phân xử hoàn tiền hoặc trả hàng."
+        primaryAction={
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            disabled={loading}
+            onClick={() => void loadList(statusTab, page)}
+          >
+            <RefreshCw className={cn("size-4", loading && "animate-spin")} aria-hidden="true" />
+            <span>{loading ? "Đang tải..." : "Làm mới"}</span>
+          </Button>
+        }
       />
 
-      <div className={shared.toolbar}>
-        <div className={shared.toolbarLeft}>
-          <div className={shared.searchWrap}>
-            <span className={shared.searchIcon}>
-              <IconSearch size={14} />
+      <MetricStrip
+        items={[
+          { label: "Hồ sơ trong bộ lọc", value: formatInt(total) },
+          {
+            label: "Cần phân xử",
+            value: (
+              <span className={escalatedCount > 0 ? "text-destructive" : undefined}>
+                {formatInt(escalatedCount)}
+              </span>
+            ),
+          },
+          { label: "Chờ bằng chứng", value: formatInt(evidenceCount) },
+        ]}
+      />
+
+      <IndexTable
+        tabs={tabs}
+        activeTab={statusTab}
+        onTabChange={(next) => handleTabChange(next as ReturnFilterTab)}
+        toolbar={
+          <div className="flex items-center gap-3">
+            <AdminKbdHint label="chuyển hồ sơ" />
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {formatInt(total)} hồ sơ
             </span>
-            <input
+          </div>
+        }
+        footer={
+          !loadError && !loading && filteredItems.length > 0 ? (
+            <AdminPaginationBar
+              page={page}
+              totalPages={totalPages}
+              totalItems={total}
+              itemLabel="hồ sơ"
+              disabled={loading}
+              onPageChange={handlePageChange}
+            />
+          ) : undefined
+        }
+      >
+        <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/35 px-4 py-2.5">
+          <div className="relative min-w-0 flex-1 sm:max-w-md">
+            <Search
+              className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <Input
               type="search"
-              className={shared.toolbarSearch}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Tìm mã đơn, mã yêu cầu, vận đơn, lý do..."
               aria-label="Tìm kiếm hồ sơ khiếu nại và trả hàng"
+              className="h-9 bg-card pl-8"
             />
           </div>
         </div>
-        <div className={shared.toolbarRight}>
-          <span className={shared.resultCount}>{formatInt(total)} hồ sơ</span>
-          <Button
-            variant="outline"
-            size="sm"
-            shape="app"
-            disabled={loading}
-            onClick={() => void loadList(statusTab, page)}
-          >
-            Làm mới
-          </Button>
-        </div>
-      </div>
 
-      {loadError ? (
-        <StateView
-          kind="error"
-          surface="app"
-          title="Không thể tải danh sách khiếu nại"
-          message={loadError}
-          actionLabel="Thử lại"
-          onAction={() => void loadList(statusTab, page)}
-        />
-      ) : loading ? (
-        <div className={shared.stateWrap}>
-          <StateView
-            kind="loading"
-            surface="app"
-            title="Đang tải danh sách khiếu nại..."
-            rows={5}
-          />
-        </div>
-      ) : filteredItems.length === 0 ? (
-        <p className={shared.emptyRow}>Không có yêu cầu trả hàng hoặc khiếu nại phù hợp.</p>
-      ) : (
-        <>
-          <div className={shared.reviewSplit}>
-            <div className={shared.queueColumn}>
-              <div className={shared.queueHead}>
-                <span>Danh sách yêu cầu</span>
-                <span>
-                  {activeIndex + 1} / {formatInt(filteredItems.length)}
-                </span>
-              </div>
-              <ul className={shared.queueList} aria-label="Danh sách khiếu nại trả hàng">
-                {filteredItems.map((item) => {
-                  const meta = getAdminReturnStatusMeta(item.status);
-                  const isSelected = activeReturn?.id === item.id;
-                  return (
-                    <li key={item.id} className={shared.queueItem}>
-                      <button
-                        ref={(node) => {
-                          if (node) rowRefs.current.set(item.id, node);
-                          else rowRefs.current.delete(item.id);
-                        }}
-                        type="button"
-                        className={`${shared.queueItemBtn} ${isSelected ? shared.queueItemActive : ""}`}
-                        aria-current={isSelected ? "true" : undefined}
-                        onClick={() => {
-                          setSelectedId(item.id);
-                          if (typeof window !== "undefined" && window.innerWidth <= 960) {
-                            setDrawerOpen(true);
-                          }
-                        }}
+        {loadError ? (
+          <div className="p-4">
+            <ErrorState
+              title="Không thể tải danh sách khiếu nại"
+              description={loadError}
+              onRetry={() => void loadList(statusTab, page)}
+              className="shadow-none"
+            />
+          </div>
+        ) : loading ? (
+          <div className="space-y-2.5 p-5" role="status" aria-live="polite">
+            <p className="text-xs text-muted-foreground">Đang tải danh sách khiếu nại...</p>
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-10 w-full rounded-md" />
+            ))}
+          </div>
+        ) : filteredItems.length === 0 ? (
+          <div className="p-4">
+            <EmptyState
+              icon={Flag}
+              title="Không có yêu cầu trả hàng hoặc khiếu nại phù hợp"
+              description="Thử chuyển sang trạng thái khác hoặc xóa từ khóa tìm kiếm."
+              className="shadow-none"
+            />
+          </div>
+        ) : (
+          <>
+            <div className="hidden md:block">
+              <Table aria-label="Danh sách khiếu nại trả hàng">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Đơn hàng</TableHead>
+                    <TableHead>Trạng thái</TableHead>
+                    <TableHead className="hidden xl:table-cell">Lý do / Khiếu nại</TableHead>
+                    <TableHead className="hidden text-right lg:table-cell">Hoàn dự kiến</TableHead>
+                    <TableHead className="hidden lg:table-cell">Tạo lúc</TableHead>
+                    <TableHead className="text-right">Thao tác</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredItems.map((item) => {
+                    const meta = getAdminReturnStatusMeta(item.status);
+                    const isSelected = drawerOpen && activeReturn?.id === item.id;
+                    return (
+                      <TableRow
+                        key={item.id}
+                        data-state={isSelected ? "selected" : undefined}
+                        className="cursor-pointer"
+                        onClick={() => openReturnSheet(item)}
                       >
-                        <span className={shared.queueItemBody}>
-                          <span className={shared.queueItemTop}>
-                            <span className={shared.queueItemTitle}>
-                              Đơn {item.order_code || item.order_id.slice(0, 8)}
-                            </span>
-                            <StatusPill label={meta.label} tone={meta.tone} />
-                          </span>
-                          <span className={shared.queueItemMeta}>
-                            {item.refund_amount_vnd > 0
-                              ? formatVnd(item.refund_amount_vnd)
-                              : EMPTY_DASH}
-                            {item.created_at ? ` · ${formatShortTimeDateVi(item.created_at)}` : ""}
-                          </span>
-                          <span className={shared.queueItemMeta}>
+                        <TableCell>
+                          <div className="font-medium text-foreground">
+                            Đơn {item.order_code || item.order_id.slice(0, 8)}
+                          </div>
+                          <div className="text-xs text-muted-foreground tabular-nums">
+                            {item.id.slice(0, 12)}
+                            {item.refund_amount_vnd > 0 && (
+                              <span className="lg:hidden">
+                                {" · "}
+                                {formatVnd(item.refund_amount_vnd)}
+                              </span>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <StatusBadge tone={adminReturnStatusTone(item.status)}>
+                            {meta.label}
+                          </StatusBadge>
+                        </TableCell>
+                        <TableCell className="hidden max-w-[280px] whitespace-normal xl:table-cell">
+                          <span className="line-clamp-2 text-[13px] text-foreground">
                             {item.dispute_reason || item.reason || "Chưa có lý do"}
                           </span>
+                        </TableCell>
+                        <TableCell className="hidden text-right lg:table-cell">
+                          {item.refund_amount_vnd > 0 ? (
+                            <Money vnd={item.refund_amount_vnd} />
+                          ) : (
+                            <span className="text-xs text-muted-foreground">{EMPTY_DASH}</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="hidden text-xs text-muted-foreground tabular-nums lg:table-cell">
+                          {item.created_at ? formatShortTimeDateVi(item.created_at) : EMPTY_DASH}
+                        </TableCell>
+                        <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="xs"
+                            onClick={() => openReturnSheet(item)}
+                          >
+                            {canAdminResolveReturn(item.status) && canResolve
+                              ? "Phân xử"
+                              : "Xem chi tiết"}
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="md:hidden">
+              {filteredItems.map((item) => {
+                const meta = getAdminReturnStatusMeta(item.status);
+                return (
+                  <IndexRowCard
+                    key={item.id}
+                    title={`Đơn ${item.order_code || item.order_id.slice(0, 8)}`}
+                    badge={
+                      <StatusBadge tone={adminReturnStatusTone(item.status)}>
+                        {meta.label}
+                      </StatusBadge>
+                    }
+                    meta={
+                      <>
+                        <span className="tabular-nums">
+                          {item.refund_amount_vnd > 0
+                            ? formatVnd(item.refund_amount_vnd)
+                            : EMPTY_DASH}
                         </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
+                        {item.created_at && (
+                          <>
+                            <span>·</span>
+                            <span className="tabular-nums">
+                              {formatShortTimeDateVi(item.created_at)}
+                            </span>
+                          </>
+                        )}
+                        <span className="line-clamp-1 basis-full">
+                          {item.dispute_reason || item.reason || "Chưa có lý do"}
+                        </span>
+                      </>
+                    }
+                    onClick={() => openReturnSheet(item)}
+                  />
+                );
+              })}
             </div>
+          </>
+        )}
+      </IndexTable>
 
-            {activeReturn && (
-              <section className={shared.inspectorPane} aria-label="Chi tiết phân xử khiếu nại">
-                {renderInspector(activeReturn, false)}
-              </section>
-            )}
-          </div>
-
-          {totalPages > 1 && (
-            <div className={styles.paginationRow}>
-              <span className={styles.paginationInfo}>
-                Trang {formatInt(page)} / {formatInt(totalPages)} ({formatInt(total)} hồ sơ)
-              </span>
-              <div className={styles.paginationBtns}>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  shape="app"
-                  disabled={page <= 1 || loading}
-                  onClick={() => handlePageChange(page - 1)}
-                >
-                  Trang trước
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  shape="app"
-                  disabled={page >= totalPages || loading}
-                  onClick={() => handlePageChange(page + 1)}
-                >
-                  Trang sau
-                </Button>
-              </div>
-            </div>
-          )}
-        </>
-      )}
-
-      <AdminDrawer
-        open={drawerOpen && Boolean(activeReturn)}
-        onClose={() => setDrawerOpen(false)}
-        title={
-          activeReturn ? `Đơn ${activeReturn.order_code || activeReturn.order_id.slice(0, 8)}` : ""
-        }
-        subtitle={activeReturn?.created_at ? formatDateTimeVi(activeReturn.created_at) : undefined}
-        headerBadge={
-          activeReturn ? (
-            <StatusPill
-              label={getAdminReturnStatusMeta(activeReturn.status).label}
-              tone={getAdminReturnStatusMeta(activeReturn.status).tone}
-            />
-          ) : undefined
-        }
-        width="lg"
-      >
-        {activeReturn && renderInspector(activeReturn, true)}
-      </AdminDrawer>
+      <Sheet open={drawerOpen && Boolean(activeReturn)} onOpenChange={setDrawerOpen}>
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
+          {activeReturn ? (
+            <>
+              <SheetHeader className="border-b border-border pr-12">
+                <div className="flex flex-wrap items-center gap-2">
+                  <SheetTitle>
+                    Đơn {activeReturn.order_code || activeReturn.order_id.slice(0, 8)}
+                  </SheetTitle>
+                  <StatusBadge tone={adminReturnStatusTone(activeReturn.status)}>
+                    {getAdminReturnStatusMeta(activeReturn.status).label}
+                  </StatusBadge>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                  <SheetDescription className="tabular-nums">
+                    Mã yêu cầu {activeReturn.id.slice(0, 12)}
+                    {activeReturn.created_at
+                      ? ` · Tạo lúc ${formatDateTimeVi(activeReturn.created_at)}`
+                      : ""}
+                  </SheetDescription>
+                  {activeIndex >= 0 && (
+                    <div className="flex items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon-xs"
+                        disabled={activeIndex <= 0}
+                        onClick={() => stepSelection(-1)}
+                        aria-label="Hồ sơ trước (K)"
+                      >
+                        <ChevronLeft className="size-3.5" aria-hidden="true" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon-xs"
+                        disabled={activeIndex >= filteredItems.length - 1}
+                        onClick={() => stepSelection(1)}
+                        aria-label="Hồ sơ tiếp theo (J)"
+                      >
+                        <ChevronRight className="size-3.5" aria-hidden="true" />
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </SheetHeader>
+              {renderInspector(activeReturn)}
+            </>
+          ) : null}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

@@ -1,13 +1,14 @@
 import React from "react";
-import { StateView } from "@/components";
+import { ErrorState } from "@/components/app";
+import { Toaster } from "@/components/ui/sonner";
+import { UiScope } from "@/components/ui/ui-scope";
 import { ADMIN_STAFF_ROLES, roleHasCapability } from "@/lib/admin-rbac";
 import type { GatewayAdminApprovalsResponse, GatewayLedgerSummary } from "@/lib/gateway-types";
 import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import { requireRole, type Session } from "@/lib/server/session";
 import { AdminShell } from "@/features/admin/AdminShell";
-import shared from "@/features/admin/adminShared.module.css";
-import styles from "./layout.module.css";
+import "@/styles/ui.css";
 
 export const dynamic = "force-dynamic";
 
@@ -18,29 +19,18 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   } catch (err) {
     if (err instanceof GatewayError) {
       return (
-        <div className={styles.shell}>
-          <div className={styles.sheetWrap}>
-            <main className={styles.sheet}>
-              <div className={shared.page}>
-                <header className={shared.titleRow}>
-                  <div className={shared.titleBlock}>
-                    <h1 className={shared.pageTitle}>Quản trị NexusMart</h1>
-                  </div>
-                </header>
-                <div className={shared.stateWrap}>
-                  <StateView
-                    kind="error"
-                    surface="app"
-                    title="Chưa thể xác minh phiên quản trị"
-                    message={SAFE_MESSAGES[err.kind]}
-                    actionLabel="Tải lại"
-                    actionHref="/admin"
-                  />
-                </div>
-              </div>
-            </main>
-          </div>
-        </div>
+        <UiScope className="flex min-h-svh items-center justify-center bg-background p-6 text-sm text-foreground">
+          <main className="w-full max-w-md space-y-4">
+            <h1 className="text-center text-xl leading-7 font-semibold tracking-tight text-foreground">
+              Quản trị NexusMart
+            </h1>
+            <ErrorState
+              title="Chưa thể xác minh phiên quản trị"
+              description={SAFE_MESSAGES[err.kind]}
+              retryHref="/admin"
+            />
+          </main>
+        </UiScope>
       );
     }
     throw err;
@@ -97,15 +87,18 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     : 0;
 
   return (
-    <AdminShell
-      user={session.user}
-      pendingShopApprovals={pendingShopApprovals}
-      pendingProductReviews={pendingProductReviews}
-      openComplaintsCount={openComplaintsCount}
-      ledgerUnbalanced={ledgerUnbalanced}
-      pendingApprovalsCount={pendingApprovalsCount}
-    >
-      {children}
-    </AdminShell>
+    <UiScope className="min-h-svh bg-background text-sm text-foreground">
+      <AdminShell
+        user={session.user}
+        pendingShopApprovals={pendingShopApprovals}
+        pendingProductReviews={pendingProductReviews}
+        openComplaintsCount={openComplaintsCount}
+        ledgerUnbalanced={ledgerUnbalanced}
+        pendingApprovalsCount={pendingApprovalsCount}
+      >
+        {children}
+      </AdminShell>
+      <Toaster />
+    </UiScope>
   );
 }

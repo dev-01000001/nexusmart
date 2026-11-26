@@ -3,17 +3,40 @@
 import React, { Suspense, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { CheckCircle2, Download, Flag, ShieldCheck, Store, Wallet } from "lucide-react";
 import {
   BarChart,
-  Button,
-  IconCheck,
-  IconFlag,
-  IconShield,
-  IconStore,
-  IconWallet,
+  ErrorState,
+  IndexRowCard,
+  KpiChartCard,
   LineChart,
-  StateView,
-} from "@/components";
+  MetricStrip,
+  Money,
+  PageHeader,
+  StatusBadge,
+  orderStatusTone,
+} from "@/components/app";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableFooter,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { api, apiBlob, getErrorMessage } from "@/lib/api";
 import { roleHasCapability } from "@/lib/admin-rbac";
 import {
@@ -39,11 +62,10 @@ import {
   normalizeSalesChannel,
   type SalesChannelFilter,
 } from "@/lib/salesChannel";
+import { cn } from "@/lib/utils";
 import { formatShortTimeDateVi } from "./adminMeta";
 import { AdminStateGate, AdminSuspenseFallback } from "./AdminStateGate";
 import { useAdminContext } from "./AdminShell";
-import { CountUpValue } from "./AdminUi";
-import { StatusPill } from "./StatusPill";
 import {
   getAccountTypeLabelVi,
   getAdminOrderStatusMeta,
@@ -55,11 +77,8 @@ import {
 } from "./adminApiTypes";
 import { getAdminAuditTargetTypeLabel } from "./types";
 import { getAdminAuditActionLabelVi } from "./AdminAuditHelpers";
-import shared from "./adminShared.module.css";
-import styles from "@/app/(admin)/admin/page.module.css";
 
 type QueueCategory = "all" | "shop" | "product" | "return" | "needs-review" | "ledger";
-type HealthMetric = "gmv" | "orders";
 
 interface ActionQueueItem {
   id: string;
@@ -143,7 +162,6 @@ function AdminOverviewContent({
   const canReports = roleHasCapability(user.role, "reports.read");
 
   const [queueFilter, setQueueFilter] = useState<QueueCategory>("all");
-  const [healthMetric, setHealthMetric] = useState<HealthMetric>("gmv");
   const [orderChannelFilter, setOrderChannelFilter] = useState<SalesChannelFilter>("");
   const [anchorNowMs] = useState<number>(() => serverNowMs ?? Date.now());
 
@@ -154,6 +172,7 @@ function AdminOverviewContent({
   const [reportTo, setReportTo] = useState<string>(
     () => initialReportTo ?? formatVnDateOffset(0, anchorNowMs)
   );
+  const [activePreset, setActivePreset] = useState<number | null>(30);
   const [reportLoading, setReportLoading] = useState(false);
   const [reportExporting, setReportExporting] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
@@ -352,6 +371,7 @@ function AdminOverviewContent({
   const handleApplyPreset = (days: number) => {
     const nextTo = formatVnDateOffset(0, anchorNowMs);
     const nextFrom = formatVnDateOffset(-(days - 1), anchorNowMs);
+    setActivePreset(days);
     setReportFrom(nextFrom);
     setReportTo(nextTo);
     void handleLoadReport(nextFrom, nextTo);
@@ -390,14 +410,12 @@ function AdminOverviewContent({
 
   if (loadError) {
     return (
-      <div className={shared.page}>
-        <StateView
-          kind="error"
-          surface="app"
+      <div className="space-y-5">
+        <PageHeader title="Tổng quan" />
+        <ErrorState
           title="Không thể tải số liệu tổng quan"
-          message={loadError}
-          actionLabel="Thử lại"
-          onAction={() => router.refresh()}
+          description={loadError}
+          onRetry={() => router.refresh()}
         />
       </div>
     );
@@ -421,111 +439,424 @@ function AdminOverviewContent({
   const queueIcon = (cat: ActionQueueItem["category"]) => {
     switch (cat) {
       case "shop":
-        return <IconStore size={15} />;
+        return Store;
       case "product":
-        return <IconShield size={15} />;
+        return ShieldCheck;
       case "return":
       case "needs-review":
-        return <IconFlag size={15} />;
+        return Flag;
       case "ledger":
-        return <IconWallet size={15} />;
+        return Wallet;
     }
   };
 
+  const rangeFooter =
+    dailySeries.length > 0
+      ? `${dailySeries[0].label} – ${dailySeries[dailySeries.length - 1].label}`
+      : `${reportFrom} – ${reportTo}`;
+
+  const orderBarSeries = dailySeries.slice(-7);
+  const orderBarRange =
+    orderBarSeries.length > 0
+      ? `${orderBarSeries[0].label} – ${orderBarSeries[orderBarSeries.length - 1].label}`
+      : rangeFooter;
+
+  const totalOrdersCount = report ? report.total_orders : validOrders.length;
+
+  const orderChannelLabel =
+    orderChannelFilter === "MARKETPLACE"
+      ? `Sàn NexusMart (${formatInt(channelCounts.marketplace)})`
+      : orderChannelFilter === "STOREFRONT"
+        ? `Site riêng (${formatInt(channelCounts.storefront)})`
+        : `Tất cả kênh (${formatInt(orders.length)})`;
+
   return (
-    <div className={shared.page}>
-      <header className={shared.titleRow}>
-        <div className={shared.titleBlock}>
-          <h1 className={shared.pageTitle}>Tổng quan</h1>
-        </div>
-        <div className={shared.titleActions}>
-          {canReports && (
+    <div className="space-y-5">
+      <PageHeader
+        title="Tổng quan"
+        subtitle="Theo dõi vận hành nền tảng, hàng đợi cần xử lý và báo cáo theo kỳ."
+        secondaryActions={
+          canReports ? (
             <Button
-              variant="outline"
+              type="button"
+              variant="secondary"
               size="sm"
-              shape="app"
-              loading={reportExporting}
+              disabled={reportExporting}
               onClick={() => void handleExportCsv()}
             >
-              Xuất CSV
+              <Download className="size-4" aria-hidden="true" />
+              <span>{reportExporting ? "Đang xuất..." : "Xuất CSV"}</span>
             </Button>
-          )}
-          {canShops && (
-            <Button variant="primary" size="sm" shape="app" href="/admin/gian-hang">
-              Duyệt gian hàng
+          ) : undefined
+        }
+        primaryAction={
+          canShops ? (
+            <Button size="sm" asChild>
+              <Link href="/admin/gian-hang">Duyệt gian hàng</Link>
             </Button>
-          )}
-        </div>
-      </header>
+          ) : undefined
+        }
+      />
 
-      {/* Compact 4-cell KPI Strip */}
-      <section className={shared.kpiStrip} aria-label="Chỉ số vận hành chính">
-        <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Hàng đợi cần xử lý</span>
-          <span
-            className={`${shared.kpiValue} ${actionQueue.length > 0 ? shared.kpiValueNegative : shared.kpiValuePositive}`}
-          >
-            <CountUpValue value={actionQueue.length} format="int" />
-          </span>
-          <span className={shared.kpiCaption}>
-            {canOrders && needsReviewTotal > 0
-              ? `${formatInt(needsReviewTotal)} đơn cần rà soát`
-              : `${formatInt(activeShopsCount)} gian hàng hoạt động`}
-          </span>
-        </div>
-
-        <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>{report ? "GMV kỳ báo cáo" : "GMV đơn hàng"}</span>
-          <span className={shared.kpiValue}>
-            <CountUpValue value={totalGmv} format="vnd" />
-          </span>
-          <span className={shared.kpiCaption}>
-            {report
-              ? `${formatInt(report.total_orders)} đơn · hoàn tất ${formatInt(report.completed_orders)}`
-              : `${formatInt(validOrders.length)} đơn hợp lệ`}
-          </span>
-        </div>
-
-        <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Hoa hồng nền tảng</span>
-          <span className={shared.kpiValue}>
-            <CountUpValue value={totalCommission} format="vnd" />
-          </span>
-          <span className={shared.kpiCaption}>
-            {report
-              ? `Trợ giá ${formatVnd(report.platform_subsidy_vnd)}`
-              : `${formatInt(channelCounts.storefront)} đơn site riêng`}
-          </span>
-        </div>
-
-        <div className={shared.kpiCell}>
-          <span className={shared.kpiLabel}>Sổ cái Nợ và Có</span>
-          <span
-            className={`${shared.kpiValue} ${!isBalanced ? shared.kpiValueNegative : shared.kpiValuePositive}`}
-          >
-            {canLedger ? (isBalanced ? "0₫ lệch" : formatSignedVnd(ledgerDiff)) : "—"}
-          </span>
-          <span className={shared.kpiCaption}>
-            {canLedger
-              ? isBalanced
-                ? "Cân đối tuyệt đối"
-                : "Cần đối soát ngay"
-              : "Không thuộc phạm vi quyền"}
-          </span>
-        </div>
+      {/* 4-cell KPI Strip */}
+      <section aria-label="Chỉ số vận hành chính">
+        <MetricStrip
+          className="md:grid-flow-row md:grid-cols-2 md:divide-x-0 lg:grid-flow-col lg:auto-cols-fr lg:divide-x"
+          items={[
+            {
+              label: "Hàng đợi cần xử lý",
+              value: (
+                <span
+                  className={actionQueue.length > 0 ? "text-destructive" : "text-badge-success-ink"}
+                >
+                  {formatInt(actionQueue.length)}
+                </span>
+              ),
+              hint:
+                canOrders && needsReviewTotal > 0
+                  ? `${formatInt(needsReviewTotal)} đơn cần rà soát`
+                  : `${formatInt(activeShopsCount)} gian hàng hoạt động`,
+            },
+            {
+              label: report ? "GMV kỳ báo cáo" : "GMV đơn hàng",
+              value: formatVnd(totalGmv),
+              hint: report
+                ? `${formatInt(report.total_orders)} đơn · hoàn tất ${formatInt(report.completed_orders)}`
+                : `${formatInt(validOrders.length)} đơn hợp lệ`,
+            },
+            {
+              label: "Hoa hồng nền tảng",
+              value: formatVnd(totalCommission),
+              hint: report
+                ? `Trợ giá ${formatVnd(report.platform_subsidy_vnd)}`
+                : `${formatInt(channelCounts.storefront)} đơn site riêng`,
+            },
+            {
+              label: "Sổ cái Nợ và Có",
+              value: (
+                <span
+                  className={
+                    !canLedger
+                      ? "text-muted-foreground"
+                      : !isBalanced
+                        ? "text-destructive"
+                        : "text-badge-success-ink"
+                  }
+                >
+                  {canLedger ? (isBalanced ? "0₫ lệch" : formatSignedVnd(ledgerDiff)) : "—"}
+                </span>
+              ),
+              hint: canLedger
+                ? isBalanced
+                  ? "Cân đối tuyệt đối"
+                  : "Cần đối soát ngay"
+                : "Không thuộc phạm vi quyền",
+            },
+          ]}
+        />
       </section>
 
-      {/* Primary Hero: Left Actionable Pending Queue + Right Single-Question Health Chart */}
-      <div className={styles.heroGrid}>
-        <section
-          className={`${shared.panel} ${styles.queuePanel}`}
-          aria-labelledby="admin-queue-heading"
-        >
-          <div className={shared.panelHeader}>
-            <h2 id="admin-queue-heading" className={shared.panelTitle}>
-              Hàng đợi cần xử lý
-            </h2>
-            <div className={styles.chipRow} role="tablist" aria-label="Lọc nhanh hàng đợi">
+      {/* A4 Period Controls */}
+      {canReports && (
+        <section aria-labelledby="admin-report-heading" className="space-y-4">
+          <Card>
+            <CardHeader className="gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <CardTitle id="admin-report-heading">Báo cáo nền tảng</CardTitle>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {[7, 30, 90].map((days) => (
+                    <Button
+                      key={days}
+                      type="button"
+                      size="xs"
+                      variant={activePreset === days ? "secondary" : "outline"}
+                      onClick={() => handleApplyPreset(days)}
+                    >
+                      {days} ngày
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <label htmlFor="report-from" className="sr-only">
+                    Từ ngày
+                  </label>
+                  <Input
+                    id="report-from"
+                    type="date"
+                    className="h-9 w-40 bg-card tabular-nums"
+                    value={reportFrom}
+                    onChange={(e) => {
+                      setActivePreset(null);
+                      setReportFrom(e.target.value);
+                    }}
+                    aria-label="Ngày bắt đầu báo cáo"
+                  />
+                  <span className="text-[13px] text-muted-foreground">đến</span>
+                  <label htmlFor="report-to" className="sr-only">
+                    Đến ngày
+                  </label>
+                  <Input
+                    id="report-to"
+                    type="date"
+                    className="h-9 w-40 bg-card tabular-nums"
+                    value={reportTo}
+                    onChange={(e) => {
+                      setActivePreset(null);
+                      setReportTo(e.target.value);
+                    }}
+                    aria-label="Ngày kết thúc báo cáo"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={reportLoading}
+                    onClick={() => void handleLoadReport(reportFrom, reportTo)}
+                  >
+                    {reportLoading ? "Đang tải..." : "Cập nhật"}
+                  </Button>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={reportExporting}
+                  onClick={() => void handleExportCsv()}
+                >
+                  {reportExporting ? "Đang xuất..." : "Xuất CSV"}
+                </Button>
+              </div>
+
+              {reportError && (
+                <p className="text-[13px] font-medium text-destructive" role="alert">
+                  {reportError}
+                </p>
+              )}
+
+              {report ? (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-lg border border-border bg-muted/40 p-3.5">
+                    <div className="text-[13px] text-muted-foreground">Doanh thu ròng</div>
+                    <div className="mt-1 text-lg font-semibold text-foreground tabular-nums">
+                      {formatVnd(report.net_revenue_vnd)}
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted-foreground tabular-nums">
+                      GMV {formatVnd(report.gmv_vnd)}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-muted/40 p-3.5">
+                    <div className="text-[13px] text-muted-foreground">Hoa hồng &amp; phí TT</div>
+                    <div className="mt-1 text-lg font-semibold text-foreground tabular-nums">
+                      {formatVnd(report.commission_vnd)}
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted-foreground tabular-nums">
+                      Phí TT {formatVnd(report.payment_fee_vnd)}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-muted/40 p-3.5">
+                    <div className="text-[13px] text-muted-foreground">Tỉ lệ hủy / trả hàng</div>
+                    <div className="mt-1 text-lg font-semibold text-foreground tabular-nums">
+                      {formatBpsPercent(report.cancel_rate_bps)} /{" "}
+                      {formatBpsPercent(report.return_rate_bps)}
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted-foreground tabular-nums">
+                      {formatInt(report.cancelled_orders)} hủy · {formatInt(report.returned_orders)}{" "}
+                      trả
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-muted/40 p-3.5">
+                    <div className="text-[13px] text-muted-foreground">Tăng trưởng kỳ báo cáo</div>
+                    <div className="mt-1 text-lg font-semibold text-foreground tabular-nums">
+                      {report.user_stats
+                        ? `+${formatInt(report.user_stats.new_users)} người dùng`
+                        : `${formatInt(report.completed_orders)} đơn hoàn tất`}
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted-foreground tabular-nums">
+                      {report.user_stats
+                        ? `+${formatInt(report.user_stats.new_shops)} gian hàng mới`
+                        : `Tổng ${formatInt(report.total_orders)} đơn`}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-[13px] text-muted-foreground">
+                  Chưa có dữ liệu báo cáo trong khoảng ngày đã chọn.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </section>
+      )}
+
+      {/* A4 KpiChartCard Grid */}
+      <section
+        aria-labelledby="admin-health-heading"
+        className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"
+      >
+        <h2 id="admin-health-heading" className="sr-only">
+          Xu hướng vận hành nền tảng
+        </h2>
+
+        <KpiChartCard
+          title="Xu hướng GMV"
+          tooltip="Tổng giá trị đơn hàng hợp lệ ghi nhận theo ngày trong kỳ đang chọn."
+          value={formatVnd(totalGmv)}
+          chart={
+            <LineChart
+              labels={dailySeries.map((p) => p.label)}
+              series={[
+                {
+                  name: "GMV ghi nhận",
+                  values: dailySeries.map((p) => p.gmv),
+                },
+              ]}
+              height={188}
+              showArea
+              formatValue={formatVnd}
+              formatTick={formatCompactVnd}
+              ariaLabel="Biểu đồ GMV toàn sàn"
+            />
+          }
+          footer={<span>{rangeFooter}</span>}
+        />
+
+        <KpiChartCard
+          title="Xu hướng số đơn"
+          tooltip="Số lượng đơn hàng hợp lệ phát sinh mỗi ngày (7 ngày gần nhất trong kỳ)."
+          value={formatInt(totalOrdersCount)}
+          chart={
+            <BarChart
+              labels={orderBarSeries.map((p) => p.label)}
+              values={orderBarSeries.map((p) => p.orderCount)}
+              height={188}
+              formatValue={(v) => `${formatInt(v)} đơn`}
+              formatTick={(v) => formatInt(v)}
+              ariaLabel="Biểu đồ số đơn hàng toàn sàn"
+            />
+          }
+          footer={
+            <span>
+              {report
+                ? `${orderBarRange} · Hoàn tất ${formatInt(report.completed_orders)} · Hủy ${formatInt(report.cancelled_orders)}`
+                : orderBarRange}
+            </span>
+          }
+        />
+
+        <Card className="gap-3 md:col-span-2 xl:col-span-1">
+          <CardHeader className="gap-1">
+            <CardTitle className="text-[13px] font-medium">Tóm tắt sổ cái &amp; phân hệ</CardTitle>
+            <div className="text-2xl leading-8 font-semibold tracking-tight text-foreground tabular-nums">
+              {canLedger
+                ? isBalanced
+                  ? "Khớp 0₫"
+                  : formatSignedVnd(ledgerDiff)
+                : `${formatInt(activeShopsCount)} gian hàng`}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-2.5 pt-0 text-[13px]">
+            {canLedger && (
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-muted-foreground">Ghi có sổ cái</span>
+                  <span className="font-medium text-foreground tabular-nums">
+                    {formatVnd(ledger?.total_credits_vnd ?? 0)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-muted-foreground">Ghi nợ sổ cái</span>
+                  <span className="font-medium text-foreground tabular-nums">
+                    {formatVnd(ledger?.total_debits_vnd ?? 0)}
+                  </span>
+                </div>
+                <Separator />
+              </>
+            )}
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              {canShops && (
+                <Link
+                  href="/admin/gian-hang"
+                  className="rounded-lg border border-border bg-muted/40 p-2.5 transition-colors hover:bg-accent"
+                >
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <Store className="size-3.5 shrink-0 text-brand" aria-hidden="true" />
+                    <span>Gian hàng</span>
+                  </div>
+                  <div className="mt-1 text-xs font-semibold text-foreground tabular-nums">
+                    {formatInt(pendingShops.length)} chờ · {formatInt(activeShopsCount)} chạy
+                  </div>
+                </Link>
+              )}
+              {canProducts && (
+                <Link
+                  href="/admin/kiem-duyet"
+                  className="rounded-lg border border-border bg-muted/40 p-2.5 transition-colors hover:bg-accent"
+                >
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <ShieldCheck className="size-3.5 shrink-0 text-brand" aria-hidden="true" />
+                    <span>Sản phẩm</span>
+                  </div>
+                  <div className="mt-1 text-xs font-semibold text-foreground tabular-nums">
+                    {formatInt(pendingProducts.length)} chờ duyệt
+                  </div>
+                </Link>
+              )}
+              {canReturns && (
+                <Link
+                  href="/admin/khieu-nai"
+                  className="rounded-lg border border-border bg-muted/40 p-2.5 transition-colors hover:bg-accent"
+                >
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <Flag className="size-3.5 shrink-0 text-brand" aria-hidden="true" />
+                    <span>Khiếu nại trả hàng</span>
+                  </div>
+                  <div className="mt-1 text-xs font-semibold text-foreground tabular-nums">
+                    {formatInt(escalatedReturns.length)} cần phân xử
+                  </div>
+                </Link>
+              )}
+              {canOrders && (
+                <Link
+                  href="/admin/doi-soat?tab=needs-review"
+                  className="rounded-lg border border-border bg-muted/40 p-2.5 transition-colors hover:bg-accent"
+                >
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <Wallet className="size-3.5 shrink-0 text-brand" aria-hidden="true" />
+                    <span>Đơn cần rà soát</span>
+                  </div>
+                  <div className="mt-1 text-xs font-semibold text-foreground tabular-nums">
+                    {formatInt(needsReviewTotal)} đơn
+                  </div>
+                </Link>
+              )}
+            </div>
+            {canLedger && (
+              <div className="pt-1">
+                <Link
+                  href="/admin/doi-soat"
+                  className="text-xs font-medium text-brand hover:underline"
+                >
+                  Mở đối soát →
+                </Link>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
+      {/* Actionable Pending Queue */}
+      <Card>
+        <CardHeader className="gap-3 border-b border-border pb-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle id="admin-queue-heading">Hàng đợi cần xử lý</CardTitle>
+            <div
+              role="tablist"
+              aria-label="Lọc nhanh hàng đợi"
+              className="flex flex-wrap items-center gap-1"
+            >
               {queueChips.map((chip) => {
                 const active = queueFilter === chip.id;
                 return (
@@ -534,590 +865,403 @@ function AdminOverviewContent({
                     type="button"
                     role="tab"
                     aria-selected={active}
-                    className={`${styles.filterChip} ${active ? styles.filterChipActive : ""}`}
                     onClick={() => setQueueFilter(chip.id)}
+                    className={cn(
+                      "inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      active
+                        ? "bg-secondary font-semibold text-foreground"
+                        : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+                    )}
                   >
                     <span>{chip.label}</span>
-                    <span className={styles.filterChipCount}>{chip.count}</span>
+                    <span className="tabular-nums opacity-75">{chip.count}</span>
                   </button>
                 );
               })}
             </div>
           </div>
-
+        </CardHeader>
+        <CardContent className="pt-4">
           {visibleQueue.length > 0 ? (
-            <div className={styles.queueBody}>
-              <ul className={styles.queueList}>
-                {visibleQueue.slice(0, 8).map((item, idx) => (
-                  <li
-                    key={item.id}
-                    className={styles.queueRow}
-                    style={{ "--i": idx } as React.CSSProperties}
-                  >
-                    <div className={styles.queueRowLeft}>
-                      <span
-                        className={`${styles.queueTypeTag} ${item.urgent ? styles.queueTypeTagUrgent : ""}`}
-                      >
-                        {queueIcon(item.category)}
-                        <span>{item.categoryLabel}</span>
-                      </span>
-                      <div className={styles.queueText}>
-                        <span className={styles.queueTitle}>{item.title}</span>
-                        <span className={styles.queueMeta}>{item.meta}</span>
+            <div className="space-y-3">
+              <ul className="divide-y divide-border" aria-labelledby="admin-queue-heading">
+                {visibleQueue.slice(0, 8).map((item) => {
+                  const Icon = queueIcon(item.category);
+                  return (
+                    <li
+                      key={item.id}
+                      className="flex flex-col gap-2 py-3 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div className="flex min-w-0 flex-1 flex-wrap items-start gap-2.5 sm:flex-nowrap sm:items-center">
+                        <StatusBadge
+                          tone={item.urgent ? "critical" : "attention"}
+                          icon={Icon}
+                          className="shrink-0"
+                        >
+                          {item.categoryLabel}
+                        </StatusBadge>
+                        <div className="min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere]">
+                          <div className="text-sm font-medium text-foreground">{item.title}</div>
+                          <div className="text-xs text-muted-foreground">{item.meta}</div>
+                        </div>
                       </div>
-                    </div>
-                    <Link href={item.href} className={shared.rowActionBtn}>
-                      {item.cta}
-                    </Link>
-                  </li>
-                ))}
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        asChild
+                        className="shrink-0 self-start sm:self-center"
+                      >
+                        <Link href={item.href}>{item.cta}</Link>
+                      </Button>
+                    </li>
+                  );
+                })}
               </ul>
               {visibleQueue.length <= 2 && (
-                <div className={styles.queueCalmNote}>
-                  <IconCheck size={15} />
+                <div className="flex items-center gap-2 rounded-lg bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
+                  <CheckCircle2
+                    className="size-4 shrink-0 text-badge-success-ink"
+                    aria-hidden="true"
+                  />
                   <span>Các nhóm còn lại hiện không có mục tồn đọng.</span>
                 </div>
               )}
             </div>
           ) : (
-            <div className={styles.queueClearBanner}>
-              <IconCheck size={16} />
+            <div className="flex items-center gap-2 rounded-lg bg-badge-success-bg/60 px-3.5 py-3 text-[13px] font-medium text-badge-success-ink">
+              <CheckCircle2 className="size-4 shrink-0" aria-hidden="true" />
               <span>Không còn mục tồn đọng cần xử lý.</span>
             </div>
           )}
+        </CardContent>
+      </Card>
 
-          <div className={styles.queueSummaryGrid}>
-            {canShops && (
-              <Link href="/admin/gian-hang" className={styles.queueSummaryTile}>
-                <span className={styles.queueSummaryLabel}>
-                  <IconStore size={15} />
-                  <span>Gian hàng</span>
-                </span>
-                <strong className={styles.queueSummaryVal}>
-                  {formatInt(pendingShops.length)} chờ duyệt, {formatInt(activeShopsCount)} hoạt
-                  động
-                </strong>
-              </Link>
-            )}
-
-            {canProducts && (
-              <Link href="/admin/kiem-duyet" className={styles.queueSummaryTile}>
-                <span className={styles.queueSummaryLabel}>
-                  <IconShield size={15} />
-                  <span>Sản phẩm</span>
-                </span>
-                <strong className={styles.queueSummaryVal}>
-                  {formatInt(pendingProducts.length)} chờ duyệt
-                </strong>
-              </Link>
-            )}
-
-            {canReturns && (
-              <Link href="/admin/khieu-nai" className={styles.queueSummaryTile}>
-                <span className={styles.queueSummaryLabel}>
-                  <IconFlag size={15} />
-                  <span>Khiếu nại trả hàng</span>
-                </span>
-                <strong className={styles.queueSummaryVal}>
-                  {formatInt(escalatedReturns.length)} cần phân xử
-                </strong>
-              </Link>
-            )}
-
-            {canOrders && (
-              <Link href="/admin/doi-soat?tab=needs-review" className={styles.queueSummaryTile}>
-                <span className={styles.queueSummaryLabel}>
-                  <IconWallet size={15} />
-                  <span>Đơn cần rà soát</span>
-                </span>
-                <strong className={styles.queueSummaryVal}>
-                  {formatInt(needsReviewTotal)} đơn
-                </strong>
-              </Link>
-            )}
-          </div>
-        </section>
-
-        <section className={shared.panel} aria-labelledby="admin-health-heading">
-          <div className={shared.panelHeader}>
-            <h2 id="admin-health-heading" className={shared.panelTitle}>
-              {healthMetric === "gmv" ? "Xu hướng GMV" : "Xu hướng số đơn"}
-            </h2>
-            <div className={styles.segmentSwitch} role="tablist" aria-label="Chọn chỉ số biểu đồ">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={healthMetric === "gmv"}
-                className={`${styles.segmentBtn} ${healthMetric === "gmv" ? styles.segmentBtnActive : ""}`}
-                onClick={() => setHealthMetric("gmv")}
-              >
-                GMV
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={healthMetric === "orders"}
-                className={`${styles.segmentBtn} ${healthMetric === "orders" ? styles.segmentBtnActive : ""}`}
-                onClick={() => setHealthMetric("orders")}
-              >
-                Số đơn
-              </button>
+      {/* Top Products from Platform Report */}
+      {canReports && report && (report.top_products?.length ?? 0) > 0 && (
+        <Card>
+          <CardHeader className="border-b border-border pb-3">
+            <CardTitle>Top sản phẩm bán chạy</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="hidden md:block">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Top sản phẩm bán chạy</TableHead>
+                    <TableHead className="text-right">Số lượng bán</TableHead>
+                    <TableHead className="text-right">Doanh thu</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {report.top_products.map((tp) => (
+                    <TableRow key={tp.product_id}>
+                      <TableCell className="max-w-[360px] whitespace-normal font-medium text-foreground">
+                        {tp.product_name}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatInt(tp.units_sold)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Money vnd={tp.revenue_vnd} />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             </div>
-          </div>
-
-          {healthMetric === "gmv" ? (
-            <LineChart
-              labels={dailySeries.map((p) => p.label)}
-              series={[
-                {
-                  name: "GMV ghi nhận",
-                  values: dailySeries.map((p) => p.gmv),
-                  color: "var(--chart-1)",
-                },
-              ]}
-              height={224}
-              showArea
-              formatValue={formatVnd}
-              formatTick={formatCompactVnd}
-              ariaLabel="Biểu đồ GMV toàn sàn"
-            />
-          ) : (
-            <BarChart
-              labels={dailySeries.map((p) => p.label)}
-              values={dailySeries.map((p) => p.orderCount)}
-              height={224}
-              formatValue={(v) => `${formatInt(v)} đơn`}
-              formatTick={(v) => formatInt(v)}
-              ariaLabel="Biểu đồ số đơn hàng toàn sàn"
-            />
-          )}
-
-          {canLedger && (
-            <div className={styles.healthFooter}>
-              <div className={styles.healthStat}>
-                <span className={styles.healthStatLabel}>Ghi có sổ cái</span>
-                <span className={`${styles.healthStatVal} num`}>
-                  {formatVnd(ledger?.total_credits_vnd ?? 0)}
-                </span>
-              </div>
-              <div className={styles.healthStat}>
-                <span className={styles.healthStatLabel}>Ghi nợ sổ cái</span>
-                <span className={`${styles.healthStatVal} num`}>
-                  {formatVnd(ledger?.total_debits_vnd ?? 0)}
-                </span>
-              </div>
-              <Link href="/admin/doi-soat" className={shared.panelLink}>
-                Mở đối soát
-              </Link>
+            <div className="md:hidden">
+              {report.top_products.map((tp) => (
+                <IndexRowCard
+                  key={tp.product_id}
+                  title={tp.product_name}
+                  badge={<Money vnd={tp.revenue_vnd} size="sm" />}
+                  meta={<span>Đã bán {formatInt(tp.units_sold)}</span>}
+                />
+              ))}
             </div>
-          )}
-        </section>
-      </div>
-
-      {/* Platform Report (/admin/reports + CSV Export) */}
-      {canReports && (
-        <section className={shared.panel} aria-labelledby="admin-report-heading">
-          <div className={shared.panelHeader}>
-            <h2 id="admin-report-heading" className={shared.panelTitle}>
-              Báo cáo nền tảng
-            </h2>
-            <div className={styles.chipRow}>
-              <button
-                type="button"
-                className={styles.filterChip}
-                onClick={() => handleApplyPreset(7)}
-              >
-                7 ngày
-              </button>
-              <button
-                type="button"
-                className={styles.filterChip}
-                onClick={() => handleApplyPreset(30)}
-              >
-                30 ngày
-              </button>
-              <button
-                type="button"
-                className={styles.filterChip}
-                onClick={() => handleApplyPreset(90)}
-              >
-                90 ngày
-              </button>
-            </div>
-          </div>
-
-          <div className={styles.reportControls}>
-            <div className={styles.reportDateGroup}>
-              <label htmlFor="report-from" className="sr-only">
-                Từ ngày
-              </label>
-              <input
-                id="report-from"
-                type="date"
-                className={shared.toolbarDate}
-                value={reportFrom}
-                onChange={(e) => setReportFrom(e.target.value)}
-                aria-label="Ngày bắt đầu báo cáo"
-              />
-              <span className={shared.panelMeta}>đến</span>
-              <label htmlFor="report-to" className="sr-only">
-                Đến ngày
-              </label>
-              <input
-                id="report-to"
-                type="date"
-                className={shared.toolbarDate}
-                value={reportTo}
-                onChange={(e) => setReportTo(e.target.value)}
-                aria-label="Ngày kết thúc báo cáo"
-              />
-              <Button
-                variant="outline"
-                size="sm"
-                shape="app"
-                loading={reportLoading}
-                onClick={() => void handleLoadReport(reportFrom, reportTo)}
-              >
-                Cập nhật
-              </Button>
-            </div>
-            <Button
-              variant="primary"
-              size="sm"
-              shape="app"
-              loading={reportExporting}
-              onClick={() => void handleExportCsv()}
-            >
-              Xuất CSV
-            </Button>
-          </div>
-
-          {reportError && (
-            <p className={shared.validationError} role="alert">
-              {reportError}
-            </p>
-          )}
-
-          {report ? (
-            <>
-              <div className={styles.reportMetricsGrid}>
-                <div className={styles.reportMetricCard}>
-                  <span className={styles.reportMetricLabel}>Doanh thu ròng</span>
-                  <span className={styles.reportMetricValue}>
-                    {formatVnd(report.net_revenue_vnd)}
-                  </span>
-                  <span className={styles.reportMetricSub}>GMV {formatVnd(report.gmv_vnd)}</span>
-                </div>
-                <div className={styles.reportMetricCard}>
-                  <span className={styles.reportMetricLabel}>Hoa hồng &amp; phí TT</span>
-                  <span className={styles.reportMetricValue}>
-                    {formatVnd(report.commission_vnd)}
-                  </span>
-                  <span className={styles.reportMetricSub}>
-                    Phí TT {formatVnd(report.payment_fee_vnd)}
-                  </span>
-                </div>
-                <div className={styles.reportMetricCard}>
-                  <span className={styles.reportMetricLabel}>Tỉ lệ hủy / trả hàng</span>
-                  <span className={styles.reportMetricValue}>
-                    {formatBpsPercent(report.cancel_rate_bps)} /{" "}
-                    {formatBpsPercent(report.return_rate_bps)}
-                  </span>
-                  <span className={styles.reportMetricSub}>
-                    {formatInt(report.cancelled_orders)} hủy · {formatInt(report.returned_orders)}{" "}
-                    trả
-                  </span>
-                </div>
-                <div className={styles.reportMetricCard}>
-                  <span className={styles.reportMetricLabel}>Tăng trưởng kỳ báo cáo</span>
-                  <span className={styles.reportMetricValue}>
-                    {report.user_stats
-                      ? `+${formatInt(report.user_stats.new_users)} người dùng`
-                      : `${formatInt(report.completed_orders)} đơn hoàn tất`}
-                  </span>
-                  <span className={styles.reportMetricSub}>
-                    {report.user_stats
-                      ? `+${formatInt(report.user_stats.new_shops)} gian hàng mới`
-                      : `Tổng ${formatInt(report.total_orders)} đơn`}
-                  </span>
-                </div>
-              </div>
-
-              {(report.top_products?.length ?? 0) > 0 && (
-                <>
-                  <div className={`${shared.tableWrap} ${shared.tableWrapAuto}`}>
-                    <table className={shared.dataTable}>
-                      <thead>
-                        <tr>
-                          <th>Top sản phẩm bán chạy</th>
-                          <th className={shared.colNum}>Số lượng bán</th>
-                          <th className={shared.colNum}>Doanh thu</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {report.top_products.map((tp) => (
-                          <tr key={tp.product_id}>
-                            <td className={shared.cellPrimary}>{tp.product_name}</td>
-                            <td className={shared.colNum}>{formatInt(tp.units_sold)}</td>
-                            <td className={shared.colNum}>{formatVnd(tp.revenue_vnd)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <div className={shared.mobileList}>
-                    {report.top_products.map((tp) => (
-                      <div key={tp.product_id} className={shared.mobileItem}>
-                        <div className={shared.mobileLine1}>
-                          <span className={shared.mobileIdentity}>{tp.product_name}</span>
-                          <span className={shared.mobileMetric}>{formatVnd(tp.revenue_vnd)}</span>
-                        </div>
-                        <div className={shared.mobileLine2}>
-                          <span className={shared.mobileMetaText}>Top sản phẩm bán chạy</span>
-                          <span className="num">Đã bán {formatInt(tp.units_sold)}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              )}
-            </>
-          ) : (
-            <p className={shared.emptyRow}>Chưa có dữ liệu báo cáo trong khoảng ngày đã chọn.</p>
-          )}
-        </section>
+          </CardContent>
+        </Card>
       )}
 
       {/* Recent Orders */}
       {canOrders && (
-        <section className={shared.panel} aria-labelledby="admin-orders-heading">
-          <div className={shared.panelHeader}>
-            <h2 id="admin-orders-heading" className={shared.panelTitle}>
-              Đơn hàng gần đây
-            </h2>
-            <div className={styles.panelControls}>
-              <span className={shared.panelMeta}>
-                {formatInt(channelCounts.marketplace)} đơn sàn,{" "}
-                {formatInt(channelCounts.storefront)} site riêng
-              </span>
-              <select
-                className={shared.toolbarSelect}
-                value={orderChannelFilter}
-                onChange={(e) => setOrderChannelFilter(e.target.value as SalesChannelFilter)}
-                aria-label="Lọc đơn hàng theo kênh bán"
+        <Card>
+          <CardHeader className="gap-3 border-b border-border pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <CardTitle id="admin-orders-heading">Đơn hàng gần đây</CardTitle>
+                <p className="mt-0.5 text-xs text-muted-foreground tabular-nums">
+                  {formatInt(channelCounts.marketplace)} đơn sàn,{" "}
+                  {formatInt(channelCounts.storefront)} site riêng
+                </p>
+              </div>
+              <Select
+                value={orderChannelFilter || "ALL"}
+                onValueChange={(val) =>
+                  setOrderChannelFilter((val === "ALL" ? "" : val) as SalesChannelFilter)
+                }
               >
-                <option value="">Tất cả kênh ({formatInt(orders.length)})</option>
-                <option value="MARKETPLACE">
-                  Sàn NexusMart ({formatInt(channelCounts.marketplace)})
-                </option>
-                <option value="STOREFRONT">
-                  Site riêng ({formatInt(channelCounts.storefront)})
-                </option>
-              </select>
+                <SelectTrigger className="w-52 bg-card" aria-label="Lọc đơn hàng theo kênh bán">
+                  <SelectValue>{orderChannelLabel}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">Tất cả kênh ({formatInt(orders.length)})</SelectItem>
+                  <SelectItem value="MARKETPLACE">
+                    Sàn NexusMart ({formatInt(channelCounts.marketplace)})
+                  </SelectItem>
+                  <SelectItem value="STOREFRONT">
+                    Site riêng ({formatInt(channelCounts.storefront)})
+                  </SelectItem>
+                </SelectContent>
+              </Select>
             </div>
-          </div>
-
-          {filteredRecentOrders.length === 0 ? (
-            <p className={shared.emptyRow}>Chưa có đơn hàng thuộc kênh đang chọn.</p>
-          ) : (
-            <>
-              <div className={`${shared.tableWrap} ${shared.tableWrapAuto}`}>
-                <table className={shared.dataTable}>
-                  <thead>
-                    <tr>
-                      <th>Mã đơn</th>
-                      <th>Gian hàng</th>
-                      <th>Kênh bán</th>
-                      <th className={shared.colNum}>Tổng tiền</th>
-                      <th>Trạng thái</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredRecentOrders.map((order) => {
-                      const statusMeta = getAdminOrderStatusMeta(order.status);
-                      const channelMeta = getSalesChannelMeta(order.sales_channel);
-                      const shopName = shopNameById.get(order.shop_id) ?? order.shop_id.slice(0, 8);
-                      return (
-                        <tr key={order.id}>
-                          <td>
-                            <div className={shared.cellPrimary}>{order.order_code}</div>
-                            {order.created_at && (
-                              <div className={shared.cellSub}>
-                                {formatShortTimeDateVi(order.created_at)}
+          </CardHeader>
+          <CardContent className="p-0">
+            {filteredRecentOrders.length === 0 ? (
+              <p className="px-5 py-8 text-center text-[13px] text-muted-foreground">
+                Chưa có đơn hàng thuộc kênh đang chọn.
+              </p>
+            ) : (
+              <>
+                <div className="hidden md:block">
+                  <Table aria-labelledby="admin-orders-heading">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Mã đơn</TableHead>
+                        <TableHead className="hidden lg:table-cell">Gian hàng</TableHead>
+                        <TableHead className="hidden lg:table-cell">Kênh bán</TableHead>
+                        <TableHead className="text-right">Tổng tiền</TableHead>
+                        <TableHead>Trạng thái</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredRecentOrders.map((order) => {
+                        const statusMeta = getAdminOrderStatusMeta(order.status);
+                        const channelMeta = getSalesChannelMeta(order.sales_channel);
+                        const shopName =
+                          shopNameById.get(order.shop_id) ?? order.shop_id.slice(0, 8);
+                        return (
+                          <TableRow key={order.id}>
+                            <TableCell>
+                              <div className="font-medium text-foreground">{order.order_code}</div>
+                              {order.created_at && (
+                                <div className="text-xs text-muted-foreground tabular-nums">
+                                  {formatShortTimeDateVi(order.created_at)}
+                                </div>
+                              )}
+                              <div className="text-xs text-muted-foreground lg:hidden">
+                                {shopName} · {channelMeta.label}
                               </div>
-                            )}
-                          </td>
-                          <td>{shopName}</td>
-                          <td>
-                            <span
-                              className={`${shared.channelBadge} ${channelMeta.isStorefront ? shared.channelBadgeStorefront : ""}`}
+                            </TableCell>
+                            <TableCell className="hidden lg:table-cell">{shopName}</TableCell>
+                            <TableCell className="hidden lg:table-cell">
+                              <Badge
+                                variant={channelMeta.isStorefront ? "info" : "neutral"}
+                                data-sales-channel={channelMeta.value}
+                              >
+                                {channelMeta.label}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Money vnd={order.total_payable_vnd} />
+                            </TableCell>
+                            <TableCell>
+                              <StatusBadge tone={orderStatusTone(order.status)}>
+                                {statusMeta.label}
+                              </StatusBadge>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+
+                <div className="md:hidden">
+                  {filteredRecentOrders.map((order) => {
+                    const statusMeta = getAdminOrderStatusMeta(order.status);
+                    const channelMeta = getSalesChannelMeta(order.sales_channel);
+                    const shopName = shopNameById.get(order.shop_id) ?? order.shop_id.slice(0, 8);
+                    return (
+                      <IndexRowCard
+                        key={order.id}
+                        title={order.order_code}
+                        badge={
+                          <StatusBadge tone={orderStatusTone(order.status)}>
+                            {statusMeta.label}
+                          </StatusBadge>
+                        }
+                        meta={
+                          <>
+                            <Money vnd={order.total_payable_vnd} size="sm" />
+                            <span>·</span>
+                            <span>{shopName}</span>
+                            <Badge
+                              variant={channelMeta.isStorefront ? "info" : "neutral"}
                               data-sales-channel={channelMeta.value}
                             >
                               {channelMeta.label}
-                            </span>
-                          </td>
-                          <td className={shared.colNum}>{formatVnd(order.total_payable_vnd)}</td>
-                          <td>
-                            <StatusPill label={statusMeta.label} tone={statusMeta.tone} />
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className={shared.mobileList}>
-                {filteredRecentOrders.map((order) => {
-                  const statusMeta = getAdminOrderStatusMeta(order.status);
-                  const channelMeta = getSalesChannelMeta(order.sales_channel);
-                  const shopName = shopNameById.get(order.shop_id) ?? order.shop_id.slice(0, 8);
-                  return (
-                    <div key={order.id} className={shared.mobileItem}>
-                      <div className={shared.mobileLine1}>
-                        <span className={shared.mobileIdentity}>{order.order_code}</span>
-                        <span className={shared.mobileMetric}>
-                          {formatVnd(order.total_payable_vnd)}
-                        </span>
-                      </div>
-                      <div className={shared.mobileLine2}>
-                        <span className={shared.mobileMetaText}>{shopName}</span>
-                        <div className={styles.badgeCluster}>
-                          <span
-                            className={`${shared.channelBadge} ${channelMeta.isStorefront ? shared.channelBadgeStorefront : ""}`}
-                            data-sales-channel={channelMeta.value}
-                          >
-                            {channelMeta.label}
-                          </span>
-                          <StatusPill label={statusMeta.label} tone={statusMeta.tone} />
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
-        </section>
+                            </Badge>
+                          </>
+                        }
+                      />
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
       )}
 
-      {/* Bottom Operational Pair: Ledger Summary + Audit Feed */}
+      {/* Bottom Operational Pair: Ledger Accounts + Audit Feed */}
       {(canLedger || canAudit) && (
-        <div className={styles.bottomGrid}>
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)]">
           {canLedger && (
-            <section className={shared.panel} aria-labelledby="channel-recon-heading">
-              <div className={shared.panelHeader}>
-                <h2 id="channel-recon-heading" className={shared.panelTitle}>
-                  Tài khoản sổ cái
-                </h2>
-                <Link href="/admin/doi-soat" className={shared.panelLink}>
-                  Xem tất cả ({formatInt(ledger?.accounts.length ?? 0)})
-                </Link>
-              </div>
+            <Card>
+              <CardHeader className="border-b border-border pb-3">
+                <CardTitle id="channel-recon-heading">Tài khoản sổ cái</CardTitle>
+                <CardAction>
+                  <Link
+                    href="/admin/doi-soat"
+                    className="text-xs font-medium text-brand hover:underline"
+                  >
+                    Xem tất cả ({formatInt(ledger?.accounts.length ?? 0)})
+                  </Link>
+                </CardAction>
+              </CardHeader>
+              <CardContent className="p-0">
+                {!ledger || ledger.accounts.length === 0 ? (
+                  <p className="px-5 py-8 text-center text-[13px] text-muted-foreground">
+                    Chưa phát sinh bút toán trên sổ cái.
+                  </p>
+                ) : (
+                  <>
+                    <div className="hidden md:block">
+                      <Table aria-labelledby="channel-recon-heading">
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="px-3">Tài khoản</TableHead>
+                            <TableHead className="hidden px-3 text-right lg:table-cell">
+                              Ghi nợ
+                            </TableHead>
+                            <TableHead className="hidden px-3 text-right lg:table-cell">
+                              Ghi có
+                            </TableHead>
+                            <TableHead className="px-3 text-right">Số dư</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {ledger.accounts.slice(0, 6).map((acc) => (
+                            <TableRow key={acc.account_code}>
+                              <TableCell className="px-3">
+                                <div className="text-[13px] font-medium text-foreground">
+                                  {acc.account_code}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {getAccountTypeLabelVi(acc.account_type)}
+                                </div>
+                              </TableCell>
+                              <TableCell className="hidden px-3 text-right text-[13px] tabular-nums lg:table-cell">
+                                {formatVnd(acc.debit_total_vnd)}
+                              </TableCell>
+                              <TableCell className="hidden px-3 text-right text-[13px] tabular-nums lg:table-cell">
+                                {formatVnd(acc.credit_total_vnd)}
+                              </TableCell>
+                              <TableCell className="px-3 text-right text-[13px] font-medium tabular-nums">
+                                {formatVnd(acc.balance_vnd)}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                        <TableFooter>
+                          <TableRow>
+                            <TableCell className="px-3 font-semibold">Tổng sổ cái</TableCell>
+                            <TableCell className="hidden px-3 text-right text-[13px] font-semibold tabular-nums lg:table-cell">
+                              {formatVnd(ledger.total_debits_vnd)}
+                            </TableCell>
+                            <TableCell className="hidden px-3 text-right text-[13px] font-semibold tabular-nums lg:table-cell">
+                              {formatVnd(ledger.total_credits_vnd)}
+                            </TableCell>
+                            <TableCell
+                              className={cn(
+                                "px-3 text-right text-[13px] font-semibold tabular-nums",
+                                !isBalanced ? "text-destructive" : "text-badge-success-ink"
+                              )}
+                            >
+                              {isBalanced ? "Khớp 0₫" : formatSignedVnd(ledgerDiff)}
+                            </TableCell>
+                          </TableRow>
+                        </TableFooter>
+                      </Table>
+                    </div>
 
-              {!ledger || ledger.accounts.length === 0 ? (
-                <p className={shared.emptyRow}>Chưa phát sinh bút toán trên sổ cái.</p>
-              ) : (
-                <>
-                  <div className={`${shared.tableWrap} ${shared.tableWrapAuto}`}>
-                    <table className={shared.dataTable}>
-                      <thead>
-                        <tr>
-                          <th>Tài khoản</th>
-                          <th className={shared.colNum}>Ghi nợ</th>
-                          <th className={shared.colNum}>Ghi có</th>
-                          <th className={shared.colNum}>Số dư</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {ledger.accounts.slice(0, 6).map((acc) => (
-                          <tr key={acc.account_code}>
-                            <td>
-                              <div className={shared.cellPrimary}>{acc.account_code}</div>
-                              <div className={shared.cellSub}>
-                                {getAccountTypeLabelVi(acc.account_type)}
-                              </div>
-                            </td>
-                            <td className={shared.colNum}>{formatVnd(acc.debit_total_vnd)}</td>
-                            <td className={shared.colNum}>{formatVnd(acc.credit_total_vnd)}</td>
-                            <td className={shared.colNum}>{formatVnd(acc.balance_vnd)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                      <tfoot>
-                        <tr>
-                          <td>Tổng sổ cái</td>
-                          <td className={shared.colNum}>{formatVnd(ledger.total_debits_vnd)}</td>
-                          <td className={shared.colNum}>{formatVnd(ledger.total_credits_vnd)}</td>
-                          <td
-                            className={`${shared.colNum} ${!isBalanced ? shared.numNegative : ""}`}
-                          >
-                            {isBalanced ? "Khớp 0₫" : formatSignedVnd(ledgerDiff)}
-                          </td>
-                        </tr>
-                      </tfoot>
-                    </table>
-                  </div>
-
-                  <div className={shared.mobileList}>
-                    {ledger.accounts.slice(0, 5).map((acc) => (
-                      <div key={acc.account_code} className={shared.mobileItem}>
-                        <div className={shared.mobileLine1}>
-                          <span className={shared.mobileIdentity}>{acc.account_code}</span>
-                          <span className={shared.mobileMetric}>{formatVnd(acc.balance_vnd)}</span>
-                        </div>
-                        <div className={shared.mobileLine2}>
-                          <span className={shared.mobileMetaText}>
-                            {getAccountTypeLabelVi(acc.account_type)}
-                          </span>
-                          <span>
-                            Nợ {formatVnd(acc.debit_total_vnd)} / Có{" "}
-                            {formatVnd(acc.credit_total_vnd)}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              )}
-            </section>
+                    <div className="md:hidden">
+                      {ledger.accounts.slice(0, 5).map((acc) => (
+                        <IndexRowCard
+                          key={acc.account_code}
+                          title={acc.account_code}
+                          badge={<Money vnd={acc.balance_vnd} size="sm" />}
+                          meta={
+                            <>
+                              <span>{getAccountTypeLabelVi(acc.account_type)}</span>
+                              <span>·</span>
+                              <span className="tabular-nums">
+                                Nợ {formatVnd(acc.debit_total_vnd)} / Có{" "}
+                                {formatVnd(acc.credit_total_vnd)}
+                              </span>
+                            </>
+                          }
+                        />
+                      ))}
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
           )}
 
           {canAudit && (
-            <section className={shared.panel} aria-labelledby="rail-audit-heading">
-              <div className={shared.panelHeader}>
-                <h2 id="rail-audit-heading" className={shared.panelTitle}>
-                  Nhật ký gần đây
-                </h2>
-                <Link href="/admin/audit-log" className={shared.panelLink}>
-                  Xem tất cả ({formatInt(auditLogs.length)})
-                </Link>
-              </div>
-
-              {recentAuditLogs.length === 0 ? (
-                <p className={shared.emptyRow}>Chưa có bản ghi kiểm toán.</p>
-              ) : (
-                <ul className={styles.auditFeed}>
-                  {recentAuditLogs.map((log) => (
-                    <li key={log.id} className={styles.auditRow}>
-                      <div className={styles.auditTopLine}>
-                        <span className={styles.auditAction}>
-                          {getAdminAuditActionLabelVi(log.action)}
-                        </span>
-                        <span className={styles.auditTime}>
-                          {log.created_at ? formatShortTimeDateVi(log.created_at) : ""}
-                        </span>
-                      </div>
-                      <span className={styles.auditSub}>
-                        {getAdminAuditTargetTypeLabel(log.target_type)} {log.target_id.slice(0, 10)}
-                        {log.reason ? `: ${log.reason}` : ""}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
+            <Card>
+              <CardHeader className="border-b border-border pb-3">
+                <CardTitle id="rail-audit-heading">Nhật ký gần đây</CardTitle>
+                <CardAction>
+                  <Link
+                    href="/admin/audit-log"
+                    className="text-xs font-medium text-brand hover:underline"
+                  >
+                    Xem tất cả ({formatInt(auditLogs.length)})
+                  </Link>
+                </CardAction>
+              </CardHeader>
+              <CardContent className="pt-4">
+                {recentAuditLogs.length === 0 ? (
+                  <p className="py-4 text-center text-[13px] text-muted-foreground">
+                    Chưa có bản ghi kiểm toán.
+                  </p>
+                ) : (
+                  <ul className="divide-y divide-border" aria-labelledby="rail-audit-heading">
+                    {recentAuditLogs.map((log) => (
+                      <li key={log.id} className="space-y-0.5 py-2.5 first:pt-0 last:pb-0">
+                        <div className="flex items-baseline justify-between gap-2">
+                          <span className="text-sm font-medium text-foreground">
+                            {getAdminAuditActionLabelVi(log.action)}
+                          </span>
+                          <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                            {log.created_at ? formatShortTimeDateVi(log.created_at) : ""}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                          {getAdminAuditTargetTypeLabel(log.target_type)}{" "}
+                          {log.target_id.slice(0, 10)}
+                          {log.reason ? `: ${log.reason}` : ""}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
           )}
         </div>
       )}

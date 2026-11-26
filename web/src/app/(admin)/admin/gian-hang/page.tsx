@@ -1,13 +1,12 @@
 import React from "react";
 import { notFound } from "next/navigation";
-import { StateView } from "@/components";
+import { ErrorState, PageHeader } from "@/components/app";
 import { ADMIN_STAFF_ROLES, canAccessAdminPath, roleHasCapability } from "@/lib/admin-rbac";
 import type { GatewayShop, PaginatedResponse } from "@/lib/gateway-types";
 import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import { requireRole, type Session } from "@/lib/server/session";
 import { AdminShopsClient } from "@/features/admin/AdminShopsClient";
-import shared from "@/features/admin/adminShared.module.css";
 
 export const dynamic = "force-dynamic";
 
@@ -25,22 +24,13 @@ export default async function AdminShopApprovalsPage() {
   } catch (err) {
     if (err instanceof GatewayError) {
       return (
-        <div className={shared.page}>
-          <header className={shared.titleRow}>
-            <div className={shared.titleBlock}>
-              <h1 className={shared.pageTitle}>Gian hàng</h1>
-            </div>
-          </header>
-          <div className={shared.stateWrap}>
-            <StateView
-              kind="error"
-              surface="app"
-              title="Chưa thể xác minh phiên quản trị"
-              message={SAFE_MESSAGES[err.kind]}
-              actionLabel="Tải lại"
-              actionHref="/admin/gian-hang"
-            />
-          </div>
+        <div className="space-y-5">
+          <PageHeader title="Gian hàng" />
+          <ErrorState
+            title="Chưa thể xác minh phiên quản trị"
+            description={SAFE_MESSAGES[err.kind]}
+            retryHref="/admin/gian-hang"
+          />
         </div>
       );
     }

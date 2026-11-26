@@ -2,8 +2,38 @@
 
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Button, IconChevronLeft, IconChevronRight, IconSearch, StateView } from "@/components";
-import { hasOpenModal } from "@/components/modalFocus";
+import { AlertTriangle, ChevronLeft, ChevronRight, PackageSearch, Search } from "lucide-react";
+import {
+  EmptyState,
+  ErrorState,
+  IndexRowCard,
+  IndexTable,
+  Money,
+  PageHeader,
+  StatusBadge,
+  productStatusTone,
+} from "@/components/app";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, getErrorMessage } from "@/lib/api";
 import { roleHasCapability } from "@/lib/admin-rbac";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
@@ -15,19 +45,31 @@ import {
 import { AdminBannedKeywordsTab } from "@/features/admin/AdminBannedKeywordsTab";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { useAdminContext } from "@/features/admin/AdminShell";
-import { AdminDrawer, SlidingTabBar, isEditableElement } from "@/features/admin/AdminUi";
-import { StatusPill } from "@/features/admin/StatusPill";
-import shared from "@/features/admin/adminShared.module.css";
-import styles from "./page.module.css";
+import {
+  AdminConfirmActionDialog,
+  AdminDetailField,
+  AdminDetailGrid,
+  AdminKbdHint,
+  AdminPaginationBar,
+  hasOpenRadixDialog,
+  isEditableTarget,
+} from "@/features/admin/ops/AdminOpsPrimitives";
 
 type ModerationSection = "products" | "banned_keywords";
 type ProductStatusFilter = "all" | "PENDING" | "APPROVED" | "REJECTED" | "HIDDEN" | "OUT_OF_STOCK";
+
+const PRODUCTS_PAGE_SIZE = 15;
 
 export interface AdminModerationClientProps {
   initialProducts: GwAdminProductExtended[];
   initialBannedCount?: number;
   loadError: string | null;
 }
+
+type PendingProductDecisionConfirm = {
+  item: GwAdminProductExtended;
+  decision: "APPROVE" | "REJECT";
+};
 
 function ModerationContent({
   initialProducts,
@@ -56,17 +98,19 @@ function ModerationContent({
   const [products, setProducts] = useState<GwAdminProductExtended[]>(initialProducts);
   const [productStatusFilter, setProductStatusFilter] = useState<ProductStatusFilter>("all");
   const [query, setQuery] = useState(initialQuery);
-  const [selectedProductId, setSelectedProductId] = useState<string | null>(
-    initialSelected ?? initialProducts[0]?.id ?? null
+  const [page, setPage] = useState(1);
+  const [selectedProductId, setSelectedProductId] = useState<string | null>(initialSelected);
+  const [drawerOpen, setDrawerOpen] = useState(
+    Boolean(initialSelected && initialProducts.some((p) => p.id === initialSelected))
   );
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
   const [productErrorId, setProductErrorId] = useState<string | null>(null);
   const [busyProductId, setBusyProductId] = useState<string | null>(null);
   const [busyDecision, setBusyDecision] = useState<"APPROVE" | "REJECT" | null>(null);
+  const [confirmDecision, setConfirmDecision] = useState<PendingProductDecisionConfirm | null>(
+    null
+  );
 
-  const rowRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
-  const deepLinkHandledRef = useRef(false);
   const fetchedDetailIdsRef = useRef<Set<string>>(new Set());
 
   const reloadProducts = useCallback(async () => {
@@ -137,19 +181,29 @@ function ModerationContent({
     return [...list].sort((a, b) => rank(a.status) - rank(b.status));
   }, [products, productStatusFilter, query]);
 
+  const totalPages = Math.max(1, Math.ceil(filteredProducts.length / PRODUCTS_PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pagedProducts = useMemo(() => {
+    const start = (safePage - 1) * PRODUCTS_PAGE_SIZE;
+    return filteredProducts.slice(start, start + PRODUCTS_PAGE_SIZE);
+  }, [filteredProducts, safePage]);
+
   const activeIndex = useMemo(() => {
-    if (filteredProducts.length === 0) return -1;
-    if (selectedProductId) {
-      const idx = filteredProducts.findIndex((p) => p.id === selectedProductId);
-      if (idx >= 0) return idx;
-    }
-    return 0;
+    if (!selectedProductId) return -1;
+    return filteredProducts.findIndex((p) => p.id === selectedProductId);
   }, [filteredProducts, selectedProductId]);
 
-  const activeProduct = activeIndex >= 0 ? filteredProducts[activeIndex] : null;
+  const activeProduct = useMemo(() => {
+    if (!selectedProductId) return null;
+    return (
+      filteredProducts.find((p) => p.id === selectedProductId) ??
+      products.find((p) => p.id === selectedProductId) ??
+      null
+    );
+  }, [filteredProducts, products, selectedProductId]);
 
   useEffect(() => {
-    if (!canReadProducts || !activeProduct) return;
+    if (!canReadProducts || !drawerOpen || !activeProduct) return;
     if (fetchedDetailIdsRef.current.has(activeProduct.id)) return;
     fetchedDetailIdsRef.current.add(activeProduct.id);
     void api<{ product: GwAdminProductExtended }>(
@@ -164,26 +218,19 @@ function ModerationContent({
       .catch(() => {
         // Keep list-level product payload.
       });
-  }, [activeProduct, canReadProducts]);
-
-  useEffect(() => {
-    if (deepLinkHandledRef.current) return;
-    deepLinkHandledRef.current = true;
-    if (
-      initialSelected &&
-      typeof window !== "undefined" &&
-      window.innerWidth <= 960 &&
-      initialProducts.some((p) => p.id === initialSelected)
-    ) {
-      setDrawerOpen(true);
-    }
-  }, [initialSelected, initialProducts]);
+  }, [activeProduct, drawerOpen, canReadProducts]);
 
   useEffect(() => {
     if (!activeProduct && drawerOpen) {
       setDrawerOpen(false);
     }
   }, [activeProduct, drawerOpen]);
+
+  const openProductSheet = useCallback((item: GwAdminProductExtended) => {
+    setProductErrorId(null);
+    setSelectedProductId(item.id);
+    setDrawerOpen(true);
+  }, []);
 
   const stepSelection = useCallback(
     (delta: 1 | -1) => {
@@ -194,7 +241,7 @@ function ModerationContent({
       if (!nextItem) return;
       setProductErrorId(null);
       setSelectedProductId(nextItem.id);
-      rowRefs.current.get(nextItem.id)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      setPage(Math.floor(nextIdx / PRODUCTS_PAGE_SIZE) + 1);
     },
     [section, filteredProducts, activeIndex]
   );
@@ -202,16 +249,24 @@ function ModerationContent({
   useEffect(() => {
     if (section !== "products") return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || isEditableElement(e.target) || hasOpenModal()) {
+      if (
+        e.metaKey ||
+        e.ctrlKey ||
+        e.altKey ||
+        isEditableTarget(e.target) ||
+        hasOpenRadixDialog()
+      ) {
         return;
       }
       const key = e.key.toLowerCase();
       if (key === "j") {
         e.preventDefault();
         stepSelection(1);
+        setDrawerOpen(true);
       } else if (key === "k") {
         e.preventDefault();
         stepSelection(-1);
+        setDrawerOpen(true);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -247,6 +302,17 @@ function ModerationContent({
     return other?.id ?? remaining[0].id;
   };
 
+  const handleRequestDecision = (item: GwAdminProductExtended, decision: "APPROVE" | "REJECT") => {
+    if (busyProductId || !canReviewProducts) return;
+    const reason = (noteDrafts[item.id] ?? "").trim();
+    if (decision === "REJECT" && !reason) {
+      setProductErrorId(item.id);
+      return;
+    }
+    setProductErrorId(null);
+    setConfirmDecision({ item, decision });
+  };
+
   const handleProductDecision = async (
     item: GwAdminProductExtended,
     decision: "APPROVE" | "REJECT"
@@ -255,6 +321,7 @@ function ModerationContent({
     const reason = (noteDrafts[item.id] ?? "").trim();
     if (decision === "REJECT" && !reason) {
       setProductErrorId(item.id);
+      setConfirmDecision(null);
       return;
     }
     setProductErrorId(null);
@@ -271,12 +338,10 @@ function ModerationContent({
       const mergedItem = { ...item, ...res.product };
       setProducts((prev) => prev.map((p) => (p.id === item.id ? mergedItem : p)));
       setNoteDrafts((prev) => ({ ...prev, [item.id]: "" }));
+      setConfirmDecision(null);
       const nextId = pickNextAfterDecision(item.id, mergedItem);
       if (nextId) {
         setSelectedProductId(nextId);
-        window.requestAnimationFrame(() => {
-          rowRefs.current.get(nextId)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-        });
       }
       showToast(
         decision === "APPROVE"
@@ -285,6 +350,7 @@ function ModerationContent({
       );
       router.refresh();
     } catch (err) {
+      setConfirmDecision(null);
       showToast(getErrorMessage(err, "Không thể cập nhật kiểm duyệt sản phẩm lúc này."));
     } finally {
       setBusyProductId(null);
@@ -292,155 +358,115 @@ function ModerationContent({
     }
   };
 
-  const renderProductDetail = (item: GwAdminProductExtended, inDrawer = false) => {
-    const meta = getProductReviewStatusMeta(item.status);
+  const renderProductDetail = (item: GwAdminProductExtended) => {
     const anyBusy = Boolean(busyProductId);
     const isThisBusy = busyProductId === item.id;
-    const noteInputId = `prod-note-${inDrawer ? "drawer" : "pane"}-${item.id}`;
+    const noteInputId = `prod-note-drawer-${item.id}`;
     const totalStock = item.skus.reduce((sum, sku) => sum + sku.available_stock, 0);
     const thumb = item.images[0] || "/products/ao-thun-cotton-trang.png";
     const flaggedKeywords = item.flagged_keywords ?? [];
 
     return (
-      <div
-        key={item.id}
-        className={`${inDrawer ? styles.drawerContent : shared.detailWellCard} ${shared.inspectorSlide}`}
-      >
-        {!inDrawer && (
-          <div className={shared.detailHeader}>
-            <div>
-              <h2 className={shared.detailHeading}>{item.name}</h2>
-              <span className={shared.cellSub}>
-                Mã {item.id.slice(0, 8)}, Gian hàng {item.shop_id.slice(0, 8)}
-              </span>
-            </div>
-            <div className={shared.detailHeaderMeta}>
-              <StatusPill label={meta.label} tone={meta.tone} />
-              <div className={styles.stepperBtns}>
-                <button
-                  type="button"
-                  className={styles.stepperBtn}
-                  disabled={activeIndex <= 0}
-                  onClick={() => stepSelection(-1)}
-                  aria-label="Sản phẩm trước (K)"
-                  title="Sản phẩm trước (K)"
-                >
-                  <IconChevronLeft size={14} />
-                </button>
-                <button
-                  type="button"
-                  className={styles.stepperBtn}
-                  disabled={activeIndex >= filteredProducts.length - 1}
-                  onClick={() => stepSelection(1)}
-                  aria-label="Sản phẩm tiếp theo (J)"
-                  title="Sản phẩm tiếp theo (J)"
-                >
-                  <IconChevronRight size={14} />
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
+      <div key={item.id} className="space-y-5 px-4 pb-6">
         {flaggedKeywords.length > 0 && (
-          <div className={styles.flaggedBanner} role="status">
-            <strong>Từ khoá cần kiểm tra ({formatInt(flaggedKeywords.length)}):</strong>
-            <div className={styles.flaggedChips}>
-              {flaggedKeywords.map((kw) => (
-                <span key={kw} className={styles.flaggedChip}>
-                  {kw}
-                </span>
-              ))}
-            </div>
-          </div>
+          <Alert>
+            <AlertTriangle className="size-4 text-badge-warning-ink" aria-hidden="true" />
+            <AlertTitle>Từ khoá cần kiểm tra ({formatInt(flaggedKeywords.length)})</AlertTitle>
+            <AlertDescription>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {flaggedKeywords.map((kw) => (
+                  <Badge key={kw} variant="warning">
+                    {kw}
+                  </Badge>
+                ))}
+              </div>
+            </AlertDescription>
+          </Alert>
         )}
 
-        <div className={styles.previewRow}>
-          <img src={thumb} alt={item.name} className={styles.thumbLg} width={104} height={104} />
-          <div className={styles.previewMeta}>
-            <div className={shared.detailGrid}>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Khoảng giá bán</span>
-                <span className={`${shared.detailVal} num`}>
-                  {item.min_price_vnd === item.max_price_vnd
-                    ? formatVnd(item.min_price_vnd)
-                    : `${formatVnd(item.min_price_vnd)} đến ${formatVnd(item.max_price_vnd)}`}
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Biến thể &amp; tồn khả dụng</span>
-                <span className={`${shared.detailVal} num`}>
-                  {formatInt(item.skus.length)} SKU, tồn {formatInt(totalStock)} sản phẩm
-                </span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Mã gian hàng</span>
-                <span className={`${shared.detailValPlain} num`}>{item.shop_id}</span>
-              </div>
-              <div className={shared.detailField}>
-                <span className={shared.detailKey}>Ngày tạo</span>
-                <span className={`${shared.detailValPlain} num`}>
-                  {item.created_at ? formatDateTimeVi(item.created_at) : "Mới cập nhật"}
-                </span>
-              </div>
-            </div>
-          </div>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+          <img
+            src={thumb}
+            alt={item.name}
+            width={96}
+            height={96}
+            className="size-24 shrink-0 rounded-lg border border-border bg-muted object-cover"
+          />
+          <AdminDetailGrid className="min-w-0 flex-1">
+            <AdminDetailField label="Khoảng giá bán" mono>
+              {item.min_price_vnd === item.max_price_vnd
+                ? formatVnd(item.min_price_vnd)
+                : `${formatVnd(item.min_price_vnd)} đến ${formatVnd(item.max_price_vnd)}`}
+            </AdminDetailField>
+            <AdminDetailField label="Biến thể & tồn khả dụng" mono>
+              {formatInt(item.skus.length)} SKU, tồn {formatInt(totalStock)} sản phẩm
+            </AdminDetailField>
+            <AdminDetailField label="Mã gian hàng" mono>
+              {item.shop_id}
+            </AdminDetailField>
+            <AdminDetailField label="Ngày tạo" mono>
+              {item.created_at ? formatDateTimeVi(item.created_at) : "Mới cập nhật"}
+            </AdminDetailField>
+          </AdminDetailGrid>
         </div>
 
-        <div className={shared.detailField}>
-          <span className={shared.detailKey}>Mô tả sản phẩm</span>
-          <span className={shared.detailValPlain}>
+        <div className="space-y-1">
+          <div className="text-xs font-medium text-muted-foreground">Mô tả sản phẩm</div>
+          <p className="rounded-lg border border-border bg-muted/30 p-3 text-[13px] leading-5 text-foreground [overflow-wrap:anywhere]">
             {item.description || "Gian hàng chưa nhập mô tả."}
-          </span>
+          </p>
         </div>
 
         {item.skus.length > 0 && (
-          <div className={shared.detailField}>
-            <span className={shared.detailKey}>
+          <div className="space-y-2">
+            <div className="text-xs font-medium text-muted-foreground">
               Danh sách phân loại ({formatInt(item.skus.length)} SKU)
-            </span>
-            <div className={styles.skuTableWrap}>
-              <table className={styles.skuTable}>
-                <thead>
-                  <tr>
-                    <th>Mã SKU</th>
-                    <th>Phân loại</th>
-                    <th className={shared.colNum}>Giá bán</th>
-                    <th className={shared.colNum}>Tồn khả dụng</th>
-                  </tr>
-                </thead>
-                <tbody>
+            </div>
+            <div className="overflow-x-auto rounded-lg border border-border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Mã SKU</TableHead>
+                    <TableHead>Phân loại</TableHead>
+                    <TableHead className="text-right">Giá bán</TableHead>
+                    <TableHead className="text-right">Tồn khả dụng</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {item.skus.map((sku) => (
-                    <tr key={sku.id}>
-                      <td className="num">{sku.sku_code}</td>
-                      <td>{sku.name}</td>
-                      <td className={shared.colNum}>{formatVnd(sku.price_vnd)}</td>
-                      <td className={shared.colNum}>{formatInt(sku.available_stock)}</td>
-                    </tr>
+                    <TableRow key={sku.id}>
+                      <TableCell className="font-mono text-xs">{sku.sku_code}</TableCell>
+                      <TableCell>{sku.name}</TableCell>
+                      <TableCell className="text-right">
+                        <Money vnd={sku.price_vnd} size="sm" />
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatInt(sku.available_stock)}
+                      </TableCell>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             </div>
           </div>
         )}
 
         {item.rejection_reason && (
-          <div className={shared.detailField}>
-            <span className={shared.detailKey}>Lý do từ chối gần nhất</span>
-            <span className={shared.priorityText}>{item.rejection_reason}</span>
+          <div className="rounded-lg border border-border bg-badge-warning-bg/40 p-3">
+            <div className="text-xs font-medium text-muted-foreground">Lý do từ chối gần nhất</div>
+            <p className="mt-0.5 text-[13px] font-medium text-badge-warning-ink">
+              {item.rejection_reason}
+            </p>
           </div>
         )}
 
         {canReviewProducts ? (
-          <div className={shared.detailActionBar}>
-            <div className={shared.detailNoteGroup}>
-              <label htmlFor={noteInputId} className={shared.fieldLabel}>
-                Lý do kiểm duyệt (bắt buộc khi Từ chối)
-              </label>
-              <input
+          <div className="space-y-3 rounded-lg border border-border bg-card p-4">
+            <Field>
+              <FieldLabel htmlFor={noteInputId}>Lý do kiểm duyệt (bắt buộc khi Từ chối)</FieldLabel>
+              <Input
                 id={noteInputId}
                 type="text"
-                className={shared.textInput}
                 value={noteDrafts[item.id] ?? ""}
                 onChange={(e) => {
                   setNoteDrafts((prev) => ({ ...prev, [item.id]: e.target.value }));
@@ -449,36 +475,31 @@ function ModerationContent({
                 placeholder="Nhập ghi chú duyệt hoặc lý do từ chối gửi gian hàng..."
               />
               {productErrorId === item.id && (
-                <span className={shared.validationError}>
-                  Vui lòng nhập lý do cụ thể trước khi từ chối sản phẩm.
-                </span>
+                <FieldError>Vui lòng nhập lý do cụ thể trước khi từ chối sản phẩm.</FieldError>
               )}
-            </div>
-            <div className={shared.detailButtons}>
+            </Field>
+            <div className="flex flex-wrap items-center gap-2">
               <Button
-                variant="primary"
+                type="button"
                 size="sm"
-                shape="app"
-                loading={isThisBusy && busyDecision === "APPROVE"}
                 disabled={anyBusy || item.status.toUpperCase() === "APPROVED"}
-                onClick={() => void handleProductDecision(item, "APPROVE")}
+                onClick={() => handleRequestDecision(item, "APPROVE")}
               >
-                Duyệt đăng bán
+                {isThisBusy && busyDecision === "APPROVE" ? "Đang duyệt..." : "Duyệt đăng bán"}
               </Button>
               <Button
-                variant="danger"
+                type="button"
+                variant="destructive"
                 size="sm"
-                shape="app"
-                loading={isThisBusy && busyDecision === "REJECT"}
                 disabled={anyBusy || item.status.toUpperCase() === "REJECTED"}
-                onClick={() => void handleProductDecision(item, "REJECT")}
+                onClick={() => handleRequestDecision(item, "REJECT")}
               >
-                Từ chối
+                {isThisBusy && busyDecision === "REJECT" ? "Đang từ chối..." : "Từ chối"}
               </Button>
             </div>
           </div>
         ) : (
-          <p className={styles.helperText}>
+          <p className="text-xs text-muted-foreground">
             Tài khoản hiện tại chỉ có quyền xem danh sách sản phẩm kiểm duyệt.
           </p>
         )}
@@ -486,51 +507,351 @@ function ModerationContent({
     );
   };
 
-  const sectionTabs: Array<{ id: ModerationSection; label: string; count: number }> = [
-    ...(canReadProducts
-      ? [{ id: "products" as const, label: "Sản phẩm", count: counts.PENDING }]
-      : []),
-    ...(canReadBanned
-      ? [{ id: "banned_keywords" as const, label: "Từ khoá cấm", count: bannedCount }]
-      : []),
+  const statusTabs = [
+    { key: "all", label: "Tất cả", count: counts.all },
+    { key: "PENDING", label: "Chờ duyệt", count: counts.PENDING },
+    { key: "APPROVED", label: "Đã duyệt bán", count: counts.APPROVED },
+    { key: "REJECTED", label: "Đã từ chối", count: counts.REJECTED },
+    { key: "OUT_OF_STOCK", label: "Hết hàng", count: counts.OUT_OF_STOCK },
+    { key: "HIDDEN", label: "Đang ẩn", count: counts.HIDDEN },
   ];
 
-  const statusTabs: Array<{ id: ProductStatusFilter; label: string; count: number }> = [
-    { id: "all", label: "Tất cả", count: counts.all },
-    { id: "PENDING", label: "Chờ duyệt", count: counts.PENDING },
-    { id: "APPROVED", label: "Đã duyệt bán", count: counts.APPROVED },
-    { id: "REJECTED", label: "Đã từ chối", count: counts.REJECTED },
-    { id: "OUT_OF_STOCK", label: "Hết hàng", count: counts.OUT_OF_STOCK },
-    { id: "HIDDEN", label: "Đang ẩn", count: counts.HIDDEN },
-  ];
-
-  return (
-    <div className={shared.page}>
-      <header className={shared.titleRow}>
-        <div className={shared.titleBlock}>
-          <h1 className={shared.pageTitle}>Kiểm duyệt nội dung</h1>
-        </div>
-        {section === "products" && canReadProducts && (
-          <div className={shared.titleActions}>
-            <span className={shared.kbdHint} aria-label="Phím tắt chuyển sản phẩm">
-              <kbd className={shared.kbdKey}>J</kbd>
-              <kbd className={shared.kbdKey}>K</kbd>
-              <span>chuyển sản phẩm</span>
-            </span>
-          </div>
-        )}
-      </header>
-
-      {sectionTabs.length > 1 && (
-        <SlidingTabBar
-          tabs={sectionTabs}
-          activeId={section}
-          onChange={setSection}
-          ariaLabel="Chuyển khu vực kiểm duyệt"
+  const renderProductsPanel = () => (
+    <>
+      {loadError ? (
+        <ErrorState
+          title="Không thể tải danh sách sản phẩm"
+          description={loadError}
+          onRetry={() => router.refresh()}
         />
+      ) : (
+        <IndexTable
+          tabs={statusTabs}
+          activeTab={productStatusFilter}
+          onTabChange={(next) => {
+            setProductStatusFilter(next as ProductStatusFilter);
+            setPage(1);
+          }}
+          toolbar={
+            <div className="flex items-center gap-3">
+              <AdminKbdHint label="chuyển sản phẩm" />
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {formatInt(filteredProducts.length)} sản phẩm
+              </span>
+            </div>
+          }
+          footer={
+            filteredProducts.length > 0 ? (
+              <AdminPaginationBar
+                page={safePage}
+                totalPages={totalPages}
+                totalItems={filteredProducts.length}
+                itemLabel="sản phẩm"
+                onPageChange={setPage}
+              />
+            ) : undefined
+          }
+        >
+          <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/35 px-4 py-2.5">
+            <div className="relative min-w-0 flex-1 sm:max-w-md">
+              <Search
+                className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <Input
+                type="search"
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setPage(1);
+                }}
+                placeholder="Tìm tên sản phẩm, SKU, từ khoá gắn cờ, mã shop..."
+                aria-label="Tìm kiếm trong hàng đợi duyệt sản phẩm"
+                className="h-9 bg-card pl-8"
+              />
+            </div>
+          </div>
+
+          {filteredProducts.length === 0 ? (
+            <div className="p-4">
+              <EmptyState
+                icon={PackageSearch}
+                title="Không có sản phẩm nào khớp với bộ lọc"
+                description="Thử đổi trạng thái kiểm duyệt hoặc xóa từ khóa tìm kiếm."
+                className="shadow-none"
+              />
+            </div>
+          ) : (
+            <>
+              <div className="hidden md:block">
+                <Table aria-label="Danh sách sản phẩm kiểm duyệt">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Sản phẩm</TableHead>
+                      <TableHead>Trạng thái</TableHead>
+                      <TableHead className="hidden lg:table-cell">Tồn kho &amp; SKU</TableHead>
+                      <TableHead className="text-right">Giá bán</TableHead>
+                      <TableHead className="text-right">Thao tác</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pagedProducts.map((item) => {
+                      const meta = getProductReviewStatusMeta(item.status);
+                      const isSelected = drawerOpen && activeProduct?.id === item.id;
+                      const totalStock = item.skus.reduce((sum, s) => sum + s.available_stock, 0);
+                      const thumb = item.images[0] || "/products/ao-thun-cotton-trang.png";
+                      const flagged = item.flagged_keywords ?? [];
+                      return (
+                        <TableRow
+                          key={item.id}
+                          data-state={isSelected ? "selected" : undefined}
+                          className="cursor-pointer"
+                          onClick={() => openProductSheet(item)}
+                        >
+                          <TableCell className="max-w-[340px] whitespace-normal">
+                            <div className="flex items-center gap-3">
+                              <img
+                                src={thumb}
+                                alt=""
+                                width={44}
+                                height={44}
+                                className="size-11 shrink-0 rounded-md border border-border bg-muted object-cover"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="line-clamp-2 font-medium text-foreground">
+                                  {item.name}
+                                </div>
+                                <div className="mt-0.5 text-xs text-muted-foreground tabular-nums">
+                                  Shop {item.shop_id.slice(0, 8)}
+                                  {flagged.length > 0 && (
+                                    <span className="font-medium text-badge-warning-ink">
+                                      {" · "}Gắn cờ: {flagged.join(", ")}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <StatusBadge tone={productStatusTone(item.status)}>
+                              {meta.label}
+                            </StatusBadge>
+                          </TableCell>
+                          <TableCell className="hidden text-[13px] tabular-nums lg:table-cell">
+                            <span
+                              className={
+                                totalStock === 0
+                                  ? "font-medium text-destructive"
+                                  : "text-foreground"
+                              }
+                            >
+                              {formatInt(totalStock)} còn
+                            </span>
+                            <span className="text-muted-foreground">
+                              {" · "}
+                              {formatInt(item.skus.length)} SKU
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {item.min_price_vnd === item.max_price_vnd ? (
+                              <Money vnd={item.min_price_vnd} />
+                            ) : (
+                              <span className="text-[13px] font-medium">
+                                {formatVnd(item.min_price_vnd)} – {formatVnd(item.max_price_vnd)}
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="xs"
+                              onClick={() => openProductSheet(item)}
+                            >
+                              Kiểm duyệt
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+
+              <div className="md:hidden">
+                {pagedProducts.map((item) => {
+                  const meta = getProductReviewStatusMeta(item.status);
+                  const totalStock = item.skus.reduce((sum, s) => sum + s.available_stock, 0);
+                  const thumb = item.images[0] || "/products/ao-thun-cotton-trang.png";
+                  const flagged = item.flagged_keywords ?? [];
+                  return (
+                    <IndexRowCard
+                      key={item.id}
+                      media={
+                        <img
+                          src={thumb}
+                          alt=""
+                          width={44}
+                          height={44}
+                          className="size-11 rounded-md border border-border bg-muted object-cover"
+                        />
+                      }
+                      title={item.name}
+                      badge={
+                        <StatusBadge tone={productStatusTone(item.status)}>
+                          {meta.label}
+                        </StatusBadge>
+                      }
+                      meta={
+                        <>
+                          <span className="tabular-nums">{formatVnd(item.min_price_vnd)}</span>
+                          <span>·</span>
+                          <span className="tabular-nums">
+                            {formatInt(item.skus.length)} SKU, tồn {formatInt(totalStock)}
+                          </span>
+                          {flagged.length > 0 && (
+                            <span className="font-medium text-badge-warning-ink">
+                              · Gắn cờ: {flagged.join(", ")}
+                            </span>
+                          )}
+                        </>
+                      }
+                      onClick={() => openProductSheet(item)}
+                    />
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </IndexTable>
       )}
 
-      {section === "banned_keywords" && canReadBanned ? (
+      <Sheet open={drawerOpen && Boolean(activeProduct)} onOpenChange={setDrawerOpen}>
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
+          {activeProduct ? (
+            <>
+              <SheetHeader className="border-b border-border pr-12">
+                <div className="flex flex-wrap items-center gap-2">
+                  <SheetTitle>{activeProduct.name}</SheetTitle>
+                  <StatusBadge tone={productStatusTone(activeProduct.status)}>
+                    {getProductReviewStatusMeta(activeProduct.status).label}
+                  </StatusBadge>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                  <SheetDescription className="tabular-nums">
+                    Mã {activeProduct.id.slice(0, 8)} · Shop {activeProduct.shop_id.slice(0, 8)}
+                  </SheetDescription>
+                  {activeIndex >= 0 && (
+                    <div className="flex items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon-xs"
+                        disabled={activeIndex <= 0}
+                        onClick={() => stepSelection(-1)}
+                        aria-label="Sản phẩm trước (K)"
+                      >
+                        <ChevronLeft className="size-3.5" aria-hidden="true" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon-xs"
+                        disabled={activeIndex >= filteredProducts.length - 1}
+                        onClick={() => stepSelection(1)}
+                        aria-label="Sản phẩm tiếp theo (J)"
+                      >
+                        <ChevronRight className="size-3.5" aria-hidden="true" />
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </SheetHeader>
+              {renderProductDetail(activeProduct)}
+            </>
+          ) : null}
+        </SheetContent>
+      </Sheet>
+
+      <AdminConfirmActionDialog
+        open={Boolean(confirmDecision)}
+        title={
+          confirmDecision?.decision === "APPROVE"
+            ? "Xác nhận duyệt đăng bán sản phẩm"
+            : "Xác nhận từ chối sản phẩm"
+        }
+        description={
+          confirmDecision
+            ? confirmDecision.decision === "APPROVE"
+              ? `Phê duyệt sản phẩm "${confirmDecision.item.name}" để hiển thị trên site gian hàng?`
+              : `Từ chối sản phẩm "${confirmDecision.item.name}" và gửi lý do về người bán?`
+            : ""
+        }
+        confirmLabel={
+          confirmDecision?.decision === "APPROVE" ? "Xác nhận duyệt" : "Xác nhận từ chối"
+        }
+        confirmVariant={confirmDecision?.decision === "APPROVE" ? "default" : "destructive"}
+        busy={Boolean(busyProductId)}
+        onCancel={() => setConfirmDecision(null)}
+        onConfirm={() => {
+          if (confirmDecision) {
+            void handleProductDecision(confirmDecision.item, confirmDecision.decision);
+          }
+        }}
+      >
+        {confirmDecision && noteDrafts[confirmDecision.item.id]?.trim() ? (
+          <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs">
+            Ghi chú: {noteDrafts[confirmDecision.item.id].trim()}
+          </div>
+        ) : null}
+      </AdminConfirmActionDialog>
+    </>
+  );
+
+  const showBothTabs = canReadProducts && canReadBanned;
+
+  return (
+    <div className="space-y-5">
+      <PageHeader
+        title="Kiểm duyệt nội dung"
+        subtitle="Duyệt sản phẩm gian hàng đăng bán và quản lý quy tắc từ khoá cấm."
+      />
+
+      {showBothTabs ? (
+        <Tabs
+          value={section}
+          onValueChange={(val) => setSection(val as ModerationSection)}
+          className="space-y-4"
+        >
+          <TabsList aria-label="Chuyển khu vực kiểm duyệt">
+            <TabsTrigger value="products" className="gap-1.5">
+              <span>Sản phẩm</span>
+              <Badge variant="neutral" className="px-1.5 py-0 text-[11px] tabular-nums">
+                {formatInt(counts.PENDING)}
+              </Badge>
+            </TabsTrigger>
+            <TabsTrigger value="banned_keywords" className="gap-1.5">
+              <span>Từ khoá cấm</span>
+              <Badge variant="neutral" className="px-1.5 py-0 text-[11px] tabular-nums">
+                {formatInt(bannedCount)}
+              </Badge>
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="products" className="space-y-4">
+            {renderProductsPanel()}
+          </TabsContent>
+
+          <TabsContent value="banned_keywords" className="space-y-4">
+            <AdminBannedKeywordsTab
+              onMutated={() => {
+                void reloadBannedCount();
+                void reloadProducts();
+              }}
+            />
+          </TabsContent>
+        </Tabs>
+      ) : canReadBanned && !canReadProducts ? (
         <AdminBannedKeywordsTab
           onMutated={() => {
             void reloadBannedCount();
@@ -538,143 +859,7 @@ function ModerationContent({
           }}
         />
       ) : (
-        <>
-          <SlidingTabBar
-            tabs={statusTabs}
-            activeId={productStatusFilter}
-            onChange={setProductStatusFilter}
-            ariaLabel="Lọc trạng thái kiểm duyệt sản phẩm"
-          />
-
-          <div className={shared.toolbar}>
-            <div className={shared.toolbarLeft}>
-              <div className={shared.searchWrap}>
-                <span className={shared.searchIcon}>
-                  <IconSearch size={14} />
-                </span>
-                <input
-                  type="search"
-                  className={shared.toolbarSearch}
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Tìm tên sản phẩm, SKU, từ khoá gắn cờ, mã shop..."
-                  aria-label="Tìm kiếm trong hàng đợi duyệt sản phẩm"
-                />
-              </div>
-            </div>
-
-            <div className={shared.toolbarRight}>
-              <span className={shared.resultCount}>
-                {formatInt(filteredProducts.length)} sản phẩm
-              </span>
-            </div>
-          </div>
-
-          {loadError ? (
-            <StateView
-              kind="error"
-              surface="app"
-              title="Không thể tải danh sách sản phẩm"
-              message={loadError}
-              actionLabel="Thử lại"
-              onAction={() => router.refresh()}
-            />
-          ) : filteredProducts.length === 0 ? (
-            <p className={shared.emptyRow}>Không có sản phẩm nào khớp với bộ lọc.</p>
-          ) : (
-            <div className={shared.reviewSplit}>
-              <div className={shared.queueColumn}>
-                <div className={shared.queueHead}>
-                  <span>Hàng đợi kiểm duyệt</span>
-                  <span>
-                    {activeIndex + 1} / {formatInt(filteredProducts.length)}
-                  </span>
-                </div>
-                <ul className={shared.queueList} aria-label="Danh sách sản phẩm kiểm duyệt">
-                  {filteredProducts.map((item) => {
-                    const meta = getProductReviewStatusMeta(item.status);
-                    const isSelected = activeProduct?.id === item.id;
-                    const totalStock = item.skus.reduce((sum, s) => sum + s.available_stock, 0);
-                    const thumb = item.images[0] || "/products/ao-thun-cotton-trang.png";
-                    const flagged = item.flagged_keywords ?? [];
-                    return (
-                      <li key={item.id} className={shared.queueItem}>
-                        <button
-                          ref={(node) => {
-                            if (node) rowRefs.current.set(item.id, node);
-                            else rowRefs.current.delete(item.id);
-                          }}
-                          type="button"
-                          className={`${shared.queueItemBtn} ${isSelected ? shared.queueItemActive : ""}`}
-                          aria-current={isSelected ? "true" : undefined}
-                          onClick={() => {
-                            setProductErrorId(null);
-                            setSelectedProductId(item.id);
-                            if (typeof window !== "undefined" && window.innerWidth <= 960) {
-                              setDrawerOpen(true);
-                            }
-                          }}
-                        >
-                          <img
-                            src={thumb}
-                            alt=""
-                            className={styles.thumbSm}
-                            width={46}
-                            height={46}
-                          />
-                          <span className={shared.queueItemBody}>
-                            <span className={shared.queueItemTop}>
-                              <span className={shared.queueItemTitle}>{item.name}</span>
-                              <StatusPill label={meta.label} tone={meta.tone} />
-                            </span>
-                            <span className={shared.queueItemMeta}>
-                              {item.min_price_vnd === item.max_price_vnd
-                                ? formatVnd(item.min_price_vnd)
-                                : `${formatVnd(item.min_price_vnd)} đến ${formatVnd(item.max_price_vnd)}`}
-                              , {formatInt(item.skus.length)} SKU, tồn {formatInt(totalStock)}
-                            </span>
-                            <span className={shared.queueItemMeta}>
-                              Shop {item.shop_id.slice(0, 8)}
-                              {flagged.length > 0 && (
-                                <span className={styles.flaggedInline}>
-                                  {" · "}Gắn cờ: {flagged.join(", ")}
-                                </span>
-                              )}
-                            </span>
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-
-              {activeProduct && (
-                <section className={shared.inspectorPane} aria-label="Chi tiết kiểm duyệt sản phẩm">
-                  {renderProductDetail(activeProduct, false)}
-                </section>
-              )}
-            </div>
-          )}
-
-          <AdminDrawer
-            open={drawerOpen && Boolean(activeProduct)}
-            onClose={() => setDrawerOpen(false)}
-            title={activeProduct?.name ?? ""}
-            subtitle={activeProduct ? `Shop ${activeProduct.shop_id.slice(0, 8)}` : undefined}
-            headerBadge={
-              activeProduct ? (
-                <StatusPill
-                  label={getProductReviewStatusMeta(activeProduct.status).label}
-                  tone={getProductReviewStatusMeta(activeProduct.status).tone}
-                />
-              ) : undefined
-            }
-            width="lg"
-          >
-            {activeProduct && renderProductDetail(activeProduct, true)}
-          </AdminDrawer>
-        </>
+        renderProductsPanel()
       )}
     </div>
   );
