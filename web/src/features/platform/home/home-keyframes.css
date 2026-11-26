@@ -1,0 +1,98 @@
+/* Homepage-only @keyframes (imported exclusively by (shop)/(public)/layout.tsx).
+   Contains @keyframes rules only — zero selectors. */
+
+@keyframes nm-home-brighten-copy {
+  from {
+    color: var(--home-ink-dim);
+  }
+  to {
+    color: var(--home-ink);
+  }
+}
+
+@keyframes nm-home-hero-cycle-1 {
+  0%,
+  27% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  33%,
+  94% {
+    opacity: 0;
+    transform: translateY(-0.35em);
+  }
+  95% {
+    opacity: 0;
+    transform: translateY(0.35em);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes nm-home-hero-cycle-2 {
+  0%,
+  29% {
+    opacity: 0;
+    transform: translateY(0.35em);
+  }
+  34%,
+  61% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  67%,
+  100% {
+    opacity: 0;
+    transform: translateY(-0.35em);
+  }
+}
+
+@keyframes nm-home-hero-cycle-3 {
+  0%,
+  62% {
+    opacity: 0;
+    transform: translateY(0.35em);
+  }
+  68%,
+  94% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-0.35em);
+  }
+}
+
+@keyframes nm-home-prod-float-a {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: 0 -10px;
+  }
+}
+
+@keyframes nm-home-prod-float-b {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: 0 10px;
+  }
+}
+
+@keyframes nm-home-faq-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}

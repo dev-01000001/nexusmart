@@ -1,5 +1,6 @@
 import { Inter } from "next/font/google";
 import React from "react";
+import "@/features/platform/home/home-keyframes.css";
 import { PlatformFooter } from "@/features/platform/PlatformFooter";
 import { PlatformHeader } from "@/features/platform/PlatformHeader";
 
