@@ -178,14 +178,23 @@ export const baseCookie = {
   path: "/",
 };
 
+function parseAppOrigins(raw: string | undefined): string[] {
+  return (raw || "")
+    .split(",")
+    .map((s) => s.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+}
+
 /**
  * Optional comma-separated allow-list of origins for write requests (e.g.
  * "https://nexusmart.vn"). Empty = same origin as the request Host.
  */
-export const APP_ORIGINS = (process.env.APP_ORIGIN || "")
-  .split(",")
-  .map((s) => s.trim().replace(/\/+$/, ""))
-  .filter(Boolean);
+export const APP_ORIGINS = parseAppOrigins(process.env.APP_ORIGIN);
+
+/** Runtime reader for `APP_ORIGIN` (reflects env changes in tests). */
+export function getAppOrigins(): string[] {
+  return parseAppOrigins(process.env.APP_ORIGIN);
+}
 
 /**
  * Trust reverse-proxy forwarding headers (`x-forwarded-proto`, `x-forwarded-for`, `x-real-ip`)

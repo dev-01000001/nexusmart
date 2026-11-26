@@ -76,8 +76,9 @@ describe("03. Cross-site isolation, IDOR, 401 guards, CSRF across hosts, body ta
       "evil.example.com",
       `a.b.${ROOT}`,
       `admin.${ROOT}`,
-      `www.${ROOT}`,
       `api.${ROOT}`,
+      `seller.${ROOT}`,
+      `app.${ROOT}`,
       `nexusmart.${ROOT}`,
       `vietcombank-uudai.${ROOT}`,
     ];
@@ -88,6 +89,55 @@ describe("03. Cross-site isolation, IDOR, 401 guards, CSRF across hosts, body ta
         assert.equal(res.status, 404, `Host ${host}${path} must return 404, got ${res.status}`);
       }
     }
+  });
+
+  it("www.<SITE_ROOT_DOMAIN> permanently redirects (308) pages and /api/* to apex origin preserving path and query", async () => {
+    const wwwHost = `www.${ROOT}`;
+    const configuredAppOrigin = (process.env.APP_ORIGIN ?? "")
+      .split(",")
+      .map((s) => s.trim().replace(/\/+$/, ""))
+      .filter(Boolean)[0];
+    let expectedOrigin = "";
+    if (configuredAppOrigin) {
+      try {
+        const parsed = new URL(configuredAppOrigin);
+        if (
+          (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+          parsed.hostname.toLowerCase() !== wwwHost
+        ) {
+          expectedOrigin = parsed.origin;
+        }
+      } catch {
+        // Fall back to request protocol + SITE_ROOT_DOMAIN below.
+      }
+    }
+    if (!expectedOrigin) {
+      expectedOrigin = `${config.webProtocol}://${ROOT}`;
+    }
+
+    // Browser/rawRequest uses node:http(s) directly and never auto-follows redirects (manual redirect).
+    const client = new Browser("www-redirect").at(wwwHost);
+    for (const path of ["/", "/ve-nexusmart?ref=e2e&tab=1", "/api/auth/me", "/api/cart?v=1"]) {
+      const res = await client.get(path, { headers: { accept: "*/*" } });
+      assert.equal(res.status, 308, `Host ${wwwHost}${path} must return 308, got ${res.status}`);
+      assert.equal(
+        res.location,
+        `${expectedOrigin}${path}`,
+        `Host ${wwwHost}${path} must redirect to ${expectedOrigin}${path}, got ${res.location}`
+      );
+    }
+
+    const postRes = await client.post("/api/auth/login?from=www", { email: "x@example.com" });
+    assert.equal(
+      postRes.status,
+      308,
+      `POST ${wwwHost}/api/auth/login?from=www must return 308, got ${postRes.status}`
+    );
+    assert.equal(
+      postRes.location,
+      `${expectedOrigin}/api/auth/login?from=www`,
+      `POST ${wwwHost}/api/auth/login?from=www must redirect to ${expectedOrigin}/api/auth/login?from=www, got ${postRes.location}`
+    );
   });
 
   it("direct /s/... is 404 on every host; /seller, /admin, /api/seller/*, /api/admin/* are 404 on site hosts", async () => {

@@ -3,6 +3,7 @@ import {
   ACCESS_COOKIE,
   REFRESH_COOKIE,
   buildSiteCspHeader,
+  getAppOrigins,
   getSiteRootDomain,
 } from "@/lib/server/config";
 import { GatewayError } from "@/lib/server/errors";
@@ -33,6 +34,7 @@ import {
   isSiteApiPath,
   isSiteMetadataPath,
   isTenantSiteHost,
+  normalizeHostHeader,
   resolveCanonicalHostRedirect,
 } from "@/lib/site/host";
 
@@ -142,15 +144,60 @@ async function withSession(
   }
 }
 
+function resolveWwwRootRedirect(
+  req: NextRequest,
+  rawHost: string,
+  rootDomain: string
+): string | null {
+  const { hostname } = normalizeHostHeader(rawHost);
+  const wwwHost = `www.${rootDomain}`;
+  if (hostname !== wwwHost) return null;
+
+  let targetOrigin = "";
+  const configuredOrigin = getAppOrigins()[0];
+  if (configuredOrigin) {
+    try {
+      const parsed = new URL(configuredOrigin);
+      if (
+        (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+        parsed.hostname.toLowerCase() !== wwwHost
+      ) {
+        targetOrigin = parsed.origin;
+      }
+    } catch {
+      // Ignore malformed APP_ORIGIN and fall back to request protocol + SITE_ROOT_DOMAIN.
+    }
+  }
+  if (!targetOrigin) {
+    const proto =
+      resolveRequestProto(req.headers, req.url) ||
+      req.nextUrl.protocol.replace(/:$/, "").toLowerCase() ||
+      "http";
+    targetOrigin = `${proto}://${rootDomain}`;
+  }
+
+  const { pathname, search } = req.nextUrl;
+  const safePath = pathname.startsWith("/") ? pathname : `/${pathname}`;
+  return `${targetOrigin}${safePath}${search}`;
+}
+
 export async function middleware(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
+
+  // Host is always authoritative (`x-forwarded-host` is never trusted, even when TRUST_PROXY_HEADERS=true).
+  const rootDomain = getSiteRootDomain();
+  const rawHost = resolveRequestHost(req.headers, req.nextUrl.host);
+
+  // Permanently redirect `www.<SITE_ROOT_DOMAIN>` to the apex origin (including `/api/*`; 308 preserves method).
+  const wwwRedirect = resolveWwwRootRedirect(req, rawHost, rootDomain);
+  if (wwwRedirect) {
+    return NextResponse.redirect(wwwRedirect, 308);
+  }
 
   // Direct external access to internal `/s` or `/s/...` is ALWAYS 404 on every host.
   if (isDirectInternalSitePath(pathname)) return notFoundResponse();
 
-  // Host is always authoritative (`x-forwarded-host` is never trusted, even when TRUST_PROXY_HEADERS=true).
-  const rootDomain = getSiteRootDomain();
-  const hostClass = classifyHost(resolveRequestHost(req.headers, req.nextUrl.host), rootDomain);
+  const hostClass = classifyHost(rawHost, rootDomain);
 
   // Unknown, reserved, multi-level, forbidden, or malformed host -> 404 without calling backend.
   if (hostClass.kind === "unknown") return notFoundResponse();

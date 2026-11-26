@@ -568,3 +568,226 @@ test("middleware forwards X-Forwarded-For on /sites/by-host lookup only when TRU
     publishedSiteHostCache.clear();
   }
 });
+
+test("middleware redirects www.<SITE_ROOT_DOMAIN> with 308 preserving pathname, query, and method, using APP_ORIGIN or request protocol fallback", async () => {
+  const prevRoot = process.env.SITE_ROOT_DOMAIN;
+  const prevAppOrigin = process.env.APP_ORIGIN;
+  const prevTrust = process.env.TRUST_PROXY_HEADERS;
+  const origFetch = globalThis.fetch;
+  let fetchCalls = 0;
+
+  globalThis.fetch = async () => {
+    fetchCalls++;
+    throw new Error("www redirect must not call backend");
+  };
+
+  try {
+    process.env.SITE_ROOT_DOMAIN = "nexusmartai.store";
+    process.env.APP_ORIGIN = "https://nexusmartai.store";
+    delete process.env.TRUST_PROXY_HEADERS;
+
+    // 1. Root path on www -> 308 to APP_ORIGIN
+    const resRoot = await middleware(
+      makeNextRequest("https://www.nexusmartai.store/", "www.nexusmartai.store")
+    );
+    assert.equal(resRoot.status, 308);
+    assert.equal(resRoot.headers.get("location"), "https://nexusmartai.store/");
+
+    // 2. Path + query string + uppercase Host + port + ignored X-Forwarded-Host -> 308
+    const resPathQuery = await middleware(
+      makeNextRequest(
+        "https://www.nexusmartai.store/ve-nexusmart?ref=ig&tab=2",
+        "WWW.NEXUSMARTAI.STORE:443",
+        "GET",
+        {},
+        { "x-forwarded-host": "evil.com" }
+      )
+    );
+    assert.equal(resPathQuery.status, 308);
+    assert.equal(
+      resPathQuery.headers.get("location"),
+      "https://nexusmartai.store/ve-nexusmart?ref=ig&tab=2"
+    );
+
+    // 3. /api/* with POST -> 308 (preserves HTTP method & body)
+    const resApiPost = await middleware(
+      makeNextRequest(
+        "https://www.nexusmartai.store/api/auth/login?mode=otp",
+        "www.nexusmartai.store",
+        "POST"
+      )
+    );
+    assert.equal(resApiPost.status, 308);
+    assert.equal(
+      resApiPost.headers.get("location"),
+      "https://nexusmartai.store/api/auth/login?mode=otp"
+    );
+
+    // 4. Trailing slash and comma-separated APP_ORIGIN are normalized
+    process.env.APP_ORIGIN = " https://nexusmartai.store/ , https://backup.nexusmartai.store ";
+    const resNormalizedOrigin = await middleware(
+      makeNextRequest("http://www.nexusmartai.store/tro-giup?a=1", "www.nexusmartai.store")
+    );
+    assert.equal(resNormalizedOrigin.status, 308);
+    assert.equal(resNormalizedOrigin.headers.get("location"), "https://nexusmartai.store/tro-giup?a=1");
+
+    // 5. Protocol-relative pathname stays anchored to apex origin (no open redirect)
+    const resDoubleSlash = await middleware(
+      makeNextRequest("https://www.nexusmartai.store//evil.com/phish?x=1", "www.nexusmartai.store")
+    );
+    assert.equal(resDoubleSlash.status, 308);
+    assert.equal(
+      resDoubleSlash.headers.get("location"),
+      "https://nexusmartai.store//evil.com/phish?x=1"
+    );
+
+    // 6. Without APP_ORIGIN -> falls back to request protocol + SITE_ROOT_DOMAIN
+    delete process.env.APP_ORIGIN;
+    const resFallbackHttps = await middleware(
+      makeNextRequest("https://www.nexusmartai.store/dang-nhap?next=%2Fseller", "www.nexusmartai.store")
+    );
+    assert.equal(resFallbackHttps.status, 308);
+    assert.equal(
+      resFallbackHttps.headers.get("location"),
+      "https://nexusmartai.store/dang-nhap?next=%2Fseller"
+    );
+
+    const resFallbackHttp = await middleware(
+      makeNextRequest("http://www.nexusmartai.store:3300/ve-nexusmart", "www.nexusmartai.store:3300")
+    );
+    assert.equal(resFallbackHttp.status, 308);
+    assert.equal(resFallbackHttp.headers.get("location"), "http://nexusmartai.store/ve-nexusmart");
+
+    // 7. Behind trusted proxy without APP_ORIGIN -> honors X-Forwarded-Proto
+    process.env.TRUST_PROXY_HEADERS = "true";
+    const resFallbackProxy = await middleware(
+      makeNextRequest(
+        "http://web:3000/ve-nexusmart?src=cf",
+        "www.nexusmartai.store",
+        "GET",
+        {},
+        { "x-forwarded-proto": "https" }
+      )
+    );
+    assert.equal(resFallbackProxy.status, 308);
+    assert.equal(
+      resFallbackProxy.headers.get("location"),
+      "https://nexusmartai.store/ve-nexusmart?src=cf"
+    );
+
+    assert.equal(fetchCalls, 0);
+  } finally {
+    if (prevRoot === undefined) delete process.env.SITE_ROOT_DOMAIN;
+    else process.env.SITE_ROOT_DOMAIN = prevRoot;
+    if (prevAppOrigin === undefined) delete process.env.APP_ORIGIN;
+    else process.env.APP_ORIGIN = prevAppOrigin;
+    if (prevTrust === undefined) delete process.env.TRUST_PROXY_HEADERS;
+    else process.env.TRUST_PROXY_HEADERS = prevTrust;
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("middleware does NOT www-redirect root host, shop subdomain, wwww., www.evil.com, or spoofed X-Forwarded-Host", async () => {
+  const { publishedSiteHostCache } = await import("./lib/server/siteLookup.ts");
+  publishedSiteHostCache.clear();
+  const prevRoot = process.env.SITE_ROOT_DOMAIN;
+  const prevAppOrigin = process.env.APP_ORIGIN;
+  const prevTrust = process.env.TRUST_PROXY_HEADERS;
+  const origFetch = globalThis.fetch;
+
+  globalThis.fetch = async (rawUrl) => {
+    const url = new URL(String(rawUrl));
+    if (
+      url.pathname === "/api/v1/sites/by-host" &&
+      url.searchParams.get("host") === "bach-dang.nexusmartai.store"
+    ) {
+      return new Response(
+        JSON.stringify({
+          site: {
+            id: "site-bd",
+            shop_id: "shop-bd",
+            status: "PUBLISHED",
+            primary_host: "bach-dang.nexusmartai.store",
+          },
+          shop: { status: "ACTIVE" },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    return new Response(JSON.stringify({ error: { code: "NOT_FOUND", message: "not found" } }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    process.env.SITE_ROOT_DOMAIN = "nexusmartai.store";
+    process.env.APP_ORIGIN = "https://nexusmartai.store";
+    process.env.TRUST_PROXY_HEADERS = "true";
+
+    // 1. Root host (even with spoofed X-Forwarded-Host: www.<root>) -> NOT redirected
+    const resRoot = await middleware(
+      makeNextRequest(
+        "https://nexusmartai.store/ve-nexusmart",
+        "nexusmartai.store",
+        "GET",
+        {},
+        { "x-forwarded-host": "www.nexusmartai.store" }
+      )
+    );
+    assert.equal(resRoot._action, "next");
+    assert.equal(resRoot.status, 200);
+
+    // 2. Shop subdomain -> rewritten to /s/<host>, NOT redirected
+    const resShop = await middleware(
+      makeNextRequest("https://bach-dang.nexusmartai.store/san-pham", "bach-dang.nexusmartai.store")
+    );
+    assert.equal(resShop._action, "rewrite");
+    assert.equal(
+      new URL(resShop._rewriteUrl).pathname,
+      "/s/bach-dang.nexusmartai.store/san-pham"
+    );
+
+    // 3. wwww.<root> -> NOT redirected (unknown site -> 404)
+    const resWwww = await middleware(
+      makeNextRequest("https://wwww.nexusmartai.store/", "wwww.nexusmartai.store")
+    );
+    assert.notEqual(resWwww.status, 308);
+    assert.equal(resWwww.status, 404);
+
+    // 4. www.evil.com -> NOT redirected (unknown custom domain -> 404)
+    const resEvil = await middleware(
+      makeNextRequest("https://www.evil.com/", "www.evil.com")
+    );
+    assert.notEqual(resEvil.status, 308);
+    assert.equal(resEvil.status, 404);
+
+    // 5. Multi-level www.bach-dang.<root> and suffix spoof www.<root>.evil.com -> NOT redirected
+    const resNested = await middleware(
+      makeNextRequest(
+        "https://www.bach-dang.nexusmartai.store/",
+        "www.bach-dang.nexusmartai.store"
+      )
+    );
+    assert.notEqual(resNested.status, 308);
+    assert.equal(resNested.status, 404);
+
+    const resSuffix = await middleware(
+      makeNextRequest(
+        "https://www.nexusmartai.store.evil.com/",
+        "www.nexusmartai.store.evil.com"
+      )
+    );
+    assert.notEqual(resSuffix.status, 308);
+    assert.equal(resSuffix.status, 404);
+  } finally {
+    if (prevRoot === undefined) delete process.env.SITE_ROOT_DOMAIN;
+    else process.env.SITE_ROOT_DOMAIN = prevRoot;
+    if (prevAppOrigin === undefined) delete process.env.APP_ORIGIN;
+    else process.env.APP_ORIGIN = prevAppOrigin;
+    if (prevTrust === undefined) delete process.env.TRUST_PROXY_HEADERS;
+    else process.env.TRUST_PROXY_HEADERS = prevTrust;
+    globalThis.fetch = origFetch;
+    publishedSiteHostCache.clear();
+  }
+});
