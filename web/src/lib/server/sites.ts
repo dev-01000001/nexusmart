@@ -2,18 +2,19 @@
 // Import only from Server Components and Route Handlers (never from client components or Edge middleware).
 import { cache } from "react";
 import { headers as nextHeaders } from "next/headers";
-import type { FlashSaleItem, FlashSaleSlot } from "@/data/flash-sale";
 import { CATEGORIES, PRODUCTS, type CategoryInfo, type Product } from "@/data/products";
 import { SHOPS, type Shop } from "@/data/shops";
 import { VOUCHERS, type Voucher } from "@/data/vouchers";
 import type {
   GatewayActiveShopDiscount,
+  GatewayFlashSale,
   GatewayProductReviewsResponse,
   GatewayProductSlugResponse,
   GatewayProvince,
 } from "@/lib/gateway-types";
 import {
   buildFlashSlots,
+  extendCategoryIndexForShopProducts,
   markFlashProducts,
   mergeCategories,
   mergeProducts,
@@ -26,6 +27,8 @@ import {
   type GwShop,
   type GwVoucher,
   type ProductMergeContext,
+  type SiteFlashSaleItem,
+  type SiteFlashSaleSlot,
 } from "@/lib/catalog-map";
 import {
   parseSiteConfig,
@@ -38,8 +41,9 @@ import { classifyHost, isTenantSiteHost, normalizeHostHeader } from "@/lib/site/
 import { GATEWAY_TIMEOUT_MS, GATEWAY_URL, getSiteRootDomain } from "./config";
 import { GatewayError, logServer } from "./errors";
 import { gw } from "./gateway";
-import { resolveRequestHost } from "./http";
+import { resolveForwardedClientIp, resolveRequestHost } from "./http";
 import { lookupPublishedSiteHost, publishedSiteHostCache } from "./siteLookup";
+import { STOREFRONT_CHANNEL } from "./storefront";
 import { resolveTraceContext } from "./trace";
 
 const SITE_REVALIDATE_SECONDS = 30;
@@ -53,8 +57,8 @@ export interface RequestSite {
 }
 
 /**
- * Resolve the PUBLISHED site for a request from its `Host` (or `X-Forwarded-Host` only when
- * `TRUST_PROXY_HEADERS=true`). Returns null for the root host, unknown/reserved hosts and
+ * Resolve the PUBLISHED site for a request strictly from its `Host` header (never
+ * `X-Forwarded-Host`). Returns null for the root host, unknown/reserved hosts and
  * draft/suspended sites. Never reads `shop_id`, channel or any other client-supplied hint.
  * `fresh: true` bypasses the short host cache (checkout: a just-suspended site is rejected).
  */
@@ -66,9 +70,12 @@ export async function resolveSiteFromRequest(
   const cls = classifyHost(resolveRequestHost(headers), getSiteRootDomain());
   if (!isTenantSiteHost(cls)) return null;
   const trace = resolveTraceContext(headers);
+  const clientIp = resolveForwardedClientIp(headers);
   const lookup = opts.fresh
-    ? await lookupPublishedSiteHost(cls.hostname, trace)
-    : await publishedSiteHostCache.resolve(cls.hostname, (h) => lookupPublishedSiteHost(h, trace));
+    ? await lookupPublishedSiteHost(cls.hostname, trace, clientIp)
+    : await publishedSiteHostCache.resolve(cls.hostname, (h) =>
+        lookupPublishedSiteHost(h, trace, clientIp)
+      );
   if (lookup.status === "error")
     throw new GatewayError("unavailable", undefined, "", trace.traceId);
   if (lookup.status !== "found") return null;
@@ -83,44 +90,6 @@ export async function requireRequestSite(
   const site = await resolveSiteFromRequest(req, opts);
   if (!site) throw new GatewayError("not_found");
   return site;
-}
-
-function productHasSku(p: GwProduct | null | undefined, shopId: string, skuId: string): boolean {
-  return Boolean(p && p.shop_id === shopId && (p.skus ?? []).some((s) => s.id === skuId));
-}
-
-/**
- * 404 unless `skuId` is a SKU of a product owned by `shopId`. `productIdHint` (from the client)
- * only speeds up the lookup: the backend product's `shop_id` and SKU list decide.
- */
-export async function assertSkuOfShop(
-  shopId: string,
-  skuId: string,
-  productIdHint?: unknown
-): Promise<void> {
-  const hint = typeof productIdHint === "string" ? productIdHint.trim() : "";
-  if (hint) {
-    try {
-      const res = await gw<{ product?: GwProduct | null }>(
-        `/api/v1/products/${encodeURIComponent(hint)}`,
-        { auth: "none" }
-      );
-      if (productHasSku(res.product, shopId, skuId)) return;
-    } catch (err) {
-      if (!(err instanceof GatewayError && (err.kind === "not_found" || err.kind === "invalid"))) {
-        throw err;
-      }
-    }
-  }
-  const products = await fetchShopProductsRaw(shopId, {
-    revalidate: SITE_REVALIDATE_SECONDS,
-    tags: [`site-shop:${shopId}`],
-  });
-  if (products.some((p) => productHasSku(p, shopId, skuId))) return;
-  // Retry once uncached so newly created SKUs of this shop are never falsely 404'd by TTL cache.
-  const freshProducts = await fetchShopProductsRaw(shopId, {});
-  if (freshProducts.some((p) => productHasSku(p, shopId, skuId))) return;
-  throw new GatewayError("not_found");
 }
 
 interface RawPublicSiteResponse {
@@ -199,7 +168,7 @@ export const fetchPublishedSiteByHost = cache(
         kind: err instanceof GatewayError ? err.kind : "unknown",
         trace_id: err instanceof GatewayError ? err.traceId : "",
       });
-      return null;
+      throw err;
     }
   }
 );
@@ -283,7 +252,81 @@ export interface ShopSiteRenderData {
   categories: CategoryInfo[];
   products: Product[];
   vouchers: Voucher[];
-  flashSlots: FlashSaleSlot[];
+  flashSlots: SiteFlashSaleSlot[];
+}
+
+export type LiveFlashSalesResult =
+  { ok: true; sales: GatewayFlashSale[] } | { ok: false; sales: [] };
+
+/**
+ * Filters raw gateway flash sales strictly to non-ended windows and approved items belonging to
+ * `shopId` (fail-closed: drops items missing `shop_id` or belonging to another shop).
+ */
+export function filterShopLiveFlashSales(
+  flashSales: readonly (GatewayFlashSale & { status?: string })[] | null | undefined,
+  shopId: string
+): GatewayFlashSale[] {
+  const cleanShopId = shopId.trim();
+  if (!cleanShopId || !flashSales || flashSales.length === 0) return [];
+  return flashSales
+    .filter((fs) => String(fs.status ?? "").toUpperCase() !== "ENDED")
+    .map((fs) => ({
+      ...fs,
+      items: (fs.items ?? []).filter(
+        (it) =>
+          it.shop_id === cleanShopId &&
+          (!it.status || String(it.status).toUpperCase() === "APPROVED")
+      ),
+    }))
+    .filter((fs) => (fs.items?.length ?? 0) > 0);
+}
+
+/**
+ * Fetches currently live flash sales filtered strictly to approved items of `shopId`.
+ * Uncached so Cart, Checkout, and PDP always reflect live remaining_slots and prices across reloads.
+ * Distinguishes gateway failures (`ok: false`) from valid empty lists (`ok: true, sales: []`).
+ */
+export async function loadShopLiveFlashSales(shopId: string): Promise<LiveFlashSalesResult> {
+  const cleanShopId = shopId.trim();
+  if (!cleanShopId) return { ok: true, sales: [] };
+  try {
+    const res = await gw<{ flash_sales?: GatewayFlashSale[] | null }>("/api/v1/flash-sales", {
+      auth: "none",
+      query: { include_upcoming: false },
+    });
+    return { ok: true, sales: filterShopLiveFlashSales(res.flash_sales, cleanShopId) };
+  } catch {
+    return { ok: false, sales: [] };
+  }
+}
+
+/**
+ * Resolves the active PDP flash sale item from an uncached live fetch result:
+ * - When the live fetch succeeded (`ok: true`), trusts it authoritatively (empty `[]` => `null`,
+ *   never resurrecting an ended flash sale from the 30s cached site bundle).
+ * - Falls back to `cachedFlashSlots` ONLY when the live fetch failed (`ok: false`) and the cached
+ *   slot's `endsAt` has not yet passed.
+ */
+export function resolvePdpLiveFlashItem(input: {
+  liveFlash: LiveFlashSalesResult;
+  product: Product;
+  cachedFlashSlots: readonly SiteFlashSaleSlot[];
+  nowMs?: number;
+}): SiteFlashSaleItem | null {
+  const nowMs = input.nowMs ?? Date.now();
+  if (input.liveFlash.ok) {
+    if (input.liveFlash.sales.length === 0) return null;
+    const freshSlots = buildFlashSlots(input.liveFlash.sales, [input.product], nowMs);
+    const freshLiveSlot = freshSlots.find((s) => s.status === "live");
+    return freshLiveSlot?.items.find((it) => it.productId === input.product.id) ?? null;
+  }
+  const liveSlot = input.cachedFlashSlots.find((s) => {
+    if (s.status !== "live") return false;
+    if (!s.endsAt) return true;
+    const endMs = Date.parse(s.endsAt);
+    return !Number.isFinite(endMs) || endMs > nowMs;
+  });
+  return liveSlot?.items.find((it) => it.productId === input.product.id) ?? null;
 }
 
 interface PagedProductsResponse {
@@ -339,7 +382,12 @@ export async function loadShopSiteRenderData(
     fetchShopProductsRaw(shop.id, cacheOpts),
     gw<{ vouchers?: GwVoucher[] | null }>("/api/v1/vouchers", {
       auth: "none",
-      query: { shop_id: shop.id, scope: "SHOP" },
+      query: {
+        shop_id: shop.id,
+        scope: "SHOP",
+        sales_channel: STOREFRONT_CHANNEL,
+        storefront_shop_id: shop.id,
+      },
       ...cacheOpts,
     }),
     gw<{ flash_sales?: GwFlashSale[] | null }>("/api/v1/flash-sales", {
@@ -350,7 +398,6 @@ export async function loadShopSiteRenderData(
   ]);
 
   const gwCats = catsRes.status === "fulfilled" ? (catsRes.value.categories ?? []) : [];
-  const categoryIndex = mergeCategories(gwCats, CATEGORIES);
 
   const gwShop: GwShop = {
     id: shop.id,
@@ -373,6 +420,13 @@ export async function loadShopSiteRenderData(
       ? productsRes.value.filter((p) => p.shop_id === shop.id)
       : [];
 
+  // Preserve real backend categories for already shop-verified products (custom categories outside static seeds)
+  const categoryIndex = extendCategoryIndexForShopProducts(
+    mergeCategories(gwCats, CATEGORIES),
+    gwCats,
+    rawShopProducts
+  );
+
   const mergeCtx: ProductMergeContext = {
     content: PRODUCTS,
     categories: categoryIndex,
@@ -382,11 +436,17 @@ export async function loadShopSiteRenderData(
     (p) => p.shopId === (shopProfile?.id ?? shop.id)
   );
 
-  let flashSlots: FlashSaleSlot[] = [];
+  let flashSlots: SiteFlashSaleSlot[] = [];
   if (flashRes.status === "fulfilled" && (flashRes.value.flash_sales?.length ?? 0) > 0) {
-    flashSlots = buildFlashSlots(flashRes.value.flash_sales ?? [], products, Date.now());
-    if (flashSlots.length > 0) {
-      products = markFlashProducts(products, flashSlots);
+    const shopLiveSales = filterShopLiveFlashSales(
+      flashRes.value.flash_sales as GatewayFlashSale[],
+      shop.id
+    );
+    if (shopLiveSales.length > 0) {
+      flashSlots = buildFlashSlots(shopLiveSales, products, Date.now());
+      if (flashSlots.length > 0) {
+        products = markFlashProducts(products, flashSlots);
+      }
     }
   }
 
@@ -423,7 +483,7 @@ export interface PublicSitePageBundle {
   categories: CategoryInfo[];
   products: Product[];
   vouchers: Voucher[];
-  flashSlots: FlashSaleSlot[];
+  flashSlots: SiteFlashSaleSlot[];
 }
 
 /**
@@ -458,7 +518,7 @@ export type PublicSiteProductResult =
       bundle: PublicSitePageBundle;
       product: Product;
       relatedProducts: Product[];
-      liveFlashItem: FlashSaleItem | null;
+      liveFlashItem: SiteFlashSaleItem | null;
       initialReviews: GatewayProductReviewsResponse | null;
       activeShopDiscountBySkuId: Record<string, GatewayActiveShopDiscount>;
       provinces: GatewayProvince[];
@@ -491,7 +551,7 @@ export async function loadPublicSiteProduct(
     contentCategories: CATEGORIES,
     fetchBySlug: async (slug) => {
       try {
-        return await gw<GatewayProductSlugResponse>(
+        return await gw<GatewayProductSlugResponse & { shop_id?: string }>(
           `/api/v1/products/slug/${encodeURIComponent(slug)}`,
           { auth: "none" }
         );
@@ -538,7 +598,7 @@ export async function loadPublicSiteProduct(
 
   const freshProduct = resolved.product;
   const backendProductId = freshProduct.backendId || freshProduct.id;
-  const [reviewsRes, discountsRes, provincesRes] = await Promise.allSettled([
+  const [reviewsRes, discountsRes, provincesRes, liveFlashRes] = await Promise.allSettled([
     backendProductId
       ? gw<GatewayProductReviewsResponse>(
           `/api/v1/products/${encodeURIComponent(backendProductId)}/reviews`,
@@ -553,6 +613,7 @@ export async function loadPublicSiteProduct(
       auth: "none",
       revalidate: 3600,
     }),
+    loadShopLiveFlashSales(shopId),
   ]);
 
   const initialReviews = reviewsRes.status === "fulfilled" ? reviewsRes.value : null;
@@ -569,8 +630,13 @@ export async function loadPublicSiteProduct(
       ? provincesRes.value.provinces
       : [];
 
-  const liveSlot = bundle.flashSlots.find((s) => s.status === "live");
-  const liveFlashItem = liveSlot?.items.find((it) => it.productId === freshProduct.id) ?? null;
+  const liveFlashResult: LiveFlashSalesResult =
+    liveFlashRes.status === "fulfilled" ? liveFlashRes.value : { ok: false, sales: [] };
+  const liveFlashItem = resolvePdpLiveFlashItem({
+    liveFlash: liveFlashResult,
+    product: freshProduct,
+    cachedFlashSlots: bundle.flashSlots,
+  });
   const relatedProducts = bundle.products.filter((p) => p.id !== freshProduct.id).slice(0, 4);
 
   return {

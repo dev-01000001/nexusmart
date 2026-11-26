@@ -313,6 +313,7 @@
 
 [data-ui="site-assistant"] .bubbleAssistant {
   max-width: 94%;
+  min-width: 0;
   padding: 11px 13px;
   border-radius: var(--site-radius, var(--radius-card, 0px));
   background: var(--site-surface, var(--surface-white));
@@ -328,6 +329,44 @@
   line-height: 21px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+[data-ui="site-assistant"] .msgRich {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 21px;
+  word-break: break-word;
+}
+
+[data-ui="site-assistant"] .msgParagraph {
+  margin: 0;
+}
+
+[data-ui="site-assistant"] .msgList {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+[data-ui="site-assistant"] .msgListItem {
+  margin: 0;
+}
+
+[data-ui="site-assistant"] .msgStrong {
+  font-weight: 600;
+}
+
+[data-ui="site-assistant"] .msgLink {
+  color: var(--site-accent, var(--accent));
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
 }
 
 [data-ui="site-assistant"] .statusNote {

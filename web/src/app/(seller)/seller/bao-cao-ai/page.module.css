@@ -97,6 +97,18 @@
   gap: 6px;
 }
 
+[data-ui="seller-ai-report"] .narrativeStrong {
+  font-weight: 600;
+}
+
+[data-ui="seller-ai-report"] .narrativeLink {
+  color: var(--accent);
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
 [data-ui="seller-ai-report"] .historyTitleRow {
   display: flex;
   align-items: center;

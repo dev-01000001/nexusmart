@@ -33,39 +33,57 @@ export interface ApiOptions {
   retryOn401?: boolean;
 }
 
-let inFlightRefresh: Promise<boolean> | null = null;
+type RefreshOutcome =
+  { status: "refreshed" } | { status: "expired" } | { status: "transient"; error: ApiError };
+
+let inFlightRefresh: Promise<RefreshOutcome> | null = null;
 let refreshGeneration = 0;
 
 /**
  * Single-flight refresh inside the browser tab so parallel 401s never replay the
- * same rotating refresh token and trigger family revocation.
+ * same rotating refresh token and trigger family revocation. Distinguishes dead sessions
+ * (`401`/`403`) from transient failures (`429`/`5xx`/network) so outages never log users out.
  */
-export function refreshSessionOnce(): Promise<boolean> {
+function runSingleFlightRefresh(): Promise<RefreshOutcome> {
   if (inFlightRefresh) {
     return inFlightRefresh;
   }
 
-  inFlightRefresh = (async () => {
+  inFlightRefresh = (async (): Promise<RefreshOutcome> => {
+    let res: Response;
     try {
-      const res = await fetch("/api/auth/refresh", {
+      res = await fetch("/api/auth/refresh", {
         method: "POST",
         credentials: "same-origin",
         headers: { Accept: "application/json" },
         cache: "no-store",
       });
-      if (res.ok) {
-        refreshGeneration += 1;
-        return true;
-      }
-      return false;
     } catch {
-      return false;
+      return {
+        status: "transient",
+        error: new ApiError(0, "NETWORK", "Không kết nối được. Bạn kiểm tra mạng và thử lại nhé."),
+      };
     }
+    if (res.ok) {
+      refreshGeneration += 1;
+      return { status: "refreshed" };
+    }
+    if (res.status === 401 || res.status === 403) {
+      return { status: "expired" };
+    }
+    return {
+      status: "transient",
+      error: await parseErrorResponse(res),
+    };
   })().finally(() => {
     inFlightRefresh = null;
   });
 
   return inFlightRefresh;
+}
+
+export function refreshSessionOnce(): Promise<boolean> {
+  return runSingleFlightRefresh().then((outcome) => outcome.status === "refreshed");
 }
 
 function notifySessionExpired() {
@@ -140,16 +158,21 @@ async function parseErrorResponse(res: Response): Promise<ApiError> {
 
 function shouldRetry401(path: string, opts: ApiOptions): boolean {
   if (opts.retryOn401 !== undefined) return opts.retryOn401;
-  return !path.startsWith("/api/auth/");
+  const pathname = path.split("?")[0] ?? path;
+  if (!pathname.startsWith("/api/auth/")) return true;
+  return (
+    pathname === "/api/auth/addresses" ||
+    pathname.startsWith("/api/auth/addresses/") ||
+    pathname === "/api/auth/me"
+  );
 }
 
-/**
- * Call an explicit same-origin BFF endpoint (e.g. `/api/cart`, `/api/orders/...`).
- * Throws ApiError (status 0 = network failure). Returns undefined for 204.
- * On 401 (non-auth routes), triggers single-flight `/api/auth/refresh` and retries once.
- */
-export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
-  const reqInit = buildFetchInit(opts, "application/json");
+async function fetchWithAuthRetry(
+  path: string,
+  opts: ApiOptions,
+  defaultAccept: string
+): Promise<Response> {
+  const reqInit = buildFetchInit(opts, defaultAccept);
   const genBefore = refreshGeneration;
 
   let res: Response;
@@ -160,15 +183,24 @@ export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
   }
 
   if (res.status === 401 && shouldRetry401(path, opts)) {
-    const refreshed = refreshGeneration > genBefore ? true : await refreshSessionOnce();
-    if (refreshed) {
+    const outcome: RefreshOutcome =
+      refreshGeneration > genBefore ? { status: "refreshed" } : await runSingleFlightRefresh();
+
+    if (outcome.status === "transient") {
+      throw outcome.error;
+    }
+
+    if (outcome.status === "refreshed") {
       try {
         res = await fetch(path, reqInit);
       } catch {
         throw new ApiError(0, "NETWORK", "Không kết nối được. Bạn kiểm tra mạng và thử lại nhé.");
       }
-    }
-    if (res.status === 401) {
+      if (res.status === 401) {
+        notifySessionExpired();
+      }
+    } else {
+      // Refresh returned 401/403 -> session is genuinely dead.
       notifySessionExpired();
     }
   }
@@ -177,10 +209,19 @@ export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
     throw await parseErrorResponse(res);
   }
 
+  return res;
+}
+
+/**
+ * Call an explicit same-origin BFF endpoint (e.g. `/api/cart`, `/api/orders/...`).
+ * Throws ApiError (status 0 = network failure). Returns undefined for 204.
+ * On 401 (authenticated routes), triggers single-flight `/api/auth/refresh` and retries once.
+ */
+export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
+  const res = await fetchWithAuthRetry(path, opts, "application/json");
   if (res.status === 204) {
     return undefined as T;
   }
-
   return (await res.json()) as T;
 }
 
@@ -188,34 +229,7 @@ export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
  * Downloads a binary/CSV/PDF response from an explicit BFF endpoint with single-flight 401 retry.
  */
 export async function apiBlob(path: string, opts: ApiOptions = {}): Promise<Blob> {
-  const reqInit = buildFetchInit(opts, "*/*");
-  const genBefore = refreshGeneration;
-
-  let res: Response;
-  try {
-    res = await fetch(path, reqInit);
-  } catch {
-    throw new ApiError(0, "NETWORK", "Không kết nối được. Bạn kiểm tra mạng và thử lại nhé.");
-  }
-
-  if (res.status === 401 && shouldRetry401(path, opts)) {
-    const refreshed = refreshGeneration > genBefore ? true : await refreshSessionOnce();
-    if (refreshed) {
-      try {
-        res = await fetch(path, reqInit);
-      } catch {
-        throw new ApiError(0, "NETWORK", "Không kết nối được. Bạn kiểm tra mạng và thử lại nhé.");
-      }
-    }
-    if (res.status === 401) {
-      notifySessionExpired();
-    }
-  }
-
-  if (!res.ok) {
-    throw await parseErrorResponse(res);
-  }
-
+  const res = await fetchWithAuthRetry(path, opts, "*/*");
   return res.blob();
 }
 

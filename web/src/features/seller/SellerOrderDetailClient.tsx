@@ -37,8 +37,11 @@ import {
   formatPaymentMethodVi,
   formatPaymentStatusVi,
   getSellerOrderStatusMeta,
+  normalizeSellerShipmentResponse,
+  resolveSellerShipmentFeeVnd,
   type GwOrderShipment,
   type GwSellerOrder,
+  type GwShipmentEvent,
 } from "./sellerApiTypes";
 import { useSellerContext } from "./SellerShell";
 import { statusPillClass } from "./SellerUiPrimitives";
@@ -50,12 +53,14 @@ const EMPTY_DASH = "—";
 export interface SellerOrderDetailClientProps {
   initialOrder: GwSellerOrder | null;
   initialShipment: GwOrderShipment | null;
+  initialShipmentEvents?: GwShipmentEvent[];
   loadError: string | null;
 }
 
 export function SellerOrderDetailClient({
   initialOrder,
   initialShipment,
+  initialShipmentEvents = [],
   loadError,
 }: SellerOrderDetailClientProps) {
   const router = useRouter();
@@ -63,6 +68,9 @@ export function SellerOrderDetailClient({
 
   const [order, setOrder] = useState<GwSellerOrder | null>(initialOrder);
   const [shipment, setShipment] = useState<GwOrderShipment | null>(initialShipment);
+  const [shipmentEvents, setShipmentEvents] = useState<GwShipmentEvent[]>(() =>
+    initialShipmentEvents.length > 0 ? initialShipmentEvents : (initialShipment?.events ?? [])
+  );
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -75,6 +83,7 @@ export function SellerOrderDetailClient({
   const [cancelError, setCancelError] = useState<string | null>(null);
 
   const pollCountRef = useRef(0);
+  const [pollTick, setPollTick] = useState(0);
 
   const reloadDetail = useCallback(
     async (opts?: { silent?: boolean }) => {
@@ -83,12 +92,16 @@ export function SellerOrderDetailClient({
       try {
         const [ordRes, shipRes] = await Promise.all([
           api<{ order: GwSellerOrder }>(`/api/seller/orders/${encodeURIComponent(order.id)}`),
-          api<{ shipment: GwOrderShipment | null }>(
-            `/api/seller/orders/${encodeURIComponent(order.id)}/shipment`
-          ).catch(() => ({ shipment: null })),
+          api<unknown>(`/api/seller/orders/${encodeURIComponent(order.id)}/shipment`).catch(
+            () => null
+          ),
         ]);
         if (ordRes.order) setOrder(ordRes.order);
-        if (shipRes && "shipment" in shipRes) setShipment(shipRes.shipment);
+        if (shipRes !== null) {
+          const parsedShip = normalizeSellerShipmentResponse(shipRes);
+          setShipment(parsedShip.shipment);
+          setShipmentEvents(parsedShip.events);
+        }
       } catch (err) {
         if (!opts?.silent) {
           showToast(getErrorMessage(err, "Không thể tải lại chi tiết đơn hàng."));
@@ -112,12 +125,20 @@ export function SellerOrderDetailClient({
       return;
     }
     if (pollCountRef.current >= 20) return;
+    let cancelled = false;
     const timer = window.setTimeout(() => {
       pollCountRef.current += 1;
-      void reloadDetail({ silent: true });
+      void reloadDetail({ silent: true }).finally(() => {
+        if (!cancelled) {
+          setPollTick((v) => v + 1);
+        }
+      });
     }, 3000);
-    return () => window.clearTimeout(timer);
-  }, [isShipmentQueued, reloadDetail, order?.updated_at]);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [isShipmentQueued, reloadDetail, pollTick]);
 
   const carrierOptions = useMemo(() => buildCarrierSelectOptions(order), [order]);
   const activeCarrierOption = useMemo(
@@ -170,7 +191,7 @@ export function SellerOrderDetailClient({
   );
   const jobStatus = (order.shipment_job_status ?? "").trim().toUpperCase();
   const isShipmentFailed = !order.tracking_code && jobStatus === "FAILED";
-  const canConfirm = canSellerConfirmOrder(order.status);
+  const canConfirm = canSellerConfirmOrder(order.status, order.shipment_job_status);
   const canShip = canSellerShipOrder(order.status, order.tracking_code);
   const canCancel = canSellerCancelOrder(order.status);
 
@@ -281,6 +302,11 @@ export function SellerOrderDetailClient({
   };
 
   const shipmentStatusInfo = shipment?.status ? getShipmentStatusInfo(shipment.status) : null;
+  const shipmentFeeVnd = resolveSellerShipmentFeeVnd(shipment);
+  const paymentStatusLabel =
+    order.payment_status || (order.payment_method ?? "").toUpperCase() === "COD"
+      ? formatPaymentStatusVi(order.payment_status ?? "", order.payment_method, order.status)
+      : "";
 
   return (
     <div className={common.page}>
@@ -316,7 +342,7 @@ export function SellerOrderDetailClient({
             <span className={styles.objectMeta}>
               Đặt lúc {order.created_at ? formatDateTimeVi(order.created_at) : EMPTY_DASH} ·{" "}
               {formatPaymentMethodVi(order.payment_method)}
-              {order.payment_status ? ` (${formatPaymentStatusVi(order.payment_status)})` : ""}
+              {paymentStatusLabel ? ` (${paymentStatusLabel})` : ""}
             </span>
           </div>
         </div>
@@ -596,10 +622,10 @@ export function SellerOrderDetailClient({
                     {shipmentStatusInfo ? shipmentStatusInfo.label : shipment.status}
                   </span>
                 </div>
-                {typeof shipment.actual_fee_vnd === "number" && shipment.actual_fee_vnd > 0 && (
+                {shipmentFeeVnd > 0 && (
                   <div className={styles.kvRow}>
-                    <span className={styles.kvKey}>Phí vận chuyển thực tế</span>
-                    <span className={styles.kvVal}>{formatVnd(shipment.actual_fee_vnd)}</span>
+                    <span className={styles.kvKey}>Phí vận chuyển hãng</span>
+                    <span className={styles.kvVal}>{formatVnd(shipmentFeeVnd)}</span>
                   </div>
                 )}
                 {shipment.cod_amount_vnd > 0 && (
@@ -683,18 +709,19 @@ export function SellerOrderDetailClient({
         </section>
 
         {/* Carrier Tracking Events */}
-        {shipment && Array.isArray(shipment.events) && shipment.events.length > 0 && (
+        {shipmentEvents.length > 0 && (
           <section
             className={`${styles.detailCard} ${styles.span6}`}
             aria-label="Hành trình vận đơn"
           >
             <div className={common.cardHeader}>
               <h2 className={common.cardTitle}>
-                Hành trình vận đơn ({shipment.tracking_code || order.tracking_code})
+                Hành trình vận đơn (
+                {shipment?.tracking_code || order.tracking_code || order.order_code})
               </h2>
             </div>
             <div className={styles.kvList}>
-              {shipment.events.map((ev) => {
+              {shipmentEvents.map((ev) => {
                 const stInfo = getShipmentStatusInfo(ev.status);
                 return (
                   <div key={ev.id} className={styles.kvRow}>
@@ -723,7 +750,7 @@ export function SellerOrderDetailClient({
               {order.timeline.map((ev) => {
                 const title = isAddressUpdatedTimelineNote(ev.note)
                   ? "Cập nhật địa chỉ giao hàng"
-                  : getTimelineEventTitle(ev);
+                  : getTimelineEventTitle(ev, order.payment_method);
                 const noteText = localizeTimelineNote(ev.note);
                 return (
                   <div key={ev.id} className={styles.kvRow}>

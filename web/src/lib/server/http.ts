@@ -8,6 +8,8 @@ import { MAX_BFF_BODY_BYTES, readBoundedJson } from "./proxy-security.ts";
 import { extractTraceId } from "./trace.ts";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const MAX_FORWARDED_FOR_HOPS = 10;
+const HEADER_NEWLINE_RE = /[\r\n]/;
 
 export interface ProxyTrustOptions {
   /** Override `TRUST_PROXY_HEADERS` env check (mainly for unit tests). */
@@ -41,25 +43,20 @@ export function isPrefetchRequest(
 }
 
 /**
- * Resolve the effective request host. Ignores `x-forwarded-host` unless `TRUST_PROXY_HEADERS=true`,
- * falling back to the HTTP `Host` header (then `fallbackHost`).
+ * Resolve the effective request host strictly from the HTTP `Host` header (then `fallbackHost`).
+ * Always ignores `x-forwarded-host`, even when `TRUST_PROXY_HEADERS=true` (ingress-nginx preserves
+ * `Host` by default; trusting `x-forwarded-host` allows tenant switching, login redirect hijacking,
+ * and cache-key skew on direct pod access).
  */
-export function resolveRequestHost(
-  headers: Pick<Headers, "get">,
-  fallbackHost = "",
-  opts: ProxyTrustOptions = {}
-): string {
-  const trustProxy = opts.trustProxyHeaders ?? isTrustedProxyHeadersEnabled();
-  if (trustProxy) {
-    const forwarded = firstForwardedValue(headers.get("x-forwarded-host"));
-    if (forwarded) return forwarded;
-  }
+export function resolveRequestHost(headers: Pick<Headers, "get">, fallbackHost = ""): string {
   return headers.get("host")?.trim() || fallbackHost;
 }
 
 /**
  * Resolve the effective request protocol (`http` or `https`). Ignores `x-forwarded-proto` unless
  * `TRUST_PROXY_HEADERS=true`, falling back to the incoming request URL protocol.
+ * When `TRUST_PROXY_HEADERS=true`, the front reverse proxy MUST overwrite (never append to)
+ * `X-Forwarded-Proto` so untrusted clients cannot spoof the leftmost protocol entry.
  */
 export function resolveRequestProto(
   headers: Pick<Headers, "get">,
@@ -75,9 +72,13 @@ export function resolveRequestProto(
 }
 
 /**
- * Resolve the forwarded visitor IP to pass to the gateway. Returns `null` when
+ * Resolve the forwarded visitor IP header value to pass to the gateway. Returns `null` when
  * `TRUST_PROXY_HEADERS` is disabled so untrusted clients cannot smuggle spoofed
  * `X-Forwarded-For` / `X-Real-IP` headers through the BFF.
+ *
+ * When `TRUST_PROXY_HEADERS=true`, forwards the sanitized `X-Forwarded-For` chain (dropping empty
+ * entries, keeping at most the last 10 hops, and rejecting CR/LF characters) rather than selecting
+ * the leftmost hop, so the gateway scans right-to-left against `TRUSTED_PROXIES`.
  */
 export function resolveForwardedClientIp(
   headers: Pick<Headers, "get">,
@@ -85,16 +86,34 @@ export function resolveForwardedClientIp(
 ): string | null {
   const trustProxy = opts.trustProxyHeaders ?? isTrustedProxyHeadersEnabled();
   if (!trustProxy) return null;
-  const xff = firstForwardedValue(headers.get("x-forwarded-for"));
-  if (xff) return xff;
-  const realIp = headers.get("x-real-ip")?.trim();
-  return realIp || null;
+
+  const rawXff = headers.get("x-forwarded-for");
+  if (rawXff !== null) {
+    if (HEADER_NEWLINE_RE.test(rawXff)) return null;
+    const hops = rawXff
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (hops.length > 0) {
+      return hops.slice(-MAX_FORWARDED_FOR_HOPS).join(", ");
+    }
+  }
+
+  const rawRealIp = headers.get("x-real-ip");
+  if (rawRealIp !== null) {
+    if (HEADER_NEWLINE_RE.test(rawRealIp)) return null;
+    const realIp = rawRealIp.trim();
+    if (realIp) return realIp;
+  }
+
+  return null;
 }
 
 /**
  * Build the login redirect URL used by middleware for unauthenticated protected routes,
- * honoring `x-forwarded-host`/`x-forwarded-proto` ONLY when `TRUST_PROXY_HEADERS=true`
- * and neutralizing open-redirect dot-segment vectors via `sanitizeNextPath`.
+ * always deriving host from `Host` (never `x-forwarded-host`), honoring `x-forwarded-proto`
+ * ONLY when `TRUST_PROXY_HEADERS=true`, and neutralizing open-redirect dot-segment vectors
+ * via `sanitizeNextPath`.
  */
 export function buildLoginRedirectUrl(
   req: {
@@ -110,7 +129,7 @@ export function buildLoginRedirectUrl(
     resolveRequestProto(req.headers, req.url, opts) ||
     urlObj.protocol.replace(/:$/, "").toLowerCase() ||
     "http";
-  const host = resolveRequestHost(req.headers, urlObj.host, opts);
+  const host = resolveRequestHost(req.headers, urlObj.host);
 
   let target: URL;
   try {
@@ -126,10 +145,10 @@ export function buildLoginRedirectUrl(
 
 /**
  * CSRF guard for write requests. Checks Fetch-Metadata (`Sec-Fetch-Site`), then requires the
- * `Origin` header (or `Referer` fallback ONLY when `Origin` is absent) to be EXACTLY the host
- * serving this request (ignoring `x-forwarded-host`/`x-forwarded-proto` unless
- * `TRUST_PROXY_HEADERS=true`). Every site and the root host are separate origins: a write from
- * another site or from the root host is rejected. Also rejects `Origin: null`,
+ * `Origin` header (or `Referer` fallback ONLY when `Origin` is absent) to be EXACTLY the `Host`
+ * serving this request (always ignoring `x-forwarded-host`, and ignoring `x-forwarded-proto`
+ * unless `TRUST_PROXY_HEADERS=true`). Every site and the root host are separate origins: a write
+ * from another site or from the root host is rejected. Also rejects `Origin: null`,
  * cross-site/same-site Fetch-Metadata, and requests carrying neither `Origin` nor `Referer`
  * with 403 `BAD_ORIGIN`. Server actions are already origin-checked by Next; route handlers must
  * call this (`apiRoute` does it automatically for non-GET/HEAD/OPTIONS methods).
@@ -158,7 +177,7 @@ export function assertSameOrigin(req: Request, opts: ProxyTrustOptions = {}): vo
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw bad();
 
-  const rawHost = resolveRequestHost(req.headers, "", opts).toLowerCase();
+  const rawHost = resolveRequestHost(req.headers, "").toLowerCase();
   const expectedProto = resolveRequestProto(req.headers, req.url, opts);
   if (!rawHost) throw bad();
   let expectedHost: string;

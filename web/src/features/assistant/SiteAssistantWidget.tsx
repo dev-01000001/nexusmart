@@ -14,6 +14,7 @@ import {
   extractToolCardData,
   getToolActivityLabel,
   sanitizeAssistantError,
+  shouldRefreshCartAfterToolResult,
   type AssistantChatInputMessage,
   type AssistantCitation,
   type AssistantMessage,
@@ -22,6 +23,7 @@ import {
   type AssistantProductCard,
   type SiteAssistantWidgetProps,
 } from "./assistantTypes";
+import { renderAssistantMarkdown } from "./assistantMarkdown";
 import { createSseParser } from "./sseParser";
 import styles from "./SiteAssistantWidget.module.css";
 
@@ -120,7 +122,7 @@ export function SiteAssistantWidget({
 }: SiteAssistantWidgetComponentProps) {
   const pathname = usePathname();
   const { isAuthenticated } = useSession();
-  const { addToCart, showToast } = useStore();
+  const { addToCart, refreshCart, showToast } = useStore();
 
   const [open, setOpen] = useState(embedded ? true : defaultOpen);
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
@@ -335,6 +337,9 @@ export function SiteAssistantWidget({
             }));
           } else if (ev.type === "tool_result") {
             const extracted = extractToolCardData(ev);
+            if (shouldRefreshCartAfterToolResult(extracted)) {
+              void refreshCart();
+            }
             patchAssistant((m) => ({
               ...m,
               toolStatus: null,
@@ -414,7 +419,7 @@ export function SiteAssistantWidget({
         setStreaming(false);
       }
     },
-    [messages, streaming]
+    [messages, refreshCart, streaming]
   );
 
   const handleConfirmCartAction = useCallback(
@@ -651,7 +656,25 @@ export function SiteAssistantWidget({
                   className={msg.role === "user" ? styles.rowUser : styles.rowAssistant}
                 >
                   <div className={msg.role === "user" ? styles.bubbleUser : styles.bubbleAssistant}>
-                    {msg.content && <p className={styles.msgText}>{msg.content}</p>}
+                    {msg.content &&
+                      (msg.role === "assistant" ? (
+                        <div className={styles.msgRich}>
+                          {renderAssistantMarkdown(msg.content, {
+                            stripUuids: true,
+                            streaming: Boolean(msg.streaming),
+                            LinkComponent: Link,
+                            classNames: {
+                              paragraph: styles.msgParagraph,
+                              list: styles.msgList,
+                              listItem: styles.msgListItem,
+                              strong: styles.msgStrong,
+                              link: styles.msgLink,
+                            },
+                          })}
+                        </div>
+                      ) : (
+                        <p className={styles.msgText}>{msg.content}</p>
+                      ))}
 
                     {msg.streaming && !msg.content && !msg.toolStatus && (
                       <p className={styles.statusNote}>Đang soạn trả lời...</p>
@@ -749,7 +772,11 @@ export function SiteAssistantWidget({
                           <div key={action.id} className={styles.cartConfirmCard}>
                             <div className={styles.cartConfirmHead}>
                               <IconBag size={14} />
-                              <span>Xác nhận thêm vào giỏ</span>
+                              <span>
+                                {action.status === "added"
+                                  ? "Đã thêm vào giỏ"
+                                  : "Xác nhận thêm vào giỏ"}
+                              </span>
                             </div>
                             <div className={styles.cartConfirmDetail}>
                               <span className={styles.cartConfirmName}>{action.productName}</span>
@@ -759,9 +786,11 @@ export function SiteAssistantWidget({
                                 {action.priceVnd ? `, ${formatVnd(action.priceVnd)}` : ""}
                               </span>
                             </div>
-                            <p className={styles.cartConfirmHint}>
-                              Kiểm tra phân loại trước khi thêm. Trợ lý không tự đặt đơn.
-                            </p>
+                            {action.status !== "added" && (
+                              <p className={styles.cartConfirmHint}>
+                                Kiểm tra phân loại trước khi thêm. Trợ lý không tự đặt đơn.
+                              </p>
+                            )}
 
                             {action.status === "added" ? (
                               <div className={styles.cartDoneRow}>

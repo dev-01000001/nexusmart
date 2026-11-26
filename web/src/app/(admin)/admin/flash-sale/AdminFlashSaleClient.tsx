@@ -22,9 +22,13 @@ import { getVoucherScopeMeta } from "@/features/admin/adminComplaintsTypes";
 import {
   canEndFlashSaleEarly,
   computeFlashDiscountPercent,
+  formatFlashSaleItemsNotice,
   getFlashSaleWindowMeta,
+  loadAdminFlashSaleItems,
   MAX_FLASH_SALE_DISCOUNT_PERCENT,
+  mergeFlashSaleItems,
   validateCreateFlashSaleInput,
+  type FlashSaleItemsLoadMeta,
 } from "@/features/admin/AdminFlashSaleHelpers";
 import { AdminStateGate, AdminSuspenseFallback } from "@/features/admin/AdminStateGate";
 import { useAdminContext } from "@/features/admin/AdminShell";
@@ -45,6 +49,8 @@ export interface AdminFlashSaleClientProps {
   categories?: GatewayCategory[];
   initialVouchers?: GatewayVoucher[];
   loadError: string | null;
+  initialItemsError?: string | null;
+  initialItemsMeta?: FlashSaleItemsLoadMeta | null;
   serverNowMs?: number;
 }
 
@@ -88,6 +94,8 @@ function FlashSaleWorkspace({
   categories = [],
   initialVouchers = [],
   loadError,
+  initialItemsError = null,
+  initialItemsMeta = null,
   serverNowMs,
   initialQuery,
 }: AdminFlashSaleClientProps & { initialQuery: string }) {
@@ -99,11 +107,15 @@ function FlashSaleWorkspace({
   const canReadVouchers = roleHasCapability(user.role, "vouchers.read");
 
   const [flashSales, setFlashSales] = useState<GwAdminFlashSaleExtended[]>(initialFlashSales);
+  const [itemsError, setItemsError] = useState<string | null>(initialItemsError);
+  const [itemsMeta, setItemsMeta] = useState<FlashSaleItemsLoadMeta | null>(initialItemsMeta);
   const [vouchers, setVouchers] = useState<GatewayVoucher[]>(initialVouchers);
   const [vouchersLoading, setVouchersLoading] = useState(false);
 
   const initialTotalItems = initialFlashSales.reduce((s, f) => s + (f.items?.length ?? 0), 0);
-  const [activeTab, setActiveTab] = useState<FlashTab>(initialTotalItems > 0 ? "slots" : "windows");
+  const [activeTab, setActiveTab] = useState<FlashTab>(
+    initialTotalItems > 0 || Boolean(initialItemsError) ? "slots" : "windows"
+  );
   const [itemFilter, setItemFilter] = useState<ItemFilter>("all");
   const [windowStatusFilter, setWindowStatusFilter] = useState<WindowStatusFilter>("");
   const [windowsLoading, setWindowsLoading] = useState(false);
@@ -138,12 +150,51 @@ function FlashSaleWorkspace({
       try {
         const qs = new URLSearchParams({ page: "1", page_size: "50" });
         if (statusFilter) qs.set("status", statusFilter);
-        const res = await api<PaginatedResponse<GwAdminFlashSaleExtended>>(
-          `/api/admin/flash-sales?${qs.toString()}`
-        );
-        setFlashSales(res.items ?? []);
-      } catch (err) {
-        showToast(getErrorMessage(err, "Không thể tải danh sách khung giờ Flash sale."));
+        const [salesSettled, itemsSettled] = await Promise.allSettled([
+          api<PaginatedResponse<GwAdminFlashSaleExtended>>(
+            `/api/admin/flash-sales?${qs.toString()}`
+          ),
+          loadAdminFlashSaleItems(({ status, page, pageSize }) => {
+            const itemQs = new URLSearchParams({
+              page: String(page),
+              page_size: String(pageSize),
+            });
+            if (status) itemQs.set("status", status);
+            return api<PaginatedResponse<GwAdminFlashSaleItemExtended>>(
+              `/api/admin/flash-sale-items?${itemQs.toString()}`
+            );
+          }),
+        ]);
+
+        let itemsLoaded: Awaited<
+          ReturnType<typeof loadAdminFlashSaleItems<GwAdminFlashSaleItemExtended>>
+        > | null = null;
+        if (itemsSettled.status === "fulfilled") {
+          itemsLoaded = itemsSettled.value;
+          setItemsMeta(itemsLoaded.meta);
+          setItemsError(itemsLoaded.error);
+        } else {
+          setItemsError(
+            getErrorMessage(
+              itemsSettled.reason,
+              "Không thể tải danh sách suất đăng ký Flash sale lúc này."
+            )
+          );
+        }
+
+        if (salesSettled.status === "fulfilled") {
+          const nextSales = salesSettled.value.items ?? [];
+          setFlashSales(
+            itemsLoaded ? mergeFlashSaleItems(nextSales, itemsLoaded.items) : nextSales
+          );
+        } else {
+          showToast(
+            getErrorMessage(salesSettled.reason, "Không thể tải danh sách khung giờ Flash sale.")
+          );
+          if (itemsLoaded && itemsLoaded.items.length > 0) {
+            setFlashSales((prev) => mergeFlashSaleItems(prev, itemsLoaded.items));
+          }
+        }
       } finally {
         setWindowsLoading(false);
       }
@@ -548,117 +599,142 @@ function FlashSaleWorkspace({
       )}
 
       {/* TAB 1: SLOTS */}
-      {activeTab === "slots" &&
-        (visibleEntries.length === 0 ? (
-          <p className={shared.emptyRow}>Chưa có suất đăng ký nào phù hợp bộ lọc.</p>
-        ) : (
-          <>
-            <div className={shared.tableWrap}>
-              <table className={shared.dataTable}>
-                <thead>
-                  <tr>
-                    <th>Gian hàng &amp; SKU</th>
-                    <th>Khung giờ</th>
-                    <th className={shared.colNum}>Giá Flash sale</th>
-                    <th className={shared.colNum}>Suất còn / tổng</th>
-                    <th>Trạng thái</th>
-                    <th className={shared.colAction}>Thao tác</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleEntries.map(({ flashSale, item }) => {
-                    const meta = getItemStatusMeta(item.status);
-                    const selected = drawer?.kind === "slot" && drawer.itemId === item.id;
-                    const discountPct = computeFlashDiscountPercent(
-                      item.original_price_vnd,
-                      item.flash_price_vnd
-                    );
-                    return (
-                      <tr
-                        key={item.id}
-                        className={`${shared.rowInteractive} ${selected ? shared.rowSelected : ""}`}
+      {activeTab === "slots" && (
+        <>
+          {itemsError && (
+            <div className={styles.itemsErrorBanner} role="alert">
+              <span>{itemsError}</span>
+              <Button
+                variant="outline"
+                size="sm"
+                shape="app"
+                loading={windowsLoading}
+                onClick={() => void reloadFlashSales(windowStatusFilter)}
+              >
+                Thử lại
+              </Button>
+            </div>
+          )}
+          {formatFlashSaleItemsNotice(itemsMeta) && (
+            <div className={styles.itemsNoticeBanner} role="status">
+              {formatFlashSaleItemsNotice(itemsMeta)}
+            </div>
+          )}
+          {visibleEntries.length === 0 ? (
+            itemsError ? null : (
+              <p className={shared.emptyRow}>Chưa có suất đăng ký nào phù hợp bộ lọc.</p>
+            )
+          ) : (
+            <>
+              <div className={shared.tableWrap}>
+                <table className={shared.dataTable}>
+                  <thead>
+                    <tr>
+                      <th>Gian hàng &amp; SKU</th>
+                      <th>Khung giờ</th>
+                      <th className={shared.colNum}>Giá Flash sale</th>
+                      <th className={shared.colNum}>Suất còn / tổng</th>
+                      <th>Trạng thái</th>
+                      <th className={shared.colAction}>Thao tác</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleEntries.map(({ flashSale, item }) => {
+                      const meta = getItemStatusMeta(item.status);
+                      const selected = drawer?.kind === "slot" && drawer.itemId === item.id;
+                      const discountPct = computeFlashDiscountPercent(
+                        item.original_price_vnd,
+                        item.flash_price_vnd
+                      );
+                      return (
+                        <tr
+                          key={item.id}
+                          className={`${shared.rowInteractive} ${selected ? shared.rowSelected : ""}`}
+                          onClick={() => {
+                            setRejectDraft("");
+                            setDrawer({ kind: "slot", flashSaleId: flashSale.id, itemId: item.id });
+                          }}
+                        >
+                          <td>
+                            <button
+                              type="button"
+                              className={shared.rowTriggerBtn}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setRejectDraft("");
+                                setDrawer({
+                                  kind: "slot",
+                                  flashSaleId: flashSale.id,
+                                  itemId: item.id,
+                                });
+                              }}
+                            >
+                              <span className={shared.cellPrimary}>{shopLabel(item.shop_id)}</span>
+                              <span className={shared.cellSub}>
+                                SKU {item.sku_id.slice(0, 8)}, tối đa{" "}
+                                {formatInt(item.per_user_limit)}
+                                /người
+                              </span>
+                            </button>
+                          </td>
+                          <td>{flashSale.name}</td>
+                          <td className={shared.colNum}>
+                            <div className={shared.cellPrimary}>
+                              {formatVnd(item.flash_price_vnd)}
+                            </div>
+                            {discountPct !== null && (
+                              <div className={styles.discountTag}>-{discountPct}%</div>
+                            )}
+                          </td>
+                          <td className={shared.colNum}>
+                            {formatInt(item.remaining_slots)} / {formatInt(item.total_slots)}
+                          </td>
+                          <td>
+                            <StatusPill label={meta.label} tone={meta.tone} />
+                          </td>
+                          <td className={shared.colAction}>{decisionButtons(item)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className={shared.mobileList}>
+                {visibleEntries.map(({ flashSale, item }) => {
+                  const meta = getItemStatusMeta(item.status);
+                  return (
+                    <div key={item.id} className={shared.mobileItem}>
+                      <button
+                        type="button"
+                        className={shared.mobileItemBtn}
                         onClick={() => {
                           setRejectDraft("");
                           setDrawer({ kind: "slot", flashSaleId: flashSale.id, itemId: item.id });
                         }}
                       >
-                        <td>
-                          <button
-                            type="button"
-                            className={shared.rowTriggerBtn}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setRejectDraft("");
-                              setDrawer({
-                                kind: "slot",
-                                flashSaleId: flashSale.id,
-                                itemId: item.id,
-                              });
-                            }}
-                          >
-                            <span className={shared.cellPrimary}>{shopLabel(item.shop_id)}</span>
-                            <span className={shared.cellSub}>
-                              SKU {item.sku_id.slice(0, 8)}, tối đa {formatInt(item.per_user_limit)}
-                              /người
-                            </span>
-                          </button>
-                        </td>
-                        <td>{flashSale.name}</td>
-                        <td className={shared.colNum}>
-                          <div className={shared.cellPrimary}>
+                        <span className={shared.mobileLine1}>
+                          <span className={shared.mobileIdentity}>{shopLabel(item.shop_id)}</span>
+                          <span className={shared.mobileMetric}>
                             {formatVnd(item.flash_price_vnd)}
-                          </div>
-                          {discountPct !== null && (
-                            <div className={styles.discountTag}>-{discountPct}%</div>
-                          )}
-                        </td>
-                        <td className={shared.colNum}>
-                          {formatInt(item.remaining_slots)} / {formatInt(item.total_slots)}
-                        </td>
-                        <td>
+                          </span>
+                        </span>
+                        <span className={shared.mobileLine2}>
+                          <span className={shared.mobileMetaText}>
+                            {flashSale.name}, còn {formatInt(item.remaining_slots)}/
+                            {formatInt(item.total_slots)} suất
+                          </span>
                           <StatusPill label={meta.label} tone={meta.tone} />
-                        </td>
-                        <td className={shared.colAction}>{decisionButtons(item)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            <div className={shared.mobileList}>
-              {visibleEntries.map(({ flashSale, item }) => {
-                const meta = getItemStatusMeta(item.status);
-                return (
-                  <div key={item.id} className={shared.mobileItem}>
-                    <button
-                      type="button"
-                      className={shared.mobileItemBtn}
-                      onClick={() => {
-                        setRejectDraft("");
-                        setDrawer({ kind: "slot", flashSaleId: flashSale.id, itemId: item.id });
-                      }}
-                    >
-                      <span className={shared.mobileLine1}>
-                        <span className={shared.mobileIdentity}>{shopLabel(item.shop_id)}</span>
-                        <span className={shared.mobileMetric}>
-                          {formatVnd(item.flash_price_vnd)}
                         </span>
-                      </span>
-                      <span className={shared.mobileLine2}>
-                        <span className={shared.mobileMetaText}>
-                          {flashSale.name}, còn {formatInt(item.remaining_slots)}/
-                          {formatInt(item.total_slots)} suất
-                        </span>
-                        <StatusPill label={meta.label} tone={meta.tone} />
-                      </span>
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </>
-        ))}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </>
+      )}
 
       {/* TAB 2: WINDOWS */}
       {activeTab === "windows" &&

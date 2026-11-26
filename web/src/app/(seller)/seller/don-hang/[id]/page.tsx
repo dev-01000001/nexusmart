@@ -26,7 +26,8 @@ export default async function SellerOrderDetailPage({
     <SellerSuspense>
       <SellerOrderDetailClient
         initialOrder={orderRes.data}
-        initialShipment={shipmentRes.data}
+        initialShipment={shipmentRes.data?.shipment ?? null}
+        initialShipmentEvents={shipmentRes.data?.events ?? []}
         loadError={orderRes.error}
       />
     </SellerSuspense>

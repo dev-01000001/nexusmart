@@ -3,12 +3,6 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import {
-  ORDER_STATUS_META,
-  PAYMENT_METHOD_LABELS,
-  PAYMENT_STATUS_META,
-  type OrderStatus,
-} from "@/data/orders";
 import type { Product } from "@/data/products";
 import { formatVnd } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";
@@ -18,29 +12,28 @@ import { renderOrderDateTime, statusToneClass } from "@/features/commerce/orderD
 import { usePageStateParam } from "@/features/commerce/usePageStateParam";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./OrdersClientView.module.css";
-import type { OrderView } from "./orderView";
-
-type FilterKey = "all" | "cho_thanh_toan" | "da_tra_hang" | OrderStatus;
-
-const FILTER_TABS: Array<{ key: FilterKey; label: string }> = [
-  { key: "all", label: "Tất cả" },
-  { key: "cho_thanh_toan", label: "Chờ thanh toán" },
-  { key: "cho_xac_nhan", label: "Chờ xác nhận" },
-  { key: "dang_chuan_bi", label: "Đang chuẩn bị" },
-  { key: "dang_giao", label: "Đang giao" },
-  { key: "da_giao", label: "Đã giao" },
-  { key: "yeu_cau_tra_hang", label: "Yêu cầu trả hàng" },
-  { key: "da_tra_hang", label: "Đã trả hàng" },
-  { key: "da_huy", label: "Đã hủy" },
-];
+import {
+  ORDER_FILTER_TABS,
+  getOrderStatusInfo,
+  getPaymentMethodLabel,
+  getPaymentStatusInfo,
+  needsVietQrPayment,
+} from "./orderMeta";
+import {
+  countOrdersByBackendStatus,
+  filterOrdersByBackendStatus,
+  type BuyerOrderFilterKey,
+  type OrderView,
+} from "./orderView";
 
 function isUnpaidOnlineOrder(order: OrderView): boolean {
-  return (
-    (order.paymentMethod === "vietqr" || order.paymentMethod === "vi_sandbox") &&
-    (order.paymentStatus === "cho_thanh_toan" || order.paymentStatus === "thanh_toan_that_bai") &&
-    order.status !== "da_huy" &&
-    order.paymentStatusRaw !== "EXPIRED"
-  );
+  return needsVietQrPayment({
+    status: order.backendStatus,
+    payment_method: order.paymentMethodRaw,
+    payment_id: order.paymentId,
+    payment_status: order.paymentStatusRaw,
+    payment_expires_at: order.paymentExpiresAt,
+  });
 }
 
 export interface OrdersClientViewProps {
@@ -59,11 +52,11 @@ function OrdersClientInner({
   const router = useRouter();
   const viewState = usePageStateParam();
   const { addToCart, showToast } = useStore();
-  const [activeTab, setActiveTab] = useState<FilterKey>("all");
+  const [activeTab, setActiveTab] = useState<BuyerOrderFilterKey>("");
   const [reorderingId, setReorderingId] = useState<string | null>(null);
 
   const tabBarRef = useRef<HTMLDivElement | null>(null);
-  const tabRefs = useRef<Partial<Record<FilterKey, HTMLButtonElement | null>>>({});
+  const tabRefs = useRef<Partial<Record<BuyerOrderFilterKey, HTMLButtonElement | null>>>({});
   const [indicator, setIndicator] = useState<{ left: number; width: number }>({
     left: 0,
     width: 0,
@@ -84,44 +77,12 @@ function OrdersClientInner({
     return () => ro.disconnect();
   }, [measureIndicator]);
 
-  const counts = useMemo(() => {
-    const map: Record<FilterKey, number> = {
-      all: initialOrders.length,
-      cho_thanh_toan: 0,
-      cho_xac_nhan: 0,
-      dang_chuan_bi: 0,
-      dang_giao: 0,
-      da_giao: 0,
-      yeu_cau_tra_hang: 0,
-      da_tra_hang: 0,
-      da_huy: 0,
-    };
-    for (const order of initialOrders) {
-      if (order.backendStatus === "RETURNED") {
-        map.da_tra_hang += 1;
-      } else {
-        map[order.status] += 1;
-      }
-      if (isUnpaidOnlineOrder(order)) {
-        map.cho_thanh_toan += 1;
-      }
-    }
-    return map;
-  }, [initialOrders]);
+  const counts = useMemo(() => countOrdersByBackendStatus(initialOrders), [initialOrders]);
 
-  const filteredOrders = useMemo(() => {
-    if (activeTab === "all") return initialOrders;
-    if (activeTab === "cho_thanh_toan") {
-      return initialOrders.filter(isUnpaidOnlineOrder);
-    }
-    if (activeTab === "da_tra_hang") {
-      return initialOrders.filter((o) => o.backendStatus === "RETURNED");
-    }
-    if (activeTab === "yeu_cau_tra_hang") {
-      return initialOrders.filter((o) => o.backendStatus === "RETURN_REQUESTED");
-    }
-    return initialOrders.filter((o) => o.status === activeTab);
-  }, [initialOrders, activeTab]);
+  const filteredOrders = useMemo(
+    () => filterOrdersByBackendStatus(initialOrders, activeTab),
+    [initialOrders, activeTab]
+  );
 
   const handleReorder = async (order: OrderView) => {
     setReorderingId(order.id);
@@ -231,11 +192,11 @@ function OrdersClientInner({
             role="tablist"
             aria-label="Lọc trạng thái đơn hàng"
           >
-            {FILTER_TABS.map((tab) => {
+            {ORDER_FILTER_TABS.map((tab) => {
               const isActive = activeTab === tab.key;
               return (
                 <button
-                  key={tab.key}
+                  key={tab.key || "ALL"}
                   ref={(el) => {
                     tabRefs.current[tab.key] = el;
                   }}
@@ -267,16 +228,20 @@ function OrdersClientInner({
             kind="empty"
             title="Không có đơn hàng ở trạng thái này."
             actionLabel="Xem tất cả"
-            onAction={() => setActiveTab("all")}
+            onAction={() => setActiveTab("")}
           />
         ) : (
           <div className={styles.orderList} data-reveal="rows">
             {filteredOrders.map((order) => {
-              const meta =
-                order.backendStatus === "RETURNED"
-                  ? { label: "Đã trả hàng", tone: "neutral" as const }
-                  : ORDER_STATUS_META[order.status];
-              const payMeta = order.paymentStatus ? PAYMENT_STATUS_META[order.paymentStatus] : null;
+              const meta = getOrderStatusInfo(order.backendStatus);
+              const payMeta =
+                order.paymentStatusRaw || order.paymentMethodRaw === "COD"
+                  ? getPaymentStatusInfo(
+                      order.paymentStatusRaw,
+                      order.paymentMethodRaw,
+                      order.backendStatus
+                    )
+                  : null;
               const pendingOnline = isUnpaidOnlineOrder(order);
               const visibleThumbs = order.items.slice(0, 3);
               const extraCount = Math.max(0, order.items.length - visibleThumbs.length);
@@ -344,7 +309,7 @@ function OrdersClientInner({
                     </div>
 
                     <div className={styles.metaFootLine}>
-                      <span>{PAYMENT_METHOD_LABELS[order.paymentMethod]}</span>
+                      <span>{getPaymentMethodLabel(order.paymentMethodRaw)}</span>
                       {order.carrier && <span>{order.carrier}</span>}
                       {order.trackingCode && <span className="num">{order.trackingCode}</span>}
                     </div>

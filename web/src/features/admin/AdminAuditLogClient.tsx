@@ -24,7 +24,6 @@ const PAGE_SIZE = 20;
 
 const TARGET_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "", label: "Tất cả phân hệ" },
-  { value: "site", label: "Site gian hàng" },
   ...Object.entries(ADMIN_AUDIT_TARGET_TYPE_LABELS).map(([value, label]) => ({
     value,
     label,
@@ -350,10 +349,7 @@ function AuditLogContent({
               <tbody>
                 {filtered.map((log) => {
                   const selected = selectedLog?.id === log.id;
-                  const targetLabel =
-                    log.target_type.toLowerCase() === "site"
-                      ? "Site gian hàng"
-                      : getAdminAuditTargetTypeLabel(log.target_type);
+                  const targetLabel = getAdminAuditTargetTypeLabel(log.target_type);
                   return (
                     <tr
                       key={log.id}
@@ -398,10 +394,7 @@ function AuditLogContent({
 
           <div className={shared.mobileList}>
             {filtered.map((log) => {
-              const targetLabel =
-                log.target_type.toLowerCase() === "site"
-                  ? "Site gian hàng"
-                  : getAdminAuditTargetTypeLabel(log.target_type);
+              const targetLabel = getAdminAuditTargetTypeLabel(log.target_type);
               return (
                 <article key={log.id} className={shared.mobileItem}>
                   <button
@@ -470,11 +463,7 @@ function AuditLogContent({
         headerBadge={
           selectedLog ? (
             <StatusPill
-              label={
-                selectedLog.target_type.toLowerCase() === "site"
-                  ? "Site gian hàng"
-                  : getAdminAuditTargetTypeLabel(selectedLog.target_type)
-              }
+              label={getAdminAuditTargetTypeLabel(selectedLog.target_type)}
               tone="neutral"
             />
           ) : undefined

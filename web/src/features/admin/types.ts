@@ -7,9 +7,10 @@ import type {
   UserRole,
   UserStatus,
 } from "@/lib/gateway-types";
-import { getErrorMessage } from "@/lib/api";
-import { GATEWAY_ORDER_STATUS_LABELS } from "@/lib/format";
-import type { PillTone } from "./adminMeta";
+import { getErrorMessage } from "../../lib/api.ts";
+import { GATEWAY_ORDER_STATUS_LABELS } from "../../lib/format.ts";
+import { getAdminOrderStatusMeta as getCanonicalAdminOrderStatusMeta } from "./adminApiTypes.ts";
+import type { PillTone } from "./adminMeta.ts";
 
 export const ADMIN_SHOP_STATUS_META: Record<
   ShopStatus | string,
@@ -91,30 +92,52 @@ export function getReconciliationQueueStatusMeta(status: string): {
   }
 }
 
+/**
+ * Target types aligned 1:1 with `auditTargetType()` in `services/gateway/internal/middleware/audit.go`
+ * and transactional `InsertAuditLog` writes in `services/user`.
+ */
 export const ADMIN_AUDIT_TARGET_TYPE_LABELS: Record<string, string> = {
   shop: "Gian hàng",
-  user: "Người dùng",
+  site: "Site gian hàng",
+  domain: "Tên miền riêng",
+  shop_bank_account: "Tài khoản ngân hàng gian hàng",
+  shop_suspension_approval: "Phê duyệt khóa gian hàng",
+  user: "Người dùng & nhân sự",
   product: "Sản phẩm",
   category: "Danh mục",
+  banned_keyword: "Từ khóa cấm",
   voucher: "Mã giảm giá",
   flash_sale: "Flash sale",
   flash_sale_item: "Sản phẩm Flash sale",
   coin: "Xu thành viên",
+  order: "Đơn hàng",
   payment: "Thanh toán",
   refund: "Hoàn tiền",
   reconciliation_item: "Đối soát giao dịch",
+  reconciliation_run: "Phiên đối soát COD",
   return_request: "Trả hàng / khiếu nại",
   carrier: "Hãng vận chuyển",
-  payment_method: "Phương thức thanh toán",
-  shop_approval: "Phê duyệt khoá gian hàng",
-  staff: "Nhân sự nội bộ",
+  payment_method_config: "Phương thức thanh toán",
+  category_fee_schedule: "Biểu phí ngành hàng",
+  payment_fee_config: "Cấu hình phí thanh toán",
+  search_reindex: "Đồng bộ chỉ mục tìm kiếm",
   admin: "Hệ thống quản trị",
+};
+
+const LEGACY_AUDIT_TARGET_TYPE_LABELS: Record<string, string> = {
+  payment_method: "Phương thức thanh toán",
+  shop_approval: "Phê duyệt khóa gian hàng",
+  staff: "Nhân sự nội bộ",
 };
 
 export function getAdminAuditTargetTypeLabel(targetType: string): string {
   const key = (targetType ?? "").trim().toLowerCase();
   if (!key) return "Hệ thống quản trị";
-  return ADMIN_AUDIT_TARGET_TYPE_LABELS[key] ?? "Hệ thống quản trị";
+  return (
+    ADMIN_AUDIT_TARGET_TYPE_LABELS[key] ??
+    LEGACY_AUDIT_TARGET_TYPE_LABELS[key] ??
+    "Hệ thống quản trị"
+  );
 }
 
 export function getAdminReturnStatusMeta(status: string): { label: string; tone: PillTone } {
@@ -238,7 +261,7 @@ export function getAdminUserStatusMeta(status: string): { label: string; tone: P
 }
 
 export function getAdminOrderStatusMeta(status: string): { label: string; tone: PillTone } {
-  return ADMIN_ORDER_STATUS_META[status] ?? { label: status || "Chưa rõ", tone: "neutral" };
+  return getCanonicalAdminOrderStatusMeta(status);
 }
 
 export function formatCommissionBps(bps?: number): string {

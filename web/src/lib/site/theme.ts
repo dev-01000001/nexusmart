@@ -113,9 +113,18 @@ export function sanitizeSafeUrl(raw: string | undefined | null): string {
   if (CONTROL_CHAR_RE.test(trimmed) || trimmed.includes("\\")) return "";
 
   if (trimmed.startsWith("/")) {
-    if (trimmed.startsWith("//")) return "";
-    // Reject embedded scheme tricks or newlines
-    if (/[\s]/.test(trimmed)) return "";
+    if (trimmed.startsWith("//") || /[\s]/.test(trimmed)) return "";
+    const pathOnly = trimmed.split(/[?#]/, 1)[0] ?? trimmed;
+    if (pathOnly.split("/").some((seg) => seg === "." || seg === "..")) return "";
+    let resolved: URL;
+    try {
+      resolved = new URL(trimmed, "https://x.invalid");
+    } catch {
+      return "";
+    }
+    if (resolved.origin !== "https://x.invalid" || resolved.pathname.startsWith("//")) {
+      return "";
+    }
     return trimmed;
   }
 

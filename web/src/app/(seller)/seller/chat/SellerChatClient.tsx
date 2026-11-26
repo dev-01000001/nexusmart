@@ -20,6 +20,13 @@ import { formatDateTimeVi, formatInt, formatTimeVi, formatVnd } from "@/lib/form
 import { sanitizeSafeUrl } from "@/lib/site/theme";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { useSellerContext } from "@/features/seller/SellerShell";
+import {
+  SELLER_CHAT_READ_EVENT,
+  markSellerConversationRead,
+  shouldClearUnreadAfterReadSync,
+  type ReadSyncResult,
+  type SellerChatReadEventDetail,
+} from "@/features/seller/sellerReturns";
 import { createChatSocketManager, type ChatSocketManager } from "@/features/chat/chatClient";
 import {
   detectOffPlatformContact,
@@ -176,11 +183,13 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
 
   const socketRef = useRef<ChatSocketManager | null>(null);
   const selectedIdRef = useRef<string>("");
+  const conversationsRef = useRef<ChatConversationDTO[]>([]);
   const messagesByConvRef = useRef<Record<string, ChatMessageDTO[]>>({});
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLInputElement | null>(null);
 
   selectedIdRef.current = selectedId;
+  conversationsRef.current = conversations;
   messagesByConvRef.current = messagesByConv;
 
   const isSellerMessage = useCallback(
@@ -207,6 +216,7 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
             Date.parse(b.last_message_at || b.updated_at || "") -
             Date.parse(a.last_message_at || a.updated_at || "")
         );
+      conversationsRef.current = list;
       setConversations(list);
       setConversationsError(null);
       setSelectedId((prev) => {
@@ -228,43 +238,101 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
     }
   }, []);
 
-  const loadMessages = useCallback(async (convId: string, afterId?: string) => {
-    if (!convId) return;
-    if (!afterId) {
-      setLoadingMessages(true);
-      setMessagesError(null);
+  const syncConversationRead = useCallback(
+    async (convId: string, lastReadSeq?: number, messageId?: string): Promise<ReadSyncResult> =>
+      markSellerConversationRead({
+        conversationId: convId,
+        lastReadSeq,
+        messageId,
+        sendWsRead: (id, seq, msgId) => Boolean(socketRef.current?.sendRead(id, seq, msgId)),
+        postRestRead: (id, body) =>
+          api(`/api/seller/chat/conversations/${encodeURIComponent(id)}/read`, {
+            method: "POST",
+            body,
+          }),
+      }),
+    []
+  );
+
+  const clearConversationUnread = useCallback((convId: string, overrideReadCount?: number) => {
+    const currentConv = conversationsRef.current.find((c) => c.id === convId);
+    const currentUnread =
+      currentConv && currentConv.unread_count > 0 ? currentConv.unread_count : 0;
+    const clearedCount =
+      overrideReadCount !== undefined ? Math.max(0, Math.trunc(overrideReadCount)) : currentUnread;
+    if (currentUnread > 0) {
+      conversationsRef.current = conversationsRef.current.map((c) =>
+        c.id === convId ? { ...c, unread_count: 0 } : c
+      );
     }
-    try {
-      const qs = afterId ? `?after=${encodeURIComponent(afterId)}` : "?limit=50";
-      const res = await api<MessagesApiResponse>(
-        `/api/seller/chat/conversations/${encodeURIComponent(convId)}/messages${qs}`
+    setConversations((prev) => prev.map((c) => (c.id === convId ? { ...c, unread_count: 0 } : c)));
+    if (clearedCount > 0 && typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent<SellerChatReadEventDetail>(SELLER_CHAT_READ_EVENT, {
+          detail: { readCount: clearedCount },
+        })
       );
-      const parsed = (res.messages ?? [])
-        .map((item) => normalizeMessage(item))
-        .filter((m): m is ChatMessageDTO => m !== null);
-      setMessagesByConv((prev) => ({
-        ...prev,
-        [convId]: afterId ? mergeMessages(prev[convId] ?? [], parsed) : mergeMessages([], parsed),
-      }));
-      const latest = parsed[parsed.length - 1];
-      if (latest) {
-        socketRef.current?.sendRead(convId, latest.seq, latest.id);
-      }
-      setConversations((prev) =>
-        prev.map((c) => (c.id === convId ? { ...c, unread_count: 0 } : c))
-      );
-    } catch (err) {
-      if (!afterId) {
-        setMessagesError(
-          err instanceof ApiError ? err.message : "Không thể tải lịch sử tin nhắn lúc này."
-        );
-      }
-    } finally {
-      if (!afterId) {
-        setLoadingMessages(false);
-      }
     }
   }, []);
+
+  const syncAndClearUnread = useCallback(
+    async (convId: string, lastReadSeq?: number, messageId?: string, preWsUnread = 0) => {
+      const result = await syncConversationRead(convId, lastReadSeq, messageId);
+      if (shouldClearUnreadAfterReadSync(result, true)) {
+        clearConversationUnread(convId, preWsUnread);
+      }
+    },
+    [clearConversationUnread, syncConversationRead]
+  );
+
+  const loadMessages = useCallback(
+    async (convId: string, afterId?: string) => {
+      if (!convId) return;
+      if (!afterId) {
+        setLoadingMessages(true);
+        setMessagesError(null);
+      }
+      try {
+        const qs = afterId ? `?after=${encodeURIComponent(afterId)}` : "?limit=50";
+        const res = await api<MessagesApiResponse>(
+          `/api/seller/chat/conversations/${encodeURIComponent(convId)}/messages${qs}`
+        );
+        const parsed = (res.messages ?? [])
+          .map((item) => normalizeMessage(item))
+          .filter((m): m is ChatMessageDTO => m !== null);
+        const merged = afterId
+          ? mergeMessages(messagesByConvRef.current[convId] ?? [], parsed)
+          : mergeMessages([], parsed);
+        setMessagesByConv((prev) => ({
+          ...prev,
+          [convId]: afterId ? mergeMessages(prev[convId] ?? [], parsed) : mergeMessages([], parsed),
+        }));
+        const latest =
+          parsed[parsed.length - 1] ?? [...merged].reverse().find((m) => !m.id.startsWith("scli-"));
+        if (latest) {
+          const syncResult = await syncConversationRead(convId, latest.seq, latest.id);
+          if (shouldClearUnreadAfterReadSync(syncResult, true)) {
+            clearConversationUnread(convId);
+          }
+        } else if (shouldClearUnreadAfterReadSync(null, false)) {
+          setConversations((prev) =>
+            prev.map((c) => (c.id === convId ? { ...c, unread_count: 0 } : c))
+          );
+        }
+      } catch (err) {
+        if (!afterId) {
+          setMessagesError(
+            err instanceof ApiError ? err.message : "Không thể tải lịch sử tin nhắn lúc này."
+          );
+        }
+      } finally {
+        if (!afterId) {
+          setLoadingMessages(false);
+        }
+      }
+    },
+    [clearConversationUnread, syncConversationRead]
+  );
 
   useEffect(() => {
     void loadConversations();
@@ -295,9 +363,8 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
         }));
         const active = selectedIdRef.current === convId;
         const fromSeller = isSellerMessage(ev.message);
-        if (active && !fromSeller) {
-          socketRef.current?.sendRead(convId, ev.message.seq, ev.message.id);
-        }
+        const prevConv = conversationsRef.current.find((c) => c.id === convId);
+        const preWsUnread = prevConv && prevConv.unread_count > 0 ? prevConv.unread_count : 0;
         setConversations((prev) => {
           const exists = prev.some((c) => c.id === convId);
           if (!exists) {
@@ -312,7 +379,7 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
                   last_message_preview: ev.message.body,
                   last_message_at: ev.message.created_at,
                   updated_at: ev.message.created_at,
-                  unread_count: active || fromSeller ? 0 : c.unread_count + 1,
+                  unread_count: fromSeller ? 0 : c.unread_count + 1,
                 }
               : c
           );
@@ -322,6 +389,9 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
               Date.parse(a.last_message_at || a.updated_at || "")
           );
         });
+        if (active && !fromSeller) {
+          void syncAndClearUnread(convId, ev.message.seq, ev.message.id, preWsUnread);
+        }
       } else if (ev.type === "ack") {
         const convId = ev.conversation_id;
         if (!convId) return;
@@ -368,7 +438,14 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
         socketRef.current = null;
       }
     };
-  }, [loadingConversations, conversationsError, isSellerMessage, loadConversations, loadMessages]);
+  }, [
+    loadingConversations,
+    conversationsError,
+    isSellerMessage,
+    loadConversations,
+    loadMessages,
+    syncAndClearUnread,
+  ]);
 
   const unreadTotal = useMemo(
     () => conversations.reduce((sum, c) => sum + (c.unread_count > 0 ? 1 : 0), 0),

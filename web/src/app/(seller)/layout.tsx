@@ -4,6 +4,7 @@ import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import type { Session } from "@/lib/server/session";
 import { SellerShell } from "@/features/seller/SellerShell";
+import { extractSellerUnreadChatCount } from "@/features/seller/sellerApiTypes";
 import {
   loadMyShop,
   loadSellerOrders,
@@ -19,11 +20,10 @@ export const dynamic = "force-dynamic";
 
 async function loadUnreadChatCount(): Promise<number> {
   try {
-    const res = await gw<{ items?: Array<{ unread_count?: number }> }>(
-      "/api/v1/chat/conversations",
-      { query: { role: "seller", page: 1, page_size: 50 } }
-    );
-    return (res.items ?? []).reduce((sum, item) => sum + Math.max(0, item.unread_count ?? 0), 0);
+    const res = await gw<unknown>("/api/v1/seller/chat/conversations", {
+      query: { page: 1, page_size: 1 },
+    });
+    return extractSellerUnreadChatCount(res);
   } catch {
     return 0;
   }

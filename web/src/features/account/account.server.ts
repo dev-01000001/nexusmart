@@ -6,7 +6,7 @@ import { buildCatalogLookups, mergeVouchers, type GwVoucher } from "@/lib/catalo
 import type { GatewayNotificationPreferences } from "@/lib/gateway-types";
 import { gw } from "@/lib/server/gateway";
 import type { GatewayUser, Session } from "@/lib/server/session";
-import { belongsToStorefront } from "@/lib/server/storefront";
+import { STOREFRONT_CHANNEL, belongsToStorefront } from "@/lib/server/storefront";
 import {
   mapGatewayAddress,
   type AccountProfile,
@@ -55,7 +55,12 @@ export async function fetchAccountPageData(
       revalidate: 3600,
     }).catch(() => ({ provinces: [] })),
     gw<{ vouchers?: GwVoucher[] | null }>("/api/v1/vouchers", {
-      query: { shop_id: shopId, scope: "SHOP" },
+      query: {
+        shop_id: shopId,
+        scope: "SHOP",
+        sales_channel: STOREFRONT_CHANNEL,
+        storefront_shop_id: shopId,
+      },
     }).catch(() => ({ vouchers: [] })),
     gw<{ preferences?: GatewayNotificationPreferences | null }>(
       "/api/v1/notifications/preferences"

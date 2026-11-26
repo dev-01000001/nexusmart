@@ -12,6 +12,7 @@ import { AdminCarriersPanel } from "./AdminCarriersPanel";
 import { AdminCategoriesPanel } from "./AdminCategoriesPanel";
 import { AdminFeesPanel } from "./AdminFeesPanel";
 import { AdminPaymentMethodsPanel } from "./AdminPaymentMethodsPanel";
+import { AdminSearchReindexBlock } from "./AdminSearchReindexBlock";
 import { useAdminContext } from "./AdminShell";
 import { AdminStateGate, AdminSuspenseFallback } from "./AdminStateGate";
 import { AdminDrawer, SlidingTabBar } from "./AdminUi";
@@ -56,6 +57,7 @@ function ConfigWorkspace({
   const canReadCategories = roleHasCapability(role, "categories.read");
   const canReadUsers = roleHasCapability(role, "users.read");
   const canReadVouchers = roleHasCapability(role, "vouchers.read");
+  const canReindexSearch = roleHasCapability(role, "search.reindex");
 
   const tabs = useMemo<Array<{ id: ConfigTab; label: string; count?: number }>>(() => {
     const list: Array<{ id: ConfigTab; label: string; count?: number }> = [];
@@ -312,6 +314,13 @@ function ConfigWorkspace({
             </>
           )}
         </section>
+      )}
+
+      {canReindexSearch && (
+        <>
+          <hr className={styles.sectionRule} />
+          <AdminSearchReindexBlock />
+        </>
       )}
 
       <AdminDrawer

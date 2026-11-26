@@ -55,7 +55,7 @@ export const POST = apiRoute(async (req) => {
   if (!conversation) {
     throw new GatewayError("unavailable");
   }
-  if (conversation.shop_id && conversation.shop_id !== site.shopId) {
+  if (conversation.shop_id !== site.shopId) {
     throw new GatewayError("not_found");
   }
 

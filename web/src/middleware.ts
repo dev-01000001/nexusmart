@@ -148,7 +148,7 @@ export async function middleware(req: NextRequest) {
   // Direct external access to internal `/s` or `/s/...` is ALWAYS 404 on every host.
   if (isDirectInternalSitePath(pathname)) return notFoundResponse();
 
-  // Proxy trust rule: `TRUST_PROXY_HEADERS=true` honors x-forwarded-host, otherwise ONLY Host.
+  // Host is always authoritative (`x-forwarded-host` is never trusted, even when TRUST_PROXY_HEADERS=true).
   const rootDomain = getSiteRootDomain();
   const hostClass = classifyHost(resolveRequestHost(req.headers, req.nextUrl.host), rootDomain);
 
@@ -164,9 +164,20 @@ export async function middleware(req: NextRequest) {
     // Seller/admin pages + APIs stay 404 on site & custom hosts without calling backend.
     if (isBlockedSitePath(pathname)) return notFoundResponse();
 
+    const clientIp = resolveForwardedClientIp(req.headers);
     const lookup = await publishedSiteHostCache.resolve(hostClass.hostname, (h) =>
-      lookupPublishedSiteHost(h, trace)
+      lookupPublishedSiteHost(h, trace, clientIp)
     );
+    if (lookup.status === "error") {
+      return new NextResponse("Hệ thống đang tạm bận, vui lòng thử lại sau ít phút.", {
+        status: 503,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Retry-After": "5",
+          "Cache-Control": "no-store",
+        },
+      });
+    }
     // 404 BEFORE any rewrite (prevents host cache poisoning & hides draft/suspended/unknown sites).
     if (lookup.status !== "found") return notFoundResponse();
 
@@ -222,9 +233,12 @@ export const config = {
   runtime: "nodejs",
   matcher: [
     /*
-     * Match pages, `/api/**`, `/robots.txt`, and `/sitemap.xml` so multi-tenant host isolation
-     * runs before any route handler. Excludes Next internals and static public media/assets.
+     * Match every app page, `/api/**`, `/s/**`, `/seller/**`, `/admin/**`, `/san-pham/**`,
+     * `/robots.txt`, and `/sitemap.xml` (including paths ending in static suffixes such as
+     * `.json`/`.js`) so multi-tenant host isolation runs before any route handler.
+     * Excludes ONLY Next internals (`_next/static/*` without traversal, `_next/image`), app
+     * icons (`favicon.ico`, `icon.svg`), and real static files under `web/public`.
      */
-    "/((?!_next/static|_next/image|favicon\\.ico|products/|models/|banners/|videos/|atmosphere/|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico|mp4|webm|css|js|map|woff2?|ttf|json)$).*)",
+    "/((?!_next/static/(?!.*(?:\\.\\.|%2[eE]|%2[fF]|%5[cC]|\\\\))|_next/image$|favicon\\.ico$|icon\\.svg$|media-manifest\\.json$|(?:products|models|banners|atmosphere)/[a-z0-9][a-z0-9_-]*\\.(?:png|jpg|jpeg|gif|webp|webm)$).*)",
   ],
 };

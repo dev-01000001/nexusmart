@@ -99,6 +99,33 @@
   line-height: 1.5;
 }
 
+.itemsErrorBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: var(--radius-control);
+  background: var(--pill-negative-bg);
+  color: var(--pill-negative-ink);
+  font-size: var(--fs-small);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.itemsNoticeBanner {
+  min-width: 0;
+  padding: 10px 14px;
+  border-radius: var(--radius-control);
+  background: var(--pill-warning-bg);
+  color: var(--pill-warning-ink);
+  font-size: var(--fs-small);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .discountTag {
   font-size: var(--fs-small);
   color: var(--pill-positive-ink);

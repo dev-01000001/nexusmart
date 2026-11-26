@@ -1,6 +1,14 @@
 "use client";
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { usePathname } from "next/navigation";
 import { SESSION_EXPIRED_EVENT, api } from "@/lib/api";
 import type { Role, SessionUser } from "@/lib/server/session";
@@ -46,16 +54,25 @@ export function SessionProvider({
   const pathname = usePathname();
   const [user, setUser] = useState<SessionUser | null>(initialUser);
   const [loading, setLoading] = useState(false);
+  const expiringRef = useRef(false);
 
   // Sync client state whenever the server re-renders RootLayout (e.g. after router.refresh()).
   useEffect(() => {
     setUser(initialUser);
   }, [initialUser]);
 
+  useEffect(() => {
+    if (user?.id) {
+      expiringRef.current = false;
+    }
+  }, [user?.id]);
+
   // Clear local session state when an authenticated API call fails after single-flight refresh.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const onExpired = () => {
+      if (expiringRef.current) return;
+      expiringRef.current = true;
       setUser(null);
       void fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
       const cleanPath = normalizeRoutePathname(pathname);

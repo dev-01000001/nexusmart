@@ -1,7 +1,10 @@
 import { GatewayError } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import { apiRoute } from "@/lib/server/http";
-import type { GwOrderShipment, GwSellerOrder } from "@/features/seller/sellerApiTypes";
+import {
+  normalizeSellerShipmentResponse,
+  type GwSellerOrder,
+} from "@/features/seller/sellerApiTypes";
 import { assertSellerSession, assertValidId } from "@/features/seller/sellerServer";
 
 interface RouteCtx {
@@ -24,12 +27,9 @@ export const GET = apiRoute<RouteCtx>(async (req, ctx) => {
   const direction =
     rawDirection === "FORWARD" || rawDirection === "RETURN" ? rawDirection : undefined;
 
-  const data = await gw<{ shipment: GwOrderShipment | null }>(
-    `/api/v1/shipping/shipments/${encodeURIComponent(orderId)}`,
-    { query: { direction } }
-  );
-  return Response.json(
-    { shipment: data.shipment ?? null },
-    { headers: { "Cache-Control": "no-store" } }
-  );
+  const data = await gw<unknown>(`/api/v1/shipping/shipments/${encodeURIComponent(orderId)}`, {
+    query: { direction },
+  });
+  const normalized = normalizeSellerShipmentResponse(data);
+  return Response.json(normalized, { headers: { "Cache-Control": "no-store" } });
 });

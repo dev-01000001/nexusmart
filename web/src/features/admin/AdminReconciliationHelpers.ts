@@ -1,10 +1,77 @@
 // Pure validation helpers for Admin Reconciliation, Refunds & Needs-Review Orders (/admin/doi-soat).
 // Zero I/O, zero DOM, safe for route handlers, client components, and Node tests.
 import type { GatewayReconciliationAction } from "../../lib/gateway-types.ts";
+import {
+  isAmbiguousCheckoutSubmitError,
+  resolveStableReferenceKey,
+  type StableReferenceCache,
+} from "../checkout/helpers.ts";
 import type { ValidationResult } from "./adminComplaintsTypes.ts";
 import { isValidAdminPathId } from "./AdminReturnsHelpers.ts";
 
+export type { StableReferenceCache };
+
 const IDEMPOTENCY_KEY_RE = /^[a-zA-Z0-9._:-]{4,128}$/;
+
+/**
+ * Builds a deterministic fingerprint for an admin money operation payload so the pinned
+ * `Idempotency-Key` stays identical across retries of the same operation and rotates as soon
+ * as any field changes.
+ */
+export function buildAdminMoneyFingerprint(
+  scope: string,
+  payload: Record<string, string | number | boolean | null | undefined>
+): string {
+  const sortedEntries = Object.keys(payload)
+    .sort()
+    .map((key) => {
+      const raw = payload[key];
+      const normalized = typeof raw === "string" ? raw.trim() : (raw ?? null);
+      return [key, normalized] as const;
+    });
+  return JSON.stringify([scope.trim(), sortedEntries]);
+}
+
+/**
+ * Returns true ONLY when the server definitively rejected the money mutation with a terminal 4xx
+ * (e.g. 400/401/403/404/409 non-ABORTED/422), meaning no partial state is in flight and a fresh
+ * `Idempotency-Key` should be minted on the next attempt. Ambiguous outcomes (network failure,
+ * 5xx, 499, 408, 429, 409 ABORTED) return false so the caller keeps the pinned key.
+ */
+export function isDefinitiveAdminMoneyError(err: unknown): boolean {
+  if (isAmbiguousCheckoutSubmitError(err)) {
+    return false;
+  }
+  if (!err || typeof err !== "object") {
+    return false;
+  }
+  const status = (err as { status?: unknown }).status;
+  if (typeof status !== "number" || !Number.isFinite(status)) {
+    return false;
+  }
+  return status >= 400 && status < 500 && status !== 408 && status !== 429 && status !== 499;
+}
+
+export function resolveAdminMoneyIdempotencyKey(input: {
+  prefix: string;
+  fingerprint: string;
+  cache: StableReferenceCache | null;
+  uuidFn?: () => string;
+}): { key: string; cache: StableReferenceCache | null } {
+  return resolveStableReferenceKey({
+    prefix: input.prefix,
+    fingerprint: input.fingerprint,
+    cache: input.cache,
+    uuidFn: input.uuidFn,
+  });
+}
+
+export function nextAdminMoneyIdempotencyCacheAfterError(
+  cache: StableReferenceCache | null,
+  err: unknown
+): StableReferenceCache | null {
+  return isDefinitiveAdminMoneyError(err) ? null : cache;
+}
 
 export const RECON_QUEUE_ACTIONS: readonly GatewayReconciliationAction[] = [
   "ASSIGN",

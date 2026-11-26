@@ -1,7 +1,15 @@
 // Run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/features/admin/adminComplaints.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { getAdminOrderStatusMeta } from "./adminApiTypes.ts";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  formatAdminOrderPaymentDisplay,
+  getAdminOrderStatusMeta,
+} from "./adminApiTypes.ts";
+import { getAdminOrderStatusMeta as getAdminOrderStatusMetaFromTypes } from "./types.ts";
+import { GATEWAY_ORDER_STATUS_LABELS } from "../../lib/format.ts";
 import { localVnInputToIso } from "./adminMeta.ts";
 import {
   canModifyUserAccount,
@@ -391,10 +399,10 @@ test("canModifyUserAccount blocks self-lock and self-role edits while permitting
   assert.deepEqual(otherUser, { allowed: true });
 });
 
-test("getAdminOrderStatusMeta localizes every proto OrderStatus enum value into Vietnamese", () => {
+test("getAdminOrderStatusMeta localizes every proto OrderStatus enum value into Vietnamese and matches GATEWAY_ORDER_STATUS_LABELS", () => {
   const expected = {
     PENDING: { label: "Chờ thanh toán", tone: "warning" },
-    CONFIRMED: { label: "Chờ xác nhận", tone: "warning" },
+    CONFIRMED: { label: "Đã xác nhận", tone: "warning" },
     PREPARING: { label: "Đang chuẩn bị", tone: "neutral" },
     SHIPPING: { label: "Đang giao", tone: "neutral" },
     DELIVERED: { label: "Đã giao", tone: "positive" },
@@ -416,6 +424,19 @@ test("getAdminOrderStatusMeta localizes every proto OrderStatus enum value into 
       want,
       `prefixed ORDER_STATUS_${code}`
     );
+    assert.deepEqual(
+      getAdminOrderStatusMetaFromTypes(code),
+      want,
+      `types.ts getAdminOrderStatusMeta(${code}) must share canonical mapping`
+    );
+  }
+
+  for (const [code, canonicalLabel] of Object.entries(GATEWAY_ORDER_STATUS_LABELS)) {
+    assert.equal(
+      getAdminOrderStatusMeta(code).label,
+      canonicalLabel,
+      `status ${code} must match GATEWAY_ORDER_STATUS_LABELS`
+    );
   }
 
   assert.deepEqual(getAdminOrderStatusMeta("return_rejected"), {
@@ -423,6 +444,124 @@ test("getAdminOrderStatusMeta localizes every proto OrderStatus enum value into 
     tone: "negative",
   });
   assert.deepEqual(getAdminOrderStatusMeta(""), { label: "Đang xử lý", tone: "neutral" });
+});
+
+test("formatAdminOrderPaymentDisplay renders Vietnamese COD and online payment labels using shared getPaymentStatusInfo", () => {
+  // Real gateway JSON order shapes after main + phase-0b merge:
+  // New COD order has status=CONFIRMED, payment_method=COD, payment_status=PENDING
+  assert.equal(
+    formatAdminOrderPaymentDisplay({
+      status: "CONFIRMED",
+      payment_method: "COD",
+      payment_status: "PENDING",
+    }),
+    "Thanh toán khi nhận hàng (COD) (Thu hộ khi giao)"
+  );
+
+  // Cancelled COD order has status=CANCELLED, payment_status=CANCELLED
+  assert.equal(
+    formatAdminOrderPaymentDisplay({
+      status: "CANCELLED",
+      payment_method: "COD",
+      payment_status: "CANCELLED",
+    }),
+    "Thanh toán khi nhận hàng (COD) (Không thu hộ)"
+  );
+
+  // Delivered COD order
+  assert.equal(
+    formatAdminOrderPaymentDisplay({
+      status: "DELIVERED",
+      payment_method: "COD",
+      payment_status: "PENDING",
+    }),
+    "Thanh toán khi nhận hàng (COD) (Đã thu hộ COD)"
+  );
+
+  // COD RETURN_REQUESTED (already delivered & collected) and RETURNED states
+  assert.equal(
+    formatAdminOrderPaymentDisplay({
+      status: "RETURN_REQUESTED",
+      payment_method: "COD",
+      payment_status: "PENDING",
+    }),
+    "Thanh toán khi nhận hàng (COD) (Đã thu hộ COD)"
+  );
+  assert.equal(
+    formatAdminOrderPaymentDisplay({
+      status: "RETURNED",
+      payment_method: "COD",
+      payment_status: "SUCCEEDED",
+    }),
+    "Thanh toán khi nhận hàng (COD) (Đã thu hộ COD)"
+  );
+  assert.equal(
+    formatAdminOrderPaymentDisplay({
+      status: "RETURNED",
+      payment_method: "COD",
+      payment_status: "CANCELLED",
+    }),
+    "Thanh toán khi nhận hàng (COD) (Không thu hộ)"
+  );
+  assert.equal(
+    formatAdminOrderPaymentDisplay({
+      status: "RETURNED",
+      payment_method: "COD",
+      payment_status: "REFUNDED",
+    }),
+    "Thanh toán khi nhận hàng (COD) (Đã hoàn tiền)"
+  );
+
+  // VietQR pending & paid
+  assert.equal(
+    formatAdminOrderPaymentDisplay({
+      status: "PENDING",
+      payment_method: "VIETQR",
+      payment_status: "PENDING",
+    }),
+    "Chuyển khoản VietQR (Chờ thanh toán)"
+  );
+  assert.equal(
+    formatAdminOrderPaymentDisplay({
+      status: "CONFIRMED",
+      payment_method: "VIETQR",
+      payment_status: "SUCCEEDED",
+    }),
+    "Chuyển khoản VietQR (Đã thanh toán)"
+  );
+});
+
+test("every shared.tableWrap across admin has a paired shared.mobileList so 390px viewports never lose tables", () => {
+  const webSrc = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+  const roots = [resolve(webSrc, "features/admin"), resolve(webSrc, "app/(admin)")];
+
+  const tsxFiles = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir)) {
+      const full = join(dir, entry);
+      const st = statSync(full);
+      if (st.isDirectory()) walk(full);
+      else if (entry.endsWith(".tsx")) tsxFiles.push(full);
+    }
+  };
+  for (const r of roots) walk(r);
+
+  assert.ok(tsxFiles.length > 0, "expected admin .tsx files");
+
+  const uncovered = [];
+  for (const file of tsxFiles) {
+    const src = readFileSync(file, "utf8");
+    const tableWrapCount = (src.match(/shared\.tableWrap\b/g) ?? []).length;
+    const mobileListCount = (src.match(/shared\.mobileList\b/g) ?? []).length;
+    if (tableWrapCount !== mobileListCount) {
+      uncovered.push({ file, tableWrapCount, mobileListCount });
+    }
+  }
+  assert.deepEqual(
+    uncovered,
+    [],
+    `Found admin files where shared.tableWrap has no paired shared.mobileList: ${JSON.stringify(uncovered)}`
+  );
 });
 
 test("localVnInputToIso converts UTC+7 datetime-local inputs to UTC ISO timestamps", () => {

@@ -3,10 +3,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   backendStatusesFor,
+  countOrdersByBackendStatus,
+  filterOrdersByBackendStatus,
   mapGatewayOrder,
   mapOrderStatus,
   mapPaymentStatus,
 } from "./orderView.ts";
+import {
+  getOrderStatusInfo,
+  getPaymentStatusInfo,
+  getTimelineEventTitle,
+} from "./orderMeta.ts";
 
 const lookups = {
   product: (id) =>
@@ -89,7 +96,7 @@ test("maps a COD order with catalog presentation data", () => {
   assert.equal(v.isPaid, false);
   assert.equal(v.shopName, "Xưởng Dệt Bạch Đằng");
   assert.equal(v.shopSlug, "xuong-det-bach-dang");
-  assert.equal(v.carrier, "GHN");
+  assert.equal(v.carrier, "Giao Hàng Nhanh (GHN)");
   assert.equal(v.shippingAddress, "Số 248 Võ Văn Tần, Phường Xuân Hòa, Thành phố Hồ Chí Minh");
   assert.deepEqual(v.items[0], {
     skuCode: "BD-AT01-TRANG-L",
@@ -239,4 +246,366 @@ test("preserves sales_channel and storefront_shop_id with legacy MARKETPLACE def
   assert.equal(storefront.sales_channel, "STOREFRONT");
   assert.equal(storefront.storefrontShopId, "shop-1");
   assert.equal(storefront.storefront_shop_id, "shop-1");
+});
+
+test("maps real gateway COD payment_status (PENDING/CANCELLED/DELIVERED), carriers (GHN/GHTK/mock_express), and shared labels", () => {
+  // Real gateway COD checkout creates status=CONFIRMED, payment_status=PENDING (checkout.go:460-462)
+  const codNew = mapGatewayOrder(
+    gwOrder({
+      status: "CONFIRMED",
+      payment_method: "COD",
+      payment_status: "PENDING",
+      carrier_code: "ghtk",
+    }),
+    lookups
+  );
+  assert.equal(codNew.paymentStatus, "cod_cho_thu");
+  assert.equal(codNew.paymentDueAt, undefined);
+  assert.equal(codNew.isPaid, false);
+  assert.equal(codNew.carrier, "GHTK");
+  assert.deepEqual(
+    getPaymentStatusInfo(codNew.paymentStatusRaw, codNew.paymentMethodRaw, codNew.backendStatus),
+    { label: "Thu hộ khi giao", tone: "neutral" }
+  );
+  assert.equal(getOrderStatusInfo(codNew.backendStatus).label, "Đã xác nhận");
+
+  // Real gateway cancelled COD sets payment_status=CANCELLED (postgres.go:1418-1425)
+  const codCancelled = mapGatewayOrder(
+    gwOrder({
+      status: "CANCELLED",
+      payment_method: "COD",
+      payment_status: "CANCELLED",
+      carrier_code: "mock_express",
+    }),
+    lookups
+  );
+  assert.equal(codCancelled.paymentStatus, undefined);
+  assert.equal(codCancelled.carrier, "Chuyển phát Nexus");
+  assert.deepEqual(
+    getPaymentStatusInfo(
+      codCancelled.paymentStatusRaw,
+      codCancelled.paymentMethodRaw,
+      codCancelled.backendStatus
+    ),
+    { label: "Không thu hộ", tone: "neutral" }
+  );
+
+  // Real gateway delivered/completed COD + GHN carrier label
+  const codCompleted = mapGatewayOrder(
+    gwOrder({
+      status: "COMPLETED",
+      payment_method: "COD",
+      payment_status: "PENDING",
+      carrier_code: "ghn",
+    }),
+    lookups
+  );
+  assert.equal(codCompleted.isPaid, true);
+  assert.equal(codCompleted.carrier, "Giao Hàng Nhanh (GHN)");
+  assert.equal(getOrderStatusInfo(codCompleted.backendStatus).label, "Hoàn tất");
+  assert.deepEqual(
+    getPaymentStatusInfo(
+      codCompleted.paymentStatusRaw,
+      codCompleted.paymentMethodRaw,
+      codCompleted.backendStatus
+    ),
+    { label: "Đã thu hộ COD", tone: "pos" }
+  );
+
+  // Fallback carrier code is hidden from buyer UI
+  const fallbackCarrier = mapGatewayOrder(gwOrder({ carrier_code: "fallback" }), lookups);
+  assert.equal(fallbackCarrier.carrier, undefined);
+
+  // RETURNED and SHIPPING use unified GATEWAY_ORDER_STATUS_LABELS
+  assert.equal(getOrderStatusInfo("RETURNED").label, "Đã trả hàng");
+  assert.equal(getOrderStatusInfo("SHIPPING").label, "Đang giao");
+  assert.equal(getOrderStatusInfo("DELIVERED").label, "Đã giao");
+});
+
+test("countOrdersByBackendStatus and filterOrdersByBackendStatus separate PENDING from CONFIRMED without double-counting", () => {
+  const orders = [
+    mapGatewayOrder(
+      gwOrder({
+        id: "o-pending-qr",
+        status: "PENDING",
+        payment_method: "VIETQR",
+        payment_id: "pay-1",
+        payment_status: "PENDING",
+      }),
+      lookups
+    ),
+    mapGatewayOrder(
+      gwOrder({
+        id: "o-confirmed-cod",
+        status: "CONFIRMED",
+        payment_method: "COD",
+        payment_status: "PENDING",
+      }),
+      lookups
+    ),
+    mapGatewayOrder(gwOrder({ id: "o-delivered", status: "DELIVERED" }), lookups),
+    mapGatewayOrder(gwOrder({ id: "o-completed", status: "COMPLETED" }), lookups),
+    mapGatewayOrder(gwOrder({ id: "o-returned", status: "RETURNED" }), lookups),
+  ];
+
+  const counts = countOrdersByBackendStatus(orders);
+  assert.equal(counts[""], 5);
+  assert.equal(counts.PENDING, 1);
+  assert.equal(counts.CONFIRMED, 1);
+  assert.equal(counts.DELIVERED, 1);
+  assert.equal(counts.COMPLETED, 1);
+  assert.equal(counts.RETURNED, 1);
+  assert.equal(counts.RETURN_REQUESTED, 0);
+
+  // Sum of individual status buckets equals total (zero double-counting)
+  const bucketSum =
+    counts.PENDING +
+    counts.CONFIRMED +
+    counts.PREPARING +
+    counts.SHIPPING +
+    counts.DELIVERED +
+    counts.COMPLETED +
+    counts.RETURN_REQUESTED +
+    counts.RETURNED +
+    counts.CANCELLED;
+  assert.equal(bucketSum, counts[""]);
+
+  assert.deepEqual(
+    filterOrdersByBackendStatus(orders, "PENDING").map((o) => o.id),
+    ["o-pending-qr"]
+  );
+  assert.deepEqual(
+    filterOrdersByBackendStatus(orders, "CONFIRMED").map((o) => o.id),
+    ["o-confirmed-cod"]
+  );
+  assert.deepEqual(
+    filterOrdersByBackendStatus(orders, "COMPLETED").map((o) => o.id),
+    ["o-completed"]
+  );
+  assert.deepEqual(
+    filterOrdersByBackendStatus(orders, "RETURNED").map((o) => o.id),
+    ["o-returned"]
+  );
+});
+
+test("COD payment status labels accurately reflect RETURN_REQUESTED and RETURNED states", () => {
+  // Real gateway COD order in RETURN_REQUESTED (only allowed from DELIVERED -> cash already collected)
+  const codReturnRequested = mapGatewayOrder(
+    gwOrder({
+      status: "RETURN_REQUESTED",
+      payment_method: "COD",
+      payment_status: "PENDING",
+    }),
+    lookups
+  );
+  assert.equal(codReturnRequested.paymentStatus, "da_thanh_toan");
+  assert.equal(codReturnRequested.isPaid, true);
+  assert.deepEqual(
+    getPaymentStatusInfo(
+      codReturnRequested.paymentStatusRaw,
+      codReturnRequested.paymentMethodRaw,
+      codReturnRequested.backendStatus
+    ),
+    { label: "Đã thu hộ COD", tone: "pos" }
+  );
+
+  // Legacy COD_PENDING in RETURN_REQUESTED
+  assert.equal(mapPaymentStatus("COD_PENDING", "COD", "RETURN_REQUESTED"), "da_thanh_toan");
+  assert.deepEqual(getPaymentStatusInfo("COD_PENDING", "COD", "RETURN_REQUESTED"), {
+    label: "Đã thu hộ COD",
+    tone: "pos",
+  });
+
+  // Post-delivery returned COD where COD settlement already succeeded (awaiting bank refund)
+  const codReturnedCollected = mapGatewayOrder(
+    gwOrder({
+      status: "RETURNED",
+      payment_method: "COD",
+      payment_status: "SUCCEEDED",
+    }),
+    lookups
+  );
+  assert.equal(codReturnedCollected.paymentStatus, "da_thanh_toan");
+  assert.equal(codReturnedCollected.isPaid, true);
+  assert.deepEqual(
+    getPaymentStatusInfo(
+      codReturnedCollected.paymentStatusRaw,
+      codReturnedCollected.paymentMethodRaw,
+      codReturnedCollected.backendStatus
+    ),
+    { label: "Đã thu hộ COD", tone: "pos" }
+  );
+
+  // Forward delivery failure SHIPPING -> RETURNED sets payment_status = CANCELLED (never collected)
+  const codReturnedFailedDelivery = mapGatewayOrder(
+    gwOrder({
+      status: "RETURNED",
+      payment_method: "COD",
+      payment_status: "CANCELLED",
+    }),
+    lookups
+  );
+  assert.equal(codReturnedFailedDelivery.paymentStatus, undefined);
+  assert.equal(codReturnedFailedDelivery.isPaid, false);
+  assert.deepEqual(
+    getPaymentStatusInfo(
+      codReturnedFailedDelivery.paymentStatusRaw,
+      codReturnedFailedDelivery.paymentMethodRaw,
+      codReturnedFailedDelivery.backendStatus
+    ),
+    { label: "Không thu hộ", tone: "neutral" }
+  );
+
+  // Post-delivery returned COD after bank refund finished
+  const codReturnedRefunded = mapGatewayOrder(
+    gwOrder({
+      status: "RETURNED",
+      payment_method: "COD",
+      payment_status: "REFUNDED",
+    }),
+    lookups
+  );
+  assert.equal(codReturnedRefunded.paymentStatus, "da_hoan_tien");
+  assert.deepEqual(
+    getPaymentStatusInfo(
+      codReturnedRefunded.paymentStatusRaw,
+      codReturnedRefunded.paymentMethodRaw,
+      codReturnedRefunded.backendStatus
+    ),
+    { label: "Đã hoàn tiền", tone: "neutral" }
+  );
+});
+
+test("timeline titles distinguish switched-to-COD confirmations and shipment creation events for both buyer and seller", () => {
+  // Real gateway JSON for ZaloPay -> COD switch followed by seller confirm and shipment creation
+  const switchedCodOrder = gwOrder({
+    status: "PREPARING",
+    payment_method: "COD",
+    payment_status: "PENDING",
+    carrier_code: "ghn",
+    tracking_code: "GHN-20261126-001",
+    timeline: [
+      {
+        id: "t-1",
+        from_status: "",
+        to_status: "PENDING",
+        actor_role: "buyer",
+        note: "Order created awaiting payment",
+        created_at: "2026-11-26T02:00:00Z",
+      },
+      {
+        id: "t-2",
+        from_status: "PENDING",
+        to_status: "CONFIRMED",
+        actor_role: "buyer",
+        note: "Switched payment method from ZALOPAY to COD; order confirmed",
+        created_at: "2026-11-26T02:03:00Z",
+      },
+      {
+        id: "t-3",
+        from_status: "CONFIRMED",
+        to_status: "PREPARING",
+        actor_role: "seller",
+        note: "Seller confirmed order and began preparation",
+        created_at: "2026-11-26T02:05:00Z",
+      },
+      {
+        id: "t-4",
+        from_status: "PREPARING",
+        to_status: "PREPARING",
+        actor_role: "seller",
+        note: "Shipment created via ghn (tracking: GHN-20261126-001)",
+        created_at: "2026-11-26T02:06:00Z",
+      },
+    ],
+  });
+
+  // Seller / shared getTimelineEventTitle
+  assert.equal(
+    getTimelineEventTitle(switchedCodOrder.timeline[1], switchedCodOrder.payment_method),
+    "Đơn hàng đã xác nhận"
+  );
+  // Even without payment_method arg, switch-to-COD note prevents misleading "Thanh toán thành công"
+  assert.equal(getTimelineEventTitle(switchedCodOrder.timeline[1]), "Đơn hàng đã xác nhận");
+  // Even with empty note, payment_method="COD" prevents misleading "Thanh toán thành công"
+  assert.equal(
+    getTimelineEventTitle({ from_status: "PENDING", to_status: "CONFIRMED", note: "" }, "COD"),
+    "Đơn hàng đã xác nhận"
+  );
+  assert.equal(
+    getTimelineEventTitle(switchedCodOrder.timeline[2], switchedCodOrder.payment_method),
+    "Gian hàng đang chuẩn bị đơn hàng"
+  );
+  assert.equal(
+    getTimelineEventTitle(switchedCodOrder.timeline[3], switchedCodOrder.payment_method),
+    "Đã tạo vận đơn"
+  );
+
+  // Async shipment created and queued/failed distinction
+  assert.equal(
+    getTimelineEventTitle(
+      {
+        from_status: "PREPARING",
+        to_status: "PREPARING",
+        note: "Shipment created asynchronously via ghtk (tracking: GHTK-99)",
+      },
+      "COD"
+    ),
+    "Đã tạo vận đơn"
+  );
+  assert.equal(
+    getTimelineEventTitle(
+      {
+        from_status: "PREPARING",
+        to_status: "PREPARING",
+        note: "Shipment creation queued for async retry",
+      },
+      "COD"
+    ),
+    "Gian hàng đang chuẩn bị đơn hàng"
+  );
+
+  // Buyer mapGatewayOrder timeline
+  const buyerView = mapGatewayOrder(switchedCodOrder, lookups);
+  assert.equal(buyerView.timeline[1].title, "Đơn hàng đã xác nhận");
+  assert.match(buyerView.timeline[1].note, /COD/);
+  assert.doesNotMatch(buyerView.timeline[1].note, /Thanh toán thành công/);
+  assert.equal(buyerView.timeline[2].title, "Gian hàng đã xác nhận");
+  assert.equal(buyerView.timeline[3].title, "Đã tạo vận đơn");
+  assert.match(buyerView.timeline[3].note, /GHN-20261126-001/);
+
+  // Online payment (VietQR / ZaloPay) keeps existing "Thanh toán thành công" titles
+  const paidOnline = gwOrder({
+    status: "CONFIRMED",
+    payment_method: "VIETQR",
+    payment_status: "SUCCEEDED",
+    timeline: [
+      {
+        id: "t-1",
+        from_status: "",
+        to_status: "PENDING",
+        actor_role: "buyer",
+        note: "Order created awaiting payment",
+        created_at: "2026-11-26T02:00:00Z",
+      },
+      {
+        id: "t-2",
+        from_status: "PENDING",
+        to_status: "CONFIRMED",
+        actor_role: "system",
+        note: "Payment succeeded",
+        created_at: "2026-11-26T02:02:00Z",
+      },
+    ],
+  });
+  assert.equal(
+    getTimelineEventTitle(paidOnline.timeline[1], paidOnline.payment_method),
+    "Thanh toán thành công · Đơn hàng đã xác nhận"
+  );
+  assert.equal(
+    getTimelineEventTitle(paidOnline.timeline[1], "ZALOPAY"),
+    "Thanh toán thành công · Đơn hàng đã xác nhận"
+  );
+  const buyerOnline = mapGatewayOrder(paidOnline, lookups);
+  assert.equal(buyerOnline.timeline[1].title, "Đã nhận thanh toán");
 });

@@ -224,6 +224,23 @@
   margin-top: 12px;
 }
 
+.reindexRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.reindexStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
 @media (max-width: 960px) {
   .configRow {
     grid-template-columns: minmax(0, 1fr);

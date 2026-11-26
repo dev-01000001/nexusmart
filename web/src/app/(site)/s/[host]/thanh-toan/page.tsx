@@ -5,9 +5,14 @@ import { notFound } from "next/navigation";
 import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import { getSession } from "@/lib/server/session";
-import { loadPublicSitePageBundle } from "@/lib/server/sites";
+import { loadPublicSitePageBundle, loadShopLiveFlashSales } from "@/lib/server/sites";
+import { STOREFRONT_CHANNEL } from "@/lib/server/storefront";
 import { buildSiteMetadata } from "@/lib/site/seo";
-import type { GatewayActiveShopDiscount, GatewayPaymentMethodConfig } from "@/lib/gateway-types";
+import type {
+  GatewayActiveShopDiscount,
+  GatewayFlashSale,
+  GatewayPaymentMethodConfig,
+} from "@/lib/gateway-types";
 import type { GwAddress, GwVoucher } from "@/features/commerce/types";
 import { loadSiteContext } from "@/features/site/siteContext.server";
 import { CheckoutClient } from "./CheckoutClient";
@@ -59,13 +64,15 @@ export default async function SiteCheckoutPage({ params }: PageProps) {
   let initialVouchers: GwVoucher[] = [];
   let initialPaymentMethods: GatewayPaymentMethodConfig[] = [];
   let initialShopDiscounts: GatewayActiveShopDiscount[] = [];
+  let initialFlashSales: GatewayFlashSale[] = [];
 
-  const [pmRes, sdRes] = await Promise.allSettled([
+  const [pmRes, sdRes, fsRes] = await Promise.allSettled([
     gw<{ methods?: GatewayPaymentMethodConfig[] }>("/api/v1/payment-methods", { auth: "none" }),
     gw<{ discounts?: GatewayActiveShopDiscount[] }>("/api/v1/shop-discounts/active", {
       auth: "none",
       query: { shop_id: shopId },
     }),
+    loadShopLiveFlashSales(shopId),
   ]);
   if (pmRes.status === "fulfilled" && Array.isArray(pmRes.value.methods)) {
     initialPaymentMethods = pmRes.value.methods;
@@ -73,12 +80,20 @@ export default async function SiteCheckoutPage({ params }: PageProps) {
   if (sdRes.status === "fulfilled" && Array.isArray(sdRes.value.discounts)) {
     initialShopDiscounts = sdRes.value.discounts;
   }
+  if (fsRes.status === "fulfilled" && fsRes.value.ok) {
+    initialFlashSales = fsRes.value.sales;
+  }
 
   if (session) {
     const [addrRes, vRes] = await Promise.allSettled([
       gw<{ addresses: GwAddress[] }>("/api/v1/users/me/addresses"),
       gw<{ vouchers: GwVoucher[] }>("/api/v1/vouchers", {
-        query: { shop_id: shopId, scope: "SHOP" },
+        query: {
+          shop_id: shopId,
+          scope: "SHOP",
+          sales_channel: STOREFRONT_CHANNEL,
+          storefront_shop_id: shopId,
+        },
       }),
     ]);
     if (addrRes.status === "fulfilled") initialAddresses = addrRes.value.addresses ?? [];
@@ -101,6 +116,7 @@ export default async function SiteCheckoutPage({ params }: PageProps) {
       initialVouchers={initialVouchers}
       initialPaymentMethods={initialPaymentMethods}
       initialShopDiscounts={initialShopDiscounts}
+      initialFlashSales={initialFlashSales}
       initialError={initialError}
       serverNowMs={Date.now()}
     />

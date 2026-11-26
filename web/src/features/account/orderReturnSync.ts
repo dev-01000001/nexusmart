@@ -1,172 +1,54 @@
-import type {
-  GatewayProductReview,
-  GatewayRefund,
-  GatewayReturnRequest,
-} from "@/lib/gateway-types";
-
-export interface OrderReturnEnvelope {
-  return_request?: GatewayReturnRequest | null;
-}
-
-export interface OrderRefundsEnvelope {
-  items?: GatewayRefund[] | null;
-  refunds?: GatewayRefund[] | null;
-}
-
-export interface OrderReviewsEnvelope {
-  reviews?: GatewayProductReview[] | null;
-}
+import type { GatewayReturnRequest } from "@/lib/gateway-types";
 
 /**
- * Shared gateway reader for `GET /api/v1/orders/{id}/return`.
- * Returns `null` when gateway responds with `not_found`, and rethrows other errors.
+ * Resolves a return request snapshot after a mutation: uses the inline snapshot when present,
+ * otherwise falls back to a GET read without turning a succeeded mutation into an error.
  */
-export async function fetchOrderReturnFromGateway(
-  orderId: string,
-  fetchPath: (path: string) => Promise<OrderReturnEnvelope>,
-  isNotFoundError: (err: unknown) => boolean
+export async function resolveReturnRequest(
+  inline: GatewayReturnRequest | null | undefined,
+  fetchFallback: () => Promise<{ return_request?: GatewayReturnRequest | null }>
 ): Promise<GatewayReturnRequest | null> {
+  if (inline) return inline;
   try {
-    const res = await fetchPath(`/api/v1/orders/${encodeURIComponent(orderId)}/return`);
-    return res?.return_request ?? null;
-  } catch (err) {
-    if (isNotFoundError(err)) {
-      return null;
-    }
-    throw err;
-  }
-}
-
-/**
- * Resolves the `return_request` snapshot to include in BFF `POST /api/orders/{id}/return`.
- * Uses the same GET reader when gateway POST omits `return_request`.
- * Swallows read failures so a successful return creation still responds 200 (client falls back to GET).
- */
-export async function resolvePostReturnRequest(opts: {
-  orderId: string;
-  inlineReturnRequest?: GatewayReturnRequest | null;
-  fetchOrderReturn: (orderId: string) => Promise<GatewayReturnRequest | null>;
-}): Promise<GatewayReturnRequest | null> {
-  if (opts.inlineReturnRequest) {
-    return opts.inlineReturnRequest;
-  }
-  try {
-    return (await opts.fetchOrderReturn(opts.orderId)) ?? null;
+    return (await fetchFallback())?.return_request ?? null;
   } catch {
     return null;
   }
 }
 
-/**
- * Client-side resolver after creating or mutating a return request (create / escalate / add evidence).
- * Uses inline `return_request` when present; otherwise falls back to `GET /api/orders/{id}/return`
- * without turning an already-succeeded mutation into an error if the fallback read fails.
- */
-export async function resolveClientReturnRequest(opts: {
-  inlineReturnRequest?: GatewayReturnRequest | null;
-  fetchFallback: () => Promise<OrderReturnEnvelope>;
-}): Promise<GatewayReturnRequest | null> {
-  if (opts.inlineReturnRequest) {
-    return opts.inlineReturnRequest;
-  }
-  try {
-    const res = await opts.fetchFallback();
-    return res?.return_request ?? null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Updates the local refund list after submitting a buyer refund bank account,
- * falling back to `GET /api/orders/{id}/refunds` if the mutation response omitted `refund`.
- */
-export async function resolveUpdatedRefunds(opts: {
-  refundId: string;
-  updatedRefund?: GatewayRefund | null;
-  currentRefunds: readonly GatewayRefund[];
-  fetchFallback: () => Promise<OrderRefundsEnvelope>;
-}): Promise<GatewayRefund[]> {
-  if (opts.updatedRefund) {
-    const updated = opts.updatedRefund;
-    let matched = false;
-    const next = opts.currentRefunds.map((rf) => {
-      if (rf.refund_id === opts.refundId) {
-        matched = true;
-        return updated;
-      }
-      return rf;
-    });
-    return matched ? next : [...next, updated];
-  }
-  try {
-    const res = await opts.fetchFallback();
-    const list = res?.items ?? res?.refunds;
-    if (Array.isArray(list)) {
-      return list;
-    }
-  } catch {
-    // Keep existing list if fallback read fails after a succeeded mutation.
-  }
-  return [...opts.currentRefunds];
-}
-
-/**
- * Upserts a newly submitted review into the local order reviews list without duplicates.
- */
-export function mergeSubmittedReview(
-  currentReviews: readonly GatewayProductReview[],
-  submittedReview: GatewayProductReview
-): GatewayProductReview[] {
+/** Replaces the first matching item in `items`, or appends `nextItem` when no match exists. */
+export function upsertItem<T>(
+  items: readonly T[],
+  nextItem: T,
+  matches: (existing: T) => boolean
+): T[] {
   let replaced = false;
-  const next = currentReviews.map((existing) => {
-    if (
-      (submittedReview.id && existing.id === submittedReview.id) ||
-      (submittedReview.order_item_id && existing.order_item_id === submittedReview.order_item_id)
-    ) {
+  const next = items.map((item) => {
+    if (matches(item)) {
       replaced = true;
-      return submittedReview;
+      return nextItem;
     }
-    return existing;
+    return item;
   });
-  return replaced ? next : [...next, submittedReview];
+  return replaced ? next : [...next, nextItem];
 }
 
 /**
- * Updates the local reviews list after submitting a product review,
- * falling back to `GET /api/orders/{id}/reviews` if the mutation response omitted `review`.
+ * Applies an inline mutated item into `current`, or falls back to refetching the list.
+ * Keeps `current` if the fallback read fails so a succeeded mutation is not lost.
  */
-export async function resolveUpdatedReviews(opts: {
-  submittedReview?: GatewayProductReview | null;
-  currentReviews: readonly GatewayProductReview[];
-  fetchFallback: () => Promise<OrderReviewsEnvelope>;
-}): Promise<GatewayProductReview[]> {
-  if (opts.submittedReview) {
-    return mergeSubmittedReview(opts.currentReviews, opts.submittedReview);
-  }
+export async function resolveListMutation<T>(
+  inlineItem: T | null | undefined,
+  current: readonly T[],
+  matches: (existing: T) => boolean,
+  fetchFallback: () => Promise<readonly T[] | null | undefined>
+): Promise<T[]> {
+  if (inlineItem) return upsertItem(current, inlineItem, matches);
   try {
-    const res = await opts.fetchFallback();
-    if (Array.isArray(res?.reviews)) {
-      return res.reviews;
-    }
+    const list = await fetchFallback();
+    if (Array.isArray(list)) return [...list];
   } catch {
     // Keep existing list if fallback read fails after a succeeded mutation.
   }
-  return [...opts.currentReviews];
-}
-
-/**
- * Reconciles a nullable server snapshot prop into client state on navigation or `router.refresh()`.
- * Resets unconditionally when `orderChanged` is true; on the same order, avoids clobbering
- * freshly-mutated client state with a transient `null` from a failed optional server sub-fetch.
- */
-export function reconcileServerSnapshot<T>(opts: {
-  orderChanged: boolean;
-  current: T | null;
-  incoming: T | null;
-}): T | null {
-  if (opts.orderChanged) {
-    return opts.incoming;
-  }
-  return opts.incoming ?? opts.current;
+  return [...current];
 }

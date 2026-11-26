@@ -1,8 +1,43 @@
-import { formatCarrierLabel, formatVnd } from "@/lib/format";
+import { formatCarrierLabel, formatVnd } from "../../lib/format.ts";
 
 export const MAX_COD_CSV_BYTES = 2 * 1024 * 1024;
 export const MAX_COD_CSV_ROWS = 5000;
 export const COD_RESULT_PAGE_SIZE = 50;
+
+export interface CodCarrierOption {
+  code: string;
+  label: string;
+}
+
+/**
+ * Fallback active carrier codes matching services/shipping/migrations/000003_shipping_ops.sql
+ * when the current admin role (e.g. accountant) has `reconciliation.write` without `carriers.read`.
+ */
+export const DEFAULT_COD_FALLBACK_CARRIER_CODES = ["ghn", "ghtk", "mock_express"] as const;
+
+const DEFAULT_COD_FALLBACK_CARRIER_NAMES: Record<
+  (typeof DEFAULT_COD_FALLBACK_CARRIER_CODES)[number],
+  string | undefined
+> = {
+  ghn: undefined,
+  ghtk: "Giao Hàng Tiết Kiệm (GHTK)",
+  mock_express: undefined,
+};
+
+export function buildCodCarrierOptions(
+  carriers?: readonly { carrier_code: string; name?: string | null }[]
+): CodCarrierOption[] {
+  if (carriers && carriers.length > 0) {
+    return carriers.map((c) => ({
+      code: c.carrier_code,
+      label: formatCarrierLabel(c.carrier_code, c.name),
+    }));
+  }
+  return DEFAULT_COD_FALLBACK_CARRIER_CODES.map((code) => ({
+    code,
+    label: formatCarrierLabel(code, DEFAULT_COD_FALLBACK_CARRIER_NAMES[code]),
+  }));
+}
 
 export function validateCodCsvFile(file: { name: string; size: number } | null | undefined): {
   error: string | null;

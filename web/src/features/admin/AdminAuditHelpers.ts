@@ -65,23 +65,73 @@ export function buildAuditLogsQueryParams(filters: AuditLogFilterInput): URLSear
 }
 
 export const ADMIN_AUDIT_ACTION_LABELS: Record<string, string> = {
+  // Real transactional audit actions written by services/user
   "admin.shop.review": "Thẩm định hồ sơ gian hàng",
-  "admin.shop.suspend": "Tạm ngưng gian hàng",
+  "admin.shop.suspend_request": "Đề xuất tạm ngưng gian hàng",
+  "admin.shop.suspend_approve": "Phê duyệt tạm ngưng gian hàng",
+  "admin.shop.suspend_reject": "Từ chối tạm ngưng gian hàng",
   "admin.shop.unsuspend": "Mở khóa gian hàng",
-  "admin.shop.bank.review": "Duyệt tài khoản ngân hàng gian hàng",
-  "admin.user.status": "Cập nhật trạng thái tài khoản",
-  "admin.user.role": "Thay đổi phân quyền tài khoản",
+  "admin.shop_bank_account.review": "Duyệt tài khoản ngân hàng gian hàng",
+  "admin.user.update_status": "Cập nhật trạng thái tài khoản",
+  "admin.user.update_role": "Thay đổi phân quyền tài khoản",
   "admin.staff.create": "Tạo tài khoản nhân viên nội bộ",
   "admin.site.suspend": "Tạm khóa site gian hàng",
   "admin.site.unsuspend": "Mở khóa site gian hàng",
   "site.save_draft": "Lưu bản nháp site",
   "site.publish": "Xuất bản site gian hàng",
   "site.rollback": "Khôi phục phiên bản site",
+  "site.apply_template": "Áp dụng mẫu giao diện site",
+  "site.domain.add": "Thêm tên miền riêng",
+  "site.domain.check": "Kiểm tra DNS tên miền riêng",
+  "site.domain.activated": "Kích hoạt tên miền riêng",
+  "site.domain.remove": "Gỡ tên miền riêng",
+  "seller.shop_bank_account.add": "Gian hàng thêm tài khoản ngân hàng",
+  "seller.shop_bank_account.verify_otp": "Gian hàng xác minh OTP ngân hàng",
+  "user.phone.verify_otp": "Người dùng xác minh SĐT",
+
+  // Real gateway middleware AdminAudit actions (`METHOD /api/v1/admin/...`)
+  "POST /api/v1/admin/approvals/refund/{id}/decide": "Phê duyệt lệnh hoàn tiền 2 người",
+  "POST /api/v1/admin/categories": "Tạo danh mục ngành hàng",
+  "PUT /api/v1/admin/categories/{id}": "Cập nhật danh mục ngành hàng",
+  "DELETE /api/v1/admin/categories/{id}": "Xóa danh mục ngành hàng",
+  "POST /api/v1/admin/fees/categories/{id}": "Cập nhật biểu phí ngành hàng",
+  "POST /api/v1/admin/products/{id}/review": "Kiểm duyệt sản phẩm",
+  "POST /api/v1/admin/banned-keywords": "Thêm từ khóa cấm",
+  "PUT /api/v1/admin/banned-keywords/{id}": "Cập nhật từ khóa cấm",
+  "DELETE /api/v1/admin/banned-keywords/{id}": "Xóa từ khóa cấm",
+  "POST /api/v1/admin/banned-keywords/preview": "Xem trước ảnh hưởng từ khóa cấm",
+  "POST /api/v1/admin/banned-keywords/rescan": "Quét lại sản phẩm theo từ khóa cấm",
+  "POST /api/v1/admin/vouchers": "Tạo voucher sàn",
+  "PUT /api/v1/admin/vouchers/{id}": "Cập nhật voucher sàn",
+  "PATCH /api/v1/admin/vouchers/{id}/status": "Đổi trạng thái voucher sàn",
+  "DELETE /api/v1/admin/vouchers/{id}": "Xóa voucher sàn",
+  "POST /api/v1/admin/flash-sales": "Mở khung giờ Flash sale",
+  "POST /api/v1/admin/flash-sales/{id}/end": "Kết thúc sớm khung giờ Flash sale",
+  "POST /api/v1/admin/flash-sale-items/{item_id}/approve": "Duyệt suất Flash sale",
+  "POST /api/v1/admin/coins/credit": "Cộng Xu thành viên",
+  "POST /api/v1/admin/orders/{id}/resolve-review": "Xử lý đơn cần rà soát",
+  "POST /api/v1/admin/returns/{id}/resolve": "Phân xử yêu cầu trả hàng / khiếu nại",
+  "PUT /api/v1/admin/payment-methods/{method}": "Cập nhật phương thức thanh toán",
+  "POST /api/v1/admin/fees/payment": "Cập nhật cấu hình phí thanh toán",
+  "POST /api/v1/admin/payments/{id}/refund": "Tạo lệnh hoàn tiền thủ công",
+  "POST /api/v1/admin/refunds/{id}/settle": "Tất toán chuyển khoản hoàn tiền",
+  "POST /api/v1/admin/payments/reconcile": "Chạy đối soát giao dịch",
+  "POST /api/v1/admin/reconciliation/cod/import": "Nhập tệp CSV đối soát COD",
+  "POST /api/v1/admin/reconciliation/queue/{id}/resolve": "Xử lý giao dịch không khớp",
+  "PUT /api/v1/admin/carriers/{code}": "Cập nhật hãng vận chuyển",
+  "POST /api/v1/admin/carriers/{code}/test": "Kiểm tra kết nối hãng vận chuyển",
+  "POST /api/v1/admin/search/reindex": "Đồng bộ lại chỉ mục tìm kiếm",
+
+  // Legacy dot-notation aliases preserved for historical log records
+  "admin.shop.suspend": "Tạm ngưng gian hàng",
+  "admin.shop.bank.review": "Duyệt tài khoản ngân hàng gian hàng",
+  "admin.user.status": "Cập nhật trạng thái tài khoản",
+  "admin.user.role": "Thay đổi phân quyền tài khoản",
   "admin.product.review": "Kiểm duyệt sản phẩm",
-  "admin.banned_keyword.create": "Thêm từ khoá cấm",
-  "admin.banned_keyword.update": "Cập nhật từ khoá cấm",
-  "admin.banned_keyword.delete": "Xóa từ khoá cấm",
-  "admin.banned_keyword.rescan": "Quét lại sản phẩm theo từ khoá cấm",
+  "admin.banned_keyword.create": "Thêm từ khóa cấm",
+  "admin.banned_keyword.update": "Cập nhật từ khóa cấm",
+  "admin.banned_keyword.delete": "Xóa từ khóa cấm",
+  "admin.banned_keyword.rescan": "Quét lại sản phẩm theo từ khóa cấm",
   "admin.return.resolve": "Phân xử yêu cầu trả hàng / khiếu nại",
   "admin.order.resolve_review": "Xử lý đơn cần rà soát",
   "admin.reconcile.run": "Chạy đối soát giao dịch",
@@ -102,7 +152,18 @@ export const ADMIN_AUDIT_ACTION_LABELS: Record<string, string> = {
 export function getAdminAuditActionLabelVi(action: string): string {
   const key = (action ?? "").trim();
   if (!key) return "Thao tác quản trị";
-  return ADMIN_AUDIT_ACTION_LABELS[key] ?? key;
+  const direct = ADMIN_AUDIT_ACTION_LABELS[key];
+  if (direct) return direct;
+
+  // Normalize extra spaces or lowercase HTTP method in `METHOD /api/v1/admin/...`
+  const routeMatch = /^([a-zA-Z]+)\s+(\/\S+)$/.exec(key);
+  if (routeMatch) {
+    const normalized = `${routeMatch[1].toUpperCase()} ${routeMatch[2]}`;
+    if (ADMIN_AUDIT_ACTION_LABELS[normalized]) {
+      return ADMIN_AUDIT_ACTION_LABELS[normalized];
+    }
+  }
+  return key;
 }
 
 export function filterAuditLogsClientSide(

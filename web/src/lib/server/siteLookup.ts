@@ -37,7 +37,8 @@ export function parsePublishedSiteHost(
 /** Uncached gateway lookup. Never throws: upstream failures resolve to `{ status: "error" }`. */
 export async function lookupPublishedSiteHost(
   hostname: string,
-  trace?: Pick<TraceContext, "traceparent" | "tracestate">
+  trace?: Pick<TraceContext, "traceparent" | "tracestate">,
+  clientIp?: string | null
 ): Promise<SiteHostLookupResult> {
   const traceparent = trace?.traceparent || generateTraceparent();
   try {
@@ -49,6 +50,7 @@ export async function lookupPublishedSiteHost(
           Accept: "application/json",
           traceparent,
           ...(trace?.tracestate ? { tracestate: trace.tracestate } : {}),
+          ...(clientIp ? { "X-Forwarded-For": clientIp } : {}),
         },
         cache: "no-store",
         signal: AbortSignal.timeout(SITE_LOOKUP_TIMEOUT_MS),

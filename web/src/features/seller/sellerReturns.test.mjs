@@ -1,19 +1,33 @@
 // Run: cd web && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/features/seller/sellerReturns.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { readBoundedBody } from "../../lib/server/proxy-security.ts";
 import {
+  SELLER_CHAT_READ_EVENT,
+  applySellerChatReadDelta,
   countPendingReturns,
+  extractSellerChatReadDelta,
   getNotificationCategoryLabel,
   getReturnStatusMeta,
+  markSellerConversationRead,
   normalizeAutoReplyConfig,
   normalizeProductReviewSummary,
   normalizeSellerNotification,
   normalizeSellerNotifications,
   normalizeSellerReturn,
   normalizeSellerReturns,
+  parseOptionalMarkReadBody,
+  shouldClearUnreadAfterReadSync,
   summarizeNotifications,
+  validateMarkReadPayload,
   validateRejectReason,
 } from "./sellerReturns.ts";
+import { normalizeReviewSummary } from "../assistant/assistantTypes.ts";
+
+const WEB_SRC = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
 test("normalizeSellerReturn parses valid payload, enforces integer VND, and sanitizes photos", () => {
   const result = normalizeSellerReturn({
@@ -251,4 +265,208 @@ test("normalizeProductReviewSummary and normalizeAutoReplyConfig handle ready an
   });
   assert.equal(autoReply.enabled, true);
   assert.equal(autoReply.message, "Cảm ơn bạn đã nhắn tin, shop sẽ phản hồi trong ít phút.");
+});
+
+test("normalizeProductReviewSummary preserves camelCase BFF output from normalizeReviewSummary(gatewayJson)", () => {
+  // Real gateway GET /api/v1/products/{id}/review-summary (handlers_assistant.go:631-645)
+  const gatewayReady = {
+    product_id: "11111111-1111-4111-8111-111111111111",
+    available: true,
+    review_count: 25,
+    min_reviews_required: 10,
+    average_rating: 4.7,
+    summary: "Chất vải mềm thoáng, giữ phom tốt sau khi giặt.",
+    pros: ["Vải mát", "Đường may chắc chắn"],
+    cons: ["Nên tăng 1 size nếu thích mặc rộng"],
+    ai_generated: true,
+    updated_at: "2026-11-25T09:15:00Z",
+  };
+  const bffReady = normalizeReviewSummary(gatewayReady, gatewayReady.product_id);
+  const clientReady = normalizeProductReviewSummary(bffReady, "fallback-id");
+  assert.equal(clientReady.product_id, gatewayReady.product_id);
+  assert.equal(clientReady.ready, true);
+  assert.equal(clientReady.review_count, 25);
+  assert.equal(clientReady.average_rating, 4.7);
+  assert.equal(clientReady.updated_at, "2026-11-25T09:15:00Z");
+  assert.equal(clientReady.summary, gatewayReady.summary);
+  assert.deepEqual(clientReady.pros, gatewayReady.pros);
+  assert.deepEqual(clientReady.cons, gatewayReady.cons);
+
+  // Unavailable summary with fallback copy must stay ready=false and keep actual reviewCount
+  const gatewayUnavailable = {
+    product_id: "22222222-2222-4222-8222-222222222222",
+    available: false,
+    review_count: 4,
+    min_reviews_required: 10,
+    average_rating: 4.5,
+    summary: "Chưa đủ đánh giá để tổng hợp tự động.",
+    pros: [],
+    cons: [],
+    ai_generated: false,
+    updated_at: "2026-11-25T09:20:00Z",
+  };
+  const bffUnavailable = normalizeReviewSummary(gatewayUnavailable, gatewayUnavailable.product_id);
+  const clientUnavailable = normalizeProductReviewSummary(bffUnavailable, "fallback-2");
+  assert.equal(clientUnavailable.ready, false);
+  assert.equal(clientUnavailable.review_count, 4);
+  assert.equal(clientUnavailable.product_id, gatewayUnavailable.product_id);
+});
+
+test("markSellerConversationRead falls back to REST POST when WebSocket is not open, and validateMarkReadPayload validates body", async () => {
+  const restCalls = [];
+  const wsFailed = await markSellerConversationRead({
+    conversationId: "conv-1",
+    lastReadSeq: 12,
+    messageId: "msg-12",
+    sendWsRead: () => false,
+    postRestRead: async (convId, body) => {
+      restCalls.push({ convId, body });
+      return { conversation_id: convId, last_read_seq: 12, unread_count: 0 };
+    },
+  });
+  assert.equal(wsFailed, "rest");
+  assert.deepEqual(restCalls, [
+    { convId: "conv-1", body: { last_read_seq: 12, message_id: "msg-12" } },
+  ]);
+
+  // When WS is open and sendRead returns true, do not send duplicate REST call
+  const wsOk = await markSellerConversationRead({
+    conversationId: "conv-1",
+    lastReadSeq: 13,
+    messageId: "msg-13",
+    sendWsRead: () => true,
+    postRestRead: async (convId, body) => {
+      restCalls.push({ convId, body });
+    },
+  });
+  assert.equal(wsOk, "ws");
+  assert.equal(restCalls.length, 1);
+
+  assert.deepEqual(validateMarkReadPayload({ last_read_seq: 8, message_id: "msg-8" }), {
+    ok: true,
+    value: { last_read_seq: 8, message_id: "msg-8" },
+  });
+  assert.deepEqual(validateMarkReadPayload({}), { ok: true, value: {} });
+  assert.equal(validateMarkReadPayload({ last_read_seq: -1 }).ok, false);
+  assert.equal(validateMarkReadPayload("invalid").ok, false);
+});
+
+test("parseOptionalMarkReadBody accepts empty HTTP/2 JSON requests without Content-Length and rejects malformed JSON", async () => {
+  // Chunked/HTTP2 POST with Content-Type: application/json and empty body (content-length === null)
+  const emptyJsonReq = new Request("http://localhost/api/seller/chat/conversations/conv-1/read", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(emptyJsonReq.headers.get("content-length"), null);
+  const emptyBounded = await readBoundedBody(emptyJsonReq);
+  assert.equal(emptyBounded.ok, true);
+  if (emptyBounded.ok) {
+    assert.deepEqual(parseOptionalMarkReadBody(emptyBounded.body), { ok: true, value: {} });
+  }
+
+  // Whitespace-only body is also treated as empty optional body
+  assert.deepEqual(parseOptionalMarkReadBody(new TextEncoder().encode("   \n\t ")), {
+    ok: true,
+    value: {},
+  });
+
+  // Real gateway payload shape from POST /api/v1/chat/conversations/{id}/read
+  const realReq = new Request("http://localhost/api/seller/chat/conversations/conv-1/read", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ last_read_seq: 4, message_id: "msg-4" }),
+  });
+  const realBounded = await readBoundedBody(realReq);
+  assert.equal(realBounded.ok, true);
+  if (realBounded.ok) {
+    assert.deepEqual(parseOptionalMarkReadBody(realBounded.body), {
+      ok: true,
+      value: { last_read_seq: 4, message_id: "msg-4" },
+    });
+  }
+
+  // Malformed JSON still fails with INVALID_JSON; invalid schema fails with INVALID_READ_PAYLOAD
+  assert.deepEqual(parseOptionalMarkReadBody(new TextEncoder().encode("{not-json")), {
+    ok: false,
+    code: "INVALID_JSON",
+  });
+  assert.deepEqual(parseOptionalMarkReadBody(new TextEncoder().encode('{"last_read_seq":-5}')), {
+    ok: false,
+    code: "INVALID_READ_PAYLOAD",
+  });
+
+  // Route handler must use readBoundedBody + parseOptionalMarkReadBody (not content-length header heuristic)
+  const routeSrc = readFileSync(
+    resolve(WEB_SRC, "app/api/seller/chat/conversations/[id]/read/route.ts"),
+    "utf8"
+  );
+  assert.ok(routeSrc.includes("readBoundedBody"));
+  assert.ok(routeSrc.includes("parseOptionalMarkReadBody"));
+  assert.equal(routeSrc.includes('req.headers.get("content-length")'), false);
+});
+
+test("shouldClearUnreadAfterReadSync only clears unread_count when read sync succeeded or conversation is empty", async () => {
+  // When WS is closed and REST fails, markSellerConversationRead returns "failed" -> must NOT clear unread_count
+  const failedResult = await markSellerConversationRead({
+    conversationId: "conv-1",
+    lastReadSeq: 5,
+    messageId: "msg-5",
+    sendWsRead: () => false,
+    postRestRead: async () => {
+      throw new Error("503 Service Unavailable");
+    },
+  });
+  assert.equal(failedResult, "failed");
+  assert.equal(shouldClearUnreadAfterReadSync(failedResult, true), false);
+  assert.equal(shouldClearUnreadAfterReadSync("ws", true), true);
+  assert.equal(shouldClearUnreadAfterReadSync("rest", true), true);
+  assert.equal(shouldClearUnreadAfterReadSync(null, false), true);
+
+  // SellerChatClient must await syncConversationRead and gate unread_count: 0 via shouldClearUnreadAfterReadSync
+  const clientSrc = readFileSync(
+    resolve(WEB_SRC, "app/(seller)/seller/chat/SellerChatClient.tsx"),
+    "utf8"
+  );
+  assert.ok(clientSrc.includes("shouldClearUnreadAfterReadSync"));
+  assert.equal(clientSrc.includes("void syncConversationRead("), false);
+});
+
+test("SellerOrderDetailClient passes order.payment_method into getTimelineEventTitle", () => {
+  const detailSrc = readFileSync(
+    resolve(WEB_SRC, "features/seller/SellerOrderDetailClient.tsx"),
+    "utf8"
+  );
+  assert.ok(detailSrc.includes("getTimelineEventTitle(ev, order.payment_method)"));
+});
+
+test("applySellerChatReadDelta clamps unread badge non-negative and SellerChatClient syncs SellerShell via CustomEvent", () => {
+  assert.equal(SELLER_CHAT_READ_EVENT, "nm:seller-chat-read");
+  assert.equal(applySellerChatReadDelta(1, 1), 0);
+  assert.equal(applySellerChatReadDelta(5, 2), 3);
+  assert.equal(applySellerChatReadDelta(1, 4), 0);
+  assert.equal(applySellerChatReadDelta(0, 2), 0);
+  assert.equal(applySellerChatReadDelta(3, 0), 3);
+  assert.equal(applySellerChatReadDelta(3, -2), 3);
+  assert.equal(applySellerChatReadDelta(3, Number.NaN), 3);
+  assert.equal(applySellerChatReadDelta(3, undefined), 3);
+  assert.equal(applySellerChatReadDelta(-1, 1), 0);
+
+  assert.equal(extractSellerChatReadDelta({ readCount: 2 }), 2);
+  assert.equal(extractSellerChatReadDelta({ readCount: 2.9 }), 2);
+  assert.equal(extractSellerChatReadDelta({ readCount: 0 }), 0);
+  assert.equal(extractSellerChatReadDelta({ readCount: -1 }), 0);
+  assert.equal(extractSellerChatReadDelta(null), 0);
+  assert.equal(extractSellerChatReadDelta({}), 0);
+
+  const chatSrc = readFileSync(
+    resolve(WEB_SRC, "app/(seller)/seller/chat/SellerChatClient.tsx"),
+    "utf8"
+  );
+  assert.ok(chatSrc.includes("SELLER_CHAT_READ_EVENT"));
+  assert.match(chatSrc, /new CustomEvent(?:<[^>]+>)?\(SELLER_CHAT_READ_EVENT/);
+
+  const shellSrc = readFileSync(resolve(WEB_SRC, "features/seller/SellerShell.tsx"), "utf8");
+  assert.ok(shellSrc.includes("SELLER_CHAT_READ_EVENT"));
+  assert.ok(shellSrc.includes("applySellerChatReadDelta"));
+  assert.ok(shellSrc.includes("setLiveUnreadChatCount(Math.max(0, Math.trunc(unreadChatCount)))"));
 });

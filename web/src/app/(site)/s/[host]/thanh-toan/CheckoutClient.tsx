@@ -7,6 +7,7 @@ import type { Product } from "@/data/products";
 import type { Shop } from "@/data/shops";
 import type {
   GatewayActiveShopDiscount,
+  GatewayFlashSale,
   GatewayPaymentMethod,
   GatewayPaymentMethodConfig,
 } from "@/lib/gateway-types";
@@ -18,12 +19,29 @@ import { Button, IconCheck, StateView } from "@/components";
 import { AddressForm } from "@/features/commerce/AddressForm";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
 import {
+  buildCheckoutIdempotencySignature,
+  canMutateCheckoutFlashSelection,
+  classifyCheckoutSubmitError,
+  clearPendingCheckoutKey,
   evaluatePaymentMethodForCheckout,
+  evaluateShopFlashLines,
+  INITIAL_CHECKOUT_SUBMIT_GUARD_STATE,
+  isTerminalCancelledCheckoutResponse,
+  readPendingCheckoutKey,
+  reduceCheckoutSubmitState,
+  resolveCartFlashSaleState,
   resolveDefaultCheckoutMethod,
   resolveDisplayedLinePricing,
   saveCheckoutWarnings,
+  savePendingCheckoutKey,
+  shouldClearPendingKeyOnConfirmedEmptyCart,
+  type CheckoutSubmitGuardState,
 } from "@/features/checkout/helpers";
-import { translateCheckoutError } from "@/features/checkout/messages";
+import {
+  AMBIGUOUS_CHECKOUT_MESSAGE,
+  CHECKOUT_FAILED_BUYER_MESSAGE,
+  translateCheckoutError,
+} from "@/features/checkout/messages";
 import {
   buildCheckoutPreviewKey,
   enrichCartGroups,
@@ -103,6 +121,7 @@ export interface CheckoutClientProps {
   initialVouchers: GwVoucher[];
   initialPaymentMethods?: GatewayPaymentMethodConfig[];
   initialShopDiscounts?: GatewayActiveShopDiscount[];
+  initialFlashSales?: GatewayFlashSale[];
   initialError: string | null;
   serverNowMs?: number;
 }
@@ -123,6 +142,7 @@ export function CheckoutClient({
   initialVouchers,
   initialPaymentMethods = [],
   initialShopDiscounts = [],
+  initialFlashSales = [],
   initialError,
   serverNowMs,
 }: CheckoutClientProps) {
@@ -136,6 +156,11 @@ export function CheckoutClient({
     refreshCart,
     selectedVoucherId,
     flashSaleItemBySku,
+    optedOutFlashSkus,
+    optOutFlashSaleSku,
+    optOutFlashSaleSkus,
+    restoreFlashSaleSku,
+    clearOptedOutFlashSkus,
     setSelectedVoucher,
     resetVoucherSelection,
     showToast,
@@ -182,6 +207,7 @@ export function CheckoutClient({
     key: string;
     status: "ok" | "error";
     breakdown: GwDiscountBreakdown | null;
+    rejectedFlashSaleItemIds: string[];
     error: string | null;
   } | null>(null);
 
@@ -194,12 +220,33 @@ export function CheckoutClient({
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   const [idempotencyKey, setIdempotencyKey] = useState<string>(initialIdempotencyKey);
+  const [submitGuard, setSubmitGuard] = useState<CheckoutSubmitGuardState>(
+    INITIAL_CHECKOUT_SUBMIT_GUARD_STATE
+  );
+  const [pendingOrderCheckHint, setPendingOrderCheckHint] = useState<boolean>(false);
+  const submitGuardRef = useRef<CheckoutSubmitGuardState>(INITIAL_CHECKOUT_SUBMIT_GUARD_STATE);
   const lastSignatureRef = useRef<string | null>(null);
   const didInitialMetaFetchRef = useRef<boolean>(false);
   const hasAddressesRef = useRef<boolean>(initialAddresses.length > 0);
   hasAddressesRef.current = addresses.length > 0;
   const previewStateRef = useRef(previewState);
   previewStateRef.current = previewState;
+
+  const pendingKeySig = useMemo(
+    () => (user?.id ? buildCheckoutIdempotencySignature({ userId: user.id }) : ""),
+    [user?.id]
+  );
+
+  // Restore in-flight / ambiguous idempotency key across F5 reloads to prevent duplicate orders.
+  useEffect(() => {
+    if (!pendingKeySig) return;
+    const storedKey = readPendingCheckoutKey(pendingKeySig);
+    if (!storedKey) return;
+    setIdempotencyKey(storedKey);
+    const tr = reduceCheckoutSubmitState(submitGuardRef.current, { type: "hydrated_pending_key" });
+    submitGuardRef.current = tr.state;
+    setSubmitGuard(tr.state);
+  }, [pendingKeySig]);
 
   const enrichedGroups = useMemo(
     () => enrichCartGroups(cart?.shop_groups ?? [], catalogProducts, catalogShops),
@@ -209,6 +256,44 @@ export function CheckoutClient({
   const allCartItems = useMemo(() => activeGroup?.items ?? [], [activeGroup]);
   const cartItems = useMemo(() => allCartItems.filter((it) => !it.isUnavailable), [allCartItems]);
   const unavailableCount = allCartItems.length - cartItems.length;
+
+  // When server authoritatively confirms the cart is now empty after an ambiguous/F5 checkout,
+  // remind the buyer to check /don-hang and evict the old pending key so future orders never replay it.
+  useEffect(() => {
+    if (cartItems.length > 0) {
+      setPendingOrderCheckHint(false);
+      return;
+    }
+    if (
+      !shouldClearPendingKeyOnConfirmedEmptyCart({
+        hasPendingKey: submitGuard.keyUncertainty !== "none",
+        isAuthenticated,
+        sessionLoading,
+        cartLoading,
+        cartError,
+        cartLoaded: cart !== null,
+        availableCartItemCount: cartItems.length,
+        isSubmitting,
+      })
+    ) {
+      return;
+    }
+    setPendingOrderCheckHint(true);
+    const tr = reduceCheckoutSubmitState(submitGuardRef.current, { type: "confirmed_empty_cart" });
+    submitGuardRef.current = tr.state;
+    setSubmitGuard(tr.state);
+    if (tr.clearStoredKey) clearPendingCheckoutKey();
+    if (tr.rotateKey) setIdempotencyKey(generateClientAttemptKey());
+  }, [
+    submitGuard.keyUncertainty,
+    isAuthenticated,
+    sessionLoading,
+    cartLoading,
+    cartError,
+    cart,
+    cartItems.length,
+    isSubmitting,
+  ]);
   const shopDiscountBySku = useMemo(() => {
     const map: Record<string, GatewayActiveShopDiscount> = {};
     for (const d of initialShopDiscounts) {
@@ -216,10 +301,23 @@ export function CheckoutClient({
     }
     return map;
   }, [initialShopDiscounts]);
-  const hasFlashSaleItem = useMemo(
-    () => cartItems.some((it) => Boolean(flashSaleItemBySku[it.raw.sku_id])),
-    [cartItems, flashSaleItemBySku]
+  const flashState = useMemo(
+    () =>
+      resolveCartFlashSaleState({
+        items: cartItems.map((it) => ({
+          skuId: it.raw.sku_id,
+          quantity: it.raw.quantity,
+          regularUnitPriceVnd: it.raw.price_vnd,
+        })),
+        serverFlashSales: initialFlashSales,
+        storedFlashItemIdBySku: flashSaleItemBySku,
+        optedOutFlashSkus,
+        nowMs: anchorNowMs,
+      }),
+    [cartItems, initialFlashSales, flashSaleItemBySku, optedOutFlashSkus, anchorNowMs]
   );
+  const hasFlashSaleItem = flashState.hasFlashSaleItem;
+  const canMutateFlashSelection = canMutateCheckoutFlashSelection(submitGuard);
 
   // Fetch dynamic payment method config if not hydrated from SSR
   useEffect(() => {
@@ -431,7 +529,7 @@ export function CheckoutClient({
   }, [quotes, selectedCarrier]);
 
   const quotedShippingFee: number | null = activeQuote ? activeQuote.fee_vnd : null;
-  const flashKey = JSON.stringify(flashSaleItemBySku);
+  const flashKey = JSON.stringify(flashState.activeFlashItemIdBySku);
 
   const previewRequestKey =
     isAuthenticated && activeShopId && cartItems.length > 0 && !quotesPending
@@ -455,6 +553,13 @@ export function CheckoutClient({
     previewRequestKey && previewState?.key === previewRequestKey && previewState.status === "ok"
       ? previewState.breakdown
       : null;
+  const rejectedFlashSaleItemIds = useMemo(
+    () =>
+      previewRequestKey && previewState?.key === previewRequestKey && previewState.status === "ok"
+        ? previewState.rejectedFlashSaleItemIds
+        : [],
+    [previewRequestKey, previewState]
+  );
   const previewError =
     previewRequestKey && previewState?.key === previewRequestKey && previewState.status === "error"
       ? previewState.error
@@ -470,20 +575,26 @@ export function CheckoutClient({
     }
     let cancelled = false;
 
-    api<{ breakdown: GwDiscountBreakdown }>("/api/vouchers/preview", {
-      method: "POST",
-      body: {
-        shipping_fee_vnd: quotedShippingFee ?? 0,
-        shop_voucher_id: selectedVoucherId || "",
-        flash_sale_item_by_sku: flashSaleItemBySku,
-      },
-    })
+    api<{ breakdown: GwDiscountBreakdown; rejected_flash_sale_item_ids?: string[] }>(
+      "/api/vouchers/preview",
+      {
+        method: "POST",
+        body: {
+          shipping_fee_vnd: quotedShippingFee ?? 0,
+          shop_voucher_id: selectedVoucherId || "",
+          flash_sale_item_by_sku: flashState.activeFlashItemIdBySku,
+        },
+      }
+    )
       .then((res) => {
         if (!cancelled) {
           setPreviewState({
             key: previewRequestKey,
             status: "ok",
             breakdown: res.breakdown,
+            rejectedFlashSaleItemIds: Array.isArray(res.rejected_flash_sale_item_ids)
+              ? res.rejected_flash_sale_item_ids
+              : [],
             error: null,
           });
         }
@@ -494,6 +605,7 @@ export function CheckoutClient({
             key: previewRequestKey,
             status: "error",
             breakdown: null,
+            rejectedFlashSaleItemIds: [],
             error: err instanceof ApiError ? err.message : "Chưa cập nhật được ưu đãi.",
           });
         }
@@ -513,8 +625,9 @@ export function CheckoutClient({
         cart: cartItems.map((it) => `${it.raw.sku_id}:${it.raw.quantity}`),
         voucher: selectedVoucherId ?? "",
         carrier: selectedCarrier,
+        flash: flashKey,
       }),
-    [selectedAddress?.id, paymentMethod, cartItems, selectedVoucherId, selectedCarrier]
+    [selectedAddress?.id, paymentMethod, cartItems, selectedVoucherId, selectedCarrier, flashKey]
   );
 
   useEffect(() => {
@@ -524,7 +637,9 @@ export function CheckoutClient({
     }
     if (lastSignatureRef.current !== orderAttemptSignature) {
       lastSignatureRef.current = orderAttemptSignature;
-      setIdempotencyKey(generateClientAttemptKey());
+      if (submitGuardRef.current.keyUncertainty === "none") {
+        setIdempotencyKey(generateClientAttemptKey());
+      }
     }
   }, [orderAttemptSignature]);
 
@@ -545,6 +660,34 @@ export function CheckoutClient({
   const totalQty = cartItems.reduce((sum, it) => sum + it.raw.quantity, 0);
   const codAreaSupported = activeQuote ? activeQuote.cod_supported !== false : undefined;
   const shopBreakdown = breakdown?.shops?.[0] ?? null;
+  const flashLineEvals = useMemo(
+    () =>
+      evaluateShopFlashLines({
+        lines: cartItems.map((it) => {
+          const lf = flashState.liveFlashBySku[it.raw.sku_id];
+          return {
+            skuId: it.raw.sku_id,
+            quantity: it.raw.quantity,
+            regularUnitPriceVnd: it.raw.price_vnd,
+            flashSaleItemId: lf?.flashSaleItemId,
+            flashUnitPriceVnd: lf?.flashPriceVnd,
+            flashPerUserLimit: lf?.perUserLimit,
+            hasActiveShopDiscount: Boolean(shopDiscountBySku[it.raw.sku_id]),
+          };
+        }),
+        previewShopFlashDiscountVnd: shopBreakdown ? shopBreakdown.flash_sale_discount_vnd : null,
+        previewWarnings: breakdown?.warnings ?? [],
+        rejectedFlashSaleItemIds,
+      }),
+    [
+      cartItems,
+      flashState.liveFlashBySku,
+      shopDiscountBySku,
+      shopBreakdown,
+      breakdown?.warnings,
+      rejectedFlashSaleItemIds,
+    ]
+  );
 
   const paymentMethodEvals = useMemo(() => {
     const map = new Map<
@@ -609,13 +752,14 @@ export function CheckoutClient({
         discount_vnd: number;
         reason?: string;
         breakdown?: GwDiscountBreakdown;
+        rejected_flash_sale_item_ids?: string[];
       }>("/api/vouchers/validate", {
         method: "POST",
         body: {
           code: clean,
           shipping_fee_vnd: quotedShippingFee ?? 0,
           shop_voucher_id: selectedVoucherId || "",
-          flash_sale_item_by_sku: flashSaleItemBySku,
+          flash_sale_item_by_sku: flashState.activeFlashItemIdBySku,
         },
       });
       if (!res.valid || !res.voucher) {
@@ -645,6 +789,9 @@ export function CheckoutClient({
           key: nextKey,
           status: "ok" as const,
           breakdown: res.breakdown,
+          rejectedFlashSaleItemIds: Array.isArray(res.rejected_flash_sale_item_ids)
+            ? res.rejected_flash_sale_item_ids
+            : [],
           error: null,
         };
         previewStateRef.current = nextState;
@@ -666,6 +813,31 @@ export function CheckoutClient({
     } finally {
       setPromoValidating(false);
     }
+  };
+
+  const handleStartNewOrderAttempt = () => {
+    const tr = reduceCheckoutSubmitState(submitGuardRef.current, { type: "explicit_new_order" });
+    submitGuardRef.current = tr.state;
+    setSubmitGuard(tr.state);
+    if (tr.clearStoredKey) clearPendingCheckoutKey();
+    if (tr.rotateKey) setIdempotencyKey(generateClientAttemptKey());
+    setFormError(null);
+    setFormErrorCode(null);
+  };
+
+  const handleOptOutAllFlashSkus = () => {
+    if (!canMutateCheckoutFlashSelection(submitGuardRef.current)) return;
+    const skuIds = Object.keys(flashState.activeFlashItemIdBySku);
+    if (skuIds.length === 0) return;
+    optOutFlashSaleSkus(skuIds);
+    setFormError(null);
+    setFormErrorCode(null);
+    const nextState: CheckoutSubmitGuardState = {
+      ...submitGuardRef.current,
+      flashBlocked: false,
+    };
+    submitGuardRef.current = nextState;
+    setSubmitGuard(nextState);
   };
 
   const handlePlaceOrder = async () => {
@@ -698,12 +870,19 @@ export function CheckoutClient({
     setSessionExpired(false);
     setIsSubmitting(true);
 
+    const startTr = reduceCheckoutSubmitState(submitGuardRef.current, { type: "submit_start" });
+    submitGuardRef.current = startTr.state;
+    setSubmitGuard(startTr.state);
+    if (pendingKeySig) {
+      savePendingCheckoutKey({ key: idempotencyKey, sig: pendingKeySig });
+    }
+
     const flashItems = cartItems
-      .filter((it) => Boolean(flashSaleItemBySku[it.raw.sku_id]))
+      .filter((it) => Boolean(flashState.activeFlashItemIdBySku[it.raw.sku_id]))
       .map((it) => ({
         sku_id: it.raw.sku_id,
         quantity: it.raw.quantity,
-        flash_sale_item_id: flashSaleItemBySku[it.raw.sku_id],
+        flash_sale_item_id: flashState.activeFlashItemIdBySku[it.raw.sku_id],
       }));
 
     const checkoutRequestBody: Record<string, unknown> = {
@@ -726,7 +905,27 @@ export function CheckoutClient({
         body: checkoutRequestBody,
       });
 
+      const terminalCancelled = isTerminalCancelledCheckoutResponse(res);
+      const okTr = reduceCheckoutSubmitState(submitGuardRef.current, {
+        type: "submit_success",
+        terminalCancelled,
+      });
+      submitGuardRef.current = okTr.state;
+      setSubmitGuard(okTr.state);
+      if (okTr.clearStoredKey) clearPendingCheckoutKey();
+
+      if (terminalCancelled) {
+        submittingRef.current = false;
+        setIsSubmitting(false);
+        setIdempotencyKey(generateClientAttemptKey());
+        setFormError(CHECKOUT_FAILED_BUYER_MESSAGE);
+        setFormErrorCode("CHECKOUT_FAILED");
+        void refreshCart();
+        return;
+      }
+
       resetVoucherSelection();
+      clearOptedOutFlashSkus();
       void refreshCart();
       if (Array.isArray(res.warnings) && res.warnings.length > 0) {
         saveCheckoutWarnings({
@@ -761,8 +960,22 @@ export function CheckoutClient({
     } catch (err) {
       submittingRef.current = false;
       setIsSubmitting(false);
+
+      const errKind = classifyCheckoutSubmitError(err, {
+        hasFlashSaleItem,
+        paymentMethod,
+      });
+      const errTr = reduceCheckoutSubmitState(submitGuardRef.current, {
+        type: "submit_error",
+        kind: errKind,
+      });
+      submitGuardRef.current = errTr.state;
+      setSubmitGuard(errTr.state);
+      if (errTr.clearStoredKey) clearPendingCheckoutKey();
+      if (errTr.rotateKey) setIdempotencyKey(generateClientAttemptKey());
+
       if (err instanceof ApiError) {
-        if (err.status === 401) {
+        if (errKind === "unauthenticated") {
           setSessionExpired(true);
           setFormError("Phiên đăng nhập đã hết hạn.");
           return;
@@ -791,7 +1004,7 @@ export function CheckoutClient({
           void loadCheckoutMeta();
         }
       } else {
-        setFormError("Hệ thống tạm gián đoạn. Bấm thử lại an toàn, không tạo trùng đơn.");
+        setFormError(AMBIGUOUS_CHECKOUT_MESSAGE);
       }
     }
   };
@@ -868,16 +1081,27 @@ export function CheckoutClient({
   }
 
   if (!activeGroup || cartItems.length === 0) {
+    const showOrderCheckNotice = pendingOrderCheckHint || submitGuard.keyUncertainty !== "none";
     return (
       <div className={shared.page}>
         {renderHeader()}
         <section className={shared.section}>
-          <StateView
-            kind="empty"
-            title="Chưa có sản phẩm nào để thanh toán."
-            actionLabel="Xem sản phẩm"
-            actionHref="/san-pham"
-          />
+          {showOrderCheckNotice ? (
+            <StateView
+              kind="empty"
+              title="Đơn hàng trước có thể đã được tạo."
+              message="Giỏ hàng hiện đã trống. Vui lòng kiểm tra mục Đơn hàng của tôi trước khi đặt lại."
+              actionLabel="Đơn hàng của tôi"
+              actionHref="/don-hang"
+            />
+          ) : (
+            <StateView
+              kind="empty"
+              title="Chưa có sản phẩm nào để thanh toán."
+              actionLabel="Xem sản phẩm"
+              actionHref="/san-pham"
+            />
+          )}
         </section>
         {addonProducts.length > 0 && (
           <ProductAddonStrip title={`Gợi ý từ ${brandName}`} products={addonProducts} />
@@ -938,16 +1162,12 @@ export function CheckoutClient({
                     </h2>
 
                     {!addressOpen && selectedAddress && (
-                      <div
-                        className={styles.stageCompactSummary}
-                        role="radiogroup"
-                        aria-label="Chọn địa chỉ nhận hàng"
-                      >
+                      <div className={styles.stageCompactSummary}>
                         <button
                           type="button"
-                          role="radio"
-                          aria-checked="true"
-                          className={styles.stageSummaryRadio}
+                          aria-expanded={false}
+                          aria-controls="stage-address-body"
+                          className={styles.stageSummaryBtn}
                           onClick={() => setOpenStage("address")}
                         >
                           <span className={styles.stageSummaryMetaRow}>
@@ -970,6 +1190,9 @@ export function CheckoutClient({
                 {!addressOpen && selectedAddress && (
                   <button
                     type="button"
+                    aria-expanded={false}
+                    aria-controls="stage-address-body"
+                    aria-label="Sửa địa chỉ nhận hàng"
                     className={styles.editBtn}
                     onClick={() => setOpenStage("address")}
                   >
@@ -978,112 +1201,118 @@ export function CheckoutClient({
                 )}
               </div>
 
-              {addressOpen && (
-                <div className={styles.stageBody}>
-                  {addressesLoading && addresses.length === 0 ? (
-                    <StateView
-                      kind="loading"
-                      skeletonVariant="detail"
-                      title="Đang tải địa chỉ..."
-                      rows={2}
-                    />
-                  ) : addresses.length > 0 ? (
-                    <>
-                      <div
-                        className={styles.addressList}
-                        role="radiogroup"
-                        aria-label="Chọn địa chỉ nhận hàng"
-                      >
-                        {addresses.map((addr) => {
-                          const isSelected = selectedAddress?.id === addr.id;
-                          return (
-                            <button
-                              key={addr.id}
-                              type="button"
-                              role="radio"
-                              aria-checked={isSelected}
-                              className={`${styles.addressOption} ${
-                                isSelected ? styles.addressOptionSelected : ""
-                              }`}
-                              onClick={() => {
-                                setSelectedAddressId(addr.id);
-                                setShowNewAddressForm(false);
-                                setOpenStage("shipping");
-                              }}
-                            >
-                              <span className={styles.addressTopRow}>
-                                <span className={styles.addressName}>
-                                  <span>{addr.recipient_name}</span>
-                                  <span className={`${styles.addressPhone} num`}>
-                                    {addr.recipient_phone}
+              <div id="stage-address-body" hidden={!addressOpen}>
+                {addressOpen && (
+                  <div className={styles.stageBody}>
+                    {addressesLoading && addresses.length === 0 ? (
+                      <StateView
+                        kind="loading"
+                        skeletonVariant="detail"
+                        title="Đang tải địa chỉ..."
+                        rows={2}
+                      />
+                    ) : addresses.length > 0 ? (
+                      <>
+                        <div
+                          className={styles.addressList}
+                          role="radiogroup"
+                          aria-label="Chọn địa chỉ nhận hàng"
+                        >
+                          {addresses.map((addr) => {
+                            const isSelected = selectedAddress?.id === addr.id;
+                            return (
+                              <button
+                                key={addr.id}
+                                type="button"
+                                role="radio"
+                                aria-checked={isSelected}
+                                className={`${styles.addressOption} ${
+                                  isSelected ? styles.addressOptionSelected : ""
+                                }`}
+                                onClick={() => {
+                                  setSelectedAddressId(addr.id);
+                                  setShowNewAddressForm(false);
+                                  setOpenStage("shipping");
+                                }}
+                              >
+                                <span className={styles.addressTopRow}>
+                                  <span className={styles.addressName}>
+                                    <span>{addr.recipient_name}</span>
+                                    <span className={`${styles.addressPhone} num`}>
+                                      {addr.recipient_phone}
+                                    </span>
+                                  </span>
+                                  <span className={shared.formActions}>
+                                    {addr.is_default && (
+                                      <span className={`${shared.statusTag} ${shared.toneNeutral}`}>
+                                        Mặc định
+                                      </span>
+                                    )}
+                                    {isSelected && (
+                                      <span className={`${shared.statusTag} ${shared.tonePos}`}>
+                                        Đang chọn
+                                      </span>
+                                    )}
                                   </span>
                                 </span>
-                                <span className={shared.formActions}>
-                                  {addr.is_default && (
-                                    <span className={`${shared.statusTag} ${shared.toneNeutral}`}>
-                                      Mặc định
-                                    </span>
-                                  )}
-                                  {isSelected && (
-                                    <span className={`${shared.statusTag} ${shared.tonePos}`}>
-                                      Đang chọn
-                                    </span>
+                                <span className={styles.addressLine}>
+                                  {formatAddressLine(
+                                    addr.street_address,
+                                    addr.ward_name,
+                                    addr.province_name
                                   )}
                                 </span>
-                              </span>
-                              <span className={styles.addressLine}>
-                                {formatAddressLine(
-                                  addr.street_address,
-                                  addr.ward_name,
-                                  addr.province_name
-                                )}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
+                              </button>
+                            );
+                          })}
+                        </div>
 
-                      <div className={styles.stageFooterRow}>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => setShowNewAddressForm((v) => !v)}
-                        >
-                          {showNewAddressForm ? "Đóng biểu mẫu" : "Thêm địa chỉ mới"}
-                        </Button>
-                        {!showNewAddressForm && selectedAddress && (
-                          <Button variant="ink" size="sm" onClick={() => setOpenStage("shipping")}>
-                            Tiếp tục giao hàng
+                        <div className={styles.stageFooterRow}>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => setShowNewAddressForm((v) => !v)}
+                          >
+                            {showNewAddressForm ? "Đóng biểu mẫu" : "Thêm địa chỉ mới"}
                           </Button>
-                        )}
-                      </div>
-                    </>
-                  ) : null}
+                          {!showNewAddressForm && selectedAddress && (
+                            <Button
+                              variant="ink"
+                              size="sm"
+                              onClick={() => setOpenStage("shipping")}
+                            >
+                              Tiếp tục giao hàng
+                            </Button>
+                          )}
+                        </div>
+                      </>
+                    ) : null}
 
-                  {showNewAddressForm && (
-                    <AddressForm
-                      defaultName={user?.fullName ?? ""}
-                      defaultPhone={user?.phone ?? ""}
-                      submitLabel="Lưu và giao tới địa chỉ này"
-                      onSaved={(created) => {
-                        setAddresses((prev) => [
-                          created,
-                          ...prev.map((a) =>
-                            created.is_default ? { ...a, is_default: false } : a
-                          ),
-                        ]);
-                        setSelectedAddressId(created.id);
-                        setShowNewAddressForm(false);
-                        setFormError(null);
-                        setOpenStage("payment");
-                      }}
-                      onCancel={
-                        addresses.length > 0 ? () => setShowNewAddressForm(false) : undefined
-                      }
-                    />
-                  )}
-                </div>
-              )}
+                    {showNewAddressForm && (
+                      <AddressForm
+                        defaultName={user?.fullName ?? ""}
+                        defaultPhone={user?.phone ?? ""}
+                        submitLabel="Lưu và giao tới địa chỉ này"
+                        onSaved={(created) => {
+                          setAddresses((prev) => [
+                            created,
+                            ...prev.map((a) =>
+                              created.is_default ? { ...a, is_default: false } : a
+                            ),
+                          ]);
+                          setSelectedAddressId(created.id);
+                          setShowNewAddressForm(false);
+                          setFormError(null);
+                          setOpenStage("payment");
+                        }}
+                        onCancel={
+                          addresses.length > 0 ? () => setShowNewAddressForm(false) : undefined
+                        }
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
             </section>
 
             {/* Stage 2: Giao hàng */}
@@ -1121,16 +1350,12 @@ export function CheckoutClient({
                       quotesPending ? (
                         <p className={styles.stageSummaryLine}>Đang tính phí vận chuyển…</p>
                       ) : activeQuote ? (
-                        <div
-                          className={styles.stageCompactSummary}
-                          role="radiogroup"
-                          aria-label={`Chọn đơn vị vận chuyển cho ${brandName}`}
-                        >
+                        <div className={styles.stageCompactSummary}>
                           <button
                             type="button"
-                            role="radio"
-                            aria-checked="true"
-                            className={styles.stageSummaryRadio}
+                            aria-expanded={false}
+                            aria-controls="stage-shipping-body"
+                            className={styles.stageSummaryBtn}
                             onClick={() => setOpenStage("shipping")}
                           >
                             <span className={styles.stageSummaryMetaRow}>
@@ -1164,6 +1389,9 @@ export function CheckoutClient({
                 {addressDone && !shippingOpen && (
                   <button
                     type="button"
+                    aria-expanded={false}
+                    aria-controls="stage-shipping-body"
+                    aria-label="Sửa đơn vị vận chuyển"
                     className={styles.editBtn}
                     onClick={() => setOpenStage("shipping")}
                   >
@@ -1172,68 +1400,70 @@ export function CheckoutClient({
                 )}
               </div>
 
-              {shippingOpen && (
-                <div className={styles.stageBody}>
-                  {quotesPending ? (
-                    <p className={styles.addressShipLine}>Đang tính cước vận chuyển…</p>
-                  ) : quotes.length > 0 ? (
-                    <div
-                      className={styles.deliveryOptions}
-                      role="radiogroup"
-                      aria-label={`Chọn đơn vị vận chuyển cho ${brandName}`}
-                    >
-                      {quotes.map((q) => {
-                        const active =
-                          activeQuote?.carrier_code === q.carrier_code &&
-                          activeQuote?.service_code === q.service_code;
-                        return (
-                          <button
-                            key={`${q.carrier_code}-${q.service_code}`}
-                            type="button"
-                            role="radio"
-                            aria-checked={active}
-                            className={`${styles.deliveryOptionBtn} ${
-                              active ? styles.deliveryOptionActive : ""
-                            }`}
-                            onClick={() => {
-                              setSelectedCarrier({
-                                carrier_code: q.carrier_code,
-                                service_code: q.service_code,
-                              });
-                              setOpenStage("payment");
-                            }}
-                          >
-                            <span className={styles.deliveryOptionHead}>
-                              <span className={styles.paymentTitle}>
-                                {formatCarrierLabel(q.carrier_code, q.carrier_name)}
+              <div id="stage-shipping-body" hidden={!shippingOpen}>
+                {shippingOpen && (
+                  <div className={styles.stageBody}>
+                    {quotesPending ? (
+                      <p className={styles.addressShipLine}>Đang tính cước vận chuyển…</p>
+                    ) : quotes.length > 0 ? (
+                      <div
+                        className={styles.deliveryOptions}
+                        role="radiogroup"
+                        aria-label={`Chọn đơn vị vận chuyển cho ${brandName}`}
+                      >
+                        {quotes.map((q) => {
+                          const active =
+                            activeQuote?.carrier_code === q.carrier_code &&
+                            activeQuote?.service_code === q.service_code;
+                          return (
+                            <button
+                              key={`${q.carrier_code}-${q.service_code}`}
+                              type="button"
+                              role="radio"
+                              aria-checked={active}
+                              className={`${styles.deliveryOptionBtn} ${
+                                active ? styles.deliveryOptionActive : ""
+                              }`}
+                              onClick={() => {
+                                setSelectedCarrier({
+                                  carrier_code: q.carrier_code,
+                                  service_code: q.service_code,
+                                });
+                                setOpenStage("payment");
+                              }}
+                            >
+                              <span className={styles.deliveryOptionHead}>
+                                <span className={styles.paymentTitle}>
+                                  {formatCarrierLabel(q.carrier_code, q.carrier_name)}
+                                </span>
+                                <span className={`${styles.deliveryFee} num`}>
+                                  {formatVnd(q.fee_vnd)}
+                                </span>
                               </span>
-                              <span className={`${styles.deliveryFee} num`}>
-                                {formatVnd(q.fee_vnd)}
+                              <span className={styles.addressShipLine}>
+                                <span>{formatServiceLabel(q.service_code, q.service_name)}</span>
+                                <span>
+                                  Dự kiến <span className="num">{q.estimated_days}</span> ngày
+                                </span>
                               </span>
-                            </span>
-                            <span className={styles.addressShipLine}>
-                              <span>{formatServiceLabel(q.service_code, q.service_name)}</span>
-                              <span>
-                                Dự kiến <span className="num">{q.estimated_days}</span> ngày
-                              </span>
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <p className={styles.addressShipLine}>
-                      Phí vận chuyển được xác nhận tự động khi đặt đơn.
-                    </p>
-                  )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className={styles.addressShipLine}>
+                        Phí vận chuyển được xác nhận tự động khi đặt đơn.
+                      </p>
+                    )}
 
-                  <div className={styles.stageFooterRow}>
-                    <Button variant="ink" size="sm" onClick={() => setOpenStage("payment")}>
-                      Tiếp tục thanh toán
-                    </Button>
+                    <div className={styles.stageFooterRow}>
+                      <Button variant="ink" size="sm" onClick={() => setOpenStage("payment")}>
+                        Tiếp tục thanh toán
+                      </Button>
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </section>
 
             {/* Stage 3: Phương thức thanh toán */}
@@ -1277,6 +1507,9 @@ export function CheckoutClient({
                 {addressDone && !paymentOpen && (
                   <button
                     type="button"
+                    aria-expanded={false}
+                    aria-controls="stage-payment-body"
+                    aria-label="Sửa phương thức thanh toán"
                     className={styles.editBtn}
                     onClick={() => setOpenStage("payment")}
                   >
@@ -1285,78 +1518,83 @@ export function CheckoutClient({
                 )}
               </div>
 
-              {paymentOpen && (
-                <div className={styles.stageBody}>
-                  <div
-                    className={styles.paymentGrid}
-                    role="radiogroup"
-                    aria-label="Chọn phương thức thanh toán"
-                  >
-                    {(["VIETQR", "ZALOPAY", "COD"] as const).map((methodKey) => {
-                      const entry = paymentMethodEvals.get(methodKey);
-                      if (!entry || !entry.config.enabled) return null;
-                      const copy = PAYMENT_METHOD_COPY[methodKey];
-                      const selected = paymentMethod === methodKey;
-                      const { allowed, reason, blockCode } = entry.evalResult;
-                      const maxVnd = entry.config.max_order_vnd;
-                      const minVnd = entry.config.min_order_vnd;
-                      return (
-                        <button
-                          key={methodKey}
-                          type="button"
-                          role="radio"
-                          aria-checked={selected}
-                          className={`${styles.paymentTile} ${
-                            selected ? styles.paymentTileSelected : ""
-                          }`}
-                          onClick={() => {
-                            setPaymentMethod(methodKey);
-                            setFormError(null);
-                            setFormErrorCode(null);
-                          }}
-                        >
-                          <span className={styles.paymentHead}>
-                            <span className={styles.paymentTitle}>{copy.title}</span>
-                            <span className={styles.paymentCheck} aria-hidden="true">
-                              <IconCheck size={13} />
+              <div id="stage-payment-body" hidden={!paymentOpen}>
+                {paymentOpen && (
+                  <div className={styles.stageBody}>
+                    <div
+                      className={styles.paymentGrid}
+                      role="radiogroup"
+                      aria-label="Chọn phương thức thanh toán"
+                    >
+                      {(["VIETQR", "ZALOPAY", "COD"] as const).map((methodKey) => {
+                        const entry = paymentMethodEvals.get(methodKey);
+                        if (!entry || !entry.config.enabled) return null;
+                        const copy = PAYMENT_METHOD_COPY[methodKey];
+                        const selected = paymentMethod === methodKey;
+                        const { allowed, reason, blockCode } = entry.evalResult;
+                        const maxVnd = entry.config.max_order_vnd;
+                        const minVnd = entry.config.min_order_vnd;
+                        return (
+                          <button
+                            key={methodKey}
+                            type="button"
+                            role="radio"
+                            aria-checked={selected}
+                            disabled={blockCode === "FLASH_SALE"}
+                            className={`${styles.paymentTile} ${
+                              selected ? styles.paymentTileSelected : ""
+                            }`}
+                            onClick={() => {
+                              if (blockCode === "FLASH_SALE") return;
+                              setPaymentMethod(methodKey);
+                              setFormError(null);
+                              setFormErrorCode(null);
+                            }}
+                          >
+                            <span className={styles.paymentHead}>
+                              <span className={styles.paymentTitle}>{copy.title}</span>
+                              <span className={styles.paymentCheck} aria-hidden="true">
+                                <IconCheck size={13} />
+                              </span>
                             </span>
-                          </span>
-                          <span className={styles.paymentDesc}>
-                            {copy.description}
-                            {minVnd > 0 && (
-                              <>
-                                {" "}
-                                Tối thiểu <span className="num">{formatVnd(minVnd)}</span>.
-                              </>
-                            )}
-                            {maxVnd > 0 && (
-                              <>
-                                {" "}
-                                Tối đa <span className="num">{formatVnd(maxVnd)}</span>.
-                              </>
-                            )}
-                          </span>
-                          {!allowed && reason && (
-                            <span className={shared.fieldError}>{reason}</span>
-                          )}
-                          {blockCode === "PHONE_NOT_VERIFIED" && (
-                            <span className={styles.addressShipLine}>
-                              Cần xác minh SĐT trước khi đặt COD.
+                            <span className={styles.paymentDesc}>
+                              {copy.description}
+                              {minVnd > 0 && (
+                                <>
+                                  {" "}
+                                  Tối thiểu <span className="num">{formatVnd(minVnd)}</span>.
+                                </>
+                              )}
+                              {maxVnd > 0 && (
+                                <>
+                                  {" "}
+                                  Tối đa <span className="num">{formatVnd(maxVnd)}</span>.
+                                </>
+                              )}
                             </span>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {paymentMethodEvals.get("COD")?.evalResult.blockCode === "PHONE_NOT_VERIFIED" && (
-                    <div className={styles.stageFooterRow}>
-                      <Link href="/tai-khoan#xac-minh-sdt" className={shared.breadcrumbLink}>
-                        Xác minh số điện thoại ngay để bật COD →
-                      </Link>
+                            {!allowed && reason && (
+                              <span className={shared.fieldError}>{reason}</span>
+                            )}
+                            {blockCode === "PHONE_NOT_VERIFIED" && (
+                              <span className={styles.addressShipLine}>
+                                Cần xác minh SĐT trước khi đặt COD.
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
                     </div>
-                  )}
-                </div>
-              )}
+                    {paymentMethodEvals.get("COD")?.evalResult.blockCode ===
+                      "PHONE_NOT_VERIFIED" && (
+                      <div className={styles.stageFooterRow}>
+                        <Link href="/tai-khoan#xac-minh-sdt" className={shared.breadcrumbLink}>
+                          Xác minh số điện thoại ngay để bật COD →
+                        </Link>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </section>
           </div>
 
@@ -1369,17 +1607,24 @@ export function CheckoutClient({
 
               <div className={styles.shopSliceItems}>
                 {cartItems.map((it) => {
+                  const skuId = it.raw.sku_id;
+                  const liveFlash = flashState.liveFlashBySku[skuId] ?? null;
+                  const availableLiveFlash = flashState.availableLiveFlashBySku[skuId] ?? null;
+                  const isFlashOptedOut = Boolean(availableLiveFlash) && !liveFlash;
+                  const flashEval = flashLineEvals[skuId] ?? null;
+                  const flashInspection = flashState.inspectionBySku[skuId] ?? null;
                   const lp = resolveDisplayedLinePricing({
                     regularUnitPriceVnd: it.raw.price_vnd,
                     quantity: it.raw.quantity,
-                    isFlashLine: Boolean(flashSaleItemBySku[it.raw.sku_id]),
-                    flashShortfall: false,
-                    activeShopDiscount: shopDiscountBySku[it.raw.sku_id] ?? null,
+                    isFlashLine: Boolean(liveFlash),
+                    flashUnitPriceVnd: liveFlash?.flashPriceVnd,
+                    flashShortfall: Boolean(flashEval?.needsRegularPriceChoice),
+                    activeShopDiscount: shopDiscountBySku[skuId] ?? null,
                     shopBreakdown,
                     isInPreview: Boolean(shopBreakdown),
                   });
                   return (
-                    <div key={it.raw.sku_id} className={styles.miniItem}>
+                    <div key={skuId} className={styles.miniItem}>
                       <img
                         src={it.image}
                         alt={it.productName}
@@ -1395,6 +1640,46 @@ export function CheckoutClient({
                           ))}
                           <span className="num">×{it.raw.quantity}</span>
                         </span>
+                        {(liveFlash || isFlashOptedOut) && (
+                          <div className={styles.miniFlashRow}>
+                            {liveFlash ? (
+                              <>
+                                <span className={`${shared.statusTag} ${shared.toneWarn}`}>
+                                  Flash sale
+                                </span>
+                                <button
+                                  type="button"
+                                  className={styles.flashToggleBtn}
+                                  disabled={isSubmitting || !canMutateFlashSelection}
+                                  onClick={() => optOutFlashSaleSku(skuId)}
+                                >
+                                  Mua giá thường
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <span className={`${shared.statusTag} ${shared.toneNeutral}`}>
+                                  Giá thường
+                                </span>
+                                <button
+                                  type="button"
+                                  className={styles.flashToggleBtn}
+                                  disabled={isSubmitting || !canMutateFlashSelection}
+                                  onClick={() => restoreFlashSaleSku(skuId)}
+                                >
+                                  Dùng giá Flash
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+                        {flashEval?.reason ? (
+                          <span className={`${styles.miniLineNote} ${styles.miniLineWarn}`}>
+                            {flashEval.reason}
+                          </span>
+                        ) : flashInspection && flashInspection.state !== "live" ? (
+                          <span className={styles.miniLineNote}>{flashInspection.message}</span>
+                        ) : null}
                       </div>
                       <span className={`${styles.miniPrice} num`}>
                         {formatVnd(lp.lineTotalVnd)}
@@ -1549,20 +1834,73 @@ export function CheckoutClient({
                 )}
               </div>
 
+              {submitGuard.keyUncertainty !== "none" && !formError && (
+                <div className={`${shared.feedbackBox} ${shared.feedbackWarn}`} role="status">
+                  <p>{AMBIGUOUS_CHECKOUT_MESSAGE}</p>
+                  <div className={styles.alertActions}>
+                    <Button variant="secondary" size="sm" href="/don-hang">
+                      Đơn hàng của tôi
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={isSubmitting}
+                      onClick={handleStartNewOrderAttempt}
+                    >
+                      Đặt đơn mới
+                    </Button>
+                  </div>
+                </div>
+              )}
+
               {formError && (
                 <div className={`${shared.feedbackBox} ${shared.feedbackError}`} role="alert">
                   <p>{formError}</p>
                   {sessionExpired && (
-                    <div className={shared.formActions}>
+                    <div className={styles.alertActions}>
                       <Button variant="secondary" size="sm" href="/dang-nhap?next=%2Fthanh-toan">
                         Đăng nhập lại
                       </Button>
                     </div>
                   )}
                   {formErrorCode === "COD_PHONE_NOT_VERIFIED" && (
-                    <div className={shared.formActions}>
+                    <div className={styles.alertActions}>
                       <Button variant="secondary" size="sm" href="/tai-khoan#xac-minh-sdt">
                         Xác minh SĐT ngay
+                      </Button>
+                    </div>
+                  )}
+                  {submitGuard.keyUncertainty !== "none" && (
+                    <div className={styles.alertActions}>
+                      <Button variant="secondary" size="sm" href="/don-hang">
+                        Đơn hàng của tôi
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={isSubmitting}
+                        onClick={handleStartNewOrderAttempt}
+                      >
+                        Đặt đơn mới
+                      </Button>
+                    </div>
+                  )}
+                  {submitGuard.checkoutFailedPrior && submitGuard.keyUncertainty === "none" && (
+                    <div className={styles.alertActions}>
+                      <Button variant="secondary" size="sm" href="/don-hang">
+                        Đơn hàng của tôi
+                      </Button>
+                    </div>
+                  )}
+                  {submitGuard.flashBlocked && canMutateFlashSelection && hasFlashSaleItem && (
+                    <div className={styles.alertActions}>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={isSubmitting}
+                        onClick={handleOptOutAllFlashSkus}
+                      >
+                        Bỏ Flash sale, mua giá thường
                       </Button>
                     </div>
                   )}

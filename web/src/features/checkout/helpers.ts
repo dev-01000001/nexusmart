@@ -433,6 +433,149 @@ export function inspectFlashSaleStatusForSku(
   return { state: "none", message: "" };
 }
 
+export interface CartFlashLineInput {
+  skuId: string;
+  quantity: number;
+  regularUnitPriceVnd: number;
+}
+
+export interface ResolvedCartFlashState {
+  activeFlashItemIdBySku: Record<string, string>;
+  liveFlashBySku: Record<string, ResolvedLiveFlashItem>;
+  availableLiveFlashBySku: Record<string, ResolvedLiveFlashItem>;
+  inspectionBySku: Record<string, FlashSaleSkuInspection>;
+  hasFlashSaleItem: boolean;
+}
+
+/**
+ * Shared single source of truth for Cart & Checkout flash-sale state per SKU:
+ * - Rehydrates live per-SKU `flash_sale_item_id`, price, slots, and limit directly from the
+ *   shop's server flash-sale list (so F5 / reload never loses flash pricing or COD restriction).
+ * - Strictly matches by `sku_id` (never falls back to another SKU's flash item).
+ * - Honors explicit buyer `"Mua giá thường"` opt-outs per SKU while keeping `availableLiveFlashBySku`
+ *   so the buyer can re-enable Flash sale price if desired.
+ */
+export function resolveCartFlashSaleState(input: {
+  items: readonly CartFlashLineInput[];
+  serverFlashSales: readonly GatewayFlashSale[];
+  storedFlashItemIdBySku?: Record<string, string> | null;
+  optedOutFlashSkus?: Record<string, boolean> | null;
+  nowMs?: number;
+}): ResolvedCartFlashState {
+  const nowMs = input.nowMs ?? Date.now();
+  const flashSales = input.serverFlashSales as GatewayFlashSale[];
+  const stored = input.storedFlashItemIdBySku ?? {};
+  const optedOut = input.optedOutFlashSkus ?? {};
+
+  const activeFlashItemIdBySku: Record<string, string> = {};
+  const liveFlashBySku: Record<string, ResolvedLiveFlashItem> = {};
+  const availableLiveFlashBySku: Record<string, ResolvedLiveFlashItem> = {};
+  const inspectionBySku: Record<string, FlashSaleSkuInspection> = {};
+
+  for (const item of input.items) {
+    const skuId = (item.skuId ?? "").trim();
+    if (!skuId) continue;
+    const storedId = (stored[skuId] ?? "").trim();
+    const live =
+      (storedId
+        ? resolveLiveFlashSaleItem(flashSales, storedId, skuId, item.regularUnitPriceVnd, nowMs)
+        : null) ?? resolveLiveFlashSaleForSku(flashSales, skuId, item.regularUnitPriceVnd, nowMs);
+
+    if (live) {
+      availableLiveFlashBySku[skuId] = live;
+      if (!optedOut[skuId]) {
+        liveFlashBySku[skuId] = live;
+        activeFlashItemIdBySku[skuId] = live.flashSaleItemId;
+      }
+      continue;
+    }
+
+    const inspection = inspectFlashSaleStatusForSku(
+      flashSales,
+      skuId,
+      storedId || undefined,
+      nowMs
+    );
+    if (inspection.state !== "none") {
+      inspectionBySku[skuId] = inspection;
+    }
+  }
+
+  return {
+    activeFlashItemIdBySku,
+    liveFlashBySku,
+    availableLiveFlashBySku,
+    inspectionBySku,
+    hasFlashSaleItem: Object.keys(activeFlashItemIdBySku).length > 0,
+  };
+}
+
+const FLASH_OPTOUT_STORAGE_KEY = "nm_flash_optout_v1";
+
+interface StoredFlashOptOut {
+  userId: string;
+  skuIds: string[];
+}
+
+export function saveOptedOutFlashSkus(
+  userId: string,
+  optedOutMap: Record<string, boolean>,
+  storage?: Pick<Storage, "setItem" | "removeItem"> | null
+): void {
+  const target = storage === undefined ? getDefaultSessionStorage() : storage;
+  const uid = (userId ?? "").trim();
+  if (!target || !uid) return;
+  const skuIds = Object.keys(optedOutMap)
+    .filter((k) => Boolean(optedOutMap[k]) && k.trim().length > 0)
+    .map((k) => k.trim());
+  try {
+    if (skuIds.length === 0) {
+      target.removeItem(FLASH_OPTOUT_STORAGE_KEY);
+      return;
+    }
+    const payload: StoredFlashOptOut = { userId: uid, skuIds };
+    target.setItem(FLASH_OPTOUT_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // Ignore storage quota/access failures
+  }
+}
+
+export function readOptedOutFlashSkus(
+  expectedUserId: string,
+  storage?: Pick<Storage, "getItem"> | null
+): Record<string, boolean> {
+  const target = storage === undefined ? getDefaultSessionStorage() : storage;
+  const uid = (expectedUserId ?? "").trim();
+  if (!target || !uid) return {};
+  try {
+    const raw = target.getItem(FLASH_OPTOUT_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Partial<StoredFlashOptOut> | null;
+    if (!parsed || parsed.userId !== uid || !Array.isArray(parsed.skuIds)) {
+      return {};
+    }
+    const out: Record<string, boolean> = {};
+    for (const id of parsed.skuIds) {
+      if (typeof id === "string" && id.trim()) {
+        out[id.trim()] = true;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function clearOptedOutFlashSkus(storage?: Pick<Storage, "removeItem"> | null): void {
+  const target = storage === undefined ? getDefaultSessionStorage() : storage;
+  if (!target) return;
+  try {
+    target.removeItem(FLASH_OPTOUT_STORAGE_KEY);
+  } catch {
+    // Ignore storage access failures
+  }
+}
+
 export interface EffectiveSkuPromotion {
   kind: "flash" | "shop_discount" | "none";
   effectiveUnitPriceVnd: number;
@@ -524,6 +667,7 @@ export function evaluateShopFlashLines(input: {
   }>;
   previewShopFlashDiscountVnd?: number | null;
   previewWarnings?: string[];
+  rejectedFlashSaleItemIds?: readonly string[];
 }): Record<string, FlashLineLimitEvaluation> {
   const out: Record<string, FlashLineLimitEvaluation> = {};
   const flashLines = input.lines.filter(
@@ -544,8 +688,13 @@ export function evaluateShopFlashLines(input: {
       ? Math.max(0, expectedShopFlashDiscount - input.previewShopFlashDiscountVnd)
       : 0;
   const warningBlob = (input.previewWarnings ?? []).join(" ").toLowerCase();
+  const rejectedFlashIds = new Set(
+    (input.rejectedFlashSaleItemIds ?? [])
+      .map((id) => (typeof id === "string" ? id.trim().toLowerCase() : ""))
+      .filter(Boolean)
+  );
 
-  // Pass 1: identify explicitly matched lines (qty > perUserLimit or flashSaleItemId in warnings)
+  // Pass 1: identify explicitly matched lines (qty > perUserLimit, rejectedFlashSaleItemIds, or raw warnings)
   const explicitFlags = new Map<
     string,
     { exceedsQtyLimit: boolean; explicitItemWarning: boolean; expectedDiscountVnd: number }
@@ -556,8 +705,10 @@ export function evaluateShopFlashLines(input: {
   for (const line of flashLines) {
     const perUser = Math.max(0, Math.trunc(line.flashPerUserLimit ?? 0));
     const exceedsQtyLimit = perUser > 0 && line.quantity > perUser;
+    const normalizedFlashId = line.flashSaleItemId?.trim().toLowerCase() ?? "";
     const explicitItemWarning = Boolean(
-      line.flashSaleItemId && warningBlob.includes(line.flashSaleItemId.toLowerCase())
+      normalizedFlashId &&
+      (rejectedFlashIds.has(normalizedFlashId) || warningBlob.includes(normalizedFlashId))
     );
     const expectedDiscountVnd =
       (line.regularUnitPriceVnd - line.flashUnitPriceVnd!) * line.quantity;
@@ -646,6 +797,7 @@ export type CheckoutSubmitErrorKind =
 
 const FLASH_LIMIT_ERROR_CODES = new Set<string>([
   "FLASH_SALE_NOT_ACTIVE",
+  "FLASH_SALE_EXHAUSTED",
   "FLASH_UNAVAILABLE_ON_COMMIT",
   "FLASH_SALE_PRICE_CHANGED",
   "FLASH_SALE_SKU_MISMATCH",
@@ -749,7 +901,8 @@ export type CheckoutSubmitEvent =
   | { type: "submit_success"; terminalCancelled?: boolean }
   | { type: "submit_error"; kind: CheckoutSubmitErrorKind }
   | { type: "explicit_new_order" }
-  | { type: "hydrated_pending_key" };
+  | { type: "hydrated_pending_key" }
+  | { type: "confirmed_empty_cart" };
 
 export interface CheckoutSubmitTransitionResult {
   state: CheckoutSubmitGuardState;
@@ -813,6 +966,21 @@ export function reduceCheckoutSubmitState(
       },
       rotateKey: false,
       clearStoredKey: false,
+    };
+  }
+
+  if (event.type === "confirmed_empty_cart") {
+    if (prev.keyUncertainty === "none") {
+      return {
+        state: prev,
+        rotateKey: false,
+        clearStoredKey: false,
+      };
+    }
+    return {
+      state: { ...INITIAL_CHECKOUT_SUBMIT_GUARD_STATE },
+      rotateKey: true,
+      clearStoredKey: true,
     };
   }
 
@@ -974,10 +1142,12 @@ export function shouldApplyPaymentFetchResult(input: {
 }
 
 const PENDING_CHECKOUT_KEY_STORAGE_KEY = "nm_pending_checkout_key_v1";
+export const PENDING_CHECKOUT_KEY_TTL_MS = 30 * 60 * 1000;
 
 export interface StoredPendingCheckoutKey {
   key: string;
   sig: string;
+  savedAt?: number;
 }
 
 /**
@@ -1000,14 +1170,17 @@ export function buildCheckoutIdempotencySignature(input: {
 
 export function savePendingCheckoutKey(
   record: StoredPendingCheckoutKey,
-  storage?: Pick<Storage, "setItem"> | null
+  storage?: Pick<Storage, "setItem"> | null,
+  nowMs = Date.now()
 ): void {
   const target = storage === undefined ? getDefaultSessionStorage() : storage;
   if (!target || !record.key.trim() || !record.sig.trim()) return;
+  const savedAt =
+    typeof record.savedAt === "number" && Number.isFinite(record.savedAt) ? record.savedAt : nowMs;
   try {
     target.setItem(
       PENDING_CHECKOUT_KEY_STORAGE_KEY,
-      JSON.stringify({ key: record.key.trim(), sig: record.sig.trim() })
+      JSON.stringify({ key: record.key.trim(), sig: record.sig.trim(), savedAt })
     );
   } catch {
     // Ignore storage access/quota failures
@@ -1016,7 +1189,8 @@ export function savePendingCheckoutKey(
 
 export function readPendingCheckoutKey(
   expectedSig: string,
-  storage?: Pick<Storage, "getItem"> | null
+  storage?: (Pick<Storage, "getItem"> & Partial<Pick<Storage, "removeItem">>) | null,
+  nowMs = Date.now()
 ): string | null {
   const target = storage === undefined ? getDefaultSessionStorage() : storage;
   const cleanSig = (expectedSig ?? "").trim();
@@ -1029,9 +1203,20 @@ export function readPendingCheckoutKey(
       !parsed ||
       typeof parsed.key !== "string" ||
       typeof parsed.sig !== "string" ||
-      !parsed.key.trim() ||
-      parsed.sig !== cleanSig
+      !parsed.key.trim()
     ) {
+      target.removeItem?.(PENDING_CHECKOUT_KEY_STORAGE_KEY);
+      return null;
+    }
+    if (
+      typeof parsed.savedAt !== "number" ||
+      !Number.isFinite(parsed.savedAt) ||
+      nowMs - parsed.savedAt > PENDING_CHECKOUT_KEY_TTL_MS
+    ) {
+      target.removeItem?.(PENDING_CHECKOUT_KEY_STORAGE_KEY);
+      return null;
+    }
+    if (parsed.sig !== cleanSig) {
       return null;
     }
     return parsed.key.trim();
@@ -1050,6 +1235,72 @@ export function clearPendingCheckoutKey(storage?: Pick<Storage, "removeItem"> | 
   }
 }
 
+/**
+ * Syncs `nm_pending_checkout_key_v1` with auth transitions:
+ * - On logout (`!activeUserId`): unconditionally deletes any pending key.
+ * - On user switch (or hard-reload into another account): deletes any key whose signature belongs
+ *   to a different user, or whose 30-minute TTL has expired.
+ * - Preserves a valid, non-expired pending key belonging to `activeUserId` across F5 reloads.
+ */
+export function prunePendingCheckoutKeyForUser(
+  activeUserId: string | null | undefined,
+  storage?: Pick<Storage, "getItem" | "removeItem"> | null,
+  nowMs = Date.now()
+): void {
+  const target = storage === undefined ? getDefaultSessionStorage() : storage;
+  if (!target) return;
+  const uid = (activeUserId ?? "").trim();
+  if (!uid) {
+    clearPendingCheckoutKey(target);
+    return;
+  }
+  try {
+    const raw = target.getItem(PENDING_CHECKOUT_KEY_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Partial<StoredPendingCheckoutKey> | null;
+    const isExpired =
+      !parsed ||
+      typeof parsed.savedAt !== "number" ||
+      !Number.isFinite(parsed.savedAt) ||
+      nowMs - parsed.savedAt > PENDING_CHECKOUT_KEY_TTL_MS;
+    const belongsToUser =
+      Boolean(parsed) && typeof parsed?.sig === "string" && parsed.sig.startsWith(`${uid}:`);
+    if (isExpired || !belongsToUser) {
+      target.removeItem(PENDING_CHECKOUT_KEY_STORAGE_KEY);
+    }
+  } catch {
+    clearPendingCheckoutKey(target);
+  }
+}
+
+/**
+ * Returns true ONLY once the server has authoritatively confirmed an empty available cart
+ * (`cartLoaded && !cartLoading && !cartError && availableCartItemCount === 0`) while a stale
+ * pending checkout key is hydrated, so CheckoutClient can show a `/don-hang` check reminder and
+ * evict the old key without weakening F5 duplicate-order protection while items remain in cart.
+ */
+export function shouldClearPendingKeyOnConfirmedEmptyCart(input: {
+  hasPendingKey: boolean;
+  isAuthenticated: boolean;
+  sessionLoading: boolean;
+  cartLoading: boolean;
+  cartError: string | null;
+  cartLoaded: boolean;
+  availableCartItemCount: number;
+  isSubmitting: boolean;
+}): boolean {
+  return (
+    input.hasPendingKey &&
+    input.isAuthenticated &&
+    !input.sessionLoading &&
+    !input.cartLoading &&
+    !input.cartError &&
+    input.cartLoaded &&
+    !input.isSubmitting &&
+    input.availableCartItemCount === 0
+  );
+}
+
 const TERMINAL_FAILED_PAYMENT_STATUSES = new Set(["CANCELLED", "EXPIRED", "FAILED"]);
 
 /**
@@ -1058,7 +1309,13 @@ const TERMINAL_FAILED_PAYMENT_STATUSES = new Set(["CANCELLED", "EXPIRED", "FAILE
  * a dead payment-waiting page.
  */
 export function isTerminalCancelledCheckoutResponse(
-  res: Pick<GatewayCheckoutResponse, "orders" | "payment_status"> | null | undefined
+  res:
+    | {
+        orders?: ReadonlyArray<{ status?: string | null } | null> | null;
+        payment_status?: string | null;
+      }
+    | null
+    | undefined
 ): boolean {
   if (!res) return false;
   const orders = Array.isArray(res.orders) ? res.orders : [];

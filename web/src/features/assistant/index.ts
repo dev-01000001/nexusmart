@@ -2,6 +2,13 @@ export { SiteAssistantWidget } from "./SiteAssistantWidget";
 export { ProductReviewSummary } from "./ProductReviewSummary";
 export { createSseParser, type AssistantSseEvent, type SseParser } from "./sseParser";
 export {
+  renderAssistantMarkdown,
+  sanitizeAssistantLinkUrl,
+  type AssistantLinkComponent,
+  type AssistantMarkdownClassNames,
+  type RenderAssistantMarkdownOptions,
+} from "./assistantMarkdown";
+export {
   MIN_REVIEWS_FOR_SUMMARY,
   MAX_CHAT_MESSAGES,
   MAX_CHAT_MESSAGE_LENGTH,

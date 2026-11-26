@@ -3,6 +3,12 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { useSession } from "@/components/SessionProvider";
+import {
+  clearOptedOutFlashSkus as clearStoredOptedOutFlashSkus,
+  prunePendingCheckoutKeyForUser,
+  readOptedOutFlashSkus,
+  saveOptedOutFlashSkus,
+} from "@/features/checkout/helpers";
 import type { GwCart, GwCartItem } from "@/features/commerce/types";
 
 /**
@@ -63,6 +69,11 @@ export interface StoreContextValue {
   // In-memory shop voucher & flash-sale selections for the current site checkout
   selectedVoucherId: string | null;
   flashSaleItemBySku: Record<string, string>;
+  optedOutFlashSkus: Record<string, boolean>;
+  optOutFlashSaleSku: (skuId: string) => void;
+  optOutFlashSaleSkus: (skuIds: string[]) => void;
+  restoreFlashSaleSku: (skuId: string) => void;
+  clearOptedOutFlashSkus: () => void;
   setSelectedVoucher: (idOrCode: string | null) => void;
   saveVoucher: (idOrCode: string) => Promise<SaveVoucherResult>;
   resetVoucherSelection: () => void;
@@ -103,6 +114,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   // In-memory shop voucher & flash selection for the current site
   const [selectedVoucherId, setSelectedVoucherId] = useState<string | null>(null);
   const [flashSaleItemBySku, setFlashSaleItemBySku] = useState<Record<string, string>>({});
+  const [optedOutFlashSkus, setOptedOutFlashSkus] = useState<Record<string, boolean>>({});
 
   // Viewer-only convenience preferences
   const [wishlist, setWishlist] = useState<WishlistEntry[]>([]);
@@ -201,15 +213,19 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   // Sync real backend cart automatically on live shop site hosts whenever the session changes
   useEffect(() => {
+    prunePendingCheckoutKeyForUser(sessionUser?.id ?? null);
     if (!sessionUser?.id) {
       setCart(null);
       setCartAuthenticated(false);
       setCartError(null);
       setCartLoading(false);
       setFlashSaleItemBySku({});
+      setOptedOutFlashSkus({});
+      clearStoredOptedOutFlashSkus();
       setSelectedVoucherId(null);
       return;
     }
+    setOptedOutFlashSkus(readOptedOutFlashSkus(sessionUser.id));
     if (!isLiveSiteHostDocument()) {
       setCart(null);
       setCartLoading(false);
@@ -218,6 +234,61 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
     void refreshCart();
   }, [sessionUser?.id, refreshCart]);
+
+  const optOutFlashSaleSku = useCallback(
+    (skuId: string) => {
+      const clean = skuId.trim();
+      if (!clean) return;
+      setOptedOutFlashSkus((prev) => {
+        if (prev[clean]) return prev;
+        const next = { ...prev, [clean]: true };
+        if (sessionUser?.id) saveOptedOutFlashSkus(sessionUser.id, next);
+        return next;
+      });
+    },
+    [sessionUser?.id]
+  );
+
+  const optOutFlashSaleSkus = useCallback(
+    (skuIds: string[]) => {
+      const cleaned = skuIds.map((id) => id.trim()).filter(Boolean);
+      if (cleaned.length === 0) return;
+      setOptedOutFlashSkus((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const id of cleaned) {
+          if (!next[id]) {
+            next[id] = true;
+            changed = true;
+          }
+        }
+        if (!changed) return prev;
+        if (sessionUser?.id) saveOptedOutFlashSkus(sessionUser.id, next);
+        return next;
+      });
+    },
+    [sessionUser?.id]
+  );
+
+  const restoreFlashSaleSku = useCallback(
+    (skuId: string) => {
+      const clean = skuId.trim();
+      if (!clean) return;
+      setOptedOutFlashSkus((prev) => {
+        if (!prev[clean]) return prev;
+        const next = { ...prev };
+        delete next[clean];
+        if (sessionUser?.id) saveOptedOutFlashSkus(sessionUser.id, next);
+        return next;
+      });
+    },
+    [sessionUser?.id]
+  );
+
+  const clearOptedOutFlashSkus = useCallback(() => {
+    setOptedOutFlashSkus({});
+    clearStoredOptedOutFlashSkus();
+  }, []);
 
   const cartItems = useMemo<GwCartItem[]>(
     () => (cart?.shop_groups ?? []).flatMap((g) => g.items ?? []),
@@ -252,6 +323,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             ...prev,
             [skuId]: input.flashSaleItemId as string,
           }));
+          restoreFlashSaleSku(skuId);
         }
         const label = input.productName
           ? input.size
@@ -284,7 +356,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         return { ok: false, message };
       }
     },
-    [showToast]
+    [restoreFlashSaleSku, showToast]
   );
 
   const updateCartItemQty = useCallback(
@@ -308,6 +380,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             delete copy[cleanSkuId];
             return copy;
           });
+          restoreFlashSaleSku(cleanSkuId);
         }
         if (data.clamped_to_stock) {
           showToast("Số lượng đã được điều chỉnh theo tồn kho hiện tại.");
@@ -331,7 +404,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         return { ok: false, message };
       }
     },
-    [showToast]
+    [restoreFlashSaleSku, showToast]
   );
 
   const removeCartItem = useCallback(
@@ -350,6 +423,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           delete copy[cleanSkuId];
           return copy;
         });
+        restoreFlashSaleSku(cleanSkuId);
         return { ok: true, cart: data.cart ?? null };
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
@@ -365,7 +439,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         return { ok: false, message };
       }
     },
-    [showToast]
+    [restoreFlashSaleSku, showToast]
   );
 
   const resetVoucherSelection = useCallback(() => {
@@ -382,7 +456,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         setCart(data.cart ?? null);
         if (!skuIds || skuIds.length === 0) {
           setFlashSaleItemBySku({});
+          clearOptedOutFlashSkus();
           resetVoucherSelection();
+        } else {
+          for (const id of skuIds) {
+            restoreFlashSaleSku(id);
+          }
         }
         return true;
       } catch (err) {
@@ -396,7 +475,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         return false;
       }
     },
-    [resetVoucherSelection, showToast]
+    [clearOptedOutFlashSkus, resetVoucherSelection, restoreFlashSaleSku, showToast]
   );
 
   const setSelectedVoucher = useCallback((idOrCode: string | null) => {
@@ -487,6 +566,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       clearCart,
       selectedVoucherId,
       flashSaleItemBySku,
+      optedOutFlashSkus,
+      optOutFlashSaleSku,
+      optOutFlashSaleSkus,
+      restoreFlashSaleSku,
+      clearOptedOutFlashSkus,
       setSelectedVoucher,
       saveVoucher,
       resetVoucherSelection,
@@ -514,6 +598,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       clearCart,
       selectedVoucherId,
       flashSaleItemBySku,
+      optedOutFlashSkus,
+      optOutFlashSaleSku,
+      optOutFlashSaleSkus,
+      restoreFlashSaleSku,
+      clearOptedOutFlashSkus,
       setSelectedVoucher,
       saveVoucher,
       resetVoucherSelection,

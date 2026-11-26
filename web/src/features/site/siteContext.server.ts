@@ -1,7 +1,6 @@
 // Server-only helpers shared by every page under `app/(site)/s/[host]/` (site host pages).
 import { cache } from "react";
 import { headers } from "next/headers";
-import type { FlashSaleSlot } from "@/data/flash-sale";
 import { CATEGORIES, PRODUCTS, type CategoryInfo, type Product } from "@/data/products";
 import { SHOPS, type Shop } from "@/data/shops";
 import { VOUCHERS, type Voucher } from "@/data/vouchers";
@@ -13,6 +12,7 @@ import {
   type GwFlashSale,
   type GwProduct,
   type GwShop,
+  type SiteFlashSaleSlot,
 } from "@/lib/catalog-map";
 import type { GwVoucher as CommerceGwVoucher } from "@/features/commerce/types";
 import { APP_ORIGINS, getSiteRootDomain } from "@/lib/server/config";
@@ -20,6 +20,7 @@ import { GatewayError, SAFE_MESSAGES, logServer } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import { resolveRequestHost, resolveRequestProto } from "@/lib/server/http";
 import { loadShopSiteRenderData } from "@/lib/server/sites";
+import { STOREFRONT_CHANNEL } from "@/lib/server/storefront";
 import { deriveMarketplaceOrigin, deriveSiteOrigin, normalizeHostHeader } from "@/lib/site/host";
 import {
   parseSiteConfig,
@@ -121,8 +122,9 @@ export const fetchPublishedSiteTemplateByHost = cache(
       logServer("warn", "site_template_by_host_fetch_failed", {
         host: hostname,
         kind: err instanceof GatewayError ? err.kind : "unknown",
+        trace_id: err instanceof GatewayError ? err.traceId : "",
       });
-      return null;
+      throw err;
     }
   }
 );
@@ -178,7 +180,7 @@ export interface SiteTemplateBundle {
   categories: CategoryInfo[];
   products: Product[];
   vouchers: Voucher[];
-  flashSlots: FlashSaleSlot[];
+  flashSlots: SiteFlashSaleSlot[];
 }
 
 /**
@@ -212,7 +214,7 @@ export const loadSiteTemplateBundle = cache(
 export async function loadSiteFlashSales(hostParam: string): Promise<{
   brandName: string;
   shopName: string;
-  slots: FlashSaleSlot[];
+  slots: SiteFlashSaleSlot[];
   products: Product[];
   error: string | null;
 } | null> {
@@ -300,18 +302,24 @@ export async function loadSiteVouchers(hostParam: string): Promise<{
   const brandName = bundle.templateConfig.theme.brand_name?.trim() || bundle.payload.shop.name;
 
   try {
+    const voucherQuery = {
+      shop_id: shopId,
+      scope: "SHOP",
+      sales_channel: STOREFRONT_CHANNEL,
+      storefront_shop_id: shopId,
+    };
     let gwVouchers: CommerceGwVoucher[] = [];
     try {
       const res = await gw<{ vouchers?: CommerceGwVoucher[] | null }>("/api/v1/vouchers", {
         auth: "user",
-        query: { shop_id: shopId, scope: "SHOP" },
+        query: voucherQuery,
       });
       gwVouchers = res.vouchers ?? [];
     } catch (err) {
       if (err instanceof GatewayError && err.kind === "unauthenticated") {
         const res = await gw<{ vouchers?: CommerceGwVoucher[] | null }>("/api/v1/vouchers", {
           auth: "none",
-          query: { shop_id: shopId, scope: "SHOP" },
+          query: voucherQuery,
         });
         gwVouchers = res.vouchers ?? [];
       } else {

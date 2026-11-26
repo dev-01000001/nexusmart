@@ -4,9 +4,16 @@ import React, { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { FLASH_SALE_RULES, type FlashSaleItem, type FlashSaleSlot } from "@/data/flash-sale";
-import { getSku, type Product, type SizeCode } from "@/data/products";
-import { pickDefaultFlashSlot, secondsUntilSlotEdge } from "@/lib/catalog-map";
+import { FLASH_SALE_RULES, type FlashSaleSlot } from "@/data/flash-sale";
+import type { Product } from "@/data/products";
+import {
+  listFlashSaleSkuOptions,
+  pickDefaultFlashSlot,
+  secondsUntilSlotEdge,
+  type FlashSaleSkuOption,
+  type SiteFlashSaleItem,
+  type SiteFlashSaleSlot,
+} from "@/lib/catalog-map";
 import { formatDiscountPercent } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";
 import { Button, Price, StateView } from "@/components";
@@ -14,7 +21,7 @@ import styles from "./page.module.css";
 
 export interface FlashSaleClientProps {
   brandName: string;
-  slots: FlashSaleSlot[];
+  slots: Array<FlashSaleSlot | SiteFlashSaleSlot>;
   products: Product[];
   loadError: string | null;
   serverNowMs: number;
@@ -87,7 +94,7 @@ export function FlashSaleClient({
   const [nowOffsetSec, setNowOffsetSec] = useState<number>(0);
   const [claimedCounts, setClaimedCounts] = useState<Record<string, number>>({});
   const [remindedIds, setRemindedIds] = useState<Record<string, boolean>>({});
-  const [selectedSizes, setSelectedSizes] = useState<Record<string, SizeCode>>({});
+  const [selectedSkuIds, setSelectedSkuIds] = useState<Record<string, string>>({});
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
   useEffect(() => {
@@ -161,51 +168,54 @@ export function FlashSaleClient({
     router.replace(`/flash-sale?slot=${encodeURIComponent(id)}`, { scroll: false });
   };
 
-  const handleQuickFlashBuy = async (item: FlashSaleItem, liveRemaining: number) => {
+  const handleQuickFlashBuy = async (
+    item: SiteFlashSaleItem,
+    option: FlashSaleSkuOption | null,
+    liveRemaining: number
+  ) => {
     if (busyKey) return;
     const product = productById.get(item.productId);
     if (!product) return;
+    if (!option || !option.skuId || !option.detail.id) {
+      showToast("Phân loại này không nằm trong suất Flash sale.");
+      return;
+    }
     if (flashCountInCart >= FLASH_SALE_RULES.maxItemsPerOrder) {
       showToast(
         `Mỗi đơn Flash sale chỉ chọn tối đa ${FLASH_SALE_RULES.maxItemsPerOrder} sản phẩm ưu đãi.`
       );
       return;
     }
-    const already = claimedCounts[item.id] ?? 0;
-    if (already >= item.limitPerBuyer) {
-      showToast(`Bạn đã chọn tối đa ${item.limitPerBuyer} suất cho sản phẩm này.`);
+    const flashItemId = option.detail.id;
+    const already = claimedCounts[flashItemId] ?? 0;
+    if (option.detail.limitPerBuyer > 0 && already >= option.detail.limitPerBuyer) {
+      showToast(`Bạn đã chọn tối đa ${option.detail.limitPerBuyer} suất cho phân loại này.`);
       return;
     }
     if (liveRemaining <= 0) {
-      showToast("Suất ưu đãi của sản phẩm này đã hết.");
+      showToast("Suất ưu đãi của phân loại này đã hết.");
       return;
     }
-    const firstColor = product.colors[0]?.code ?? "";
-    const defaultSize =
-      selectedSizes[item.id] ??
-      product.skus.find((s) => s.colorCode === firstColor && s.stock > 0 && s.skuId)?.size ??
-      product.sizes[0];
-    const sku = getSku(product, firstColor, defaultSize);
-    if (!sku || sku.stock <= 0 || !sku.skuId) {
-      showToast(`Size ${defaultSize} hiện đã hết hàng.`);
+    if (option.sku.stock <= 0) {
+      showToast(`Phân loại ${option.label} hiện đã hết hàng.`);
       return;
     }
 
     setBusyKey(item.id);
     try {
       const res = await addToCart({
-        skuId: sku.skuId,
+        skuId: option.skuId,
         quantity: 1,
-        flashSaleItemId: item.itemIdBySku?.[sku.skuId] ?? item.id,
+        flashSaleItemId: flashItemId,
         productName: product.shortName,
-        size: defaultSize,
+        size: option.label,
       });
       if (res.unauthenticated) {
         router.push(`/dang-nhap?next=${encodeURIComponent("/flash-sale")}`);
         return;
       }
       if (res.ok) {
-        setClaimedCounts((prev) => ({ ...prev, [item.id]: already + 1 }));
+        setClaimedCounts((prev) => ({ ...prev, [flashItemId]: already + 1 }));
       }
     } finally {
       setBusyKey(null);
@@ -227,9 +237,19 @@ export function FlashSaleClient({
   const renderableItems = activeSlot.items
     .map((item) => {
       const product = productById.get(item.productId);
-      return product ? { item, product } : null;
+      if (!product) return null;
+      const skuOptions = listFlashSaleSkuOptions(product, item);
+      return { item: item as SiteFlashSaleItem, product, skuOptions };
     })
-    .filter((entry): entry is { item: FlashSaleItem; product: Product } => entry !== null);
+    .filter(
+      (
+        entry
+      ): entry is {
+        item: SiteFlashSaleItem;
+        product: Product;
+        skuOptions: FlashSaleSkuOption[];
+      } => entry !== null && entry.skuOptions.length > 0
+    );
 
   const gridVariantClass =
     renderableItems.length === 1
@@ -346,28 +366,30 @@ export function FlashSaleClient({
           />
         ) : (
           <div className={gridVariantClass}>
-            {renderableItems.map(({ item, product }, idx) => {
-              const claimed = claimedCounts[item.id] ?? 0;
-              const liveRemaining = Math.max(0, item.remainingQuota - claimed);
+            {renderableItems.map(({ item, product, skuOptions }, idx) => {
+              const defaultOption =
+                skuOptions.find((o) => o.sku.stock > 0 && o.detail.remainingQuota > 0) ??
+                skuOptions.find((o) => o.sku.stock > 0) ??
+                skuOptions[0] ??
+                null;
+              const chosenOption =
+                skuOptions.find((o) => o.skuId === selectedSkuIds[item.id]) ?? defaultOption;
+              const detail = chosenOption?.detail;
+              const flashPrice = detail?.flashPrice ?? item.flashPrice;
+              const originalPrice = detail?.originalPrice ?? item.originalPrice;
+              const totalQuota = detail?.totalQuota ?? item.totalQuota;
+              const limitPerBuyer = detail?.limitPerBuyer ?? item.limitPerBuyer;
+              const claimed = detail ? (claimedCounts[detail.id] ?? 0) : 0;
+              const liveRemaining = detail ? Math.max(0, detail.remainingQuota - claimed) : 0;
               const soldRatio =
-                item.totalQuota > 0
-                  ? Math.min(
-                      100,
-                      Math.round(((item.totalQuota - liveRemaining) / item.totalQuota) * 100)
-                    )
+                totalQuota > 0
+                  ? Math.min(100, Math.round(((totalQuota - liveRemaining) / totalQuota) * 100))
                   : 100;
 
-              const firstColor = product.colors[0]?.code ?? "";
-              const chosenSize: SizeCode =
-                selectedSizes[item.id] ??
-                product.skus.find((s) => s.colorCode === firstColor && s.stock > 0 && s.skuId)
-                  ?.size ??
-                product.sizes[0];
-              const chosenSku = getSku(product, firstColor, chosenSize);
-              const skuOutOfStock = !chosenSku || chosenSku.stock <= 0 || !chosenSku.skuId;
+              const skuOutOfStock = !chosenOption || chosenOption.sku.stock <= 0;
               const isReminded = Boolean(remindedIds[item.id]);
               const hoverImage = product.onModelImage ?? product.gallery[1];
-              const discountTag = formatDiscountPercent(item.originalPrice, item.flashPrice);
+              const discountTag = formatDiscountPercent(originalPrice, flashPrice);
               const singleLayout = renderableItems.length === 1;
 
               return (
@@ -416,8 +438,8 @@ export function FlashSaleClient({
                     </Link>
 
                     <Price
-                      amount={item.flashPrice}
-                      originalAmount={item.originalPrice}
+                      amount={flashPrice}
+                      originalAmount={originalPrice}
                       size="md"
                       showDiscount={false}
                     />
@@ -426,19 +448,21 @@ export function FlashSaleClient({
                       <div className={styles.quotaTop}>
                         <span className={styles.quotaRemain}>
                           {activeSlot.status === "ended"
-                            ? `Đã kết thúc (${item.totalQuota} suất)`
+                            ? `Đã kết thúc (${totalQuota} suất)`
                             : activeSlot.status === "upcoming"
-                              ? `${item.totalQuota} suất lúc ${activeSlot.startTime}`
-                              : `Còn ${liveRemaining}/${item.totalQuota} suất`}
+                              ? `${totalQuota} suất lúc ${activeSlot.startTime}`
+                              : `Còn ${liveRemaining}/${totalQuota} suất`}
                         </span>
-                        <span className={styles.quotaLimit}>Tối đa {item.limitPerBuyer}/mẫu</span>
+                        {limitPerBuyer > 0 && (
+                          <span className={styles.quotaLimit}>Tối đa {limitPerBuyer}/mẫu</span>
+                        )}
                       </div>
                       <div
                         className={styles.quotaTrack}
                         role="progressbar"
                         aria-valuemin={0}
-                        aria-valuemax={item.totalQuota}
-                        aria-valuenow={item.totalQuota - liveRemaining}
+                        aria-valuemax={totalQuota}
+                        aria-valuenow={totalQuota - liveRemaining}
                         aria-label={`Tiến độ suất ưu đãi ${product.shortName}`}
                       >
                         <div
@@ -456,24 +480,25 @@ export function FlashSaleClient({
                           <div
                             className={styles.sizePills}
                             role="group"
-                            aria-label={`Chọn size ${product.shortName}`}
+                            aria-label={`Chọn phân loại ưu đãi ${product.shortName}`}
                           >
-                            {product.sizes.map((sz) => {
-                              const sku = getSku(product, firstColor, sz);
-                              const outOfStock = !sku || sku.stock <= 0 || !sku.skuId;
-                              const active = chosenSize === sz;
+                            {skuOptions.map((opt) => {
+                              const optClaimed = claimedCounts[opt.detail.id] ?? 0;
+                              const optDisabled =
+                                opt.sku.stock <= 0 || opt.detail.remainingQuota - optClaimed <= 0;
+                              const active = chosenOption?.skuId === opt.skuId;
                               return (
                                 <button
-                                  key={sz}
+                                  key={opt.skuId}
                                   type="button"
-                                  disabled={outOfStock}
+                                  disabled={optDisabled}
                                   className={`${styles.sizeBtn} ${active ? styles.sizeBtnActive : ""}`}
                                   onClick={() =>
-                                    setSelectedSizes((prev) => ({ ...prev, [item.id]: sz }))
+                                    setSelectedSkuIds((prev) => ({ ...prev, [item.id]: opt.skuId }))
                                   }
                                   aria-pressed={active}
                                 >
-                                  {sz}
+                                  {opt.label}
                                 </button>
                               );
                             })}
@@ -483,8 +508,13 @@ export function FlashSaleClient({
                             variant="primary"
                             size="md"
                             fullWidth
-                            disabled={liveRemaining <= 0 || skuOutOfStock || busyKey === item.id}
-                            onClick={() => handleQuickFlashBuy(item, liveRemaining)}
+                            disabled={
+                              !chosenOption ||
+                              liveRemaining <= 0 ||
+                              skuOutOfStock ||
+                              busyKey === item.id
+                            }
+                            onClick={() => handleQuickFlashBuy(item, chosenOption, liveRemaining)}
                           >
                             {liveRemaining <= 0
                               ? "Đã hết suất"
@@ -492,7 +522,7 @@ export function FlashSaleClient({
                                 ? "Tạm hết hàng"
                                 : busyKey === item.id
                                   ? "Đang thêm..."
-                                  : `Mua ưu đãi (${chosenSize})`}
+                                  : `Mua ưu đãi (${chosenOption?.label ?? ""})`}
                           </Button>
                         </>
                       )}

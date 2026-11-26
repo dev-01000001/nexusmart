@@ -203,9 +203,11 @@ function asStringList(value: unknown, maxItems = 20): string[] {
 }
 
 const ORDER_STATUS_LABELS: Record<string, string> = {
+  PENDING: "Chờ thanh toán",
   PENDING_PAYMENT: "Chờ thanh toán",
   PAID: "Đã thanh toán",
   CONFIRMED: "Đã xác nhận",
+  PREPARING: "Đang chuẩn bị hàng",
   PROCESSING: "Đang chuẩn bị hàng",
   PACKING: "Đang đóng gói",
   SHIPPING: "Đang giao hàng",
@@ -215,6 +217,7 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
   CANCELLED: "Đã hủy",
   RETURN_REQUESTED: "Đang yêu cầu trả hàng",
   RETURN_APPROVED: "Đã duyệt trả hàng",
+  RETURNED: "Đã trả hàng",
   REFUNDED: "Đã hoàn tiền",
 };
 
@@ -229,9 +232,11 @@ export function getToolActivityLabel(toolName: string): string {
   if (name.includes("order") || name.includes("track")) {
     return "Đang tra cứu thông tin đơn hàng của bạn...";
   }
-  if (name.includes("policy") || name.includes("return") || name.includes("shipping")) {
+  if (name.includes("polic") || name.includes("return") || name.includes("shipping")) {
     return "Đang kiểm tra chính sách của cửa hàng...";
   }
+  if (name.includes("handoff")) return "Đang kết nối với nhân viên cửa hàng...";
+  if (name.includes("report")) return "Đang tổng hợp báo cáo kinh doanh...";
   if (name.includes("review")) return "Đang tổng hợp nhận xét từ khách hàng...";
   return "Đang tìm sản phẩm phù hợp trong cửa hàng...";
 }
@@ -246,7 +251,7 @@ export function sanitizeAssistantError(code?: string, rawMessage?: string): stri
   if (normalizedCode === "UNAUTHENTICATED" || normalizedCode === "UNAUTHORIZED") {
     return "Vui lòng đăng nhập để sử dụng thao tác liên quan đến tài khoản và đơn hàng.";
   }
-  if (normalizedCode === "QUOTA_EXCEEDED") {
+  if (normalizedCode === "QUOTA_EXCEEDED" || normalizedCode === "BUDGET_EXCEEDED") {
     return "Lượt hỗ trợ tự động hôm nay đã đạt giới hạn. Bạn có thể nhắn trực tiếp với nhân viên gian hàng.";
   }
   const clean = (rawMessage ?? "").trim();
@@ -256,7 +261,85 @@ export function sanitizeAssistantError(code?: string, rawMessage?: string): stri
   return clean;
 }
 
-// ---- Tool result card extractor ----
+// ---- Site route allowlist & tool result card extractor ----
+
+const SITE_STATIC_ROUTES = new Set([
+  "/",
+  "/san-pham",
+  "/tim-kiem",
+  "/flash-sale",
+  "/voucher",
+  "/gio-hang",
+  "/thanh-toan",
+  "/don-hang",
+  "/tra-cuu-don-hang",
+  "/tra-cuu-don",
+  "/tai-khoan",
+  "/gioi-thieu",
+  "/chinh-sach",
+  "/dang-nhap",
+  "/dang-ky",
+  "/quen-mat-khau",
+  "/dat-lai-mat-khau",
+]);
+
+function normalizeSiteRouteHref(rawHref: string): string {
+  const safe = sanitizeSafeUrl(rawHref);
+  if (!safe) return "";
+  if (safe.startsWith("https://")) return safe;
+
+  const hashIdx = safe.indexOf("#");
+  const withoutHash = hashIdx >= 0 ? safe.slice(0, hashIdx) : safe;
+  const hash = hashIdx >= 0 ? safe.slice(hashIdx) : "";
+  const queryIdx = withoutHash.indexOf("?");
+  const rawPath = queryIdx >= 0 ? withoutHash.slice(0, queryIdx) : withoutHash;
+  const query = queryIdx >= 0 ? withoutHash.slice(queryIdx) : "";
+  const path = rawPath.length > 1 ? rawPath.replace(/\/+$/, "") : rawPath;
+
+  if (path.includes("..")) return "";
+
+  if (
+    path === "/policies" ||
+    path.startsWith("/policies/") ||
+    path === "/policy" ||
+    path.startsWith("/policy/")
+  ) {
+    return "/chinh-sach#info-policies";
+  }
+  if (path === "/cart") return "/gio-hang";
+  if (path === "/orders" || path === "/tai-khoan/don-hang") return "/don-hang";
+
+  if (SITE_STATIC_ROUTES.has(path)) {
+    return `${path}${query}${hash}`;
+  }
+  if (
+    (path.startsWith("/san-pham/") && path.length > "/san-pham/".length) ||
+    (path.startsWith("/don-hang/") && path.length > "/don-hang/".length)
+  ) {
+    return `${path}${query}${hash}`;
+  }
+  return "";
+}
+
+function findCartItemBySku(cart: unknown, skuId: string): Record<string, unknown> | null {
+  if (!isRecord(cart) || !skuId) return null;
+  const checkItems = (items: unknown): Record<string, unknown> | null => {
+    if (!Array.isArray(items)) return null;
+    for (const item of items) {
+      if (!isRecord(item)) continue;
+      if (asString(item.sku_id ?? item.skuId) === skuId) return item;
+    }
+    return null;
+  };
+  if (Array.isArray(cart.shop_groups)) {
+    for (const group of cart.shop_groups) {
+      if (!isRecord(group)) continue;
+      const found = checkItems(group.items);
+      if (found) return found;
+    }
+  }
+  return checkItems(cart.items);
+}
 
 function parseProductCard(raw: unknown): AssistantProductCard | null {
   if (!isRecord(raw)) return null;
@@ -265,27 +348,67 @@ function parseProductCard(raw: unknown): AssistantProductCard | null {
   const name = asString(raw.name ?? raw.product_name ?? raw.productName ?? raw.title);
   if (!name || !slug) return null;
 
-  const priceVnd = Math.max(
-    0,
-    asInt(raw.price_vnd ?? raw.priceVnd ?? raw.min_price_vnd ?? raw.minPriceVnd ?? raw.price) ?? 0
+  const skus = Array.isArray(raw.skus) ? raw.skus.filter(isRecord) : [];
+  const activeSkus = skus.filter((s) => s.is_active !== false);
+  const candidateSkus = activeSkus.length > 0 ? activeSkus : skus;
+  const firstInStockSku = candidateSkus.find((s) => (asInt(s.available_stock ?? s.stock) ?? 0) > 0);
+  const primarySku = firstInStockSku ?? candidateSkus[0];
+
+  const topPrice = asInt(
+    raw.price_vnd ?? raw.priceVnd ?? raw.min_price_vnd ?? raw.minPriceVnd ?? raw.price
   );
+  const skuPrice = primarySku ? asInt(primarySku.price_vnd ?? primarySku.priceVnd) : undefined;
+  const priceVnd = Math.max(0, (topPrice && topPrice > 0 ? topPrice : skuPrice) ?? topPrice ?? 0);
   const orig = asInt(raw.original_price_vnd ?? raw.originalPriceVnd);
   const rawImg =
-    asString(raw.image ?? raw.image_url ?? raw.imageUrl ?? raw.thumbnail) ||
-    (Array.isArray(raw.images) ? asString(raw.images[0]) : "");
+    asString(
+      raw.image ??
+        raw.image_url ??
+        raw.imageUrl ??
+        raw.thumbnail_url ??
+        raw.thumbnailUrl ??
+        raw.thumbnail
+    ) || (Array.isArray(raw.images) ? asString(raw.images[0]) : "");
   const safeImg = sanitizeSafeUrl(rawImg) || undefined;
 
   const rawHref = asString(raw.href ?? raw.url);
-  const safeExplicitHref = rawHref.startsWith("/san-pham/") ? sanitizeSafeUrl(rawHref) : "";
+  const safeExplicitHref =
+    rawHref.startsWith("/san-pham/") &&
+    rawHref.length > "/san-pham/".length &&
+    !rawHref.includes("..")
+      ? sanitizeSafeUrl(rawHref)
+      : "";
   const href = safeExplicitHref || `/san-pham/${encodeURIComponent(slug)}`;
 
   const stockCount = asInt(raw.available_stock ?? raw.availableStock ?? raw.stock);
+  const inStockFlag =
+    typeof raw.in_stock === "boolean"
+      ? raw.in_stock
+      : typeof raw.inStock === "boolean"
+        ? raw.inStock
+        : undefined;
   let stockLabel: string | undefined;
   if (typeof stockCount === "number") {
     stockLabel = stockCount > 0 ? "Còn hàng" : "Tạm hết hàng";
-  } else if (raw.in_stock === false || raw.inStock === false) {
+  } else if (typeof inStockFlag === "boolean") {
+    stockLabel = inStockFlag ? "Còn hàng" : "Tạm hết hàng";
+  } else if (candidateSkus.length > 0) {
+    const skuStocks = candidateSkus
+      .map((s) => asInt(s.available_stock ?? s.stock))
+      .filter((v): v is number => typeof v === "number");
+    if (skuStocks.length > 0) {
+      stockLabel = skuStocks.some((v) => v > 0) ? "Còn hàng" : "Tạm hết hàng";
+    }
+  } else if (asString(raw.status).toUpperCase() === "OUT_OF_STOCK") {
     stockLabel = "Tạm hết hàng";
   }
+
+  const skuIds = Array.isArray(raw.sku_ids) ? raw.sku_ids : [];
+  const skuId =
+    asString(raw.sku_id ?? raw.skuId ?? raw.default_sku_id ?? raw.defaultSkuId) ||
+    (primarySku ? asString(primarySku.id ?? primarySku.sku_id) : "") ||
+    asString(skuIds[0]) ||
+    undefined;
 
   return {
     id: id || slug,
@@ -296,7 +419,7 @@ function parseProductCard(raw: unknown): AssistantProductCard | null {
     image: safeImg,
     href,
     stockLabel,
-    skuId: asString(raw.sku_id ?? raw.skuId ?? raw.default_sku_id) || undefined,
+    skuId,
     size: asString(raw.size) || undefined,
     color: asString(raw.color ?? raw.color_name) || undefined,
   };
@@ -305,14 +428,15 @@ function parseProductCard(raw: unknown): AssistantProductCard | null {
 function parsePendingCartAction(
   raw: unknown,
   requiresAuth: boolean,
-  fallbackId: string
+  fallbackId: string,
+  opts: { status?: AssistantPendingCartAction["status"]; statusMessage?: string } = {}
 ): AssistantPendingCartAction | null {
   if (!isRecord(raw)) return null;
   const skuId = asString(raw.sku_id ?? raw.skuId);
   if (!skuId) return null;
   const productName =
     asString(raw.product_name ?? raw.productName ?? raw.name ?? raw.title) || "Sản phẩm đã chọn";
-  const quantity = Math.max(1, Math.min(20, asInt(raw.quantity ?? raw.qty) ?? 1));
+  const quantity = Math.max(1, Math.min(999, asInt(raw.quantity ?? raw.qty) ?? 1));
   const priceVnd = asInt(raw.price_vnd ?? raw.priceVnd ?? raw.unit_price_vnd);
   const size = asString(raw.size) || undefined;
   const color = asString(raw.color ?? raw.color_name);
@@ -332,7 +456,8 @@ function parsePendingCartAction(
     priceVnd: typeof priceVnd === "number" && priceVnd > 0 ? priceVnd : undefined,
     quantity,
     image: safeImage || undefined,
-    status: "pending",
+    status: opts.status ?? "pending",
+    statusMessage: opts.statusMessage,
     requiresAuth,
   };
 }
@@ -342,11 +467,18 @@ function parseOrderCard(raw: unknown): AssistantOrderCard | null {
   const id = asString(raw.id ?? raw.order_id ?? raw.orderId);
   const orderCode = asString(raw.order_code ?? raw.orderCode ?? raw.code) || id;
   if (!orderCode) return null;
-  const status = asString(raw.status) || "PROCESSING";
-  const totalVnd = asInt(raw.total_vnd ?? raw.totalVnd ?? raw.grand_total_vnd ?? raw.subtotal_vnd);
+  const status = asString(raw.status) || "PENDING";
+  const totalVnd = asInt(
+    raw.total_payable_vnd ??
+      raw.totalPayableVnd ??
+      raw.total_vnd ??
+      raw.totalVnd ??
+      raw.grand_total_vnd ??
+      raw.subtotal_vnd
+  );
   const trackingCode = asString(raw.tracking_code ?? raw.trackingCode) || undefined;
   const updatedAt = asString(raw.updated_at ?? raw.updatedAt ?? raw.created_at) || undefined;
-  const href = id ? `/don-hang/${encodeURIComponent(id)}` : "/tai-khoan/don-hang";
+  const href = id ? `/don-hang/${encodeURIComponent(id)}` : "/don-hang";
   return {
     id: id || undefined,
     orderCode,
@@ -366,11 +498,11 @@ function parseCitation(raw: unknown): AssistantCitation | null {
   );
   const section = asString(raw.section ?? raw.heading);
   const rawHref = asString(raw.citation ?? raw.href ?? raw.url ?? raw.link);
-  let href = sanitizeSafeUrl(rawHref);
-  if (!href) {
+  let href = rawHref ? normalizeSiteRouteHref(rawHref) : "";
+  if (!href && !rawHref) {
     const slug = asString(raw.doc_slug ?? raw.docSlug);
     if (slug && /^[a-z0-9-]+$/i.test(slug)) {
-      href = `/chinh-sach#${encodeURIComponent(slug)}`;
+      href = "/chinh-sach#info-policies";
     }
   }
   if (!href || !title) return null;
@@ -384,7 +516,7 @@ function parseCitation(raw: unknown): AssistantCitation | null {
 /**
  * Safely extracts structured UI cards (recommended products, pending add-to-cart confirmation,
  * order status cards, policy citations) from an assistant `tool_result` SSE event.
- * All image and link URLs are passed through `sanitizeSafeUrl`.
+ * All image and link URLs are passed through `sanitizeSafeUrl` and restricted to real site routes.
  */
 export function extractToolCardData(event: ToolResultEventLike): ExtractedToolCardData {
   const products: AssistantProductCard[] = [];
@@ -399,27 +531,48 @@ export function extractToolCardData(event: ToolResultEventLike): ExtractedToolCa
     event.requiresConfirmation || data.requires_confirmation || data.requiresConfirmation
   );
 
-  // 1. Add-to-cart confirmation payload (UC-AI04: never auto-checkout; always confirm!)
+  // 1. Add-to-cart confirmation or completed cart-add payload (UC-AI04: never auto-checkout!)
   const isCartTool = toolName.includes("cart");
-  const cartCandidate =
-    data.pending_cart_action ??
-    data.cart_action ??
-    (isCartTool || requiresConfirmation ? data : null);
-  if (cartCandidate) {
+  const isPolicyTool = toolName.includes("polic");
+  const explicitCartCandidate = data.pending_cart_action ?? data.cart_action;
+  if (explicitCartCandidate) {
     const action = parsePendingCartAction(
-      cartCandidate,
+      explicitCartCandidate,
       requiresAuth,
-      `cart-${event.id || asString((cartCandidate as Record<string, unknown>).sku_id ?? (cartCandidate as Record<string, unknown>).skuId) || "1"}`
+      `cart-${event.id || asString((explicitCartCandidate as Record<string, unknown>).sku_id ?? (explicitCartCandidate as Record<string, unknown>).skuId) || "1"}`
     );
-    if (action) {
-      pendingCartActions.push(action);
-    }
+    if (action) pendingCartActions.push(action);
+  } else if (requiresConfirmation || (isCartTool && event.ok)) {
+    const alreadyAdded = isCartTool && event.ok && !requiresConfirmation && isRecord(data.cart);
+    const skuId = asString(data.sku_id ?? data.skuId);
+    const cartItem = alreadyAdded ? findCartItemBySku(data.cart, skuId) : null;
+    const mergedCartPayload = cartItem
+      ? {
+          ...cartItem,
+          ...data,
+          quantity: data.clamped_to_stock ? (cartItem.quantity ?? data.quantity) : data.quantity,
+        }
+      : data;
+    const action = parsePendingCartAction(
+      mergedCartPayload,
+      requiresAuth,
+      `cart-${event.id || skuId || "1"}`,
+      alreadyAdded
+        ? {
+            status: "added",
+            statusMessage: data.clamped_to_stock
+              ? "Đã thêm số lượng tối đa còn sẵn vào giỏ hàng."
+              : "Đã thêm vào giỏ hàng.",
+          }
+        : {}
+    );
+    if (action) pendingCartActions.push(action);
   }
 
   // 2. Product cards
   const productSources: unknown[] = [];
   if (Array.isArray(data.products)) productSources.push(...data.products);
-  if (Array.isArray(data.items) && !toolName.includes("order") && !toolName.includes("policy")) {
+  if (Array.isArray(data.items) && !toolName.includes("order") && !isPolicyTool && !isCartTool) {
     productSources.push(...data.items);
   }
   if (Array.isArray(data.recommendations)) productSources.push(...data.recommendations);
@@ -461,7 +614,7 @@ export function extractToolCardData(event: ToolResultEventLike): ExtractedToolCa
   if (Array.isArray(data.citations)) citationSources.push(...data.citations);
   if (Array.isArray(data.chunks)) citationSources.push(...data.chunks);
   if (Array.isArray(data.policies)) citationSources.push(...data.policies);
-  if (toolName.includes("policy") && Array.isArray(data.items)) {
+  if (isPolicyTool && Array.isArray(data.items)) {
     citationSources.push(...data.items);
   }
 
@@ -483,6 +636,16 @@ export function extractToolCardData(event: ToolResultEventLike): ExtractedToolCa
     citations,
     requiresAuth,
   };
+}
+
+/**
+ * Returns true when an assistant `tool_result` completed an `add_to_cart` mutation server-side
+ * (`status === "added"`), signalling the widget to sync `StoreContext` via `refreshCart()`.
+ */
+export function shouldRefreshCartAfterToolResult(
+  extracted: Pick<ExtractedToolCardData, "pendingCartActions">
+): boolean {
+  return extracted.pendingCartActions.some((action) => action.status === "added");
 }
 
 // ---- Review summary normalizer ----
@@ -583,25 +746,48 @@ export function normalizeSellerReport(
       const rawTone = asString(item.tone).toLowerCase();
       const tone =
         rawTone === "pos" || rawTone === "neg" || rawTone === "warn" ? rawTone : "neutral";
+      const caption = asString(item.caption ?? item.sub_label ?? item.delta) || undefined;
       kpis.push({
         label,
         value,
-        caption: asString(item.caption ?? item.sub_label ?? item.delta) || undefined,
+        ...(caption ? { caption } : {}),
         tone,
       });
     }
   }
 
   const rows: SellerReportRow[] = [];
-  const metrics = isRecord(src.metrics) ? src.metrics : null;
+  const hasInlineMetrics =
+    src.gross_revenue_vnd !== undefined ||
+    src.grossRevenueVnd !== undefined ||
+    src.gmv_vnd !== undefined ||
+    src.gmvVnd !== undefined ||
+    src.total_orders !== undefined ||
+    src.totalOrders !== undefined ||
+    src.available_balance_vnd !== undefined ||
+    src.availableBalanceVnd !== undefined ||
+    src.available_vnd !== undefined ||
+    Array.isArray(src.top_products) ||
+    Array.isArray(src.topProducts);
+  const metrics = isRecord(src.metrics) ? src.metrics : hasInlineMetrics ? src : null;
   if (metrics) {
     if (kpis.length === 0) {
-      const grossRevenue = asInt(metrics.gross_revenue_vnd ?? metrics.grossRevenueVnd);
+      const grossRevenue = asInt(
+        metrics.gross_revenue_vnd ?? metrics.grossRevenueVnd ?? metrics.gmv_vnd ?? metrics.gmvVnd
+      );
       const totalOrders = asInt(metrics.total_orders ?? metrics.totalOrders);
       const completedOrders = asInt(metrics.completed_orders ?? metrics.completedOrders);
       const cancelledOrders = asInt(metrics.cancelled_orders ?? metrics.cancelledOrders);
-      const cancelRatePct = asNumber(metrics.cancel_rate_pct ?? metrics.cancelRatePct);
-      const availableBal = asInt(metrics.available_balance_vnd ?? metrics.availableBalanceVnd);
+      const cancelRateBps = asNumber(metrics.cancel_rate_bps ?? metrics.cancelRateBps);
+      const cancelRatePct =
+        asNumber(metrics.cancel_rate_pct ?? metrics.cancelRatePct) ??
+        (typeof cancelRateBps === "number" ? cancelRateBps / 100 : undefined);
+      const availableBal = asInt(
+        metrics.available_balance_vnd ?? metrics.availableBalanceVnd ?? metrics.available_vnd
+      );
+      const pendingBal = asInt(
+        metrics.pending_balance_vnd ?? metrics.pendingBalanceVnd ?? metrics.pending_vnd
+      );
 
       if (typeof grossRevenue === "number") {
         kpis.push({ label: "Doanh thu gộp", value: formatVnd(grossRevenue), tone: "pos" });
@@ -610,25 +796,31 @@ export function normalizeSellerReport(
         kpis.push({
           label: "Tổng số đơn",
           value: formatInt(totalOrders),
-          caption:
-            typeof completedOrders === "number"
-              ? `${formatInt(completedOrders)} đơn hoàn thành`
-              : undefined,
+          ...(typeof completedOrders === "number"
+            ? { caption: `${formatInt(completedOrders)} đơn hoàn thành` }
+            : {}),
+          tone: "neutral",
         });
       }
       if (typeof cancelRatePct === "number") {
         kpis.push({
           label: "Tỷ lệ hủy đơn",
           value: formatPercent(cancelRatePct, 1, false),
-          caption:
-            typeof cancelledOrders === "number"
-              ? `${formatInt(cancelledOrders)} đơn đã hủy`
-              : undefined,
+          ...(typeof cancelledOrders === "number"
+            ? { caption: `${formatInt(cancelledOrders)} đơn đã hủy` }
+            : {}),
           tone: cancelRatePct >= 10 ? "neg" : cancelRatePct >= 5 ? "warn" : "neutral",
         });
       }
       if (typeof availableBal === "number") {
-        kpis.push({ label: "Số dư khả dụng", value: formatVnd(availableBal) });
+        kpis.push({
+          label: "Số dư khả dụng",
+          value: formatVnd(availableBal),
+          ...(typeof pendingBal === "number"
+            ? { caption: `Chờ đối soát: ${formatVnd(pendingBal)}` }
+            : {}),
+          tone: "neutral",
+        });
       }
     }
 
@@ -657,16 +849,20 @@ export function normalizeSellerReport(
     const colSet = new Set<string>();
     for (const row of src.rows) {
       if (!isRecord(row)) continue;
-      const label = asString(row.product_name ?? row.name ?? row.label ?? row.sku_code);
-      const units = asInt(row.units_sold ?? row.quantity ?? row.orders);
-      const rev = asInt(row.revenue_vnd ?? row.amount_vnd ?? row.revenue);
+      const label = asString(
+        row.product_name ?? row.productName ?? row.name ?? row.label ?? row.sku_code
+      );
+      const units = asInt(row.units_sold ?? row.unitsSold ?? row.quantity ?? row.orders);
+      const rev = asInt(row.revenue_vnd ?? row.revenueVnd ?? row.amount_vnd ?? row.revenue);
       if (label && (typeof units === "number" || typeof rev === "number")) {
+        const extra = asString(row.status ?? row.note ?? row.extra) || undefined;
         rows.push({
           label,
-          subLabel: asString(row.sku_code ?? row.category ?? row.sub_label) || undefined,
+          subLabel:
+            asString(row.sku_code ?? row.category ?? row.sub_label ?? row.subLabel) || undefined,
           unitsSold: units,
           revenueVnd: rev,
-          extra: asString(row.status ?? row.note) || undefined,
+          ...(extra ? { extra } : {}),
         });
       } else {
         const cleanObj: Record<string, string | number> = {};
@@ -680,6 +876,32 @@ export function normalizeSellerReport(
       }
     }
     if (rows.length === 0 && parsedGeneric.length > 0) {
+      tableColumns = Array.from(colSet);
+      genericRows = parsedGeneric;
+    }
+  }
+  if (
+    rows.length === 0 &&
+    !genericRows &&
+    Array.isArray(src.genericRows) &&
+    src.genericRows.length > 0
+  ) {
+    const parsedGeneric: Array<Record<string, string | number>> = [];
+    const colSet = new Set<string>(
+      Array.isArray(src.tableColumns) ? asStringList(src.tableColumns, 20) : []
+    );
+    for (const row of src.genericRows) {
+      if (!isRecord(row)) continue;
+      const cleanObj: Record<string, string | number> = {};
+      for (const [k, v] of Object.entries(row)) {
+        if (typeof v === "string" || (typeof v === "number" && Number.isFinite(v))) {
+          cleanObj[k] = v;
+          colSet.add(k);
+        }
+      }
+      if (Object.keys(cleanObj).length > 0) parsedGeneric.push(cleanObj);
+    }
+    if (parsedGeneric.length > 0) {
       tableColumns = Array.from(colSet);
       genericRows = parsedGeneric;
     }

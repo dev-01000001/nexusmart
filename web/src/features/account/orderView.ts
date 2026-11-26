@@ -10,6 +10,8 @@ import type {
   PaymentMethod,
   PaymentStatus,
 } from "../../data/orders";
+import type { GatewayOrderStatus } from "../../lib/gateway-types";
+import { formatCarrierLabel } from "../../lib/format.ts";
 import { formatAddressLine } from "../commerce/cartEnrich.ts";
 import {
   normalizeSalesChannel,
@@ -17,8 +19,12 @@ import {
   type SalesChannel,
 } from "../../lib/salesChannel.ts";
 import {
+  VALID_ORDER_STATUSES,
   getTimelineEventTitle,
   isAddressUpdatedTimelineNote,
+  isShipmentCreatedTimelineNote,
+  isSwitchedToCodConfirmTimelineEvent,
+  isValidOrderStatus,
   localizeTimelineNote,
 } from "./orderMeta.ts";
 
@@ -109,7 +115,9 @@ export interface OrderLookups {
 }
 
 /** `Order` của UI cộng các trường chỉ có ở backend để quyết định nút thao tác. */
-export interface OrderView extends Order {
+export interface OrderView extends Omit<Order, "carrier"> {
+  carrier?: string;
+  carrierCode: string;
   checkoutGroupId: string;
   backendStatus: string;
   paymentId: string;
@@ -131,6 +139,8 @@ export interface OrderView extends Order {
   canRequestReturn: boolean;
 }
 
+export type BuyerOrderFilterKey = "" | GatewayOrderStatus;
+
 const STATUS_MAP: Record<string, OrderStatus> = {
   PENDING: "cho_xac_nhan",
   CONFIRMED: "cho_xac_nhan",
@@ -147,9 +157,36 @@ export function mapOrderStatus(status: string): OrderStatus {
   return STATUS_MAP[status.toUpperCase()] ?? "cho_xac_nhan";
 }
 
-export function mapPaymentStatus(status: string): PaymentStatus | undefined {
-  switch (status.toUpperCase()) {
+export function mapPaymentStatus(
+  status: string,
+  paymentMethod?: string,
+  orderStatus?: string
+): PaymentStatus | undefined {
+  const payStatus = (status ?? "").trim().toUpperCase();
+  const method = (paymentMethod ?? "").trim().toUpperCase();
+  const ordStatus = (orderStatus ?? "").trim().toUpperCase();
+
+  if (payStatus === "REFUNDED") {
+    return "da_hoan_tien";
+  }
+  if (method === "COD" || payStatus === "COD_PENDING") {
+    if (
+      ordStatus === "DELIVERED" ||
+      ordStatus === "COMPLETED" ||
+      ordStatus === "RETURN_REQUESTED" ||
+      payStatus === "SUCCEEDED" ||
+      payStatus === "PAID"
+    ) {
+      return "da_thanh_toan";
+    }
+    if (ordStatus === "CANCELLED" || ordStatus === "RETURNED" || payStatus === "CANCELLED") {
+      return undefined;
+    }
+    return "cod_cho_thu";
+  }
+  switch (payStatus) {
     case "SUCCEEDED":
+    case "PAID":
       return "da_thanh_toan";
     case "COD_PENDING":
       return "cod_cho_thu";
@@ -159,12 +196,52 @@ export function mapPaymentStatus(status: string): PaymentStatus | undefined {
     case "EXPIRED":
     case "CANCELLED":
       return "thanh_toan_that_bai";
-    case "REFUNDED":
-      return "da_hoan_tien";
     default:
       return undefined;
   }
 }
+
+export function formatBuyerCarrier(carrierCode: string | null | undefined): string | undefined {
+  const clean = (carrierCode ?? "").trim();
+  if (!clean) return undefined;
+  const lower = clean.toLowerCase();
+  if (lower === "fallback") return undefined;
+  return formatCarrierLabel(lower === "ghtk" ? "GHTK" : clean);
+}
+
+export function countOrdersByBackendStatus(
+  orders: ReadonlyArray<Pick<OrderView, "backendStatus">>
+): Record<BuyerOrderFilterKey, number> {
+  const map: Record<BuyerOrderFilterKey, number> = {
+    "": orders.length,
+    PENDING: 0,
+    CONFIRMED: 0,
+    PREPARING: 0,
+    SHIPPING: 0,
+    DELIVERED: 0,
+    COMPLETED: 0,
+    RETURN_REQUESTED: 0,
+    RETURNED: 0,
+    CANCELLED: 0,
+  };
+  for (const order of orders) {
+    const key = (order.backendStatus ?? "").trim().toUpperCase();
+    if (isValidOrderStatus(key)) {
+      map[key] += 1;
+    }
+  }
+  return map;
+}
+
+export function filterOrdersByBackendStatus<T extends Pick<OrderView, "backendStatus">>(
+  orders: readonly T[],
+  activeTab: BuyerOrderFilterKey
+): T[] {
+  if (!activeTab) return [...orders];
+  return orders.filter((order) => (order.backendStatus ?? "").trim().toUpperCase() === activeTab);
+}
+
+export { VALID_ORDER_STATUSES };
 
 export function mapPaymentMethod(method: string): PaymentMethod {
   const key = method.toUpperCase();
@@ -194,7 +271,7 @@ function timelineText(
   const isOnline = isVietQr || isZaloPay;
   if (isAddressUpdatedTimelineNote(ev.note) || (from && from === to && ev.note.trim())) {
     return {
-      title: getTimelineEventTitle(ev),
+      title: getTimelineEventTitle(ev, order.payment_method),
       note: localizeTimelineNote(ev.note),
     };
   }
@@ -210,6 +287,14 @@ function timelineText(
       };
     case "CONFIRMED":
       if (from === "PENDING") {
+        if (isSwitchedToCodConfirmTimelineEvent(ev, order.payment_method)) {
+          return {
+            title: getTimelineEventTitle(ev, order.payment_method),
+            note: ev.note.trim()
+              ? localizeTimelineNote(ev.note)
+              : "Thanh toán khi nhận hàng (COD), đơn đã chuyển tới gian hàng chuẩn bị.",
+          };
+        }
         return {
           title: "Đã nhận thanh toán",
           note: "Thanh toán thành công, đơn đã chuyển tới gian hàng chuẩn bị.",
@@ -224,6 +309,12 @@ function timelineText(
             : "Thanh toán khi nhận hàng (COD), gian hàng sẽ xác nhận đơn sớm.",
       };
     case "PREPARING":
+      if (isShipmentCreatedTimelineNote(ev.note)) {
+        return {
+          title: getTimelineEventTitle(ev, order.payment_method),
+          note: localizeTimelineNote(ev.note),
+        };
+      }
       return {
         title: "Gian hàng đã xác nhận",
         note: "Gian hàng đang đóng gói và chuẩn bị bàn giao vận chuyển.",
@@ -288,7 +379,7 @@ export function mapGatewayOrder(o: GwOrder, lookups: OrderLookups): OrderView {
   const backendStatus = o.status.toUpperCase();
   const shop = lookups.shop(o.shop_id);
   const addr = o.shipping_address;
-  const paymentStatus = mapPaymentStatus(o.payment_status);
+  const paymentStatus = mapPaymentStatus(o.payment_status, o.payment_method, backendStatus);
   const events = o.timeline ?? [];
 
   const timeline: OrderTimelineEvent[] = [];
@@ -346,9 +437,13 @@ export function mapGatewayOrder(o: GwOrder, lookups: OrderLookups): OrderView {
     paymentMethodRaw: (o.payment_method || "COD").toUpperCase(),
     paymentStatusRaw: (o.payment_status || "").toUpperCase(),
     paymentExpiresAt: o.payment_expires_at,
-    paymentDueAt: paymentStatus === "cho_thanh_toan" ? o.payment_expires_at : undefined,
+    paymentDueAt:
+      backendStatus === "PENDING" && paymentStatus === "cho_thanh_toan"
+        ? o.payment_expires_at
+        : undefined,
     isPaid: paymentStatus === "da_thanh_toan",
-    carrier: o.carrier_code.toUpperCase() === "GHN" ? "GHN" : undefined,
+    carrier: formatBuyerCarrier(o.carrier_code),
+    carrierCode: (o.carrier_code ?? "").trim(),
     createdAt: o.created_at ?? "",
     updatedAt: o.updated_at ?? o.created_at ?? "",
     items: mappedItems,

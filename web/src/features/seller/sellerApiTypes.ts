@@ -1,9 +1,11 @@
 // Shared DTO types and pure view helpers for Seller Center backend integration.
+import { GATEWAY_ORDER_STATUS_LABELS } from "../../lib/format.ts";
 import {
   normalizeSalesChannel,
   normalizeStorefrontShopId,
   type SalesChannel,
 } from "../../lib/salesChannel.ts";
+import { getPaymentStatusInfo } from "../account/orderMeta.ts";
 
 export type PillTone = "neutral" | "pos" | "warn" | "neg";
 
@@ -345,7 +347,9 @@ export interface GwSellerReport {
 
 export interface GwShipmentEvent {
   id: string;
+  shipment_id?: string;
   status: string;
+  raw_status?: string;
   carrier_status?: string;
   description: string;
   location?: string;
@@ -354,13 +358,16 @@ export interface GwShipmentEvent {
 
 export interface GwOrderShipment {
   id: string;
+  shipment_id?: string;
   order_id: string;
+  shop_id?: string;
   carrier_code: string;
   service_code: string;
   tracking_code: string;
   label_url?: string;
   status: string;
   direction?: string;
+  return_request_id?: string;
   fee_vnd: number;
   actual_fee_vnd?: number;
   cod_amount_vnd: number;
@@ -369,6 +376,139 @@ export interface GwOrderShipment {
   events: GwShipmentEvent[];
   created_at?: string;
   updated_at?: string;
+}
+
+export interface SellerShipmentPayload {
+  shipment: GwOrderShipment | null;
+  events: GwShipmentEvent[];
+}
+
+function asNonNegInt(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+}
+
+function normalizeShipmentEvent(raw: unknown): GwShipmentEvent | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const rec = raw as Record<string, unknown>;
+  const id = typeof rec.id === "string" ? rec.id.trim() : "";
+  const status = typeof rec.status === "string" ? rec.status.trim() : "";
+  const description = typeof rec.description === "string" ? rec.description.trim() : "";
+  if (!id && !status && !description) return null;
+  const shipmentId = typeof rec.shipment_id === "string" ? rec.shipment_id.trim() : "";
+  const rawStatus = typeof rec.raw_status === "string" ? rec.raw_status.trim() : "";
+  const carrierStatus = typeof rec.carrier_status === "string" ? rec.carrier_status.trim() : "";
+  const location = typeof rec.location === "string" ? rec.location.trim() : "";
+  const occurredAt = typeof rec.occurred_at === "string" ? rec.occurred_at.trim() : "";
+  return {
+    id: id || `${status || "ev"}-${occurredAt || "0"}`,
+    ...(shipmentId ? { shipment_id: shipmentId } : {}),
+    status,
+    ...(rawStatus ? { raw_status: rawStatus } : {}),
+    ...(carrierStatus ? { carrier_status: carrierStatus } : {}),
+    description,
+    ...(location ? { location } : {}),
+    ...(occurredAt ? { occurred_at: occurredAt } : {}),
+  };
+}
+
+/**
+ * Normalizes gateway `GET /api/v1/shipping/shipments/{order_id}` (`{ shipment, events }`),
+ * preserving root-level `events` and `shipment_id` / `fee_vnd` fields.
+ */
+export function normalizeSellerShipmentResponse(raw: unknown): SellerShipmentPayload {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { shipment: null, events: [] };
+  }
+  const root = raw as Record<string, unknown>;
+  const rawShipment =
+    root.shipment && typeof root.shipment === "object" && !Array.isArray(root.shipment)
+      ? (root.shipment as Record<string, unknown>)
+      : null;
+
+  const rawEventsSource = Array.isArray(root.events)
+    ? root.events
+    : rawShipment && Array.isArray(rawShipment.events)
+      ? rawShipment.events
+      : [];
+  const events = rawEventsSource
+    .map(normalizeShipmentEvent)
+    .filter((ev): ev is GwShipmentEvent => ev !== null);
+
+  if (!rawShipment) {
+    return { shipment: null, events };
+  }
+
+  const shipmentId =
+    (typeof rawShipment.shipment_id === "string" && rawShipment.shipment_id.trim()) ||
+    (typeof rawShipment.id === "string" && rawShipment.id.trim()) ||
+    "";
+
+  const shipment: GwOrderShipment = {
+    id: shipmentId,
+    ...(shipmentId ? { shipment_id: shipmentId } : {}),
+    order_id: typeof rawShipment.order_id === "string" ? rawShipment.order_id : "",
+    ...(typeof rawShipment.shop_id === "string" ? { shop_id: rawShipment.shop_id } : {}),
+    carrier_code: typeof rawShipment.carrier_code === "string" ? rawShipment.carrier_code : "",
+    service_code: typeof rawShipment.service_code === "string" ? rawShipment.service_code : "",
+    tracking_code: typeof rawShipment.tracking_code === "string" ? rawShipment.tracking_code : "",
+    ...(typeof rawShipment.label_url === "string" ? { label_url: rawShipment.label_url } : {}),
+    status: typeof rawShipment.status === "string" ? rawShipment.status : "",
+    ...(typeof rawShipment.direction === "string" ? { direction: rawShipment.direction } : {}),
+    ...(typeof rawShipment.return_request_id === "string"
+      ? { return_request_id: rawShipment.return_request_id }
+      : {}),
+    fee_vnd: asNonNegInt(rawShipment.fee_vnd),
+    ...(typeof rawShipment.actual_fee_vnd === "number" &&
+    Number.isFinite(rawShipment.actual_fee_vnd)
+      ? { actual_fee_vnd: Math.max(0, Math.trunc(rawShipment.actual_fee_vnd)) }
+      : {}),
+    cod_amount_vnd: asNonNegInt(rawShipment.cod_amount_vnd),
+    ...(typeof rawShipment.cod_fee_vnd === "number" && Number.isFinite(rawShipment.cod_fee_vnd)
+      ? { cod_fee_vnd: Math.max(0, Math.trunc(rawShipment.cod_fee_vnd)) }
+      : {}),
+    ...(typeof rawShipment.redelivery_count === "number" &&
+    Number.isFinite(rawShipment.redelivery_count)
+      ? { redelivery_count: Math.max(0, Math.trunc(rawShipment.redelivery_count)) }
+      : {}),
+    events,
+    ...(typeof rawShipment.created_at === "string" ? { created_at: rawShipment.created_at } : {}),
+    ...(typeof rawShipment.updated_at === "string" ? { updated_at: rawShipment.updated_at } : {}),
+  };
+
+  return { shipment, events };
+}
+
+export function resolveSellerShipmentFeeVnd(
+  shipment: Pick<GwOrderShipment, "fee_vnd" | "actual_fee_vnd"> | null | undefined
+): number {
+  if (!shipment) return 0;
+  if (typeof shipment.actual_fee_vnd === "number" && shipment.actual_fee_vnd > 0) {
+    return Math.trunc(shipment.actual_fee_vnd);
+  }
+  if (typeof shipment.fee_vnd === "number" && shipment.fee_vnd > 0) {
+    return Math.trunc(shipment.fee_vnd);
+  }
+  return 0;
+}
+
+/**
+ * Extracts total unread seller chat messages from gateway
+ * `GET /api/v1/seller/chat/conversations` (`total_unread` preferred over paginated `items`).
+ */
+export function extractSellerUnreadChatCount(raw: unknown): number {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return 0;
+  const rec = raw as Record<string, unknown>;
+  if (typeof rec.total_unread === "number" && Number.isFinite(rec.total_unread)) {
+    return Math.max(0, Math.trunc(rec.total_unread));
+  }
+  if (Array.isArray(rec.items)) {
+    return rec.items.reduce((sum, item) => {
+      if (!item || typeof item !== "object") return sum;
+      const unread = (item as Record<string, unknown>).unread_count;
+      return sum + asNonNegInt(unread);
+    }, 0);
+  }
+  return 0;
 }
 
 export interface GwSellerReturnEvent {
@@ -419,9 +559,10 @@ export function getSellerOrderStatusMeta(
   shipmentJobStatus?: string,
   trackingCode?: string
 ): SellerOrderStatusMeta {
-  const normalized = (status ?? "").toUpperCase();
+  const normalized = (status ?? "").trim().toUpperCase();
   const job = (shipmentJobStatus ?? "").trim().toUpperCase();
-  if (normalized === "PREPARING" && !trackingCode) {
+  const hasTracking = Boolean((trackingCode ?? "").trim());
+  if ((normalized === "CONFIRMED" || normalized === "PREPARING") && !hasTracking) {
     if (job === "QUEUED") {
       return {
         label: "Đang chờ tạo vận đơn",
@@ -437,23 +578,30 @@ export function getSellerOrderStatusMeta(
       };
     }
   }
+  if (normalized === "PREPARING" && hasTracking) {
+    return {
+      label: "Chờ hãng lấy hàng",
+      tone: "warn",
+      description: "Đã tạo vận đơn, chờ đơn vị vận chuyển đến lấy kiện hàng.",
+    };
+  }
   switch (normalized) {
     case "PENDING":
     case "PENDING_PAYMENT":
       return {
-        label: "Chờ thanh toán",
+        label: GATEWAY_ORDER_STATUS_LABELS.PENDING,
         tone: "warn",
         description: "Đơn đang chờ người mua hoàn tất thanh toán trực tuyến.",
       };
     case "CONFIRMED":
       return {
-        label: "Chờ xác nhận",
+        label: GATEWAY_ORDER_STATUS_LABELS.CONFIRMED,
         tone: "warn",
         description: "Đơn đã sẵn sàng, chờ gian hàng xác nhận chuẩn bị hàng.",
       };
     case "PREPARING":
       return {
-        label: "Đang chuẩn bị",
+        label: GATEWAY_ORDER_STATUS_LABELS.PREPARING,
         tone: "neutral",
         description: "Gian hàng đang đóng gói và chuẩn bị bàn giao vận chuyển.",
       };
@@ -465,7 +613,7 @@ export function getSellerOrderStatusMeta(
       };
     case "SHIPPING":
       return {
-        label: "Đang giao",
+        label: GATEWAY_ORDER_STATUS_LABELS.SHIPPING,
         tone: "neutral",
         description: "Đơn vị vận chuyển đã tiếp nhận và đang giao đến người mua.",
       };
@@ -477,25 +625,25 @@ export function getSellerOrderStatusMeta(
       };
     case "DELIVERED":
       return {
-        label: "Đã giao",
+        label: GATEWAY_ORDER_STATUS_LABELS.DELIVERED,
         tone: "pos",
         description: "Người mua đã nhận hàng, chờ hoàn tất đối soát.",
       };
     case "COMPLETED":
       return {
-        label: "Hoàn tất",
+        label: GATEWAY_ORDER_STATUS_LABELS.COMPLETED,
         tone: "pos",
         description: "Đơn hàng đã hoàn tất đối soát và giải ngân.",
       };
     case "RETURN_REQUESTED":
       return {
-        label: "Yêu cầu trả hàng",
+        label: GATEWAY_ORDER_STATUS_LABELS.RETURN_REQUESTED,
         tone: "warn",
         description: "Người mua đã gửi yêu cầu trả hàng / hoàn tiền.",
       };
     case "RETURNED":
       return {
-        label: "Đã trả hàng",
+        label: GATEWAY_ORDER_STATUS_LABELS.RETURNED,
         tone: "neg",
         description: "Đơn hàng đã hoàn trả về gian hàng.",
       };
@@ -507,7 +655,7 @@ export function getSellerOrderStatusMeta(
       };
     case "CANCELLED":
       return {
-        label: "Đã hủy",
+        label: GATEWAY_ORDER_STATUS_LABELS.CANCELLED,
         tone: "neg",
         description: "Đơn hàng đã hủy và hoàn lại tồn kho SKU.",
       };
@@ -525,12 +673,17 @@ export function getNextBackendOrderAction(
   trackingCode?: string,
   shipmentJobStatus?: string
 ): SellerOrderAction | null {
-  switch ((status ?? "").toUpperCase()) {
+  const normalized = (status ?? "").trim().toUpperCase();
+  const hasTracking = Boolean((trackingCode ?? "").trim());
+  const job = (shipmentJobStatus ?? "").trim().toUpperCase();
+  switch (normalized) {
     case "CONFIRMED":
+      if (!hasTracking && (job === "QUEUED" || job === "FAILED")) {
+        return { kind: "ship", label: "Thử tạo lại ngay", shortLabel: "Thử lại" };
+      }
       return { kind: "confirm", label: "Xác nhận đơn hàng", shortLabel: "Xác nhận" };
     case "PREPARING": {
-      if (trackingCode) return null;
-      const job = (shipmentJobStatus ?? "").trim().toUpperCase();
+      if (hasTracking) return null;
       if (job === "QUEUED" || job === "FAILED") {
         return { kind: "ship", label: "Thử tạo lại ngay", shortLabel: "Thử lại" };
       }
@@ -592,25 +745,12 @@ export function formatPaymentMethodVi(method: string): string {
   }
 }
 
-export function formatPaymentStatusVi(status: string): string {
-  switch ((status ?? "").toUpperCase()) {
-    case "SUCCEEDED":
-      return "Đã thanh toán";
-    case "COD_PENDING":
-      return "Thu hộ khi giao";
-    case "PENDING":
-      return "Chờ thanh toán";
-    case "FAILED":
-      return "Thanh toán thất bại";
-    case "EXPIRED":
-      return "Hết hạn thanh toán";
-    case "CANCELLED":
-      return "Đã hủy thanh toán";
-    case "REFUNDED":
-      return "Đã hoàn tiền";
-    default:
-      return status || "Đang xử lý";
-  }
+export function formatPaymentStatusVi(
+  status: string,
+  paymentMethod?: string,
+  orderStatus?: string
+): string {
+  return getPaymentStatusInfo(status, paymentMethod ?? "", orderStatus).label;
 }
 
 export function computeSellerOrderDeductions(

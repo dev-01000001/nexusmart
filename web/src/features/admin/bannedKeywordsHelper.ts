@@ -1,11 +1,81 @@
 import type {
   GatewayBannedContentProductSample,
   GatewayRescanProductsResponse,
-} from "@/lib/gateway-types";
+} from "../../lib/gateway-types.ts";
+import type { ValidationResult } from "./adminComplaintsTypes.ts";
+import { isValidAdminPathId } from "./AdminReturnsHelpers.ts";
 
 export const RESCAN_BATCH_LIMIT = 500;
 export const MAX_RESCAN_SAMPLES = 20;
 const MAX_RESCAN_BATCHES = 200;
+
+export interface ValidatedRescanInput {
+  keyword_ids: string[];
+  dry_run: boolean;
+  cursor: string;
+  limit: number;
+}
+
+export function validateRescanBannedKeywordsInput(
+  input: unknown
+): ValidationResult<ValidatedRescanInput> {
+  const rec =
+    input && typeof input === "object" && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : {};
+
+  const keywordIds: string[] = [];
+  if (rec.keyword_ids !== undefined && rec.keyword_ids !== null) {
+    if (!Array.isArray(rec.keyword_ids) || rec.keyword_ids.length > 100) {
+      return {
+        ok: false,
+        code: "INVALID_KEYWORD_IDS",
+        message: "Danh sách mã từ khoá cấm không hợp lệ.",
+      };
+    }
+    for (const item of rec.keyword_ids) {
+      if (typeof item !== "string" || !isValidAdminPathId(item)) {
+        return {
+          ok: false,
+          code: "INVALID_KEYWORD_IDS",
+          message: "Danh sách mã từ khoá cấm không hợp lệ.",
+        };
+      }
+      keywordIds.push(item.trim());
+    }
+  }
+
+  if (typeof rec.dry_run !== "boolean") {
+    return {
+      ok: false,
+      code: "INVALID_ARGUMENT",
+      message: "Chế độ chạy thử quét lại phải là giá trị đúng/sai hợp lệ.",
+    };
+  }
+
+  const cursor = typeof rec.cursor === "string" ? rec.cursor.trim().slice(0, 256) : "";
+  let limit = RESCAN_BATCH_LIMIT;
+  if (rec.limit !== undefined && rec.limit !== null) {
+    if (typeof rec.limit !== "number" || !Number.isInteger(rec.limit) || rec.limit < 1) {
+      return {
+        ok: false,
+        code: "INVALID_LIMIT",
+        message: "Kích thước lô quét không hợp lệ.",
+      };
+    }
+    limit = Math.min(RESCAN_BATCH_LIMIT, rec.limit);
+  }
+
+  return {
+    ok: true,
+    value: {
+      keyword_ids: keywordIds,
+      dry_run: rec.dry_run,
+      cursor,
+      limit,
+    },
+  };
+}
 
 export interface RescanBatchRequest {
   keyword_ids?: string[];

@@ -5,12 +5,15 @@ import { assertSession } from "@/lib/server/session";
 import { requireRequestSite } from "@/lib/server/sites";
 import {
   STOREFRONT_CHANNEL,
+  filterPreviewableCartGroups,
   hasPlatformPromoInput,
   isSiteShopVoucher,
   resolveSiteShopVoucherMap,
-  scopeCartToShop,
 } from "@/lib/server/storefront";
-import { translatePromotionWarning } from "@/features/commerce/checkoutErrors";
+import {
+  extractRejectedFlashSaleItemIds,
+  translatePromotionWarning,
+} from "@/features/commerce/checkoutErrors";
 import type { GwCart, GwDiscountBreakdown, GwVoucher } from "@/features/commerce/types";
 
 interface ValidateBody {
@@ -89,9 +92,8 @@ export const POST = apiRoute(
       );
     }
 
-    const scopedCart = scopeCartToShop(cart, site.shopId);
-    const groups = scopedCart.shop_groups;
-    if (groups.length === 0) {
+    const availableGroups = filterPreviewableCartGroups(cart, site.shopId);
+    if (availableGroups.length === 0) {
       return Response.json(
         { valid: false, voucher: found, reason: "Giỏ hàng đang trống nên chưa thể áp mã ưu đãi." },
         { headers: { "Cache-Control": "no-store" } }
@@ -101,14 +103,14 @@ export const POST = apiRoute(
     const rawFee = body.shipping_fee_vnd ?? body.shipping_fees?.[site.shopId] ?? 0;
     const shippingFeeVnd = Math.max(0, Math.trunc(Number(rawFee) || 0));
     const flashBySku = body.flash_sale_item_by_sku ?? {};
-    const shopItems = groups.map((g) => ({
+    // Do NOT send unit_price_vnd — the gateway resolves authoritative SKU prices from product-service.
+    const shopItems = availableGroups.map((g) => ({
       shop_id: site.shopId,
       subtotal_vnd: g.subtotal_vnd,
       shipping_fee_vnd: shippingFeeVnd,
       items: g.items.map((it) => ({
         sku_id: it.sku_id,
         quantity: it.quantity,
-        unit_price_vnd: it.price_vnd,
         flash_sale_item_id: flashBySku[it.sku_id] || "",
       })),
     }));
@@ -129,14 +131,18 @@ export const POST = apiRoute(
       }
     );
 
-    const warningsVi = (breakdown.warnings ?? []).map(translatePromotionWarning);
+    const rawWarnings = breakdown.warnings ?? [];
+    const rejectedFlashSaleItemIds = extractRejectedFlashSaleItemIds(rawWarnings);
+    const warningsVi = rawWarnings.map(translatePromotionWarning);
     const safeBreakdown: GwDiscountBreakdown = { ...breakdown, warnings: warningsVi };
     const discountVnd =
       breakdown.shops.find((s) => s.shop_id === site.shopId)?.shop_voucher_discount_vnd ?? 0;
 
     if (discountVnd <= 0) {
+      const voucherWarnIdx = rawWarnings.findIndex((w) => !w.toLowerCase().includes("flash sale"));
+      const voucherWarnVi = voucherWarnIdx >= 0 ? warningsVi[voucherWarnIdx] : "";
       const reason =
-        warningsVi[0] ||
+        voucherWarnVi ||
         (found.min_order_vnd > 0
           ? `Đơn hàng cần tối thiểu ${found.min_order_vnd.toLocaleString("vi-VN")}₫ để dùng mã ${found.code}.`
           : `Mã ${found.code} chưa đủ điều kiện áp dụng cho giỏ hàng hiện tại.`);
@@ -148,6 +154,7 @@ export const POST = apiRoute(
           shop_id: site.shopId,
           discount_vnd: 0,
           reason,
+          rejected_flash_sale_item_ids: rejectedFlashSaleItemIds,
         },
         { headers: { "Cache-Control": "no-store" } }
       );
@@ -161,6 +168,7 @@ export const POST = apiRoute(
         shop_id: site.shopId,
         discount_vnd: discountVnd,
         breakdown: safeBreakdown,
+        rejected_flash_sale_item_ids: rejectedFlashSaleItemIds,
       },
       { headers: { "Cache-Control": "no-store" } }
     );

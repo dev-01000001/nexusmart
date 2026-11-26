@@ -29,7 +29,25 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   }
 
   if (isTenantSiteHost(cls)) {
-    const bundle = await loadPublicSitePageBundle(cls.hostname);
+    const buildCoreEntries = (siteOrigin: string, lastModified: Date): MetadataRoute.Sitemap => [
+      { url: `${siteOrigin}/`, lastModified, changeFrequency: "daily", priority: 1 },
+      { url: `${siteOrigin}/san-pham`, lastModified, changeFrequency: "daily", priority: 0.9 },
+      { url: `${siteOrigin}/chinh-sach`, lastModified, changeFrequency: "monthly", priority: 0.5 },
+      { url: `${siteOrigin}/gioi-thieu`, lastModified, changeFrequency: "monthly", priority: 0.6 },
+    ];
+
+    let bundle;
+    try {
+      bundle = await loadPublicSitePageBundle(cls.hostname);
+    } catch {
+      // Transient upstream error (429/5xx/timeout): keep core storefront URLs instead of returning empty/500.
+      const siteOrigin = deriveSiteOrigin({
+        siteHost: cls.hostname,
+        rawHost,
+        proto,
+      });
+      return buildCoreEntries(siteOrigin, now);
+    }
     if (!bundle) return [];
 
     const siteOrigin = deriveSiteOrigin({
@@ -41,12 +59,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       ? new Date(bundle.payload.site.published_at)
       : now;
 
-    const entries: MetadataRoute.Sitemap = [
-      { url: `${siteOrigin}/`, lastModified, changeFrequency: "daily", priority: 1 },
-      { url: `${siteOrigin}/san-pham`, lastModified, changeFrequency: "daily", priority: 0.9 },
-      { url: `${siteOrigin}/chinh-sach`, lastModified, changeFrequency: "monthly", priority: 0.5 },
-      { url: `${siteOrigin}/gioi-thieu`, lastModified, changeFrequency: "monthly", priority: 0.6 },
-    ];
+    const entries = buildCoreEntries(siteOrigin, lastModified);
 
     for (const product of bundle.products) {
       entries.push({

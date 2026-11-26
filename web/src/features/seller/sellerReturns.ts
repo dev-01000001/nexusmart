@@ -441,7 +441,7 @@ export function getNotificationCategoryLabel(category: string): string {
   }
 }
 
-/** Normalize GET /api/seller/products/[id]/review-summary payload. */
+/** Normalize GET /api/seller/products/[id]/review-summary payload (snake_case gateway or camelCase BFF DTO). */
 export function normalizeProductReviewSummary(
   payload: unknown,
   fallbackProductId = ""
@@ -449,18 +449,39 @@ export function normalizeProductReviewSummary(
   const root = asRecord(payload);
   const obj = asRecord(root?.review_summary ?? root?.data ?? root) ?? {};
 
-  const productId = readStr(obj, "product_id") || fallbackProductId;
-  const reviewCount = readNonNegInt(obj, "review_count", "total_reviews", "count");
-  const rawAvg = Number(obj.average_rating ?? obj.avg_rating ?? 0);
+  const productId = readStr(obj, "product_id", "productId") || fallbackProductId;
+  const hasReviewCountField =
+    obj.review_count !== undefined ||
+    obj.reviewCount !== undefined ||
+    obj.total_reviews !== undefined ||
+    obj.totalReviews !== undefined ||
+    obj.count !== undefined;
+  const reviewCount = readNonNegInt(
+    obj,
+    "review_count",
+    "reviewCount",
+    "total_reviews",
+    "totalReviews",
+    "count"
+  );
+  const minReviewsRequired = Math.max(
+    10,
+    readNonNegInt(obj, "min_reviews_required", "minReviewsRequired") || 10
+  );
+  const rawAvg = Number(
+    obj.average_rating ?? obj.averageRating ?? obj.avg_rating ?? obj.rating ?? 0
+  );
   const averageRating = Number.isFinite(rawAvg) && rawAvg > 0 ? Math.min(5, rawAvg) : 0;
   const summary = readStr(obj, "summary", "overview", "text");
   const pros = readStringArray(obj.pros ?? obj.highlights ?? obj.strengths);
   const cons = readStringArray(obj.cons ?? obj.drawbacks ?? obj.weaknesses);
-  const updatedAt = readStr(obj, "updated_at", "generated_at");
+  const updatedAt = readStr(obj, "updated_at", "updatedAt", "generated_at", "generatedAt");
 
   const hasContent = Boolean(summary) || pros.length > 0 || cons.length > 0;
-  const explicitlyUnavailable = obj.ready === false || obj.insufficient_reviews === true;
-  const ready = !explicitlyUnavailable && hasContent && (reviewCount === 0 || reviewCount >= 10);
+  const explicitlyUnavailable =
+    obj.ready === false || obj.available === false || obj.insufficient_reviews === true;
+  const meetsReviewThreshold = hasReviewCountField ? reviewCount >= minReviewsRequired : true;
+  const ready = !explicitlyUnavailable && hasContent && meetsReviewThreshold;
 
   return {
     product_id: productId,
@@ -483,4 +504,150 @@ export function normalizeAutoReplyConfig(payload: unknown): SellerAutoReplyConfi
     message: readStr(obj, "message", "template", "greeting"),
     updated_at: readStr(obj, "updated_at"),
   };
+}
+
+export interface MarkReadPayload {
+  last_read_seq?: number;
+  message_id?: string;
+}
+
+export type MarkReadValidation =
+  { ok: true; value: MarkReadPayload } | { ok: false; code: "INVALID_READ_PAYLOAD" };
+
+export type OptionalMarkReadBodyResult =
+  | { ok: true; value: MarkReadPayload }
+  | { ok: false; code: "INVALID_JSON" | "INVALID_READ_PAYLOAD" };
+
+export type ReadSyncResult = "ws" | "rest" | "failed";
+
+export const SELLER_CHAT_READ_EVENT = "nm:seller-chat-read";
+
+export interface SellerChatReadEventDetail {
+  readCount: number;
+}
+
+/**
+ * Computes the next SellerShell unread chat badge count after syncing a conversation as read.
+ * Subtracts a positive integer `readCount` and clamps to >= 0; ignores invalid/non-positive deltas.
+ */
+export function applySellerChatReadDelta(currentCount: number, readCount: unknown): number {
+  const base = Number.isFinite(currentCount) ? Math.max(0, Math.trunc(currentCount)) : 0;
+  if (typeof readCount !== "number" || !Number.isFinite(readCount) || readCount <= 0) {
+    return base;
+  }
+  return Math.max(0, base - Math.trunc(readCount));
+}
+
+/** Extracts a valid positive `readCount` from a `SELLER_CHAT_READ_EVENT` payload. */
+export function extractSellerChatReadDelta(detail: unknown): number {
+  const obj = asRecord(detail);
+  if (!obj) return 0;
+  const raw = obj.readCount;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) return 0;
+  return Math.trunc(raw);
+}
+
+/** Validates optional POST /api/seller/chat/conversations/[id]/read body. */
+export function validateMarkReadPayload(raw: unknown): MarkReadValidation {
+  if (raw === undefined || raw === null) {
+    return { ok: true, value: {} };
+  }
+  const obj = asRecord(raw);
+  if (!obj) {
+    return { ok: false, code: "INVALID_READ_PAYLOAD" };
+  }
+  const out: MarkReadPayload = {};
+  if (obj.last_read_seq !== undefined && obj.last_read_seq !== null) {
+    if (
+      typeof obj.last_read_seq !== "number" ||
+      !Number.isSafeInteger(obj.last_read_seq) ||
+      obj.last_read_seq < 0
+    ) {
+      return { ok: false, code: "INVALID_READ_PAYLOAD" };
+    }
+    if (obj.last_read_seq > 0) {
+      out.last_read_seq = obj.last_read_seq;
+    }
+  }
+  if (obj.message_id !== undefined && obj.message_id !== null) {
+    if (typeof obj.message_id !== "string") {
+      return { ok: false, code: "INVALID_READ_PAYLOAD" };
+    }
+    const cleanId = obj.message_id.trim();
+    if (cleanId.length > 128) {
+      return { ok: false, code: "INVALID_READ_PAYLOAD" };
+    }
+    if (cleanId) {
+      out.message_id = cleanId;
+    }
+  }
+  return { ok: true, value: out };
+}
+
+/**
+ * Parses an optional JSON body from raw request bytes (supports empty HTTP/2 or chunked bodies
+ * with `Content-Type: application/json` and no `Content-Length` header).
+ */
+export function parseOptionalMarkReadBody(body: Uint8Array): OptionalMarkReadBodyResult {
+  if (body.byteLength === 0) {
+    return { ok: true, value: {} };
+  }
+  const text = new TextDecoder().decode(body).trim();
+  if (!text) {
+    return { ok: true, value: {} };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    return { ok: false, code: "INVALID_JSON" };
+  }
+  return validateMarkReadPayload(parsed);
+}
+
+/**
+ * Clears local `unread_count` only when the read cursor was synced over WS/REST,
+ * or when the conversation genuinely has no messages.
+ */
+export function shouldClearUnreadAfterReadSync(
+  result: ReadSyncResult | null,
+  hasMessages: boolean
+): boolean {
+  if (!hasMessages) return true;
+  return result === "ws" || result === "rest";
+}
+
+/**
+ * Persists seller conversation read cursor: prefers live WebSocket `read` frame and falls back
+ * to REST `POST /api/seller/chat/conversations/{id}/read` when the socket is not yet open.
+ */
+export async function markSellerConversationRead(params: {
+  conversationId: string;
+  lastReadSeq?: number;
+  messageId?: string;
+  sendWsRead: (convId: string, lastReadSeq?: number, messageId?: string) => boolean;
+  postRestRead: (convId: string, body: MarkReadPayload) => Promise<unknown>;
+}): Promise<ReadSyncResult> {
+  const convId = params.conversationId.trim();
+  if (!convId) return "failed";
+  const seq =
+    typeof params.lastReadSeq === "number" &&
+    Number.isSafeInteger(params.lastReadSeq) &&
+    params.lastReadSeq > 0
+      ? params.lastReadSeq
+      : undefined;
+  const msgId = (params.messageId ?? "").trim() || undefined;
+  if (params.sendWsRead(convId, seq, msgId)) {
+    return "ws";
+  }
+  const body: MarkReadPayload = {
+    ...(seq !== undefined ? { last_read_seq: seq } : {}),
+    ...(msgId ? { message_id: msgId } : {}),
+  };
+  try {
+    await params.postRestRead(convId, body);
+    return "rest";
+  } catch {
+    return "failed";
+  }
 }

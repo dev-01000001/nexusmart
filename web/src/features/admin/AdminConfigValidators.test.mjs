@@ -1,6 +1,9 @@
 // Run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/features/admin/AdminConfigValidators.test.mjs
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   parseCarrierCode,
   parseEntityId,
@@ -13,10 +16,16 @@ import {
   validateCreateStaffInput,
   validatePaymentFeeConfigInput,
   validatePaymentMethodConfigInput,
+  validateSearchReindexInput,
   validateShopBankReviewInput,
   validateUpdateUserRoleInput,
   validateUpdateUserStatusInput,
 } from "./AdminConfigValidators.ts";
+import { getSearchReindexStatusMeta } from "./adminApiTypes.ts";
+import { validateRescanBannedKeywordsInput } from "./bannedKeywordsHelper.ts";
+import { sanitizeGatewayError } from "../../lib/server/error-map.ts";
+
+const WEB_SRC = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
 describe("AdminConfigValidators — path ID & enum guards", () => {
   test("parseEntityId accepts UUIDs and safe IDs, rejects path traversal and injection", () => {
@@ -298,5 +307,123 @@ describe("AdminConfigValidators — shop review, bank review, config & fees", ()
       ],
     });
     assert.equal(badWeight.ok, false);
+  });
+});
+
+describe("AdminConfigValidators — banned-keywords rescan & search reindex", () => {
+  test("validateRescanBannedKeywordsInput requires boolean dry_run and route does not use Boolean(raw.dry_run)", () => {
+    assert.deepEqual(validateRescanBannedKeywordsInput({ dry_run: true, limit: 100 }), {
+      ok: true,
+      value: { keyword_ids: [], dry_run: true, cursor: "", limit: 100 },
+    });
+    assert.deepEqual(
+      validateRescanBannedKeywordsInput({ dry_run: false, keyword_ids: ["kw-1"] }),
+      {
+        ok: true,
+        value: { keyword_ids: ["kw-1"], dry_run: false, cursor: "", limit: 500 },
+      }
+    );
+
+    for (const bad of [
+      {},
+      { dry_run: undefined },
+      { dry_run: null },
+      { dry_run: "true" },
+      { dry_run: "false" },
+      { dry_run: 0 },
+      { dry_run: 1 },
+    ]) {
+      const res = validateRescanBannedKeywordsInput(bad);
+      assert.equal(res.ok, false, `expected rejection for ${JSON.stringify(bad)}`);
+      if (!res.ok) assert.equal(res.code, "INVALID_ARGUMENT");
+    }
+
+    const rescanRouteSrc = readFileSync(
+      resolve(WEB_SRC, "app/api/admin/banned-keywords/rescan/route.ts"),
+      "utf8"
+    );
+    assert.equal(
+      rescanRouteSrc.includes("Boolean(raw.dry_run)"),
+      false,
+      "rescan route must not coerce raw.dry_run with Boolean()"
+    );
+    const validatePos = rescanRouteSrc.indexOf("validateRescanBannedKeywordsInput");
+    const gwPos = rescanRouteSrc.indexOf("await gwRaw(");
+    assert.ok(validatePos > 0 && gwPos > validatePos);
+  });
+
+  test("validateSearchReindexInput validates optional booleans and batch_size", () => {
+    assert.deepEqual(validateSearchReindexInput(undefined), { ok: true, value: {} });
+    assert.deepEqual(validateSearchReindexInput({}), { ok: true, value: {} });
+    assert.deepEqual(
+      validateSearchReindexInput({
+        reindex_products: true,
+        reindex_embeddings: false,
+        batch_size: 200,
+      }),
+      {
+        ok: true,
+        value: { reindex_products: true, reindex_embeddings: false, batch_size: 200 },
+      }
+    );
+
+    for (const bad of [
+      null,
+      [],
+      "invalid",
+      { reindex_products: "true" },
+      { reindex_shops: 1 },
+      { batch_size: 0 },
+      { batch_size: -5 },
+      { batch_size: 501 },
+      { batch_size: 12.5 },
+      { batch_size: "200" },
+    ]) {
+      const res = validateSearchReindexInput(bad);
+      assert.equal(res.ok, false, `expected rejection for ${JSON.stringify(bad)}`);
+      if (!res.ok) assert.equal(res.code, "INVALID_ARGUMENT");
+    }
+  });
+
+  test("search reindex BFF routes, status meta, error map, and /admin/cau-hinh capability gating", () => {
+    assert.equal(getSearchReindexStatusMeta("RUNNING").state, "RUNNING");
+    assert.equal(getSearchReindexStatusMeta("COMPLETED").state, "COMPLETED");
+    assert.equal(getSearchReindexStatusMeta("FAILED").state, "FAILED");
+
+    const conflictErr = sanitizeGatewayError(409, {
+      error: { code: "FAILED_PRECONDITION", message: "REINDEX_ALREADY_RUNNING: busy" },
+    });
+    assert.equal(conflictErr.code, "REINDEX_ALREADY_RUNNING");
+    assert.match(conflictErr.message, /dựng lại chỉ mục/i);
+
+    const postRoutePath = resolve(WEB_SRC, "app/api/admin/search/reindex/route.ts");
+    const getRoutePath = resolve(WEB_SRC, "app/api/admin/search/reindex/[jobId]/route.ts");
+    assert.equal(existsSync(postRoutePath), true, "POST /api/admin/search/reindex must exist");
+    assert.equal(existsSync(getRoutePath), true, "GET /api/admin/search/reindex/[jobId] must exist");
+
+    const postSrc = readFileSync(postRoutePath, "utf8");
+    assert.ok(postSrc.includes("apiRoute("), "POST reindex BFF must wrap handler in apiRoute (CSRF)");
+    assert.ok(postSrc.includes('assertCapability("search.reindex")'));
+    assert.ok(postSrc.includes("/api/v1/admin/search/reindex"));
+
+    const getSrc = readFileSync(getRoutePath, "utf8");
+    assert.ok(getSrc.includes("apiRoute<"), "GET reindex status BFF must wrap handler in apiRoute");
+    assert.ok(getSrc.includes('assertCapability("search.reindex")'));
+    assert.ok(getSrc.includes("parseEntityId(jobId)"));
+    assert.ok(getSrc.includes("/api/v1/admin/search/reindex/"));
+
+    const configClientSrc = readFileSync(
+      resolve(WEB_SRC, "features/admin/AdminConfigClient.tsx"),
+      "utf8"
+    );
+    const reindexBlockSrc = readFileSync(
+      resolve(WEB_SRC, "features/admin/AdminSearchReindexBlock.tsx"),
+      "utf8"
+    );
+    assert.ok(configClientSrc.includes('roleHasCapability(role, "search.reindex")'));
+    assert.ok(configClientSrc.includes("AdminSearchReindexBlock"));
+    assert.ok(reindexBlockSrc.includes('useAdminCapability("search.reindex")'));
+    assert.ok(reindexBlockSrc.includes("AdminConfirmDialog"));
+    assert.ok(reindexBlockSrc.includes("Dựng lại chỉ mục"));
   });
 });

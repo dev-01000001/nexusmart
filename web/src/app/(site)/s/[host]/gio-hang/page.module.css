@@ -237,7 +237,46 @@
 .itemTags {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
+}
+
+.flashToggleBtn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 2px 10px;
+  border-radius: var(--radius-shop);
+  background: var(--surface-subtle);
+  color: var(--ink-strong);
+  font-size: var(--step-small);
+  font-weight: 560;
+  line-height: 1.3;
+  max-width: 100%;
+  transition:
+    background-color var(--t-hover) var(--ease-out),
+    color var(--t-hover) var(--ease-out);
+}
+
+.flashToggleBtn:hover:not(:disabled) {
+  background: var(--accent-tint);
+  color: var(--accent-tint-ink);
+}
+
+.flashToggleBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.flashLineNote {
+  font-size: var(--step-small);
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.flashLineWarn {
+  color: var(--negative);
+  font-weight: 500;
 }
 
 .itemActionsCol {

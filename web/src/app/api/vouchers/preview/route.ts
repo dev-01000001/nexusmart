@@ -5,11 +5,14 @@ import { assertSession } from "@/lib/server/session";
 import { requireRequestSite } from "@/lib/server/sites";
 import {
   STOREFRONT_CHANNEL,
+  filterPreviewableCartGroups,
   hasPlatformPromoInput,
   resolveSiteShopVoucherMap,
-  scopeCartToShop,
 } from "@/lib/server/storefront";
-import { translatePromotionWarning } from "@/features/commerce/checkoutErrors";
+import {
+  extractRejectedFlashSaleItemIds,
+  translatePromotionWarning,
+} from "@/features/commerce/checkoutErrors";
 import type { GwCart, GwDiscountBreakdown } from "@/features/commerce/types";
 
 interface PreviewLineInput {
@@ -74,18 +77,11 @@ export const POST = apiRoute(
     const { cart } = await gw<{ cart: GwCart }>("/api/v1/cart", {
       query: { shop_id: site.shopId },
     });
-    const scoped = scopeCartToShop(cart, site.shopId);
-
-    const availableGroups = scoped.shop_groups
-      .map((g) => ({
-        ...g,
-        items: g.items.filter((it) => !it.unavailable && it.available_stock > 0 && it.quantity > 0),
-      }))
-      .filter((g) => g.items.length > 0);
+    const availableGroups = filterPreviewableCartGroups(cart, site.shopId);
 
     if (availableGroups.length === 0) {
       return Response.json(
-        { breakdown: EMPTY_BREAKDOWN, warnings_vi: [] },
+        { breakdown: EMPTY_BREAKDOWN, warnings_vi: [], rejected_flash_sale_item_ids: [] },
         { headers: { "Cache-Control": "no-store" } }
       );
     }
@@ -134,14 +130,20 @@ export const POST = apiRoute(
       },
     });
 
-    const warningsVi = (data.breakdown?.warnings ?? []).map(translatePromotionWarning);
+    const rawWarnings = data.breakdown?.warnings ?? [];
+    const rejectedFlashSaleItemIds = extractRejectedFlashSaleItemIds(rawWarnings);
+    const warningsVi = rawWarnings.map(translatePromotionWarning);
     const safeBreakdown: GwDiscountBreakdown = {
       ...data.breakdown,
       warnings: warningsVi,
     };
 
     return Response.json(
-      { breakdown: safeBreakdown, warnings_vi: warningsVi },
+      {
+        breakdown: safeBreakdown,
+        warnings_vi: warningsVi,
+        rejected_flash_sale_item_ids: rejectedFlashSaleItemIds,
+      },
       { headers: { "Cache-Control": "no-store" } }
     );
   },

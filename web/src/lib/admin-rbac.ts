@@ -217,6 +217,7 @@ export function canAccessAdminPath(
       "categories.read",
       "users.read",
       "carriers.read",
+      "search.reindex",
     ]);
   }
   if (clean === "/admin/audit-log" || clean.startsWith("/admin/audit-log/")) {

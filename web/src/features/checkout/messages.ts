@@ -284,6 +284,7 @@ export function translateCheckoutError(err: unknown, ctx?: CheckoutErrorContext)
 
   if (
     err.code === "FLASH_SALE_NOT_ACTIVE" ||
+    err.code === "FLASH_SALE_EXHAUSTED" ||
     err.code === "FLASH_UNAVAILABLE_ON_COMMIT" ||
     err.code === "FLASH_SALE_PRICE_CHANGED" ||
     err.code === "FLASH_SALE_SKU_MISMATCH" ||
@@ -311,6 +312,14 @@ export function translateCheckoutError(err: unknown, ctx?: CheckoutErrorContext)
 
   if (err.code === "PROMOTION_BREAKDOWN_MISSING" || err.code === "RESERVATION_ALREADY_RELEASED") {
     return "Hệ thống khuyến mãi vừa cập nhật lại giá đơn hàng. Vui lòng kiểm tra lại và thử đặt lại.";
+  }
+
+  if (
+    err.code === "RATE_LIMITED" ||
+    err.code === "RATE_LIMIT_EXCEEDED" ||
+    (err.status === 429 && err.code !== "RESOURCE_EXHAUSTED")
+  ) {
+    return err.message || "Bạn thao tác quá nhanh, vui lòng thử lại sau ít phút.";
   }
 
   if (err.code === "RESOURCE_EXHAUSTED") {

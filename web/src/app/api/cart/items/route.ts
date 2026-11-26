@@ -2,14 +2,13 @@ import { GatewayError } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import { apiRoute, readJson } from "@/lib/server/http";
 import { assertSession } from "@/lib/server/session";
-import { assertSkuOfShop, requireRequestSite } from "@/lib/server/sites";
+import { requireRequestSite } from "@/lib/server/sites";
 import { scopeCartToShop } from "@/lib/server/storefront";
 import { mapCartError } from "@/features/commerce/checkoutErrors";
 import type { GwCart } from "@/features/commerce/types";
 
 interface AddCartBody {
   sku_id?: string;
-  /** Optional lookup hint; ownership is still verified against the backend product. */
   product_id?: string;
   quantity?: number;
 }
@@ -28,13 +27,11 @@ export const POST = apiRoute(
     if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 999) {
       throw new GatewayError("invalid", "INVALID_QUANTITY");
     }
-    // A SKU of another shop is "not found" on this site.
-    await assertSkuOfShop(site.shopId, skuId, body.product_id);
 
     try {
       const data = await gw<{ cart: GwCart; clamped_to_stock: boolean }>("/api/v1/cart/items", {
         method: "POST",
-        body: { sku_id: skuId, quantity },
+        body: { sku_id: skuId, quantity, storefront_shop_id: site.shopId },
       });
       return Response.json(
         { cart: scopeCartToShop(data.cart, site.shopId), clamped_to_stock: data.clamped_to_stock },

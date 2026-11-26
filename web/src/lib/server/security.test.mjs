@@ -144,10 +144,10 @@ test("assertSameOrigin accepts same custom-domain origin and rejects subdomain<-
   });
   assert.doesNotThrow(() => assertSameOrigin(sameCustomDev));
 
-  // Same custom host passes behind trusted HTTPS reverse proxy
+  // Same custom host passes behind trusted HTTPS reverse proxy (ingress-nginx preserves Host; X-Forwarded-Host is ignored)
   const sameCustomProd = makeReq("http://web:3000/api/checkout", {
-    host: "web:3000",
-    "x-forwarded-host": "shop.brand.vn",
+    host: "shop.brand.vn",
+    "x-forwarded-host": "evil.example",
     "x-forwarded-proto": "https",
     origin: "https://shop.brand.vn",
     "sec-fetch-site": "same-origin",
@@ -403,28 +403,39 @@ test("TRUST_PROXY_HEADERS defaults to false and ignores spoofed x-forwarded-host
   assert.doesNotThrow(() => assertSameOrigin(legitReqWithSpoofedHeaders));
 });
 
-test("assertSameOrigin honors x-forwarded-host/proto ONLY when TRUST_PROXY_HEADERS=true", () => {
+test("assertSameOrigin honors x-forwarded-proto ONLY when TRUST_PROXY_HEADERS=true and always ignores x-forwarded-host", () => {
   const prev = process.env.TRUST_PROXY_HEADERS;
   try {
     process.env.TRUST_PROXY_HEADERS = "true";
 
     const proxiedReq = makeReq("http://web:3000/api/checkout", {
-      host: "web:3000",
-      "x-forwarded-host": "bach-dang.nexusmart.vn, internal-lb",
+      host: "bach-dang.nexusmart.vn",
+      "x-forwarded-host": "evil.example, internal-lb",
       "x-forwarded-proto": "https, http",
       origin: "https://bach-dang.nexusmart.vn",
     });
     assert.doesNotThrow(() => assertSameOrigin(proxiedReq));
 
-    // When proxy headers are trusted, the internal container origin no longer matches.
-    const internalOriginReq = makeReq("http://web:3000/api/checkout", {
-      host: "web:3000",
-      "x-forwarded-host": "bach-dang.nexusmart.vn",
+    // Spoofed x-forwarded-host is ignored even when TRUST_PROXY_HEADERS=true.
+    const spoofedXfhReq = makeReq("http://web:3000/api/checkout", {
+      host: "bach-dang.nexusmart.vn",
+      "x-forwarded-host": "evil.example",
       "x-forwarded-proto": "https",
-      origin: "http://web:3000",
+      origin: "https://evil.example",
     });
     assert.throws(
-      () => assertSameOrigin(internalOriginReq),
+      () => assertSameOrigin(spoofedXfhReq),
+      (err) => err instanceof GatewayError && err.status === 403 && err.code === "BAD_ORIGIN"
+    );
+
+    // When proxy headers are trusted, mismatched protocol against x-forwarded-proto is rejected.
+    const wrongProtoReq = makeReq("http://web:3000/api/checkout", {
+      host: "bach-dang.nexusmart.vn",
+      "x-forwarded-proto": "https",
+      origin: "http://bach-dang.nexusmart.vn",
+    });
+    assert.throws(
+      () => assertSameOrigin(wrongProtoReq),
       (err) => err instanceof GatewayError && err.status === 403 && err.code === "BAD_ORIGIN"
     );
   } finally {
@@ -433,7 +444,7 @@ test("assertSameOrigin honors x-forwarded-host/proto ONLY when TRUST_PROXY_HEADE
   }
 });
 
-test("buildLoginRedirectUrl keeps site host and honors TRUST_PROXY_HEADERS only when enabled", () => {
+test("buildLoginRedirectUrl always keeps Host (ignoring x-forwarded-host) and honors x-forwarded-proto/xff only when TRUST_PROXY_HEADERS=true", () => {
   const prev = process.env.TRUST_PROXY_HEADERS;
   try {
     delete process.env.TRUST_PROXY_HEADERS;
@@ -458,12 +469,12 @@ test("buildLoginRedirectUrl keeps site host and honors TRUST_PROXY_HEADERS only 
     );
 
     process.env.TRUST_PROXY_HEADERS = "true";
-    assert.equal(resolveRequestHost(req.headers, "fallback"), "evil.example");
+    assert.equal(resolveRequestHost(req.headers, "fallback"), "bach-dang.nexusmart.localhost:3300");
     assert.equal(resolveRequestProto(req.headers, req.url), "https");
-    assert.equal(resolveForwardedClientIp(req.headers), "203.0.113.9");
+    assert.equal(resolveForwardedClientIp(req.headers), "203.0.113.9, 10.0.0.1");
     assert.equal(
       buildLoginRedirectUrl(req).toString(),
-      "https://evil.example/dang-nhap?next=%2Fthanh-toan%2Fcho%2Fpay-1%3Ftab%3Dqr"
+      "https://bach-dang.nexusmart.localhost:3300/dang-nhap?next=%2Fthanh-toan%2Fcho%2Fpay-1%3Ftab%3Dqr"
     );
 
     // Invalid x-forwarded-proto is rejected even when TRUST_PROXY_HEADERS=true.
@@ -476,6 +487,83 @@ test("buildLoginRedirectUrl keeps site host and honors TRUST_PROXY_HEADERS only 
     if (prev === undefined) delete process.env.TRUST_PROXY_HEADERS;
     else process.env.TRUST_PROXY_HEADERS = prev;
   }
+});
+
+test("resolveForwardedClientIp forwards sanitized X-Forwarded-For chain (max 10 trailing hops, strips blanks, rejects CR/LF)", () => {
+  const headerBag = (entries) => ({
+    get(name) {
+      const key = name.toLowerCase();
+      return key in entries ? entries[key] : null;
+    },
+  });
+
+  // Disabled by default (trustProxyHeaders=false): returns null even when headers exist.
+  assert.equal(
+    resolveForwardedClientIp(
+      headerBag({ "x-forwarded-for": "198.51.100.1, 203.0.113.9", "x-real-ip": "203.0.113.9" }),
+      { trustProxyHeaders: false }
+    ),
+    null
+  );
+
+  // Preserves full chain (never picks leftmost spoofed IP) so gateway scans right-to-left.
+  assert.equal(
+    resolveForwardedClientIp(
+      headerBag({ "x-forwarded-for": "198.51.100.1, 203.0.113.9, 10.0.0.1" }),
+      { trustProxyHeaders: true }
+    ),
+    "198.51.100.1, 203.0.113.9, 10.0.0.1"
+  );
+
+  // Drops empty elements and trims whitespace around each hop.
+  assert.equal(
+    resolveForwardedClientIp(
+      headerBag({ "x-forwarded-for": " , 198.51.100.1 , ,  203.0.113.9 ,  " }),
+      { trustProxyHeaders: true }
+    ),
+    "198.51.100.1, 203.0.113.9"
+  );
+
+  // Caps at the last 10 hops (keeping rightmost proxy-appended hops, dropping excess leftmost hops).
+  const twelveHops = Array.from({ length: 12 }, (_, i) => `198.51.100.${i + 1}`).join(", ");
+  const expectedTenHops = Array.from({ length: 10 }, (_, i) => `198.51.100.${i + 3}`).join(", ");
+  assert.equal(
+    resolveForwardedClientIp(headerBag({ "x-forwarded-for": twelveHops }), {
+      trustProxyHeaders: true,
+    }),
+    expectedTenHops
+  );
+
+  // Rejects CR/LF characters in X-Forwarded-For (prevents header injection / fetch rejection).
+  for (const bad of [
+    "198.51.100.1\r\nX-Injected: 1, 203.0.113.9",
+    "203.0.113.9\n",
+    "203.0.113.9\r",
+  ]) {
+    assert.equal(
+      resolveForwardedClientIp(headerBag({ "x-forwarded-for": bad, "x-real-ip": "203.0.113.50" }), {
+        trustProxyHeaders: true,
+      }),
+      null
+    );
+  }
+
+  // Falls back to X-Real-IP when X-Forwarded-For is absent or contains only blank items.
+  assert.equal(
+    resolveForwardedClientIp(
+      headerBag({ "x-forwarded-for": " , , ", "x-real-ip": " 203.0.113.42 " }),
+      { trustProxyHeaders: true }
+    ),
+    "203.0.113.42"
+  );
+
+  // Rejects CR/LF in X-Real-IP as well.
+  assert.equal(
+    resolveForwardedClientIp(headerBag({ "x-real-ip": "203.0.113.42\r\nEvil: 1" }), {
+      trustProxyHeaders: true,
+    }),
+    null
+  );
 });
 
 test("parsePublishedSiteHost accepts PUBLISHED + ACTIVE sites and rejects DRAFT/SUSPENDED/inactive", () => {
@@ -749,17 +837,23 @@ test("callRefresh and lookupPublishedSiteHost propagate or generate W3C tracepar
     assert.equal(seen[0].headers.traceparent, incoming);
     assert.equal(seen[0].headers.tracestate, "congo=t61rcWkgMzE");
 
-    const siteWithTrace = await lookupPublishedSiteHost("shop.nexusmart.localhost", {
-      traceparent: incoming,
-      tracestate: "vendor=1",
-    });
+    const siteWithTrace = await lookupPublishedSiteHost(
+      "shop.nexusmart.localhost",
+      {
+        traceparent: incoming,
+        tracestate: "vendor=1",
+      },
+      "203.0.113.9, 10.0.0.1"
+    );
     assert.equal(siteWithTrace.status, "found");
     assert.equal(seen[1].headers.traceparent, incoming);
     assert.equal(seen[1].headers.tracestate, "vendor=1");
+    assert.equal(seen[1].headers["X-Forwarded-For"], "203.0.113.9, 10.0.0.1");
 
-    const siteAutoTrace = await lookupPublishedSiteHost("shop.nexusmart.localhost");
+    const siteAutoTrace = await lookupPublishedSiteHost("shop.nexusmart.localhost", undefined, null);
     assert.equal(siteAutoTrace.status, "found");
     assert.equal(isValidTraceparent(seen[2].headers.traceparent), true);
+    assert.equal("X-Forwarded-For" in seen[2].headers, false);
   } finally {
     globalThis.fetch = origFetch;
   }

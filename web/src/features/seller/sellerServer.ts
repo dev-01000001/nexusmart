@@ -12,10 +12,10 @@ import {
 } from "@/lib/server/session";
 import {
   normalizeSellerOrder,
+  normalizeSellerShipmentResponse,
   type GwCategory,
   type GwFlashSale,
   type GwFlashSaleItem,
-  type GwOrderShipment,
   type GwSellerBalance,
   type GwSellerBankAccount,
   type GwSellerOrder,
@@ -26,6 +26,7 @@ import {
   type GwSellerVoucher,
   type GwShopDiscountProgram,
   type GwShopShippingSettings,
+  type SellerShipmentPayload,
 } from "./sellerApiTypes";
 import type { SellerAddress } from "./sellerReturns";
 import { isValidResourceId } from "./sellerValidation";
@@ -222,15 +223,15 @@ export async function loadSellerOrderById(
 
 export async function loadSellerOrderShipment(
   orderId: string
-): Promise<LoadResult<GwOrderShipment>> {
+): Promise<LoadResult<SellerShipmentPayload>> {
   if (!isValidResourceId(orderId)) {
     return { data: null, error: null };
   }
   try {
-    const res = await gw<{ shipment: GwOrderShipment | null }>(
+    const res = await gw<unknown>(
       `/api/v1/shipping/shipments/${encodeURIComponent(orderId.trim())}`
     );
-    return { data: res.shipment ?? null, error: null };
+    return { data: normalizeSellerShipmentResponse(res), error: null };
   } catch (err) {
     if (err instanceof GatewayError && err.kind === "not_found") {
       return { data: null, error: null };

@@ -105,7 +105,7 @@
   min-width: 0;
 }
 
-.stageSummaryRadio {
+.stageSummaryBtn {
   text-align: left;
   font-size: 15px;
   color: var(--ink);
@@ -118,7 +118,7 @@
   transition: color var(--t-hover) var(--ease-out);
 }
 
-.stageSummaryRadio:hover {
+.stageSummaryBtn:hover {
   color: var(--accent);
 }
 
@@ -390,6 +390,65 @@
   font-size: var(--step-small);
   color: var(--muted);
   line-height: 1.45;
+}
+
+.paymentTile:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.miniFlashRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.flashToggleBtn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 2px 9px;
+  border-radius: var(--radius-shop);
+  background: var(--surface-subtle);
+  color: var(--ink-strong);
+  font-size: 13px;
+  font-weight: 560;
+  line-height: 1.3;
+  max-width: 100%;
+  transition:
+    background-color var(--t-hover) var(--ease-out),
+    color var(--t-hover) var(--ease-out);
+}
+
+.flashToggleBtn:hover:not(:disabled) {
+  background: var(--accent-tint);
+  color: var(--accent-tint-ink);
+}
+
+.flashToggleBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.miniLineNote {
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.miniLineWarn {
+  color: var(--negative);
+  font-weight: 500;
+}
+
+.alertActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
 }
 
 /* Sticky right summary column */

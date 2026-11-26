@@ -1,9 +1,11 @@
 "use client";
 
 import React, { useCallback, useState } from "react";
+import Link from "next/link";
 import { Button, IconClock, IconRefresh, IconSpark, StateView } from "@/components";
 import { ApiError, api } from "@/lib/api";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
+import { renderAssistantMarkdown } from "@/features/assistant/assistantMarkdown";
 import {
   normalizeSellerReport,
   type SellerReportPeriod,
@@ -35,44 +37,6 @@ const QUICK_QUESTIONS: Array<{ label: string; suggestedPeriod?: SellerReportPeri
 
 function getPeriodLabel(period: SellerReportPeriod): string {
   return PERIOD_OPTIONS.find((p) => p.value === period)?.label ?? "30 ngày";
-}
-
-function renderNarrativeBlocks(text: string): React.ReactNode {
-  const rawLines = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  const elements: React.ReactNode[] = [];
-  let bullets: string[] = [];
-
-  const flushBullets = (keyPrefix: string) => {
-    if (bullets.length === 0) return;
-    elements.push(
-      <ul key={`list-${keyPrefix}`} className={styles.narrativeList}>
-        {bullets.map((b, idx) => (
-          <li key={`${keyPrefix}-${idx}`}>{b}</li>
-        ))}
-      </ul>
-    );
-    bullets = [];
-  };
-
-  rawLines.forEach((line, idx) => {
-    if (/^([-*•])\s+/.test(line)) {
-      bullets.push(line.replace(/^([-*•])\s+/, "").trim());
-    } else {
-      flushBullets(String(idx));
-      elements.push(
-        <p key={`p-${idx}`} className={styles.narrativeParagraph}>
-          {line}
-        </p>
-      );
-    }
-  });
-  flushBullets("end");
-
-  return elements;
 }
 
 export interface SellerAiReportClientProps {
@@ -340,7 +304,16 @@ export function SellerAiReportClient({ hasShop }: SellerAiReportClientProps) {
                 </div>
 
                 <div className={styles.narrativeBody}>
-                  {renderNarrativeBlocks(activeReport.answer)}
+                  {renderAssistantMarkdown(activeReport.answer, {
+                    stripUuids: false,
+                    LinkComponent: Link,
+                    classNames: {
+                      paragraph: styles.narrativeParagraph,
+                      list: styles.narrativeList,
+                      strong: styles.narrativeStrong,
+                      link: styles.narrativeLink,
+                    },
+                  })}
                 </div>
               </section>
 

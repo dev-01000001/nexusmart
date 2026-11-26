@@ -2,6 +2,7 @@ import React from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { buildSiteMetadata } from "@/lib/site/seo";
+import { loadShopLiveFlashSales } from "@/lib/server/sites";
 import {
   loadSiteContext,
   loadSiteTemplateBundle,
@@ -43,6 +44,8 @@ export default async function SiteCartPage({ params }: PageProps) {
 
   const brandName = bundle.templateConfig.theme.brand_name?.trim() || bundle.payload.shop.name;
   const catalogShops = bundle.shopProfile ? [bundle.shopProfile] : [];
+  const liveFlashRes = await loadShopLiveFlashSales(bundle.payload.site.shop_id);
+  const initialFlashSales = liveFlashRes.sales;
 
   return (
     <CartClient
@@ -50,6 +53,7 @@ export default async function SiteCartPage({ params }: PageProps) {
       catalogProducts={bundle.products}
       catalogShops={catalogShops}
       initialVouchers={voucherData?.rawVouchers ?? []}
+      initialFlashSales={initialFlashSales}
       cartConfig={bundle.templateConfig.pages.cart}
       templateConfig={bundle.templateConfig}
       shop={bundle.payload.shop}

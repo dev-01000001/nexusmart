@@ -20,7 +20,7 @@ import type {
   UserRole,
 } from "@/lib/gateway-types";
 import { getPaymentMethodLabel } from "@/features/account/orderMeta";
-import { EMPTY_DASH } from "./adminMeta";
+import { EMPTY_DASH, formatShortTimeDateVi } from "./adminMeta";
 import { useAdminContext } from "./AdminShell";
 import { AdminConfirmDialog, AdminDrawer } from "./AdminUi";
 import { useAdminUser } from "./AdminUserContext";
@@ -796,28 +796,50 @@ export function AdminUsersPanel({ initialQuery = "" }: AdminUsersPanelProps) {
               ) : !activities || activities.items.length === 0 ? (
                 <p className={shared.savedStamp}>Chưa ghi nhận sự kiện hoạt động nào.</p>
               ) : (
-                <div className={shared.tableWrap}>
-                  <table className={shared.dataTable}>
-                    <thead>
-                      <tr>
-                        <th>Thời điểm</th>
-                        <th>Sự kiện</th>
-                        <th>IP</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {activities.items.map((act) => (
-                        <tr key={act.id}>
-                          <td className="num">
-                            {act.created_at ? formatDateTimeVi(act.created_at) : EMPTY_DASH}
-                          </td>
-                          <td>{formatUserActivityEventType(act.event_type)}</td>
-                          <td className="num">{act.ip_address || EMPTY_DASH}</td>
+                <>
+                  <div className={shared.tableWrap}>
+                    <table className={shared.dataTable}>
+                      <thead>
+                        <tr>
+                          <th>Thời điểm</th>
+                          <th>Sự kiện</th>
+                          <th>IP</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {activities.items.map((act) => (
+                          <tr key={act.id}>
+                            <td className="num">
+                              {act.created_at ? formatDateTimeVi(act.created_at) : EMPTY_DASH}
+                            </td>
+                            <td>{formatUserActivityEventType(act.event_type)}</td>
+                            <td className="num">{act.ip_address || EMPTY_DASH}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className={shared.mobileList}>
+                    {activities.items.map((act) => (
+                      <div key={act.id} className={shared.mobileItem}>
+                        <div className={shared.mobileLine1}>
+                          <span className={shared.mobileIdentity}>
+                            {formatUserActivityEventType(act.event_type)}
+                          </span>
+                          <span className={shared.mobileMetric}>
+                            {act.created_at ? formatShortTimeDateVi(act.created_at) : EMPTY_DASH}
+                          </span>
+                        </div>
+                        <div className={shared.mobileLine2}>
+                          <span className={shared.mobileMetaText}>
+                            IP {act.ip_address || EMPTY_DASH}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
               )}
 
               {activities &&
@@ -859,6 +881,31 @@ export function AdminUsersPanel({ initialQuery = "" }: AdminUsersPanelProps) {
                           })}
                         </tbody>
                       </table>
+                    </div>
+
+                    <div className={shared.mobileList}>
+                      {activities.recent_orders.map((ord) => {
+                        const ordMeta = getAdminOrderStatusMeta(ord.status);
+                        return (
+                          <div key={ord.id} className={shared.mobileItem}>
+                            <div className={shared.mobileLine1}>
+                              <span className={shared.mobileIdentity}>{ord.order_code}</span>
+                              <span className={shared.mobileMetric}>
+                                {formatVnd(ord.total_payable_vnd)}
+                              </span>
+                            </div>
+                            <div className={shared.mobileLine2}>
+                              <span className={shared.mobileMetaText}>
+                                {getPaymentMethodLabel(ord.payment_method)}
+                                {ord.created_at
+                                  ? ` · ${formatShortTimeDateVi(ord.created_at)}`
+                                  : ""}
+                              </span>
+                              <StatusPill label={ordMeta.label} tone={ordMeta.tone} />
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}

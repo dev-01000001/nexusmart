@@ -26,18 +26,7 @@ export default async function robots(): Promise<MetadataRoute.Robots> {
   }
 
   if (isTenantSiteHost(cls)) {
-    const payload = await fetchPublishedSiteByHost(cls.hostname);
-    if (!payload) {
-      return {
-        rules: [{ userAgent: "*", disallow: "/" }],
-      };
-    }
-    const siteOrigin = deriveSiteOrigin({
-      siteHost: payload.site.primary_host || cls.hostname,
-      rawHost,
-      proto,
-    });
-    return {
+    const buildSiteRobots = (siteOrigin: string): MetadataRoute.Robots => ({
       rules: [
         {
           userAgent: "*",
@@ -56,7 +45,31 @@ export default async function robots(): Promise<MetadataRoute.Robots> {
       ],
       sitemap: `${siteOrigin}/sitemap.xml`,
       host: siteOrigin,
-    };
+    });
+
+    let payload;
+    try {
+      payload = await fetchPublishedSiteByHost(cls.hostname);
+    } catch {
+      // Transient upstream error (429/5xx/timeout): never emit `Disallow: /` for the whole site.
+      const siteOrigin = deriveSiteOrigin({
+        siteHost: cls.hostname,
+        rawHost,
+        proto,
+      });
+      return buildSiteRobots(siteOrigin);
+    }
+    if (!payload) {
+      return {
+        rules: [{ userAgent: "*", disallow: "/" }],
+      };
+    }
+    const siteOrigin = deriveSiteOrigin({
+      siteHost: payload.site.primary_host || cls.hostname,
+      rawHost,
+      proto,
+    });
+    return buildSiteRobots(siteOrigin);
   }
 
   const platformOrigin = deriveMarketplaceOrigin({

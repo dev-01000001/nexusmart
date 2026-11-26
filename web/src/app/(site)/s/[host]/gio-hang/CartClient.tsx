@@ -5,12 +5,14 @@ import Link from "next/link";
 import type { Product } from "@/data/products";
 import type { Shop } from "@/data/shops";
 import type { Voucher } from "@/data/vouchers";
-import type { GatewayActiveShopDiscount } from "@/lib/gateway-types";
+import type { GatewayActiveShopDiscount, GatewayFlashSale } from "@/lib/gateway-types";
 import { ApiError, api } from "@/lib/api";
 import { formatSignedVnd, formatVnd } from "@/lib/format";
 import type { SitePublicShopDTO } from "@/lib/site/types";
 import {
+  evaluateShopFlashLines,
   fetchActiveShopDiscountsWithFetcher,
+  resolveCartFlashSaleState,
   resolveDisplayedLinePricing,
 } from "@/features/checkout/helpers";
 import { useStore } from "@/context/StoreContext";
@@ -54,6 +56,7 @@ export interface CartClientProps {
   catalogProducts: Product[];
   catalogShops: Shop[];
   initialVouchers: GwVoucher[];
+  initialFlashSales?: GatewayFlashSale[];
   cartConfig?: CartPageConfig;
   templateConfig?: SiteTemplateConfig;
   shop?: SitePublicShopDTO;
@@ -66,6 +69,7 @@ export function CartClient({
   catalogProducts,
   catalogShops,
   initialVouchers,
+  initialFlashSales = [],
   cartConfig,
   templateConfig,
   shop,
@@ -85,6 +89,9 @@ export function CartClient({
     clearCart,
     selectedVoucherId,
     flashSaleItemBySku,
+    optedOutFlashSkus,
+    optOutFlashSaleSku,
+    restoreFlashSaleSku,
     setSelectedVoucher,
     saveVoucher,
     showToast,
@@ -101,6 +108,7 @@ export function CartClient({
   const [vouchers, setVouchers] = useState<GwVoucher[]>(initialVouchers);
   const [savingVoucherId, setSavingVoucherId] = useState<string | null>(null);
   const [breakdown, setBreakdown] = useState<GwDiscountBreakdown | null>(null);
+  const [rejectedFlashSaleItemIds, setRejectedFlashSaleItemIds] = useState<string[]>([]);
   const [previewLoading, setPreviewLoading] = useState<boolean>(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [busySkuId, setBusySkuId] = useState<string | null>(null);
@@ -197,11 +205,28 @@ export function CartClient({
     void loadShopVouchers();
   }, [loadShopVouchers]);
 
-  const flashKey = JSON.stringify(flashSaleItemBySku);
+  const flashState = useMemo(
+    () =>
+      resolveCartFlashSaleState({
+        items: availableItems.map((it) => ({
+          skuId: it.raw.sku_id,
+          quantity: it.raw.quantity,
+          regularUnitPriceVnd: it.raw.price_vnd,
+        })),
+        serverFlashSales: initialFlashSales,
+        storedFlashItemIdBySku: flashSaleItemBySku,
+        optedOutFlashSkus,
+        nowMs: anchorNowMs,
+      }),
+    [availableItems, initialFlashSales, flashSaleItemBySku, optedOutFlashSkus, anchorNowMs]
+  );
+
+  const flashKey = JSON.stringify(flashState.activeFlashItemIdBySku);
 
   useEffect(() => {
     if (!isAuthenticated || !activeGroup || availableItems.length === 0) {
       setBreakdown(null);
+      setRejectedFlashSaleItemIds([]);
       setPreviewError(null);
       return;
     }
@@ -210,16 +235,25 @@ export function CartClient({
     setPreviewLoading(true);
     setPreviewError(null);
 
-    api<{ breakdown: GwDiscountBreakdown; warnings_vi?: string[] }>("/api/vouchers/preview", {
+    api<{
+      breakdown: GwDiscountBreakdown;
+      warnings_vi?: string[];
+      rejected_flash_sale_item_ids?: string[];
+    }>("/api/vouchers/preview", {
       method: "POST",
       body: {
         shop_voucher_id: showVouchers ? selectedVoucherId || "" : "",
         shipping_fee_vnd: 0,
-        flash_sale_item_by_sku: flashSaleItemBySku,
+        flash_sale_item_by_sku: flashState.activeFlashItemIdBySku,
       },
     })
       .then((res) => {
-        if (!cancelled) setBreakdown(res.breakdown);
+        if (!cancelled) {
+          setBreakdown(res.breakdown);
+          setRejectedFlashSaleItemIds(
+            Array.isArray(res.rejected_flash_sale_item_ids) ? res.rejected_flash_sale_item_ids : []
+          );
+        }
       })
       .catch((err) => {
         if (!cancelled) {
@@ -261,6 +295,34 @@ export function CartClient({
   );
   const canProceedCheckout = availableItems.length > 0 && !hasStockIssue;
   const shopBreakdown = breakdown?.shops?.[0] ?? null;
+  const flashLineEvals = useMemo(
+    () =>
+      evaluateShopFlashLines({
+        lines: availableItems.map((it) => {
+          const lf = flashState.liveFlashBySku[it.raw.sku_id];
+          return {
+            skuId: it.raw.sku_id,
+            quantity: it.raw.quantity,
+            regularUnitPriceVnd: it.raw.price_vnd,
+            flashSaleItemId: lf?.flashSaleItemId,
+            flashUnitPriceVnd: lf?.flashPriceVnd,
+            flashPerUserLimit: lf?.perUserLimit,
+            hasActiveShopDiscount: Boolean(shopDiscountBySku[it.raw.sku_id]),
+          };
+        }),
+        previewShopFlashDiscountVnd: shopBreakdown ? shopBreakdown.flash_sale_discount_vnd : null,
+        previewWarnings: breakdown?.warnings ?? [],
+        rejectedFlashSaleItemIds,
+      }),
+    [
+      availableItems,
+      flashState.liveFlashBySku,
+      shopDiscountBySku,
+      shopBreakdown,
+      breakdown?.warnings,
+      rejectedFlashSaleItemIds,
+    ]
+  );
   const isCartMutating = Boolean(busySkuId || clearing);
 
   const startUndoWindow = (item: Omit<UndoItem, "key">) => {
@@ -282,7 +344,7 @@ export function CartClient({
 
   const handleRemoveWithUndo = async (skuId: string, quantity: number, productName: string) => {
     if (busySkuId || clearing) return;
-    const savedFlashId = flashSaleItemBySku[skuId];
+    const savedFlashId = flashState.activeFlashItemIdBySku[skuId] ?? flashSaleItemBySku[skuId];
     setBusySkuId(skuId);
     try {
       const res = await removeCartItem(skuId);
@@ -377,13 +439,14 @@ export function CartClient({
         discount_vnd: number;
         reason?: string;
         breakdown?: GwDiscountBreakdown;
+        rejected_flash_sale_item_ids?: string[];
       }>("/api/vouchers/validate", {
         method: "POST",
         body: {
           code: clean,
           shop_voucher_id: selectedVoucherId || "",
           shipping_fee_vnd: 0,
-          flash_sale_item_by_sku: flashSaleItemBySku,
+          flash_sale_item_by_sku: flashState.activeFlashItemIdBySku,
         },
       });
 
@@ -398,6 +461,9 @@ export function CartClient({
       setSelectedVoucher(res.voucher.id);
       if (res.breakdown) {
         setBreakdown(res.breakdown);
+        if (Array.isArray(res.rejected_flash_sale_item_ids)) {
+          setRejectedFlashSaleItemIds(res.rejected_flash_sale_item_ids);
+        }
       }
 
       const discText = res.discount_vnd > 0 ? ` (-${formatVnd(res.discount_vnd)})` : "";
@@ -567,7 +633,21 @@ export function CartClient({
                 {cartItems.map((item) => {
                   const raw = item.raw;
                   const isBusy = Boolean(busySkuId) || clearing;
-                  const isFlash = Boolean(flashSaleItemBySku[raw.sku_id]);
+                  const liveFlash = !item.isUnavailable
+                    ? (flashState.liveFlashBySku[raw.sku_id] ?? null)
+                    : null;
+                  const availableLiveFlash = !item.isUnavailable
+                    ? (flashState.availableLiveFlashBySku[raw.sku_id] ?? null)
+                    : null;
+                  const isFlash = Boolean(liveFlash);
+                  const isFlashOptedOut =
+                    !item.isUnavailable && Boolean(availableLiveFlash) && !liveFlash;
+                  const flashEval = !item.isUnavailable
+                    ? (flashLineEvals[raw.sku_id] ?? null)
+                    : null;
+                  const flashInspection = !item.isUnavailable
+                    ? (flashState.inspectionBySku[raw.sku_id] ?? null)
+                    : null;
                   const activeShopDisc = !item.isUnavailable
                     ? (shopDiscountBySku[raw.sku_id] ?? null)
                     : null;
@@ -575,7 +655,8 @@ export function CartClient({
                     regularUnitPriceVnd: raw.price_vnd,
                     quantity: raw.quantity,
                     isFlashLine: isFlash,
-                    flashShortfall: false,
+                    flashUnitPriceVnd: liveFlash?.flashPriceVnd,
+                    flashShortfall: Boolean(flashEval?.needsRegularPriceChoice),
                     activeShopDiscount: activeShopDisc,
                     shopBreakdown,
                     isInPreview: Boolean(shopBreakdown),
@@ -628,6 +709,7 @@ export function CartClient({
 
                           {(item.isUnavailable ||
                             isFlash ||
+                            isFlashOptedOut ||
                             linePricing.shopProgramApplied ||
                             raw.price_changed ||
                             item.isOutOfStock ||
@@ -640,9 +722,34 @@ export function CartClient({
                                 </span>
                               )}
                               {!item.isUnavailable && isFlash && (
-                                <span className={`${shared.statusTag} ${shared.toneWarn}`}>
-                                  Flash sale
-                                </span>
+                                <>
+                                  <span className={`${shared.statusTag} ${shared.toneWarn}`}>
+                                    Flash sale
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className={styles.flashToggleBtn}
+                                    disabled={isBusy}
+                                    onClick={() => optOutFlashSaleSku(raw.sku_id)}
+                                  >
+                                    Mua giá thường
+                                  </button>
+                                </>
+                              )}
+                              {!item.isUnavailable && isFlashOptedOut && (
+                                <>
+                                  <span className={`${shared.statusTag} ${shared.toneNeutral}`}>
+                                    Giá thường
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className={styles.flashToggleBtn}
+                                    disabled={isBusy}
+                                    onClick={() => restoreFlashSaleSku(raw.sku_id)}
+                                  >
+                                    Dùng giá Flash
+                                  </button>
+                                </>
                               )}
                               {!item.isUnavailable && linePricing.shopProgramApplied && (
                                 <span className={`${shared.statusTag} ${shared.tonePos}`}>
@@ -671,6 +778,13 @@ export function CartClient({
                               )}
                             </div>
                           )}
+                          {flashEval?.reason ? (
+                            <p className={`${styles.flashLineNote} ${styles.flashLineWarn}`}>
+                              {flashEval.reason}
+                            </p>
+                          ) : flashInspection && flashInspection.state !== "live" ? (
+                            <p className={styles.flashLineNote}>{flashInspection.message}</p>
+                          ) : null}
                         </div>
 
                         <div className={styles.itemActionsCol}>

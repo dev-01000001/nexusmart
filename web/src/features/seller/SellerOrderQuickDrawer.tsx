@@ -140,7 +140,9 @@ export function SellerOrderQuickDrawer({
                 <span className={common.drawerKvKey}>Thanh toán</span>
                 <span className={common.drawerKvVal}>
                   {formatPaymentMethodVi(order.payment_method)}
-                  {order.payment_status ? `, ${formatPaymentStatusVi(order.payment_status)}` : ""}
+                  {order.payment_status || (order.payment_method ?? "").toUpperCase() === "COD"
+                    ? `, ${formatPaymentStatusVi(order.payment_status ?? "", order.payment_method, order.status)}`
+                    : ""}
                 </span>
               </div>
             </div>

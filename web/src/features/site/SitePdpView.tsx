@@ -14,6 +14,7 @@ import type {
   GatewayWard,
 } from "@/lib/gateway-types";
 import { api } from "@/lib/api";
+import { getFlashSaleSkuDetail, type SiteFlashSaleItem } from "@/lib/catalog-map";
 import { IconBag, IconCheck, IconClose } from "@/components/Icons";
 import { useSession } from "@/components/SessionProvider";
 import { useModalFocusTrap } from "@/components/modalFocus";
@@ -45,7 +46,7 @@ export interface SitePdpViewProps {
   product: Product;
   shopVouchers: Voucher[];
   relatedProducts: Product[];
-  liveFlashItem?: FlashSaleItem | null;
+  liveFlashItem?: FlashSaleItem | SiteFlashSaleItem | null;
   initialReviews?: GatewayProductReviewsResponse | null;
   activeShopDiscountBySkuId?: Record<string, GatewayActiveShopDiscount>;
   provinces?: GatewayProvince[];
@@ -118,7 +119,7 @@ export function SitePdpView({
     defaultSku?.colorCode ?? product.colors[0]?.code ?? ""
   );
   const [selectedSize, setSelectedSize] = useState<SizeCode | string>(
-    defaultSku?.size ?? product.sizes[0] ?? "M"
+    defaultSku?.size ?? product.sizes[0] ?? ""
   );
   const [activeImage, setActiveImage] = useState<string>(gallery[0]);
   const [qty, setQty] = useState<number>(1);
@@ -143,26 +144,23 @@ export function SitePdpView({
   const maxStock = Math.max(0, selectedSku?.stock ?? 0);
   const clampedQty = maxStock > 0 ? Math.min(qty, maxStock) : 1;
   const skuId = selectedSku?.skuId || "";
-  const flashSaleItemId = skuId ? liveFlashItem?.itemIdBySku?.[skuId] : undefined;
-  const flashPrice =
-    flashSaleItemId && liveFlashItem && liveFlashItem.flashPrice > 0
-      ? liveFlashItem.flashPrice
-      : null;
+  const skuFlashDetail = getFlashSaleSkuDetail(liveFlashItem, skuId);
   const skuPrice = selectedSku?.price ?? product.price;
   const activeShopDiscount = skuId ? (activeShopDiscountBySkuId[skuId] ?? null) : null;
   const effectivePromo = resolveSkuEffectivePromotion({
     regularPriceVnd: skuPrice,
-    liveFlash:
-      liveFlashItem && flashSaleItemId && flashPrice
-        ? {
-            flashSaleItemId,
-            flashPriceVnd: flashPrice,
-            remainingSlots: Math.max(0, liveFlashItem.remainingQuota),
-            perUserLimit: Math.max(0, liveFlashItem.limitPerBuyer),
-          }
-        : null,
+    liveFlash: skuFlashDetail
+      ? {
+          flashSaleItemId: skuFlashDetail.id,
+          flashPriceVnd: skuFlashDetail.flashPrice,
+          remainingSlots: skuFlashDetail.remainingQuota,
+          perUserLimit: skuFlashDetail.limitPerBuyer,
+        }
+      : null,
     activeShopDiscount,
   });
+  const flashSaleItemId =
+    effectivePromo.kind === "flash" ? effectivePromo.flashSaleItemId : undefined;
   const displayPrice = effectivePromo.effectiveUnitPriceVnd;
   const comparePrice =
     effectivePromo.kind !== "none" ? effectivePromo.originalUnitPriceVnd : product.originalPrice;
@@ -895,7 +893,11 @@ export function SitePdpView({
             </>
           ) : null}
           {effectivePromo.kind === "flash" && (
-            <span className={`${shared.statusTag} ${shared.toneWarn}`}>Flash sale</span>
+            <span className={`${shared.statusTag} ${shared.toneWarn}`}>
+              {skuFlashDetail && skuFlashDetail.totalQuota > 0
+                ? `Flash sale · Còn ${formatInt(skuFlashDetail.remainingQuota)}/${formatInt(skuFlashDetail.totalQuota)} suất`
+                : "Flash sale"}
+            </span>
           )}
           {effectivePromo.kind === "shop_discount" && (
             <span className={`${shared.statusTag} ${shared.tonePos}`}>

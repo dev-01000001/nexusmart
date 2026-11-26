@@ -1,9 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+  extractRejectedFlashSaleItemIds,
   mapCartError,
   mapCheckoutError,
   mapVoucherError,
+  resolveCheckoutRouteError,
   translatePromotionWarning,
 } from "./checkoutErrors.ts";
 import {
@@ -295,4 +300,238 @@ test("splitVariantParts and buildCheckoutPreviewKey normalize variant labels and
   assert.notEqual(keyNoVoucher, keyWithVoucher);
   assert.notEqual(keyNoVoucher, keyPendingQuote);
   assert.equal(keyWithVoucher, buildCheckoutPreviewKey({ ...baseInput, voucherId: "v-1" }));
+});
+
+test("CheckoutClient uses disclosure buttons (aria-expanded/aria-controls) on collapsed stages and keeps radiogroup only on real choice groups", () => {
+  const webSrc = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+  const src = readFileSync(
+    resolve(webSrc, "app/(site)/s/[host]/thanh-toan/CheckoutClient.tsx"),
+    "utf8"
+  );
+
+  // Only the 3 real choice lists (address list, delivery quotes, payment methods) may use role="radiogroup".
+  const radiogroupCount = (src.match(/role="radiogroup"/g) ?? []).length;
+  assert.equal(
+    radiogroupCount,
+    3,
+    `expected exactly 3 real radiogroups in CheckoutClient, found ${radiogroupCount}`
+  );
+  assert.equal(
+    src.includes("stageSummaryRadio"),
+    false,
+    "collapsed summary buttons must not use fake radio styling/roles"
+  );
+  assert.ok(src.includes('aria-controls="stage-address-body"'));
+  assert.ok(src.includes('aria-controls="stage-shipping-body"'));
+  assert.ok(src.includes('aria-controls="stage-payment-body"'));
+  assert.ok(src.includes("aria-expanded={false}"));
+  assert.ok(src.includes('id="stage-address-body"'));
+  assert.ok(src.includes('id="stage-shipping-body"'));
+  assert.ok(src.includes('id="stage-payment-body"'));
+});
+
+test("Item 6: 429 rate-limit errors return HTTP 429 with rate-limit message (never 409 VOUCHER_EXHAUSTED)", () => {
+  // Real gateway 429 from rate limiter middleware (handlers / ratelimit.go)
+  const rlMiddleware = mapCheckoutError("RATE_LIMITED", "rate limit exceeded, please retry later");
+  assert.equal(rlMiddleware.status, 429);
+  assert.equal(rlMiddleware.code, "RATE_LIMITED");
+  assert.match(rlMiddleware.message, /quá nhanh/i);
+  assert.doesNotMatch(rlMiddleware.message, /mã ưu đãi/i);
+
+  // Real gateway 429 RESOURCE_EXHAUSTED without voucher detail
+  const rlResource = mapCheckoutError("RESOURCE_EXHAUSTED", "rate limit exceeded");
+  assert.equal(rlResource.status, 429);
+  assert.equal(rlResource.code, "RESOURCE_EXHAUSTED");
+  assert.match(rlResource.message, /quá nhanh/i);
+  assert.doesNotMatch(rlResource.message, /mã ưu đãi/i);
+
+  // Real PromotionService Lua FLASH_SOLD_OUT (gRPC ResourceExhausted -> HTTP 429 RESOURCE_EXHAUSTED)
+  const flashSoldOut = mapCheckoutError("RESOURCE_EXHAUSTED", "FLASH_SOLD_OUT: no slots left");
+  assert.match(flashSoldOut.message, /Flash sale/i);
+  assert.doesNotMatch(flashSoldOut.message, /mã ưu đãi/i);
+
+  // Route-level helper: rate_limited GatewayError delegates to apiRoute (429 + Retry-After) except flash sold out
+  const routeRateLimited = resolveCheckoutRouteError({
+    kind: "rate_limited",
+    status: 429,
+    code: "RESOURCE_EXHAUSTED",
+    detail: "rate limit exceeded",
+    retryAfter: "30",
+  });
+  assert.equal(routeRateLimited.action, "rethrow");
+
+  const routeFlashSoldOut = resolveCheckoutRouteError({
+    kind: "rate_limited",
+    status: 429,
+    code: "RESOURCE_EXHAUSTED",
+    detail: "FLASH_SOLD_OUT: flash sale item sold out",
+    retryAfter: undefined,
+  });
+  assert.equal(routeFlashSoldOut.action, "respond");
+  assert.equal(routeFlashSoldOut.status, 429);
+  assert.equal(routeFlashSoldOut.code, "RESOURCE_EXHAUSTED");
+  assert.match(routeFlashSoldOut.message, /Flash sale/i);
+
+  // Verify api/checkout/route.ts uses resolveCheckoutRouteError (does not map generic rate_limited to 409)
+  const webSrc = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+  const routeSrc = readFileSync(resolve(webSrc, "app/api/checkout/route.ts"), "utf8");
+  assert.ok(
+    routeSrc.includes("resolveCheckoutRouteError"),
+    "api/checkout/route.ts must delegate GatewayError handling to resolveCheckoutRouteError"
+  );
+  assert.equal(
+    routeSrc.includes('err.kind === "rate_limited"'),
+    false,
+    "api/checkout/route.ts must not route generic rate_limited through mapCheckoutError"
+  );
+});
+
+test("Item 6 & 5: CheckoutClient wires pending-key F5 persistence, CHECKOUT_FAILED rotation, and flash opt-out recovery", () => {
+  const webSrc = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+  const checkoutSrc = readFileSync(
+    resolve(webSrc, "app/(site)/s/[host]/thanh-toan/CheckoutClient.tsx"),
+    "utf8"
+  );
+  assert.ok(checkoutSrc.includes("reduceCheckoutSubmitState"));
+  assert.ok(checkoutSrc.includes("classifyCheckoutSubmitError"));
+  assert.ok(checkoutSrc.includes("readPendingCheckoutKey"));
+  assert.ok(checkoutSrc.includes("savePendingCheckoutKey"));
+  assert.ok(checkoutSrc.includes("clearPendingCheckoutKey"));
+  assert.ok(checkoutSrc.includes("resolveCartFlashSaleState"));
+  assert.ok(checkoutSrc.includes("evaluateShopFlashLines"));
+  assert.ok(checkoutSrc.includes("canMutateCheckoutFlashSelection"));
+});
+
+test("Mục 1: translatePromotionWarning handles flash sale before per-user/not-found/shop rules and extractRejectedFlashSaleItemIds parses all real services/promotion strings", () => {
+  // Real calculator.go warning strings (services/promotion/internal/calculator/calculator.go:607-630)
+  const rawWarnings = [
+    "flash sale item fsi-per-user per-user limit (1) exceeded",
+    "flash sale item fsi-sold-out is sold out (remaining 0, requested 1)",
+    "flash sale item fsi-ended is not active",
+    "flash sale item fsi-removed not found",
+    "flash sale item fsi-unapproved is not approved",
+    "SHOP_SUSPENDED: shop for flash sale item fsi-susp is suspended",
+    "flash sale item fsi-sku-mismatch does not match SKU sku-9",
+    "flash sale item fsi-shop-mismatch does not belong to shop shop-a",
+    // Non-rejection informational warning when flash WON (calculator.go:219) -> MUST NOT be marked rejected
+    "flash sale item fsi-winner takes precedence over shop discount program item spi-1 for SKU sku-1",
+    // Unrelated voucher warning -> MUST NOT be extracted as flash item
+    "voucher SHOP10 per-user limit reached",
+  ];
+
+  // Flash sale warnings must NEVER blame "mã ưu đãi" and must never leak English or raw UUIDs
+  for (const w of rawWarnings.slice(0, 8)) {
+    const vi = translatePromotionWarning(w);
+    assert.match(vi, /Flash sale/i, `expected Flash sale copy for: ${w} -> ${vi}`);
+    assert.doesNotMatch(vi, /mã ưu đãi|mã gian hàng/i, `must not blame voucher for: ${w} -> ${vi}`);
+    assert.doesNotMatch(vi, /fsi-|per-user|sold out|not found|not active/i);
+  }
+  // Specifically verify per-user flash warning mentions limit/Flash sale (not voucher)
+  assert.match(
+    translatePromotionWarning("flash sale item fsi-per-user per-user limit (1) exceeded"),
+    /giới hạn.*Flash sale|Flash sale.*giới hạn/i
+  );
+
+  // Extract rejected IDs strictly from rejected flash warnings, excluding winner and vouchers
+  const rejected = extractRejectedFlashSaleItemIds(rawWarnings);
+  assert.deepEqual(rejected, [
+    "fsi-per-user",
+    "fsi-sold-out",
+    "fsi-ended",
+    "fsi-removed",
+    "fsi-unapproved",
+    "fsi-susp",
+    "fsi-sku-mismatch",
+    "fsi-shop-mismatch",
+  ]);
+});
+
+test("Mục 2: resolveCheckoutRouteError maps 429 voucher quota/budget exhaustion to 409 VOUCHER_EXHAUSTED while keeping real 429 rate-limit and FLASH_SOLD_OUT", () => {
+  // Real gateway 429 from PromotionService ReservePromotion Lua (scripts.go:67, promotion.go:2977-2980)
+  const voucherOutOfQuota = resolveCheckoutRouteError({
+    kind: "rate_limited",
+    status: 429,
+    code: "RESOURCE_EXHAUSTED",
+    detail: "promotion reservation rejected: VOUCHER_OUT_OF_QUOTA (promo:voucher:v-1:remaining)",
+    retryAfter: undefined,
+  });
+  assert.equal(voucherOutOfQuota.action, "respond");
+  if (voucherOutOfQuota.action === "respond") {
+    assert.equal(voucherOutOfQuota.status, 409);
+    assert.equal(voucherOutOfQuota.code, "VOUCHER_EXHAUSTED");
+    assert.match(voucherOutOfQuota.message, /hết lượt/i);
+  }
+
+  const voucherBudgetExhausted = resolveCheckoutRouteError({
+    kind: "rate_limited",
+    status: 429,
+    code: "RESOURCE_EXHAUSTED",
+    detail:
+      "promotion reservation rejected: VOUCHER_BUDGET_EXHAUSTED (promo:voucher:v-2:budget_remaining)",
+    retryAfter: undefined,
+  });
+  assert.equal(voucherBudgetExhausted.action, "respond");
+  if (voucherBudgetExhausted.action === "respond") {
+    assert.equal(voucherBudgetExhausted.status, 409);
+    assert.equal(voucherBudgetExhausted.code, "VOUCHER_EXHAUSTED");
+    assert.match(voucherBudgetExhausted.message, /hết lượt/i);
+  }
+
+  // Real gateway rate limiter (ratelimit.go:258,300) MUST still rethrow to keep 429 + Retry-After
+  const realRateLimit = resolveCheckoutRouteError({
+    kind: "rate_limited",
+    status: 429,
+    code: "RATE_LIMITED",
+    detail: "rate limit exceeded, please retry later",
+    retryAfter: "45",
+  });
+  assert.equal(realRateLimit.action, "rethrow");
+
+  // FLASH_SOLD_OUT MUST remain 429 RESOURCE_EXHAUSTED with Flash sale copy
+  const flashSoldOut = resolveCheckoutRouteError({
+    kind: "rate_limited",
+    status: 429,
+    code: "RESOURCE_EXHAUSTED",
+    detail: "promotion reservation rejected: FLASH_SOLD_OUT (promo:flash:fsi-1:remaining)",
+    retryAfter: undefined,
+  });
+  assert.equal(flashSoldOut.action, "respond");
+  if (flashSoldOut.action === "respond") {
+    assert.equal(flashSoldOut.status, 429);
+    assert.equal(flashSoldOut.code, "RESOURCE_EXHAUSTED");
+    assert.match(flashSoldOut.message, /Flash sale/i);
+  }
+});
+
+test("mapCheckoutError maps SHOP_NOT_ACTIVE to 409 with clean Vietnamese message", () => {
+  const fromDetail = mapCheckoutError(
+    "FAILED_PRECONDITION",
+    "SHOP_NOT_ACTIVE: gian hàng shop-1 không tồn tại hoặc không hoạt động"
+  );
+  assert.equal(fromDetail.code, "SHOP_NOT_ACTIVE");
+  assert.equal(fromDetail.status, 409);
+  assert.equal(fromDetail.message, "Gian hàng hiện không hoạt động nên không thể đặt hàng.");
+
+  const fromCode = mapCheckoutError("SHOP_NOT_ACTIVE", "shop status pending");
+  assert.equal(fromCode.code, "SHOP_NOT_ACTIVE");
+  assert.equal(fromCode.status, 409);
+  assert.equal(fromCode.message, "Gian hàng hiện không hoạt động nên không thể đặt hàng.");
+
+  const routeDecision = resolveCheckoutRouteError({
+    kind: "conflict",
+    status: 409,
+    code: "FAILED_PRECONDITION",
+    detail: "SHOP_NOT_ACTIVE: gian hàng shop-1 hiện không ở trạng thái hoạt động (SHOP_STATUS_PENDING)",
+  });
+  assert.deepEqual(routeDecision, {
+    action: "respond",
+    status: 409,
+    code: "SHOP_NOT_ACTIVE",
+    message: "Gian hàng hiện không hoạt động nên không thể đặt hàng.",
+  });
+
+  // SHOP_SUSPENDED remains distinct and unaffected.
+  const suspended = mapCheckoutError("SHOP_SUSPENDED", "SHOP_SUSPENDED: shop is suspended");
+  assert.equal(suspended.code, "SHOP_SUSPENDED");
+  assert.equal(suspended.status, 409);
 });

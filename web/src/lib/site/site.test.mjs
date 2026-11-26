@@ -792,6 +792,100 @@ test("createSiteHostCache bounds negative entries at maxNegativeEntries and prot
   assert.equal(tightCache.get("flood-18.example.com"), null);
 });
 
+test("createSiteHostCache stale-if-error serves recent found within 60s without extending positive TTL, clears stale on not_found, and returns error after 60s", async () => {
+  let clock = 10_000;
+  const cache = createSiteHostCache({
+    positiveTtlMs: 3000,
+    negativeTtlMs: 1500,
+    now: () => clock,
+  });
+
+  const host = "bach-dang.nexusmart.localhost";
+  let calls = 0;
+
+  // 1. Seed found entry at t = 10_000 (positive TTL until 13_000, stale window until 70_000)
+  const first = await cache.resolve(host, async () => {
+    calls++;
+    return {
+      status: "found",
+      siteId: "site-bd",
+      shopId: "shop-bd",
+      primaryHost: host,
+    };
+  });
+  assert.equal(first.status, "found");
+  assert.equal(calls, 1);
+
+  // 2. Past positive TTL (t = 13_500), fetcher returns error -> serves stale found,
+  //    does NOT extend positive TTL (cache.get remains null so next resolve re-fetches).
+  clock = 13_500;
+  const staleRes = await cache.resolve(host, async () => {
+    calls++;
+    return { status: "error" };
+  });
+  assert.deepEqual(staleRes, {
+    status: "found",
+    siteId: "site-bd",
+    shopId: "shop-bd",
+    primaryHost: host,
+  });
+  assert.equal(calls, 2);
+  assert.equal(cache.get(host), null, "stale-if-error must not extend positive TTL");
+
+  // 3. Subsequent call still hits fetcher (no extended positive TTL); thrown error also uses stale.
+  clock = 13_600;
+  const staleAfterThrow = await cache.resolve(host, async () => {
+    calls++;
+    throw new Error("gateway timeout");
+  });
+  assert.equal(staleAfterThrow.status, "found");
+  assert.equal(calls, 3);
+  assert.equal(cache.get(host), null);
+
+  // 4. Past 60s stale window (t = 70_000) -> error is returned directly.
+  clock = 70_000;
+  const expiredErr = await cache.resolve(host, async () => {
+    calls++;
+    return { status: "error" };
+  });
+  assert.deepEqual(expiredErr, { status: "error" });
+  assert.equal(calls, 4);
+
+  // 5. not_found MUST delete stale immediately so a suspended site never resurrects on subsequent error.
+  const suspendedHost = "suspended.nexusmart.localhost";
+  clock = 100_000;
+  const liveAgain = await cache.resolve(suspendedHost, async () => ({
+    status: "found",
+    siteId: "site-sus",
+    shopId: "shop-sus",
+    primaryHost: suspendedHost,
+  }));
+  assert.equal(liveAgain.status, "found");
+
+  // Past positive TTL -> backend confirms not_found (site suspended).
+  clock = 104_000;
+  const miss = await cache.resolve(suspendedHost, async () => ({ status: "not_found" }));
+  assert.deepEqual(miss, { status: "not_found" });
+
+  // Past negative TTL (106_000, still well within 60s of t=100_000) -> backend errors -> MUST return error, NOT stale found!
+  clock = 106_000;
+  const afterSuspendErr = await cache.resolve(suspendedHost, async () => ({ status: "error" }));
+  assert.deepEqual(afterSuspendErr, { status: "error" });
+
+  // 6. Explicit cache.delete(host) also clears stale.
+  const deletedHost = "deleted.nexusmart.localhost";
+  clock = 200_000;
+  cache.setFound(deletedHost, {
+    siteId: "site-del",
+    shopId: "shop-del",
+    primaryHost: deletedHost,
+  });
+  cache.delete(deletedHost);
+  clock = 204_000;
+  const afterDeleteErr = await cache.resolve(deletedHost, async () => ({ status: "error" }));
+  assert.deepEqual(afterDeleteErr, { status: "error" });
+});
+
 test("WCAG contrast, safe URL sanitization, and CSS theme vars enforce security and readability", () => {
   assert.equal(contrastRatio("#FFFFFF", "#000000"), 21);
 
@@ -816,6 +910,7 @@ test("WCAG contrast, safe URL sanitization, and CSS theme vars enforce security 
 
   // Safe URLs accepted
   assert.equal(sanitizeSafeUrl("/banners/vietnam-workshop.jpg"), "/banners/vietnam-workshop.jpg");
+  assert.equal(sanitizeSafeUrl("/p/ok?a=1#b"), "/p/ok?a=1#b");
   assert.equal(sanitizeSafeHref("/san-pham?cat=ao-thun"), "/san-pham?cat=ao-thun");
   assert.equal(
     sanitizeSafeUrl("https://cdn.nexusmart.vn/shops/logo.png"),
@@ -830,6 +925,14 @@ test("WCAG contrast, safe URL sanitization, and CSS theme vars enforce security 
     "vbscript:msgbox(1)",
     "http://insecure.example.com/img.jpg",
     "//evil.example.com/steal.js",
+    "//evil.com",
+    "/.//evil.com",
+    "/a/..//evil.com",
+    "/%2e//evil.com",
+    "/a/.",
+    "/a/..",
+    "/\\evil.com",
+    "/\t/evil.com",
     "/bad\\path",
     "/bad\npath",
     `https://example.com/${"a".repeat(500)}`,

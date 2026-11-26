@@ -24,10 +24,15 @@ import {
 import {
   computeSellerNetReceivable,
   computeSellerOrderDeductions,
+  extractSellerUnreadChatCount,
   formatPaymentMethodVi,
+  formatPaymentStatusVi,
   getNextBackendOrderAction,
   getSellerOrderStatusMeta,
+  normalizeSellerShipmentResponse,
+  resolveSellerShipmentFeeVnd,
 } from "./sellerApiTypes.ts";
+import { canSellerConfirmOrder } from "./types.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -324,7 +329,29 @@ test("computeSellerNetReceivable deducts all 6 seller costs and prefers server f
   assert.equal(computeSellerNetReceivable({ ...order, subtotal_vnd: 50_000 }), 0);
 });
 
-test("getSellerOrderStatusMeta, getNextBackendOrderAction, and formatPaymentMethodVi handle async jobs & ZALOPAY", () => {
+test("getSellerOrderStatusMeta, getNextBackendOrderAction, and formatPaymentStatusVi align with real backend order lifecycle", () => {
+  // Real backend keeps CONFIRMED when async shipment creation queues/fails (lifecycle.go:852-891)
+  const confirmedQueued = getSellerOrderStatusMeta("CONFIRMED", "QUEUED", "");
+  assert.equal(confirmedQueued.tone, "warn");
+  assert.equal(confirmedQueued.label, "Đang chờ tạo vận đơn");
+  assert.equal(getNextBackendOrderAction("CONFIRMED", "", "QUEUED")?.kind, "ship");
+  assert.equal(getNextBackendOrderAction("CONFIRMED", "", "QUEUED")?.label, "Thử tạo lại ngay");
+  assert.equal(canSellerConfirmOrder("CONFIRMED", "QUEUED"), false);
+
+  const confirmedFailed = getSellerOrderStatusMeta("CONFIRMED", "FAILED", "");
+  assert.equal(confirmedFailed.tone, "neg");
+  assert.equal(confirmedFailed.label, "Tạo vận đơn thất bại");
+  assert.equal(getNextBackendOrderAction("CONFIRMED", "", "FAILED")?.kind, "ship");
+  assert.equal(getNextBackendOrderAction("CONFIRMED", "", "FAILED")?.label, "Thử tạo lại ngay");
+  assert.equal(canSellerConfirmOrder("CONFIRMED", "FAILED"), false);
+
+  // Normal CONFIRMED uses shared GATEWAY_ORDER_STATUS_LABELS.CONFIRMED
+  const confirmedPlain = getSellerOrderStatusMeta("CONFIRMED", "", "");
+  assert.equal(confirmedPlain.label, "Đã xác nhận");
+  assert.equal(canSellerConfirmOrder("CONFIRMED", ""), true);
+  assert.equal(getNextBackendOrderAction("CONFIRMED", "", "")?.kind, "confirm");
+
+  // PREPARING async job states
   const queued = getSellerOrderStatusMeta("PREPARING", "QUEUED", "");
   assert.equal(queued.tone, "warn");
   assert.equal(queued.label, "Đang chờ tạo vận đơn");
@@ -333,11 +360,12 @@ test("getSellerOrderStatusMeta, getNextBackendOrderAction, and formatPaymentMeth
   assert.equal(failed.tone, "neg");
   assert.equal(failed.label, "Tạo vận đơn thất bại");
 
-  // Once tracking_code exists, job status no longer masks PREPARING
-  const withTracking = getSellerOrderStatusMeta("PREPARING", "QUEUED", "GHN-001");
-  assert.equal(withTracking.label, "Đang chuẩn bị");
+  // Real backend sets PREPARING + tracking_code when shipment created (no READY_TO_SHIP)
+  const withTracking = getSellerOrderStatusMeta("PREPARING", "", "GHN-001");
+  assert.equal(withTracking.tone, "warn");
+  assert.equal(withTracking.label, "Chờ hãng lấy hàng");
+  assert.equal(getSellerOrderStatusMeta("PREPARING", "QUEUED", "GHN-001").label, "Chờ hãng lấy hàng");
 
-  assert.equal(getNextBackendOrderAction("CONFIRMED")?.kind, "confirm");
   assert.equal(getNextBackendOrderAction("PREPARING", "", "")?.label, "Tạo vận đơn");
   assert.equal(getNextBackendOrderAction("PREPARING", "", "FAILED")?.label, "Thử tạo lại ngay");
   assert.equal(getNextBackendOrderAction("PREPARING", "", "QUEUED")?.label, "Thử tạo lại ngay");
@@ -346,4 +374,127 @@ test("getSellerOrderStatusMeta, getNextBackendOrderAction, and formatPaymentMeth
   assert.equal(formatPaymentMethodVi("ZALOPAY"), "Ví ZaloPay");
   assert.equal(formatPaymentMethodVi("VIETQR"), "VietQR");
   assert.equal(formatPaymentMethodVi("COD"), "Thu hộ COD");
+
+  // Shared getPaymentStatusInfo semantics for real backend COD & online payment_status
+  assert.equal(formatPaymentStatusVi("PENDING", "COD", "CONFIRMED"), "Thu hộ khi giao");
+  assert.equal(formatPaymentStatusVi("CANCELLED", "COD", "CANCELLED"), "Không thu hộ");
+  assert.equal(formatPaymentStatusVi("PENDING", "COD", "DELIVERED"), "Đã thu hộ COD");
+  assert.equal(formatPaymentStatusVi("PENDING", "COD", "RETURN_REQUESTED"), "Đã thu hộ COD");
+  assert.equal(formatPaymentStatusVi("COD_PENDING", "COD", "RETURN_REQUESTED"), "Đã thu hộ COD");
+  assert.equal(formatPaymentStatusVi("SUCCEEDED", "COD", "RETURNED"), "Đã thu hộ COD");
+  assert.equal(formatPaymentStatusVi("CANCELLED", "COD", "RETURNED"), "Không thu hộ");
+  assert.equal(formatPaymentStatusVi("REFUNDED", "COD", "RETURNED"), "Đã hoàn tiền");
+  assert.equal(formatPaymentStatusVi("SUCCEEDED", "COD", "CONFIRMED"), "Đã thanh toán");
+  assert.equal(formatPaymentStatusVi("PENDING", "VIETQR", "PENDING"), "Chờ thanh toán");
+  assert.equal(formatPaymentStatusVi("SUCCEEDED", "VIETQR", "CONFIRMED"), "Đã thanh toán");
+  assert.equal(formatPaymentStatusVi("EXPIRED", "VIETQR", "CANCELLED"), "Hết hạn thanh toán");
+});
+
+test("normalizeSellerShipmentResponse preserves root events & fee_vnd from real gateway GET /api/v1/shipping/shipments/{id}", () => {
+  // Real gateway payload shape (handlers_shipping.go:43-59, 90-97, 595-598)
+  const gatewayPayload = {
+    shipment: {
+      shipment_id: "ship-001",
+      order_id: "ord-001",
+      shop_id: "shop-001",
+      carrier_code: "ghn",
+      service_code: "STANDARD",
+      tracking_code: "GHN-20261125-001",
+      label_url: "/api/v1/shipping/labels/GHN-20261125-001",
+      status: "DELIVERING",
+      fee_vnd: 28000,
+      cod_amount_vnd: 338000,
+      direction: "FORWARD",
+      return_request_id: "",
+      redelivery_count: 0,
+      created_at: "2026-11-25T08:00:00Z",
+      updated_at: "2026-11-25T10:30:00Z",
+    },
+    events: [
+      {
+        id: "ev-1",
+        shipment_id: "ship-001",
+        status: "CREATED",
+        raw_status: "ready_to_pick",
+        description: "Đã tiếp nhận vận đơn",
+        occurred_at: "2026-11-25T08:00:00Z",
+      },
+      {
+        id: "ev-2",
+        shipment_id: "ship-001",
+        status: "DELIVERING",
+        raw_status: "delivering",
+        description: "Bưu tá đang giao hàng",
+        occurred_at: "2026-11-25T10:30:00Z",
+      },
+    ],
+  };
+
+  const normalized = normalizeSellerShipmentResponse(gatewayPayload);
+  assert.ok(normalized.shipment);
+  assert.equal(normalized.shipment.id, "ship-001");
+  assert.equal(normalized.shipment.fee_vnd, 28000);
+  assert.equal(resolveSellerShipmentFeeVnd(normalized.shipment), 28000);
+  assert.equal(normalized.events.length, 2);
+  assert.equal(normalized.events[1].status, "DELIVERING");
+  assert.equal(normalized.events[1].description, "Bưu tá đang giao hàng");
+  assert.deepEqual(normalized.shipment.events, normalized.events);
+
+  // Handles null shipment cleanly
+  assert.deepEqual(normalizeSellerShipmentResponse({ shipment: null, events: [] }), {
+    shipment: null,
+    events: [],
+  });
+
+  // SellerOrderDetailClient wires root events, fee_vnd helper, and pollTick loop for QUEUED polling
+  const detailSrc = readFileSync(resolve(__dirname, "SellerOrderDetailClient.tsx"), "utf8");
+  assert.ok(detailSrc.includes("initialShipmentEvents"), "must accept initialShipmentEvents prop");
+  assert.ok(detailSrc.includes("resolveSellerShipmentFeeVnd"), "must read fee_vnd via helper");
+  assert.ok(
+    detailSrc.includes("setPollTick") && detailSrc.includes("[isShipmentQueued, reloadDetail, pollTick]"),
+    "QUEUED polling effect must re-trigger via pollTick"
+  );
+});
+
+test("extractSellerUnreadChatCount reads gateway total_unread and SellerLayout uses /api/v1/seller/chat/conversations", () => {
+  // Real gateway GET /api/v1/seller/chat/conversations?page=1&page_size=1 response (handlers_chat.go:872-878)
+  assert.equal(
+    extractSellerUnreadChatCount({
+      items: [{ id: "conv-1", unread_count: 2 }],
+      total: 12,
+      total_unread: 7,
+      page: 1,
+      page_size: 1,
+    }),
+    7
+  );
+  // Zero total_unread overrides stale/empty items
+  assert.equal(
+    extractSellerUnreadChatCount({
+      items: [],
+      total: 0,
+      total_unread: 0,
+      page: 1,
+      page_size: 1,
+    }),
+    0
+  );
+  // Falls back to summing items when total_unread is absent
+  assert.equal(
+    extractSellerUnreadChatCount({
+      items: [{ unread_count: 3 }, { unread_count: 1 }],
+    }),
+    4
+  );
+
+  const layoutSrc = readFileSync(resolve(__dirname, "../../app/(seller)/layout.tsx"), "utf8");
+  assert.ok(
+    layoutSrc.includes("/api/v1/seller/chat/conversations"),
+    "SellerLayout must query /api/v1/seller/chat/conversations instead of unscoped /api/v1/chat/conversations"
+  );
+  assert.equal(
+    layoutSrc.includes('role: "seller"'),
+    false,
+    "SellerLayout must not pass ignored query param role=seller"
+  );
 });

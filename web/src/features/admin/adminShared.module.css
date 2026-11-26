@@ -1253,9 +1253,12 @@ textarea.textareaInput:focus-visible {
 /* Mobile 2-line List Representation (<= 720px) */
 .mobileList {
   display: none;
+  width: 100%;
+  min-width: 0;
 }
 
 .mobileItem {
+  min-width: 0;
   padding: 14px 0;
   border-bottom: 1px solid var(--rule);
 }
@@ -1266,6 +1269,7 @@ textarea.textareaInput:focus-visible {
 
 .mobileItemBtn {
   width: 100%;
+  min-width: 0;
   min-height: 44px;
   text-align: left;
   display: flex;
@@ -1275,6 +1279,7 @@ textarea.textareaInput:focus-visible {
 }
 
 .mobileLine1 {
+  min-width: 0;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -1301,6 +1306,7 @@ textarea.textareaInput:focus-visible {
 }
 
 .mobileLine2 {
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;

@@ -3,12 +3,6 @@
 import React, { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import {
-  ORDER_STATUS_META,
-  PAYMENT_METHOD_LABELS,
-  PAYMENT_STATUS_META,
-  type OrderStatus,
-} from "@/data/orders";
 import type { Product } from "@/data/products";
 import type {
   GatewayAddress,
@@ -19,7 +13,13 @@ import type {
   GatewayShipmentEvent,
 } from "@/lib/gateway-types";
 import { ApiError, api } from "@/lib/api";
-import { formatCarrierLabel, formatDateTimeVi, formatSignedVnd, formatVnd } from "@/lib/format";
+import {
+  GATEWAY_ORDER_STATUS_LABELS,
+  formatCarrierLabel,
+  formatDateTimeVi,
+  formatSignedVnd,
+  formatVnd,
+} from "@/lib/format";
 import {
   type UpdateOrderAddressResponse,
   applyTopLevelAddressFeeQuote,
@@ -48,12 +48,7 @@ import {
 } from "@/features/product/reviewHelpers";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./OrderDetailClientView.module.css";
-import {
-  reconcileServerSnapshot,
-  resolveClientReturnRequest,
-  resolveUpdatedRefunds,
-  resolveUpdatedReviews,
-} from "./orderReturnSync";
+import { resolveListMutation, resolveReturnRequest } from "./orderReturnSync";
 import type { OrderView } from "./orderView";
 import {
   MAX_EVIDENCE_URLS,
@@ -61,6 +56,9 @@ import {
   buildShippingLabelHref,
   canRequestRedelivery,
   canSubmitBuyerRefundBankAccount,
+  getOrderStatusInfo,
+  getPaymentMethodLabel,
+  getPaymentStatusInfo,
   getRefundStatusInfo,
   getReturnFeeBearerLabel,
   getReturnStatusInfo,
@@ -74,12 +72,44 @@ import {
   validateEvidenceUrls,
 } from "./orderMeta";
 
-const STANDARD_STEPS: Array<{ status: OrderStatus; label: string }> = [
-  { status: "cho_xac_nhan", label: "Chờ xác nhận" },
-  { status: "dang_chuan_bi", label: "Đang chuẩn bị" },
-  { status: "dang_giao", label: "Đang giao hàng" },
-  { status: "da_giao", label: "Đã giao" },
-];
+function buildOrderSteps(backendStatus: string): Array<{ key: string; label: string }> {
+  const norm = backendStatus.toUpperCase();
+  return [
+    {
+      key: "CONFIRMED",
+      label:
+        norm === "PENDING"
+          ? GATEWAY_ORDER_STATUS_LABELS.PENDING
+          : GATEWAY_ORDER_STATUS_LABELS.CONFIRMED,
+    },
+    { key: "PREPARING", label: GATEWAY_ORDER_STATUS_LABELS.PREPARING },
+    { key: "SHIPPING", label: GATEWAY_ORDER_STATUS_LABELS.SHIPPING },
+    {
+      key: "DELIVERED",
+      label:
+        norm === "COMPLETED"
+          ? GATEWAY_ORDER_STATUS_LABELS.COMPLETED
+          : GATEWAY_ORDER_STATUS_LABELS.DELIVERED,
+    },
+  ];
+}
+
+function getOrderStepIndex(backendStatus: string): number {
+  switch (backendStatus.toUpperCase()) {
+    case "PENDING":
+    case "CONFIRMED":
+      return 0;
+    case "PREPARING":
+      return 1;
+    case "SHIPPING":
+      return 2;
+    case "DELIVERED":
+    case "COMPLETED":
+      return 3;
+    default:
+      return -1;
+  }
+}
 
 const CANCEL_REASONS = [
   "Đổi địa chỉ nhận hàng",
@@ -162,15 +192,11 @@ function OrderDetailInner({
 
     if (orderChanged || prevInitialOrderRef.current !== initialOrder) {
       prevInitialOrderRef.current = initialOrder;
-      setOrder((prev) =>
-        reconcileServerSnapshot({ orderChanged, current: prev, incoming: initialOrder })
-      );
+      setOrder((prev) => (orderChanged ? initialOrder : (initialOrder ?? prev)));
     }
     if (orderChanged || prevInitialShipmentRef.current !== initialShipment) {
       prevInitialShipmentRef.current = initialShipment;
-      setShipment((prev) =>
-        reconcileServerSnapshot({ orderChanged, current: prev, incoming: initialShipment })
-      );
+      setShipment((prev) => (orderChanged ? initialShipment : (initialShipment ?? prev)));
     }
     if (orderChanged || prevInitialShipmentEventsRef.current !== initialShipmentEvents) {
       prevInitialShipmentEventsRef.current = initialShipmentEvents;
@@ -181,13 +207,13 @@ function OrderDetailInner({
     if (orderChanged || prevInitialReturnShipmentRef.current !== initialReturnShipment) {
       prevInitialReturnShipmentRef.current = initialReturnShipment;
       setReturnShipment((prev) =>
-        reconcileServerSnapshot({ orderChanged, current: prev, incoming: initialReturnShipment })
+        orderChanged ? initialReturnShipment : (initialReturnShipment ?? prev)
       );
     }
     if (orderChanged || prevInitialReturnRequestRef.current !== initialReturnRequest) {
       prevInitialReturnRequestRef.current = initialReturnRequest;
       setReturnRequest((prev) =>
-        reconcileServerSnapshot({ orderChanged, current: prev, incoming: initialReturnRequest })
+        orderChanged ? initialReturnRequest : (initialReturnRequest ?? prev)
       );
     }
     if (orderChanged || prevInitialRefundsRef.current !== initialRefunds) {
@@ -413,13 +439,11 @@ function OrderDetailInner({
         method: "POST",
         body: { reason: combinedReason, evidence_urls: evCheck.urls },
       });
-      const resolvedReturnRequest = await resolveClientReturnRequest({
-        inlineReturnRequest: res.return_request,
-        fetchFallback: () =>
-          api<{ return_request?: GatewayReturnRequest | null }>(
-            `/api/orders/${encodeURIComponent(order.id)}/return`
-          ),
-      });
+      const resolvedReturnRequest = await resolveReturnRequest(res.return_request, () =>
+        api<{ return_request?: GatewayReturnRequest | null }>(
+          `/api/orders/${encodeURIComponent(order.id)}/return`
+        )
+      );
       if (resolvedReturnRequest) {
         setReturnRequest(resolvedReturnRequest);
       }
@@ -469,13 +493,11 @@ function OrderDetailInner({
         `/api/returns/${encodeURIComponent(returnRequest.id)}/escalate`,
         { method: "POST", body: { reason: clean } }
       );
-      const resolvedReturnRequest = await resolveClientReturnRequest({
-        inlineReturnRequest: res.return_request,
-        fetchFallback: () =>
-          api<{ return_request?: GatewayReturnRequest | null }>(
-            `/api/orders/${encodeURIComponent(order.id)}/return`
-          ),
-      });
+      const resolvedReturnRequest = await resolveReturnRequest(res.return_request, () =>
+        api<{ return_request?: GatewayReturnRequest | null }>(
+          `/api/orders/${encodeURIComponent(order.id)}/return`
+        )
+      );
       if (resolvedReturnRequest) {
         setReturnRequest(resolvedReturnRequest);
       }
@@ -521,13 +543,11 @@ function OrderDetailInner({
           },
         }
       );
-      const resolvedReturnRequest = await resolveClientReturnRequest({
-        inlineReturnRequest: res.return_request,
-        fetchFallback: () =>
-          api<{ return_request?: GatewayReturnRequest | null }>(
-            `/api/orders/${encodeURIComponent(order.id)}/return`
-          ),
-      });
+      const resolvedReturnRequest = await resolveReturnRequest(res.return_request, () =>
+        api<{ return_request?: GatewayReturnRequest | null }>(
+          `/api/orders/${encodeURIComponent(order.id)}/return`
+        )
+      );
       if (resolvedReturnRequest) {
         setReturnRequest(resolvedReturnRequest);
       }
@@ -625,15 +645,17 @@ function OrderDetailInner({
           },
         }
       );
-      const nextRefunds = await resolveUpdatedRefunds({
-        refundId,
-        updatedRefund: res.refund,
-        currentRefunds: refunds,
-        fetchFallback: () =>
-          api<{ items?: GatewayRefund[]; refunds?: GatewayRefund[] }>(
+      const nextRefunds = await resolveListMutation(
+        res.refund,
+        refunds,
+        (rf) => rf.refund_id === refundId,
+        async () => {
+          const fallback = await api<{ items?: GatewayRefund[]; refunds?: GatewayRefund[] }>(
             `/api/orders/${encodeURIComponent(order.id)}/refunds`
-          ),
-      });
+          );
+          return fallback?.items ?? fallback?.refunds;
+        }
+      );
       setRefunds(nextRefunds);
       setBankFeedbackByRefund((prev) => ({
         ...prev,
@@ -699,14 +721,21 @@ function OrderDetailInner({
           },
         }
       );
-      const nextReviews = await resolveUpdatedReviews({
-        submittedReview: res.review,
-        currentReviews: reviews,
-        fetchFallback: () =>
-          api<{ reviews?: GatewayProductReview[] }>(
-            `/api/orders/${encodeURIComponent(order.id)}/reviews`
+      const nextReviews = await resolveListMutation(
+        res.review,
+        reviews,
+        (existing) =>
+          Boolean(
+            (res.review?.id && existing.id === res.review.id) ||
+            (res.review?.order_item_id && existing.order_item_id === res.review.order_item_id)
           ),
-      });
+        async () => {
+          const fallback = await api<{ reviews?: GatewayProductReview[] }>(
+            `/api/orders/${encodeURIComponent(order.id)}/reviews`
+          );
+          return fallback?.reviews;
+        }
+      );
       setReviews(nextReviews);
       showToast("Cảm ơn bạn đã gửi đánh giá sản phẩm.");
       router.refresh();
@@ -887,15 +916,11 @@ function OrderDetailInner({
     );
   }
 
-  const statusMeta =
-    order.backendStatus === "RETURNED"
-      ? {
-          label: "Đã trả hàng",
-          tone: "neutral" as const,
-          description: "Đơn hàng đã hoàn tất thủ tục trả hàng.",
-        }
-      : ORDER_STATUS_META[order.status];
-  const payMeta = order.paymentStatus ? PAYMENT_STATUS_META[order.paymentStatus] : null;
+  const statusMeta = getOrderStatusInfo(order.backendStatus);
+  const payMeta =
+    order.paymentStatusRaw || order.paymentMethodRaw === "COD"
+      ? getPaymentStatusInfo(order.paymentStatusRaw, order.paymentMethodRaw, order.backendStatus)
+      : null;
   const showOnlinePaymentBox = needsVietQrPayment({
     status: order.backendStatus,
     payment_method: order.paymentMethodRaw,
@@ -903,9 +928,14 @@ function OrderDetailInner({
     payment_status: order.paymentStatusRaw,
     payment_expires_at: order.paymentExpiresAt,
   });
-  const currentStepIdx = STANDARD_STEPS.findIndex((s) => s.status === order.status);
-  const isTerminalSpecial = order.status === "da_huy" || order.status === "yeu_cau_tra_hang";
-  const progressFraction = currentStepIdx <= 0 ? 0 : currentStepIdx / (STANDARD_STEPS.length - 1);
+  const orderSteps = buildOrderSteps(order.backendStatus);
+  const currentStepIdx = getOrderStepIndex(order.backendStatus);
+  const isCompletedOrder = order.backendStatus.toUpperCase() === "COMPLETED";
+  const isTerminalSpecial =
+    order.backendStatus === "CANCELLED" ||
+    order.backendStatus === "RETURN_REQUESTED" ||
+    order.backendStatus === "RETURNED";
+  const progressFraction = currentStepIdx <= 0 ? 0 : currentStepIdx / (orderSteps.length - 1);
 
   const forwardLabelHref = buildShippingLabelHref(
     shipment?.tracking_code || order.trackingCode,
@@ -1032,7 +1062,7 @@ function OrderDetailInner({
             {showOnlinePaymentBox && order.paymentId && (
               <RetryPaymentBox
                 paymentId={order.paymentId}
-                order={order}
+                order={{ ...order, carrier: undefined }}
                 onPaid={() => router.refresh()}
                 onSwitchedToCod={() => router.refresh()}
               />
@@ -1064,12 +1094,12 @@ function OrderDetailInner({
                       />
                     </div>
                     <ol className={styles.stepperWrap} aria-label="Tiến trình giao hàng">
-                      {STANDARD_STEPS.map((step, idx) => {
-                        const done = currentStepIdx > idx;
-                        const current = currentStepIdx === idx;
+                      {orderSteps.map((step, idx) => {
+                        const done = isCompletedOrder || currentStepIdx > idx;
+                        const current = !isCompletedOrder && currentStepIdx === idx;
                         return (
                           <li
-                            key={step.status}
+                            key={step.key}
                             className={`${styles.stepNode} ${
                               done ? styles.stepNodeDone : current ? styles.stepNodeCurrent : ""
                             }`}
@@ -2102,9 +2132,9 @@ function OrderDetailInner({
 
               <div className={styles.sideBlock}>
                 <h2 className={styles.sideTitle}>Thanh toán</h2>
-                <p className={styles.sideLine}>{PAYMENT_METHOD_LABELS[order.paymentMethod]}</p>
+                <p className={styles.sideLine}>{getPaymentMethodLabel(order.paymentMethodRaw)}</p>
                 <p className={styles.sideMuted}>
-                  {payMeta?.label ?? (order.isPaid ? "Đã thanh toán" : "Thu hộ khi nhận hàng")}
+                  {payMeta?.label ?? (order.isPaid ? "Đã thanh toán" : "Thu hộ khi giao")}
                 </p>
 
                 <dl className={styles.ledgerBox}>

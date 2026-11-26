@@ -4,7 +4,7 @@ import { gw } from "@/lib/server/gateway";
 import { apiRoute, readJson } from "@/lib/server/http";
 import { assertSession } from "@/lib/server/session";
 import { requireRequestSite } from "@/lib/server/sites";
-import { mapCheckoutError } from "@/features/commerce/checkoutErrors";
+import { resolveCheckoutRouteError } from "@/features/commerce/checkoutErrors";
 import {
   buildStorefrontCheckoutPayload,
   type CheckoutBody,
@@ -41,18 +41,18 @@ export const POST = apiRoute(
         { status, headers: { "Cache-Control": "no-store" } }
       );
     } catch (err) {
-      if (
-        err instanceof GatewayError &&
-        (err.kind === "conflict" ||
-          err.kind === "invalid" ||
-          err.kind === "not_found" ||
-          err.kind === "rate_limited")
-      ) {
-        const mapped = mapCheckoutError(err.code, err.detail);
-        return Response.json(
-          { error: { code: mapped.code, message: mapped.message } },
-          { status: mapped.status ?? err.status, headers: { "Cache-Control": "no-store" } }
-        );
+      if (err instanceof GatewayError) {
+        const decision = resolveCheckoutRouteError(err);
+        if (decision.action === "respond") {
+          const headers: Record<string, string> = { "Cache-Control": "no-store" };
+          if (decision.retryAfter && decision.status === 429) {
+            headers["Retry-After"] = decision.retryAfter;
+          }
+          return Response.json(
+            { error: { code: decision.code, message: decision.message } },
+            { status: decision.status, headers }
+          );
+        }
       }
       throw err;
     }

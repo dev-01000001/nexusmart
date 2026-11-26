@@ -844,26 +844,43 @@ function AdminOverviewContent({
               </div>
 
               {(report.top_products?.length ?? 0) > 0 && (
-                <div className={`${shared.tableWrap} ${shared.tableWrapAuto}`}>
-                  <table className={shared.dataTable}>
-                    <thead>
-                      <tr>
-                        <th>Top sản phẩm bán chạy</th>
-                        <th className={shared.colNum}>Số lượng bán</th>
-                        <th className={shared.colNum}>Doanh thu</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {report.top_products.map((tp) => (
-                        <tr key={tp.product_id}>
-                          <td className={shared.cellPrimary}>{tp.product_name}</td>
-                          <td className={shared.colNum}>{formatInt(tp.units_sold)}</td>
-                          <td className={shared.colNum}>{formatVnd(tp.revenue_vnd)}</td>
+                <>
+                  <div className={`${shared.tableWrap} ${shared.tableWrapAuto}`}>
+                    <table className={shared.dataTable}>
+                      <thead>
+                        <tr>
+                          <th>Top sản phẩm bán chạy</th>
+                          <th className={shared.colNum}>Số lượng bán</th>
+                          <th className={shared.colNum}>Doanh thu</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {report.top_products.map((tp) => (
+                          <tr key={tp.product_id}>
+                            <td className={shared.cellPrimary}>{tp.product_name}</td>
+                            <td className={shared.colNum}>{formatInt(tp.units_sold)}</td>
+                            <td className={shared.colNum}>{formatVnd(tp.revenue_vnd)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className={shared.mobileList}>
+                    {report.top_products.map((tp) => (
+                      <div key={tp.product_id} className={shared.mobileItem}>
+                        <div className={shared.mobileLine1}>
+                          <span className={shared.mobileIdentity}>{tp.product_name}</span>
+                          <span className={shared.mobileMetric}>{formatVnd(tp.revenue_vnd)}</span>
+                        </div>
+                        <div className={shared.mobileLine2}>
+                          <span className={shared.mobileMetaText}>Top sản phẩm bán chạy</span>
+                          <span className="num">Đã bán {formatInt(tp.units_sold)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
               )}
             </>
           ) : (

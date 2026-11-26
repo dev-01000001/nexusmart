@@ -4,7 +4,13 @@
 // unit-tested directly.
 import type { OrderLookupResponse, PublicOrderSummary } from "../a8-types";
 import { ADMIN_STAFF_ROLES } from "../admin-rbac.ts";
-import type { GwCart, GwPayment, GwVoucher } from "../../features/commerce/types";
+import type {
+  GwCart,
+  GwCartItem,
+  GwCartShopGroup,
+  GwPayment,
+  GwVoucher,
+} from "../../features/commerce/types";
 import { GatewayError } from "./errors.ts";
 
 export const STOREFRONT_CHANNEL = "STOREFRONT";
@@ -45,6 +51,51 @@ export function scopeCartToShop(cart: GwCart | null | undefined, shopId: string)
     total_items: availableLines.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0),
     total_vnd: groups.reduce((sum, g) => sum + g.subtotal_vnd, 0),
   };
+}
+
+/**
+ * Whether a cart line is eligible for promotion preview and voucher validation: active (not
+ * unavailable), in stock (`available_stock > 0`), and positive quantity. Matches checkout's
+ * minimum stock requirement (checkout rejects `available_stock < quantity`, including
+ * `available_stock <= 0` for Flash Sale).
+ */
+export function isPreviewableCartItem(item: GwCartItem | null | undefined): boolean {
+  if (!item || item.unavailable) return false;
+  const stock = Number(item.available_stock);
+  const qty = Number(item.quantity);
+  return Number.isFinite(stock) && stock > 0 && Number.isFinite(qty) && qty > 0;
+}
+
+/**
+ * Scope a cart to `shopId` and retain only groups with previewable lines (`!unavailable`,
+ * `available_stock > 0`, `quantity > 0`), recomputing `subtotal_vnd` and `total_weight_grams`
+ * from the retained lines. Shared by `/api/vouchers/preview` and `/api/vouchers/validate`.
+ */
+export function filterPreviewableCartGroups(
+  cart: GwCart | null | undefined,
+  shopId: string
+): GwCartShopGroup[] {
+  const scoped = scopeCartToShop(cart, shopId);
+  const out: GwCartShopGroup[] = [];
+  for (const g of scoped.shop_groups) {
+    const items = g.items.filter(isPreviewableCartItem);
+    if (items.length === 0) continue;
+    const subtotalVnd = items.reduce(
+      (sum, it) => sum + (Number(it.price_vnd) || 0) * (Number(it.quantity) || 0),
+      0
+    );
+    const totalWeightGrams = items.reduce(
+      (sum, it) => sum + (Number(it.weight_grams) || 0) * (Number(it.quantity) || 0),
+      0
+    );
+    out.push({
+      ...g,
+      items,
+      subtotal_vnd: subtotalVnd,
+      total_weight_grams: totalWeightGrams,
+    });
+  }
+  return out;
 }
 
 export function cartHasSku(cart: GwCart | null | undefined, skuId: string): boolean {

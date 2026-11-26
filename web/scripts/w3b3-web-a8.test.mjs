@@ -1008,13 +1008,13 @@ describe("Wave 3b-3 Round 6 — W2–W6 real-browser QA fixes", () => {
     const guestLookupSrc = readSrc("features/commerce/OrderLookupView.tsx");
 
     assert.ok(
-      buyerSrc.includes("getTimelineEventTitle(ev)") &&
+      buyerSrc.includes("getTimelineEventTitle(") &&
         buyerSrc.includes("localizeTimelineNote(ev.note)"),
       "buyer orderView.ts must use getTimelineEventTitle + localizeTimelineNote"
     );
     assert.ok(
       sellerDetailSrc.includes("isAddressUpdatedTimelineNote(ev.note)") &&
-        sellerDetailSrc.includes("getTimelineEventTitle(ev)") &&
+        sellerDetailSrc.includes("getTimelineEventTitle(") &&
         sellerDetailSrc.includes("localizeTimelineNote(ev.note)"),
       "seller order detail must use getTimelineEventTitle + localizeTimelineNote for address updates"
     );

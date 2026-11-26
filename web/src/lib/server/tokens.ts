@@ -81,6 +81,23 @@ export function accessExpiresSoon(token: string | undefined, skewS = 60): boolea
   }
 }
 
+/**
+ * True only when `token` is a syntactically valid 3-part JWT whose numeric `exp` claim is already
+ * in the past. Returns `false` for non-JWT / opaque strings so callers still attempt upstream
+ * validation and fall back on 401.
+ */
+function isJwtExpired(token: string | undefined): boolean {
+  if (!token) return false;
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3 || !parts[1]) return false;
+    const payload = JSON.parse(decodeBase64Url(parts[1])) as { exp?: unknown };
+    return typeof payload.exp === "number" && payload.exp <= Date.now() / 1000;
+  } catch {
+    return false;
+  }
+}
+
 function sha256Hex(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -97,6 +114,7 @@ interface RotationEntry {
   pair?: TokenPair | null;
   settled: boolean;
   cancelled: boolean;
+  revokedOnCancel?: boolean;
 }
 
 interface RefreshTokenState {
@@ -143,29 +161,132 @@ function pruneMaps(state: RefreshTokenState, now: number) {
   }
 }
 
+async function callLogout(
+  accessToken: string,
+  refreshToken: string | undefined,
+  trace?: Pick<TraceContext, "traceparent" | "tracestate">,
+  clientIp?: string | null,
+  timeoutMs = GATEWAY_TIMEOUT_MS
+): Promise<"ok" | "unauthenticated"> {
+  const traceparent = trace?.traceparent || generateTraceparent();
+  const traceId = extractTraceId(traceparent);
+  let res: Response;
+  try {
+    res = await fetch(`${GATEWAY_URL}/api/v1/auth/logout`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Authorization: `Bearer ${accessToken}`,
+        traceparent,
+        ...(trace?.tracestate ? { tracestate: trace.tracestate } : {}),
+        ...(clientIp ? { "X-Forwarded-For": clientIp } : {}),
+      },
+      body: JSON.stringify(refreshToken ? { refresh_token: refreshToken } : {}),
+      cache: "no-store",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch {
+    throw new GatewayError("unavailable", undefined, "", traceId);
+  }
+  if (res.ok) return "ok";
+  if (res.status === 401) return "unauthenticated";
+  const err = await errorFromResponse(res, traceId);
+  if (err.kind === "unavailable" || err.kind === "rate_limited") throw err;
+  return "ok"; // 400/403/404: session already invalid
+}
+
 export async function revokeTokenPairBestEffort(
   pair: TokenPair,
   trace?: Pick<TraceContext, "traceparent" | "tracestate">,
   clientIp?: string | null
 ): Promise<void> {
-  const traceparent = trace?.traceparent || generateTraceparent();
   try {
-    await fetch(`${GATEWAY_URL}/api/v1/auth/logout`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        Authorization: `Bearer ${pair.accessToken}`,
-        traceparent,
-        ...(trace?.tracestate ? { tracestate: trace.tracestate } : {}),
-        ...(clientIp ? { "X-Forwarded-For": clientIp } : {}),
-      },
-      body: JSON.stringify({ refresh_token: pair.refreshToken }),
-      cache: "no-store",
-      signal: AbortSignal.timeout(5_000),
-    });
+    await callLogout(pair.accessToken, pair.refreshToken, trace, clientIp, 5_000);
   } catch {
     // Best effort revocation when an in-flight refresh completes after logout.
+  }
+}
+
+export interface RevokeSessionInput {
+  accessToken?: string;
+  refreshToken?: string;
+  trace?: Pick<TraceContext, "traceparent" | "tracestate">;
+  clientIp?: string | null;
+}
+
+/**
+ * Revoke the caller's session on the backend, guaranteeing refresh-token family revocation even
+ * when the access token is expired, absent, or rejected with 401.
+ *
+ * Immediately invalidates the shared 5s grace cache / in-flight rotation so concurrent requests
+ * cannot observe rotated tokens after logout. When no valid access token can authorize
+ * `POST /api/v1/auth/logout`, performs a one-off non-cached refresh and immediately revokes the
+ * rotated pair (and its entire token family).
+ */
+export async function revokeSessionTokens({
+  accessToken,
+  refreshToken,
+  trace,
+  clientIp,
+}: RevokeSessionInput): Promise<void> {
+  const state = getRefreshState();
+  const directBefore = refreshToken ? state.rotations.get(sha256Hex(refreshToken)) : undefined;
+  const { purgedTokens, inFlightPromise } = await invalidateRefreshCache(refreshToken);
+
+  let rotatedRefreshToken: string | undefined;
+  try {
+    let familyRevoked = false;
+
+    if (inFlightPromise) {
+      await inFlightPromise.catch(() => null);
+      if (directBefore?.revokedOnCancel) {
+        familyRevoked = true;
+      }
+    }
+
+    if (purgedTokens) {
+      await invalidateRefreshCache(purgedTokens.refreshToken);
+      const status = await callLogout(
+        purgedTokens.accessToken,
+        purgedTokens.refreshToken,
+        trace,
+        clientIp
+      );
+      if (status === "ok") {
+        familyRevoked = true;
+      }
+    }
+
+    if (accessToken && !isJwtExpired(accessToken) && accessToken !== purgedTokens?.accessToken) {
+      const status = await callLogout(
+        accessToken,
+        familyRevoked ? undefined : refreshToken,
+        trace,
+        clientIp
+      );
+      if (status === "ok" && refreshToken) {
+        familyRevoked = true;
+      }
+    }
+
+    if (!familyRevoked && refreshToken) {
+      const refreshCandidate = purgedTokens?.refreshToken ?? refreshToken;
+      const freshPair = await callRefresh(refreshCandidate, trace, { clientIp });
+      if (freshPair) {
+        rotatedRefreshToken = freshPair.refreshToken;
+        await invalidateRefreshCache(freshPair.refreshToken);
+        await callLogout(freshPair.accessToken, freshPair.refreshToken, trace, clientIp);
+      }
+    }
+  } finally {
+    await invalidateRefreshCache(refreshToken);
+    if (purgedTokens) {
+      await invalidateRefreshCache(purgedTokens.refreshToken);
+    }
+    if (rotatedRefreshToken) {
+      await invalidateRefreshCache(rotatedRefreshToken);
+    }
   }
 }
 
@@ -257,7 +378,21 @@ export async function rotateRefreshToken(
         if (rotations.get(key) === entry) {
           rotations.delete(key);
         }
-        await revokeTokenPairBestEffort(pair, trace, opts?.clientIp);
+        cancelledRawTokens.set(pair.refreshToken, Date.now() + REFRESH_GRACE_MS);
+        try {
+          const status = await callLogout(
+            pair.accessToken,
+            pair.refreshToken,
+            trace,
+            opts?.clientIp,
+            5_000
+          );
+          if (status === "ok") {
+            entry.revokedOnCancel = true;
+          }
+        } catch {
+          // Best effort revocation when an in-flight refresh completes after logout.
+        }
         return null;
       }
       if (!pair) {

@@ -10,7 +10,7 @@ import {
   GATEWAY_SHIPMENT_STATUS_LABELS,
   formatCarrierLabel,
   formatVnd,
-} from "@/lib/format";
+} from "../../lib/format.ts";
 
 export const EMPTY_DASH = "—";
 
@@ -45,7 +45,7 @@ export const SELLER_PRODUCT_STATUS_META: Record<ProductStatus | string, StatusMe
 
 export const SELLER_ORDER_STATUS_META: Record<GatewayOrderStatus | string, StatusMeta> = {
   PENDING: { label: GATEWAY_ORDER_STATUS_LABELS.PENDING, tone: "warn" },
-  CONFIRMED: { label: "Chờ xác nhận", tone: "warn" },
+  CONFIRMED: { label: GATEWAY_ORDER_STATUS_LABELS.CONFIRMED, tone: "warn" },
   PREPARING: { label: GATEWAY_ORDER_STATUS_LABELS.PREPARING, tone: "neutral" },
   SHIPPING: { label: GATEWAY_ORDER_STATUS_LABELS.SHIPPING, tone: "neutral" },
   DELIVERED: { label: GATEWAY_ORDER_STATUS_LABELS.DELIVERED, tone: "pos" },
@@ -210,28 +210,33 @@ export function getSellerOrderDisplayMeta(
     shipment_job_status?: string;
   }
 ): StatusMeta {
+  const normStatus = (order.status ?? "").trim().toUpperCase();
   const hasTracking = Boolean((order.tracking_code ?? "").trim());
   const jobStatus = (order.shipment_job_status ?? "").trim().toUpperCase();
-  if (!hasTracking && jobStatus === "QUEUED") {
-    return { label: "Đang chờ tạo lại với hãng", tone: "warn" };
+  if ((normStatus === "CONFIRMED" || normStatus === "PREPARING") && !hasTracking) {
+    if (jobStatus === "QUEUED") {
+      return { label: "Đang chờ tạo lại với hãng", tone: "warn" };
+    }
+    if (jobStatus === "FAILED") {
+      return { label: "Tạo vận đơn thất bại", tone: "neg" };
+    }
   }
-  if (!hasTracking && jobStatus === "FAILED") {
-    return { label: "Tạo vận đơn thất bại", tone: "neg" };
-  }
-  if (order.status === "PREPARING" && hasTracking) {
+  if (normStatus === "PREPARING" && hasTracking) {
     return { label: "Chờ hãng lấy hàng", tone: "warn" };
   }
-  return getOrderStatusMeta(order.status);
+  return getOrderStatusMeta(normStatus);
 }
 
 /**
  * Valid seller actions by order state machine (docs/contracts.md §6 & E18):
  * - PENDING: cancel
- * - CONFIRMED: confirm (→ PREPARING), ship (creates shipment, stays PREPARING with tracking_code), cancel
+ * - CONFIRMED: confirm (→ PREPARING, unless async shipment job is already QUEUED/FAILED), ship (creates shipment, stays PREPARING with tracking_code), cancel
  * - PREPARING: ship (if no tracking_code yet — allowed even when QUEUED so orders never get stuck; server is idempotent), cancel
  */
-export function canSellerConfirmOrder(status: string): boolean {
-  return status === "CONFIRMED";
+export function canSellerConfirmOrder(status: string, shipmentJobStatus?: string): boolean {
+  if ((status ?? "").trim().toUpperCase() !== "CONFIRMED") return false;
+  const job = (shipmentJobStatus ?? "").trim().toUpperCase();
+  return job !== "QUEUED" && job !== "FAILED";
 }
 
 export function canSellerShipOrder(status: string, trackingCode?: string): boolean {

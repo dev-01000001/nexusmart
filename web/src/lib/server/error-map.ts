@@ -52,6 +52,7 @@ const KNOWN_PREFIXED_ERROR_CODES = new Set<string>([
   "ORDER_AMOUNT_OUT_OF_RANGE",
   "VERSION_CONFLICT",
   "MAKER_CHECKER_CONFLICT",
+  "REINDEX_ALREADY_RUNNING",
 ]);
 
 function normalizeDomainErrorCode(rawCode: string, rawMessage: string): string {
@@ -599,6 +600,13 @@ export function toSafeVietnameseMessage(status: number, code: string, rawMessage
     lower.includes("expected_version")
   ) {
     return "Cấu hình đã được người khác cập nhật trước đó. Vui lòng tải lại dữ liệu mới nhất trước khi lưu.";
+  }
+  if (
+    code === "REINDEX_ALREADY_RUNNING" ||
+    lower.includes("reindex_already_running") ||
+    lower.includes("another reindex")
+  ) {
+    return "Đang có tiến trình dựng lại chỉ mục tìm kiếm. Vui lòng chờ hoàn tất.";
   }
   if (
     code === "MAKER_CHECKER_CONFLICT" ||

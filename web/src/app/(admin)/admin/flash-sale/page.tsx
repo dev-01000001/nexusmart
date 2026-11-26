@@ -4,7 +4,15 @@ import { roleHasAnyCapability, roleHasCapability } from "@/lib/admin-rbac";
 import { gw } from "@/lib/server/gateway";
 import { requireSession } from "@/lib/server/session";
 import type { GatewayCategory, GatewayVoucher, PaginatedResponse } from "@/lib/gateway-types";
-import type { GwAdminFlashSaleExtended, GwAdminShop } from "@/features/admin/adminApiTypes";
+import type {
+  GwAdminFlashSaleExtended,
+  GwAdminFlashSaleItemExtended,
+  GwAdminShop,
+} from "@/features/admin/adminApiTypes";
+import {
+  loadAdminFlashSaleItems,
+  mergeFlashSaleItems,
+} from "@/features/admin/AdminFlashSaleHelpers";
 import AdminFlashSaleClient from "./AdminFlashSaleClient";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +28,7 @@ export default async function AdminFlashSalePage() {
   const canReadShops = roleHasCapability(role, "shops.read");
   const canReadVouchers = roleHasCapability(role, "vouchers.read");
 
-  const [flashSalesRes, shopsRes, categoriesRes, vouchersRes] = await Promise.all([
+  const [flashSalesRes, flashItemsRes, shopsRes, categoriesRes, vouchersRes] = await Promise.all([
     canReadFlashSales
       ? gw<PaginatedResponse<GwAdminFlashSaleExtended>>("/api/v1/admin/flash-sales", {
           query: { page: 1, page_size: 50 },
@@ -31,6 +39,17 @@ export default async function AdminFlashSalePage() {
             error: "Không thể tải danh sách khung giờ Flash sale lúc này.",
           }))
       : Promise.resolve({ items: [] as GwAdminFlashSaleExtended[], error: null as string | null }),
+    canReadFlashSales
+      ? loadAdminFlashSaleItems(({ status, page, pageSize }) =>
+          gw<PaginatedResponse<GwAdminFlashSaleItemExtended>>("/api/v1/admin/flash-sale-items", {
+            query: { status, page, page_size: pageSize },
+          })
+        )
+      : Promise.resolve({
+          items: [] as GwAdminFlashSaleItemExtended[],
+          meta: { loadedCount: 0, totalCount: 0, unloadedCount: 0, pendingUnloadedCount: 0 },
+          error: null as string | null,
+        }),
     canReadShops
       ? gw<PaginatedResponse<GwAdminShop>>("/api/v1/admin/shops", {
           query: { page: 1, page_size: 100 },
@@ -46,6 +65,8 @@ export default async function AdminFlashSalePage() {
       : Promise.resolve(null),
   ]);
 
+  const initialFlashSales = mergeFlashSaleItems(flashSalesRes.items, flashItemsRes.items);
+
   const shopNames: Record<string, string> = {};
   for (const shop of shopsRes?.items ?? []) {
     shopNames[shop.id] = shop.name;
@@ -53,11 +74,13 @@ export default async function AdminFlashSalePage() {
 
   return (
     <AdminFlashSaleClient
-      initialFlashSales={flashSalesRes.items}
+      initialFlashSales={initialFlashSales}
       shopNames={shopNames}
       categories={categoriesRes?.categories ?? []}
       initialVouchers={vouchersRes?.vouchers ?? []}
       loadError={flashSalesRes.error}
+      initialItemsError={flashItemsRes.error}
+      initialItemsMeta={flashItemsRes.meta}
       serverNowMs={Date.now()}
     />
   );

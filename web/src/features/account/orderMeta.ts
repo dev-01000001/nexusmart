@@ -55,12 +55,12 @@ export const ORDER_STATUS_INFO: Record<GatewayOrderStatus, StatusMeta> = {
     description: "Gian hàng đang kiểm tra và đóng gói sản phẩm cho đơn hàng của bạn.",
   },
   SHIPPING: {
-    label: "Đang giao hàng",
+    label: GATEWAY_ORDER_STATUS_LABELS.SHIPPING,
     tone: "neutral",
     description: "Đơn vị vận chuyển đã nhận kiện hàng và đang giao tới địa chỉ của bạn.",
   },
   DELIVERED: {
-    label: "Đã giao hàng",
+    label: GATEWAY_ORDER_STATUS_LABELS.DELIVERED,
     tone: "pos",
     description:
       "Đơn hàng đã được giao thành công. Bạn có thể xác nhận đã nhận hoặc gửi yêu cầu trả hàng trong 7 ngày.",
@@ -106,8 +106,9 @@ export function isValidOrderStatus(value: string | undefined): value is GatewayO
 }
 
 export function getOrderStatusInfo(status: string): StatusMeta {
-  if (isValidOrderStatus(status)) {
-    return ORDER_STATUS_INFO[status];
+  const key = (status ?? "").trim().toUpperCase();
+  if (isValidOrderStatus(key)) {
+    return ORDER_STATUS_INFO[key];
   }
   return {
     label: "Đang xử lý",
@@ -117,7 +118,7 @@ export function getOrderStatusInfo(status: string): StatusMeta {
 }
 
 export function getPaymentMethodLabel(method: string): string {
-  const key = method.toUpperCase() as GatewayPaymentMethod;
+  const key = (method ?? "").trim().toUpperCase() as GatewayPaymentMethod;
   return GATEWAY_PAYMENT_METHOD_LABELS[key] ?? "Thanh toán trực tuyến";
 }
 
@@ -126,22 +127,29 @@ export function getPaymentStatusInfo(
   paymentMethod: string,
   orderStatus?: string
 ): { label: string; tone: BadgeTone } {
-  const status = paymentStatus.toUpperCase();
-  const method = paymentMethod.toUpperCase();
-  const ordStatus = (orderStatus ?? "").toUpperCase();
+  const status = (paymentStatus ?? "").trim().toUpperCase();
+  const method = (paymentMethod ?? "").trim().toUpperCase();
+  const ordStatus = (orderStatus ?? "").trim().toUpperCase();
 
   if (status === "REFUNDED") {
     return { label: "Đã hoàn tiền", tone: "neutral" };
   }
-  if (method === "COD") {
-    if (ordStatus === "CANCELLED" || ordStatus === "RETURNED") {
-      return { label: "Không thu hộ", tone: "neutral" };
-    }
-    if (ordStatus === "DELIVERED" || ordStatus === "COMPLETED") {
+  if (method === "COD" || status === "COD_PENDING") {
+    if (
+      ordStatus === "DELIVERED" ||
+      ordStatus === "COMPLETED" ||
+      ordStatus === "RETURN_REQUESTED"
+    ) {
       return { label: "Đã thu hộ COD", tone: "pos" };
     }
     if (status === "SUCCEEDED" || status === "PAID") {
+      if (ordStatus === "RETURNED") {
+        return { label: "Đã thu hộ COD", tone: "pos" };
+      }
       return { label: "Đã thanh toán", tone: "pos" };
+    }
+    if (ordStatus === "CANCELLED" || ordStatus === "RETURNED" || status === "CANCELLED") {
+      return { label: "Không thu hộ", tone: "neutral" };
     }
     return { label: "Thu hộ khi giao", tone: "neutral" };
   }
@@ -984,22 +992,58 @@ export function canRequestRedelivery(
   return (shipment.redelivery_count ?? 0) < MAX_REDELIVERY_ATTEMPTS;
 }
 
+const SWITCHED_TO_COD_NOTE_RE = /^switched\s+payment\s+method\s+from\s+[a-z0-9_]+\s+to\s+cod\b/i;
+
+const SHIPMENT_CREATED_NOTE_RE =
+  /^(?:shipment\s+created\b|shipped\s+via\b|shipment\s+(?:recreation|restoration\s+to\s+the\s+original\s+address)\s+done\b)/i;
+
+export function isSwitchedToCodConfirmTimelineEvent(
+  ev: Pick<GatewayOrderTimelineEvent, "from_status" | "to_status" | "note">,
+  paymentMethod?: string | null
+): boolean {
+  const fromStatus = (ev.from_status ?? "").trim().toUpperCase();
+  const toStatus = (ev.to_status ?? "").trim().toUpperCase();
+  if (fromStatus !== "PENDING" || toStatus !== "CONFIRMED") return false;
+  if ((paymentMethod ?? "").trim().toUpperCase() === "COD") return true;
+  const trimmed = (ev.note ?? "").trim();
+  const lower = trimmed.toLowerCase();
+  return (
+    SWITCHED_TO_COD_NOTE_RE.test(trimmed) ||
+    lower.includes("switched to cod") ||
+    lower.includes("payment switched to cod")
+  );
+}
+
+export function isShipmentCreatedTimelineNote(rawNote: string | null | undefined): boolean {
+  const trimmed = (rawNote ?? "").trim();
+  if (!trimmed) return false;
+  if (SHIPMENT_CREATED_NOTE_RE.test(trimmed)) return true;
+  return /\bđã\s+tạo\s+(?:lại\s+)?vận\s+đơn\b/i.test(trimmed);
+}
+
 export function getTimelineEventTitle(
-  ev: Pick<GatewayOrderTimelineEvent, "from_status" | "to_status" | "note">
+  ev: Pick<GatewayOrderTimelineEvent, "from_status" | "to_status" | "note">,
+  paymentMethod?: string | null
 ): string {
   if (isAddressUpdatedTimelineNote(ev.note)) {
     return "Đã cập nhật địa chỉ nhận hàng";
   }
-  const toStatus = ev.to_status;
+  const fromStatus = (ev.from_status ?? "").trim().toUpperCase();
+  const toStatus = (ev.to_status ?? "").trim().toUpperCase();
   switch (toStatus) {
     case "PENDING":
       return "Đặt hàng thành công · Chờ thanh toán";
     case "CONFIRMED":
-      return ev.from_status === "PENDING"
-        ? "Thanh toán thành công · Đơn hàng đã xác nhận"
-        : "Đặt hàng thành công · Đã xác nhận";
+      if (fromStatus === "PENDING") {
+        return isSwitchedToCodConfirmTimelineEvent(ev, paymentMethod)
+          ? "Đơn hàng đã xác nhận"
+          : "Thanh toán thành công · Đơn hàng đã xác nhận";
+      }
+      return "Đặt hàng thành công · Đã xác nhận";
     case "PREPARING":
-      return "Gian hàng đang chuẩn bị đơn hàng";
+      return isShipmentCreatedTimelineNote(ev.note)
+        ? "Đã tạo vận đơn"
+        : "Gian hàng đang chuẩn bị đơn hàng";
     case "SHIPPING":
       return "Đã bàn giao cho đơn vị vận chuyển";
     case "DELIVERED":

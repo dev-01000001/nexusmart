@@ -3,7 +3,6 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ORDER_STATUS_META } from "@/data/orders";
 import type { Product } from "@/data/products";
 import type { Voucher } from "@/data/vouchers";
 import { MODEL_SHOTS } from "@/data/media";
@@ -18,7 +17,7 @@ import { useModalFocusTrap } from "@/components/modalFocus";
 import { formatAddressLine } from "@/features/commerce/cartEnrich";
 import { statusToneClass } from "@/features/commerce/orderDisplay";
 import { usePageStateParam } from "@/features/commerce/usePageStateParam";
-import { isValidVietnamesePhone, normalizeVietnamesePhone } from "./orderMeta";
+import { getOrderStatusInfo, isValidVietnamesePhone, normalizeVietnamesePhone } from "./orderMeta";
 import shared from "@/features/commerce/commerce.module.css";
 import styles from "./AccountClientView.module.css";
 import { AccountAddressForm } from "./AccountAddressForm";
@@ -896,7 +895,7 @@ function AccountClientInner({
                 ) : (
                   <div className={styles.orderList}>
                     {recentOrders.map((order) => {
-                      const meta = ORDER_STATUS_META[order.status];
+                      const meta = getOrderStatusInfo(order.backendStatus);
                       const firstItem = order.items[0];
                       return (
                         <Link

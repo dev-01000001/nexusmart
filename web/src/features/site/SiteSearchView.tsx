@@ -39,6 +39,20 @@ export function SiteSearchView({
   );
   const [page, setPage] = useState(1);
 
+  const availableSizes = useMemo<string[]>(() => {
+    const found: string[] = [];
+    const seen = new Set<string>();
+    for (const p of products) {
+      for (const sz of p.sizes) {
+        const clean = String(sz ?? "").trim();
+        if (!clean || seen.has(clean)) continue;
+        seen.add(clean);
+        found.push(clean);
+      }
+    }
+    return found.length > 0 ? found : SIZES;
+  }, [products]);
+
   const matched = useMemo(() => {
     const byQuery = appliedQuery.trim() ? searchProducts(appliedQuery, products) : products;
     const filtered = byQuery.filter((p) => {
@@ -187,7 +201,7 @@ export function SiteSearchView({
             >
               Mọi size
             </button>
-            {SIZES.map((sz) => (
+            {availableSizes.map((sz) => (
               <button
                 key={sz}
                 type="button"

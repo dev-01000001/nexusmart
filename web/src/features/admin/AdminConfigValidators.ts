@@ -631,3 +631,63 @@ export function validateCarrierUpdateInput(
   }
   return { ok: true, value: payload };
 }
+
+export interface ValidatedSearchReindexInput {
+  reindex_products?: boolean;
+  reindex_embeddings?: boolean;
+  reindex_categories?: boolean;
+  reindex_shops?: boolean;
+  batch_size?: number;
+}
+
+const SEARCH_REINDEX_BOOL_FIELDS = [
+  "reindex_products",
+  "reindex_embeddings",
+  "reindex_categories",
+  "reindex_shops",
+] as const;
+
+export function validateSearchReindexInput(
+  input: unknown
+): ValidationResult<ValidatedSearchReindexInput> {
+  if (input === undefined) {
+    return { ok: true, value: {} };
+  }
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return {
+      ok: false,
+      code: "INVALID_ARGUMENT",
+      message: "Tham số dựng lại chỉ mục không hợp lệ.",
+    };
+  }
+  const rec = input as Record<string, unknown>;
+  const payload: ValidatedSearchReindexInput = {};
+  for (const field of SEARCH_REINDEX_BOOL_FIELDS) {
+    if (rec[field] !== undefined) {
+      if (typeof rec[field] !== "boolean") {
+        return {
+          ok: false,
+          code: "INVALID_ARGUMENT",
+          message: "Tham số dựng lại chỉ mục không hợp lệ.",
+        };
+      }
+      payload[field] = rec[field];
+    }
+  }
+  if (rec.batch_size !== undefined) {
+    if (
+      typeof rec.batch_size !== "number" ||
+      !Number.isInteger(rec.batch_size) ||
+      rec.batch_size < 1 ||
+      rec.batch_size > 500
+    ) {
+      return {
+        ok: false,
+        code: "INVALID_ARGUMENT",
+        message: "Kích thước lô xử lý phải là số nguyên từ 1 đến 500.",
+      };
+    }
+    payload.batch_size = rec.batch_size;
+  }
+  return { ok: true, value: payload };
+}

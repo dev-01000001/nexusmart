@@ -86,10 +86,37 @@ export interface GwFlashSaleItem {
   shop_id?: string;
   sku_id: string;
   flash_price_vnd: number;
+  original_price_vnd?: number;
   total_slots: number;
   remaining_slots: number;
   per_user_limit: number;
   status?: string;
+}
+
+export interface FlashSaleSkuDetail {
+  id: string;
+  skuId: string;
+  flashPrice: number;
+  originalPrice: number;
+  totalQuota: number;
+  remainingQuota: number;
+  limitPerBuyer: number;
+}
+
+export interface SiteFlashSaleItem extends FlashSaleItem {
+  skuDetailsBySku?: Record<string, FlashSaleSkuDetail>;
+}
+
+export interface SiteFlashSaleSlot extends Omit<FlashSaleSlot, "items"> {
+  items: SiteFlashSaleItem[];
+}
+
+export interface FlashSaleSkuOption {
+  sku: ProductSku;
+  skuId: string;
+  colorName: string;
+  label: string;
+  detail: FlashSaleSkuDetail;
 }
 
 export interface GwFlashSale {
@@ -100,11 +127,111 @@ export interface GwFlashSale {
   items?: GwFlashSaleItem[] | null;
 }
 
-const SIZE_CODES: readonly SizeCode[] = ["S", "M", "L", "XL", "2XL"];
+const KNOWN_SIZE_ORDER: readonly string[] = [
+  "XXS",
+  "XS",
+  "S",
+  "M",
+  "L",
+  "XL",
+  "2XL",
+  "XXL",
+  "3XL",
+  "XXXL",
+  "4XL",
+  "5XL",
+];
+const DEFAULT_SIZE_LABEL = "Mặc định";
+const DEFAULT_PRODUCT_FALLBACK_IMAGE = "/banners/fabric-closeup.jpg";
 const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
 
-function isSizeCode(v: string | undefined): v is SizeCode {
-  return v !== undefined && (SIZE_CODES as readonly string[]).includes(v);
+function extractRawSkuSize(attrs: Record<string, string> | null | undefined): string {
+  if (!attrs) return "";
+  const raw = attrs.size ?? attrs.Size ?? attrs.co ?? attrs["cỡ"] ?? "";
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
+function buildSizeLabelsForSkus(
+  skus: GwSku[],
+  colorCodeForSku: (s: GwSku) => string
+): Map<string, SizeCode> {
+  const sizelessCountByColor = new Map<string, number>();
+  for (const s of skus) {
+    if (!extractRawSkuSize(s.attributes)) {
+      const color = colorCodeForSku(s);
+      sizelessCountByColor.set(color, (sizelessCountByColor.get(color) ?? 0) + 1);
+    }
+  }
+  const usedKeys = new Set<string>();
+  const out = new Map<string, SizeCode>();
+  for (const s of skus) {
+    const color = colorCodeForSku(s);
+    const explicit = extractRawSkuSize(s.attributes);
+    let label = explicit;
+    if (!label) {
+      label =
+        (sizelessCountByColor.get(color) ?? 0) > 1
+          ? s.name?.trim() || s.sku_code || DEFAULT_SIZE_LABEL
+          : DEFAULT_SIZE_LABEL;
+    }
+    const pairKey = `${color}\u0000${label}`;
+    if (usedKeys.has(pairKey)) {
+      const disambiguated = s.sku_code?.trim() || s.id;
+      if (disambiguated && !usedKeys.has(`${color}\u0000${disambiguated}`)) {
+        label = disambiguated;
+      }
+    }
+    usedKeys.add(`${color}\u0000${label}`);
+    out.set(s.id || s.sku_code, label as SizeCode);
+  }
+  return out;
+}
+
+function collectOrderedSizes(mapped: ProductSku[], baseOrder?: readonly SizeCode[]): SizeCode[] {
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const m of mapped) {
+    const sz = String(m.size ?? "").trim();
+    if (!sz || seen.has(sz)) continue;
+    seen.add(sz);
+    unique.push(sz);
+  }
+  if (unique.length === 0) return [];
+
+  const result: string[] = [];
+  const placed = new Set<string>();
+  if (baseOrder && baseOrder.length > 0) {
+    for (const sz of baseOrder) {
+      if (seen.has(sz) && !placed.has(sz)) {
+        placed.add(sz);
+        result.push(sz);
+      }
+    }
+  }
+
+  const remaining = unique.filter((sz) => !placed.has(sz));
+  const known: Array<{ sz: string; rank: number }> = [];
+  const numeric: Array<{ sz: string; val: number }> = [];
+  const other: string[] = [];
+
+  for (const sz of remaining) {
+    const rank = KNOWN_SIZE_ORDER.indexOf(sz.toUpperCase());
+    if (rank >= 0) {
+      known.push({ sz, rank });
+    } else if (/^\d+(?:\.\d+)?$/.test(sz)) {
+      numeric.push({ sz, val: Number(sz) });
+    } else {
+      other.push(sz);
+    }
+  }
+  known.sort((a, b) => a.rank - b.rank);
+  numeric.sort((a, b) => a.val - b.val);
+
+  for (const item of known) result.push(item.sz);
+  for (const item of numeric) result.push(item.sz);
+  for (const item of other) result.push(item);
+
+  return result as SizeCode[];
 }
 
 export interface CategoryIndex {
@@ -202,11 +329,45 @@ function realSku(base: ProductSku, s: GwSku): ProductSku {
 
 function fromContent(p: GwProduct, content: Product, skus: GwSku[], shopId: string): Product {
   const byCode = new Map(skus.map((s) => [s.sku_code, s]));
+  const matchedCodes = new Set<string>();
   const mapped: ProductSku[] = [];
   for (const base of content.skus) {
     const s = byCode.get(base.skuCode);
-    if (s) mapped.push(realSku(base, s));
+    if (s) {
+      matchedCodes.add(s.sku_code);
+      mapped.push(realSku(base, s));
+    }
   }
+
+  const colors = [...content.colors];
+  const colorMap = new Map(colors.map((c) => [c.code, c]));
+  const fallbackImage =
+    p.images?.[0] ||
+    content.image ||
+    skus.find((s) => s.image_url)?.image_url ||
+    DEFAULT_PRODUCT_FALLBACK_IMAGE;
+  const extraSkus = skus.filter((s) => !matchedCodes.has(s.sku_code));
+  if (extraSkus.length > 0) {
+    const defaultColorCode = colors[0]?.code || "mac-dinh";
+    const extraColorOf = (s: GwSku) => s.attributes?.color?.trim() || defaultColorCode;
+    const sizeLabels = buildSizeLabelsForSkus(extraSkus, extraColorOf);
+    for (const s of extraSkus) {
+      const colorCode = extraColorOf(s);
+      if (!colorMap.has(colorCode)) {
+        const nextColor: ProductColor = {
+          code: colorCode,
+          name: s.attributes?.color_name || s.attributes?.color || "Mặc định",
+          hex: s.attributes?.color_hex || "#9aa5ac",
+          image: s.image_url || fallbackImage,
+        };
+        colorMap.set(colorCode, nextColor);
+        colors.push(nextColor);
+      }
+      const size = sizeLabels.get(s.id || s.sku_code) ?? (DEFAULT_SIZE_LABEL as SizeCode);
+      mapped.push(realSku({ skuCode: s.sku_code, colorCode, size, stock: 0, price: 0 }, s));
+    }
+  }
+
   const price = minPrice(skus, content.price);
   return {
     ...content,
@@ -217,6 +378,8 @@ function fromContent(p: GwProduct, content: Product, skus: GwSku[], shopId: stri
     price,
     originalPrice:
       content.originalPrice && content.originalPrice > price ? content.originalPrice : undefined,
+    colors,
+    sizes: collectOrderedSizes(mapped, content.sizes),
     skus: mapped,
     createdAt: content.createdAt ?? p.created_at,
   };
@@ -231,11 +394,14 @@ function generic(
 ): Product | null {
   const colors = new Map<string, ProductColor>();
   const mapped: ProductSku[] = [];
-  const fallbackImage = p.images?.[0] ?? skus.find((s) => s.image_url)?.image_url ?? "";
+  const fallbackImage =
+    p.images?.[0] || skus.find((s) => s.image_url)?.image_url || DEFAULT_PRODUCT_FALLBACK_IMAGE;
+  const colorOf = (s: GwSku) => s.attributes?.color?.trim() || "mac-dinh";
+  const sizeLabels = buildSizeLabelsForSkus(skus, colorOf);
+
   for (const s of skus) {
-    const size = s.attributes?.size;
-    if (!isSizeCode(size)) continue;
-    const colorCode = s.attributes?.color || "mac-dinh";
+    const colorCode = colorOf(s);
+    const size = sizeLabels.get(s.id || s.sku_code) ?? (DEFAULT_SIZE_LABEL as SizeCode);
     if (!colors.has(colorCode)) {
       colors.set(colorCode, {
         code: colorCode,
@@ -246,8 +412,8 @@ function generic(
     }
     mapped.push(realSku({ skuCode: s.sku_code, colorCode, size, stock: 0, price: 0 }, s));
   }
-  if (!mapped.length || !fallbackImage) return null;
-  const sizes = SIZE_CODES.filter((sz) => mapped.some((m) => m.size === sz));
+  if (!mapped.length) return null;
+  const sizes = collectOrderedSizes(mapped);
   return {
     id: p.id,
     backendId: p.id,
@@ -375,15 +541,23 @@ const STATUS_LABELS: Record<FlashSlotStatus, string> = {
   upcoming: "Sắp mở bán",
 };
 
-/** Flash sale windows with SKU-level items grouped back to products. */
+/** Flash sale windows with SKU-level items grouped back to products while preserving exact per-SKU details. */
 export function buildFlashSlots(
   gw: GwFlashSale[],
   products: Product[],
   now: number
-): FlashSaleSlot[] {
+): SiteFlashSaleSlot[] {
   const productBySku = new Map<string, Product>();
-  for (const p of products) for (const s of p.skus) if (s.skuId) productBySku.set(s.skuId, p);
-  const out: FlashSaleSlot[] = [];
+  const skuById = new Map<string, ProductSku>();
+  for (const p of products) {
+    for (const s of p.skus) {
+      if (s.skuId) {
+        productBySku.set(s.skuId, p);
+        skuById.set(s.skuId, s);
+      }
+    }
+  }
+  const out: SiteFlashSaleSlot[] = [];
   for (const fs of [...gw].sort(
     (a, b) => Date.parse(a.starts_at ?? "") - Date.parse(b.starts_at ?? "")
   )) {
@@ -391,30 +565,48 @@ export function buildFlashSlots(
     const end = Date.parse(fs.ends_at ?? "");
     const status: FlashSlotStatus = now < start ? "upcoming" : now < end ? "live" : "ended";
     const rawItems = fs.items ?? [];
-    const grouped = new Map<string, FlashSaleItem>();
+    const grouped = new Map<string, SiteFlashSaleItem>();
     for (const it of rawItems) {
       if (it.status && it.status !== "APPROVED") continue;
       const product = productBySku.get(it.sku_id);
       if (!product) continue;
+      const skuObj = skuById.get(it.sku_id);
+      const skuOriginalPrice =
+        skuObj && skuObj.price > 0
+          ? skuObj.price
+          : it.original_price_vnd && it.original_price_vnd > 0
+            ? it.original_price_vnd
+            : product.price;
+      const skuDetail: FlashSaleSkuDetail = {
+        id: it.id,
+        skuId: it.sku_id,
+        flashPrice: it.flash_price_vnd,
+        originalPrice: skuOriginalPrice,
+        totalQuota: it.total_slots,
+        remainingQuota: Math.max(0, it.remaining_slots),
+        limitPerBuyer: Math.max(0, it.per_user_limit),
+      };
       const prev = grouped.get(product.id);
       if (!prev) {
         grouped.set(product.id, {
           id: it.id,
           productId: product.id,
           flashPrice: it.flash_price_vnd,
-          originalPrice: product.price,
+          originalPrice: skuOriginalPrice,
           totalQuota: it.total_slots,
           remainingQuota: Math.max(0, it.remaining_slots),
-          limitPerBuyer: it.per_user_limit,
+          limitPerBuyer: Math.max(0, it.per_user_limit),
           itemIdBySku: { [it.sku_id]: it.id },
+          skuDetailsBySku: { [it.sku_id]: skuDetail },
         });
         continue;
       }
       prev.flashPrice = Math.min(prev.flashPrice, it.flash_price_vnd);
       prev.totalQuota += it.total_slots;
       prev.remainingQuota += Math.max(0, it.remaining_slots);
-      prev.limitPerBuyer = Math.max(prev.limitPerBuyer, it.per_user_limit);
+      prev.limitPerBuyer = Math.max(prev.limitPerBuyer, Math.max(0, it.per_user_limit));
       prev.itemIdBySku = { ...prev.itemIdBySku, [it.sku_id]: it.id };
+      prev.skuDetailsBySku = { ...prev.skuDetailsBySku, [it.sku_id]: skuDetail };
     }
     // Drop foreign-vertical windows whose backend items belong entirely outside the storefront.
     if (rawItems.length > 0 && grouped.size === 0) continue;
@@ -432,6 +624,76 @@ export function buildFlashSlots(
     });
   }
   return out;
+}
+
+/**
+ * Resolves exact per-SKU flash sale detail without ever falling back to another SKU's item id,
+ * flash price, or remaining quota.
+ */
+export function getFlashSaleSkuDetail(
+  item: FlashSaleItem | SiteFlashSaleItem | null | undefined,
+  skuId: string | null | undefined
+): FlashSaleSkuDetail | null {
+  const cleanSkuId = (skuId ?? "").trim();
+  if (!item || !cleanSkuId) return null;
+  const extended = item as SiteFlashSaleItem;
+  const exact = extended.skuDetailsBySku?.[cleanSkuId];
+  if (exact) return exact;
+  const itemId = item.itemIdBySku?.[cleanSkuId];
+  if (!itemId) return null;
+  return {
+    id: itemId,
+    skuId: cleanSkuId,
+    flashPrice: item.flashPrice,
+    originalPrice: item.originalPrice,
+    totalQuota: item.totalQuota,
+    remainingQuota: Math.max(0, item.remainingQuota),
+    limitPerBuyer: Math.max(0, item.limitPerBuyer),
+  };
+}
+
+/**
+ * Lists ONLY the SKUs of `product` that are registered in `item` (across all colors),
+ * paired with their exact per-SKU flash price/quota/itemId and compact selection labels.
+ */
+export function listFlashSaleSkuOptions(
+  product: Product,
+  item: FlashSaleItem | SiteFlashSaleItem | null | undefined
+): FlashSaleSkuOption[] {
+  if (!item) return [];
+  const colorNameByCode = new Map(product.colors.map((c) => [c.code, c.name]));
+  const raw: Array<{
+    sku: ProductSku;
+    skuId: string;
+    colorName: string;
+    detail: FlashSaleSkuDetail;
+  }> = [];
+  for (const sku of product.skus) {
+    const skuId = (sku.skuId ?? "").trim();
+    if (!skuId) continue;
+    const detail = getFlashSaleSkuDetail(item, skuId);
+    if (!detail) continue;
+    raw.push({
+      sku,
+      skuId,
+      colorName: colorNameByCode.get(sku.colorCode) || sku.colorCode,
+      detail,
+    });
+  }
+  const distinctColors = new Set(raw.map((r) => r.sku.colorCode));
+  const multiColor = distinctColors.size > 1;
+  return raw.map((r) => {
+    const sizeText = String(r.sku.size ?? "").trim();
+    const label = multiColor
+      ? sizeText && sizeText !== DEFAULT_SIZE_LABEL
+        ? `${r.colorName} · ${sizeText}`
+        : r.colorName
+      : sizeText || r.colorName || DEFAULT_SIZE_LABEL;
+    return {
+      ...r,
+      label,
+    };
+  });
 }
 
 /** Marks products that sit in a live or upcoming flash sale window. */
@@ -611,8 +873,8 @@ export function isPublicSellableShopProduct(
 }
 
 /**
- * Ensures already shop-verified products in custom/non-seeded categories still map to a valid
- * storefront `CategorySlug` instead of being dropped on single-shop PDP / flash-sale views.
+ * Ensures already shop-verified products in custom/non-seeded categories preserve their real
+ * backend category slug & name instead of being dropped on single-shop views (home, catalog, PDP, flash sale).
  */
 export function extendCategoryIndexForShopProducts(
   base: CategoryIndex,
@@ -624,15 +886,31 @@ export function extendCategoryIndexForShopProducts(
   const fallbackSlug: CategorySlug = base.categories[0]?.slug ?? "ao-thun";
   const slugById = new Map(base.slugById);
   const categories = [...base.categories];
+  const seenSlugs = new Set<string>(categories.map((c) => c.slug));
   const gwById = new Map(gwCats.map((c) => [c.id, c]));
   for (const p of missing) {
     if (slugById.has(p.category_id)) continue;
+    const real = gwById.get(p.category_id);
+    if (real) {
+      const catSlug = (real.slug?.trim() || real.id) as CategorySlug;
+      slugById.set(p.category_id, catSlug);
+      if (!seenSlugs.has(catSlug)) {
+        seenSlugs.add(catSlug);
+        categories.push({
+          slug: catSlug,
+          name: real.name?.trim() || catSlug,
+          description: "",
+          featuredImage: "",
+        });
+      }
+      continue;
+    }
     slugById.set(p.category_id, fallbackSlug);
-    if (categories.length === 0) {
-      const real = gwById.get(p.category_id);
+    if (!seenSlugs.has(fallbackSlug)) {
+      seenSlugs.add(fallbackSlug);
       categories.push({
         slug: fallbackSlug,
-        name: real?.name || "Sản phẩm",
+        name: "Sản phẩm",
         description: "",
         featuredImage: "",
       });
@@ -643,8 +921,21 @@ export function extendCategoryIndexForShopProducts(
 
 export interface SiteSlugLookupResult {
   discontinued?: boolean;
+  shop_id?: string;
+  category_id?: string;
   name?: string;
   product?: GwProduct | null;
+}
+
+function isOwnedDiscontinuedStub(
+  stub: SiteSlugLookupResult | null | undefined,
+  shopId: string
+): stub is SiteSlugLookupResult & { discontinued: true } {
+  if (!stub?.discontinued) return false;
+  const expected = shopId.trim();
+  if (!expected) return false;
+  const stubShopId = (stub.shop_id ?? stub.product?.shop_id ?? "").trim();
+  return stubShopId !== "" && stubShopId === expected;
 }
 
 export type SiteIdLookupResult =
@@ -702,7 +993,7 @@ export async function resolveSiteProductEntry(opts: {
     if (liveRes.status === "not_found") {
       const stub = await opts.fetchBySlug(matched.slug);
       if (stub?.discontinued) {
-        if (stub.product?.shop_id && stub.product.shop_id !== opts.shopId) return null;
+        if (!isOwnedDiscontinuedStub(stub, opts.shopId)) return null;
         return {
           kind: "discontinued",
           discontinuedName: (stub.name || stub.product?.name || matched.name || "Sản phẩm").trim(),
@@ -728,7 +1019,7 @@ export async function resolveSiteProductEntry(opts: {
   let rawProduct: GwProduct | null = null;
   const slugRes = await opts.fetchBySlug(rawParam);
   if (slugRes?.discontinued) {
-    if (slugRes.product?.shop_id && slugRes.product.shop_id !== opts.shopId) {
+    if (!isOwnedDiscontinuedStub(slugRes, opts.shopId)) {
       return null;
     }
     return {
@@ -794,7 +1085,7 @@ export async function resolveFreshShopFlashSales(opts: {
   fetchCategories: () => Promise<GwCategory[]>;
   nowMs?: number;
   batchSize?: number;
-}): Promise<{ slots: FlashSaleSlot[]; products: Product[] }> {
+}): Promise<{ slots: SiteFlashSaleSlot[]; products: Product[] }> {
   const skuIds = collectShopFlashSkuIds(opts.flashSales, opts.shopId);
   if (skuIds.length === 0) {
     return { slots: [], products: [] };

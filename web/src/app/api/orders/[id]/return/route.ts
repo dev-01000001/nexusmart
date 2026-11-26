@@ -8,20 +8,22 @@ import { requireRequestSite } from "@/lib/server/sites";
 import { assertInStorefront } from "@/lib/server/storefront";
 import { assertBuyerOrderOwnership } from "@/features/account/orders.server";
 import { validateEvidenceUrls } from "@/features/account/orderMeta";
-import {
-  fetchOrderReturnFromGateway,
-  resolvePostReturnRequest,
-} from "@/features/account/orderReturnSync";
 import { mapGatewayOrder, type GwOrder } from "@/features/account/orderView";
 
 type Params = { params: Promise<{ id: string }> };
 
-function readOrderReturn(cleanId: string): Promise<GatewayReturnRequest | null> {
-  return fetchOrderReturnFromGateway(
-    cleanId,
-    (path) => gw<{ return_request?: GatewayReturnRequest | null }>(path),
-    (err) => err instanceof GatewayError && err.kind === "not_found"
-  );
+async function readOrderReturn(cleanId: string): Promise<GatewayReturnRequest | null> {
+  try {
+    const res = await gw<{ return_request?: GatewayReturnRequest | null }>(
+      `/api/v1/orders/${encodeURIComponent(cleanId)}/return`
+    );
+    return res?.return_request ?? null;
+  } catch (err) {
+    if (err instanceof GatewayError && err.kind === "not_found") {
+      return null;
+    }
+    throw err;
+  }
 }
 
 export const GET = apiRoute<Params>(async (req, ctx) => {
@@ -88,11 +90,9 @@ export const POST = apiRoute<Params>(
     });
     const [catalog, returnRequest] = await Promise.all([
       loadCatalogLookups(),
-      resolvePostReturnRequest({
-        orderId: cleanId,
-        inlineReturnRequest: res.return_request,
-        fetchOrderReturn: readOrderReturn,
-      }),
+      res.return_request
+        ? Promise.resolve(res.return_request)
+        : readOrderReturn(cleanId).catch(() => null),
     ]);
 
     return Response.json(

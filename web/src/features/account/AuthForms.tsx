@@ -454,7 +454,7 @@ function RegisterFormInner({
       setErrorPulse(0);
       setStep("otp");
       setResendCooldown(30);
-      setNotice("Đã gửi mã 6 số tới email của bạn.");
+      setNotice("Mã 6 số đang được gửi tới email của bạn.");
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : "Chưa tạo được tài khoản. Thử lại sau.");
       setErrorPulse((n) => n + 1);
@@ -541,7 +541,9 @@ function RegisterFormInner({
         body: { email: cleanEmail },
       });
       setResendCooldown(30);
-      setNotice("Đã gửi lại mã mới tới email của bạn.");
+      setNotice(
+        "Mã mới đang được gửi tới email của bạn. Chưa thấy sau 1–2 phút: xem thư rác hoặc gửi lại."
+      );
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : "Chưa gửi lại được mã.");
       setErrorPulse((n) => n + 1);
@@ -558,7 +560,8 @@ function RegisterFormInner({
     return (
       <form ref={formRef} className={styles.panel} onSubmit={handleVerifyOtpSubmit} noValidate>
         <p className={styles.note} role="status">
-          Nhập mã 6 số đã gửi tới <strong>{email}</strong> (hiệu lực 10 phút).
+          Mã 6 số đang được gửi tới <strong>{email}</strong>, hiệu lực 10 phút. Chưa thấy sau 1–2
+          phút: xem thư rác hoặc gửi lại.
         </p>
 
         <div className={styles.otpField} data-shake-target="">

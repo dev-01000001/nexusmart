@@ -25,14 +25,15 @@ import type {
   GatewaySettleRefundResponse,
   PaginatedResponse,
 } from "@/lib/gateway-types";
-import { getSalesChannelMeta, type SalesChannelFilter } from "@/lib/salesChannel";
-import { localizeRefundReason } from "@/features/account/orderMeta";
+import { getOptionalSalesChannelMeta, type SalesChannelFilter } from "@/lib/salesChannel";
+import { getPaymentMethodLabel, localizeRefundReason } from "@/features/account/orderMeta";
 import { EMPTY_DASH, formatShortTimeDateVi } from "./adminMeta";
 import { AdminStateGate, AdminSuspenseFallback } from "./AdminStateGate";
 import { useAdminContext } from "./AdminShell";
 import { AdminDrawer, SlidingTabBar } from "./AdminUi";
 import { StatusPill } from "./StatusPill";
 import {
+  formatAdminOrderPaymentDisplay,
   getAccountTypeLabelVi,
   getAdminOrderStatusMeta,
   getReconItemStatusMeta,
@@ -43,6 +44,7 @@ import {
   type GwReconciliationRunSummaryExtended,
 } from "./adminApiTypes";
 import {
+  buildCodCarrierOptions,
   COD_RESULT_PAGE_SIZE,
   formatReconciliationNote,
   formatReconciliationReason,
@@ -59,6 +61,10 @@ import {
   RECONCILE_ITEM_STATUS_META,
 } from "./types";
 import {
+  buildAdminMoneyFingerprint,
+  nextAdminMoneyIdempotencyCacheAfterError,
+  resolveAdminMoneyIdempotencyKey,
+  type StableReferenceCache,
   validateManualRefundInput,
   validateReconciliationQueueResolveInput,
   validateRefundApprovalDecisionInput,
@@ -87,13 +93,6 @@ function ledgerUrlFor(channel: SalesChannelFilter): string {
   return channel
     ? `/api/admin/ledger?sales_channel=${encodeURIComponent(channel)}`
     : "/api/admin/ledger";
-}
-
-function generateIdempotencyKey(prefix: string): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 type DrawerTarget =
@@ -188,18 +187,10 @@ function ReconciliationContent({
   const [report, setReport] = useState<GwReconciliationReportExtended | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
 
-  const carrierOptions = useMemo(() => {
-    if (carriers.length > 0) {
-      return carriers.map((c) => ({
-        code: c.carrier_code,
-        label: formatCarrierLabel(c.carrier_code, c.name),
-      }));
-    }
-    return [
-      { code: "ghn", label: formatCarrierLabel("ghn") },
-      { code: "mock_express", label: formatCarrierLabel("mock_express") },
-    ];
-  }, [carriers]);
+  const carrierOptions = useMemo(() => buildCodCarrierOptions(carriers), [carriers]);
+  const queueIdemCacheRef = useRef<StableReferenceCache | null>(null);
+  const settleIdemCacheRef = useRef<StableReferenceCache | null>(null);
+  const refundIdemCacheRef = useRef<StableReferenceCache | null>(null);
 
   // --- COD import + Runs history ---
   const [codCarrier, setCodCarrier] = useState(() => carrierOptions[0]?.code ?? "ghn");
@@ -512,14 +503,28 @@ function ReconciliationContent({
     setQueueFormError(null);
     setQueueSubmitting(true);
     try {
+      const fingerprint = buildAdminMoneyFingerprint("recon-q", {
+        item_id: item.id,
+        action: validated.value.action,
+        payment_id: validated.value.payment_id,
+        note: validated.value.note,
+      });
+      const { key: idempotencyKey, cache } = resolveAdminMoneyIdempotencyKey({
+        prefix: "recon-q",
+        fingerprint,
+        cache: queueIdemCacheRef.current,
+      });
+      queueIdemCacheRef.current = cache;
+
       const res = await api<GatewayResolveReconciliationResponse>(
         `/api/admin/reconciliation/queue/${encodeURIComponent(item.id)}/resolve`,
         {
           method: "POST",
-          headers: { "Idempotency-Key": generateIdempotencyKey("recon-q") },
+          headers: { "Idempotency-Key": idempotencyKey },
           body: validated.value,
         }
       );
+      queueIdemCacheRef.current = null;
       setQueueItems((prev) => prev.map((q) => (q.id === item.id ? res.item : q)));
       setDrawerTarget({ kind: "queue", item: res.item });
       setQueueNote("");
@@ -529,6 +534,10 @@ function ReconciliationContent({
         void loadRefunds(refundStatus, refundOrderFilter, 1);
       }
     } catch (err) {
+      queueIdemCacheRef.current = nextAdminMoneyIdempotencyCacheAfterError(
+        queueIdemCacheRef.current,
+        err
+      );
       const msg = getErrorMessage(err, "Không thể xử lý mục đối soát này.");
       setQueueFormError(msg);
       showToast(msg);
@@ -586,14 +595,27 @@ function ReconciliationContent({
     setRefundFormError(null);
     setRefundBusy(true);
     try {
+      const fingerprint = buildAdminMoneyFingerprint("settle", {
+        refund_id: refund.refund_id,
+        provider_refund_id: validated.value.provider_refund_id,
+        note: validated.value.note,
+      });
+      const { key: idempotencyKey, cache } = resolveAdminMoneyIdempotencyKey({
+        prefix: "settle",
+        fingerprint,
+        cache: settleIdemCacheRef.current,
+      });
+      settleIdemCacheRef.current = cache;
+
       const res = await api<GatewaySettleRefundResponse>(
         `/api/admin/refunds/${encodeURIComponent(refund.refund_id)}/settle`,
         {
           method: "POST",
-          headers: { "Idempotency-Key": generateIdempotencyKey("settle") },
+          headers: { "Idempotency-Key": idempotencyKey },
           body: validated.value,
         }
       );
+      settleIdemCacheRef.current = null;
       setRefunds((prev) => prev.map((rf) => (rf.refund_id === refund.refund_id ? res.refund : rf)));
       setDrawerTarget({ kind: "refund", refund: res.refund });
       setSettleRefId("");
@@ -601,6 +623,10 @@ function ReconciliationContent({
       showToast(`Đã xác nhận tất toán hoàn tiền ${formatVnd(refund.amount_vnd)}.`);
       router.refresh();
     } catch (err) {
+      settleIdemCacheRef.current = nextAdminMoneyIdempotencyCacheAfterError(
+        settleIdemCacheRef.current,
+        err
+      );
       const msg = getErrorMessage(err, "Không thể xác nhận tất toán hoàn tiền.");
       setRefundFormError(msg);
       showToast(msg);
@@ -626,11 +652,25 @@ function ReconciliationContent({
     setCreateRefundError(null);
     setCreatingRefund(true);
     try {
+      const fingerprint = buildAdminMoneyFingerprint("refund", {
+        payment_id: validated.value.payment_id,
+        order_id: validated.value.order_id,
+        amount_vnd: validated.value.amount_vnd,
+        reason: validated.value.reason,
+      });
+      const { key: idempotencyKey, cache } = resolveAdminMoneyIdempotencyKey({
+        prefix: "refund",
+        fingerprint,
+        cache: refundIdemCacheRef.current,
+      });
+      refundIdemCacheRef.current = cache;
+
       const res = await api<GatewayRefundResponse>("/api/admin/refunds", {
         method: "POST",
-        headers: { "Idempotency-Key": generateIdempotencyKey("refund") },
+        headers: { "Idempotency-Key": idempotencyKey },
         body: validated.value,
       });
+      refundIdemCacheRef.current = null;
       setRefunds((prev) => [
         res.refund,
         ...prev.filter((r) => r.refund_id !== res.refund.refund_id),
@@ -647,6 +687,10 @@ function ReconciliationContent({
           : `Đã tạo lệnh hoàn tiền ${formatVnd(res.refund.amount_vnd)}.`
       );
     } catch (err) {
+      refundIdemCacheRef.current = nextAdminMoneyIdempotencyCacheAfterError(
+        refundIdemCacheRef.current,
+        err
+      );
       const msg = getErrorMessage(err, "Không thể tạo lệnh hoàn tiền lúc này.");
       setCreateRefundError(msg);
       showToast(msg);
@@ -871,7 +915,7 @@ function ReconciliationContent({
                       <tbody>
                         {report.items.map((item, idx) => {
                           const meta = getReconItemStatusMeta(item.status);
-                          const channelMeta = getSalesChannelMeta(item.sales_channel);
+                          const channelMeta = getOptionalSalesChannelMeta(item.sales_channel);
                           return (
                             <tr
                               key={`${item.payment_id}-${item.provider_tx_id}-${idx}`}
@@ -894,12 +938,16 @@ function ReconciliationContent({
                               </td>
                               <td>{item.provider_tx_id || EMPTY_DASH}</td>
                               <td>
-                                <span
-                                  className={`${shared.channelBadge} ${channelMeta.isStorefront ? shared.channelBadgeStorefront : ""}`}
-                                  data-sales-channel={channelMeta.value}
-                                >
-                                  {channelMeta.label}
-                                </span>
+                                {channelMeta ? (
+                                  <span
+                                    className={`${shared.channelBadge} ${channelMeta.isStorefront ? shared.channelBadgeStorefront : ""}`}
+                                    data-sales-channel={channelMeta.value}
+                                  >
+                                    {channelMeta.label}
+                                  </span>
+                                ) : (
+                                  "—"
+                                )}
                               </td>
                               <td className={shared.colNum}>{formatVnd(item.local_amount_vnd)}</td>
                               <td className={shared.colNum}>
@@ -919,7 +967,7 @@ function ReconciliationContent({
                   <div className={shared.mobileList}>
                     {report.items.map((item, idx) => {
                       const meta = getReconItemStatusMeta(item.status);
-                      const channelMeta = getSalesChannelMeta(item.sales_channel);
+                      const channelMeta = getOptionalSalesChannelMeta(item.sales_channel);
                       const itemDiff = item.local_amount_vnd - item.provider_amount_vnd;
                       return (
                         <div
@@ -945,7 +993,8 @@ function ReconciliationContent({
                             </span>
                             <span className={shared.mobileLine2}>
                               <span className={shared.mobileMetaText}>
-                                {channelMeta.label}, sao kê {formatVnd(item.provider_amount_vnd)}
+                                {channelMeta ? channelMeta.label : "—"}, sao kê{" "}
+                                {formatVnd(item.provider_amount_vnd)}
                               </span>
                               <StatusPill label={meta.label} tone={meta.tone} />
                             </span>
@@ -1239,6 +1288,40 @@ function ReconciliationContent({
                             })}
                           </tbody>
                         </table>
+                      </div>
+
+                      <div className={shared.mobileList}>
+                        {codPaged.slice.map((item, idx) => {
+                          const meta = RECONCILE_ITEM_STATUS_META[item.status] ?? {
+                            label: item.status,
+                            tone: "neutral" as const,
+                          };
+                          const lineNo = item.line_number ?? codPaged.startIndex + idx + 1;
+                          const noteText = formatReconciliationNote(item.note);
+                          return (
+                            <div
+                              key={`${item.tracking_code ?? idx}-${item.line_number ?? idx}`}
+                              className={shared.mobileItem}
+                            >
+                              <div className={shared.mobileLine1}>
+                                <span className={shared.mobileIdentity}>
+                                  #{lineNo} ·{" "}
+                                  {item.tracking_code || item.provider_tx_id || EMPTY_DASH}
+                                </span>
+                                <span className={shared.mobileMetric}>
+                                  {formatVnd(item.provider_amount_vnd)}
+                                </span>
+                              </div>
+                              <div className={shared.mobileLine2}>
+                                <span className={shared.mobileMetaText}>
+                                  Sàn {formatVnd(item.local_amount_vnd)}
+                                  {noteText ? ` · ${noteText}` : ""}
+                                </span>
+                                <StatusPill label={meta.label} tone={meta.tone} />
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
 
                       {codPaged.totalPages > 1 && (
@@ -1900,7 +1983,7 @@ function ReconciliationContent({
                           <td>
                             <div className={shared.cellPrimary}>Shop {ord.shop_id.slice(0, 8)}</div>
                             <div className={shared.cellSub}>
-                              {ord.tracking_code || ord.payment_method}
+                              {ord.tracking_code || getPaymentMethodLabel(ord.payment_method)}
                             </div>
                           </td>
                           <td className={shared.colNum}>{formatVnd(ord.total_payable_vnd)}</td>
@@ -2141,7 +2224,7 @@ function ReconciliationContent({
               <div className={shared.detailField}>
                 <span className={shared.detailKey}>Kênh bán</span>
                 <span className={shared.detailValPlain}>
-                  {getSalesChannelMeta(drawerTarget.item.sales_channel).label}
+                  {getOptionalSalesChannelMeta(drawerTarget.item.sales_channel)?.label ?? "—"}
                 </span>
               </div>
               <div className={`${shared.detailField} ${shared.detailFieldWide}`}>
@@ -2605,7 +2688,7 @@ function ReconciliationContent({
                 <div className={shared.detailField}>
                   <span className={shared.detailKey}>Phương thức thanh toán</span>
                   <span className={shared.detailValPlain}>
-                    {drawerTarget.order.payment_method} ({drawerTarget.order.payment_status})
+                    {formatAdminOrderPaymentDisplay(drawerTarget.order)}
                   </span>
                 </div>
                 <div className={shared.detailField}>

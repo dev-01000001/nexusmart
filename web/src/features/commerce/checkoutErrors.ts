@@ -8,9 +8,54 @@ export interface MappedClientError {
   status?: number;
 }
 
+const FLASH_SALE_ITEM_WARNING_RE = /\bflash\s+sale\s+item\s+([a-zA-Z0-9_-]+)\s+(.+)$/i;
+const FLASH_SALE_REJECTION_REASON_RE =
+  /(?:per-user|per\s+user|limit|sold\s+out|exhausted|not\s+found|not\s+approved|rejected|not\s+active|inactive|outside\s+active|ended|expired|suspended|does\s+not\s+match|does\s+not\s+belong|removed)/i;
+
+/**
+ * Extracts opaque `flash_sale_item_id` values rejected by `services/promotion` calculator warnings
+ * (per-user limit, sold out, ended/not active, not found/unapproved, shop suspended, SKU/shop mismatch)
+ * before translating warnings into Vietnamese. Ignores informational "takes precedence" warnings.
+ */
+export function extractRejectedFlashSaleItemIds(warnings?: readonly string[] | null): string[] {
+  if (!Array.isArray(warnings) || warnings.length === 0) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of warnings) {
+    if (typeof raw !== "string") continue;
+    const match = FLASH_SALE_ITEM_WARNING_RE.exec(raw.trim());
+    if (!match) continue;
+    const id = match[1].trim();
+    const reason = match[2];
+    if (!id || /takes\s+precedence/i.test(reason)) continue;
+    if (!FLASH_SALE_REJECTION_REASON_RE.test(reason)) continue;
+    if (!seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
+}
+
 /** Map a promotion calculator warning string (English) to a clean Vietnamese buyer message. */
 export function translatePromotionWarning(raw: string): string {
   const s = raw.toLowerCase();
+  // Match Flash sale warnings BEFORE generic voucher rules (not found / per-user / limit / shop mismatch)
+  if (s.includes("flash sale")) {
+    if (s.includes("shop_suspended") || s.includes("is suspended")) {
+      return "Gian hàng hiện đang tạm ngưng hoạt động nên ưu đãi Flash sale không được áp dụng.";
+    }
+    if (s.includes("takes precedence")) {
+      return "Ưu đãi Flash sale đang được ưu tiên áp dụng thay cho chương trình giảm giá gian hàng.";
+    }
+    if (s.includes("per-user") || s.includes("per user") || s.includes("limit")) {
+      return "Sản phẩm đã vượt giới hạn suất Flash sale cho mỗi tài khoản.";
+    }
+    if (s.includes("sold out") || s.includes("exhausted")) {
+      return "Suất ưu đãi Flash sale cho một số sản phẩm đã hết lượt.";
+    }
+    return "Ưu đãi khung giờ Flash sale cho một số sản phẩm không còn khả dụng.";
+  }
   if (s.includes("not found")) return "Mã ưu đãi không tồn tại hoặc đã bị gỡ.";
   if (s.includes("inactive")) return "Mã ưu đãi hiện không còn hiệu lực.";
   if (s.includes("expired") || s.includes("ended") || s.includes("not within active")) {
@@ -43,9 +88,6 @@ export function translatePromotionWarning(raw: string): string {
   }
   if (s.includes("coin")) {
     return "Số dư Xu không đủ hoặc đã được điều chỉnh theo giới hạn đơn hàng.";
-  }
-  if (s.includes("flash sale")) {
-    return "Ưu đãi khung giờ Flash sale cho một số sản phẩm không còn khả dụng.";
   }
   return "Một mã ưu đãi chưa đủ điều kiện áp dụng cho đơn hàng hiện tại.";
 }
@@ -188,6 +230,13 @@ export function mapCheckoutError(code: string, detail: string): MappedClientErro
       message: "Gian hàng hiện đang tạm ngưng hoạt động nên không thể tiếp tục đặt hàng.",
     };
   }
+  if (code === "SHOP_NOT_ACTIVE" || d.includes("shop_not_active")) {
+    return {
+      code: "SHOP_NOT_ACTIVE",
+      status: 409,
+      message: "Gian hàng hiện không hoạt động nên không thể đặt hàng.",
+    };
+  }
   if (code === "PAYMENT_METHOD_DISABLED" || d.includes("payment_method_disabled")) {
     return {
       code: "PAYMENT_METHOD_DISABLED",
@@ -275,25 +324,32 @@ export function mapCheckoutError(code: string, detail: string): MappedClientErro
     };
   }
   if (
-    d.includes("voucher") ||
-    code === "RESOURCE_EXHAUSTED" ||
-    d.includes("quota") ||
-    d.includes("budget")
+    code.startsWith("FLASH_") ||
+    d.includes("flash_sold_out") ||
+    d.includes("flash_sale_sold_out") ||
+    d.includes("flash sale")
   ) {
+    return {
+      code: code.startsWith("FLASH_") ? code : "FLASH_SALE_EXHAUSTED",
+      status: 409,
+      message: "Suất ưu đãi Flash sale đã hết hoặc vượt giới hạn mỗi người mua.",
+    };
+  }
+  if (d.includes("voucher") || d.includes("quota") || d.includes("budget")) {
     return mapVoucherError(code, detail);
+  }
+  if (code === "RATE_LIMITED" || code === "RATE_LIMIT_EXCEEDED" || code === "RESOURCE_EXHAUSTED") {
+    return {
+      code,
+      status: 429,
+      message: "Bạn thao tác quá nhanh, vui lòng thử lại sau ít phút.",
+    };
   }
   if (d.includes("coin")) {
     return {
       code: "INSUFFICIENT_COINS",
       status: 409,
       message: "Số dư Xu không đủ để áp dụng cho đơn hàng này.",
-    };
-  }
-  if (d.includes("flash sale")) {
-    return {
-      code: "FLASH_SALE_EXHAUSTED",
-      status: 409,
-      message: "Suất ưu đãi Flash sale đã hết hoặc vượt giới hạn mỗi người mua.",
     };
   }
   if (d.includes("concurrent checkout")) {
@@ -322,4 +378,67 @@ export function mapCheckoutError(code: string, detail: string): MappedClientErro
     code: code || "CHECKOUT_FAILED",
     message: "Không thể hoàn tất đặt hàng lúc này. Bạn vui lòng kiểm tra lại giỏ hàng và thử lại.",
   };
+}
+
+export type CheckoutRouteErrorDecision =
+  | { action: "rethrow" }
+  | {
+      action: "respond";
+      status: number;
+      code: string;
+      message: string;
+      retryAfter?: string;
+    };
+
+/**
+ * Pure decision helper for POST /api/checkout BFF error handling:
+ * - Preserves HTTP 429 (and Retry-After via apiRoute) for rate-limit responses instead of
+ *   misclassifying them as 409 VOUCHER_EXHAUSTED.
+ * - Keeps 429 with flash-specific Vietnamese copy when PromotionService Lua returns FLASH_SOLD_OUT.
+ * - Maps conflict/invalid/not_found errors via `mapCheckoutError`.
+ */
+export function resolveCheckoutRouteError(err: {
+  kind: string;
+  status: number;
+  code: string;
+  detail: string;
+  retryAfter?: string;
+}): CheckoutRouteErrorDecision {
+  if (err.kind === "rate_limited") {
+    if (/flash/i.test(err.detail)) {
+      return {
+        action: "respond",
+        status: 429,
+        code: "RESOURCE_EXHAUSTED",
+        message:
+          "Suất ưu đãi Flash sale đã hết lượt. Vui lòng bỏ suất Flash hoặc chọn sản phẩm khác.",
+        retryAfter: err.retryAfter,
+      };
+    }
+    const normCode = (err.code ?? "").trim().toUpperCase();
+    if (
+      normCode !== "RATE_LIMITED" &&
+      normCode !== "RATE_LIMIT_EXCEEDED" &&
+      /voucher|quota|budget/i.test(err.detail)
+    ) {
+      const mapped = mapVoucherError(err.code, err.detail);
+      return {
+        action: "respond",
+        status: mapped.status ?? 409,
+        code: mapped.code,
+        message: mapped.message,
+      };
+    }
+    return { action: "rethrow" };
+  }
+  if (err.kind === "conflict" || err.kind === "invalid" || err.kind === "not_found") {
+    const mapped = mapCheckoutError(err.code, err.detail);
+    return {
+      action: "respond",
+      status: mapped.status ?? err.status,
+      code: mapped.code,
+      message: mapped.message,
+    };
+  }
+  return { action: "rethrow" };
 }

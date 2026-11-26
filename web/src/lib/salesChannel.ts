@@ -69,3 +69,13 @@ export function getSalesChannelMeta(raw: unknown): SalesChannelMeta {
     isStorefront: false,
   };
 }
+
+/**
+ * Presentation metadata when empty/unknown sales_channel must stay unattributed (e.g. provider-only
+ * reconciliation rows with no local payment) instead of defaulting to MARKETPLACE.
+ */
+export function getOptionalSalesChannelMeta(raw: unknown): SalesChannelMeta | null {
+  const parsed = parseSalesChannelFilter(raw);
+  if (!parsed) return null;
+  return getSalesChannelMeta(parsed);
+}

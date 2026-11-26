@@ -5,7 +5,13 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button, IconCheck, IconRefresh, IconSearch, StateView } from "@/components";
 import { api, apiBlob, getErrorMessage } from "@/lib/api";
-import { formatCarrierLabel, formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
+import {
+  GATEWAY_ORDER_STATUS_LABELS,
+  formatCarrierLabel,
+  formatDateTimeVi,
+  formatInt,
+  formatVnd,
+} from "@/lib/format";
 import {
   BATCH_POLL_MAX_OFF_PAGE_PER_TICK,
   BATCH_POLL_MAX_TICKS,
@@ -43,6 +49,7 @@ import {
 import {
   computeSellerNetReceivable,
   formatPaymentMethodVi,
+  getNextBackendOrderAction,
   getSellerOrderStatusMeta,
   summarizeOrderItems,
   type GwSellerOrder,
@@ -515,7 +522,7 @@ export function SellerOrdersClient({
   };
 
   const handleConfirmOrder = async (order: GwSellerOrder) => {
-    if (!canSellerConfirmOrder(order.status) || busyOrderId) return;
+    if (!canSellerConfirmOrder(order.status, order.shipment_job_status) || busyOrderId) return;
     setBusyOrderId(order.id);
     try {
       await api<{ order: GwSellerOrder }>(
@@ -574,7 +581,7 @@ export function SellerOrdersClient({
   };
 
   const handleConfirmPagePending = async () => {
-    const pending = orders.filter((o) => o.status === "CONFIRMED");
+    const pending = orders.filter((o) => canSellerConfirmOrder(o.status, o.shipment_job_status));
     if (pending.length === 0 || confirmBatchBusy) return;
     setConfirmBatchBusy(true);
     let okCount = 0;
@@ -709,14 +716,16 @@ export function SellerOrdersClient({
 
   const countCards: Array<{ key: SellerOrderFilterKey; label: string; count: number }> = [
     { key: "all", label: "Tất cả", count: counts.all },
-    { key: "CONFIRMED", label: "Chờ xác nhận", count: counts.CONFIRMED },
-    { key: "PREPARING", label: "Đang chuẩn bị", count: counts.PREPARING },
-    { key: "SHIPPING", label: "Đang giao", count: counts.SHIPPING },
+    { key: "CONFIRMED", label: GATEWAY_ORDER_STATUS_LABELS.CONFIRMED, count: counts.CONFIRMED },
+    { key: "PREPARING", label: GATEWAY_ORDER_STATUS_LABELS.PREPARING, count: counts.PREPARING },
+    { key: "SHIPPING", label: GATEWAY_ORDER_STATUS_LABELS.SHIPPING, count: counts.SHIPPING },
     { key: "DONE", label: "Đã giao / Hoàn tất", count: counts.DONE },
     { key: "OTHER", label: "Chờ TT / Hủy / Trả", count: counts.OTHER },
   ];
 
-  const pageConfirmedCount = orders.filter((o) => o.status === "CONFIRMED").length;
+  const pageConfirmedCount = orders.filter((o) =>
+    canSellerConfirmOrder(o.status, o.shipment_job_status)
+  ).length;
   const pageButtons = buildPaginationWindow(page, totalPages);
   const drawerOrder = useMemo(
     () => (drawerOrderId ? (orders.find((o) => o.id === drawerOrderId) ?? null) : null),
@@ -1164,7 +1173,7 @@ export function SellerOrdersClient({
                         );
                         const netVnd = computeSellerNetReceivable(o);
                         const isBusy = busyOrderId === o.id;
-                        const canConfirm = canSellerConfirmOrder(o.status);
+                        const canConfirm = canSellerConfirmOrder(o.status, o.shipment_job_status);
                         const jobStatus = (o.shipment_job_status ?? "").trim().toUpperCase();
                         const isQueuedOrFailed =
                           !o.tracking_code && (jobStatus === "QUEUED" || jobStatus === "FAILED");
@@ -1372,7 +1381,7 @@ export function SellerOrdersClient({
                       o.tracking_code
                     );
                     const isBusy = busyOrderId === o.id;
-                    const canConfirm = canSellerConfirmOrder(o.status);
+                    const canConfirm = canSellerConfirmOrder(o.status, o.shipment_job_status);
                     const jobStatus = (o.shipment_job_status ?? "").trim().toUpperCase();
                     const isQueuedOrFailed =
                       !o.tracking_code && (jobStatus === "QUEUED" || jobStatus === "FAILED");
@@ -1549,9 +1558,14 @@ export function SellerOrdersClient({
         actionBusy={drawerOrder ? busyOrderId === drawerOrder.id : false}
         onClose={() => setDrawerOrderId(null)}
         onAction={(order) => {
-          if (canSellerConfirmOrder(order.status)) {
+          const action = getNextBackendOrderAction(
+            order.status,
+            order.tracking_code,
+            order.shipment_job_status
+          );
+          if (action?.kind === "confirm") {
             void handleConfirmOrder(order);
-          } else if (canSellerShipOrder(order.status, order.tracking_code)) {
+          } else if (action?.kind === "ship") {
             const defaults = resolveOrderShippingDefaults(order);
             void handleShipOrder(order, {
               carrier_code: defaults.carrierCode,

@@ -42,6 +42,11 @@ import {
   resolvePresentationShopKey,
   type GwSellerShop,
 } from "./sellerApiTypes";
+import {
+  SELLER_CHAT_READ_EVENT,
+  applySellerChatReadDelta,
+  extractSellerChatReadDelta,
+} from "./sellerReturns";
 import { isSellerRouteAllowedWhenSuspended } from "./sellerValidation";
 import type { SellerSiteSummary } from "./site/siteSummary";
 import common from "./SellerCommon.module.css";
@@ -130,6 +135,24 @@ export function SellerShell({
   const [cmdQuery, setCmdQuery] = useState("");
   const [cmdIdx, setCmdIdx] = useState(0);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [liveUnreadChatCount, setLiveUnreadChatCount] = useState<number>(() =>
+    Math.max(0, Math.trunc(unreadChatCount))
+  );
+
+  // Fresh SSR unreadChatCount from layout overrides any client-side delta
+  useEffect(() => {
+    setLiveUnreadChatCount(Math.max(0, Math.trunc(unreadChatCount)));
+  }, [unreadChatCount]);
+
+  useEffect(() => {
+    const onChatRead = (event: Event) => {
+      const readCount = extractSellerChatReadDelta((event as CustomEvent).detail);
+      if (readCount <= 0) return;
+      setLiveUnreadChatCount((prev) => applySellerChatReadDelta(prev, readCount));
+    };
+    window.addEventListener(SELLER_CHAT_READ_EVENT, onChatRead);
+    return () => window.removeEventListener(SELLER_CHAT_READ_EVENT, onChatRead);
+  }, []);
 
   const navContainerRef = useRef<HTMLElement | null>(null);
   const itemRefs = useRef<Record<string, HTMLAnchorElement | null>>({});
@@ -289,7 +312,7 @@ export function SellerShell({
             group: "Khách hàng",
             keywords: "tin nhan chat hop thu khach hang hoi thoai",
             icon: <IconChat size={17} />,
-            badge: unreadChatCount > 0 ? unreadChatCount : undefined,
+            badge: liveUnreadChatCount > 0 ? liveUnreadChatCount : undefined,
           },
           {
             href: "/seller/tuong-tac",
@@ -334,7 +357,7 @@ export function SellerShell({
         ],
       },
     ];
-  }, [hasOperationalShop, pendingOrdersCount, pendingReturnsCount, unreadChatCount]);
+  }, [hasOperationalShop, pendingOrdersCount, pendingReturnsCount, liveUnreadChatCount]);
 
   const flatNavItems = useMemo(() => navGroups.flatMap((g) => g.items), [navGroups]);
 
@@ -814,8 +837,8 @@ export function SellerShell({
           >
             <span className={styles.mobileTabIconWrap}>
               <IconChat size={18} />
-              {unreadChatCount > 0 && (
-                <span className={styles.mobileTabBadge}>{unreadChatCount}</span>
+              {liveUnreadChatCount > 0 && (
+                <span className={styles.mobileTabBadge}>{liveUnreadChatCount}</span>
               )}
             </span>
             <span className={styles.mobileTabLabel}>Tin nhắn</span>

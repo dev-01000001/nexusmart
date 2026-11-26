@@ -2,14 +2,20 @@
 // Run: node --test scripts/catalog-map.test.mjs   (Node >= 22.18 strips TS types)
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   buildCatalogLookups,
   buildFlashSlots,
   checkLiveVoucher,
   createTtlCache,
+  extendCategoryIndexForShopProducts,
   filterStorefrontShops,
   findProductByParam,
   findShopByParam,
+  getFlashSaleSkuDetail,
+  listFlashSaleSkuOptions,
   markFlashProducts,
   mergeCategories,
   mergeProducts,
@@ -155,7 +161,7 @@ test("mergeProducts: real price/stock/sku ids, content kept, foreign categories 
   );
 });
 
-test("mergeProducts: unknown product built from attributes, invalid sizes skipped", () => {
+test("mergeProducts: unknown product built from attributes, preserves custom sizes and sizeless SKUs (Item 7)", () => {
   const categories = mergeCategories(gwCategories, contentCategories);
   const [p] = mergeProducts(
     [
@@ -167,7 +173,8 @@ test("mergeProducts: unknown product built from attributes, invalid sizes skippe
         images: ["/products/new.png"],
         skus: [
           sku("n-1", "NEW-M", 99000, 4, { color: "den", color_name: "Đen", size: "M" }),
-          sku("n-2", "NEW-FREE", 99000, 4, { color: "den", size: "Free" }),
+          sku("n-2", "NEW-FREE", 109000, 4, { color: "den", size: "Free" }),
+          sku("n-3", "NEW-3XL", 119000, 2, { color: "den", size: "3XL" }),
         ],
       },
     ],
@@ -176,10 +183,54 @@ test("mergeProducts: unknown product built from attributes, invalid sizes skippe
   assert.equal(p.id, "p-new");
   assert.equal(p.slug, "p-new");
   assert.equal(p.shopId, "u-2");
-  assert.deepEqual(p.sizes, ["M"]);
-  assert.equal(p.skus.length, 1);
+  assert.deepEqual(p.sizes, ["M", "3XL", "Free"]);
+  assert.equal(p.skus.length, 3);
   assert.equal(p.colors[0].name, "Đen");
   assert.equal(p.price, 99000);
+
+  // Sizeless product (e.g. accessory/bag without attributes.size) must also map cleanly
+  const [noSizeProd] = mergeProducts(
+    [
+      {
+        id: "p-bag",
+        shop_id: "u-2",
+        category_id: "cat-1",
+        name: "Túi vải canvas",
+        slug: "tui-vai-canvas",
+        images: ["/products/bag.png"],
+        status: "APPROVED",
+        skus: [sku("bag-1", "BAG-01", 159000, 8, { color: "kem", color_name: "Kem" })],
+      },
+    ],
+    { content: [contentProduct], categories, shopIdByBackend: new Map() }
+  );
+  assert.ok(noSizeProd);
+  assert.equal(noSizeProd.slug, "tui-vai-canvas");
+  assert.equal(noSizeProd.skus.length, 1);
+  assert.equal(noSizeProd.skus[0].skuId, "bag-1");
+  assert.deepEqual(noSizeProd.sizes, ["Mặc định"]);
+
+  // Curated product matched by content SKU code must not drop newly added backend SKUs (e.g. 3XL)
+  const [curatedPlus] = mergeProducts(
+    [
+      {
+        id: "p-curated",
+        shop_id: "u-1",
+        category_id: "cat-1",
+        name: "Áo thun trắng",
+        status: "APPROVED",
+        skus: [
+          sku("s-1", "BD-AT01-TRANG-S", 179000, 5),
+          sku("s-3xl", "BD-AT01-TRANG-3XL", 199000, 7, { color: "trang", size: "3XL" }),
+        ],
+      },
+    ],
+    { content: [contentProduct], categories, shopIdByBackend: new Map([["u-1", "shop-bach-dang"]]) }
+  );
+  assert.ok(curatedPlus);
+  assert.equal(curatedPlus.skus.length, 2);
+  assert.ok(curatedPlus.skus.some((s) => s.skuId === "s-3xl" && s.size === "3XL"));
+  assert.ok(curatedPlus.sizes.includes("3XL"));
 });
 
 test("mergeVouchers keeps copy for known codes and real quota", () => {
@@ -664,14 +715,46 @@ test("W3: resolveSiteProductEntry falls back to live slug/id lookup for newly ap
   });
   assert.equal(hidden, null);
 
-  // 5. Preserves discontinued stub for own shop, rejects for foreign shop
+  // 5. Discontinued stub is fail-closed (Item 4): requires shop_id matching opts.shopId
   const discOwn = await resolveSiteProductEntry({
     ...baseOpts,
     slugOrId: "old-slug",
-    fetchBySlug: async () => ({ discontinued: true, name: "Mẫu cũ" }),
+    fetchBySlug: async () => ({
+      discontinued: true,
+      shop_id: "u-1",
+      category_id: "cat-1",
+      name: "Mẫu cũ",
+    }),
     fetchById: async () => ({ status: "not_found" }),
   });
   assert.deepEqual(discOwn, { kind: "discontinued", discontinuedName: "Mẫu cũ" });
+
+  // Missing shop_id in gateway discontinued stub -> fail-closed 404 (null)
+  const discMissingShop = await resolveSiteProductEntry({
+    ...baseOpts,
+    slugOrId: "ao-khoac-shop-b",
+    fetchBySlug: async () => ({
+      discontinued: true,
+      category_id: "cat-1",
+      name: "Áo khoác Shop B",
+    }),
+    fetchById: async () => ({ status: "not_found" }),
+  });
+  assert.equal(discMissingShop, null);
+
+  // Foreign shop_id in gateway discontinued stub (even without product object) -> 404 (null)
+  const discForeignStub = await resolveSiteProductEntry({
+    ...baseOpts,
+    slugOrId: "ao-khoac-shop-b",
+    fetchBySlug: async () => ({
+      discontinued: true,
+      shop_id: "u-other",
+      category_id: "cat-1",
+      name: "Áo khoác Shop B",
+    }),
+    fetchById: async () => ({ status: "not_found" }),
+  });
+  assert.equal(discForeignStub, null);
 
   const discForeign = await resolveSiteProductEntry({
     ...baseOpts,
@@ -803,4 +886,263 @@ test("W4: resolveFreshShopFlashSales fetches only this shop's approved flash SKU
   });
   assert.equal(emptyFetchCount, 0);
   assert.deepEqual(emptyRes, { slots: [], products: [] });
+});
+
+test("Item 4: resolveSiteProductEntry fail-closes discontinued stub even when matched in cached bundle", async () => {
+  const cachedProduct = {
+    ...contentProduct,
+    backendId: "p-cached-1",
+    slug: "ao-cu-da-xoa",
+    shopId: "shop-bach-dang",
+  };
+  const baseOpts = {
+    bundleProducts: [cachedProduct],
+    shopId: "u-1",
+    slugOrId: "ao-cu-da-xoa",
+    shopIdByBackend: new Map([["u-1", "shop-bach-dang"]]),
+    contentProducts: [contentProduct],
+    contentCategories,
+    fetchById: async () => ({ status: "not_found" }),
+    fetchCategories: async () => gwCategories,
+  };
+
+  // Missing shop_id on discontinued stub -> fail closed (null -> 404)
+  const missingShop = await resolveSiteProductEntry({
+    ...baseOpts,
+    fetchBySlug: async () => ({ discontinued: true, category_id: "cat-1", name: "Áo cũ" }),
+  });
+  assert.equal(missingShop, null);
+
+  // Matching shop_id -> discontinued
+  const owned = await resolveSiteProductEntry({
+    ...baseOpts,
+    fetchBySlug: async () => ({
+      discontinued: true,
+      shop_id: "u-1",
+      category_id: "cat-1",
+      name: "Áo cũ",
+    }),
+  });
+  assert.deepEqual(owned, { kind: "discontinued", discontinuedName: "Áo cũ" });
+});
+
+test("Item 5: buildFlashSlots preserves per-SKU flashPrice, remainingQuota, limitPerBuyer and listFlashSaleSkuOptions never falls back to another SKU", () => {
+  const multiSkuProduct = {
+    ...contentProduct,
+    id: "p-multi",
+    colors: [
+      { code: "trang", name: "Trắng", hex: "#fff", image: "/products/a.png" },
+      { code: "den", name: "Đen", hex: "#111", image: "/products/b.png" },
+    ],
+    sizes: ["S", "M", "L"],
+    skus: [
+      { skuId: "sku-trang-s", skuCode: "P-TRANG-S", colorCode: "trang", size: "S", stock: 10, price: 219000 },
+      { skuId: "sku-trang-m", skuCode: "P-TRANG-M", colorCode: "trang", size: "M", stock: 10, price: 239000 },
+      { skuId: "sku-den-l", skuCode: "P-DEN-L", colorCode: "den", size: "L", stock: 8, price: 259000 },
+    ],
+  };
+  const now = Date.parse("2026-11-26T06:00:00Z");
+  const slots = buildFlashSlots(
+    [
+      {
+        id: "fs-live",
+        starts_at: "2026-11-26T05:00:00Z",
+        ends_at: "2026-11-26T08:00:00Z",
+        items: [
+          {
+            id: "fsi-s",
+            shop_id: "u-1",
+            sku_id: "sku-trang-s",
+            flash_price_vnd: 149000,
+            original_price_vnd: 219000,
+            total_slots: 10,
+            remaining_slots: 2,
+            per_user_limit: 1,
+            status: "APPROVED",
+          },
+          {
+            id: "fsi-den-l",
+            shop_id: "u-1",
+            sku_id: "sku-den-l",
+            flash_price_vnd: 179000,
+            original_price_vnd: 259000,
+            total_slots: 15,
+            remaining_slots: 7,
+            per_user_limit: 3,
+            status: "APPROVED",
+          },
+        ],
+      },
+    ],
+    [multiSkuProduct],
+    now
+  );
+
+  assert.equal(slots.length, 1);
+  const flashItem = slots[0].items[0];
+  // Per-SKU lookup returns exact price/quota/limit for each registered SKU
+  assert.deepEqual(getFlashSaleSkuDetail(flashItem, "sku-trang-s"), {
+    id: "fsi-s",
+    skuId: "sku-trang-s",
+    flashPrice: 149000,
+    originalPrice: 219000,
+    totalQuota: 10,
+    remainingQuota: 2,
+    limitPerBuyer: 1,
+  });
+  assert.deepEqual(getFlashSaleSkuDetail(flashItem, "sku-den-l"), {
+    id: "fsi-den-l",
+    skuId: "sku-den-l",
+    flashPrice: 179000,
+    originalPrice: 259000,
+    totalQuota: 15,
+    remainingQuota: 7,
+    limitPerBuyer: 3,
+  });
+  // Unregistered SKU returns null (never falls back to flashItem.id!)
+  assert.equal(getFlashSaleSkuDetail(flashItem, "sku-trang-m"), null);
+
+  // listFlashSaleSkuOptions returns ONLY flash-registered SKUs across all colors
+  const options = listFlashSaleSkuOptions(multiSkuProduct, flashItem);
+  assert.deepEqual(
+    options.map((o) => [o.skuId, o.detail.id, o.detail.flashPrice]),
+    [
+      ["sku-trang-s", "fsi-s", 149000],
+      ["sku-den-l", "fsi-den-l", 179000],
+    ]
+  );
+  assert.ok(options[0].label.includes("Trắng"));
+  assert.ok(options[1].label.includes("Đen"));
+});
+
+test("Item 7: custom categories and arbitrary/missing sizes appear across shop catalog, PDP, and flash sale", async () => {
+  const gwCatsCustom = [
+    { id: "cat-1", name: "Áo thun", slug: "ao-thun" },
+    { id: "cat-shoes", name: "Giày chạy bộ", slug: "giay-chay-bo" },
+    { id: "cat-acc", name: "Phụ kiện công nghệ", slug: "phu-kien-cong-nghe" },
+  ];
+  const rawShopProducts = [
+    {
+      id: "p-shoe-1",
+      shop_id: "u-1",
+      category_id: "cat-shoes",
+      name: "Giày chạy đường dài",
+      slug: "giay-chay-duong-dai",
+      images: ["/products/shoe.png"],
+      status: "APPROVED",
+      skus: [
+        sku("sku-42", "SHOE-42", 890000, 6, { color: "xam", color_name: "Xám", size: "42" }),
+        sku("sku-40", "SHOE-40", 890000, 3, { color: "xam", color_name: "Xám", size: "40" }),
+      ],
+    },
+    {
+      id: "p-bottle-1",
+      shop_id: "u-1",
+      category_id: "cat-acc",
+      name: "Bình nước thể thao",
+      slug: "binh-nuoc-the-thao",
+      images: [],
+      status: "APPROVED",
+      skus: [sku("sku-bottle", "BOTTLE-500", 129000, 12, {})],
+    },
+  ];
+
+  // 1. extendCategoryIndexForShopProducts preserves real custom category slugs and names
+  const baseIdx = mergeCategories(gwCatsCustom, contentCategories);
+  const extendedIdx = extendCategoryIndexForShopProducts(baseIdx, gwCatsCustom, rawShopProducts);
+  assert.equal(extendedIdx.slugById.get("cat-shoes"), "giay-chay-bo");
+  assert.equal(extendedIdx.slugById.get("cat-acc"), "phu-kien-cong-nghe");
+  assert.ok(extendedIdx.categories.some((c) => c.slug === "giay-chay-bo" && c.name === "Giày chạy bộ"));
+  assert.ok(
+    extendedIdx.categories.some((c) => c.slug === "phu-kien-cong-nghe" && c.name === "Phụ kiện công nghệ")
+  );
+
+  // 2. mergeProducts maps both custom-category + numeric-size and sizeless + imageless products
+  const mapped = mergeProducts(rawShopProducts, {
+    content: [contentProduct],
+    categories: extendedIdx,
+    shopIdByBackend: new Map([["u-1", "shop-bach-dang"]]),
+  });
+  assert.equal(mapped.length, 2);
+  const shoe = mapped.find((p) => p.backendId === "p-shoe-1");
+  const bottle = mapped.find((p) => p.backendId === "p-bottle-1");
+  assert.ok(shoe);
+  assert.equal(shoe.categorySlug, "giay-chay-bo");
+  assert.equal(shoe.categoryName, "Giày chạy bộ");
+  assert.deepEqual(shoe.sizes, ["40", "42"]);
+  assert.ok(bottle);
+  assert.equal(bottle.categorySlug, "phu-kien-cong-nghe");
+  assert.deepEqual(bottle.sizes, ["Mặc định"]);
+  assert.ok(bottle.image.length > 0, "imageless approved product must get safe fallback image");
+
+  // 3. PDP resolution works for custom-category + arbitrary-size product
+  const pdpResolved = await resolveSiteProductEntry({
+    bundleProducts: [],
+    shopId: "u-1",
+    slugOrId: "giay-chay-duong-dai",
+    shopIdByBackend: new Map([["u-1", "shop-bach-dang"]]),
+    contentProducts: [contentProduct],
+    contentCategories,
+    fetchBySlug: async () => ({ product: rawShopProducts[0] }),
+    fetchById: async () => ({ status: "not_found" }),
+    fetchCategories: async () => gwCatsCustom,
+  });
+  assert.equal(pdpResolved?.kind, "product");
+  assert.equal(pdpResolved?.product.categorySlug, "giay-chay-bo");
+  assert.deepEqual(pdpResolved?.product.sizes, ["40", "42"]);
+
+  // 4. Flash sale resolution works for custom-category + sizeless product
+  const nowMs = Date.parse("2026-11-26T06:00:00Z");
+  const flashRes = await resolveFreshShopFlashSales({
+    shopId: "u-1",
+    flashSales: [
+      {
+        id: "fs-custom",
+        starts_at: "2026-11-26T05:00:00Z",
+        ends_at: "2026-11-26T08:00:00Z",
+        items: [
+          {
+            id: "fsi-bottle",
+            shop_id: "u-1",
+            sku_id: "sku-bottle",
+            flash_price_vnd: 99000,
+            total_slots: 10,
+            remaining_slots: 10,
+            per_user_limit: 2,
+            status: "APPROVED",
+          },
+        ],
+      },
+    ],
+    shopIdByBackend: new Map([["u-1", "shop-bach-dang"]]),
+    contentProducts: [contentProduct],
+    contentCategories,
+    nowMs,
+    fetchCategories: async () => gwCatsCustom,
+    fetchProductsBySkuIds: async () => [rawShopProducts[1]],
+  });
+  assert.equal(flashRes.products.length, 1);
+  assert.equal(flashRes.slots.length, 1);
+  assert.equal(flashRes.slots[0].items[0].skuDetailsBySku?.["sku-bottle"]?.flashPrice, 99000);
+
+  // 5. Verify sites.ts wires extendCategoryIndexForShopProducts in loadShopSiteRenderData
+  //    and FlashSaleClient/SitePdpView use per-SKU helpers without cross-SKU fallback.
+  const webSrc = resolve(fileURLToPath(new URL("../src", import.meta.url)));
+  const sitesSrc = readFileSync(resolve(webSrc, "lib/server/sites.ts"), "utf8");
+  assert.ok(
+    sitesSrc.includes("extendCategoryIndexForShopProducts("),
+    "sites.ts loadShopSiteRenderData must extend categories for custom shop products"
+  );
+  const flashClientSrc = readFileSync(
+    resolve(webSrc, "app/(site)/s/[host]/flash-sale/FlashSaleClient.tsx"),
+    "utf8"
+  );
+  assert.ok(flashClientSrc.includes("listFlashSaleSkuOptions"));
+  assert.equal(
+    flashClientSrc.includes("?? item.id"),
+    false,
+    "FlashSaleClient must never fall back to product-level item.id for unregistered SKUs"
+  );
+  const pdpSrc = readFileSync(resolve(webSrc, "features/site/SitePdpView.tsx"), "utf8");
+  assert.ok(pdpSrc.includes("getFlashSaleSkuDetail"));
 });
