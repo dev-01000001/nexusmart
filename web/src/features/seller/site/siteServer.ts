@@ -1,4 +1,5 @@
 // Server-only helpers for Seller Site Editor, Draft Preview, and BFF Site routes.
+import { cache } from "react";
 import { revalidateTag } from "next/cache";
 import { headers } from "next/headers";
 import { getSiteRootDomain as readConfiguredRootDomain } from "@/lib/server/config";
@@ -10,6 +11,7 @@ import { PLATFORM_TEMPLATES } from "@/features/site/templateCatalog";
 import type { PlatformTemplateDTO } from "@/features/site/templateTypes";
 import { normalizeSiteTemplateConfig } from "@/features/site/templateValidator";
 import type { GwSellerShop } from "@/features/seller/sellerApiTypes";
+import { loadSellerShop } from "@/features/seller/sellerServer";
 import type { GwSite, GwSiteVersion } from "./siteEditorTypes";
 import { summarizeSellerSite, type SellerSiteSummary } from "./siteSummary";
 
@@ -420,6 +422,31 @@ export async function loadPlatformTemplatesServer(): Promise<{
   return { templates: [...PLATFORM_TEMPLATES], source: "fallback" };
 }
 
+const loadSellerSiteRaw = cache(
+  async (): Promise<{
+    data: { site?: RawGwSite | null; shop?: GwSellerShop | null; root_domain?: string } | null;
+    error: string | null;
+  }> => {
+    const rootDomain = getSiteRootDomain();
+    try {
+      const res = await gw<{
+        site?: RawGwSite | null;
+        shop?: GwSellerShop | null;
+        root_domain?: string;
+      }>("/api/v1/seller/site");
+      return { data: res, error: null };
+    } catch (err) {
+      if (err instanceof GatewayError && err.kind === "not_found") {
+        return { data: { site: null, shop: null, root_domain: rootDomain }, error: null };
+      }
+      return {
+        data: null,
+        error: err instanceof GatewayError ? SAFE_MESSAGES[err.kind] : SAFE_MESSAGES.unavailable,
+      };
+    }
+  }
+);
+
 export async function loadSellerSiteServer(): Promise<{
   site: GwSite | null;
   shop: GwSellerShop | null;
@@ -427,24 +454,8 @@ export async function loadSellerSiteServer(): Promise<{
   error: string | null;
 }> {
   const rootDomain = getSiteRootDomain();
-  const [siteResult, shopResult] = await Promise.all([
-    gw<{ site?: RawGwSite | null; shop?: GwSellerShop | null; root_domain?: string }>(
-      "/api/v1/seller/site"
-    )
-      .then((res) => ({ data: res, error: null as string | null }))
-      .catch((err) => {
-        if (err instanceof GatewayError && err.kind === "not_found") {
-          return { data: { site: null, shop: null, root_domain: rootDomain }, error: null };
-        }
-        return {
-          data: null,
-          error: err instanceof GatewayError ? SAFE_MESSAGES[err.kind] : SAFE_MESSAGES.unavailable,
-        };
-      }),
-    gw<{ shop: GwSellerShop | null }>("/api/v1/seller/shop")
-      .then((res) => res.shop ?? null)
-      .catch(() => null),
-  ]);
+  const [siteResult, shopRes] = await Promise.all([loadSellerSiteRaw(), loadSellerShop()]);
+  const shopResult = shopRes.data;
 
   if (siteResult.error) {
     return { site: null, shop: shopResult, rootDomain, error: siteResult.error };
@@ -489,9 +500,8 @@ export async function loadSellerSiteVersionsServer(
  * reported as "none" so the shell still renders; the site editor shows the real error.
  */
 export async function loadSellerSiteSummaryServer(): Promise<SellerSiteSummary> {
-  const site = await gw<{ site?: RawGwSite | null }>("/api/v1/seller/site")
-    .then((res) => normalizeGwSite(res.site))
-    .catch(() => null);
+  const siteRes = await loadSellerSiteRaw();
+  const site = siteRes.error ? null : normalizeGwSite(siteRes.data?.site);
   const h = await headers();
   const rawHost = resolveRequestHost(h, "");
   const proto = resolveRequestProto(h, `http://${rawHost || "localhost"}`);

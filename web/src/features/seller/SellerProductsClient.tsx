@@ -23,6 +23,7 @@ import {
   buildSellerProductsQuery,
   buildStockHistoryQuery,
   createInitialSellerProductTabCounts,
+  deriveSellerProductTabCountsFromCompleteList,
   formatSellerProductsHeaderSummary,
   formatStockHistoryReason,
   isImportJobPollingStatus,
@@ -114,6 +115,7 @@ function normalizeInitialFilter(raw: string | null): SellerProductFilterKey {
 export interface SellerProductsClientProps {
   initialProducts: GwSellerProduct[];
   initialTotal: number;
+  initialTabCounts?: SellerProductTabCounts;
   categories: GwCategory[];
   loadError: string | null;
 }
@@ -121,6 +123,7 @@ export interface SellerProductsClientProps {
 export function SellerProductsClient({
   initialProducts,
   initialTotal,
+  initialTabCounts,
   categories,
   loadError,
 }: SellerProductsClientProps) {
@@ -136,10 +139,13 @@ export function SellerProductsClient({
   const [errorMsg, setErrorMsg] = useState<string | null>(loadError);
   const [conflictNotice, setConflictNotice] = useState<string | null>(null);
 
-  const [tabCounts, setTabCounts] = useState<SellerProductTabCounts>(() => ({
-    ...createInitialSellerProductTabCounts(),
-    all: initialTotal,
-  }));
+  const [tabCounts, setTabCounts] = useState<SellerProductTabCounts>(
+    () =>
+      initialTabCounts ?? {
+        ...createInitialSellerProductTabCounts(),
+        all: initialTotal,
+      }
+  );
 
   const [filter, setFilter] = useState<SellerProductFilterKey>(initialFilter);
   const [queryInput, setQueryInput] = useState("");
@@ -205,27 +211,34 @@ export function SellerProductsClient({
 
   const loadTabCounts = useCallback(async () => {
     const seq = ++tabCountsLoadSeqRef.current;
-    const results = await Promise.allSettled(
-      SELLER_PRODUCT_TAB_FILTER_KEYS.map((key) => {
-        const qs = buildSellerProductsQuery({ page: 1, pageSize: 1, filter: key });
-        return api<{ items?: GwSellerProduct[]; total?: number }>(
-          `/api/seller/products?${qs}`
-        ).then((res) => Math.max(0, Math.trunc(res.total ?? res.items?.length ?? 0)));
-      })
-    );
-    if (seq !== tabCountsLoadSeqRef.current) return;
-    setTabCounts(
-      settleSellerProductTabCounts(
-        SELLER_PRODUCT_TAB_FILTER_KEYS.map((key, idx) => ({
-          key,
-          result: results[idx],
-        }))
-      )
-    );
+    try {
+      const res = await api<{ tab_counts?: Partial<SellerProductTabCounts> }>(
+        "/api/seller/products?tab_counts_only=true"
+      );
+      if (seq !== tabCountsLoadSeqRef.current) return;
+      const raw = res.tab_counts ?? {};
+      setTabCounts(
+        settleSellerProductTabCounts(
+          SELLER_PRODUCT_TAB_FILTER_KEYS.map((key) => {
+            const val = raw[key];
+            return {
+              key,
+              result:
+                typeof val === "number" && Number.isFinite(val)
+                  ? { status: "fulfilled" as const, value: val }
+                  : { status: "rejected" as const, reason: new Error("unavailable") },
+            };
+          })
+        )
+      );
+    } catch {
+      if (seq !== tabCountsLoadSeqRef.current) return;
+      setTabCounts(createInitialSellerProductTabCounts());
+    }
   }, []);
 
   const loadProducts = useCallback(
-    async (opts?: { silent?: boolean }) => {
+    async (opts?: { silent?: boolean }): Promise<boolean> => {
       const seq = ++productsLoadSeqRef.current;
       if (!opts?.silent) setLoading(true);
       setErrorMsg(null);
@@ -240,7 +253,7 @@ export function SellerProductsClient({
         const prodRes = await api<{ items?: GwSellerProduct[]; total?: number }>(
           `/api/seller/products?${qs}`
         );
-        if (seq !== productsLoadSeqRef.current) return;
+        if (seq !== productsLoadSeqRef.current) return false;
         const items = prodRes.items ?? [];
         const resolvedTotal = Math.max(0, Math.trunc(prodRes.total ?? items.length));
         const clampedPage = resolveClampedPageOnEmpty(
@@ -252,12 +265,22 @@ export function SellerProductsClient({
         if (clampedPage !== null) {
           setTotalProducts(resolvedTotal);
           setPage(clampedPage);
-          return;
+          return false;
         }
         setProducts(items);
         setTotalProducts(resolvedTotal);
+        let derivedCompleteCounts = false;
         if (categoryFilter === "all" && !debouncedQuery) {
-          setTabCounts((prev) => ({ ...prev, [filter]: resolvedTotal }));
+          const derived =
+            page === 1 && filter === "all"
+              ? deriveSellerProductTabCountsFromCompleteList(items, resolvedTotal)
+              : null;
+          if (derived) {
+            setTabCounts(derived);
+            derivedCompleteCounts = true;
+          } else {
+            setTabCounts((prev) => ({ ...prev, [filter]: resolvedTotal }));
+          }
         }
         setStockDrafts((prev) => {
           const next = { ...prev };
@@ -266,9 +289,11 @@ export function SellerProductsClient({
           }
           return next;
         });
+        return derivedCompleteCounts;
       } catch (err) {
-        if (seq !== productsLoadSeqRef.current) return;
+        if (seq !== productsLoadSeqRef.current) return false;
         setErrorMsg(getErrorMessage(err, "Không thể tải danh sách sản phẩm lúc này."));
+        return false;
       } finally {
         if (!opts?.silent && seq === productsLoadSeqRef.current) {
           setLoading(false);
@@ -288,13 +313,16 @@ export function SellerProductsClient({
   }, [uiState, loadProducts]);
 
   useEffect(() => {
-    if (!uiState && !loadError) {
+    if (!uiState && !loadError && !initialTabCounts) {
       void loadTabCounts();
     }
-  }, [uiState, loadError, loadTabCounts]);
+  }, [uiState, loadError, initialTabCounts, loadTabCounts]);
 
   const refreshAll = useCallback(async () => {
-    await Promise.all([loadProducts(), loadTabCounts()]);
+    const derived = await loadProducts();
+    if (!derived) {
+      await loadTabCounts();
+    }
   }, [loadProducts, loadTabCounts]);
 
   const loadStockHistory = useCallback(async () => {
@@ -408,8 +436,9 @@ export function SellerProductsClient({
       completedRefreshedJobIdRef.current !== importJob.id
     ) {
       completedRefreshedJobIdRef.current = importJob.id;
-      void loadProducts({ silent: true });
-      void loadTabCounts();
+      void loadProducts({ silent: true }).then((derived) => {
+        if (!derived) void loadTabCounts();
+      });
     }
   }, [importJob, loadProducts, loadTabCounts]);
 
@@ -519,17 +548,24 @@ export function SellerProductsClient({
       );
       if (res.sku) {
         const updated = res.sku;
-        setProducts((prev) =>
-          prev.map((p) => ({
-            ...p,
-            skus: (p.skus ?? []).map((item) => (item.id === sku.id ? updated : item)),
-          }))
-        );
+        const nextProducts = products.map((p) => ({
+          ...p,
+          skus: (p.skus ?? []).map((item) => (item.id === sku.id ? updated : item)),
+        }));
+        setProducts(nextProducts);
         setStockDrafts((prev) => ({ ...prev, [sku.id]: String(updated.stock) }));
         if (historyTarget && historyTarget.sku.id === sku.id) {
           setHistoryTarget((prev) => (prev ? { ...prev, sku: updated } : prev));
         }
-        void loadTabCounts();
+        const derived =
+          page === 1 && filter === "all" && categoryFilter === "all" && !debouncedQuery
+            ? deriveSellerProductTabCountsFromCompleteList(nextProducts, totalProducts)
+            : null;
+        if (derived) {
+          setTabCounts(derived);
+        } else {
+          void loadTabCounts();
+        }
       } else {
         await refreshAll();
       }

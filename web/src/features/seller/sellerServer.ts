@@ -1,5 +1,15 @@
 // Server-only Seller Center helpers: strict RBAC, ID validation + safe gateway loaders.
+import { cache } from "react";
 import { notFound, redirect } from "next/navigation";
+import {
+  SELLER_PRODUCTS_PAGE_SIZE,
+  SELLER_PRODUCT_TAB_FILTER_KEYS,
+  createInitialSellerProductTabCounts,
+  deriveSellerProductTabCountsFromCompleteList,
+  settleSellerProductTabCounts,
+  type SellerProductFilterKey,
+  type SellerProductTabCounts,
+} from "@/lib/a8-types";
 import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import {
@@ -94,7 +104,7 @@ function safeLoadError(err: unknown): string {
   return SAFE_MESSAGES.unavailable;
 }
 
-export async function loadSellerShop(): Promise<LoadResult<GwSellerShop>> {
+export const loadSellerShop = cache(async (): Promise<LoadResult<GwSellerShop>> => {
   try {
     const res = await gw<{ shop: GwSellerShop | null }>("/api/v1/seller/shop");
     return { data: res.shop ?? null, error: null };
@@ -104,10 +114,10 @@ export async function loadSellerShop(): Promise<LoadResult<GwSellerShop>> {
     }
     return { data: null, error: safeLoadError(err) };
   }
-}
+});
 
 /** Loads the authenticated user's shop via GET /api/v1/shops/me (works for buyer/pending/rejected/active). */
-export async function loadMyShop(): Promise<LoadResult<GwSellerShop>> {
+export const loadMyShop = cache(async (): Promise<LoadResult<GwSellerShop>> => {
   try {
     const res = await gw<{ shop: GwSellerShop | null }>("/api/v1/shops/me");
     return { data: res.shop ?? null, error: null };
@@ -117,23 +127,82 @@ export async function loadMyShop(): Promise<LoadResult<GwSellerShop>> {
     }
     return { data: null, error: safeLoadError(err) };
   }
-}
+});
 
-export async function loadSellerProducts(
+const loadSellerProductsCached = cache(
+  async (
+    pageSize: number,
+    page: number
+  ): Promise<LoadResult<{ items: GwSellerProduct[]; total: number }>> => {
+    try {
+      const res = await gw<{ items: GwSellerProduct[]; total: number }>("/api/v1/seller/products", {
+        query: { page, page_size: pageSize },
+      });
+      return {
+        data: { items: res.items ?? [], total: res.total ?? 0 },
+        error: null,
+      };
+    } catch (err) {
+      return { data: null, error: safeLoadError(err) };
+    }
+  }
+);
+
+export function loadSellerProducts(
   pageSize = 20,
   page = 1
 ): Promise<LoadResult<{ items: GwSellerProduct[]; total: number }>> {
-  try {
-    const res = await gw<{ items: GwSellerProduct[]; total: number }>("/api/v1/seller/products", {
-      query: { page, page_size: pageSize },
-    });
-    return {
-      data: { items: res.items ?? [], total: res.total ?? 0 },
-      error: null,
-    };
-  } catch (err) {
-    return { data: null, error: safeLoadError(err) };
+  return loadSellerProductsCached(pageSize, page);
+}
+
+const loadSellerProductTabCountsCached = cache(
+  async (knownAllTotal: number | null): Promise<SellerProductTabCounts> => {
+    let resolvedAllTotal = knownAllTotal;
+    if (resolvedAllTotal === null) {
+      const firstPage = await loadSellerProducts(SELLER_PRODUCTS_PAGE_SIZE, 1);
+      if (firstPage.error || !firstPage.data) {
+        return createInitialSellerProductTabCounts();
+      }
+      const derived = deriveSellerProductTabCountsFromCompleteList(
+        firstPage.data.items,
+        firstPage.data.total
+      );
+      if (derived) return derived;
+      resolvedAllTotal = firstPage.data.total;
+    }
+
+    const keysToFetch = SELLER_PRODUCT_TAB_FILTER_KEYS.filter((k) => k !== "all");
+    const results = await Promise.allSettled(
+      keysToFetch.map((key) =>
+        gw<{ items?: GwSellerProduct[]; total?: number }>("/api/v1/seller/products", {
+          query:
+            key === "LOW_OOS"
+              ? { page: 1, page_size: 1, low_stock: "true" }
+              : { page: 1, page_size: 1, status: key },
+        }).then((res) => Math.max(0, Math.trunc(res.total ?? res.items?.length ?? 0)))
+      )
+    );
+
+    const entries: Array<{ key: SellerProductFilterKey; result: PromiseSettledResult<number> }> = [
+      { key: "all", result: { status: "fulfilled", value: resolvedAllTotal } },
+      ...keysToFetch.map((key, idx) => ({ key, result: results[idx] })),
+    ];
+    return settleSellerProductTabCounts(entries);
   }
+);
+
+/**
+ * Loads all 6 seller product tab counts server-side without extra `/users/me` round-trips.
+ * Derives counts locally with 0 extra gateway calls when page 1 already contains all products.
+ */
+export function loadSellerProductTabCounts(
+  knownAllTotal?: number
+): Promise<SellerProductTabCounts> {
+  const normalized =
+    typeof knownAllTotal === "number" && Number.isFinite(knownAllTotal)
+      ? Math.max(0, Math.trunc(knownAllTotal))
+      : null;
+  return loadSellerProductTabCountsCached(normalized);
 }
 
 /** Loads seller's own product (including PENDING/REJECTED/HIDDEN) via /api/v1/seller/products/{id}. */
@@ -161,7 +230,45 @@ export async function loadSellerProductById(
   }
 }
 
-export async function loadSellerOrders(
+const loadSellerOrdersCached = cache(
+  async (
+    pageSize: number,
+    page: number,
+    includeStatusCounts: boolean
+  ): Promise<
+    LoadResult<{
+      items: GwSellerOrder[];
+      total: number;
+      status_counts?: Array<{ status: string; count: number }>;
+    }>
+  > => {
+    try {
+      const res = await gw<{
+        items: GwSellerOrder[];
+        total: number;
+        status_counts?: Array<{ status: string; count: number }>;
+      }>("/api/v1/seller/orders", {
+        query: {
+          page,
+          page_size: pageSize,
+          include_status_counts: includeStatusCounts ? "true" : undefined,
+        },
+      });
+      return {
+        data: {
+          items: (res.items ?? []).map(normalizeSellerOrder),
+          total: res.total ?? 0,
+          status_counts: res.status_counts,
+        },
+        error: null,
+      };
+    } catch (err) {
+      return { data: null, error: safeLoadError(err) };
+    }
+  }
+);
+
+export function loadSellerOrders(
   pageSize = 20,
   page = 1,
   includeStatusCounts = false
@@ -172,29 +279,7 @@ export async function loadSellerOrders(
     status_counts?: Array<{ status: string; count: number }>;
   }>
 > {
-  try {
-    const res = await gw<{
-      items: GwSellerOrder[];
-      total: number;
-      status_counts?: Array<{ status: string; count: number }>;
-    }>("/api/v1/seller/orders", {
-      query: {
-        page,
-        page_size: pageSize,
-        include_status_counts: includeStatusCounts ? "true" : undefined,
-      },
-    });
-    return {
-      data: {
-        items: (res.items ?? []).map(normalizeSellerOrder),
-        total: res.total ?? 0,
-        status_counts: res.status_counts,
-      },
-      error: null,
-    };
-  } catch (err) {
-    return { data: null, error: safeLoadError(err) };
-  }
+  return loadSellerOrdersCached(pageSize, page, includeStatusCounts);
 }
 
 export async function loadSellerOrderById(
@@ -278,14 +363,14 @@ export async function loadSellerShippingSettings(): Promise<LoadResult<GwShopShi
 }
 
 /** Loads seller categories with commission_rate_bps and is_prohibited metadata. */
-export async function loadSellerCategories(): Promise<LoadResult<GwCategory[]>> {
+export const loadSellerCategories = cache(async (): Promise<LoadResult<GwCategory[]>> => {
   try {
     const res = await gw<{ categories: GwCategory[] }>("/api/v1/seller/categories");
     return { data: res.categories ?? [], error: null };
   } catch (err) {
     return { data: null, error: safeLoadError(err) };
   }
-}
+});
 
 export async function loadCategories(): Promise<LoadResult<GwCategory[]>> {
   const sellerRes = await loadSellerCategories();
@@ -377,7 +462,7 @@ export async function loadSellerReturns(
   }
 }
 
-export async function loadSellerPendingReturnsCount(): Promise<number> {
+export const loadSellerPendingReturnsCount = cache(async (): Promise<number> => {
   try {
     const res = await gw<{ items: GwSellerReturnRequest[]; total: number }>(
       "/api/v1/seller/returns",
@@ -389,7 +474,7 @@ export async function loadSellerPendingReturnsCount(): Promise<number> {
   } catch {
     return 0;
   }
-}
+});
 
 export async function loadSellerAddresses(): Promise<LoadResult<SellerAddress[]>> {
   try {

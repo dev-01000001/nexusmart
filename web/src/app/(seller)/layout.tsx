@@ -1,5 +1,6 @@
 import React from "react";
 import { StateView } from "@/components";
+import { SELLER_ORDERS_PAGE_SIZE, resolveSellerPendingOrdersCount } from "@/lib/a8-types";
 import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import type { Session } from "@/lib/server/session";
@@ -73,16 +74,13 @@ export default async function SellerLayout({ children }: { children: React.React
 
   const [shopRes, ordersRes, pendingReturnsCount, unreadChatCount, site] = await Promise.all([
     loadSellerShop(),
-    loadSellerOrders(100),
+    loadSellerOrders(SELLER_ORDERS_PAGE_SIZE, 1, true),
     loadSellerPendingReturnsCount(),
     loadUnreadChatCount(),
     loadSellerSiteSummaryServer(),
   ]);
 
-  const orderItems = ordersRes.data?.items ?? [];
-  const pendingOrdersCount = orderItems.filter(
-    (o) => o.status === "CONFIRMED" || o.status === "PREPARING"
-  ).length;
+  const pendingOrdersCount = resolveSellerPendingOrdersCount(ordersRes.data);
 
   return (
     <SellerShell

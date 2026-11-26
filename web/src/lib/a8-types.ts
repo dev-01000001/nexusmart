@@ -593,6 +593,31 @@ export function aggregateSellerOrderStatusCounts(
   return out;
 }
 
+/**
+ * Resolves the seller sidebar pending-orders badge (`CONFIRMED` + `PREPARING`) from server
+ * `status_counts` when present, falling back to counting loaded items only if `status_counts`
+ * is absent/empty.
+ */
+export function resolveSellerPendingOrdersCount(
+  data:
+    | {
+        items?: ReadonlyArray<{ status?: string | null }>;
+        status_counts?: readonly SellerOrderStatusCount[] | null;
+      }
+    | null
+    | undefined
+): number {
+  if (!data) return 0;
+  if (Array.isArray(data.status_counts) && data.status_counts.length > 0) {
+    const agg = aggregateSellerOrderStatusCounts(data.status_counts);
+    return agg.CONFIRMED + agg.PREPARING;
+  }
+  return (data.items ?? []).filter((o) => {
+    const st = (o.status ?? "").trim().toUpperCase();
+    return st === "CONFIRMED" || st === "PREPARING";
+  }).length;
+}
+
 export function toggleBatchSelection(
   currentIds: readonly string[],
   targetId: string,
@@ -696,6 +721,51 @@ export function settleSellerProductTabCounts(
     }
   }
   return next;
+}
+
+/**
+ * Derives all 6 seller product tab counts locally when an unfiltered page-1 response already
+ * holds every product in the shop (`items.length >= total`), matching backend `low_stock=true`
+ * semantics (`APPROVED`/`OUT_OF_STOCK` with >=1 active SKU having `available_stock <= 5`).
+ * Returns `null` when the catalog spans multiple pages (`total > items.length`).
+ */
+export function deriveSellerProductTabCountsFromCompleteList(
+  items: ReadonlyArray<{
+    status?: string | null;
+    skus?: ReadonlyArray<{ is_active?: boolean; available_stock?: number }> | null;
+  }>,
+  total: number
+): SellerProductTabCounts | null {
+  const safeTotal = Math.max(0, Math.trunc(total || 0));
+  if (safeTotal > items.length) {
+    return null;
+  }
+  const counts: SellerProductTabCounts = {
+    all: safeTotal,
+    APPROVED: 0,
+    PENDING: 0,
+    REJECTED: 0,
+    HIDDEN: 0,
+    LOW_OOS: 0,
+  };
+  for (const product of items) {
+    const st = (product.status ?? "").trim().toUpperCase();
+    if (st === "APPROVED") counts.APPROVED = (counts.APPROVED ?? 0) + 1;
+    else if (st === "PENDING") counts.PENDING = (counts.PENDING ?? 0) + 1;
+    else if (st === "REJECTED") counts.REJECTED = (counts.REJECTED ?? 0) + 1;
+    else if (st === "HIDDEN") counts.HIDDEN = (counts.HIDDEN ?? 0) + 1;
+
+    if (
+      (st === "APPROVED" || st === "OUT_OF_STOCK") &&
+      (product.skus ?? []).some(
+        (sku) =>
+          sku.is_active && typeof sku.available_stock === "number" && sku.available_stock <= 5
+      )
+    ) {
+      counts.LOW_OOS = (counts.LOW_OOS ?? 0) + 1;
+    }
+  }
+  return counts;
 }
 
 /**

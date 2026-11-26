@@ -1,7 +1,7 @@
 import { GatewayError } from "@/lib/server/errors";
 import { apiRoute, readJson } from "@/lib/server/http";
 import { gw } from "@/lib/server/gateway";
-import { assertSellerSession } from "@/features/seller/sellerServer";
+import { assertSellerSession, loadSellerProductTabCounts } from "@/features/seller/sellerServer";
 import type { GwSellerProduct } from "@/features/seller/sellerApiTypes";
 import { isValidResourceId } from "@/features/seller/sellerValidation";
 
@@ -38,6 +38,10 @@ function sanitizeAttributes(raw: unknown): Record<string, string> {
 export const GET = apiRoute(async (req) => {
   await assertSellerSession();
   const q = req.nextUrl.searchParams;
+  if (q.get("tab_counts_only") === "true") {
+    const tabCounts = await loadSellerProductTabCounts();
+    return Response.json({ tab_counts: tabCounts }, { headers: { "Cache-Control": "no-store" } });
+  }
   const rawCat = (q.get("category_id") ?? "").trim();
   const categoryId = rawCat && isValidResourceId(rawCat) ? rawCat : undefined;
   const rawLowStock = (q.get("low_stock") ?? "").trim().toLowerCase();
