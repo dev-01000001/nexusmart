@@ -215,20 +215,15 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		StreetAddress:  addr.GetStreetAddress(),
 	}
 
-	// For STOREFRONT orders, verify storefront_shop_id is an ACTIVE shop BEFORE touching stock.
+	var shopsByID map[string]*userv1.Shop
+	// For STOREFRONT orders, verify storefront_shop_id is an ACTIVE shop via verifyShopsActive
+	// (shared userShopBreaker, retry, and F12 409 SHOP_SUSPENDED / SHOP_NOT_ACTIVE) BEFORE resolving items or touching stock.
 	if salesChannel == SalesChannelStorefront {
-		shopResp, sErr := s.clients.User.GetShop(stripServiceAuth(ctx), &userv1.GetShopRequest{ShopId: storefrontShopID})
-		if sErr != nil {
-			if status.Code(sErr) == codes.NotFound {
-				failGroupBeforePersist("STOREFRONT_SHOP_NOT_FOUND")
-				return nil, status.Errorf(codes.InvalidArgument, "STOREFRONT_SHOP_INACTIVE: storefront shop %s not found or not active", storefrontShopID)
-			}
-			failGroupBeforePersist("STOREFRONT_SHOP_LOOKUP_FAILED")
-			return nil, sErr
-		}
-		if shopResp.GetShop() == nil || shopResp.GetShop().GetStatus() != userv1.ShopStatus_SHOP_STATUS_ACTIVE {
-			failGroupBeforePersist("STOREFRONT_SHOP_INACTIVE")
-			return nil, status.Errorf(codes.InvalidArgument, "STOREFRONT_SHOP_INACTIVE: storefront shop %s is not active", storefrontShopID)
+		var shopFailReason string
+		shopsByID, shopFailReason, err = s.verifyShopsActive(ctx, []string{storefrontShopID})
+		if err != nil {
+			failGroupBeforePersist(shopFailReason)
+			return nil, err
 		}
 	}
 
@@ -270,24 +265,31 @@ func (s *OrderService) CreateCheckout(ctx context.Context, req *orderv1.CreateCh
 		}
 	}
 
-	// F12 + Item G (#8): Synchronously verify every shop in this checkout is ACTIVE via parallel User.GetShop
+	// F12 + Item G (#8): Synchronously verify every remaining unverified shop in this checkout is ACTIVE via parallel User.GetShop
 	// BEFORE checking sku.IsActive (buildShopPlans) and before reserving stock/promotions, so a suspended shop
 	// always returns SHOP_SUSPENDED even after product-service redacts its SKUs to IsActive=false.
 	preShopIDs := make([]string, 0, len(requestedItems))
 	for _, reqItem := range requestedItems {
 		if sku := skuByID[reqItem.GetSkuId()]; sku != nil {
 			if sid := strings.TrimSpace(sku.GetShopId()); sid != "" {
-				preShopIDs = append(preShopIDs, sid)
+				if _, alreadyVerified := shopsByID[sid]; !alreadyVerified {
+					preShopIDs = append(preShopIDs, sid)
+				}
 			}
 		}
 	}
-	var shopsByID map[string]*userv1.Shop
 	if len(preShopIDs) > 0 {
-		var shopFailReason string
-		shopsByID, shopFailReason, err = s.verifyShopsActive(ctx, preShopIDs)
-		if err != nil {
+		extraShops, shopFailReason, vErr := s.verifyShopsActive(ctx, preShopIDs)
+		if vErr != nil {
 			failGroupBeforePersist(shopFailReason)
-			return nil, err
+			return nil, vErr
+		}
+		if shopsByID == nil {
+			shopsByID = extraShops
+		} else {
+			for k, v := range extraShops {
+				shopsByID[k] = v
+			}
 		}
 	}
 
@@ -1458,7 +1460,7 @@ func (s *OrderService) resolveCheckoutInputs(ctx context.Context, buyerID string
 					}
 				}
 			}
-			if len(selectedShopIDs) > 0 {
+			if salesChannel != SalesChannelStorefront && len(selectedShopIDs) > 0 {
 				if _, shopFailReason, shopErr := s.verifyShopsActive(ctx, selectedShopIDs); shopErr != nil {
 					return nil, shopFailReason, shopErr
 				}
@@ -2500,15 +2502,25 @@ func (s *OrderService) releasePromotionErr(ctx context.Context, checkoutGroupID 
 	})
 }
 
-func (s *OrderService) releasePromotionShopErr(ctx context.Context, checkoutGroupID, shopID, reason string) error {
+func (s *OrderService) releasePromotionShopErr(ctx context.Context, checkoutGroupID, shopID, subOrderID, reason string) error {
+	return s.releasePromotionShopWithOpts(ctx, checkoutGroupID, shopID, subOrderID, reason, false)
+}
+
+func (s *OrderService) clawbackCompletedOrderPromotionErr(ctx context.Context, checkoutGroupID, shopID, subOrderID, reason string) error {
+	return s.releasePromotionShopWithOpts(ctx, fallbackStr(strings.TrimSpace(checkoutGroupID), strings.TrimSpace(subOrderID)), shopID, subOrderID, reason, true)
+}
+
+func (s *OrderService) releasePromotionShopWithOpts(ctx context.Context, checkoutGroupID, shopID, subOrderID, reason string, clawbackOnly bool) error {
 	if s.clients.Promotion == nil || strings.TrimSpace(checkoutGroupID) == "" || strings.TrimSpace(shopID) == "" {
 		return nil
 	}
 	return clients.RetryIdempotent(ctx, 3, func(c context.Context) error {
 		_, err := s.clients.Promotion.ReleasePromotionShop(c, &promotionv1.ReleasePromotionShopRequest{
-			OrderId: checkoutGroupID,
-			ShopId:  shopID,
-			Reason:  reason,
+			OrderId:      checkoutGroupID,
+			ShopId:       shopID,
+			SubOrderId:   strings.TrimSpace(subOrderID),
+			Reason:       reason,
+			ClawbackOnly: clawbackOnly,
 		})
 		if status.Code(err) == codes.NotFound {
 			return nil

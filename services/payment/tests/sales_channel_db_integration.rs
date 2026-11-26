@@ -1,5 +1,5 @@
 //! PostgreSQL integration tests for Sales Channel attribution, immutability triggers,
-//! phase-0b -> main+3b-3 migration upgrade fixes (`0005` & `0012`), and channel-filtered
+//! phase-0b -> main+3b-3 migration upgrade fixes (`0005`, `0012` & `0018`), and channel-filtered
 //! ledger & reconciliation queries.
 //!
 //! Runs against an isolated database when `PAYMENT_TEST_DATABASE_URL` or `TEST_PAYMENT_DB_URL`
@@ -22,7 +22,7 @@ use nexusmart_payment::metrics::Metrics;
 use nexusmart_payment::service::PaymentService;
 use nexusmart_payment::webhook_security::IncomingWebhookPayload;
 
-const MIGRATIONS_0004_TO_0017: &[(&str, &str)] = &[
+const MIGRATIONS_0004_TO_0018: &[(&str, &str)] = &[
     (
         "0004_payment_money_model.sql",
         include_str!("../migrations/0004_payment_money_model.sql"),
@@ -79,6 +79,10 @@ const MIGRATIONS_0004_TO_0017: &[(&str, &str)] = &[
         "0017_w3b3_cod_fee_adjustments.sql",
         include_str!("../migrations/0017_w3b3_cod_fee_adjustments.sql"),
     ),
+    (
+        "0018_backfill_phase0b_zalopay_refund_settle.sql",
+        include_str!("../migrations/0018_backfill_phase0b_zalopay_refund_settle.sql"),
+    ),
 ];
 
 fn pg_test_db_url() -> Option<String> {
@@ -130,7 +134,7 @@ async fn teardown_isolated_db(admin_pool: PgPool, pool: PgPool, db_name: &str) {
 }
 
 /// Non-DB invariant guard verifying the SQL fixes applied when rebasing main+3b-3 migrations
-/// (`0004..0017`) on top of byte-identical phase-0b migrations (`0001..0003`).
+/// (`0004..0018`) on top of byte-identical phase-0b migrations (`0001..0003`).
 #[test]
 fn test_phase0b_to_main_migration_sql_fixes_invariants() {
     let m0001 = include_str!("../migrations/0001_init.sql");
@@ -140,8 +144,8 @@ fn test_phase0b_to_main_migration_sql_fixes_invariants() {
     assert!(!m0002.trim().is_empty());
     assert!(!m0003.trim().is_empty());
 
-    assert_eq!(MIGRATIONS_0004_TO_0017.len(), 14);
-    for (name, sql) in MIGRATIONS_0004_TO_0017 {
+    assert_eq!(MIGRATIONS_0004_TO_0018.len(), 15);
+    for (name, sql) in MIGRATIONS_0004_TO_0018 {
         assert!(!sql.trim().is_empty(), "migration {name} must not be empty");
     }
 
@@ -166,16 +170,35 @@ fn test_phase0b_to_main_migration_sql_fixes_invariants() {
     assert!(m0012.contains("DROP INDEX IF EXISTS idx_payments_pending_expiry"));
     assert!(m0012.contains("SET pay_url = qr_url"));
     assert!(m0012.contains("WHERE method = 'ZALOPAY'"));
+
+    // 0018: must idempotently backfill `refund_settle` (Debit refund_payable / Credit gateway_clearing)
+    // strictly for completed phase-0b ZaloPay refunds with provider_refund_id IS NOT NULL, existing
+    // `refund` ledger tx, and no `refund_settle` ledger tx yet.
+    let m0018 = include_str!("../migrations/0018_backfill_phase0b_zalopay_refund_settle.sql");
+    assert!(m0018.contains("r.status = 'completed'"));
+    assert!(m0018.contains("r.provider_refund_id IS NOT NULL"));
+    assert!(m0018.contains("p.method = 'ZALOPAY'"));
+    assert!(m0018.contains("'zalopay', 'zalopay_mock', 'zalopay_sandbox'"));
+    assert!(m0018.contains("lt_ref.reference_type = 'refund'"));
+    assert!(m0018.contains("lt_settle.reference_type = 'refund_settle'"));
+    assert!(m0018.contains("'refund-settle:' || rec.refund_id::TEXT"));
+    assert!(m0018.contains("ON CONFLICT (idempotency_key) DO NOTHING"));
+    assert!(m0018.contains("'refund_payable'"));
+    assert!(m0018.contains("'gateway_clearing'"));
 }
 
 /// Real PostgreSQL upgrade test from a populated phase-0b schema (`0001..0003`) through
-/// `0004..0017`, specifically asserting:
+/// `0004..0018`, specifically asserting:
 /// 1. `0005` keeps `completed` ZaloPay refunds with `provider_refund_id IS NOT NULL` as `completed`
-///    while downgrading legacy `completed` refunds with `provider_refund_id IS NULL` (no `refund_settle`
-///    ledger tx) to `pending`.
+///    while downgrading legacy `completed` VietQR refunds with `provider_refund_id IS NULL`
+///    (no `refund_settle` ledger tx) to `pending`.
 /// 2. `0012` removes duplicate `chk_payments_method` & `idx_payments_pending_online_expiry` while
 ///    preserving `payments_method_check` & `idx_payments_pending_expiry`, AND backfills `pay_url`
 ///    from `qr_url` on legacy phase-0b `ZALOPAY` payments without tripping the immutability trigger.
+/// 3. `0018` idempotently backfills exactly 1 `refund_settle` ledger transaction (Debit
+///    `refund_payable` / Credit `gateway_clearing`) for the preserved phase-0b ZaloPay refund,
+///    reconciling `refund_payable` and `gateway_clearing` balances while leaving VietQR
+///    (`provider_refund_id IS NULL`) and COD refunds untouched.
 #[tokio::test]
 async fn test_pg_phase0b_upgrade_0005_zalopay_refund_and_0012_dedup_backfill() {
     let Some(base_db_url) = pg_test_db_url() else {
@@ -205,7 +228,11 @@ async fn test_pg_phase0b_upgrade_0005_zalopay_refund_and_0012_dedup_backfill() {
             .unwrap_or_else(|e| panic!("apply {name}: {e}"));
     }
 
-    // 2. Seed populated phase-0b ZaloPay payment (with order_url stored in qr_url) + 2 completed refunds
+    // 2. Seed populated phase-0b payments (ZaloPay STOREFRONT, VietQR MARKETPLACE, COD MARKETPLACE),
+    //    completed refunds, and their 1-step phase-0b ledger entries (no `refund_settle` yet).
+    let sf_channel = ChannelAttribution::storefront("shop-p0b").unwrap();
+    let mp_channel = ChannelAttribution::marketplace();
+
     let legacy_zp_pay_id = Uuid::new_v4();
     let legacy_zp_url = "https://sbgateway.zalopay.vn/openinapp?order=P0BLEGACY01";
     sqlx::query(
@@ -228,7 +255,8 @@ async fn test_pg_phase0b_upgrade_0005_zalopay_refund_and_0012_dedup_backfill() {
     .await
     .expect("seed phase-0b ZaloPay payment");
 
-    // Disbursed phase-0b ZaloPay refund: status='completed', provider_refund_id IS NOT NULL, no refund_settle ledger tx
+    // Disbursed phase-0b ZaloPay refund: status='completed', provider_refund_id IS NOT NULL,
+    // has `refund` ledger tx, no `refund_settle` ledger tx.
     let disbursed_zp_refund_id = Uuid::new_v4();
     sqlx::query(
         r#"
@@ -248,7 +276,27 @@ async fn test_pg_phase0b_upgrade_0005_zalopay_refund_and_0012_dedup_backfill() {
     .await
     .expect("seed disbursed phase-0b ZaloPay refund");
 
-    // Legacy un-disbursed refund: status='completed', provider_refund_id IS NULL, no refund_settle ledger tx
+    // Legacy phase-0b VietQR payment + un-disbursed refund (`provider_refund_id IS NULL`).
+    let legacy_vqr_pay_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO payments (
+            id, order_group_id, order_id, user_id, method, provider,
+            amount_vnd, status, provider_tx_id, provider_order_code,
+            paid_at, sales_channel, storefront_shop_id
+        )
+        VALUES (
+            $1, 'grp-p0b-vqr', 'ord-p0b-vqr', 'buyer-p0b-vqr', 'VIETQR', 'vietqr_mock',
+            150000, 'succeeded', 'BANK-P0B-VQR-1', 'NMP0BVQR001',
+            NOW(), 'MARKETPLACE', ''
+        )
+        "#,
+    )
+    .bind(legacy_vqr_pay_id)
+    .execute(&pool)
+    .await
+    .expect("seed phase-0b VietQR payment");
+
     let legacy_null_refund_id = Uuid::new_v4();
     sqlx::query(
         r#"
@@ -257,26 +305,107 @@ async fn test_pg_phase0b_upgrade_0005_zalopay_refund_and_0012_dedup_backfill() {
             idempotency_key, provider_refund_id
         )
         VALUES (
-            $1, $2, 'ord-p0b-zp', 50000, 'legacy_unsettled', 'completed',
+            $1, $2, 'ord-p0b-vqr', 50000, 'legacy_unsettled', 'completed',
             'idem-p0b-legacy-null', NULL
         )
         "#,
     )
     .bind(legacy_null_refund_id)
-    .bind(legacy_zp_pay_id)
+    .bind(legacy_vqr_pay_id)
     .execute(&pool)
     .await
-    .expect("seed legacy null-provider_refund_id refund");
+    .expect("seed legacy VietQR null-provider_refund_id refund");
 
-    // 3. Apply 0004..0017 on top of populated phase-0b DB
-    for (name, sql) in MIGRATIONS_0004_TO_0017 {
+    // Legacy phase-0b COD payment + completed refund with non-null provider_refund_id:
+    // MUST NOT be touched by ZaloPay-only 0018 backfill.
+    let legacy_cod_pay_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO payments (
+            id, order_group_id, order_id, user_id, method, provider,
+            amount_vnd, status, provider_order_code,
+            paid_at, sales_channel, storefront_shop_id
+        )
+        VALUES (
+            $1, 'grp-p0b-cod', 'ord-p0b-cod', 'buyer-p0b-cod', 'COD', 'cod',
+            80000, 'succeeded', 'NMP0BCOD001',
+            NOW(), 'MARKETPLACE', ''
+        )
+        "#,
+    )
+    .bind(legacy_cod_pay_id)
+    .execute(&pool)
+    .await
+    .expect("seed phase-0b COD payment");
+
+    let legacy_cod_refund_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO refunds (
+            id, payment_id, order_id, amount_vnd, reason, status,
+            idempotency_key, provider_refund_id
+        )
+        VALUES (
+            $1, $2, 'ord-p0b-cod', 30000, 'p0b_cod_refund', 'completed',
+            'idem-p0b-cod-ref', 'cod_manual_ref_001'
+        )
+        "#,
+    )
+    .bind(legacy_cod_refund_id)
+    .bind(legacy_cod_pay_id)
+    .execute(&pool)
+    .await
+    .expect("seed phase-0b COD refund");
+
+    // Seed phase-0b ledger entries (confirm + 1-step `refund` accrual, zero `refund_settle`).
+    let mut seed_tx = pool.begin().await.expect("begin phase-0b ledger seed tx");
+    for draft in [
+        ledger::build_zalopay_confirm_tx(legacy_zp_pay_id, 250_000, sf_channel.clone()),
+        ledger::build_refund_tx(
+            disbursed_zp_refund_id,
+            legacy_zp_pay_id,
+            100_000,
+            "p0b_zalopay_disbursed",
+            sf_channel.clone(),
+        ),
+        ledger::build_vietqr_confirm_tx(legacy_vqr_pay_id, 150_000, mp_channel.clone()),
+        ledger::build_refund_tx(
+            legacy_null_refund_id,
+            legacy_vqr_pay_id,
+            50_000,
+            "legacy_unsettled",
+            mp_channel.clone(),
+        ),
+        ledger::build_cod_collect_tx(
+            legacy_cod_pay_id,
+            "ord-p0b-cod",
+            None,
+            80_000,
+            mp_channel.clone(),
+        ),
+        ledger::build_refund_tx(
+            legacy_cod_refund_id,
+            legacy_cod_pay_id,
+            30_000,
+            "p0b_cod_refund",
+            mp_channel.clone(),
+        ),
+    ] {
+        ledger::post_transaction(&mut seed_tx, &draft)
+            .await
+            .expect("seed phase-0b ledger tx");
+    }
+    seed_tx.commit().await.expect("commit phase-0b ledger seed");
+
+    // 3. Apply 0004..0018 on top of populated phase-0b DB
+    for (name, sql) in MIGRATIONS_0004_TO_0018 {
         sqlx::raw_sql(sql)
             .execute(&pool)
             .await
             .unwrap_or_else(|e| panic!("apply {name} on populated phase-0b DB: {e}"));
     }
 
-    // 4. Verify 0005 fix: disbursed ZaloPay refund stays 'completed'; null-provider refund downgraded to 'pending'
+    // 4. Verify 0005 fix: disbursed ZaloPay refund stays 'completed'; VietQR null-provider refund downgraded to 'pending'
     let zp_refund_status: String = sqlx::query_scalar("SELECT status FROM refunds WHERE id = $1")
         .bind(disbursed_zp_refund_id)
         .fetch_one(&pool)
@@ -294,7 +423,7 @@ async fn test_pg_phase0b_upgrade_0005_zalopay_refund_and_0012_dedup_backfill() {
         .expect("query legacy null-provider refund status");
     assert_eq!(
         legacy_null_status, "pending",
-        "0005 MUST still downgrade legacy completed refund without provider_refund_id and without refund_settle ledger tx"
+        "0005 MUST still downgrade legacy completed VietQR refund without provider_refund_id and without refund_settle ledger tx"
     );
 
     // 5. Verify 0012 fix: duplicate CHECK and index removed; canonical CHECK & index present
@@ -351,6 +480,193 @@ async fn test_pg_phase0b_upgrade_0005_zalopay_refund_and_0012_dedup_backfill() {
     assert_eq!(pay_url.as_deref(), Some(legacy_zp_url));
     assert_eq!(sales_channel, "STOREFRONT");
     assert_eq!(storefront_shop_id, "shop-p0b");
+
+    // 7. Verify 0018 backfill: exactly 1 `refund_settle` tx for the disbursed phase-0b ZaloPay
+    //    refund, with 2 balanced entries (Debit refund_payable / Credit gateway_clearing),
+    //    reconciled account balances, untouched VietQR/COD refunds, and strict idempotency.
+    let settle_txs: Vec<(Uuid, String, String, String, String, serde_json::Value)> =
+        sqlx::query_as(
+            r#"
+            SELECT id, idempotency_key, reference_id, sales_channel, storefront_shop_id, metadata
+            FROM ledger_transactions
+            WHERE reference_type = 'refund_settle'
+            ORDER BY created_at ASC, id ASC
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("query backfilled refund_settle ledger transactions");
+    assert_eq!(
+        settle_txs.len(),
+        1,
+        "0018 must backfill exactly 1 refund_settle transaction (only the disbursed phase-0b ZaloPay refund)"
+    );
+    let (settle_tx_id, settle_idem_key, settle_ref_id, settle_ch, settle_shop, settle_meta) =
+        &settle_txs[0];
+    assert_eq!(
+        settle_idem_key,
+        &format!("refund-settle:{disbursed_zp_refund_id}")
+    );
+    assert_eq!(settle_ref_id, &disbursed_zp_refund_id.to_string());
+    assert_eq!(settle_ch, "STOREFRONT");
+    assert_eq!(settle_shop, "shop-p0b");
+    assert_eq!(settle_meta, &sf_channel.metadata_json());
+
+    let settle_entries: Vec<(String, i64, i64, String, String, serde_json::Value)> =
+        sqlx::query_as(
+            r#"
+            SELECT account_id, debit_vnd, credit_vnd, sales_channel, storefront_shop_id, metadata
+            FROM ledger_entries
+            WHERE transaction_id = $1
+            ORDER BY account_id ASC
+            "#,
+        )
+        .bind(settle_tx_id)
+        .fetch_all(&pool)
+        .await
+        .expect("query backfilled refund_settle ledger entries");
+    assert_eq!(settle_entries.len(), 2);
+    assert_eq!(
+        settle_entries[0],
+        (
+            ledger::ACCOUNT_GATEWAY_CLEARING.to_string(),
+            0,
+            100_000,
+            "STOREFRONT".to_string(),
+            "shop-p0b".to_string(),
+            sf_channel.metadata_json(),
+        )
+    );
+    assert_eq!(
+        settle_entries[1],
+        (
+            ledger::ACCOUNT_REFUND_PAYABLE.to_string(),
+            100_000,
+            0,
+            "STOREFRONT".to_string(),
+            "shop-p0b".to_string(),
+            sf_channel.metadata_json(),
+        )
+    );
+
+    // VietQR (`provider_refund_id IS NULL`) and COD refunds must have 0 `refund_settle` txs.
+    for (label, untouched_id) in [
+        ("VietQR provider_refund_id NULL", legacy_null_refund_id),
+        ("COD completed refund", legacy_cod_refund_id),
+    ] {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::BIGINT FROM ledger_transactions WHERE reference_type = 'refund_settle' AND reference_id = $1",
+        )
+        .bind(untouched_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 0, "0018 must not touch {label}");
+    }
+
+    let acct_balance = |summary: &ledger::LedgerSummary, acct_id: &str| -> i64 {
+        summary
+            .accounts
+            .iter()
+            .find(|a| a.account_id == acct_id)
+            .map(|a| a.balance_vnd)
+            .unwrap_or_else(|| panic!("missing account {acct_id}"))
+    };
+
+    let sf_summary = ledger::get_ledger_summary(&pool, Some(SalesChannel::Storefront))
+        .await
+        .expect("STOREFRONT ledger summary after 0018");
+    assert!(sf_summary.is_balanced);
+    assert_eq!(sf_summary.unbalanced_transactions, 0);
+    assert_eq!(acct_balance(&sf_summary, ledger::ACCOUNT_REFUND_PAYABLE), 0);
+    assert_eq!(
+        acct_balance(&sf_summary, ledger::ACCOUNT_GATEWAY_CLEARING),
+        150_000
+    );
+    assert_eq!(
+        acct_balance(&sf_summary, ledger::ACCOUNT_ESCROW_LIABILITY),
+        150_000
+    );
+
+    let mp_summary = ledger::get_ledger_summary(&pool, Some(SalesChannel::Marketplace))
+        .await
+        .expect("MARKETPLACE ledger summary after 0018");
+    assert!(mp_summary.is_balanced);
+    assert_eq!(
+        acct_balance(&mp_summary, ledger::ACCOUNT_REFUND_PAYABLE),
+        80_000
+    );
+    assert_eq!(
+        acct_balance(&mp_summary, ledger::ACCOUNT_GATEWAY_CLEARING),
+        150_000
+    );
+
+    let all_summary = ledger::get_ledger_summary(&pool, None)
+        .await
+        .expect("global ledger summary after 0018");
+    assert!(all_summary.is_balanced);
+    assert_eq!(all_summary.unbalanced_transactions, 0);
+    assert_eq!(
+        acct_balance(&all_summary, ledger::ACCOUNT_REFUND_PAYABLE),
+        80_000
+    );
+    assert_eq!(
+        acct_balance(&all_summary, ledger::ACCOUNT_GATEWAY_CLEARING),
+        300_000
+    );
+
+    // 8. Re-running 0018 SQL must be strictly idempotent (zero duplicate transactions/entries)
+    sqlx::raw_sql(include_str!(
+        "../migrations/0018_backfill_phase0b_zalopay_refund_settle.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("re-run 0018 migration SQL idempotently");
+
+    let settle_tx_count_after_rerun: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM ledger_transactions WHERE reference_type = 'refund_settle'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        settle_tx_count_after_rerun, 1,
+        "re-running 0018 must not duplicate refund_settle ledger_transactions"
+    );
+
+    let settle_entry_count_after_rerun: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::BIGINT FROM ledger_entries WHERE transaction_id = $1")
+            .bind(settle_tx_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(settle_entry_count_after_rerun, 2);
+
+    let sf_summary_after_rerun = ledger::get_ledger_summary(&pool, Some(SalesChannel::Storefront))
+        .await
+        .expect("STOREFRONT ledger summary after re-running 0018");
+    assert_eq!(
+        acct_balance(&sf_summary_after_rerun, ledger::ACCOUNT_REFUND_PAYABLE),
+        0
+    );
+    assert_eq!(
+        acct_balance(&sf_summary_after_rerun, ledger::ACCOUNT_GATEWAY_CLEARING),
+        150_000
+    );
+
+    // Subsequent runtime `build_refund_settle_tx` call collides on the same idempotency_key -> no-op
+    let mut replay_tx = pool.begin().await.expect("begin replay check tx");
+    let replay_inserted = ledger::post_transaction(
+        &mut replay_tx,
+        &ledger::build_refund_settle_tx(disbursed_zp_refund_id, 100_000, sf_channel),
+    )
+    .await
+    .expect("idempotent post_transaction replay");
+    assert_eq!(
+        replay_inserted, None,
+        "runtime build_refund_settle_tx must deduplicate against 0018 idempotency_key"
+    );
+    replay_tx.commit().await.expect("commit replay check tx");
 
     teardown_isolated_db(admin_pool, pool, &db_name).await;
 }
@@ -426,7 +742,7 @@ async fn test_pg_migration_immutability_and_channel_filtered_ledger_and_reconcil
     .expect("insert legacy ledger entries");
     legacy_tx.commit().await.expect("commit legacy ledger tx");
 
-    // 2. Apply additive migrations 0002..0017 on top of populated tables
+    // 2. Apply additive migrations 0002..0018 on top of populated tables
     sqlx::raw_sql(include_str!("../migrations/0002_sales_channel.sql"))
         .execute(&pool)
         .await
@@ -435,7 +751,7 @@ async fn test_pg_migration_immutability_and_channel_filtered_ledger_and_reconcil
         .execute(&pool)
         .await
         .expect("apply 0003_zalopay.sql");
-    for (name, sql) in MIGRATIONS_0004_TO_0017 {
+    for (name, sql) in MIGRATIONS_0004_TO_0018 {
         sqlx::raw_sql(sql)
             .execute(&pool)
             .await

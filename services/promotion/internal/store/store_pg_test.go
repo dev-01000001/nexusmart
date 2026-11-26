@@ -1465,3 +1465,177 @@ func TestPGStore_Phase0BUpgrade_NullJSONBAndBackfill(t *testing.T) {
 		}
 	}
 }
+
+func TestPGStore_R1Money5_SubOrderClawbackOnly_Idempotent(t *testing.T) {
+	st, pool := openTestPGStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	suffix := uuid.NewString()[:8]
+	buyerID := "pg-r1m5-buyer-" + suffix
+	shopID := "pg-r1m5-shop-" + suffix
+	grpID := "pg-r1m5-grp-" + suffix
+	subOrdID := "pg-r1m5-sub-" + suffix
+
+	if _, _, err := st.CreditCoins(ctx, buyerID, 5000, "test_seed", "seed-r1m5-"+suffix); err != nil {
+		t.Fatalf("CreditCoins: %v", err)
+	}
+	v, err := st.CreateVoucher(ctx, domain.Voucher{
+		Code:         "R1M5_" + suffix,
+		Name:         "R1M5 Shop Voucher",
+		Scope:        domain.VoucherScopeShop,
+		ShopID:       shopID,
+		DiscountType: domain.DiscountTypeFixed,
+		ValueVND:     10000,
+		Quota:        5,
+		PerUserLimit: 1,
+		BudgetVND:    50000,
+		StartsAt:     now.Add(-time.Hour),
+		EndsAt:       now.Add(2 * time.Hour),
+		IsActive:     true,
+		Status:       domain.VoucherStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("CreateVoucher: %v", err)
+	}
+	if _, _, err := st.CommitReservation(ctx, domain.PromotionReservation{
+		OrderID: grpID,
+		UserID:  buyerID,
+		Vouchers: []domain.ReservedVoucher{
+			{VoucherID: v.ID, Scope: domain.VoucherScopeShop, ShopID: shopID, DiscountVND: 10000},
+		},
+		CoinsUsed:     5000,
+		BreakdownJSON: []byte(`{"shops":[{"shopId":"` + shopID + `","coinsDiscountVnd":"5000","shopVoucherDiscountVnd":"10000"}]}`),
+	}, now); err != nil {
+		t.Fatalf("CommitReservation: %v", err)
+	}
+	if _, err := st.ProcessOrderCompletedEvent(ctx, "ev-r1m5-"+suffix, "order.completed", subOrdID, buyerID, 2500); err != nil {
+		t.Fatalf("ProcessOrderCompletedEvent: %v", err)
+	}
+
+	res1, err := st.ReleaseReservationShop(ctx, grpID, shopID, subOrdID, true)
+	if err != nil {
+		t.Fatalf("ReleaseReservationShop(clawbackOnly=true) 1st: %v", err)
+	}
+	if res1.AlreadyReleased || res1.RewardCoinsClawedBack != 2500 || res1.CoinsReturned != 0 || res1.ShopVoucherReleased {
+		t.Fatalf("unexpected 1st clawback result: %+v", res1)
+	}
+	bal, _, err := st.GetCoinBalance(ctx, buyerID, 10)
+	if err != nil || bal != 0 {
+		t.Fatalf("buyer balance after clawback = %d (err=%v), want 0", bal, err)
+	}
+
+	// Voucher usage, quota, and reservation status must remain untouched.
+	var usedCount, usageQty int
+	var resStatus string
+	if err := pool.QueryRow(ctx, `SELECT used_count FROM vouchers WHERE id = $1`, v.ID).Scan(&usedCount); err != nil {
+		t.Fatalf("query voucher used_count: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT used_qty FROM promotion_user_usage WHERE kind = 'VOUCHER' AND target_id = $1 AND user_id = $2`, v.ID, buyerID).Scan(&usageQty); err != nil {
+		t.Fatalf("query promotion_user_usage: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT status FROM promotion_reservations WHERE order_id = $1`, grpID).Scan(&resStatus); err != nil {
+		t.Fatalf("query promotion_reservations: %v", err)
+	}
+	if usedCount != 1 || usageQty != 1 || resStatus != "RESERVED" {
+		t.Fatalf("clawback_only mutated reservation/voucher: usedCount=%d usageQty=%d status=%q", usedCount, usageQty, resStatus)
+	}
+
+	// Replays must be strictly idempotent (0 clawed back, 0 restored).
+	for i := 0; i < 2; i++ {
+		resDup, err := st.ReleaseReservationShop(ctx, grpID, shopID, subOrdID, true)
+		if err != nil || !resDup.AlreadyReleased || resDup.RewardCoinsClawedBack != 0 || resDup.CoinsReturned != 0 {
+			t.Fatalf("ReleaseReservationShop(clawbackOnly=true) replay #%d: res=%+v err=%v", i+1, resDup, err)
+		}
+	}
+
+	// Legacy fallback: empty subOrderID falls back to orderID.
+	legacyOrd := "pg-r1m5-legacy-" + suffix
+	legacyBuyer := "pg-r1m5-lbuyer-" + suffix
+	if _, err := st.ProcessOrderCompletedEvent(ctx, "ev-r1m5-leg-"+suffix, "order.completed", legacyOrd, legacyBuyer, 900); err != nil {
+		t.Fatalf("ProcessOrderCompletedEvent legacy: %v", err)
+	}
+	resLeg, err := st.ReleaseReservationShop(ctx, legacyOrd, shopID, "", true)
+	if err != nil || resLeg.AlreadyReleased || resLeg.RewardCoinsClawedBack != 900 {
+		t.Fatalf("legacy fallback clawback: res=%+v err=%v", resLeg, err)
+	}
+}
+
+func TestPGStore_R1Money5_RefundBeforeOrderCompleted_TombstoneAndConcurrency(t *testing.T) {
+	st, pool := openTestPGStore(t)
+	ctx := context.Background()
+	suffix := uuid.NewString()[:8]
+	shopID := "pg-tomb-shop-" + suffix
+
+	// 1. Refund (clawback_only=true) arrives BEFORE order.completed -> writes processed_events tombstone;
+	// late order.completed must record processed event and skip crediting coins.
+	grpBefore := "pg-tomb-grp-" + suffix
+	subBefore := "pg-tomb-sub-" + suffix
+	buyerBefore := "pg-tomb-buyer-" + suffix
+	evCompBefore := "ev-tomb-comp-" + suffix
+
+	cb1, err := st.ReleaseReservationShop(ctx, grpBefore, shopID, subBefore, true)
+	if err != nil || cb1.AlreadyReleased || cb1.RewardCoinsClawedBack != 0 {
+		t.Fatalf("1st pre-reward clawback_only: res=%+v err=%v", cb1, err)
+	}
+	var tombExists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM processed_events WHERE event_id = $1)`, "reward-clawback:"+subBefore).Scan(&tombExists); err != nil || !tombExists {
+		t.Fatalf("expected tombstone in processed_events, exists=%v err=%v", tombExists, err)
+	}
+	// Replay before order.completed must be idempotent no-op.
+	cb2, err := st.ReleaseReservationShop(ctx, grpBefore, shopID, subBefore, true)
+	if err != nil || !cb2.AlreadyReleased || cb2.RewardCoinsClawedBack != 0 {
+		t.Fatalf("2nd pre-reward clawback_only replay: res=%+v err=%v", cb2, err)
+	}
+	// Late order.completed must mark event processed and skip crediting coins.
+	already, err := st.ProcessOrderCompletedEvent(ctx, evCompBefore, "order.completed", subBefore, buyerBefore, 1500)
+	if err != nil || already {
+		t.Fatalf("late ProcessOrderCompletedEvent: already=%v err=%v", already, err)
+	}
+	if processed, pErr := st.IsEventProcessed(ctx, evCompBefore); pErr != nil || !processed {
+		t.Fatalf("late order.completed event must be recorded in processed_events: processed=%v err=%v", processed, pErr)
+	}
+	bal, _, err := st.GetCoinBalance(ctx, buyerBefore, 10)
+	if err != nil || bal != 0 {
+		t.Fatalf("late order.completed credited coins despite tombstone: bal=%d err=%v", bal, err)
+	}
+	// Replays of both order.completed and clawback_only remain no-ops.
+	if already2, err := st.ProcessOrderCompletedEvent(ctx, evCompBefore, "order.completed", subBefore, buyerBefore, 1500); err != nil || !already2 {
+		t.Fatalf("replay ProcessOrderCompletedEvent: already=%v err=%v", already2, err)
+	}
+	if cb3, err := st.ReleaseReservationShop(ctx, grpBefore, shopID, subBefore, true); err != nil || !cb3.AlreadyReleased || cb3.RewardCoinsClawedBack != 0 {
+		t.Fatalf("3rd clawback_only replay after order.completed: res=%+v err=%v", cb3, err)
+	}
+
+	// 2. Concurrent race: ProcessOrderCompletedEvent vs ReleaseReservationShop(clawback_only=true)
+	// serialized by advisory lock -> final balance is ALWAYS 0 regardless of winner.
+	for i := 0; i < 6; i++ {
+		subRace := fmt.Sprintf("pg-race-sub-%s-%d", suffix, i)
+		grpRace := fmt.Sprintf("pg-race-grp-%s-%d", suffix, i)
+		buyerRace := fmt.Sprintf("pg-race-buyer-%s-%d", suffix, i)
+		evRace := fmt.Sprintf("ev-race-%s-%d", suffix, i)
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var errComp, errCB error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, errComp = st.ProcessOrderCompletedEvent(ctx, evRace, "order.completed", subRace, buyerRace, 1500)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			_, errCB = st.ReleaseReservationShop(ctx, grpRace, shopID, subRace, true)
+		}()
+		close(start)
+		wg.Wait()
+		if errComp != nil || errCB != nil {
+			t.Fatalf("race #%d errors: comp=%v cb=%v", i, errComp, errCB)
+		}
+		raceBal, _, err := st.GetCoinBalance(ctx, buyerRace, 10)
+		if err != nil || raceBal != 0 {
+			t.Fatalf("race #%d left non-zero balance=%d (err=%v)", i, raceBal, err)
+		}
+	}
+}

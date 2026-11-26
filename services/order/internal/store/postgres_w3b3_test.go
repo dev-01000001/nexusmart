@@ -713,3 +713,327 @@ func TestPostgresW3B3_O1_O2_LeaseRenew_TerminalOrphan_AndRestoringClearsOldTrack
 			orphRes.NeedsOrphanShipmentCancel, orphRes.Order.Order.PendingShipmentCancel)
 	}
 }
+
+// TestPostgresR1Money1_AddressChange_FreeshipFloorInvariant verifies OpenOrderAddressChange and
+// ApplyAddressChangeToOrder enforce shop_freeship + freeship <= applied_shipping_fee in Postgres.
+func TestPostgresR1Money1_AddressChange_FreeshipFloorInvariant(t *testing.T) {
+	st, _ := openTempPostgresStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	oldAddr, _ := json.Marshal(&orderv1.OrderAddressSnapshot{RecipientName: "Old", RecipientPhone: "0901234567", ProvinceCode: "79", WardCode: "26734", StreetAddress: "1 Old"})
+	newAddr, _ := json.Marshal(&orderv1.OrderAddressSnapshot{RecipientName: "New", RecipientPhone: "0912345678", ProvinceCode: "79", WardCode: "26735", StreetAddress: "2 New"})
+
+	ordID := "ord-pg-r1m1-" + uuid.NewString()[:8]
+	seedPGCheckoutGroupWithOrder(t, st, "grp-"+ordID, "buyer-1", "shop-1", "idem-"+ordID, db.InsertOrderParams{
+		ID: ordID, OrderCode: "NM-PG-R1M1", Status: "CONFIRMED", PaymentMethod: "COD", PaymentStatus: "PENDING",
+		SubtotalVND: 100000, ShopFreeshipDiscountVND: 30000, ShippingFeeVND: 50000, TotalPayableVND: 120000,
+		CarrierCode: "ghn", ServiceCode: "standard", ShippingAddressJSON: oldAddr,
+	}, now)
+
+	// 1. Applied fee below freeship floor (10k < 30k) must be rejected at store open gate.
+	if _, err := st.OpenOrderAddressChange(ctx, OpenAddressChangeParams{
+		ID: uuid.NewString(), OrderID: ordID, BuyerID: "buyer-1", RequestHash: "h-below", NewAddressJSON: newAddr,
+		CarrierCode: "ghn", ServiceCode: "standard", ExpectedOldShippingFeeVND: 50000, ExpectedOldTotalPayable: 120000,
+		NewShippingFeeVND: 10000, AppliedShippingFeeVND: 10000, NewTotalPayableVND: 80000,
+		FeeAdjusted: true, NeedsCODAdjust: true, ClaimToken: "tok-below", LeaseDuration: 30 * time.Second, Now: now,
+	}); !errors.Is(err, ErrAddressUpdateNotAllowed) {
+		t.Fatalf("OpenOrderAddressChange below freeship floor = %v, want ErrAddressUpdateNotAllowed", err)
+	}
+
+	// 2. Clamped applied fee (30k == freeship floor) opens and applies cleanly, keeping invariant.
+	opened, err := st.OpenOrderAddressChange(ctx, OpenAddressChangeParams{
+		ID: uuid.NewString(), OrderID: ordID, BuyerID: "buyer-1", RequestHash: "h-clamped", NewAddressJSON: newAddr,
+		CarrierCode: "ghn", ServiceCode: "standard", ExpectedOldShippingFeeVND: 50000, ExpectedOldTotalPayable: 120000,
+		NewShippingFeeVND: 30000, AppliedShippingFeeVND: 30000, NewTotalPayableVND: 100000,
+		FeeAdjusted: true, NeedsCODAdjust: true, ClaimToken: "tok-clamped", LeaseDuration: 30 * time.Second, Now: now,
+	})
+	if err != nil {
+		t.Fatalf("OpenOrderAddressChange clamped: %v", err)
+	}
+	applied, err := st.ApplyAddressChangeToOrder(ctx, ApplyAddressChangeParams{
+		ChangeID: opened.Change.ID, OrderID: ordID, ClaimToken: "tok-clamped", LeaseDuration: 30 * time.Second, Now: now.Add(time.Second),
+	})
+	if err != nil || applied.Aborted {
+		t.Fatalf("ApplyAddressChangeToOrder clamped: res=%+v err=%v", applied, err)
+	}
+	if applied.Order.Order.ShippingFeeVND != 30000 || applied.Order.Order.TotalPayableVND != 100000 ||
+		applied.Order.Order.ShopFreeshipDiscountVND+applied.Order.Order.FreeshipDiscountVND > applied.Order.Order.ShippingFeeVND {
+		t.Fatalf("PG order broke freeship floor: %+v", applied.Order.Order)
+	}
+}
+
+// TestPostgresR1Money2_Phase0bPartialReturn_TransitionAndSettlement verifies migrated phase-0b
+// partial returns preserve refund_amount_vnd, keep order RETURN_REQUESTED while REFUNDING, and
+// complete the remaining order (RETURN_REQUESTED -> COMPLETED + order.completed) on REFUNDED.
+func TestPostgresR1Money2_Phase0bPartialReturn_TransitionAndSettlement(t *testing.T) {
+	st, pool := openTempPostgresStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	addrJSON, _ := json.Marshal(&orderv1.OrderAddressSnapshot{RecipientName: "Buyer", RecipientPhone: "0901234567", StreetAddress: "1 St"})
+
+	ordID := "ord-pg-r1m2-" + uuid.NewString()[:8]
+	grpID := "grp-" + ordID
+	if _, err := st.CreateCheckoutGroup(ctx, db.CreateCheckoutGroupParams{
+		ID: grpID, BuyerID: "buyer-1", IdempotencyKey: "idem-" + ordID, RequestHash: "h-" + ordID,
+		Status: "IN_PROGRESS", PaymentMethod: "VIETQR", TotalPayableVND: 300000,
+	}); err != nil {
+		t.Fatalf("CreateCheckoutGroup: %v", err)
+	}
+	if _, err := st.PersistCheckoutBatch(ctx, CheckoutBatch{
+		CheckoutGroupID: grpID,
+		Now:             now,
+		Orders: []NewOrderRecord{
+			{
+				Order: db.InsertOrderParams{
+					ID: ordID, OrderCode: "NM-PG-R1M2", CheckoutGroupID: grpID, BuyerID: "buyer-1", ShopID: "shop-1",
+					Status: "RETURN_REQUESTED", PaymentMethod: "VIETQR", PaymentID: "pay-" + ordID, PaymentStatus: "SUCCEEDED",
+					SubtotalVND: 300000, TotalPayableVND: 300000, ShippingAddressJSON: addrJSON,
+				},
+				Items: []db.InsertOrderItemParams{
+					{ID: "item-a-" + ordID, OrderID: ordID, SKUID: "SKU-A", ProductID: "p-a", ProductName: "A", UnitPriceVND: 100000, EffectiveUnitPriceVND: 100000, Quantity: 1, LineTotalVND: 100000},
+					{ID: "item-b-" + ordID, OrderID: ordID, SKUID: "SKU-B", ProductID: "p-b", ProductName: "B", UnitPriceVND: 200000, EffectiveUnitPriceVND: 200000, Quantity: 1, LineTotalVND: 200000},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("PersistCheckoutBatch: %v", err)
+	}
+	rrID := "rr-pg-r1m2-" + uuid.NewString()[:8]
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO return_requests (id, order_id, order_code, buyer_id, shop_id, reason, items_json, status, goods_received, refund_amount_vnd, created_at, updated_at)
+		VALUES ($1, $2, 'NM-PG-R1M2', 'buyer-1', 'shop-1', 'SKU-A defective', $3::jsonb, 'RECEIVED', TRUE, 100000, $4, $4)
+	`, rrID, ordID, `[{"order_item_id":"item-a-`+ordID+`","sku_id":"SKU-A","quantity":1}]`, now); err != nil {
+		t.Fatalf("seed migrated partial return: %v", err)
+	}
+
+	res1, err := st.TransitionReturnRequest(ctx, ReturnTransitionParams{
+		ReturnRequestID: rrID,
+		TargetStatus:    orderv1.ReturnStatus_RETURN_STATUS_REFUNDING,
+		ActorID:         "seller-1",
+		ActorRole:       "seller",
+		Note:            "confirm partial return received",
+		Now:             now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("TransitionReturnRequest(REFUNDING): %v", err)
+	}
+	if res1.Return.Request.RefundAmountVND != 100000 {
+		t.Fatalf("PG REFUNDING overwrote refund_amount_vnd: got %d, want 100000", res1.Return.Request.RefundAmountVND)
+	}
+	if res1.Order.Order.Status != "RETURN_REQUESTED" {
+		t.Fatalf("PG REFUNDING partial return order status = %q, want RETURN_REQUESTED", res1.Order.Order.Status)
+	}
+
+	res2, err := st.TransitionReturnRequest(ctx, ReturnTransitionParams{
+		ReturnRequestID: rrID,
+		TargetStatus:    orderv1.ReturnStatus_RETURN_STATUS_REFUNDED,
+		ActorID:         "system",
+		ActorRole:       "system",
+		Note:            "partial refund done",
+		Now:             now.Add(2 * time.Second),
+		BuildCompletedOutboxFn: func(ord db.Order) (db.InsertOutboxEventParams, error) {
+			return db.InsertOutboxEventParams{
+				ID:          uuid.NewString(),
+				EventType:   "order.completed",
+				PayloadJSON: []byte(`{"order_id":"` + ord.ID + `"}`),
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("TransitionReturnRequest(REFUNDED): %v", err)
+	}
+	if res2.Order.Order.Status != "COMPLETED" {
+		t.Fatalf("PG REFUNDED partial return order status = %q, want COMPLETED", res2.Order.Order.Status)
+	}
+	var completedCount, returnedCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT
+			COUNT(*) FILTER (WHERE event_type = 'order.completed'),
+			COUNT(*) FILTER (WHERE event_type = 'order.returned')
+		FROM outbox_events
+		WHERE payload_json::text LIKE '%' || $1 || '%'
+	`, ordID).Scan(&completedCount, &returnedCount); err != nil {
+		t.Fatalf("query outbox_events: %v", err)
+	}
+	if completedCount != 1 || returnedCount != 0 {
+		t.Fatalf("PG partial return outbox mismatch: completed=%d returned=%d, want 1/0", completedCount, returnedCount)
+	}
+
+	// 2. Scenario 1 (prior refunded_vnd = 150k, partial return = 100k, total = 300k):
+	// both when payment.refunded for return has NOT yet arrived and when it HAS arrived,
+	// effectiveRefunded must equal 250k (kept = 50k) and transition RETURN_REQUESTED -> COMPLETED.
+	for _, recordedFirst := range []bool{false, true} {
+		ordS1 := "ord-pg-r1m2-s1-" + uuid.NewString()[:8]
+		grpS1 := "grp-" + ordS1
+		rrS1 := "rr-" + ordS1
+		refS1 := "ref-" + ordS1
+		if _, err := st.CreateCheckoutGroup(ctx, db.CreateCheckoutGroupParams{
+			ID: grpS1, BuyerID: "buyer-1", IdempotencyKey: "idem-" + ordS1, RequestHash: "h-" + ordS1,
+			Status: "IN_PROGRESS", PaymentMethod: "VIETQR", TotalPayableVND: 300000,
+		}); err != nil {
+			t.Fatalf("CreateCheckoutGroup s1: %v", err)
+		}
+		if _, err := st.PersistCheckoutBatch(ctx, CheckoutBatch{
+			CheckoutGroupID: grpS1,
+			Now:             now,
+			Orders: []NewOrderRecord{
+				{
+					Order: db.InsertOrderParams{
+						ID: ordS1, OrderCode: "NM-PG-S1-" + ordS1[len(ordS1)-4:], CheckoutGroupID: grpS1, BuyerID: "buyer-1", ShopID: "shop-1",
+						Status: "RETURN_REQUESTED", PaymentMethod: "VIETQR", PaymentID: "pay-" + ordS1, PaymentStatus: "SUCCEEDED",
+						SubtotalVND: 300000, TotalPayableVND: 300000, ShippingAddressJSON: addrJSON,
+					},
+					Items: []db.InsertOrderItemParams{
+						{ID: "item-a-" + ordS1, OrderID: ordS1, SKUID: "SKU-A", ProductID: "p-a", ProductName: "A", UnitPriceVND: 100000, EffectiveUnitPriceVND: 100000, Quantity: 1, LineTotalVND: 100000},
+						{ID: "item-b-" + ordS1, OrderID: ordS1, SKUID: "SKU-B", ProductID: "p-b", ProductName: "B", UnitPriceVND: 200000, EffectiveUnitPriceVND: 200000, Quantity: 1, LineTotalVND: 200000},
+					},
+				},
+			},
+		}); err != nil {
+			t.Fatalf("PersistCheckoutBatch s1: %v", err)
+		}
+		// Prior manual refund of 150k.
+		if _, err := st.RecordPaymentRefunded(ctx, PaymentRefundedParams{
+			EventID: "ev-prior-" + ordS1, EventType: "payment.refunded", PaymentID: "pay-" + ordS1,
+			OrderID: ordS1, RefundID: "ref-prior-" + ordS1, AmountVND: 150000, Reason: "prior manual refund",
+		}); err != nil {
+			t.Fatalf("RecordPaymentRefunded prior: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO return_requests (id, order_id, order_code, buyer_id, shop_id, reason, items_json, status, goods_received, refund_amount_vnd, created_at, updated_at)
+			VALUES ($1, $2, 'NM-PG-S1', 'buyer-1', 'shop-1', 'SKU-A defective', $3::jsonb, 'RECEIVED', TRUE, 100000, $4, $4)
+		`, rrS1, ordS1, `[{"order_item_id":"item-a-`+ordS1+`","sku_id":"SKU-A","quantity":1}]`, now); err != nil {
+			t.Fatalf("seed s1 return: %v", err)
+		}
+		if _, err := st.TransitionReturnRequest(ctx, ReturnTransitionParams{
+			ReturnRequestID: rrS1, TargetStatus: orderv1.ReturnStatus_RETURN_STATUS_REFUNDING,
+			ActorID: "seller-1", ActorRole: "seller", Note: "received", Now: now.Add(time.Second),
+		}); err != nil {
+			t.Fatalf("s1 REFUNDING: %v", err)
+		}
+		amt100k := int64(100000)
+		if _, err := st.UpdateReturnRefundApprovalState(ctx, rrS1, refS1, "", true, &amt100k); err != nil {
+			t.Fatalf("s1 save refund_id: %v", err)
+		}
+		if recordedFirst {
+			if _, err := st.RecordPaymentRefunded(ctx, PaymentRefundedParams{
+				EventID: "ev-ret-" + ordS1, EventType: "payment.refunded", PaymentID: "pay-" + ordS1,
+				OrderID: ordS1, RefundID: refS1, IdempotencyKey: "order-return-refund:" + ordS1,
+				AmountVND: 100000, Reason: "return refund",
+			}); err != nil {
+				t.Fatalf("RecordPaymentRefunded return: %v", err)
+			}
+		}
+		var gotEffective int64 = -1
+		resS1, err := st.TransitionReturnRequest(ctx, ReturnTransitionParams{
+			ReturnRequestID: rrS1, TargetStatus: orderv1.ReturnStatus_RETURN_STATUS_REFUNDED,
+			ActorID: "system", ActorRole: "system", Note: "done", RequirePromoReleasedOnFullReturn: true, Now: now.Add(2 * time.Second),
+			BuildPartialCompletedOutboxFn: func(ord db.Order, effectiveRefundedVND int64) (db.InsertOutboxEventParams, error) {
+				gotEffective = effectiveRefundedVND
+				return db.InsertOutboxEventParams{
+					ID: uuid.NewString(), EventType: "order.completed",
+					PayloadJSON: []byte(`{"order_id":"` + ord.ID + `"}`),
+				}, nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("s1 (recordedFirst=%v) REFUNDED: %v", recordedFirst, err)
+		}
+		if gotEffective != 250000 || resS1.Order.Order.Status != "COMPLETED" {
+			t.Fatalf("s1 (recordedFirst=%v): gotEffective=%d status=%q, want 250000 / COMPLETED", recordedFirst, gotEffective, resS1.Order.Order.Status)
+		}
+	}
+
+	// 3. Scenario 2 (prior 100k + partial return 100k + concurrent admin refund 100k = 300k/300k unrecorded return event):
+	// REFUNDING -> REFUNDED requires promo release (ErrReturnNeedsPromoRelease), then transitions to RETURNED + order.returned.
+	ordS2 := "ord-pg-r1m2-s2-" + uuid.NewString()[:8]
+	grpS2 := "grp-" + ordS2
+	rrS2 := "rr-" + ordS2
+	refS2 := "ref-" + ordS2
+	if _, err := st.CreateCheckoutGroup(ctx, db.CreateCheckoutGroupParams{
+		ID: grpS2, BuyerID: "buyer-1", IdempotencyKey: "idem-" + ordS2, RequestHash: "h-" + ordS2,
+		Status: "IN_PROGRESS", PaymentMethod: "VIETQR", TotalPayableVND: 300000,
+	}); err != nil {
+		t.Fatalf("CreateCheckoutGroup s2: %v", err)
+	}
+	if _, err := st.PersistCheckoutBatch(ctx, CheckoutBatch{
+		CheckoutGroupID: grpS2,
+		Now:             now,
+		Orders: []NewOrderRecord{
+			{
+				Order: db.InsertOrderParams{
+					ID: ordS2, OrderCode: "NM-PG-S2-" + ordS2[len(ordS2)-4:], CheckoutGroupID: grpS2, BuyerID: "buyer-1", ShopID: "shop-1",
+					Status: "RETURN_REQUESTED", PaymentMethod: "VIETQR", PaymentID: "pay-" + ordS2, PaymentStatus: "SUCCEEDED",
+					SubtotalVND: 300000, TotalPayableVND: 300000, ShippingAddressJSON: addrJSON,
+				},
+				Items: []db.InsertOrderItemParams{
+					{ID: "item-a-" + ordS2, OrderID: ordS2, SKUID: "SKU-A", ProductID: "p-a", ProductName: "A", UnitPriceVND: 100000, EffectiveUnitPriceVND: 100000, Quantity: 1, LineTotalVND: 100000},
+					{ID: "item-b-" + ordS2, OrderID: ordS2, SKUID: "SKU-B", ProductID: "p-b", ProductName: "B", UnitPriceVND: 200000, EffectiveUnitPriceVND: 200000, Quantity: 1, LineTotalVND: 200000},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("PersistCheckoutBatch s2: %v", err)
+	}
+	if _, err := st.RecordPaymentRefunded(ctx, PaymentRefundedParams{
+		EventID: "ev-s2-p1-" + ordS2, EventType: "payment.refunded", PaymentID: "pay-" + ordS2,
+		OrderID: ordS2, RefundID: "ref-s2-p1", AmountVND: 100000, Reason: "prior 100k",
+	}); err != nil {
+		t.Fatalf("s2 prior 100k: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO return_requests (id, order_id, order_code, buyer_id, shop_id, reason, items_json, status, goods_received, refund_amount_vnd, created_at, updated_at)
+		VALUES ($1, $2, 'NM-PG-S2', 'buyer-1', 'shop-1', 'SKU-A defective', $3::jsonb, 'RECEIVED', TRUE, 100000, $4, $4)
+	`, rrS2, ordS2, `[{"order_item_id":"item-a-`+ordS2+`","sku_id":"SKU-A","quantity":1}]`, now); err != nil {
+		t.Fatalf("seed s2 return: %v", err)
+	}
+	if _, err := st.TransitionReturnRequest(ctx, ReturnTransitionParams{
+		ReturnRequestID: rrS2, TargetStatus: orderv1.ReturnStatus_RETURN_STATUS_REFUNDING,
+		ActorID: "seller-1", ActorRole: "seller", Note: "received", Now: now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("s2 REFUNDING: %v", err)
+	}
+	amt100 := int64(100000)
+	if _, err := st.UpdateReturnRefundApprovalState(ctx, rrS2, refS2, "", true, &amt100); err != nil {
+		t.Fatalf("s2 save refund_id: %v", err)
+	}
+	// Concurrent admin refund adds another 100k -> ord.RefundedVND=200k; plus unrecorded 100k return = 300k (100%).
+	if _, err := st.RecordPaymentRefunded(ctx, PaymentRefundedParams{
+		EventID: "ev-s2-admin-" + ordS2, EventType: "payment.refunded", PaymentID: "pay-" + ordS2,
+		OrderID: ordS2, RefundID: "ref-s2-admin", AmountVND: 100000, Reason: "concurrent admin 100k",
+	}); err != nil {
+		t.Fatalf("s2 concurrent admin 100k: %v", err)
+	}
+	if _, err := st.TransitionReturnRequest(ctx, ReturnTransitionParams{
+		ReturnRequestID: rrS2, TargetStatus: orderv1.ReturnStatus_RETURN_STATUS_REFUNDED,
+		ActorID: "system", ActorRole: "system", Note: "done", RequirePromoReleasedOnFullReturn: true, Now: now.Add(2 * time.Second),
+	}); !errors.Is(err, ErrReturnNeedsPromoRelease) {
+		t.Fatalf("s2 without promo_released: got err=%v, want ErrReturnNeedsPromoRelease", err)
+	}
+	if _, err := st.UpdateReturnSideEffectProgress(ctx, rrS2, false, true, false, nil); err != nil {
+		t.Fatalf("s2 mark promo_released: %v", err)
+	}
+	resS2, err := st.TransitionReturnRequest(ctx, ReturnTransitionParams{
+		ReturnRequestID: rrS2, TargetStatus: orderv1.ReturnStatus_RETURN_STATUS_REFUNDED,
+		ActorID: "system", ActorRole: "system", Note: "done", RequirePromoReleasedOnFullReturn: true, Now: now.Add(3 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("s2 REFUNDED after promo_released: %v", err)
+	}
+	if resS2.Order.Order.Status != "RETURNED" {
+		t.Fatalf("s2 order status = %q, want RETURNED", resS2.Order.Order.Status)
+	}
+	var s2Comp, s2Ret int
+	if err := pool.QueryRow(ctx, `
+		SELECT
+			COUNT(*) FILTER (WHERE event_type = 'order.completed'),
+			COUNT(*) FILTER (WHERE event_type = 'order.returned')
+		FROM outbox_events
+		WHERE payload_json::text LIKE '%' || $1 || '%'
+	`, ordS2).Scan(&s2Comp, &s2Ret); err != nil {
+		t.Fatalf("query s2 outbox_events: %v", err)
+	}
+	if s2Comp != 0 || s2Ret != 1 {
+		t.Fatalf("PG s2 outbox mismatch: completed=%d returned=%d, want 0/1", s2Comp, s2Ret)
+	}
+}

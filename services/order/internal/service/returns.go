@@ -847,7 +847,8 @@ func (s *OrderService) ensureReturnShipment(ctx context.Context, rr db.ReturnReq
 	}
 
 	ord := ordAgg.Order
-	totalWeight, itemsSummary := summarizeOrderParcel(ordAgg.Items)
+	parcelItems, _ := store.SelectReturnItems(ordAgg.Items, latest.Request.ItemsJSON)
+	totalWeight, itemsSummary := summarizeOrderParcel(parcelItems)
 	buyerAddr := orderAddressToShipmentAddress(ord.ShippingAddressJSON)
 	svcCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
 	defer cancel()
@@ -957,17 +958,20 @@ func (s *OrderService) executeRefundingSideEffects(ctx context.Context, rr db.Re
 		}
 	}
 	ord := ordAgg.Order
+	restockItems, isPartial := store.SelectReturnItems(ordAgg.Items, curRR.ItemsJSON)
+	isPartialWithRemainder := isPartial && statemachine.StringToStatus(ord.Status) == orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED
 	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
 	defer cancel()
 
-	// 1. Refund remaining unrefunded balance P - refunded_vnd (applies to both online and delivered COD).
+	// 1. Refund remaining unrefunded balance P - refunded_vnd (or min(refund_amount_vnd, remaining)
+	// for migrated phase-0b partial returns; applies to both online and delivered COD).
 	if !curRR.RefundDone {
 		// F11: Already waiting for two-person checker approval — never create another refund or mark REFUNDED.
 		if strings.EqualFold(curRR.RefundApprovalStatus, "PENDING_APPROVAL") {
 			return latest, nil
 		}
 
-		remaining := maxInt64(0, ord.TotalPayableVND-ord.RefundedVND)
+		remaining := store.ResolveReturnRefundTarget(ord, curRR, isPartial)
 		var refundAmtToSave *int64
 		if remaining > 0 {
 			if s.clients.Payment == nil {
@@ -1085,19 +1089,36 @@ func (s *OrderService) executeRefundingSideEffects(ctx context.Context, rr db.Re
 	}
 
 	// 2. Release shop-scoped promotions (coins, shop voucher, flash slots).
+	// For migrated phase-0b partial returns where buyer keeps remaining items (effectiveRefunded < total),
+	// leave promo_released=false and skip ReleasePromotionShop. If concurrent refunds have pushed
+	// effectiveRefunded to 100%, release promotions immediately (and Step 4 re-verifies under lock).
 	if !curRR.PromoReleased {
-		if pErr := s.releasePromotionShopErr(compCtx, ord.CheckoutGroupID, ord.ShopID, "order_returned"); pErr != nil {
-			return nil, fmt.Errorf("ReleasePromotionShop for return %s (order %s): %w", curRR.ID, ord.ID, pErr)
+		shouldReleasePromo := !isPartialWithRemainder
+		if isPartialWithRemainder {
+			freshOrdAgg, gErr := s.store.GetOrderWithDetails(compCtx, curRR.OrderID)
+			if gErr != nil {
+				return nil, fmt.Errorf("reload order %s for partial return promo check: %w", curRR.OrderID, gErr)
+			}
+			ordAgg = freshOrdAgg
+			ord = freshOrdAgg.Order
+			effectiveRefunded := store.ComputeEffectiveReturnRefunded(freshOrdAgg.Order, freshOrdAgg.Timeline, curRR)
+			shouldReleasePromo = effectiveRefunded >= freshOrdAgg.Order.TotalPayableVND
 		}
-		if updated, uErr := s.store.UpdateReturnSideEffectProgress(compCtx, curRR.ID, false, true, false, nil); uErr == nil && updated != nil {
-			curRR = *updated
+		if shouldReleasePromo {
+			if pErr := s.releasePromotionShopErr(compCtx, ord.CheckoutGroupID, ord.ShopID, ord.ID, "order_returned"); pErr != nil {
+				return nil, fmt.Errorf("ReleasePromotionShop for return %s (order %s): %w", curRR.ID, ord.ID, pErr)
+			}
+			if updated, uErr := s.store.UpdateReturnSideEffectProgress(compCtx, curRR.ID, false, true, false, nil); uErr == nil && updated != nil {
+				curRR = *updated
+			}
 		}
 	}
 
 	// 3. Restock items ONLY when goods physically reached the seller without a wrong-goods dispute.
+	// For migrated phase-0b partial returns, restockItems contains only the returned SKUs/quantities from items_json.
 	// P0-2: ConfirmStock(checkout_group_id) runs before RestockOrderItems so stock is never double-added.
 	if curRR.ShouldRestock && !curRR.RestockDone {
-		if sErr := s.restockOrderItemsWithConfirmErr(compCtx, ord.CheckoutGroupID, ord.ID, ordAgg.Items); sErr != nil {
+		if sErr := s.restockOrderItemsWithConfirmErr(compCtx, ord.CheckoutGroupID, ord.ID, restockItems); sErr != nil {
 			return nil, fmt.Errorf("RestockOrderItems for return %s (order %s): %w", curRR.ID, ord.ID, sErr)
 		}
 		if updated, uErr := s.store.UpdateReturnSideEffectProgress(compCtx, curRR.ID, false, false, true, nil); uErr == nil && updated != nil {
@@ -1106,19 +1127,38 @@ func (s *OrderService) executeRefundingSideEffects(ctx context.Context, rr db.Re
 	}
 
 	traceID, traceparent := traceMetaFromContext(ctx)
-	res, err := s.store.TransitionReturnRequest(compCtx, store.ReturnTransitionParams{
-		ReturnRequestID: curRR.ID,
-		ExpectedStatus:  orderv1.ReturnStatus_RETURN_STATUS_REFUNDING,
-		TargetStatus:    orderv1.ReturnStatus_RETURN_STATUS_REFUNDED,
-		ActorID:         "order-service",
-		ActorRole:       "system",
-		Note:            "Return refund and compensations completed",
-		UpdateDeadline:  true,
-		DeadlineAt:      nil,
-		TraceID:         traceID,
-		Traceparent:     traceparent,
-		Now:             s.nowFn(),
-	})
+	transitionParams := store.ReturnTransitionParams{
+		ReturnRequestID:                  curRR.ID,
+		ExpectedStatus:                   orderv1.ReturnStatus_RETURN_STATUS_REFUNDING,
+		TargetStatus:                     orderv1.ReturnStatus_RETURN_STATUS_REFUNDED,
+		ActorID:                          "order-service",
+		ActorRole:                        "system",
+		Note:                             "Return refund and compensations completed",
+		UpdateDeadline:                   true,
+		DeadlineAt:                       nil,
+		RequirePromoReleasedOnFullReturn: true,
+		TraceID:                          traceID,
+		Traceparent:                      traceparent,
+		Now:                              s.nowFn(),
+		BuildPartialCompletedOutboxFn: func(o db.Order, effectiveRefundedVND int64) (db.InsertOutboxEventParams, error) {
+			return s.buildOrderCompletedOutboxWithEffectiveRefunded(o, effectiveRefundedVND, traceID, traceparent)
+		},
+	}
+	res, err := s.store.TransitionReturnRequest(compCtx, transitionParams)
+	if errors.Is(err, store.ErrReturnNeedsPromoRelease) {
+		// Concurrent refund pushed effectiveRefunded to 100% between Step 2 and Step 4:
+		// release shop promotions before finalizing the order as RETURNED.
+		if pErr := s.releasePromotionShopErr(compCtx, ord.CheckoutGroupID, ord.ShopID, ord.ID, "order_returned"); pErr != nil {
+			return nil, fmt.Errorf("ReleasePromotionShop for full-refunded partial return %s (order %s): %w", curRR.ID, ord.ID, pErr)
+		}
+		if updated, uErr := s.store.UpdateReturnSideEffectProgress(compCtx, curRR.ID, false, true, false, nil); uErr != nil {
+			return nil, fmt.Errorf("mark promo_released for return %s: %w", curRR.ID, uErr)
+		} else if updated != nil {
+			curRR = *updated
+		}
+		transitionParams.Now = s.nowFn()
+		res, err = s.store.TransitionReturnRequest(compCtx, transitionParams)
+	}
 	if err != nil {
 		if errors.Is(err, statemachine.ErrInvalidReturnTransition) {
 			return s.store.GetReturnRequest(ctx, curRR.ID, "")

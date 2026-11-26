@@ -56,6 +56,13 @@ func (m *MemoryStore) SeedClosedReturnForDeliveredOrderForTest(orderID string) {
 	}
 }
 
+// SeedReturnRequestForTest inserts a return_requests row directly (e.g. simulating a row migrated from phase-0b).
+func (m *MemoryStore) SeedReturnRequestForTest(rr db.ReturnRequest) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.returnRequests[rr.ID] = rr
+}
+
 func (m *MemoryStore) getReturnLocked(returnRequestID, orderID string) (*ReturnAggregate, error) {
 	if id := strings.TrimSpace(returnRequestID); id != "" {
 		rr, ok := m.returnRequests[id]
@@ -157,10 +164,19 @@ func (m *MemoryStore) TransitionReturnRequest(_ context.Context, params ReturnTr
 		return nil, fmt.Errorf("%w: return request has no tracking code", statemachine.ErrInvalidReturnTransition)
 	}
 
+	nextRefundAmt := rr.RefundAmountVND
+	hasUnrefundedPartialRemainder := false
 	if params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_REFUNDING {
+		_, isPartial := SelectReturnItems(m.items[ord.ID], rr.ItemsJSON)
+		rem := max64(0, ord.TotalPayableVND-ord.RefundedVND)
+		nextRefundAmt = ResolveReturnRefundTarget(ord, rr, isPartial)
+		hasUnrefundedPartialRemainder = isPartial && nextRefundAmt < rem
+	}
+
+	markOrderReturnedLocked := func(note string) error {
 		ordCur := statemachine.StringToStatus(ord.Status)
 		if err := statemachine.ValidateTransition(ordCur, orderv1.OrderStatus_ORDER_STATUS_RETURNED); err != nil {
-			return nil, err
+			return err
 		}
 		prevOrdStatus := ord.Status
 		ord.Status = statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURNED)
@@ -195,7 +211,7 @@ func (m *MemoryStore) TransitionReturnRequest(_ context.Context, params ReturnTr
 			ToStatus:   ord.Status,
 			ActorID:    params.ActorID,
 			ActorRole:  params.ActorRole,
-			Note:       params.Note,
+			Note:       note,
 			CreatedAt:  now,
 		})
 		wasPaid := ord.TotalPayableVND > 0 &&
@@ -211,11 +227,11 @@ func (m *MemoryStore) TransitionReturnRequest(_ context.Context, params ReturnTr
 			PaymentMethod:    ord.PaymentMethod,
 			FromStatus:       prevOrdStatus,
 			TotalPayableVND:  ord.TotalPayableVND,
-			Reason:           params.Note,
+			Reason:           note,
 			WasPaid:          wasPaid,
 		})
 		if err != nil {
-			return nil, err
+			return err
 		}
 		m.appendOutboxLocked(db.OutboxEvent{
 			ID:          uuid.NewString(),
@@ -225,6 +241,54 @@ func (m *MemoryStore) TransitionReturnRequest(_ context.Context, params ReturnTr
 			PayloadJSON: retPayload,
 			CreatedAt:   now,
 		})
+		return nil
+	}
+
+	if params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_REFUNDING {
+		if hasUnrefundedPartialRemainder {
+			ordCur := statemachine.StringToStatus(ord.Status)
+			if ordCur != orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED {
+				return nil, fmt.Errorf("%w: partial return refund requires order status RETURN_REQUESTED, got %s",
+					statemachine.ErrInvalidTransition, statemachine.StatusToString(ordCur))
+			}
+		} else if err := markOrderReturnedLocked(params.Note); err != nil {
+			return nil, err
+		}
+	} else if params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_REFUNDED {
+		if strings.EqualFold(rr.RefundApprovalStatus, "PENDING_APPROVAL") || strings.EqualFold(rr.RefundApprovalStatus, "REJECTED") {
+			return nil, fmt.Errorf("%w: cannot mark return REFUNDED while refund_approval_status is %q", statemachine.ErrInvalidReturnTransition, rr.RefundApprovalStatus)
+		}
+		ordCur := statemachine.StringToStatus(ord.Status)
+		if ordCur == orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED {
+			effectiveRefunded := ComputeEffectiveReturnRefunded(ord, m.timelines[ord.ID], rr)
+			if ord.TotalPayableVND > 0 && effectiveRefunded < ord.TotalPayableVND {
+				if err := statemachine.ValidateTransition(ordCur, orderv1.OrderStatus_ORDER_STATUS_COMPLETED); err != nil {
+					return nil, err
+				}
+				var completedOutbox db.InsertOutboxEventParams
+				if params.BuildPartialCompletedOutboxFn != nil {
+					var err error
+					completedOutbox, err = params.BuildPartialCompletedOutboxFn(ord, effectiveRefunded)
+					if err != nil {
+						return nil, err
+					}
+				} else if params.BuildCompletedOutboxFn != nil {
+					var err error
+					completedOutbox, err = params.BuildCompletedOutboxFn(ord)
+					if err != nil {
+						return nil, err
+					}
+				}
+				m.completeOrderLocked(ord, params.ActorID, params.ActorRole, "Partial return refunded; order completed for remaining items", completedOutbox, now)
+			} else {
+				if params.RequirePromoReleasedOnFullReturn && !rr.PromoReleased {
+					return nil, ErrReturnNeedsPromoRelease
+				}
+				if err := markOrderReturnedLocked(params.Note); err != nil {
+					return nil, err
+				}
+			}
+		}
 	} else if params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_CLOSED {
 		ordCur := statemachine.StringToStatus(ord.Status)
 		if err := statemachine.ValidateTransition(ordCur, orderv1.OrderStatus_ORDER_STATUS_COMPLETED); err != nil {
@@ -338,15 +402,7 @@ func (m *MemoryStore) TransitionReturnRequest(_ context.Context, params ReturnTr
 		rr.EscalatedFromCancelFailure = false
 	}
 	if params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_REFUNDING {
-		rem := ord.TotalPayableVND - ord.RefundedVND
-		if rem < 0 {
-			rem = 0
-		}
-		rr.RefundAmountVND = rem
-	}
-	if params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_REFUNDED &&
-		(strings.EqualFold(rr.RefundApprovalStatus, "PENDING_APPROVAL") || strings.EqualFold(rr.RefundApprovalStatus, "REJECTED")) {
-		return nil, fmt.Errorf("%w: cannot mark return REFUNDED while refund_approval_status is %q", statemachine.ErrInvalidReturnTransition, rr.RefundApprovalStatus)
+		rr.RefundAmountVND = nextRefundAmt
 	}
 	rr.UpdatedAt = now
 	m.returnRequests[rr.ID] = rr

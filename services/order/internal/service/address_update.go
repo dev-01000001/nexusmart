@@ -232,6 +232,7 @@ func (s *OrderService) UpdateOrderAddress(ctx context.Context, req *orderv1.Upda
 	oldTotalPayable := agg.Order.TotalPayableVND
 
 	appliedShippingFee := oldShippingFee
+	effectiveNewShippingFee := newShippingFee
 	newTotalPayable := oldTotalPayable
 	feeAdjusted := false
 	needsCODAdjust := false
@@ -240,7 +241,9 @@ func (s *OrderService) UpdateOrderAddress(ctx context.Context, req *orderv1.Upda
 	var maxCODGroupTotalVND int64
 
 	if isCOD {
-		appliedShippingFee = newShippingFee
+		appliedShippingFee = maxInt64(newShippingFee, store.OrderFreeshipFloorVND(agg.Order))
+		effectiveNewShippingFee = appliedShippingFee
+		feeDelta = appliedShippingFee - oldShippingFee
 		newTotalPayable = oldTotalPayable + feeDelta
 		if newTotalPayable < 0 {
 			return nil, status.Error(codes.FailedPrecondition,
@@ -260,10 +263,10 @@ func (s *OrderService) UpdateOrderAddress(ctx context.Context, req *orderv1.Upda
 					return nil, status.Error(codes.FailedPrecondition,
 						"ADDRESS_FEE_CONFIRMATION_REQUIRED: phí vận chuyển tăng, vui lòng xác nhận phí mới")
 				}
-				if req.GetExpectedNewShippingFeeVnd() != newShippingFee {
+				if req.GetExpectedNewShippingFeeVnd() != appliedShippingFee {
 					return nil, status.Errorf(codes.FailedPrecondition,
 						`ADDRESS_FEE_CHANGED: {"old_shipping_fee_vnd":%d,"new_shipping_fee_vnd":%d,"fee_delta_vnd":%d,"new_total_payable_vnd":%d}`,
-						oldShippingFee, newShippingFee, feeDelta, newTotalPayable)
+						oldShippingFee, appliedShippingFee, feeDelta, newTotalPayable)
 				}
 			}
 		}
@@ -282,7 +285,7 @@ func (s *OrderService) UpdateOrderAddress(ctx context.Context, req *orderv1.Upda
 		return &orderv1.UpdateOrderAddressResponse{
 			Order:                   aggregateToProtoForCaller(*agg, caller),
 			OldShippingFeeVnd:       oldShippingFee,
-			NewShippingFeeVnd:       newShippingFee,
+			NewShippingFeeVnd:       effectiveNewShippingFee,
 			FeeDeltaVnd:             feeDelta,
 			OldTotalPayableVnd:      oldTotalPayable,
 			NewTotalPayableVnd:      newTotalPayable,
@@ -322,7 +325,7 @@ func (s *OrderService) UpdateOrderAddress(ctx context.Context, req *orderv1.Upda
 		ExpectedOldAddressJSON:    agg.Order.ShippingAddressJSON,
 		ExpectedOldShippingFeeVND: oldShippingFee,
 		ExpectedOldTotalPayable:   oldTotalPayable,
-		NewShippingFeeVND:         newShippingFee,
+		NewShippingFeeVND:         effectiveNewShippingFee,
 		AppliedShippingFeeVND:     appliedShippingFee,
 		NewTotalPayableVND:        newTotalPayable,
 		FeeAdjusted:               feeAdjusted,

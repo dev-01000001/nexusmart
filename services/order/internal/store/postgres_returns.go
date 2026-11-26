@@ -247,18 +247,25 @@ func (s *PostgresStore) TransitionReturnRequest(ctx context.Context, params Retu
 		nextDeadline = params.DeadlineAt
 	}
 	nextRefundAmt := rr.RefundAmountVND
+	hasUnrefundedPartialRemainder := false
 	if params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_REFUNDING {
-		rem := ord.TotalPayableVND - ord.RefundedVND
-		if rem < 0 {
-			rem = 0
+		var isPartial bool
+		if HasRawReturnItems(rr.ItemsJSON) {
+			ordItems, iErr := q.ListOrderItemsByOrderID(ctx, ord.ID)
+			if iErr != nil {
+				return nil, iErr
+			}
+			_, isPartial = SelectReturnItems(ordItems, rr.ItemsJSON)
 		}
-		nextRefundAmt = rem
+		rem := max64(0, ord.TotalPayableVND-ord.RefundedVND)
+		nextRefundAmt = ResolveReturnRefundTarget(ord, rr, isPartial)
+		hasUnrefundedPartialRemainder = isPartial && nextRefundAmt < rem
 	}
 
-	if params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_REFUNDING {
+	markOrderReturnedInTx := func(note string) error {
 		ordCur := statemachine.StringToStatus(ord.Status)
 		if err := statemachine.ValidateTransition(ordCur, orderv1.OrderStatus_ORDER_STATUS_RETURNED); err != nil {
-			return nil, err
+			return err
 		}
 		nextOrdPayStatus := ""
 		if ord.TotalPayableVND == 0 {
@@ -270,7 +277,7 @@ func (s *PostgresStore) TransitionReturnRequest(ctx context.Context, params Retu
 			PaymentStatus: nextOrdPayStatus,
 		})
 		if err != nil {
-			return nil, err
+			return err
 		}
 		// P3-1(a): serialize checkout_groups payment_status sync via group row lock (orders -> checkout_groups order).
 		if nextOrdPayStatus != "" {
@@ -280,13 +287,13 @@ func (s *PostgresStore) TransitionReturnRequest(ctx context.Context, params Retu
 						if err := q.UpdateCheckoutGroupPaymentStatus(ctx, db.UpdateCheckoutGroupPaymentStatusParams{
 							ID: ord.CheckoutGroupID, PaymentStatus: "REFUNDED", PaymentID: "",
 						}); err != nil {
-							return nil, err
+							return err
 						}
 					} else if shouldMarkGroupCancelled(siblings, updatedOrd.ID, updatedOrd.Status, updatedOrd.PaymentStatus) {
 						if err := q.UpdateCheckoutGroupPaymentStatus(ctx, db.UpdateCheckoutGroupPaymentStatusParams{
 							ID: ord.CheckoutGroupID, PaymentStatus: "CANCELLED", PaymentID: "",
 						}); err != nil {
-							return nil, err
+							return err
 						}
 					}
 				}
@@ -299,9 +306,9 @@ func (s *PostgresStore) TransitionReturnRequest(ctx context.Context, params Retu
 			ToStatus:   statemachine.StatusToString(orderv1.OrderStatus_ORDER_STATUS_RETURNED),
 			ActorID:    params.ActorID,
 			ActorRole:  params.ActorRole,
-			Note:       params.Note,
+			Note:       note,
 		}); err != nil {
-			return nil, err
+			return err
 		}
 		wasPaid := updatedOrd.TotalPayableVND > 0 &&
 			(strings.EqualFold(updatedOrd.PaymentStatus, "SUCCEEDED") ||
@@ -316,20 +323,71 @@ func (s *PostgresStore) TransitionReturnRequest(ctx context.Context, params Retu
 			PaymentMethod:    updatedOrd.PaymentMethod,
 			FromStatus:       ord.Status,
 			TotalPayableVND:  updatedOrd.TotalPayableVND,
-			Reason:           params.Note,
+			Reason:           note,
 			WasPaid:          wasPaid,
 		})
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if err := q.InsertOutboxEvent(ctx, db.InsertOutboxEventParams{
+		return q.InsertOutboxEvent(ctx, db.InsertOutboxEventParams{
 			ID:          uuid.NewString(),
 			EventType:   events.SubjectOrderReturned,
 			TraceID:     params.TraceID,
 			Traceparent: params.Traceparent,
 			PayloadJSON: retPayload,
-		}); err != nil {
+		})
+	}
+
+	if params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_REFUNDING {
+		if hasUnrefundedPartialRemainder {
+			// Migrated phase-0b partial return with kept items: keep order in RETURN_REQUESTED
+			// until partial refund finishes, then complete order on REFUNDED so payment settles remaining escrow.
+			ordCur := statemachine.StringToStatus(ord.Status)
+			if ordCur != orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED {
+				return nil, fmt.Errorf("%w: partial return refund requires order status RETURN_REQUESTED, got %s",
+					statemachine.ErrInvalidTransition, statemachine.StatusToString(ordCur))
+			}
+		} else if err := markOrderReturnedInTx(params.Note); err != nil {
 			return nil, err
+		}
+	} else if params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_REFUNDED {
+		if strings.EqualFold(rr.RefundApprovalStatus, "PENDING_APPROVAL") || strings.EqualFold(rr.RefundApprovalStatus, "REJECTED") {
+			return nil, fmt.Errorf("%w: cannot mark return REFUNDED while refund_approval_status is %q", statemachine.ErrInvalidReturnTransition, rr.RefundApprovalStatus)
+		}
+		ordCur := statemachine.StringToStatus(ord.Status)
+		if ordCur == orderv1.OrderStatus_ORDER_STATUS_RETURN_REQUESTED {
+			timeline, tErr := q.ListOrderTimelineByOrderID(ctx, ord.ID)
+			if tErr != nil {
+				return nil, tErr
+			}
+			effectiveRefunded := ComputeEffectiveReturnRefunded(ord, timeline, rr)
+			if ord.TotalPayableVND > 0 && effectiveRefunded < ord.TotalPayableVND {
+				if err := statemachine.ValidateTransition(ordCur, orderv1.OrderStatus_ORDER_STATUS_COMPLETED); err != nil {
+					return nil, err
+				}
+				var completedOutbox db.InsertOutboxEventParams
+				if params.BuildPartialCompletedOutboxFn != nil {
+					completedOutbox, err = params.BuildPartialCompletedOutboxFn(ord, effectiveRefunded)
+					if err != nil {
+						return nil, err
+					}
+				} else if params.BuildCompletedOutboxFn != nil {
+					completedOutbox, err = params.BuildCompletedOutboxFn(ord)
+					if err != nil {
+						return nil, err
+					}
+				}
+				if _, err := completeOrderInTx(ctx, q, ord, params.ActorID, params.ActorRole, "Partial return refunded; order completed for remaining items", completedOutbox); err != nil {
+					return nil, err
+				}
+			} else {
+				if params.RequirePromoReleasedOnFullReturn && !rr.PromoReleased {
+					return nil, ErrReturnNeedsPromoRelease
+				}
+				if err := markOrderReturnedInTx(params.Note); err != nil {
+					return nil, err
+				}
+			}
 		}
 	} else if params.TargetStatus == orderv1.ReturnStatus_RETURN_STATUS_CLOSED {
 		ordCur := statemachine.StringToStatus(ord.Status)

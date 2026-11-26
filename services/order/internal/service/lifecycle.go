@@ -585,7 +585,7 @@ func (s *OrderService) compensateCancelledOrder(
 		}
 	} else {
 		// Active sibling exists: release only this sub-order's shop promotions and confirm+restock its items.
-		if err := s.releasePromotionShopErr(compCtx, groupID, prevOrd.ShopID, reason); err != nil {
+		if err := s.releasePromotionShopErr(compCtx, groupID, prevOrd.ShopID, prevOrd.ID, reason); err != nil {
 			return fmt.Errorf("release shop promotion for cancelled order %s: %w", prevOrd.ID, err)
 		}
 		if err := s.restockOrderItemsWithConfirmErr(compCtx, groupID, prevOrd.ID, items); err != nil {

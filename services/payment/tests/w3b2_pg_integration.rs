@@ -483,7 +483,8 @@ async fn test_pg_w3b2_migration_upgrade_0009_to_0010_to_0011_on_populated_db() {
     );
     assert!(!legacy_by_svc);
 
-    // 9. Apply 0016 (p5 durable last /v2/query state) and 0017 (w3b3 COD fee adjustments) on populated DB
+    // 9. Apply 0016 (p5 durable last /v2/query state), 0017 (w3b3 COD fee adjustments), and
+    //    0018 (phase-0b ZaloPay refund_settle backfill, no-op on main DB) on populated DB
     sqlx::raw_sql(include_str!(
         "../migrations/0016_zalopay_last_query_state.sql"
     ))
@@ -497,6 +498,24 @@ async fn test_pg_w3b2_migration_upgrade_0009_to_0010_to_0011_on_populated_db() {
     .execute(&pool)
     .await
     .expect("apply 0017 on populated DB");
+
+    sqlx::raw_sql(include_str!(
+        "../migrations/0018_backfill_phase0b_zalopay_refund_settle.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("apply 0018 on populated DB");
+
+    let backfill_settle_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM ledger_transactions WHERE reference_type = 'refund_settle'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        backfill_settle_count, 0,
+        "0018 must be a no-op on a main DB with no legacy unsettled phase-0b ZaloPay refunds"
+    );
 
     let (legacy_last_rc, legacy_last_proc): (Option<i32>, Option<bool>) = sqlx::query_as(
         "SELECT provider_last_query_return_code, provider_last_query_is_processing FROM payments WHERE id = $1",

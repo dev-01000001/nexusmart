@@ -267,18 +267,25 @@ func TestSalesChannel_StorefrontRejectsInactiveShopAndCrossShopItemsZeroStockCha
 	h := newTestHarness()
 	buyerCtx := ctxWithUser("buyer-1", "buyer", "")
 
-	// 1. Inactive or missing storefront shops rejected BEFORE stock reservation.
-	for _, shopID := range []string{"shop-missing", "shop-pending", "shop-suspended"} {
+	// 1. Inactive, suspended, or missing storefront shops rejected via verifyShopsActive (F12 409) BEFORE stock reservation.
+	for _, tc := range []struct {
+		shopID     string
+		wantPrefix string
+	}{
+		{shopID: "shop-missing", wantPrefix: "SHOP_NOT_ACTIVE"},
+		{shopID: "shop-pending", wantPrefix: "SHOP_NOT_ACTIVE"},
+		{shopID: "shop-suspended", wantPrefix: "SHOP_SUSPENDED"},
+	} {
 		_, err := h.svc.CreateCheckout(buyerCtx, &orderv1.CreateCheckoutRequest{
-			IdempotencyKey:   "sf-inactive-" + shopID,
+			IdempotencyKey:   "sf-inactive-" + tc.shopID,
 			AddressId:        "addr-buyer-1",
 			Items:            []*orderv1.CheckoutItemInput{{SkuId: "sku-1", Quantity: 1}},
 			PaymentMethod:    orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD,
 			SalesChannel:     SalesChannelStorefront,
-			StorefrontShopId: shopID,
+			StorefrontShopId: tc.shopID,
 		})
-		if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "STOREFRONT_SHOP_INACTIVE") {
-			t.Fatalf("shop %s: want InvalidArgument(STOREFRONT_SHOP_INACTIVE), got %v", shopID, err)
+		if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), tc.wantPrefix) {
+			t.Fatalf("shop %s: want FailedPrecondition(%s), got %v", tc.shopID, tc.wantPrefix, err)
 		}
 	}
 

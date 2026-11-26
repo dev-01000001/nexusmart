@@ -118,7 +118,7 @@ type Store interface {
 	GetReservation(ctx context.Context, orderID string) (*domain.PromotionReservation, error)
 	CommitReservation(ctx context.Context, res domain.PromotionReservation, now time.Time) (existing *domain.PromotionReservation, alreadyReserved bool, err error)
 	ReleaseReservation(ctx context.Context, orderID string) (*FullReleaseResult, error)
-	ReleaseReservationShop(ctx context.Context, orderID, shopID string) (*ShopReleaseResult, error)
+	ReleaseReservationShop(ctx context.Context, orderID, shopID, subOrderID string, clawbackOnly bool) (*ShopReleaseResult, error)
 }
 
 // PostgresStore implements Store backed by PostgreSQL via pgxpool.
@@ -1605,12 +1605,28 @@ func (s *PostgresStore) IsEventProcessed(ctx context.Context, eventID string) (b
 	return exists, nil
 }
 
+const (
+	rewardClawbackTombstonePrefix  = "reward-clawback:"
+	rewardClawbackTombstoneSubject = "reward.clawback.tombstone"
+)
+
 func (s *PostgresStore) ProcessOrderCompletedEvent(ctx context.Context, eventID, subject, orderID, buyerID string, coinsReward int64) (bool, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return false, fmt.Errorf("begin order completed tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	refID := strings.TrimSpace(orderID)
+	if refID == "" {
+		refID = strings.TrimSpace(eventID)
+	}
+	// Serialize with concurrent ReleaseReservationShop(clawback_only=true) for the same reward key.
+	if refID != "" {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, rewardClawbackTombstonePrefix+refID); err != nil {
+			return false, fmt.Errorf("lock reward clawback %s: %w", refID, err)
+		}
+	}
 
 	tag, err := tx.Exec(ctx,
 		`INSERT INTO processed_events (event_id, subject) VALUES ($1, $2) ON CONFLICT (event_id) DO NOTHING`,
@@ -1624,12 +1640,17 @@ func (s *PostgresStore) ProcessOrderCompletedEvent(ctx context.Context, eventID,
 	}
 
 	if coinsReward > 0 && buyerID != "" {
-		refID := orderID
-		if refID == "" {
-			refID = eventID
+		var tombstoned bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM processed_events WHERE event_id = $1)`,
+			rewardClawbackTombstonePrefix+refID,
+		).Scan(&tombstoned); err != nil {
+			return false, fmt.Errorf("check reward clawback tombstone: %w", err)
 		}
-		if _, _, err := creditCoinsInTx(ctx, tx, buyerID, coinsReward, "order_completed_reward", refID); err != nil {
-			return false, fmt.Errorf("credit reward coins: %w", err)
+		if !tombstoned {
+			if _, _, err := creditCoinsInTx(ctx, tx, buyerID, coinsReward, "order_completed_reward", refID); err != nil {
+				return false, fmt.Errorf("credit reward coins: %w", err)
+			}
 		}
 	}
 
@@ -2159,12 +2180,53 @@ func (s *PostgresStore) ReleaseReservation(ctx context.Context, orderID string) 
 	return result, nil
 }
 
-func (s *PostgresStore) ReleaseReservationShop(ctx context.Context, orderID, shopID string) (*ShopReleaseResult, error) {
+func (s *PostgresStore) ReleaseReservationShop(ctx context.Context, orderID, shopID, subOrderID string, clawbackOnly bool) (*ShopReleaseResult, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("begin release shop reservation tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	clawbackKey := strings.TrimSpace(subOrderID)
+	if clawbackKey == "" {
+		clawbackKey = strings.TrimSpace(orderID)
+	}
+	if clawbackOnly {
+		if clawbackKey == "" {
+			return &ShopReleaseResult{AlreadyReleased: true}, nil
+		}
+		// Serialize with concurrent ProcessOrderCompletedEvent for the same reward key.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, rewardClawbackTombstonePrefix+clawbackKey); err != nil {
+			return nil, fmt.Errorf("lock reward clawback %s: %w", clawbackKey, err)
+		}
+		clawedBack, rewardFound, cbErr := clawbackOrderRewardInTx(ctx, tx, clawbackKey)
+		if cbErr != nil {
+			return nil, cbErr
+		}
+		if !rewardFound {
+			tombTag, tErr := tx.Exec(ctx,
+				`INSERT INTO processed_events (event_id, subject) VALUES ($1, $2) ON CONFLICT (event_id) DO NOTHING`,
+				rewardClawbackTombstonePrefix+clawbackKey, rewardClawbackTombstoneSubject,
+			)
+			if tErr != nil {
+				return nil, fmt.Errorf("insert reward clawback tombstone: %w", tErr)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return nil, fmt.Errorf("commit reward clawback tombstone tx: %w", err)
+			}
+			return &ShopReleaseResult{AlreadyReleased: tombTag.RowsAffected() == 0}, nil
+		}
+		if clawedBack > 0 {
+			if err := tx.Commit(ctx); err != nil {
+				return nil, fmt.Errorf("commit reward clawback tx: %w", err)
+			}
+			return &ShopReleaseResult{
+				AlreadyReleased:       false,
+				RewardCoinsClawedBack: clawedBack,
+			}, nil
+		}
+		return &ShopReleaseResult{AlreadyReleased: true}, nil
+	}
 
 	existing, err := scanReservation(tx.QueryRow(ctx, `
 		SELECT order_id, user_id, status, coins_used, vouchers_json, flash_sale_items_json,
@@ -2174,7 +2236,7 @@ func (s *PostgresStore) ReleaseReservationShop(ctx context.Context, orderID, sho
 		FOR UPDATE
 	`, orderID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		clawedBack, cbErr := clawbackOrderRewardInTx(ctx, tx, orderID)
+		clawedBack, _, cbErr := clawbackOrderRewardInTx(ctx, tx, clawbackKey)
 		if cbErr != nil {
 			return nil, cbErr
 		}
@@ -2215,7 +2277,7 @@ func (s *PostgresStore) ReleaseReservationShop(ctx context.Context, orderID, sho
 		AllShopPrograms:             existing.ShopProgramItems,
 	}
 	if plan.alreadyReleased {
-		clawedBack, cbErr := clawbackOrderRewardInTx(ctx, tx, orderID)
+		clawedBack, _, cbErr := clawbackOrderRewardInTx(ctx, tx, clawbackKey)
 		if cbErr != nil {
 			return nil, cbErr
 		}
@@ -2240,7 +2302,7 @@ func (s *PostgresStore) ReleaseReservationShop(ctx context.Context, orderID, sho
 		}
 	}
 
-	clawedBack, cbErr := clawbackOrderRewardInTx(ctx, tx, orderID)
+	clawedBack, _, cbErr := clawbackOrderRewardInTx(ctx, tx, clawbackKey)
 	if cbErr != nil {
 		return nil, cbErr
 	}
@@ -2479,10 +2541,10 @@ func scanVoucher(row rowScanner) (*domain.Voucher, error) {
 	return &v, nil
 }
 
-func clawbackOrderRewardInTx(ctx context.Context, tx pgx.Tx, orderID string) (int64, error) {
+func clawbackOrderRewardInTx(ctx context.Context, tx pgx.Tx, orderID string) (int64, bool, error) {
 	orderID = strings.TrimSpace(orderID)
 	if orderID == "" {
-		return 0, nil
+		return 0, false, nil
 	}
 	var rewardUserID string
 	var rewardDelta int64
@@ -2496,29 +2558,29 @@ func clawbackOrderRewardInTx(ctx context.Context, tx pgx.Tx, orderID string) (in
 		LIMIT 1
 	`, orderID).Scan(&rewardUserID, &rewardDelta)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, nil
+		return 0, false, nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("lookup order reward coins: %w", err)
+		return 0, false, fmt.Errorf("lookup order reward coins: %w", err)
 	}
 	if rewardDelta <= 0 || rewardUserID == "" {
-		return 0, nil
+		return 0, false, nil
 	}
 
 	var curBalance int64
 	err = tx.QueryRow(ctx, `SELECT balance FROM coin_accounts WHERE user_id = $1 FOR UPDATE`, rewardUserID).Scan(&curBalance)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, nil
+		return 0, true, nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("lock coin account for clawback: %w", err)
+		return 0, true, fmt.Errorf("lock coin account for clawback: %w", err)
 	}
 	clawback := rewardDelta
 	if clawback > curBalance {
 		clawback = curBalance
 	}
 	if clawback <= 0 {
-		return 0, nil
+		return 0, true, nil
 	}
 
 	clawbackRef := "order_refund_reward_clawback:" + orderID
@@ -2528,19 +2590,19 @@ func clawbackOrderRewardInTx(ctx context.Context, tx pgx.Tx, orderID string) (in
 		ON CONFLICT (reference_id) DO NOTHING
 	`, uuid.NewString(), rewardUserID, -clawback, clawbackRef)
 	if err != nil {
-		return 0, fmt.Errorf("insert reward clawback tx: %w", err)
+		return 0, true, fmt.Errorf("insert reward clawback tx: %w", err)
 	}
 	if cbTag.RowsAffected() == 0 {
-		return 0, nil
+		return 0, true, nil
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE coin_accounts
 		SET balance = balance - $2, updated_at = NOW()
 		WHERE user_id = $1
 	`, rewardUserID, clawback); err != nil {
-		return 0, fmt.Errorf("debit coin account for clawback: %w", err)
+		return 0, true, fmt.Errorf("debit coin account for clawback: %w", err)
 	}
-	return clawback, nil
+	return clawback, true, nil
 }
 
 func scanFlashSale(row rowScanner) (*domain.FlashSale, error) {

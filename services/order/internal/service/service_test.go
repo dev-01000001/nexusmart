@@ -215,6 +215,7 @@ type mockProductClient struct {
 	restockAuth      []authCallSnapshot
 	onReserve        func(ctx context.Context, req *productv1.ReserveStockRequest)
 	onRelease        func(orderID string)
+	onRestock        func(ctx context.Context, req *productv1.RestockOrderItemsRequest)
 }
 
 func newMockProductClient() *mockProductClient {
@@ -281,7 +282,6 @@ func (m *mockProductClient) GetSKUsBatch(_ context.Context, req *productv1.GetSK
 
 func (m *mockProductClient) RestockOrderItems(ctx context.Context, req *productv1.RestockOrderItemsRequest, _ ...grpc.CallOption) (*productv1.RestockOrderItemsResponse, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.restockCalls = append(m.restockCalls, req)
 	var svcName string
 	if c, ok := auth.ClaimsFromContext(ctx); ok {
@@ -292,15 +292,23 @@ func (m *mockProductClient) RestockOrderItems(ctx context.Context, req *productv
 		service:  svcName,
 		rawToken: auth.RawTokenFromContext(ctx),
 	})
-	if m.restockErr != nil {
-		return nil, m.restockErr
-	}
-	for _, it := range req.GetItems() {
-		if sku, ok := m.skus[it.GetSkuId()]; ok {
-			sku.Stock += it.GetQuantity()
-			sku.AvailableStock += it.GetQuantity()
-			sku.Version++
+	hook := m.onRestock
+	rErr := m.restockErr
+	if rErr == nil {
+		for _, it := range req.GetItems() {
+			if sku, ok := m.skus[it.GetSkuId()]; ok {
+				sku.Stock += it.GetQuantity()
+				sku.AvailableStock += it.GetQuantity()
+				sku.Version++
+			}
 		}
+	}
+	m.mu.Unlock()
+	if hook != nil {
+		hook(ctx, req)
+	}
+	if rErr != nil {
+		return nil, rErr
 	}
 	return &productv1.RestockOrderItemsResponse{Restocked: true}, nil
 }

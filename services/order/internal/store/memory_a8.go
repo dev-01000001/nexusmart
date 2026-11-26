@@ -453,6 +453,10 @@ func (m *MemoryStore) OpenOrderAddressChange(_ context.Context, params OpenAddre
 		(params.ExpectedOldAddressJSON != nil && !bytes.Equal(ord.ShippingAddressJSON, params.ExpectedOldAddressJSON)) {
 		return nil, ErrAddressChangeInProgress
 	}
+	if floor := OrderFreeshipFloorVND(ord); params.AppliedShippingFeeVND < floor {
+		return nil, fmt.Errorf("%w: applied shipping fee %d is below applied freeship floor %d",
+			ErrAddressUpdateNotAllowed, params.AppliedShippingFeeVND, floor)
+	}
 
 	if params.MaxCODGroupTotalVND > 0 {
 		groupTotal := params.NewTotalPayableVND
@@ -624,12 +628,17 @@ func (m *MemoryStore) ApplyAddressChangeToOrder(_ context.Context, params ApplyA
 	}
 
 	curStatus := statemachine.StringToStatus(ord.Status)
-	if curStatus != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED && curStatus != orderv1.OrderStatus_ORDER_STATUS_PREPARING {
+	belowFreeshipFloor := ch.AppliedShippingFeeVND < OrderFreeshipFloorVND(ord)
+	if (curStatus != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED && curStatus != orderv1.OrderStatus_ORDER_STATUS_PREPARING) || belowFreeshipFloor {
+		abortReason := "order transitioned to " + ord.Status + " before apply"
+		if belowFreeshipFloor {
+			abortReason = fmt.Sprintf("applied shipping fee %d violates freeship floor %d", ch.AppliedShippingFeeVND, OrderFreeshipFloorVND(ord))
+		}
 		if ch.CODAdjusted {
 			nextLease := now.Add(lease)
 			ch.State = AddressChangeStateRevertingCOD
 			ch.AbortCode = "ADDRESS_UPDATE_NOT_ALLOWED"
-			ch.LastError = "order transitioned to " + ord.Status + " before apply; reverting COD"
+			ch.LastError = abortReason + "; reverting COD"
 			ch.ClaimedUntil = &nextLease
 			ch.ClaimToken = params.ClaimToken
 			ch.UpdatedAt = now
@@ -642,7 +651,7 @@ func (m *MemoryStore) ApplyAddressChangeToOrder(_ context.Context, params ApplyA
 		}
 		ch.State = AddressChangeStateAborted
 		ch.AbortCode = "ADDRESS_UPDATE_NOT_ALLOWED"
-		ch.LastError = "order transitioned to " + ord.Status + " before apply"
+		ch.LastError = abortReason
 		ch.ClaimedUntil = nil
 		ch.ClaimToken = ""
 		ch.UpdatedAt = now

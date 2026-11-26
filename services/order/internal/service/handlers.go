@@ -260,8 +260,9 @@ func (s *OrderService) refundSupersededPaidOrders(ctx context.Context, supersede
 	return nil
 }
 
-// HandlePaymentRefunded records a payment.refunded event idempotently on the order timeline
-// and settles any REFUNDING return request waiting on F11 large-refund approval.
+// HandlePaymentRefunded records a payment.refunded event idempotently on the order timeline,
+// settles any REFUNDING return request waiting on F11 large-refund approval, and claws back
+// order-completion reward coins when a COMPLETED order becomes fully refunded.
 func (s *OrderService) HandlePaymentRefunded(ctx context.Context, eventID string, payload events.PaymentRefundedPayload) error {
 	if _, err := s.store.RecordPaymentRefunded(ctx, store.PaymentRefundedParams{
 		EventID:          eventID,
@@ -279,6 +280,72 @@ func (s *OrderService) HandlePaymentRefunded(ctx context.Context, eventID string
 	if strings.TrimSpace(payload.OrderID) != "" {
 		if err := s.onPaymentRefundApprovedForReturn(ctx, payload); err != nil {
 			return err
+		}
+		if err := s.clawbackCompletedOrderRewardOnRefund(ctx, payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// clawbackCompletedOrderRewardOnRefund calls Promotion.ReleasePromotionShop(clawback_only=true)
+// with sub_order_id = ord.ID for any COMPLETED order whose cumulative refunded_vnd has reached
+// total_payable_vnd. Runs after RecordPaymentRefunded (including on redelivery) so transient
+// Promotion errors retry cleanly through the NATS consumer without double-recording refunds or
+// re-releasing vouchers/spent coins.
+func (s *OrderService) clawbackCompletedOrderRewardOnRefund(ctx context.Context, payload events.PaymentRefundedPayload) error {
+	if s.clients.Promotion == nil {
+		return nil
+	}
+	targetID := strings.TrimSpace(payload.OrderID)
+	if targetID == "" {
+		return nil
+	}
+
+	var candidates []db.Order
+	if agg, err := s.store.GetOrderWithDetails(ctx, targetID); err == nil {
+		candidates = []db.Order{agg.Order}
+	} else if errors.Is(err, store.ErrNotFound) {
+		aggs, gErr := s.store.ListOrdersByCheckoutGroup(ctx, targetID)
+		if gErr != nil {
+			return fmt.Errorf("list orders for refunded checkout group %s: %w", targetID, gErr)
+		}
+		candidates = make([]db.Order, 0, len(aggs))
+		for _, a := range aggs {
+			candidates = append(candidates, a.Order)
+		}
+	} else {
+		return fmt.Errorf("load order %s for reward clawback: %w", targetID, err)
+	}
+
+	compCtx, cancel := detachedCompensationContext(ctx, s.cfg.GRPCCallTimeout)
+	defer cancel()
+
+	for _, ord := range candidates {
+		if payload.PaymentID != "" && ord.PaymentID != "" && ord.PaymentID != payload.PaymentID {
+			continue
+		}
+		if statemachine.StringToStatus(ord.Status) != orderv1.OrderStatus_ORDER_STATUS_COMPLETED {
+			continue
+		}
+		if ord.TotalPayableVND <= 0 || ord.RefundedVND < ord.TotalPayableVND {
+			continue
+		}
+		if err := s.clawbackCompletedOrderPromotionErr(
+			compCtx,
+			ord.CheckoutGroupID,
+			ord.ShopID,
+			ord.ID,
+			"order_completed_refund_clawback",
+		); err != nil {
+			s.logger.ErrorContext(ctx, "failed to claw back reward coins for fully refunded completed order; returning error for consumer retry",
+				"order_id", ord.ID,
+				"checkout_group_id", ord.CheckoutGroupID,
+				"shop_id", ord.ShopID,
+				"refund_id", payload.RefundID,
+				"error", err,
+			)
+			return fmt.Errorf("clawback reward coins for completed order %s: %w", ord.ID, err)
 		}
 	}
 	return nil
@@ -477,7 +544,7 @@ func (s *OrderService) compensateReturnedOrder(
 	}
 
 	// R5: Release shop-scoped promotions (coins, shop voucher, flash slots) for returned sub-order.
-	if err := s.releasePromotionShopErr(compCtx, ord.CheckoutGroupID, ord.ShopID, "order_returned"); err != nil {
+	if err := s.releasePromotionShopErr(compCtx, ord.CheckoutGroupID, ord.ShopID, ord.ID, "order_returned"); err != nil {
 		return fmt.Errorf("release shop promotion for returned order %s: %w", ord.ID, err)
 	}
 

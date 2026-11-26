@@ -147,7 +147,7 @@ async fn setup_isolated_db(base_db_url: &str) -> (PgPool, PgPool, String, String
     sqlx::migrate!("./migrations")
         .run(&pool)
         .await
-        .expect("apply embedded sqlx migrations (0001..0017)");
+        .expect("apply embedded sqlx migrations (0001..0018)");
 
     (admin_pool, pool, db_name, isolated_url)
 }

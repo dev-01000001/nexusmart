@@ -1694,7 +1694,14 @@ func (s *PromotionService) ReleasePromotionShop(ctx context.Context, req *promot
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	res, err := s.store.ReleaseReservationShop(ctx, orderID, shopID)
+	subOrderID := strings.TrimSpace(req.GetSubOrderId())
+	if subOrderID != "" {
+		if err := validateKeySegment("sub_order_id", subOrderID); err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+	}
+
+	res, err := s.store.ReleaseReservationShop(ctx, orderID, shopID, subOrderID, req.GetClawbackOnly())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "release shop promotion reservation: %v", err)
 	}

@@ -507,7 +507,7 @@ func TestMemoryStore_OrderCompletedAndReleaseShopRewardClawback(t *testing.T) {
 	}, now); err != nil {
 		t.Fatalf("CommitReservation(ord-1): %v", err)
 	}
-	res1, err := m.ReleaseReservationShop(ctx, "ord-1", "shop-1")
+	res1, err := m.ReleaseReservationShop(ctx, "ord-1", "shop-1", "", false)
 	if err != nil || res1.AlreadyReleased || res1.CoinsReturned != 2000 || res1.RewardCoinsClawedBack != 1500 {
 		t.Fatalf("ReleaseReservationShop 1st: res=%+v err=%v", res1, err)
 	}
@@ -517,7 +517,7 @@ func TestMemoryStore_OrderCompletedAndReleaseShopRewardClawback(t *testing.T) {
 	}
 
 	// Idempotent replay MUST NOT double-clawback or double-restore.
-	res1Dup, err := m.ReleaseReservationShop(ctx, "ord-1", "shop-1")
+	res1Dup, err := m.ReleaseReservationShop(ctx, "ord-1", "shop-1", "", false)
 	if err != nil || !res1Dup.AlreadyReleased || res1Dup.RewardCoinsClawedBack != 0 {
 		t.Fatalf("ReleaseReservationShop dup: res=%+v err=%v", res1Dup, err)
 	}
@@ -529,14 +529,14 @@ func TestMemoryStore_OrderCompletedAndReleaseShopRewardClawback(t *testing.T) {
 	if _, err := m.ProcessOrderCompletedEvent(ctx, "evt-c-no-res", "order.completed", "ord-no-res", "buyer-no-res", 1200); err != nil {
 		t.Fatal(err)
 	}
-	resNoRow, err := m.ReleaseReservationShop(ctx, "ord-no-res", "shop-1")
+	resNoRow, err := m.ReleaseReservationShop(ctx, "ord-no-res", "shop-1", "", false)
 	if err != nil || resNoRow.AlreadyReleased || resNoRow.RewardCoinsClawedBack != 1200 {
 		t.Fatalf("ReleaseReservationShop no-reservation clawback: res=%+v err=%v", resNoRow, err)
 	}
 	if m.AccountBalance("buyer-no-res") != 0 || m.LedgerSum("buyer-no-res") != 0 {
 		t.Fatalf("buyer-no-res balance mismatch: acct=%d sum=%d", m.AccountBalance("buyer-no-res"), m.LedgerSum("buyer-no-res"))
 	}
-	resNoRowDup, err := m.ReleaseReservationShop(ctx, "ord-no-res", "shop-1")
+	resNoRowDup, err := m.ReleaseReservationShop(ctx, "ord-no-res", "shop-1", "", false)
 	if err != nil || !resNoRowDup.AlreadyReleased || resNoRowDup.RewardCoinsClawedBack != 0 {
 		t.Fatalf("ReleaseReservationShop no-reservation dup: res=%+v err=%v", resNoRowDup, err)
 	}
@@ -550,7 +550,7 @@ func TestMemoryStore_OrderCompletedAndReleaseShopRewardClawback(t *testing.T) {
 	}, now); err != nil {
 		t.Fatal(err)
 	}
-	resCap, err := m.ReleaseReservationShop(ctx, "ord-cap", "shop-1")
+	resCap, err := m.ReleaseReservationShop(ctx, "ord-cap", "shop-1", "", false)
 	if err != nil || resCap.RewardCoinsClawedBack != 500 {
 		t.Fatalf("expected capped clawback=500, got res=%+v err=%v", resCap, err)
 	}
@@ -568,7 +568,7 @@ func TestMemoryStore_OrderCompletedAndReleaseShopRewardClawback(t *testing.T) {
 	}, now); err != nil {
 		t.Fatal(err)
 	}
-	resZero, err := m.ReleaseReservationShop(ctx, "ord-zero", "shop-1")
+	resZero, err := m.ReleaseReservationShop(ctx, "ord-zero", "shop-1", "", false)
 	if err != nil || !resZero.AlreadyReleased || resZero.RewardCoinsClawedBack != 0 {
 		t.Fatalf("zero-balance clawback unexpected: res=%+v err=%v", resZero, err)
 	}
@@ -580,6 +580,61 @@ func TestMemoryStore_OrderCompletedAndReleaseShopRewardClawback(t *testing.T) {
 		if tx.Delta == 0 {
 			t.Fatalf("found forbidden 0-delta coin transaction: %+v", tx)
 		}
+	}
+
+	// 6. Distinct checkout_group_id vs sub_order_id + clawbackOnly=true: claws back reward without
+	// restoring spent coins or mutating the committed reservation.
+	if _, _, err := m.CreditCoins(ctx, "buyer-sub", 3000, "seed", "seed-bsub"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.CommitReservation(ctx, domain.PromotionReservation{
+		OrderID:       "grp-sub-1",
+		UserID:        "buyer-sub",
+		CoinsUsed:     3000,
+		BreakdownJSON: []byte(`{"shops":[{"shopId":"shop-1","coinsDiscountVnd":"3000"}]}`),
+	}, now); err != nil {
+		t.Fatalf("CommitReservation(grp-sub-1): %v", err)
+	}
+	if _, err := m.ProcessOrderCompletedEvent(ctx, "evt-c-sub", "order.completed", "sub-ord-1", "buyer-sub", 1800); err != nil {
+		t.Fatal(err)
+	}
+	resSub, err := m.ReleaseReservationShop(ctx, "grp-sub-1", "shop-1", "sub-ord-1", true)
+	if err != nil || resSub.AlreadyReleased || resSub.CoinsReturned != 0 || resSub.RewardCoinsClawedBack != 1800 {
+		t.Fatalf("ReleaseReservationShop(sub_order_id, clawbackOnly): res=%+v err=%v", resSub, err)
+	}
+	if m.AccountBalance("buyer-sub") != 0 || m.LedgerSum("buyer-sub") != 0 {
+		t.Fatalf("buyer-sub balance mismatch: acct=%d sum=%d", m.AccountBalance("buyer-sub"), m.LedgerSum("buyer-sub"))
+	}
+	resSubDup, err := m.ReleaseReservationShop(ctx, "grp-sub-1", "shop-1", "sub-ord-1", true)
+	if err != nil || !resSubDup.AlreadyReleased || resSubDup.CoinsReturned != 0 || resSubDup.RewardCoinsClawedBack != 0 {
+		t.Fatalf("ReleaseReservationShop(sub_order_id, clawbackOnly) dup: res=%+v err=%v", resSubDup, err)
+	}
+
+	// 7. Refund (clawbackOnly=true) arrives BEFORE order.completed -> writes tombstone in processed_events;
+	// late order.completed records event and skips crediting coins; repeated calls remain idempotent.
+	pre1, err := m.ReleaseReservationShop(ctx, "grp-pre-1", "shop-1", "sub-pre-1", true)
+	if err != nil || pre1.AlreadyReleased || pre1.RewardCoinsClawedBack != 0 {
+		t.Fatalf("pre-reward clawback 1st: res=%+v err=%v", pre1, err)
+	}
+	pre2, err := m.ReleaseReservationShop(ctx, "grp-pre-1", "shop-1", "sub-pre-1", true)
+	if err != nil || !pre2.AlreadyReleased || pre2.RewardCoinsClawedBack != 0 {
+		t.Fatalf("pre-reward clawback 2nd replay: res=%+v err=%v", pre2, err)
+	}
+	alreadyPre, err := m.ProcessOrderCompletedEvent(ctx, "evt-c-pre-1", "order.completed", "sub-pre-1", "buyer-pre", 1500)
+	if err != nil || alreadyPre {
+		t.Fatalf("late ProcessOrderCompletedEvent after tombstone: already=%v err=%v", alreadyPre, err)
+	}
+	if processed, pErr := m.IsEventProcessed(ctx, "evt-c-pre-1"); pErr != nil || !processed {
+		t.Fatalf("late order.completed event not marked processed: processed=%v err=%v", processed, pErr)
+	}
+	if m.AccountBalance("buyer-pre") != 0 || m.LedgerSum("buyer-pre") != 0 {
+		t.Fatalf("late order.completed credited coins despite tombstone: acct=%d sum=%d", m.AccountBalance("buyer-pre"), m.LedgerSum("buyer-pre"))
+	}
+	if alreadyPre2, err := m.ProcessOrderCompletedEvent(ctx, "evt-c-pre-1", "order.completed", "sub-pre-1", "buyer-pre", 1500); err != nil || !alreadyPre2 {
+		t.Fatalf("replay late ProcessOrderCompletedEvent: already=%v err=%v", alreadyPre2, err)
+	}
+	if pre3, err := m.ReleaseReservationShop(ctx, "grp-pre-1", "shop-1", "sub-pre-1", true); err != nil || !pre3.AlreadyReleased || pre3.RewardCoinsClawedBack != 0 {
+		t.Fatalf("pre-reward clawback 3rd replay: res=%+v err=%v", pre3, err)
 	}
 }
 

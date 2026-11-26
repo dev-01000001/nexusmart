@@ -430,6 +430,10 @@ func (s *PostgresStore) OpenOrderAddressChange(ctx context.Context, params OpenA
 		(params.ExpectedOldAddressJSON != nil && !bytes.Equal(ord.ShippingAddressJSON, params.ExpectedOldAddressJSON)) {
 		return nil, ErrAddressChangeInProgress
 	}
+	if floor := OrderFreeshipFloorVND(ord); params.AppliedShippingFeeVND < floor {
+		return nil, fmt.Errorf("%w: applied shipping fee %d is below applied freeship floor %d",
+			ErrAddressUpdateNotAllowed, params.AppliedShippingFeeVND, floor)
+	}
 
 	if params.MaxCODGroupTotalVND > 0 {
 		groupTotal := params.NewTotalPayableVND
@@ -712,7 +716,12 @@ func (s *PostgresStore) ApplyAddressChangeToOrder(ctx context.Context, params Ap
 	}
 
 	curStatus := statemachine.StringToStatus(ord.Status)
-	if curStatus != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED && curStatus != orderv1.OrderStatus_ORDER_STATUS_PREPARING {
+	belowFreeshipFloor := ch.AppliedShippingFeeVND < OrderFreeshipFloorVND(ord)
+	if (curStatus != orderv1.OrderStatus_ORDER_STATUS_CONFIRMED && curStatus != orderv1.OrderStatus_ORDER_STATUS_PREPARING) || belowFreeshipFloor {
+		abortReason := "order transitioned to " + ord.Status + " before apply"
+		if belowFreeshipFloor {
+			abortReason = fmt.Sprintf("applied shipping fee %d violates freeship floor %d", ch.AppliedShippingFeeVND, OrderFreeshipFloorVND(ord))
+		}
 		if ch.CODAdjusted {
 			nextLease := now.Add(lease)
 			upd, uErr := q.UpdateOrderAddressChangeState(ctx, db.UpdateOrderAddressChangeStateParams{
@@ -726,7 +735,7 @@ func (s *PostgresStore) ApplyAddressChangeToOrder(ctx context.Context, params Ap
 				NewTrackingCode:    ch.NewTrackingCode,
 				OutboxEmitted:      ch.OutboxEmitted,
 				AbortCode:          "ADDRESS_UPDATE_NOT_ALLOWED",
-				LastError:          "order transitioned to " + ord.Status + " before apply; reverting COD",
+				LastError:          abortReason + "; reverting COD",
 				ClaimedUntil:       &nextLease,
 				ClaimToken:         params.ClaimToken,
 				UpdatedAt:          now,
@@ -755,7 +764,7 @@ func (s *PostgresStore) ApplyAddressChangeToOrder(ctx context.Context, params Ap
 			NewTrackingCode:    ch.NewTrackingCode,
 			OutboxEmitted:      ch.OutboxEmitted,
 			AbortCode:          "ADDRESS_UPDATE_NOT_ALLOWED",
-			LastError:          "order transitioned to " + ord.Status + " before apply",
+			LastError:          abortReason,
 			ClaimedUntil:       nil,
 			ClaimToken:         "",
 			UpdatedAt:          now,

@@ -1395,11 +1395,13 @@ func (m *MemoryStore) ProcessOrderCompletedEvent(_ context.Context, eventID, _, 
 	m.processedEvents[eventID] = true
 
 	if coinsReward > 0 && buyerID != "" {
-		refID := orderID
+		refID := strings.TrimSpace(orderID)
 		if refID == "" {
-			refID = eventID
+			refID = strings.TrimSpace(eventID)
 		}
-		m.creditCoinsLocked(buyerID, coinsReward, "order_completed_reward", refID)
+		if !m.processedEvents[rewardClawbackTombstonePrefix+refID] {
+			m.creditCoinsLocked(buyerID, coinsReward, "order_completed_reward", refID)
+		}
 	}
 	return false, nil
 }
@@ -1668,13 +1670,37 @@ func (m *MemoryStore) ReleaseReservation(_ context.Context, orderID string) (*Fu
 	return result, nil
 }
 
-func (m *MemoryStore) ReleaseReservationShop(_ context.Context, orderID, shopID string) (*ShopReleaseResult, error) {
+func (m *MemoryStore) ReleaseReservationShop(_ context.Context, orderID, shopID, subOrderID string, clawbackOnly bool) (*ShopReleaseResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	clawbackKey := strings.TrimSpace(subOrderID)
+	if clawbackKey == "" {
+		clawbackKey = strings.TrimSpace(orderID)
+	}
+	if clawbackOnly {
+		if clawbackKey == "" {
+			return &ShopReleaseResult{AlreadyReleased: true}, nil
+		}
+		clawedBack, rewardFound := m.clawbackOrderRewardLocked(clawbackKey)
+		if !rewardFound {
+			tombKey := rewardClawbackTombstonePrefix + clawbackKey
+			already := m.processedEvents[tombKey]
+			m.processedEvents[tombKey] = true
+			return &ShopReleaseResult{AlreadyReleased: already}, nil
+		}
+		if clawedBack > 0 {
+			return &ShopReleaseResult{
+				AlreadyReleased:       false,
+				RewardCoinsClawedBack: clawedBack,
+			}, nil
+		}
+		return &ShopReleaseResult{AlreadyReleased: true}, nil
+	}
+
 	existing, ok := m.reservations[orderID]
 	if !ok {
-		clawedBack := m.clawbackOrderRewardLocked(orderID)
+		clawedBack, _ := m.clawbackOrderRewardLocked(clawbackKey)
 		if clawedBack > 0 {
 			return &ShopReleaseResult{
 				AlreadyReleased:       false,
@@ -1706,7 +1732,7 @@ func (m *MemoryStore) ReleaseReservationShop(_ context.Context, orderID, shopID 
 		AllShopPrograms:             append([]domain.ReservedShopProgramItem(nil), existing.ShopProgramItems...),
 	}
 	if plan.alreadyReleased {
-		if clawedBack := m.clawbackOrderRewardLocked(orderID); clawedBack > 0 {
+		if clawedBack, _ := m.clawbackOrderRewardLocked(clawbackKey); clawedBack > 0 {
 			result.AlreadyReleased = false
 			result.RewardCoinsClawedBack = clawedBack
 		}
@@ -1720,7 +1746,7 @@ func (m *MemoryStore) ReleaseReservationShop(_ context.Context, orderID, shopID 
 		}
 	}
 
-	result.RewardCoinsClawedBack = m.clawbackOrderRewardLocked(orderID)
+	result.RewardCoinsClawedBack, _ = m.clawbackOrderRewardLocked(clawbackKey)
 
 	now := time.Now().UTC()
 	m.restoreVouchersAndFlashLocked(plan.vouchersToRelease, plan.flashToRelease, now)
@@ -1736,10 +1762,10 @@ func (m *MemoryStore) ReleaseReservationShop(_ context.Context, orderID, shopID 
 	return result, nil
 }
 
-func (m *MemoryStore) clawbackOrderRewardLocked(orderID string) int64 {
+func (m *MemoryStore) clawbackOrderRewardLocked(orderID string) (int64, bool) {
 	orderID = strings.TrimSpace(orderID)
 	if orderID == "" {
-		return 0
+		return 0, false
 	}
 	var rewardUserID string
 	var rewardDelta int64
@@ -1751,11 +1777,11 @@ func (m *MemoryStore) clawbackOrderRewardLocked(orderID string) int64 {
 		}
 	}
 	if rewardDelta <= 0 || rewardUserID == "" {
-		return 0
+		return 0, false
 	}
 	clawbackRef := "order_refund_reward_clawback:" + orderID
 	if m.coinRefIndex[clawbackRef] {
-		return 0
+		return 0, true
 	}
 	curBal := m.coinBalances[rewardUserID]
 	clawback := rewardDelta
@@ -1763,7 +1789,7 @@ func (m *MemoryStore) clawbackOrderRewardLocked(orderID string) int64 {
 		clawback = curBal
 	}
 	if clawback <= 0 {
-		return 0
+		return 0, true
 	}
 	m.coinRefIndex[clawbackRef] = true
 	m.coinBalances[rewardUserID] = curBal - clawback
@@ -1775,7 +1801,7 @@ func (m *MemoryStore) clawbackOrderRewardLocked(orderID string) int64 {
 		ReferenceID: clawbackRef,
 		CreatedAt:   time.Now().UTC(),
 	})
-	return clawback
+	return clawback, true
 }
 
 func (m *MemoryStore) lookupFlashShopLocked(itemID string) (string, error) {

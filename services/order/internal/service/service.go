@@ -349,7 +349,16 @@ func (s *OrderService) returnInspectDuration() time.Duration {
 }
 
 func (s *OrderService) buildOrderCompletedOutbox(ord db.Order, traceID, traceparent string) (db.InsertOutboxEventParams, error) {
-	coinsReward := ComputeOrderRewardCoins(ord, s.cfg.RewardCoinsBPS)
+	return s.buildOrderCompletedOutboxWithCoins(ord, ComputeOrderRewardCoins(ord, s.cfg.RewardCoinsBPS), traceID, traceparent)
+}
+
+func (s *OrderService) buildOrderCompletedOutboxWithEffectiveRefunded(ord db.Order, effectiveRefundedVND int64, traceID, traceparent string) (db.InsertOutboxEventParams, error) {
+	adjusted := ord
+	adjusted.TotalPayableVND = maxInt64(0, ord.TotalPayableVND-maxInt64(0, effectiveRefundedVND))
+	return s.buildOrderCompletedOutboxWithCoins(ord, ComputeOrderRewardCoins(adjusted, s.cfg.RewardCoinsBPS), traceID, traceparent)
+}
+
+func (s *OrderService) buildOrderCompletedOutboxWithCoins(ord db.Order, coinsReward int64, traceID, traceparent string) (db.InsertOutboxEventParams, error) {
 	payloadBytes, err := json.Marshal(events.OrderCompletedPayload{
 		OrderID:          ord.ID,
 		OrderCode:        ord.OrderCode,

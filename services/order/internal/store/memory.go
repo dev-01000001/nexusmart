@@ -2622,8 +2622,7 @@ func (m *MemoryStore) RecordPaymentRefunded(_ context.Context, params PaymentRef
 					continue
 				}
 				if statemachine.StringToReturnStatus(rr.Status) == orderv1.ReturnStatus_RETURN_STATUS_REFUNDING &&
-					!rr.RefundDone &&
-					(rr.RequireApprovalIfLarge || strings.EqualFold(rr.RefundApprovalStatus, "PENDING_APPROVAL")) &&
+					(!rr.RefundDone || (strings.TrimSpace(rr.RefundID) == "" && strings.TrimSpace(params.RefundID) != "")) &&
 					statemachine.MatchReturnRefundEvent(
 						rr.OrderID,
 						rr.RefundID,
@@ -2632,7 +2631,9 @@ func (m *MemoryStore) RecordPaymentRefunded(_ context.Context, params PaymentRef
 						params.IdempotencyKey,
 					) == statemachine.ReturnRefundMatchMatched {
 					rr.RefundDone = true
-					rr.RefundApprovalStatus = "APPROVED"
+					if rr.RequireApprovalIfLarge || strings.EqualFold(rr.RefundApprovalStatus, "PENDING_APPROVAL") {
+						rr.RefundApprovalStatus = "APPROVED"
+					}
 					if refID := strings.TrimSpace(params.RefundID); refID != "" {
 						rr.RefundID = refID
 					}

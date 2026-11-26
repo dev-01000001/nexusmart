@@ -880,39 +880,41 @@ type ReturnRequestParams struct {
 
 // ReturnTransitionParams drives an atomic return_requests transition under FOR UPDATE.
 type ReturnTransitionParams struct {
-	ReturnRequestID             string
-	ExpectedStatus              orderv1.ReturnStatus
-	TargetStatus                orderv1.ReturnStatus
-	RequireDeadlineExpired      bool
-	RequireNotGoodsRecv         bool
-	RequireNoTracking           bool
-	RequireHasTracking          bool
-	ActorID                     string
-	ActorRole                   string
-	Note                        string
-	OutboxReason                string
-	EvidenceURLsJSON            []byte
-	SellerResponse              *string
-	SellerEvidenceURLsJSON      []byte
-	DisputeReason               *string
-	AdminNote                   *string
-	ReturnFeeBearer             *string
-	GoodsReceived               *bool
-	ShouldRestock               *bool
-	ReturnShipmentTerminal      *bool
-	EscalatedFromTransitTimeout *bool
-	EscalatedFromCancelFailure  *bool
-	RequireApprovalIfLarge      *bool
-	RefundRequestedBy           *string
-	RefundID                    *string
-	RefundApprovalStatus        *string
-	IncrementRefundAttempt      bool
-	UpdateDeadline              bool
-	DeadlineAt                  *time.Time
-	BuildCompletedOutboxFn      func(order db.Order) (db.InsertOutboxEventParams, error)
-	TraceID                     string
-	Traceparent                 string
-	Now                         time.Time
+	ReturnRequestID                  string
+	ExpectedStatus                   orderv1.ReturnStatus
+	TargetStatus                     orderv1.ReturnStatus
+	RequireDeadlineExpired           bool
+	RequireNotGoodsRecv              bool
+	RequireNoTracking                bool
+	RequireHasTracking               bool
+	ActorID                          string
+	ActorRole                        string
+	Note                             string
+	OutboxReason                     string
+	EvidenceURLsJSON                 []byte
+	SellerResponse                   *string
+	SellerEvidenceURLsJSON           []byte
+	DisputeReason                    *string
+	AdminNote                        *string
+	ReturnFeeBearer                  *string
+	GoodsReceived                    *bool
+	ShouldRestock                    *bool
+	ReturnShipmentTerminal           *bool
+	EscalatedFromTransitTimeout      *bool
+	EscalatedFromCancelFailure       *bool
+	RequireApprovalIfLarge           *bool
+	RefundRequestedBy                *string
+	RefundID                         *string
+	RefundApprovalStatus             *string
+	IncrementRefundAttempt           bool
+	UpdateDeadline                   bool
+	DeadlineAt                       *time.Time
+	BuildCompletedOutboxFn           func(order db.Order) (db.InsertOutboxEventParams, error)
+	BuildPartialCompletedOutboxFn    func(order db.Order, effectiveRefundedVND int64) (db.InsertOutboxEventParams, error)
+	RequirePromoReleasedOnFullReturn bool
+	TraceID                          string
+	Traceparent                      string
+	Now                              time.Time
 }
 
 // ReturnTransitionResult reports the committed return aggregate and associated order aggregate.

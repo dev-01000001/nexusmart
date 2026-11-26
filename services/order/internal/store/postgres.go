@@ -3045,8 +3045,7 @@ func (s *PostgresStore) RecordPaymentRefunded(ctx context.Context, params Paymen
 					}
 					if lockErr == nil &&
 						statemachine.StringToReturnStatus(rrLocked.Status) == orderv1.ReturnStatus_RETURN_STATUS_REFUNDING &&
-						!rrLocked.RefundDone &&
-						(rrLocked.RequireApprovalIfLarge || strings.EqualFold(rrLocked.RefundApprovalStatus, "PENDING_APPROVAL")) {
+						(!rrLocked.RefundDone || (strings.TrimSpace(rrLocked.RefundID) == "" && strings.TrimSpace(params.RefundID) != "")) {
 						if statemachine.MatchReturnRefundEvent(
 							rrLocked.OrderID,
 							rrLocked.RefundID,
@@ -3061,6 +3060,11 @@ func (s *PostgresStore) RecordPaymentRefunded(ctx context.Context, params Paymen
 								updAmt = true
 								amt = params.AmountVND
 							}
+							isApprovalGated := rrLocked.RequireApprovalIfLarge || strings.EqualFold(rrLocked.RefundApprovalStatus, "PENDING_APPROVAL")
+							nextApprovalStatus := rrLocked.RefundApprovalStatus
+							if isApprovalGated {
+								nextApprovalStatus = "APPROVED"
+							}
 							if _, uErr := q.UpdateReturnRequestSideEffects(ctx, db.UpdateReturnRequestSideEffectsParams{
 								ID:                         rrLocked.ID,
 								RefundDone:                 true,
@@ -3070,8 +3074,8 @@ func (s *PostgresStore) RecordPaymentRefunded(ctx context.Context, params Paymen
 								RefundAmountVND:            amt,
 								UpdateRefundID:             refID != "",
 								RefundID:                   refID,
-								UpdateRefundApprovalStatus: true,
-								RefundApprovalStatus:       "APPROVED",
+								UpdateRefundApprovalStatus: isApprovalGated,
+								RefundApprovalStatus:       nextApprovalStatus,
 							}); uErr != nil {
 								return false, uErr
 							}

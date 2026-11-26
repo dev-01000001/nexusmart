@@ -669,16 +669,17 @@ func TestW3B3_R2_ItemA_NegativeTotalPrecheckAndStep3PermanentFailRestoresOldShip
 		h := newTestHarness()
 		buyerCtx := ctxWithUser("buyer-1", "buyer", "")
 		sellerCtx := ctxWithUser("seller-1", "seller", "shop-1")
-		// Order where discounts cover almost everything: subtotal=100k, vouchers=100k, shipping=30k, freeship=20k -> total_payable=10k.
+		// Order where non-freeship discounts cover almost everything: subtotal=100k, shop_voucher=100k,
+		// platform_voucher=20k, shipping=30k (freeship=0) -> total_payable=10k.
 		h.product.skus["sku-1"].PriceVnd = 100000
 		h.promo.breakdown = &promotionv1.DiscountBreakdown{
 			Shops: []*promotionv1.ShopDiscountBreakdown{
 				{
-					ShopId:                 "shop-1",
-					SubtotalVnd:            100000,
-					ShopVoucherDiscountVnd: 100000,
-					FreeshipDiscountVnd:    20000,
-					ShippingFeeVnd:         30000,
+					ShopId:                     "shop-1",
+					SubtotalVnd:                100000,
+					ShopVoucherDiscountVnd:     100000,
+					PlatformVoucherDiscountVnd: 20000,
+					ShippingFeeVnd:             30000,
 				},
 			},
 		}
@@ -688,7 +689,7 @@ func TestW3B3_R2_ItemA_NegativeTotalPrecheckAndStep3PermanentFailRestoresOldShip
 			AddressId:         "addr-buyer-1",
 			Items:             []*orderv1.CheckoutItemInput{{SkuId: "sku-1", Quantity: 1}},
 			ShopVoucherIds:    map[string]string{"shop-1": "v-shop-1"},
-			FreeshipVoucherId: "v-free-1",
+			PlatformVoucherId: "v-plat-1",
 			PaymentMethod:     orderv1.OrderPaymentMethod_ORDER_PAYMENT_METHOD_COD,
 		})
 		if err != nil {
