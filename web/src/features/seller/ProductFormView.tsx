@@ -1,25 +1,67 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { AlertTriangle, Check, CheckCircle2, Package, Plus, Sparkles, Trash2 } from "lucide-react";
 import {
-  Button,
-  IconArrowLeft,
-  IconCheck,
-  IconChevronDown,
-  IconPlus,
-  IconSpark,
-  StateView,
-} from "@/components";
+  DetailLayout,
+  EmptyState,
+  ErrorState,
+  PageHeader,
+  SaveBar,
+  StatusBadge,
+  productStatusTone,
+} from "@/components/app";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError, getErrorMessage } from "@/lib/api";
 import { formatInt, formatVnd } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import {
   normalizeDescribeProduct,
   type DescribeProductResult,
 } from "@/features/assistant/assistantTypes";
 import { useSellerContext } from "./SellerShell";
-import { statusPillClass } from "./SellerUiPrimitives";
 import {
   getSellerProductStatusMeta,
   type GwCategory,
@@ -27,8 +69,6 @@ import {
   type GwSellerSku,
 } from "./sellerApiTypes";
 import { EMPTY_DASH, getAllowedSellerStatuses } from "./types";
-import common from "./SellerCommon.module.css";
-import styles from "./ProductFormView.module.css";
 
 const GALLERY_CHOICES = [
   { label: "Áo thun Trắng", path: "/products/ao-thun-cotton-trang.png" },
@@ -101,6 +141,16 @@ interface EditableSkuRow {
   imageUrl: string;
 }
 
+interface ProductFormSnapshot {
+  productStatus: string;
+  name: string;
+  slug: string;
+  categoryId: string;
+  description: string;
+  selectedImage: string;
+  skuRows: EditableSkuRow[];
+}
+
 function toEditableRows(
   product?: GwSellerProduct | null,
   defaultSkuStamp?: string
@@ -145,6 +195,27 @@ function toEditableRows(
   }));
 }
 
+function serializeSnapshot(snap: ProductFormSnapshot): string {
+  return JSON.stringify({
+    productStatus: snap.productStatus,
+    name: snap.name,
+    slug: snap.slug,
+    categoryId: snap.categoryId,
+    description: snap.description,
+    selectedImage: snap.selectedImage,
+    skuRows: snap.skuRows.map((r) => ({
+      id: r.id ?? "",
+      skuCode: r.skuCode,
+      colorName: r.colorName,
+      size: r.size,
+      priceVnd: r.priceVnd,
+      stock: r.stock,
+      weightGrams: r.weightGrams,
+      imageUrl: r.imageUrl,
+    })),
+  });
+}
+
 export interface ProductFormViewProps {
   mode: "create" | "edit";
   initialProduct?: GwSellerProduct | null;
@@ -162,27 +233,43 @@ export function ProductFormView({
 }: ProductFormViewProps) {
   const router = useRouter();
   const { shop, showToast } = useSellerContext();
+  const formRef = useRef<HTMLFormElement | null>(null);
 
-  const [currentProduct, setCurrentProduct] = useState<GwSellerProduct | null>(
-    initialProduct ?? null
-  );
-  const [productStatus, setProductStatus] = useState(initialProduct?.status ?? "PENDING");
-  const [name, setName] = useState(initialProduct?.name ?? "");
-  const [slug, setSlug] = useState(initialProduct?.slug ?? "");
-  const [categoryId, setCategoryId] = useState(() => {
+  const initialCategoryId = useMemo(() => {
     if (initialProduct?.category_id) return initialProduct.category_id;
     const firstAllowed = categories.find((c) => !c.is_prohibited);
     return firstAllowed?.id ?? categories[0]?.id ?? "";
-  });
-  const [description, setDescription] = useState(
-    initialProduct?.description ??
-      "Sản phẩm đồ mặc hằng ngày hoàn thiện tại xưởng, kiểm soát độ co rút và giữ phom sau nhiều lần giặt."
+  }, [initialProduct?.category_id, categories]);
+
+  const initialSnapshot = useMemo<ProductFormSnapshot>(
+    () => ({
+      productStatus: initialProduct?.status ?? "PENDING",
+      name: initialProduct?.name ?? "",
+      slug: initialProduct?.slug ?? "",
+      categoryId: initialCategoryId,
+      description:
+        initialProduct?.description ??
+        "Sản phẩm đồ mặc hằng ngày hoàn thiện tại xưởng, kiểm soát độ co rút và giữ phom sau nhiều lần giặt.",
+      selectedImage: initialProduct?.images?.[0] ?? GALLERY_CHOICES[0].path,
+      skuRows: toEditableRows(initialProduct, defaultSkuStamp),
+    }),
+    [initialProduct, initialCategoryId, defaultSkuStamp]
   );
-  const [selectedImage, setSelectedImage] = useState(
-    initialProduct?.images?.[0] ?? GALLERY_CHOICES[0].path
+
+  const [savedSnapshot, setSavedSnapshot] = useState<ProductFormSnapshot>(initialSnapshot);
+  const [currentProduct, setCurrentProduct] = useState<GwSellerProduct | null>(
+    initialProduct ?? null
   );
-  const [skuRows, setSkuRows] = useState<EditableSkuRow[]>(() =>
-    toEditableRows(initialProduct, defaultSkuStamp)
+  const [productStatus, setProductStatus] = useState(initialSnapshot.productStatus);
+  const [name, setName] = useState(initialSnapshot.name);
+  const [slug, setSlug] = useState(initialSnapshot.slug);
+  const [categoryId, setCategoryId] = useState(initialSnapshot.categoryId);
+  const [description, setDescription] = useState(initialSnapshot.description);
+  const [selectedImage, setSelectedImage] = useState(initialSnapshot.selectedImage);
+  const [skuRows, setSkuRows] = useState<EditableSkuRow[]>(initialSnapshot.skuRows);
+
+  const [bulkPriceStr, setBulkPriceStr] = useState(() =>
+    String(initialSnapshot.skuRows[0]?.priceVnd ?? 189000)
   );
   const [bulkStockStr, setBulkStockStr] = useState("20");
   const [newSkuSize, setNewSkuSize] = useState("2XL");
@@ -192,6 +279,7 @@ export function ProductFormView({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
 
   // AI description helper state (phase-0b)
@@ -199,6 +287,19 @@ export function ProductFormView({
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiDraft, setAiDraft] = useState<DescribeProductResult | null>(null);
+
+  const isDirty = useMemo(() => {
+    const current: ProductFormSnapshot = {
+      productStatus,
+      name,
+      slug,
+      categoryId,
+      description,
+      selectedImage,
+      skuRows,
+    };
+    return serializeSnapshot(current) !== serializeSnapshot(savedSnapshot);
+  }, [productStatus, name, slug, categoryId, description, selectedImage, skuRows, savedSnapshot]);
 
   const totalStock = useMemo(
     () => skuRows.reduce((s, r) => s + Math.max(0, Math.trunc(r.stock)), 0),
@@ -246,16 +347,45 @@ export function ProductFormView({
     [currentProduct?.status, productStatus]
   );
 
+  const clearFieldError = (key: string) => {
+    setFieldErrors((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  };
+
+  const focusErrorField = (key: string) => {
+    window.requestAnimationFrame(() => {
+      const root = formRef.current ?? document;
+      const candidates = root.querySelectorAll<HTMLElement>(`[data-error-key="${key}"]`);
+      for (const el of Array.from(candidates)) {
+        if (el.offsetParent !== null) {
+          el.focus();
+          el.scrollIntoView({ block: "center", behavior: "smooth" });
+          return;
+        }
+      }
+      const fallback = candidates[0];
+      if (fallback) {
+        fallback.focus();
+        fallback.scrollIntoView({ block: "center", behavior: "smooth" });
+      }
+    });
+  };
+
   if (loadError) {
     return (
-      <div className={common.page}>
-        <StateView
-          kind="error"
-          surface="app"
+      <div className="space-y-4">
+        <PageHeader
+          title={mode === "create" ? "Thêm sản phẩm mới" : "Chỉnh sửa sản phẩm"}
+          backHref="/seller/san-pham"
+        />
+        <ErrorState
           title="Không thể tải thông tin sản phẩm"
-          message={loadError}
-          actionLabel="Thử lại"
-          onAction={() => router.refresh()}
+          description={loadError}
+          onRetry={() => router.refresh()}
         />
       </div>
     );
@@ -263,23 +393,17 @@ export function ProductFormView({
 
   if (mode === "edit" && !currentProduct) {
     return (
-      <div className={common.page}>
-        <div className={common.pageHeader}>
-          <div className={common.headerText}>
-            <Link href="/seller/san-pham" className={styles.backLink}>
-              <IconArrowLeft size={14} />
-              <span>Sản phẩm</span>
-            </Link>
-            <h1 className={common.title}>Không tìm thấy sản phẩm</h1>
-          </div>
-        </div>
-        <StateView
-          kind="empty"
-          surface="app"
+      <div className="space-y-4">
+        <PageHeader title="Không tìm thấy sản phẩm" backHref="/seller/san-pham" />
+        <EmptyState
+          icon={Package}
           title="Mã sản phẩm không tồn tại trong gian hàng"
-          message="Sản phẩm có thể đã bị gỡ hoặc không thuộc gian hàng của bạn."
-          actionLabel="Về danh sách sản phẩm"
-          actionHref="/seller/san-pham"
+          description="Sản phẩm có thể đã bị gỡ hoặc không thuộc gian hàng của bạn."
+          action={
+            <Button size="sm" asChild>
+              <Link href="/seller/san-pham">Về danh sách sản phẩm</Link>
+            </Button>
+          }
         />
       </div>
     );
@@ -287,6 +411,19 @@ export function ProductFormView({
 
   const updateRow = (localKey: string, patch: Partial<EditableSkuRow>) => {
     setSkuRows((prev) => prev.map((r) => (r.localKey === localKey ? { ...r, ...patch } : r)));
+  };
+
+  const handleDiscard = () => {
+    setProductStatus(savedSnapshot.productStatus);
+    setName(savedSnapshot.name);
+    setSlug(savedSnapshot.slug);
+    setCategoryId(savedSnapshot.categoryId);
+    setDescription(savedSnapshot.description);
+    setSelectedImage(savedSnapshot.selectedImage);
+    setSkuRows(savedSnapshot.skuRows);
+    setFieldErrors({});
+    setErrorMsg(null);
+    showToast("Đã hoàn tác các thay đổi chưa lưu.");
   };
 
   const handleAddSkuRow = () => {
@@ -319,11 +456,34 @@ export function ProductFormView({
         imageUrl: selectedImage,
       },
     ]);
+    clearFieldError("skus");
   };
 
   const handleRemoveRow = (localKey: string) => {
     if (skuRows.length <= 1) return;
     setSkuRows((prev) => prev.filter((r) => r.localKey !== localKey));
+  };
+
+  const handleBulkPrice = () => {
+    const val = Math.trunc(Number(bulkPriceStr) || 0);
+    if (val < 1000) {
+      setFieldErrors((prev) => ({
+        ...prev,
+        bulkPrice: "Đơn giá áp dụng hàng loạt tối thiểu 1.000₫.",
+      }));
+      focusErrorField("bulkPrice");
+      return;
+    }
+    clearFieldError("bulkPrice");
+    setSkuRows((prev) => prev.map((r) => ({ ...r, priceVnd: val })));
+    setFieldErrors((prev) => {
+      const next = { ...prev };
+      for (const k of Object.keys(next)) {
+        if (k.startsWith("sku-price-")) delete next[k];
+      }
+      return next;
+    });
+    showToast(`Đã đặt giá ${formatVnd(val)} cho ${skuRows.length} biến thể SKU.`);
   };
 
   const handleBulkStock = () => {
@@ -353,6 +513,19 @@ export function ProductFormView({
         reservedStock: updated.reserved_stock,
         version: updated.version,
       });
+      setSavedSnapshot((prev) => ({
+        ...prev,
+        skuRows: prev.skuRows.map((r) =>
+          r.localKey === row.localKey
+            ? {
+                ...r,
+                stock: updated.stock,
+                reservedStock: updated.reserved_stock,
+                version: updated.version,
+              }
+            : r
+        ),
+      }));
       showToast(
         `Đã lưu tồn kho ${updated.sku_code}: ${formatInt(updated.available_stock)} chiếc khả dụng.`
       );
@@ -369,6 +542,7 @@ export function ProductFormView({
     const cleanName = name.trim();
     if (cleanName.length < 3) {
       setAiError("Tên sản phẩm cần tối thiểu 3 ký tự trước khi tạo mô tả bằng AI.");
+      focusErrorField("name");
       return;
     }
     setAiError(null);
@@ -451,8 +625,8 @@ export function ProductFormView({
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submitProduct = async () => {
+    if (saving) return;
     const normalizedRows = skuRows.map((r) => ({
       ...r,
       weightGrams: String(clampWeightGrams(r.weightGrams)),
@@ -461,48 +635,60 @@ export function ProductFormView({
       setSkuRows(normalizedRows);
     }
 
+    const nextErrors: Record<string, string> = {};
+    const errorOrder: string[] = [];
+    const pushErr = (key: string, msg: string) => {
+      if (!nextErrors[key]) {
+        nextErrors[key] = msg;
+        errorOrder.push(key);
+      }
+    };
+
     const cleanName = name.trim();
     if (cleanName.length < 3) {
-      setErrorMsg("Tên sản phẩm cần tối thiểu 3 ký tự.");
-      return;
+      pushErr("name", "Tên sản phẩm cần tối thiểu 3 ký tự.");
     }
     if (!categoryId) {
-      setErrorMsg("Vui lòng chọn danh mục sản phẩm.");
-      return;
-    }
-    const chosenCat = categories.find((c) => c.id === categoryId);
-    if (chosenCat?.is_prohibited) {
-      setErrorMsg("Danh mục này thuộc danh mục cấm kinh doanh trên sàn.");
-      return;
+      pushErr("categoryId", "Vui lòng chọn danh mục sản phẩm.");
+    } else {
+      const chosenCat = categories.find((c) => c.id === categoryId);
+      if (chosenCat?.is_prohibited) {
+        pushErr("categoryId", "Danh mục này thuộc danh mục cấm kinh doanh trên sàn.");
+      }
     }
     if (normalizedRows.length === 0) {
-      setErrorMsg("Cần ít nhất 1 biến thể SKU để lưu sản phẩm.");
-      return;
-    }
-    const seenCodes = new Set<string>();
-    for (const r of normalizedRows) {
-      const code = r.skuCode.trim();
-      if (!code) {
-        setErrorMsg("Mỗi biến thể cần có mã SKU không rỗng.");
-        return;
-      }
-      if (seenCodes.has(code.toUpperCase())) {
-        setErrorMsg(`Mã SKU "${code}" bị trùng lặp.`);
-        return;
-      }
-      seenCodes.add(code.toUpperCase());
-      if (r.priceVnd < 1000) {
-        setErrorMsg(`Đơn giá của SKU ${code} phải là số nguyên tối thiểu 1.000₫.`);
-        return;
-      }
-      if (r.stock < r.reservedStock) {
-        setErrorMsg(
-          `Tồn kho của SKU ${code} không được nhỏ hơn số lượng đang giữ (${r.reservedStock}).`
-        );
-        return;
-      }
+      pushErr("skus", "Cần ít nhất 1 biến thể SKU để lưu sản phẩm.");
     }
 
+    const seenCodes = new Set<string>();
+    normalizedRows.forEach((r, idx) => {
+      const code = r.skuCode.trim();
+      if (!code) {
+        pushErr(`sku-code-${idx}`, "Mã SKU không được để trống.");
+      } else if (seenCodes.has(code.toUpperCase())) {
+        pushErr(`sku-code-${idx}`, `Mã SKU "${code}" bị trùng lặp.`);
+      } else {
+        seenCodes.add(code.toUpperCase());
+      }
+      if (r.priceVnd < 1000) {
+        pushErr(`sku-price-${idx}`, "Đơn giá tối thiểu 1.000₫.");
+      }
+      if (r.stock < r.reservedStock) {
+        pushErr(
+          `sku-stock-${idx}`,
+          `Tồn kho không nhỏ hơn đang giữ (${formatInt(r.reservedStock)}).`
+        );
+      }
+    });
+
+    if (errorOrder.length > 0) {
+      setFieldErrors(nextErrors);
+      setErrorMsg(nextErrors[errorOrder[0]]);
+      focusErrorField(errorOrder[0]);
+      return;
+    }
+
+    setFieldErrors({});
     setErrorMsg(null);
     setSaving(true);
     try {
@@ -550,10 +736,25 @@ export function ProductFormView({
             body: payload,
           }
         );
+        const nextRows = toEditableRows(res.product);
+        const nextSnap: ProductFormSnapshot = {
+          productStatus: res.product.status,
+          name: res.product.name,
+          slug: res.product.slug ?? "",
+          categoryId: res.product.category_id,
+          description: res.product.description ?? "",
+          selectedImage: res.product.images?.[0] ?? selectedImage,
+          skuRows: nextRows,
+        };
         setCurrentProduct(res.product);
-        setSkuRows(toEditableRows(res.product));
-        setProductStatus(res.product.status);
-        setSlug(res.product.slug ?? "");
+        setSavedSnapshot(nextSnap);
+        setSkuRows(nextRows);
+        setProductStatus(nextSnap.productStatus);
+        setName(nextSnap.name);
+        setSlug(nextSnap.slug);
+        setCategoryId(nextSnap.categoryId);
+        setDescription(nextSnap.description);
+        setSelectedImage(nextSnap.selectedImage);
         const msg = `Đã lưu cập nhật "${res.product.name}" (${formatInt(totalStock)} tồn kho).`;
         showToast(msg);
         setSavedNotice(msg);
@@ -569,421 +770,619 @@ export function ProductFormView({
     }
   };
 
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await submitProduct();
+  };
+
   const statusMeta = getSellerProductStatusMeta(productStatus);
 
   return (
-    <form className={common.page} onSubmit={(e) => void handleSubmit(e)} noValidate>
-      <header className={common.pageHeader}>
-        <div className={common.headerText}>
-          <Link href="/seller/san-pham" className={styles.backLink}>
-            <IconArrowLeft size={14} />
-            <span>Sản phẩm</span>
-          </Link>
-          <div className={styles.titleRow}>
-            <h1 className={common.title}>
-              {mode === "create" ? "Thêm sản phẩm mới" : currentProduct?.name}
-            </h1>
-            <span className={statusPillClass(statusMeta.tone)}>{statusMeta.label}</span>
-          </div>
-        </div>
-        {mode === "edit" && currentProduct && (
-          <div className={common.headerActions}>
-            {confirmDelete ? (
-              <>
-                <Button
-                  type="button"
-                  variant="danger"
-                  size="sm"
-                  shape="app"
-                  disabled={deleting}
-                  onClick={() => void handleDeleteProduct()}
-                >
-                  {deleting ? "Đang xóa..." : "Xác nhận xóa"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  shape="app"
-                  onClick={() => setConfirmDelete(false)}
-                >
-                  Giữ lại
-                </Button>
-              </>
-            ) : (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                shape="app"
-                onClick={() => setConfirmDelete(true)}
-              >
-                Xóa sản phẩm
-              </Button>
-            )}
-          </div>
-        )}
-      </header>
+    <form ref={formRef} className="space-y-4" onSubmit={(e) => void handleSubmit(e)} noValidate>
+      <SaveBar
+        visible={isDirty}
+        saving={saving}
+        message={mode === "create" ? "Sản phẩm mới chưa lưu" : "Thay đổi chưa lưu"}
+        onDiscard={handleDiscard}
+        onSave={() => void submitProduct()}
+      />
+
+      <PageHeader
+        title={mode === "create" ? "Thêm sản phẩm mới" : currentProduct?.name || "Sản phẩm"}
+        backHref="/seller/san-pham"
+        badges={
+          <StatusBadge tone={productStatusTone(productStatus)}>{statusMeta.label}</StatusBadge>
+        }
+        subtitle={`${activeCategoryName} · ${formatInt(skuRows.length)} SKU · ${formatInt(totalStock)} tồn kho`}
+        secondaryActions={
+          mode === "edit" && currentProduct ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="text-destructive hover:text-destructive"
+              onClick={() => setConfirmDelete(true)}
+            >
+              Xóa sản phẩm
+            </Button>
+          ) : undefined
+        }
+        primaryAction={
+          <Button type="submit" size="sm" disabled={saving}>
+            <Check className="size-4" aria-hidden="true" />
+            <span>
+              {saving ? "Đang lưu..." : mode === "create" ? "Đăng bán sản phẩm" : "Lưu thay đổi"}
+            </span>
+          </Button>
+        }
+      />
 
       {savedNotice && (
-        <div className={styles.noticeBar} role="status">
-          <span>{savedNotice}</span>
-          <Link href="/seller/san-pham" className={styles.noticeLink}>
-            Về danh sách sản phẩm
-          </Link>
-        </div>
+        <Alert role="status">
+          <CheckCircle2 className="size-4 text-badge-success-ink" aria-hidden="true" />
+          <AlertDescription className="flex flex-wrap items-center justify-between gap-2 text-foreground">
+            <span>{savedNotice}</span>
+            <Link href="/seller/san-pham" className="font-medium text-brand hover:underline">
+              Về danh sách sản phẩm
+            </Link>
+          </AlertDescription>
+        </Alert>
       )}
 
       {currentProduct?.status === "REJECTED" && currentProduct.rejection_reason && (
-        <div className={styles.errorBar} role="alert">
-          Sản phẩm bị từ chối: <strong>{currentProduct.rejection_reason}</strong>. Chỉnh sửa nội
-          dung và chuyển trạng thái sang &ldquo;Gửi duyệt lại&rdquo;.
-        </div>
+        <Alert variant="destructive">
+          <AlertTriangle className="size-4" aria-hidden="true" />
+          <AlertTitle>Sản phẩm bị từ chối</AlertTitle>
+          <AlertDescription>
+            <p>
+              <strong>{currentProduct.rejection_reason}</strong>. Chỉnh sửa nội dung và chuyển trạng
+              thái sang &ldquo;Gửi duyệt lại&rdquo;.
+            </p>
+          </AlertDescription>
+        </Alert>
       )}
 
       {Array.isArray(currentProduct?.flagged_keywords) &&
         currentProduct.flagged_keywords.length > 0 && (
-          <div className={common.card} role="status">
-            <p className={common.fieldHint}>
-              Sản phẩm đang được gắn cờ kiểm duyệt thủ công do chứa từ khóa:{" "}
-              <strong>{currentProduct.flagged_keywords.join(", ")}</strong>. Bạn nên rà soát lại tên
-              và mô tả sản phẩm.
-            </p>
-          </div>
+          <Alert role="status">
+            <AlertTriangle className="size-4" aria-hidden="true" />
+            <AlertTitle>Cần rà soát nội dung kiểm duyệt</AlertTitle>
+            <AlertDescription>
+              <p>
+                Sản phẩm đang được gắn cờ kiểm duyệt thủ công do chứa từ khóa:{" "}
+                <strong className="text-foreground">
+                  {currentProduct.flagged_keywords.join(", ")}
+                </strong>
+                . Bạn nên rà soát lại tên và mô tả sản phẩm.
+              </p>
+            </AlertDescription>
+          </Alert>
         )}
 
       {errorMsg && (
-        <div className={styles.errorBar} role="alert">
-          {errorMsg}
-        </div>
+        <Alert variant="destructive">
+          <AlertTriangle className="size-4" aria-hidden="true" />
+          <AlertDescription>{errorMsg}</AlertDescription>
+        </Alert>
       )}
 
-      <div className={styles.workspace}>
-        {/* Left Column: Collapsible Form Groups */}
-        <div className={styles.formCol}>
-          <details className={common.accordion} open>
-            <summary className={common.accordionSummary}>
-              <span className={styles.accordionTitleGroup}>
-                <span>Thông tin &amp; Mô tả</span>
-                <span className={common.accordionMeta}>{activeCategoryName}</span>
-              </span>
-              <span className={common.accordionChevron} aria-hidden="true">
-                <IconChevronDown size={16} />
-              </span>
-            </summary>
+      <DetailLayout
+        main={
+          <>
+            {/* Card 1: Thông tin */}
+            <Card aria-labelledby="prod-info-heading">
+              <CardHeader>
+                <CardTitle id="prod-info-heading">Thông tin</CardTitle>
+                <CardDescription>
+                  Tên hiển thị và mô tả chất liệu, hoàn thiện sản phẩm trên site gian hàng.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <FieldGroup className="gap-4">
+                  <Field data-invalid={Boolean(fieldErrors.name) || undefined}>
+                    <FieldLabel htmlFor="prod-name">Tên sản phẩm</FieldLabel>
+                    <Input
+                      id="prod-name"
+                      type="text"
+                      data-error-key="name"
+                      value={name}
+                      onChange={(e) => {
+                        setName(e.target.value);
+                        clearFieldError("name");
+                        if (errorMsg) setErrorMsg(null);
+                      }}
+                      placeholder="Ví dụ: Áo thun Cotton Compact 220gsm Xanh đá"
+                      aria-invalid={Boolean(fieldErrors.name)}
+                    />
+                    {fieldErrors.name ? <FieldError>{fieldErrors.name}</FieldError> : null}
+                  </Field>
 
-            <div className={common.accordionBody}>
-              <div className={common.field}>
-                <label htmlFor="prod-name" className={common.fieldLabel}>
-                  Tên sản phẩm
-                </label>
-                <input
-                  id="prod-name"
-                  type="text"
-                  className={common.textInput}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Ví dụ: Áo thun Cotton Compact 220gsm Xanh đá"
-                />
-              </div>
+                  <Field>
+                    <FieldLabel htmlFor="prod-desc">Mô tả chất liệu &amp; hoàn thiện</FieldLabel>
 
-              <div className={styles.fields2}>
-                <div className={common.field}>
-                  <label htmlFor="prod-category" className={common.fieldLabel}>
-                    Ngành hàng
-                  </label>
-                  <select
-                    id="prod-category"
-                    className={common.textInput}
-                    value={categoryId}
-                    onChange={(e) => setCategoryId(e.target.value)}
-                  >
-                    {categories.map((cat) => (
-                      <option key={cat.id} value={cat.id} disabled={Boolean(cat.is_prohibited)}>
-                        {typeof cat.commission_rate_bps === "number" &&
-                        Number.isFinite(cat.commission_rate_bps)
-                          ? `${cat.name} (Hoa hồng ${(cat.commission_rate_bps / 100).toFixed(1)}%)`
-                          : cat.name}
-                        {cat.is_prohibited ? " — Danh mục cấm" : ""}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className={common.field}>
-                  <label htmlFor="prod-slug" className={common.fieldLabel}>
-                    Đường dẫn tùy chỉnh (tùy chọn)
-                  </label>
-                  <input
-                    id="prod-slug"
-                    type="text"
-                    className={common.textInput}
-                    value={slug}
-                    onChange={(e) => setSlug(e.target.value)}
-                    placeholder={name ? slugifyUrl(name) : "tu-dong-tao-tu-ten-san-pham"}
-                  />
-                </div>
-              </div>
-
-              {mode === "edit" && (
-                <div className={common.field}>
-                  <label htmlFor="prod-status" className={common.fieldLabel}>
-                    Trạng thái hiển thị
-                  </label>
-                  <select
-                    id="prod-status"
-                    className={common.textInput}
-                    value={productStatus}
-                    disabled={allowedStatuses.length <= 1}
-                    onChange={(e) => setProductStatus(e.target.value)}
-                  >
-                    {allowedStatuses.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                  <span className={common.fieldHint}>
-                    Có thể ẩn/hiện sản phẩm đã duyệt hoặc gửi duyệt lại sản phẩm bị từ chối.
-                  </span>
-                </div>
-              )}
-
-              <div className={common.field}>
-                <label htmlFor="prod-desc" className={common.fieldLabel}>
-                  Mô tả chất liệu &amp; hoàn thiện
-                </label>
-
-                <div data-ui="ai-desc-bar" className={styles.fieldStack}>
-                  <div className={styles.aiDescBar}>
-                    <span className={styles.aiDescLead}>
-                      <IconSpark size={14} />
-                      <span>Gợi ý mô tả AI</span>
-                    </span>
-                    <div className={styles.aiDescControls}>
-                      <select
-                        className={styles.aiToneSelect}
-                        value={aiTone}
-                        onChange={(e) => setAiTone(e.target.value)}
-                        disabled={aiLoading}
-                        aria-label="Chọn văn phong mô tả AI"
-                      >
-                        {AI_TONE_OPTIONS.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        shape="app"
-                        disabled={aiLoading}
-                        onClick={() => void handleGenerateDescription()}
-                      >
-                        <IconSpark size={14} />
-                        <span>{aiLoading ? "Đang tạo..." : "Tạo mô tả bằng AI"}</span>
-                      </Button>
-                    </div>
-                  </div>
-
-                  {aiError && (
-                    <p className={styles.aiError} role="alert">
-                      {aiError}
-                    </p>
-                  )}
-
-                  {aiDraft && (
-                    <div
-                      className={styles.aiPreviewCard}
-                      role="region"
-                      aria-label="Bản nháp mô tả từ AI"
-                    >
-                      <div className={styles.aiPreviewHead}>
-                        <span className={styles.aiPreviewTitle}>Bản nháp mô tả từ AI</span>
-                        <span className={styles.aiPreviewNote}>Kiểm tra lại trước khi lưu</span>
-                      </div>
-                      {aiDraft.titleSuggestion && (
-                        <p className={styles.aiPreviewSuggestionTitle}>
-                          Gợi ý tiêu đề: {aiDraft.titleSuggestion}
-                        </p>
-                      )}
-                      {aiDraft.description && (
-                        <p className={styles.aiPreviewText}>{aiDraft.description}</p>
-                      )}
-                      {aiDraft.highlights.length > 0 && (
-                        <ul className={styles.aiHighlightList}>
-                          {aiDraft.highlights.map((item) => (
-                            <li key={item}>{item}</li>
-                          ))}
-                        </ul>
-                      )}
-                      <div className={styles.aiPreviewActions}>
-                        <Button
-                          type="button"
-                          variant="ink"
-                          size="sm"
-                          shape="app"
-                          onClick={() => handleApplyAiDraft("replace")}
-                        >
-                          Áp dụng vào mô tả
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          shape="app"
-                          onClick={() => handleApplyAiDraft("append")}
-                        >
-                          Chèn thêm
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          shape="app"
-                          onClick={() => setAiDraft(null)}
-                        >
-                          Đóng
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <textarea
-                  id="prod-desc"
-                  className={common.textArea}
-                  rows={4}
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                />
-              </div>
-            </div>
-          </details>
-
-          <details className={common.accordion} open>
-            <summary className={common.accordionSummary}>
-              <span className={styles.accordionTitleGroup}>
-                <span>Hình ảnh sản phẩm</span>
-                <span className={common.accordionMeta}>{activeImageLabel}</span>
-              </span>
-              <span className={common.accordionChevron} aria-hidden="true">
-                <IconChevronDown size={16} />
-              </span>
-            </summary>
-
-            <div className={common.accordionBody}>
-              <div className={styles.galleryGrid} role="radiogroup" aria-label="Chọn ảnh đại diện">
-                {GALLERY_CHOICES.map((img) => {
-                  const active = selectedImage === img.path;
-                  return (
-                    <button
-                      key={img.path}
-                      type="button"
-                      role="radio"
-                      aria-checked={active}
-                      className={`${styles.thumbBtn} ${active ? styles.thumbBtnActive : ""}`}
-                      onClick={() => setSelectedImage(img.path)}
-                      title={img.label}
-                      aria-label={`Chọn ảnh ${img.label}`}
-                    >
-                      <img
-                        src={img.path}
-                        alt={img.label}
-                        className={styles.thumbImg}
-                        width={96}
-                        height={128}
-                      />
-                      {active && (
-                        <span className={styles.thumbCheck} aria-hidden="true">
-                          <IconCheck size={12} />
+                    <div className="space-y-2.5 rounded-lg border border-border bg-muted/40 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-foreground">
+                          <Sparkles className="size-3.5 text-brand" aria-hidden="true" />
+                          <span>Gợi ý mô tả AI</span>
                         </span>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Select value={aiTone} onValueChange={setAiTone} disabled={aiLoading}>
+                            <SelectTrigger
+                              size="sm"
+                              aria-label="Chọn văn phong mô tả AI"
+                              className="w-44 bg-card"
+                            >
+                              <SelectValue>
+                                {AI_TONE_OPTIONS.find((opt) => opt.value === aiTone)?.label ??
+                                  aiTone}
+                              </SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                              {AI_TONE_OPTIONS.map((opt) => (
+                                <SelectItem key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={aiLoading}
+                            onClick={() => void handleGenerateDescription()}
+                          >
+                            <Sparkles className="size-3.5" aria-hidden="true" />
+                            <span>{aiLoading ? "Đang tạo..." : "Tạo mô tả bằng AI"}</span>
+                          </Button>
+                        </div>
+                      </div>
+
+                      {aiError ? <FieldError>{aiError}</FieldError> : null}
+
+                      {aiDraft && (
+                        <div
+                          className="space-y-2.5 rounded-lg border border-border bg-card p-3"
+                          role="region"
+                          aria-label="Bản nháp mô tả từ AI"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-xs font-semibold text-foreground">
+                              Bản nháp mô tả từ AI
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              Kiểm tra lại trước khi lưu
+                            </span>
+                          </div>
+                          {aiDraft.titleSuggestion && (
+                            <p className="text-xs font-medium text-brand">
+                              Gợi ý tiêu đề: {aiDraft.titleSuggestion}
+                            </p>
+                          )}
+                          {aiDraft.description && (
+                            <p className="text-[13px] leading-5 text-foreground">
+                              {aiDraft.description}
+                            </p>
+                          )}
+                          {aiDraft.highlights.length > 0 && (
+                            <ul className="list-disc space-y-1 pl-4 text-[13px] text-muted-foreground">
+                              {aiDraft.highlights.map((item) => (
+                                <li key={item}>{item}</li>
+                              ))}
+                            </ul>
+                          )}
+                          <div className="flex flex-wrap items-center gap-2 pt-1">
+                            <Button
+                              type="button"
+                              size="xs"
+                              onClick={() => handleApplyAiDraft("replace")}
+                            >
+                              Áp dụng vào mô tả
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="xs"
+                              onClick={() => handleApplyAiDraft("append")}
+                            >
+                              Chèn thêm
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="xs"
+                              onClick={() => setAiDraft(null)}
+                            >
+                              Đóng
+                            </Button>
+                          </div>
+                        </div>
                       )}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </details>
+                    </div>
 
-          <details className={common.accordion} open>
-            <summary className={common.accordionSummary}>
-              <span className={styles.accordionTitleGroup}>
-                <span>Ma trận biến thể SKU</span>
-                <span className={common.accordionMeta}>
-                  {formatInt(skuRows.length)} SKU, {formatInt(totalStock)} tồn
-                </span>
-              </span>
-              <span className={common.accordionChevron} aria-hidden="true">
-                <IconChevronDown size={16} />
-              </span>
-            </summary>
+                    <Textarea
+                      id="prod-desc"
+                      rows={4}
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value)}
+                    />
+                  </Field>
+                </FieldGroup>
+              </CardContent>
+            </Card>
 
-            <div className={common.accordionBody}>
-              <div className={styles.bulkBarRow}>
-                <span className={styles.bulkHint}>Đặt nhanh tồn kho đồng loạt</span>
-                <div className={styles.bulkControls}>
-                  <input
-                    type="number"
-                    min={0}
-                    step={1}
-                    className={styles.bulkInput}
-                    value={bulkStockStr}
-                    onChange={(e) => setBulkStockStr(e.target.value)}
-                    aria-label="Số lượng áp dụng hàng loạt"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    shape="app"
-                    onClick={handleBulkStock}
+            {/* Card 2: Hình ảnh */}
+            <Card aria-labelledby="prod-images-heading">
+              <CardHeader>
+                <CardTitle id="prod-images-heading">Hình ảnh</CardTitle>
+                <CardDescription>Đang chọn: {activeImageLabel}</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div
+                  className="grid grid-cols-3 gap-2.5 sm:grid-cols-4 md:grid-cols-6"
+                  role="radiogroup"
+                  aria-label="Chọn ảnh đại diện"
+                >
+                  {GALLERY_CHOICES.map((img) => {
+                    const active = selectedImage === img.path;
+                    return (
+                      <button
+                        key={img.path}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        onClick={() => setSelectedImage(img.path)}
+                        title={img.label}
+                        aria-label={`Chọn ảnh ${img.label}`}
+                        className={cn(
+                          "group relative aspect-[3/4] overflow-hidden rounded-lg border bg-muted transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                          active
+                            ? "border-brand ring-2 ring-brand"
+                            : "border-border hover:border-foreground/40"
+                        )}
+                      >
+                        <img
+                          src={img.path}
+                          alt={img.label}
+                          className="size-full object-cover"
+                          width={96}
+                          height={128}
+                        />
+                        {active && (
+                          <span
+                            className="absolute top-1.5 right-1.5 flex size-5 items-center justify-center rounded-full bg-brand text-white"
+                            aria-hidden="true"
+                          >
+                            <Check className="size-3" />
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Card 3: Giá */}
+            <Card aria-labelledby="prod-pricing-heading">
+              <CardHeader>
+                <CardTitle id="prod-pricing-heading">Giá</CardTitle>
+                <CardDescription>
+                  Khoảng giá hiện tại:{" "}
+                  <strong className="text-foreground tabular-nums">{priceRangeLabel}</strong>
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                  <Field
+                    className="flex-1"
+                    data-invalid={Boolean(fieldErrors.bulkPrice) || undefined}
                   >
-                    Đặt tồn đồng loạt
+                    <FieldLabel htmlFor="bulk-price-input">
+                      Đặt nhanh đơn giá đồng loạt (VND)
+                    </FieldLabel>
+                    <Input
+                      id="bulk-price-input"
+                      data-error-key="bulkPrice"
+                      type="number"
+                      min={1000}
+                      step={1}
+                      value={bulkPriceStr}
+                      onChange={(e) => {
+                        setBulkPriceStr(e.target.value);
+                        clearFieldError("bulkPrice");
+                      }}
+                      className="tabular-nums"
+                      aria-invalid={Boolean(fieldErrors.bulkPrice)}
+                    />
+                  </Field>
+                  <Button type="button" variant="outline" size="default" onClick={handleBulkPrice}>
+                    Áp dụng cho {formatInt(skuRows.length)} SKU
                   </Button>
                 </div>
-              </div>
+                {fieldErrors.bulkPrice ? <FieldError>{fieldErrors.bulkPrice}</FieldError> : null}
+                <p className="text-xs text-muted-foreground">
+                  Mỗi biến thể SKU vẫn có thể chỉnh đơn giá riêng trong bảng bên dưới. Đơn giá tính
+                  bằng số nguyên VND (tối thiểu 1.000₫).
+                </p>
+              </CardContent>
+            </Card>
 
-              <div className={`${common.tableWrap} ${styles.skuTableDesktop}`}>
-                <table className={common.dataTable}>
-                  <thead>
-                    <tr>
-                      <th>Mã SKU</th>
-                      <th>Màu sắc</th>
-                      <th>Cỡ</th>
-                      <th className={common.numCol}>Giá (VND)</th>
-                      <th className={common.numCol}>Tổng tồn</th>
-                      <th className={common.numCol}>Giữ</th>
-                      <th className={common.numCol}>Gram</th>
-                      <th className={common.numCol}>Thao tác</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {skuRows.map((row) => {
-                      const lowAvail = Math.max(0, row.stock - row.reservedStock) <= 5;
-                      return (
-                        <tr key={row.localKey}>
-                          <td>
-                            <input
-                              type="text"
-                              className={styles.skuCodeInput}
-                              value={row.skuCode}
-                              onChange={(e) => updateRow(row.localKey, { skuCode: e.target.value })}
-                              aria-label={`Mã SKU ${row.name}`}
-                            />
-                          </td>
-                          <td>
-                            <div className={styles.colorCellWrap}>
-                              <span
-                                className={styles.swatchDot}
-                                style={{ backgroundColor: row.colorHex }}
-                                aria-hidden="true"
+            {/* Card 4: Biến thể & SKU */}
+            <Card aria-labelledby="prod-variants-heading">
+              <CardHeader>
+                <CardTitle id="prod-variants-heading">Biến thể &amp; SKU</CardTitle>
+                <CardDescription className="tabular-nums">
+                  {formatInt(skuRows.length)} SKU · {formatInt(totalStock)} tồn kho
+                </CardDescription>
+                <CardAction>
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={bulkStockStr}
+                      onChange={(e) => setBulkStockStr(e.target.value)}
+                      aria-label="Số lượng áp dụng hàng loạt"
+                      className="h-8 w-20 text-right tabular-nums"
+                    />
+                    <Button type="button" variant="outline" size="sm" onClick={handleBulkStock}>
+                      Đặt tồn đồng loạt
+                    </Button>
+                  </div>
+                </CardAction>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {fieldErrors.skus ? <FieldError>{fieldErrors.skus}</FieldError> : null}
+
+                {/* Desktop SKU Table (5 compact columns fit 2/3 DetailLayout without clipping) */}
+                <div className="hidden overflow-hidden rounded-lg border border-border lg:block">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="px-2">Biến thể &amp; Mã SKU</TableHead>
+                        <TableHead className="px-2 text-right">Giá (VND)</TableHead>
+                        <TableHead className="px-2 text-right">Tồn kho</TableHead>
+                        <TableHead className="px-2 text-right">Gram</TableHead>
+                        <TableHead className="px-2 text-right">Thao tác</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {skuRows.map((row, idx) => {
+                        const lowAvail = Math.max(0, row.stock - row.reservedStock) <= 5;
+                        const codeErr = fieldErrors[`sku-code-${idx}`];
+                        const priceErr = fieldErrors[`sku-price-${idx}`];
+                        const stockErr = fieldErrors[`sku-stock-${idx}`];
+                        return (
+                          <TableRow key={row.localKey}>
+                            <TableCell className="px-2 align-top whitespace-normal">
+                              <div className="space-y-1.5">
+                                <Input
+                                  type="text"
+                                  data-error-key={`sku-code-${idx}`}
+                                  value={row.skuCode}
+                                  onChange={(e) => {
+                                    updateRow(row.localKey, { skuCode: e.target.value });
+                                    clearFieldError(`sku-code-${idx}`);
+                                  }}
+                                  aria-label={`Mã SKU ${row.name}`}
+                                  aria-invalid={Boolean(codeErr)}
+                                  className="h-8 w-full min-w-[140px] px-2 font-mono text-xs"
+                                />
+                                {codeErr ? (
+                                  <FieldError className="text-xs">{codeErr}</FieldError>
+                                ) : null}
+                                <div className="flex items-center gap-1.5">
+                                  <span
+                                    className="size-3.5 shrink-0 rounded-full border border-border"
+                                    style={{ backgroundColor: row.colorHex }}
+                                    aria-hidden="true"
+                                  />
+                                  <Input
+                                    type="text"
+                                    value={row.colorName}
+                                    onChange={(e) =>
+                                      updateRow(row.localKey, {
+                                        colorName: e.target.value,
+                                        name: `${e.target.value} / ${row.size}`,
+                                      })
+                                    }
+                                    aria-label={`Màu sắc ${row.skuCode}`}
+                                    className="h-7 min-w-0 flex-1 px-2 text-xs"
+                                  />
+                                  <Input
+                                    type="text"
+                                    value={row.size}
+                                    onChange={(e) =>
+                                      updateRow(row.localKey, {
+                                        size: e.target.value.toUpperCase(),
+                                        name: `${row.colorName} / ${e.target.value.toUpperCase()}`,
+                                      })
+                                    }
+                                    aria-label={`Kích cỡ ${row.skuCode}`}
+                                    className="h-7 w-12 px-1 text-center text-xs"
+                                  />
+                                </div>
+                              </div>
+                            </TableCell>
+                            <TableCell className="px-2 align-top text-right">
+                              <Input
+                                type="number"
+                                min={1000}
+                                step={1}
+                                data-error-key={`sku-price-${idx}`}
+                                value={row.priceVnd}
+                                onChange={(e) => {
+                                  updateRow(row.localKey, {
+                                    priceVnd: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                                  });
+                                  clearFieldError(`sku-price-${idx}`);
+                                }}
+                                aria-label={`Đơn giá ${row.skuCode}`}
+                                aria-invalid={Boolean(priceErr)}
+                                className="ml-auto h-8 w-[84px] px-2 text-right text-xs tabular-nums"
                               />
-                              <input
+                              {priceErr ? (
+                                <FieldError className="mt-1 text-right text-xs">
+                                  {priceErr}
+                                </FieldError>
+                              ) : null}
+                            </TableCell>
+                            <TableCell className="px-2 align-top text-right">
+                              <Input
+                                type="number"
+                                min={row.reservedStock}
+                                step={1}
+                                data-error-key={`sku-stock-${idx}`}
+                                value={row.stock}
+                                onChange={(e) => {
+                                  updateRow(row.localKey, {
+                                    stock: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                                  });
+                                  clearFieldError(`sku-stock-${idx}`);
+                                }}
+                                aria-label={`Tồn kho ${row.skuCode}`}
+                                aria-invalid={Boolean(stockErr)}
+                                className={cn(
+                                  "ml-auto h-8 w-[68px] px-1.5 text-right text-xs tabular-nums",
+                                  lowAvail && "border-destructive/60 text-destructive"
+                                )}
+                              />
+                              <div className="mt-1 text-[11px] text-muted-foreground tabular-nums">
+                                Giữ: {formatInt(row.reservedStock)}
+                              </div>
+                              {stockErr ? (
+                                <FieldError className="mt-1 text-right text-xs">
+                                  {stockErr}
+                                </FieldError>
+                              ) : null}
+                            </TableCell>
+                            <TableCell className="px-2 align-top text-right">
+                              <Input
+                                type="number"
+                                min={1}
+                                step={1}
+                                value={row.weightGrams}
+                                onChange={(e) =>
+                                  updateRow(row.localKey, { weightGrams: e.target.value })
+                                }
+                                onBlur={(e) =>
+                                  updateRow(row.localKey, {
+                                    weightGrams: String(clampWeightGrams(e.currentTarget.value)),
+                                  })
+                                }
+                                aria-label={`Khối lượng ${row.skuCode}`}
+                                className="ml-auto h-8 w-[64px] px-1.5 text-right text-xs tabular-nums"
+                              />
+                            </TableCell>
+                            <TableCell className="px-2 align-top text-right">
+                              <div className="inline-flex items-center justify-end gap-1">
+                                {mode === "edit" && row.id && row.version ? (
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="xs"
+                                    className="px-2"
+                                    disabled={busyStockId === row.id}
+                                    onClick={() => void handleQuickSaveSkuStock(row)}
+                                  >
+                                    {busyStockId === row.id ? "Lưu..." : "Lưu tồn"}
+                                  </Button>
+                                ) : null}
+                                {skuRows.length > 1 && (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon-xs"
+                                    aria-label={`Xóa SKU ${row.skuCode}`}
+                                    className="text-muted-foreground hover:text-destructive"
+                                    onClick={() => handleRemoveRow(row.localKey)}
+                                  >
+                                    <Trash2 className="size-3.5" aria-hidden="true" />
+                                  </Button>
+                                )}
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+
+                {/* Mobile & Tablet SKU Editor Cards */}
+                <div className="space-y-3 lg:hidden">
+                  {skuRows.map((row, idx) => {
+                    const lowAvail = Math.max(0, row.stock - row.reservedStock) <= 5;
+                    const codeErr = fieldErrors[`sku-code-${idx}`];
+                    const priceErr = fieldErrors[`sku-price-${idx}`];
+                    const stockErr = fieldErrors[`sku-stock-${idx}`];
+                    return (
+                      <div
+                        key={row.localKey}
+                        className="space-y-3 rounded-lg border border-border bg-muted/35 p-3"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                            <span
+                              className="size-3.5 shrink-0 rounded-full border border-border"
+                              style={{ backgroundColor: row.colorHex }}
+                              aria-hidden="true"
+                            />
+                            <span>
+                              {row.colorName} / {row.size}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {mode === "edit" && row.id && row.version ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="min-h-10"
+                                disabled={busyStockId === row.id}
+                                onClick={() => void handleQuickSaveSkuStock(row)}
+                              >
+                                {busyStockId === row.id ? "Lưu..." : "Lưu tồn"}
+                              </Button>
+                            ) : null}
+                            {skuRows.length > 1 && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="min-h-10 text-destructive"
+                                onClick={() => handleRemoveRow(row.localKey)}
+                              >
+                                Xóa
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <Field data-invalid={Boolean(codeErr) || undefined}>
+                            <FieldLabel>Mã SKU</FieldLabel>
+                            <Input
+                              type="text"
+                              data-error-key={`sku-code-${idx}`}
+                              value={row.skuCode}
+                              onChange={(e) => {
+                                updateRow(row.localKey, { skuCode: e.target.value });
+                                clearFieldError(`sku-code-${idx}`);
+                              }}
+                              aria-invalid={Boolean(codeErr)}
+                              className="bg-card font-mono text-xs"
+                            />
+                            {codeErr ? <FieldError>{codeErr}</FieldError> : null}
+                          </Field>
+
+                          <div className="grid grid-cols-2 gap-2">
+                            <Field>
+                              <FieldLabel>Màu sắc</FieldLabel>
+                              <Input
                                 type="text"
-                                className={styles.colorCellInput}
                                 value={row.colorName}
                                 onChange={(e) =>
                                   updateRow(row.localKey, {
@@ -992,396 +1391,394 @@ export function ProductFormView({
                                   })
                                 }
                                 aria-label={`Màu sắc ${row.skuCode}`}
+                                className="bg-card"
                               />
-                            </div>
-                          </td>
-                          <td>
-                            <input
-                              type="text"
-                              className={styles.sizeCellInput}
-                              value={row.size}
-                              onChange={(e) =>
-                                updateRow(row.localKey, {
-                                  size: e.target.value.toUpperCase(),
-                                  name: `${row.colorName} / ${e.target.value.toUpperCase()}`,
-                                })
-                              }
-                              aria-label={`Kích cỡ ${row.skuCode}`}
-                            />
-                          </td>
-                          <td className={common.numCol}>
-                            <input
+                            </Field>
+                            <Field>
+                              <FieldLabel>Cỡ</FieldLabel>
+                              <Input
+                                type="text"
+                                value={row.size}
+                                onChange={(e) =>
+                                  updateRow(row.localKey, {
+                                    size: e.target.value.toUpperCase(),
+                                    name: `${row.colorName} / ${e.target.value.toUpperCase()}`,
+                                  })
+                                }
+                                aria-label={`Kích cỡ ${row.skuCode}`}
+                                className="bg-card"
+                              />
+                            </Field>
+                          </div>
+
+                          <Field data-invalid={Boolean(priceErr) || undefined}>
+                            <FieldLabel>Giá (VND)</FieldLabel>
+                            <Input
                               type="number"
                               min={1000}
                               step={1}
-                              className={styles.priceCellInput}
+                              data-error-key={`sku-price-${idx}`}
                               value={row.priceVnd}
-                              onChange={(e) =>
+                              onChange={(e) => {
                                 updateRow(row.localKey, {
                                   priceVnd: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
-                                })
-                              }
-                              aria-label={`Đơn giá ${row.skuCode}`}
+                                });
+                                clearFieldError(`sku-price-${idx}`);
+                              }}
+                              aria-invalid={Boolean(priceErr)}
+                              className="bg-card tabular-nums"
                             />
-                          </td>
-                          <td className={common.numCol}>
-                            <input
-                              type="number"
-                              min={row.reservedStock}
-                              step={1}
-                              className={`${styles.stockCellInput} ${lowAvail ? styles.stockLow : ""}`}
-                              value={row.stock}
-                              onChange={(e) =>
-                                updateRow(row.localKey, {
-                                  stock: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
-                                })
-                              }
-                              aria-label={`Tồn kho ${row.skuCode}`}
-                            />
-                          </td>
-                          <td className={common.numCol}>{formatInt(row.reservedStock)}</td>
-                          <td className={common.numCol}>
-                            <input
-                              type="number"
-                              min={1}
-                              step={1}
-                              className={styles.weightCellInput}
-                              value={row.weightGrams}
-                              onChange={(e) =>
-                                updateRow(row.localKey, { weightGrams: e.target.value })
-                              }
-                              onBlur={(e) =>
-                                updateRow(row.localKey, {
-                                  weightGrams: String(clampWeightGrams(e.currentTarget.value)),
-                                })
-                              }
-                              aria-label={`Khối lượng ${row.skuCode}`}
-                            />
-                          </td>
-                          <td className={common.numCol}>
-                            <div className={styles.rowBtns}>
-                              {mode === "edit" && row.id && row.version ? (
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  shape="app"
-                                  disabled={busyStockId === row.id}
-                                  onClick={() => void handleQuickSaveSkuStock(row)}
-                                >
-                                  {busyStockId === row.id ? "Lưu..." : "Lưu tồn"}
-                                </Button>
-                              ) : null}
-                              {skuRows.length > 1 && (
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="sm"
-                                  shape="app"
-                                  onClick={() => handleRemoveRow(row.localKey)}
-                                >
-                                  Xóa
-                                </Button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+                            {priceErr ? <FieldError>{priceErr}</FieldError> : null}
+                          </Field>
 
-              {/* Mobile SKU Editor Cards */}
-              <div className={styles.mobileSkuList}>
-                {skuRows.map((row) => {
-                  const lowAvail = Math.max(0, row.stock - row.reservedStock) <= 5;
-                  return (
-                    <div key={row.localKey} className={styles.mobileSkuCard}>
-                      <div className={styles.mobileSkuHead}>
-                        <span className={styles.colorCellWrap}>
-                          <span
-                            className={styles.swatchDot}
-                            style={{ backgroundColor: row.colorHex }}
-                            aria-hidden="true"
-                          />
-                          <strong>
-                            {row.colorName} / {row.size}
-                          </strong>
-                        </span>
-                        <div className={styles.rowBtns}>
-                          {mode === "edit" && row.id && row.version ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              shape="app"
-                              disabled={busyStockId === row.id}
-                              onClick={() => void handleQuickSaveSkuStock(row)}
-                            >
-                              {busyStockId === row.id ? "Lưu..." : "Lưu tồn"}
-                            </Button>
-                          ) : null}
-                          {skuRows.length > 1 && (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              shape="app"
-                              onClick={() => handleRemoveRow(row.localKey)}
-                            >
-                              Xóa
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                      <div className={styles.mobileSkuGrid}>
-                        <label className={common.field}>
-                          <span className={common.fieldLabel}>Mã SKU</span>
-                          <input
-                            type="text"
-                            className={common.textInput}
-                            value={row.skuCode}
-                            onChange={(e) => updateRow(row.localKey, { skuCode: e.target.value })}
-                          />
-                        </label>
-                        <div className={common.field}>
-                          <span className={common.fieldLabel}>Màu / Cỡ</span>
-                          <div className={styles.mobileSplit2}>
-                            <input
-                              type="text"
-                              className={common.textInput}
-                              value={row.colorName}
-                              onChange={(e) =>
-                                updateRow(row.localKey, {
-                                  colorName: e.target.value,
-                                  name: `${e.target.value} / ${row.size}`,
-                                })
-                              }
-                              aria-label={`Màu sắc ${row.skuCode}`}
-                            />
-                            <input
-                              type="text"
-                              className={common.textInput}
-                              value={row.size}
-                              onChange={(e) =>
-                                updateRow(row.localKey, {
-                                  size: e.target.value.toUpperCase(),
-                                  name: `${row.colorName} / ${e.target.value.toUpperCase()}`,
-                                })
-                              }
-                              aria-label={`Kích cỡ ${row.skuCode}`}
-                            />
+                          <div className="grid grid-cols-2 gap-2">
+                            <Field data-invalid={Boolean(stockErr) || undefined}>
+                              <FieldLabel>Tồn (giữ: {formatInt(row.reservedStock)})</FieldLabel>
+                              <Input
+                                type="number"
+                                min={row.reservedStock}
+                                step={1}
+                                data-error-key={`sku-stock-${idx}`}
+                                value={row.stock}
+                                onChange={(e) => {
+                                  updateRow(row.localKey, {
+                                    stock: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                                  });
+                                  clearFieldError(`sku-stock-${idx}`);
+                                }}
+                                aria-invalid={Boolean(stockErr)}
+                                className={cn(
+                                  "bg-card tabular-nums",
+                                  lowAvail && "border-destructive/60 text-destructive"
+                                )}
+                              />
+                              {stockErr ? <FieldError>{stockErr}</FieldError> : null}
+                            </Field>
+                            <Field>
+                              <FieldLabel>Khối lượng (g)</FieldLabel>
+                              <Input
+                                type="number"
+                                min={1}
+                                step={1}
+                                value={row.weightGrams}
+                                onChange={(e) =>
+                                  updateRow(row.localKey, { weightGrams: e.target.value })
+                                }
+                                onBlur={(e) =>
+                                  updateRow(row.localKey, {
+                                    weightGrams: String(clampWeightGrams(e.currentTarget.value)),
+                                  })
+                                }
+                                aria-label={`Khối lượng ${row.skuCode}`}
+                                className="bg-card tabular-nums"
+                              />
+                            </Field>
                           </div>
                         </div>
-                        <label className={common.field}>
-                          <span className={common.fieldLabel}>Giá (VND)</span>
-                          <input
-                            type="number"
-                            min={1000}
-                            step={1}
-                            className={common.textInput}
-                            value={row.priceVnd}
-                            onChange={(e) =>
-                              updateRow(row.localKey, {
-                                priceVnd: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
-                              })
-                            }
-                          />
-                        </label>
-                        <label className={common.field}>
-                          <span className={common.fieldLabel}>
-                            Tồn kho (giữ: {formatInt(row.reservedStock)})
-                          </span>
-                          <input
-                            type="number"
-                            min={row.reservedStock}
-                            step={1}
-                            className={`${common.textInput} ${lowAvail ? styles.stockLow : ""}`}
-                            value={row.stock}
-                            onChange={(e) =>
-                              updateRow(row.localKey, {
-                                stock: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
-                              })
-                            }
-                          />
-                        </label>
-                        <label className={common.field}>
-                          <span className={common.fieldLabel}>Khối lượng (g)</span>
-                          <input
-                            type="number"
-                            min={1}
-                            step={1}
-                            className={common.textInput}
-                            value={row.weightGrams}
-                            onChange={(e) =>
-                              updateRow(row.localKey, { weightGrams: e.target.value })
-                            }
-                            onBlur={(e) =>
-                              updateRow(row.localKey, {
-                                weightGrams: String(clampWeightGrams(e.currentTarget.value)),
-                              })
-                            }
-                            aria-label={`Khối lượng ${row.skuCode}`}
-                          />
-                        </label>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
 
-              <div className={styles.addSkuRow}>
-                <input
-                  type="text"
-                  className={styles.addSkuInput}
-                  value={newSkuColorName}
-                  onChange={(e) => setNewSkuColorName(e.target.value)}
-                  placeholder="Tên màu mới"
-                  aria-label="Tên màu cho SKU mới"
-                />
-                <select
-                  className={common.filterSelect}
-                  value={newSkuSize}
-                  onChange={(e) => setNewSkuSize(e.target.value)}
-                  aria-label="Chọn kích cỡ cho SKU mới"
-                >
-                  {["S", "M", "L", "XL", "2XL"].map((sz) => (
-                    <option key={sz} value={sz}>
-                      Size {sz}
-                    </option>
-                  ))}
-                </select>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  shape="app"
-                  onClick={handleAddSkuRow}
-                >
-                  <IconPlus size={14} />
-                  <span>Thêm biến thể SKU</span>
-                </Button>
-              </div>
-            </div>
-          </details>
-        </div>
-
-        {/* Right Column: Sticky Storefront Product Card Preview */}
-        <aside className={styles.previewCol} aria-label="Xem trước thẻ sản phẩm">
-          <div className={styles.previewSticky}>
-            <div className={styles.previewHeading}>Xem trước thẻ sản phẩm</div>
-
-            <article className={styles.storeCard}>
-              <div className={styles.storeCardMedia}>
-                <img
-                  src={selectedImage}
-                  alt={name.trim() || "Ảnh sản phẩm"}
-                  className={styles.storeCardImg}
-                  width={320}
-                  height={426}
-                />
-                {totalStock === 0 ? (
-                  <span className={`${styles.storeStockBadge} ${styles.storeStockOut}`}>
-                    Hết hàng
+                {/* Add new SKU bar */}
+                <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+                  <Input
+                    type="text"
+                    value={newSkuColorName}
+                    onChange={(e) => setNewSkuColorName(e.target.value)}
+                    placeholder="Tên màu mới"
+                    aria-label="Tên màu cho SKU mới"
+                    className="h-9 w-full sm:w-44"
+                  />
+                  <Select value={newSkuSize} onValueChange={setNewSkuSize}>
+                    <SelectTrigger aria-label="Chọn kích cỡ cho SKU mới" className="w-28 bg-card">
+                      <SelectValue>Size {newSkuSize}</SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {["S", "M", "L", "XL", "2XL"].map((sz) => (
+                        <SelectItem key={sz} value={sz}>
+                          Size {sz}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button type="button" variant="outline" size="sm" onClick={handleAddSkuRow}>
+                    <Plus className="size-4" aria-hidden="true" />
+                    <span>Thêm biến thể SKU</span>
+                  </Button>
+                </div>
+              </CardContent>
+              <CardFooter className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
+                <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground tabular-nums">
+                  <span>
+                    {formatInt(skuRows.length)} SKU · {formatInt(totalStock)} tồn
                   </span>
-                ) : totalStock <= 10 ? (
-                  <span className={styles.storeStockBadge}>Còn {formatInt(totalStock)}</span>
-                ) : null}
-              </div>
-
-              <div className={styles.storeCardBody}>
-                <span className={styles.storeCardCat}>{activeCategoryName}</span>
-                <h2 className={styles.storeCardTitle}>
-                  {name.trim() || "Tên sản phẩm hiển thị tại gian hàng"}
-                </h2>
-                <div className={`${styles.storeCardPrice} num`}>{priceRangeLabel}</div>
-
-                {previewColors.length > 0 && (
-                  <div className={styles.storeSwatches} aria-label="Màu sắc hiển thị">
-                    {previewColors.slice(0, 6).map((c) => (
-                      <span
-                        key={c.label}
-                        className={styles.storeSwatchItem}
-                        title={c.label}
-                        style={{ backgroundColor: c.hex }}
-                      />
-                    ))}
-                    <span className={styles.storeSwatchCount}>
-                      {formatInt(previewColors.length)} màu
+                  {lowSkuCount > 0 && (
+                    <Badge variant="warning">{formatInt(lowSkuCount)} SKU sắp hết</Badge>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => router.push("/seller/san-pham")}
+                  >
+                    Hủy
+                  </Button>
+                  <Button type="submit" size="sm" disabled={saving}>
+                    <Check className="size-4" aria-hidden="true" />
+                    <span>
+                      {saving
+                        ? "Đang lưu..."
+                        : mode === "create"
+                          ? "Đăng bán sản phẩm"
+                          : "Lưu thay đổi"}
                     </span>
+                  </Button>
+                </div>
+              </CardFooter>
+            </Card>
+          </>
+        }
+        aside={
+          <>
+            {/* Aside Card 1: Trạng thái */}
+            <Card aria-labelledby="prod-status-heading">
+              <CardHeader>
+                <CardTitle id="prod-status-heading">Trạng thái</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {mode === "edit" ? (
+                  <Field>
+                    <FieldLabel htmlFor="prod-status">Trạng thái hiển thị</FieldLabel>
+                    <Select
+                      value={productStatus}
+                      disabled={allowedStatuses.length <= 1}
+                      onValueChange={setProductStatus}
+                    >
+                      <SelectTrigger id="prod-status" className="w-full bg-card">
+                        <SelectValue>
+                          {allowedStatuses.find((opt) => opt.value === productStatus)?.label ??
+                            statusMeta.label}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {allowedStatuses.map((opt) => (
+                          <SelectItem key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <FieldDescription className="text-xs">
+                      Có thể ẩn/hiện sản phẩm đã duyệt hoặc gửi duyệt lại sản phẩm bị từ chối.
+                    </FieldDescription>
+                  </Field>
+                ) : (
+                  <div className="space-y-2">
+                    <StatusBadge tone={productStatusTone(productStatus)}>
+                      {statusMeta.label}
+                    </StatusBadge>
+                    <p className="text-xs text-muted-foreground">
+                      Sản phẩm mới sau khi đăng bán sẽ vào danh sách Chờ duyệt trước khi hiển thị
+                      trên site gian hàng.
+                    </p>
                   </div>
                 )}
+              </CardContent>
+            </Card>
 
-                {previewSizes.length > 0 && (
-                  <div className={styles.storeSizePills}>
-                    {previewSizes.slice(0, 6).map((sz) => (
-                      <span key={sz} className={styles.storeSizePill}>
-                        {sz}
-                      </span>
-                    ))}
+            {/* Aside Card 2: Phân loại */}
+            <Card aria-labelledby="prod-category-heading">
+              <CardHeader>
+                <CardTitle id="prod-category-heading">Phân loại</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <FieldGroup className="gap-4">
+                  <Field data-invalid={Boolean(fieldErrors.categoryId) || undefined}>
+                    <FieldLabel htmlFor="prod-category">Ngành hàng</FieldLabel>
+                    <Select
+                      value={categoryId || undefined}
+                      onValueChange={(v) => {
+                        setCategoryId(v);
+                        clearFieldError("categoryId");
+                      }}
+                    >
+                      <SelectTrigger
+                        id="prod-category"
+                        data-error-key="categoryId"
+                        aria-invalid={Boolean(fieldErrors.categoryId)}
+                        className="w-full bg-card"
+                      >
+                        <SelectValue placeholder="Chọn ngành hàng">
+                          {(() => {
+                            const selCat = categories.find((cat) => cat.id === categoryId);
+                            if (!selCat) return null;
+                            const base =
+                              typeof selCat.commission_rate_bps === "number" &&
+                              Number.isFinite(selCat.commission_rate_bps)
+                                ? `${selCat.name} (Hoa hồng ${(selCat.commission_rate_bps / 100).toFixed(1)}%)`
+                                : selCat.name;
+                            return `${base}${selCat.is_prohibited ? " — Danh mục cấm" : ""}`;
+                          })()}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {categories.map((cat) => (
+                          <SelectItem
+                            key={cat.id}
+                            value={cat.id}
+                            disabled={Boolean(cat.is_prohibited)}
+                          >
+                            {typeof cat.commission_rate_bps === "number" &&
+                            Number.isFinite(cat.commission_rate_bps)
+                              ? `${cat.name} (Hoa hồng ${(cat.commission_rate_bps / 100).toFixed(1)}%)`
+                              : cat.name}
+                            {cat.is_prohibited ? " — Danh mục cấm" : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {fieldErrors.categoryId ? (
+                      <FieldError>{fieldErrors.categoryId}</FieldError>
+                    ) : null}
+                  </Field>
+
+                  <Field>
+                    <FieldLabel htmlFor="prod-slug">Đường dẫn tùy chỉnh (tùy chọn)</FieldLabel>
+                    <Input
+                      id="prod-slug"
+                      type="text"
+                      value={slug}
+                      onChange={(e) => setSlug(e.target.value)}
+                      placeholder={name ? slugifyUrl(name) : "tu-dong-tao-tu-ten-san-pham"}
+                    />
+                  </Field>
+                </FieldGroup>
+              </CardContent>
+            </Card>
+
+            {/* Aside Card 3: Xem trước thẻ sản phẩm */}
+            <Card aria-label="Xem trước thẻ sản phẩm">
+              <CardHeader>
+                <CardTitle>Xem trước thẻ sản phẩm</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <article className="overflow-hidden rounded-lg border border-border bg-card">
+                  <div className="relative aspect-[3/4] bg-muted">
+                    <img
+                      src={selectedImage}
+                      alt={name.trim() || "Ảnh sản phẩm"}
+                      className="size-full object-cover"
+                      width={320}
+                      height={426}
+                    />
+                    {totalStock === 0 ? (
+                      <Badge variant="critical" className="absolute top-2 left-2">
+                        Hết hàng
+                      </Badge>
+                    ) : totalStock <= 10 ? (
+                      <Badge variant="warning" className="absolute top-2 left-2 tabular-nums">
+                        Còn {formatInt(totalStock)}
+                      </Badge>
+                    ) : null}
                   </div>
-                )}
 
-                <div className={styles.storeShopFoot}>{shop?.name ?? "Gian hàng NexusMart"}</div>
-              </div>
-            </article>
+                  <div className="space-y-2 p-3">
+                    <div className="text-xs text-muted-foreground">{activeCategoryName}</div>
+                    <h2 className="line-clamp-2 text-sm font-semibold text-foreground">
+                      {name.trim() || "Tên sản phẩm hiển thị tại gian hàng"}
+                    </h2>
+                    <div className="text-sm font-semibold text-foreground tabular-nums">
+                      {priceRangeLabel}
+                    </div>
 
-            <div className={styles.summaryCard}>
-              <div className={styles.summaryRow}>
-                <span className={styles.summaryKey}>Biến thể SKU</span>
-                <span className={styles.summaryVal}>{formatInt(skuRows.length)}</span>
-              </div>
-              <div className={styles.summaryRow}>
-                <span className={styles.summaryKey}>Tổng tồn kho</span>
-                <span className={styles.summaryVal}>{formatInt(totalStock)} chiếc</span>
-              </div>
-              <div className={styles.summaryRow}>
-                <span className={styles.summaryKey}>Khoảng giá</span>
-                <span className={styles.summaryVal}>{priceRangeLabel}</span>
-              </div>
-              <div className={styles.summaryRow}>
-                <span className={styles.summaryKey}>SKU dưới ngưỡng 5</span>
-                <span
-                  className={`${styles.summaryVal} ${lowSkuCount > 0 ? styles.summaryValWarn : ""}`}
-                >
-                  {formatInt(lowSkuCount)}
-                </span>
-              </div>
-            </div>
-          </div>
-        </aside>
-      </div>
+                    {previewColors.length > 0 && (
+                      <div
+                        className="flex flex-wrap items-center gap-1.5"
+                        aria-label="Màu sắc hiển thị"
+                      >
+                        {previewColors.slice(0, 6).map((c) => (
+                          <span
+                            key={c.label}
+                            title={c.label}
+                            className="size-3.5 rounded-full border border-border"
+                            style={{ backgroundColor: c.hex }}
+                          />
+                        ))}
+                        <span className="text-xs text-muted-foreground">
+                          {formatInt(previewColors.length)} màu
+                        </span>
+                      </div>
+                    )}
 
-      {/* Sticky Bottom Save Bar */}
-      <div className={styles.stickyBar} role="region" aria-label="Thanh lưu sản phẩm">
-        <div className={styles.stickySummary}>
-          <span className="num">
-            {formatInt(skuRows.length)} SKU, {formatInt(totalStock)} tồn
-          </span>
-          <span className="num">{priceRangeLabel}</span>
-          {lowSkuCount > 0 && (
-            <span className={styles.stickyWarn}>{formatInt(lowSkuCount)} SKU sắp hết</span>
-          )}
-        </div>
-        <div className={styles.stickyActions}>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            shape="app"
-            onClick={() => router.push("/seller/san-pham")}
-          >
-            Hủy
-          </Button>
-          <Button type="submit" variant="ink" size="sm" shape="app" disabled={saving}>
-            <IconCheck size={14} />
-            <span>
-              {saving ? "Đang lưu..." : mode === "create" ? "Đăng bán sản phẩm" : "Lưu thay đổi"}
-            </span>
-          </Button>
-        </div>
-      </div>
+                    {previewSizes.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {previewSizes.slice(0, 6).map((sz) => (
+                          <Badge key={sz} variant="secondary" className="rounded-sm px-1.5 py-0">
+                            {sz}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="border-t border-border pt-2 text-xs text-muted-foreground">
+                      {shop?.name ?? "Gian hàng NexusMart"}
+                    </div>
+                  </div>
+                </article>
+
+                <Separator />
+
+                <dl className="space-y-2 text-[13px] tabular-nums">
+                  <div className="flex items-center justify-between gap-2">
+                    <dt className="text-muted-foreground">Biến thể SKU</dt>
+                    <dd className="font-medium text-foreground">{formatInt(skuRows.length)}</dd>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <dt className="text-muted-foreground">Tổng tồn kho</dt>
+                    <dd className="font-medium text-foreground">{formatInt(totalStock)} chiếc</dd>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <dt className="text-muted-foreground">SKU dưới ngưỡng 5</dt>
+                    <dd
+                      className={cn(
+                        "font-medium",
+                        lowSkuCount > 0 ? "text-destructive" : "text-foreground"
+                      )}
+                    >
+                      {formatInt(lowSkuCount)}
+                    </dd>
+                  </div>
+                </dl>
+              </CardContent>
+            </Card>
+          </>
+        }
+      />
+
+      {/* Delete Product Confirmation Dialog */}
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Xóa sản phẩm &ldquo;{currentProduct?.name}&rdquo;?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Sản phẩm sẽ bị gỡ khỏi gian hàng và không thể khôi phục sau khi xóa.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Giữ lại</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={deleting}
+              onClick={() => void handleDeleteProduct()}
+            >
+              {deleting ? "Đang xóa..." : "Xác nhận xóa"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </form>
   );
 }

@@ -3,14 +3,34 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Button, IconArrowUpRight, IconCheck, IconRefresh, StateView } from "@/components";
+import { AlertTriangle, ArrowUpRight, Check, Info, RefreshCw, Store } from "lucide-react";
+import {
+  EmptyState,
+  ErrorState,
+  PageHeader,
+  SaveBar,
+  StatusBadge,
+  siteStatusTone,
+  type StatusTone,
+} from "@/components/app";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError, getErrorMessage } from "@/lib/api";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
 import type { SessionUser } from "@/lib/server/session";
 import { sanitizeSafeUrl } from "@/lib/site/theme";
+import { cn } from "@/lib/utils";
 import { SellerSuspense } from "@/features/seller/SellerStateGuard";
 import { useSellerContext } from "@/features/seller/SellerShell";
-import { SellerSlidingTabs, statusPillClass } from "@/features/seller/SellerUiPrimitives";
 import {
   getShopStatusLabel,
   type GwSellerShop,
@@ -24,10 +44,19 @@ import {
 } from "@/features/seller/sellerReturns";
 import { CARRIER_OPTIONS, parseSellerFreeshipSettings } from "@/features/seller/types";
 import type { SellerSiteSummary } from "@/features/seller/site/siteSummary";
-import common from "@/features/seller/SellerCommon.module.css";
-import styles from "./page.module.css";
 
 type ProfileTab = "shop" | "shipping" | "warehouse" | "autoreply";
+
+interface ShippingSnapshot {
+  enabledCarriers: string[];
+  defaultWeightStr: string;
+  defaultLengthStr: string;
+  defaultWidthStr: string;
+  defaultHeightStr: string;
+  freeShipEnabled: boolean;
+  freeShipMinOrderStr: string;
+  freeShipMaxStr: string;
+}
 
 const AUTO_REPLY_PRESETS = [
   {
@@ -51,20 +80,50 @@ export interface SellerProfileClientProps {
   site: SellerSiteSummary;
 }
 
+function shopStatusTone(status?: string | null): StatusTone {
+  const s = (status ?? "").trim().toUpperCase();
+  if (s === "ACTIVE" || s === "APPROVED") return "success";
+  if (s === "PENDING" || s === "PENDING_REVIEW") return "attention";
+  if (s === "SUSPENDED" || s === "REJECTED") return "critical";
+  return "neutral";
+}
+
 function siteStateLabel(state: SellerSiteSummary["state"]): {
   label: string;
-  tone: "pos" | "warn" | "neg" | "neutral";
+  tone: StatusTone;
 } {
   switch (state) {
     case "published":
-      return { label: "Đang mở bán", tone: "pos" };
+      return { label: "Đang mở bán", tone: siteStatusTone("PUBLISHED") };
     case "draft":
-      return { label: "Bản nháp", tone: "warn" };
+      return { label: "Bản nháp", tone: siteStatusTone("DRAFT") };
     case "suspended":
-      return { label: "Đang tạm khóa", tone: "neg" };
+      return { label: "Đang tạm khóa", tone: siteStatusTone("SUSPENDED") };
     default:
       return { label: "Chưa khởi tạo", tone: "neutral" };
   }
+}
+
+function buildShippingSnapshot(settings: GwShopShippingSettings | null): ShippingSnapshot {
+  return {
+    enabledCarriers: settings?.enabled_carrier_codes?.length
+      ? settings.enabled_carrier_codes
+      : ["ghn", "mock_express"],
+    defaultWeightStr: String(settings?.default_weight_grams || 500),
+    defaultLengthStr: String(settings?.default_length_cm || 25),
+    defaultWidthStr: String(settings?.default_width_cm || 20),
+    defaultHeightStr: String(settings?.default_height_cm || 10),
+    freeShipEnabled: Boolean(settings?.free_ship_enabled),
+    freeShipMinOrderStr: String(settings?.free_ship_min_order_vnd ?? 199000),
+    freeShipMaxStr: String(settings?.free_ship_max_vnd ?? 25000),
+  };
+}
+
+function sameCarriers(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sa = [...a].sort();
+  const sb = [...b].sort();
+  return sa.every((v, idx) => v === sb[idx]);
 }
 
 function SellerProfileContent({
@@ -97,43 +156,36 @@ function SellerProfileContent({
   const [profileError, setProfileError] = useState("");
 
   // Real shipping & freeship settings state (/api/seller/shipping-settings)
+  const initialShipSnap = useMemo(
+    () => buildShippingSnapshot(initialShippingSettings),
+    [initialShippingSettings]
+  );
+  const [savedShipping, setSavedShipping] = useState<ShippingSnapshot>(initialShipSnap);
   const [shipSettingsLoading, setShipSettingsLoading] = useState(false);
   const [shipSettingsSaving, setShipSettingsSaving] = useState(false);
   const [shipSettingsError, setShipSettingsError] = useState<string | null>(shippingSettingsError);
   const [shipSettingsUpdatedAt, setShipSettingsUpdatedAt] = useState<string | undefined>(
     initialShippingSettings?.updated_at
   );
-  const [enabledCarriers, setEnabledCarriers] = useState<string[]>(
-    initialShippingSettings?.enabled_carrier_codes?.length
-      ? initialShippingSettings.enabled_carrier_codes
-      : ["ghn", "mock_express"]
-  );
-  const [defaultWeightStr, setDefaultWeightStr] = useState(
-    String(initialShippingSettings?.default_weight_grams || 500)
-  );
-  const [defaultLengthStr, setDefaultLengthStr] = useState(
-    String(initialShippingSettings?.default_length_cm || 25)
-  );
-  const [defaultWidthStr, setDefaultWidthStr] = useState(
-    String(initialShippingSettings?.default_width_cm || 20)
-  );
-  const [defaultHeightStr, setDefaultHeightStr] = useState(
-    String(initialShippingSettings?.default_height_cm || 10)
-  );
-  const [freeShipEnabled, setFreeShipEnabled] = useState(
-    Boolean(initialShippingSettings?.free_ship_enabled)
-  );
+  const [enabledCarriers, setEnabledCarriers] = useState<string[]>(initialShipSnap.enabledCarriers);
+  const [defaultWeightStr, setDefaultWeightStr] = useState(initialShipSnap.defaultWeightStr);
+  const [defaultLengthStr, setDefaultLengthStr] = useState(initialShipSnap.defaultLengthStr);
+  const [defaultWidthStr, setDefaultWidthStr] = useState(initialShipSnap.defaultWidthStr);
+  const [defaultHeightStr, setDefaultHeightStr] = useState(initialShipSnap.defaultHeightStr);
+  const [freeShipEnabled, setFreeShipEnabled] = useState(initialShipSnap.freeShipEnabled);
   const [freeShipMinOrderStr, setFreeShipMinOrderStr] = useState(
-    String(initialShippingSettings?.free_ship_min_order_vnd ?? 199000)
+    initialShipSnap.freeShipMinOrderStr
   );
-  const [freeShipMaxStr, setFreeShipMaxStr] = useState(
-    String(initialShippingSettings?.free_ship_max_vnd ?? 25000)
-  );
+  const [freeShipMaxStr, setFreeShipMaxStr] = useState(initialShipSnap.freeShipMaxStr);
 
   // Auto-reply state
   const [autoReplyLoaded, setAutoReplyLoaded] = useState(false);
   const [autoReplyLoading, setAutoReplyLoading] = useState(false);
   const [autoReplyUnavailable, setAutoReplyUnavailable] = useState(false);
+  const [savedAutoReply, setSavedAutoReply] = useState<{ enabled: boolean; message: string }>({
+    enabled: false,
+    message: "",
+  });
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
   const [autoReplyMessage, setAutoReplyMessage] = useState("");
   const [autoReplyUpdatedAt, setAutoReplyUpdatedAt] = useState("");
@@ -141,18 +193,27 @@ function SellerProfileContent({
   const [autoReplyError, setAutoReplyError] = useState("");
 
   const applyShippingSettings = useCallback((settings: GwShopShippingSettings) => {
-    setEnabledCarriers(
-      settings.enabled_carrier_codes?.length
+    const snap: ShippingSnapshot = {
+      enabledCarriers: settings.enabled_carrier_codes?.length
         ? settings.enabled_carrier_codes
-        : ["ghn", "mock_express"]
-    );
-    setDefaultWeightStr(String(settings.default_weight_grams || 500));
-    setDefaultLengthStr(String(settings.default_length_cm || 25));
-    setDefaultWidthStr(String(settings.default_width_cm || 20));
-    setDefaultHeightStr(String(settings.default_height_cm || 10));
-    setFreeShipEnabled(Boolean(settings.free_ship_enabled));
-    setFreeShipMinOrderStr(String(settings.free_ship_min_order_vnd ?? 0));
-    setFreeShipMaxStr(String(settings.free_ship_max_vnd ?? 0));
+        : ["ghn", "mock_express"],
+      defaultWeightStr: String(settings.default_weight_grams || 500),
+      defaultLengthStr: String(settings.default_length_cm || 25),
+      defaultWidthStr: String(settings.default_width_cm || 20),
+      defaultHeightStr: String(settings.default_height_cm || 10),
+      freeShipEnabled: Boolean(settings.free_ship_enabled),
+      freeShipMinOrderStr: String(settings.free_ship_min_order_vnd ?? 0),
+      freeShipMaxStr: String(settings.free_ship_max_vnd ?? 0),
+    };
+    setSavedShipping(snap);
+    setEnabledCarriers(snap.enabledCarriers);
+    setDefaultWeightStr(snap.defaultWeightStr);
+    setDefaultLengthStr(snap.defaultLengthStr);
+    setDefaultWidthStr(snap.defaultWidthStr);
+    setDefaultHeightStr(snap.defaultHeightStr);
+    setFreeShipEnabled(snap.freeShipEnabled);
+    setFreeShipMinOrderStr(snap.freeShipMinOrderStr);
+    setFreeShipMaxStr(snap.freeShipMaxStr);
     setShipSettingsUpdatedAt(settings.updated_at);
   }, []);
 
@@ -180,6 +241,7 @@ function SellerProfileContent({
     try {
       const res = await api<unknown>("/api/seller/chat/auto-reply", { signal });
       const normalized: SellerAutoReplyConfig = normalizeAutoReplyConfig(res);
+      setSavedAutoReply({ enabled: normalized.enabled, message: normalized.message });
       setAutoReplyEnabled(normalized.enabled);
       setAutoReplyMessage(normalized.message);
       setAutoReplyUpdatedAt(normalized.updated_at);
@@ -228,8 +290,7 @@ function SellerProfileContent({
     });
   };
 
-  const handleSaveShippingSettings = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submitShippingSettings = async () => {
     if (shipSettingsSaving) return;
     if (enabledCarriers.length === 0) {
       setShipSettingsError("Gian hàng cần bật ít nhất một hãng vận chuyển.");
@@ -277,6 +338,17 @@ function SellerProfileContent({
       );
       if (res?.settings) {
         applyShippingSettings(res.settings);
+      } else {
+        setSavedShipping({
+          enabledCarriers: [...enabledCarriers],
+          defaultWeightStr: String(weight),
+          defaultLengthStr: String(length),
+          defaultWidthStr: String(width),
+          defaultHeightStr: String(height),
+          freeShipEnabled,
+          freeShipMinOrderStr: String(freeshipParsed.minOrderVnd),
+          freeShipMaxStr: String(freeshipParsed.maxVnd),
+        });
       }
       showToast("Đã lưu cài đặt vận chuyển và Freeship gian hàng.");
     } catch (err) {
@@ -284,6 +356,11 @@ function SellerProfileContent({
     } finally {
       setShipSettingsSaving(false);
     }
+  };
+
+  const handleSaveShippingSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await submitShippingSettings();
   };
 
   const shopDisplayName = shop?.name || "Gian hàng";
@@ -294,8 +371,7 @@ function SellerProfileContent({
     (a) => shop?.pickup_address_id && a.id === shop.pickup_address_id
   );
 
-  const handleSaveOwnerContact = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submitOwnerContact = async () => {
     if (profileSaving) return;
     const trimmedName = fullName.trim();
     const trimmedPhone = phone.trim();
@@ -330,8 +406,12 @@ function SellerProfileContent({
     }
   };
 
-  const handleSaveAutoReply = async (e: React.FormEvent) => {
+  const handleSaveOwnerContact = async (e: React.FormEvent) => {
     e.preventDefault();
+    await submitOwnerContact();
+  };
+
+  const submitAutoReply = async () => {
     if (autoReplySaving) return;
     const trimmedMsg = autoReplyMessage.trim();
     if (autoReplyEnabled && trimmedMsg.length < 5) {
@@ -353,8 +433,10 @@ function SellerProfileContent({
         },
       });
       const normalized = normalizeAutoReplyConfig(res);
+      const nextMsg = normalized.message || trimmedMsg;
+      setSavedAutoReply({ enabled: normalized.enabled, message: nextMsg });
       setAutoReplyEnabled(normalized.enabled);
-      setAutoReplyMessage(normalized.message || trimmedMsg);
+      setAutoReplyMessage(nextMsg);
       setAutoReplyUpdatedAt(normalized.updated_at);
       setAutoReplyUnavailable(false);
       showToast("Đã lưu cấu hình trả lời tự động chat.");
@@ -370,730 +452,893 @@ function SellerProfileContent({
     }
   };
 
-  const profileTabs: ReadonlyArray<{ key: ProfileTab; label: string; count?: number }> = [
-    { key: "shop", label: "Gian hàng" },
-    { key: "shipping", label: "Vận chuyển & Freeship" },
-    { key: "warehouse", label: "Kho lấy hàng", count: addresses.length },
-    { key: "autoreply", label: "Trả lời tự động" },
-  ];
+  const handleSaveAutoReply = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await submitAutoReply();
+  };
+
+  const shopDirty = fullName !== owner.fullName || phone !== owner.phone;
+  const shippingDirty =
+    !sameCarriers(enabledCarriers, savedShipping.enabledCarriers) ||
+    defaultWeightStr !== savedShipping.defaultWeightStr ||
+    defaultLengthStr !== savedShipping.defaultLengthStr ||
+    defaultWidthStr !== savedShipping.defaultWidthStr ||
+    defaultHeightStr !== savedShipping.defaultHeightStr ||
+    freeShipEnabled !== savedShipping.freeShipEnabled ||
+    freeShipMinOrderStr !== savedShipping.freeShipMinOrderStr ||
+    freeShipMaxStr !== savedShipping.freeShipMaxStr;
+  const autoReplyDirty =
+    autoReplyLoaded &&
+    (autoReplyEnabled !== savedAutoReply.enabled || autoReplyMessage !== savedAutoReply.message);
+
+  const activeDirty =
+    (tab === "shop" && shopDirty) ||
+    (tab === "shipping" && shippingDirty) ||
+    (tab === "autoreply" && autoReplyDirty);
+
+  const activeSaving =
+    (tab === "shop" && profileSaving) ||
+    (tab === "shipping" && shipSettingsSaving) ||
+    (tab === "autoreply" && autoReplySaving);
+
+  const handleDiscardActiveTab = () => {
+    if (tab === "shop") {
+      setFullName(owner.fullName);
+      setPhone(owner.phone);
+      setProfileError("");
+    } else if (tab === "shipping") {
+      setEnabledCarriers(savedShipping.enabledCarriers);
+      setDefaultWeightStr(savedShipping.defaultWeightStr);
+      setDefaultLengthStr(savedShipping.defaultLengthStr);
+      setDefaultWidthStr(savedShipping.defaultWidthStr);
+      setDefaultHeightStr(savedShipping.defaultHeightStr);
+      setFreeShipEnabled(savedShipping.freeShipEnabled);
+      setFreeShipMinOrderStr(savedShipping.freeShipMinOrderStr);
+      setFreeShipMaxStr(savedShipping.freeShipMaxStr);
+      setShipSettingsError(null);
+    } else if (tab === "autoreply") {
+      setAutoReplyEnabled(savedAutoReply.enabled);
+      setAutoReplyMessage(savedAutoReply.message);
+      setAutoReplyError("");
+    }
+  };
+
+  const handleSaveActiveTab = () => {
+    if (tab === "shop") {
+      void submitOwnerContact();
+    } else if (tab === "shipping") {
+      void submitShippingSettings();
+    } else if (tab === "autoreply") {
+      void submitAutoReply();
+    }
+  };
 
   return (
-    <div className={common.page}>
-      <header className={common.pageHeader}>
-        <div className={common.headerText}>
-          <h1 className={common.title}>Hồ sơ</h1>
-        </div>
-        <div className={common.headerActions}>
-          <Button variant="outline" size="sm" shape="app" href="/seller/site">
-            <span>Site bán hàng</span>
-            <IconArrowUpRight size={14} />
+    <div className="mx-auto w-full max-w-[800px] space-y-6">
+      <SaveBar
+        visible={Boolean(!uiState && activeDirty)}
+        saving={activeSaving}
+        onDiscard={handleDiscardActiveTab}
+        onSave={handleSaveActiveTab}
+      />
+
+      <PageHeader
+        title="Hồ sơ"
+        subtitle="Quản lý thông tin gian hàng, cấu hình vận chuyển, kho lấy hàng và trả lời tự động."
+        primaryAction={
+          <Button variant="outline" size="sm" asChild>
+            <Link href="/seller/site">
+              <span>Site bán hàng</span>
+              <ArrowUpRight className="size-4" aria-hidden="true" />
+            </Link>
           </Button>
-        </div>
-      </header>
+        }
+      />
 
       {uiState === "loading" && (
-        <StateView
-          kind="loading"
-          surface="app"
-          skeletonVariant="table"
-          title="Đang tải hồ sơ gian hàng..."
-          rows={5}
-        />
+        <Card role="status" aria-label="Đang tải hồ sơ gian hàng...">
+          <CardContent className="space-y-4 py-6">
+            <Skeleton className="h-5 w-44" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-2/3" />
+          </CardContent>
+        </Card>
       )}
 
       {uiState === "error" && (
-        <StateView
-          kind="error"
-          surface="app"
+        <ErrorState
           title="Không thể tải hồ sơ gian hàng"
-          message={shopError ?? "Hệ thống gian hàng tạm thời chưa phản hồi."}
-          actionLabel="Thử lại"
-          onAction={() => router.refresh()}
+          description={shopError ?? "Hệ thống gian hàng tạm thời chưa phản hồi."}
+          onRetry={() => router.refresh()}
         />
       )}
 
       {uiState === "empty" && (
-        <StateView
-          kind="empty"
-          surface="app"
+        <EmptyState
+          icon={Store}
           title="Chưa có dữ liệu hồ sơ gian hàng"
-          message="Hoàn thiện thông tin gian hàng và kho lấy hàng để bắt đầu vận hành."
-          actionLabel="Mở cấu hình site"
-          actionHref="/seller/site"
+          description="Hoàn thiện thông tin gian hàng và kho lấy hàng để bắt đầu vận hành."
+          action={
+            <Button size="sm" asChild>
+              <Link href="/seller/site">Mở cấu hình site</Link>
+            </Button>
+          }
         />
       )}
 
       {!uiState && (
-        <>
-          <SellerSlidingTabs
-            tabs={profileTabs}
-            value={tab}
-            onChange={setTab}
-            ariaLabel="Phân mục hồ sơ gian hàng"
-          />
+        <Tabs value={tab} onValueChange={(v) => setTab(v as ProfileTab)} className="space-y-6">
+          <div className="-mx-1 overflow-x-auto px-1">
+            <TabsList
+              aria-label="Phân mục hồ sơ gian hàng"
+              className="h-auto w-max min-w-full justify-start border-b border-border bg-transparent pb-2"
+            >
+              <TabsTrigger value="shop" className="min-h-10 md:min-h-8">
+                Gian hàng
+              </TabsTrigger>
+              <TabsTrigger value="shipping" className="min-h-10 md:min-h-8">
+                Vận chuyển &amp; Freeship
+              </TabsTrigger>
+              <TabsTrigger value="warehouse" className="min-h-10 gap-1.5 md:min-h-8">
+                <span>Kho lấy hàng</span>
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {formatInt(addresses.length)}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger value="autoreply" className="min-h-10 md:min-h-8">
+                Trả lời tự động
+              </TabsTrigger>
+            </TabsList>
+          </div>
 
-          {tab === "shop" && (
-            <div className={styles.twoCol}>
-              <section className={common.card} aria-labelledby="shop-info-heading">
-                <div className={common.cardHeader}>
-                  <h2 id="shop-info-heading" className={common.cardTitle}>
+          <TabsContent value="shop" className="space-y-6">
+            <section
+              aria-labelledby="shop-info-heading"
+              className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]"
+            >
+              <div className="space-y-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 id="shop-info-heading" className="text-sm font-semibold text-foreground">
                     Hồ sơ gian hàng
                   </h2>
                   {shopStatusMeta && (
-                    <span className={statusPillClass(shopStatusMeta.tone)}>
+                    <StatusBadge tone={shopStatusTone(shop?.status)}>
                       {shopStatusMeta.label}
-                    </span>
+                    </StatusBadge>
                   )}
                 </div>
+                <p className="text-[13px] leading-[18px] text-muted-foreground">
+                  Thông tin định danh, chứng từ kinh doanh và kho mặc định của gian hàng.
+                </p>
+              </div>
 
+              <Card>
                 {shopError && !shop ? (
-                  <StateView
-                    kind="error"
-                    surface="app"
-                    title="Không thể tải thông tin gian hàng"
-                    message={shopError}
-                    actionLabel="Tải lại"
-                    onAction={() => router.refresh()}
-                  />
+                  <CardContent className="pt-4">
+                    <ErrorState
+                      title="Không thể tải thông tin gian hàng"
+                      description={shopError}
+                      onRetry={() => router.refresh()}
+                      className="shadow-none"
+                    />
+                  </CardContent>
                 ) : !shop ? (
-                  <div className={common.inlineEmpty}>
+                  <CardContent className="py-6 text-[13px] text-muted-foreground">
                     Tài khoản hiện chưa gắn hồ sơ gian hàng trên hệ thống.
-                  </div>
+                  </CardContent>
                 ) : (
                   <>
-                    {shop.rejection_reason && (
-                      <div className={styles.alertBanner} role="alert">
-                        <strong>Lý do từ chối:</strong> {shop.rejection_reason}
-                      </div>
-                    )}
+                    <CardContent className="space-y-4 pt-4">
+                      {shop.rejection_reason && (
+                        <Alert variant="destructive">
+                          <AlertTriangle className="size-4" aria-hidden="true" />
+                          <AlertTitle>Lý do từ chối</AlertTitle>
+                          <AlertDescription>{shop.rejection_reason}</AlertDescription>
+                        </Alert>
+                      )}
 
-                    <div className={styles.kvList}>
-                      <div className={styles.kvRow}>
-                        <span className={styles.kvKey}>Tên gian hàng</span>
-                        <span className={styles.kvVal}>{shop.name}</span>
-                      </div>
-                      <div className={styles.kvRow}>
-                        <span className={styles.kvKey}>Trạng thái</span>
-                        <span className={styles.kvVal}>
-                          {shopStatusMeta ? shopStatusMeta.label : shop.status}
-                        </span>
-                      </div>
-                      <div className={styles.kvRow}>
-                        <span className={styles.kvKey}>Số điện thoại</span>
-                        <span className={styles.kvVal}>
-                          {shop.contact_phone || "Chưa cập nhật"}
-                        </span>
-                      </div>
-                      <div className={styles.kvRow}>
-                        <span className={styles.kvKey}>Mô tả</span>
-                        <span className={styles.kvVal}>{shop.description || "Chưa cập nhật"}</span>
-                      </div>
-                      <div className={styles.kvRow}>
-                        <span className={styles.kvKey}>Giấy phép kinh doanh</span>
-                        <span className={styles.kvVal}>
-                          {safeLicenseUrl ? (
-                            <a
-                              href={safeLicenseUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className={common.cellLink}
-                            >
-                              Xem chứng từ
-                            </a>
-                          ) : (
-                            shop.business_license_doc || "Chưa đính kèm"
-                          )}
-                        </span>
-                      </div>
-                      <div className={styles.kvRow}>
-                        <span className={styles.kvKey}>Ngày khởi tạo</span>
-                        <span className={styles.kvVal}>
-                          {shop.created_at ? formatDateTimeVi(shop.created_at) : "Chưa cập nhật"}
-                        </span>
-                      </div>
-                      <div className={styles.kvRow}>
-                        <span className={styles.kvKey}>Kho mặc định</span>
-                        <span className={styles.kvVal}>
-                          {pickupAddress
-                            ? `${pickupAddress.street_address}, ${pickupAddress.ward_name}, ${pickupAddress.province_name}`
-                            : shop.pickup_address_id || "Chưa thiết lập"}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className={styles.cardFootNote}>
-                      <span>Chỉnh giao diện &amp; chính sách trên site riêng</span>
-                      <Link href="/seller/site" className={common.cardLink}>
+                      <dl className="divide-y divide-border text-sm">
+                        <div className="flex flex-col gap-1 py-2.5 first:pt-0 sm:flex-row sm:justify-between sm:gap-4">
+                          <dt className="text-[13px] text-muted-foreground">Tên gian hàng</dt>
+                          <dd className="font-medium text-foreground sm:text-right">{shop.name}</dd>
+                        </div>
+                        <div className="flex flex-col gap-1 py-2.5 sm:flex-row sm:justify-between sm:gap-4">
+                          <dt className="text-[13px] text-muted-foreground">Trạng thái</dt>
+                          <dd className="text-foreground sm:text-right">
+                            {shopStatusMeta ? shopStatusMeta.label : shop.status}
+                          </dd>
+                        </div>
+                        <div className="flex flex-col gap-1 py-2.5 sm:flex-row sm:justify-between sm:gap-4">
+                          <dt className="text-[13px] text-muted-foreground">Số điện thoại</dt>
+                          <dd className="text-foreground tabular-nums sm:text-right">
+                            {shop.contact_phone || "Chưa cập nhật"}
+                          </dd>
+                        </div>
+                        <div className="flex flex-col gap-1 py-2.5 sm:flex-row sm:justify-between sm:gap-4">
+                          <dt className="text-[13px] text-muted-foreground">Mô tả</dt>
+                          <dd className="text-foreground sm:max-w-[65%] sm:text-right">
+                            {shop.description || "Chưa cập nhật"}
+                          </dd>
+                        </div>
+                        <div className="flex flex-col gap-1 py-2.5 sm:flex-row sm:justify-between sm:gap-4">
+                          <dt className="text-[13px] text-muted-foreground">
+                            Giấy phép kinh doanh
+                          </dt>
+                          <dd className="text-foreground sm:text-right">
+                            {safeLicenseUrl ? (
+                              <a
+                                href={safeLicenseUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-medium text-brand underline underline-offset-4 hover:text-brand/80"
+                              >
+                                Xem chứng từ
+                              </a>
+                            ) : (
+                              shop.business_license_doc || "Chưa đính kèm"
+                            )}
+                          </dd>
+                        </div>
+                        <div className="flex flex-col gap-1 py-2.5 sm:flex-row sm:justify-between sm:gap-4">
+                          <dt className="text-[13px] text-muted-foreground">Ngày khởi tạo</dt>
+                          <dd className="text-foreground tabular-nums sm:text-right">
+                            {shop.created_at ? formatDateTimeVi(shop.created_at) : "Chưa cập nhật"}
+                          </dd>
+                        </div>
+                        <div className="flex flex-col gap-1 py-2.5 last:pb-0 sm:flex-row sm:justify-between sm:gap-4">
+                          <dt className="text-[13px] text-muted-foreground">Kho mặc định</dt>
+                          <dd className="text-foreground sm:max-w-[65%] sm:text-right">
+                            {pickupAddress
+                              ? `${pickupAddress.street_address}, ${pickupAddress.ward_name}, ${pickupAddress.province_name}`
+                              : shop.pickup_address_id || "Chưa thiết lập"}
+                          </dd>
+                        </div>
+                      </dl>
+                    </CardContent>
+                    <CardFooter className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 text-[13px]">
+                      <span className="text-muted-foreground">
+                        Chỉnh giao diện &amp; chính sách trên site riêng
+                      </span>
+                      <Link href="/seller/site" className="font-medium text-brand hover:underline">
                         Mở Site Studio
                       </Link>
-                    </div>
+                    </CardFooter>
                   </>
                 )}
-              </section>
+              </Card>
+            </section>
 
-              <form
-                className={common.card}
-                onSubmit={(e) => void handleSaveOwnerContact(e)}
-                aria-labelledby="owner-contact-heading"
-              >
-                <div className={common.cardHeader}>
-                  <h2 id="owner-contact-heading" className={common.cardTitle}>
+            <Separator />
+
+            <section
+              aria-labelledby="owner-contact-heading"
+              className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]"
+            >
+              <div className="space-y-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 id="owner-contact-heading" className="text-sm font-semibold text-foreground">
                     Chủ gian hàng
                   </h2>
-                  <span className={statusPillClass(owner.phoneVerified ? "pos" : "neutral")}>
+                  <StatusBadge tone={owner.phoneVerified ? "success" : "neutral"}>
                     {owner.phoneVerified ? "Đã xác thực SĐT" : "Chưa xác thực SĐT"}
-                  </span>
+                  </StatusBadge>
                 </div>
+                <p className="text-[13px] leading-[18px] text-muted-foreground">
+                  Thông tin liên hệ của người phụ trách tài khoản quản trị gian hàng.
+                </p>
+              </div>
 
-                <div className={styles.fieldStack}>
-                  <div className={common.field}>
-                    <label htmlFor="owner-email" className={common.fieldLabel}>
-                      Email đăng nhập
-                    </label>
-                    <input
-                      id="owner-email"
-                      type="email"
-                      className={common.textInput}
-                      value={owner.email}
-                      disabled
-                      readOnly
-                    />
-                  </div>
+              <Card>
+                <form onSubmit={(e) => void handleSaveOwnerContact(e)}>
+                  <CardContent className="pt-4">
+                    <FieldGroup className="gap-4">
+                      <Field>
+                        <FieldLabel htmlFor="owner-email">Email đăng nhập</FieldLabel>
+                        <Input
+                          id="owner-email"
+                          type="email"
+                          value={owner.email}
+                          disabled
+                          readOnly
+                          className="bg-muted/60"
+                        />
+                      </Field>
 
-                  <div className={common.field}>
-                    <label htmlFor="owner-fullname" className={common.fieldLabel}>
-                      Họ và tên người phụ trách
-                    </label>
-                    <input
-                      id="owner-fullname"
-                      type="text"
-                      className={common.textInput}
-                      value={fullName}
-                      onChange={(e) => setFullName(e.target.value)}
-                      placeholder="Nhập họ tên chủ gian hàng"
-                      maxLength={120}
-                    />
-                  </div>
+                      <Field data-invalid={Boolean(profileError) || undefined}>
+                        <FieldLabel htmlFor="owner-fullname">Họ và tên người phụ trách</FieldLabel>
+                        <Input
+                          id="owner-fullname"
+                          type="text"
+                          value={fullName}
+                          onChange={(e) => {
+                            setFullName(e.target.value);
+                            if (profileError) setProfileError("");
+                          }}
+                          placeholder="Nhập họ tên chủ gian hàng"
+                          maxLength={120}
+                          aria-invalid={Boolean(profileError)}
+                        />
+                      </Field>
 
-                  <div className={common.field}>
-                    <label htmlFor="owner-phone" className={common.fieldLabel}>
-                      Số điện thoại tài khoản
-                    </label>
-                    <input
-                      id="owner-phone"
-                      type="tel"
-                      className={common.textInput}
-                      value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
-                      placeholder="Ví dụ: 0901234567"
-                      maxLength={20}
-                    />
-                  </div>
+                      <Field>
+                        <FieldLabel htmlFor="owner-phone">Số điện thoại tài khoản</FieldLabel>
+                        <Input
+                          id="owner-phone"
+                          type="tel"
+                          value={phone}
+                          onChange={(e) => setPhone(e.target.value)}
+                          placeholder="Ví dụ: 0901234567"
+                          maxLength={20}
+                        />
+                      </Field>
 
-                  {profileError && (
-                    <p className={common.fieldError} role="alert">
-                      {profileError}
-                    </p>
-                  )}
-
-                  <div className={styles.formActions}>
-                    <Button
-                      type="submit"
-                      variant="ink"
-                      size="sm"
-                      shape="app"
-                      disabled={profileSaving}
-                    >
-                      <IconCheck size={14} />
+                      {profileError ? <FieldError>{profileError}</FieldError> : null}
+                    </FieldGroup>
+                  </CardContent>
+                  <CardFooter className="justify-end border-t border-border pt-3">
+                    <Button type="submit" size="sm" disabled={profileSaving}>
+                      <Check className="size-4" aria-hidden="true" />
                       <span>{profileSaving ? "Đang lưu..." : "Lưu thông tin liên hệ"}</span>
                     </Button>
-                  </div>
-                </div>
-              </form>
-            </div>
-          )}
+                  </CardFooter>
+                </form>
+              </Card>
+            </section>
+          </TabsContent>
 
-          {tab === "shipping" && (
+          <TabsContent value="shipping">
             <form
-              className={`${common.card} ${styles.shippingCard}`}
               onSubmit={(e) => void handleSaveShippingSettings(e)}
               aria-labelledby="shipping-settings-heading"
               noValidate
+              className="space-y-6"
             >
-              <div className={common.cardHeader}>
-                <div>
-                  <h2 id="shipping-settings-heading" className={common.cardTitle}>
-                    Cài đặt vận chuyển &amp; Freeship shop
-                  </h2>
-                  <span className={common.cardMeta}>
-                    {shipSettingsUpdatedAt
-                      ? `Cập nhật lúc ${formatDateTimeVi(shipSettingsUpdatedAt)}`
-                      : "Đồng bộ với tính phí vận chuyển và tạo vận đơn"}
-                  </span>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  shape="app"
-                  disabled={shipSettingsLoading}
-                  onClick={() => void loadShippingSettings()}
-                >
-                  <IconRefresh size={14} />
-                  <span>{shipSettingsLoading ? "Đang tải..." : "Tải lại"}</span>
-                </Button>
-              </div>
-
               {shipSettingsLoading ? (
-                <StateView
-                  kind="loading"
-                  surface="app"
-                  title="Đang tải cài đặt vận chuyển..."
-                  rows={3}
-                />
+                <Card role="status" aria-label="Đang tải cài đặt vận chuyển...">
+                  <CardContent className="space-y-3 py-6">
+                    <Skeleton className="h-5 w-48" />
+                    <Skeleton className="h-12 w-full" />
+                    <Skeleton className="h-12 w-full" />
+                  </CardContent>
+                </Card>
               ) : (
-                <div className={styles.fieldStack}>
-                  <div>
-                    <span className={common.fieldLabel}>
-                      Hãng vận chuyển cho phép (bật ít nhất 1 hãng)
-                    </span>
-                    {carrierChoices.map((car) => {
-                      const checked = enabledCarriers.includes(car.code);
-                      return (
-                        <div key={car.code} className={styles.switchRow}>
-                          <div className={styles.switchText}>
-                            <span className={styles.switchTitle}>{car.label}</span>
-                            <span className={styles.switchDesc}>
-                              Mã hãng: {car.code} · Báo giá khi cả sàn và shop đều bật
-                            </span>
+                <>
+                  <section className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+                    <div className="space-y-2">
+                      <h2
+                        id="shipping-settings-heading"
+                        className="text-sm font-semibold text-foreground"
+                      >
+                        Cài đặt vận chuyển &amp; Freeship shop
+                      </h2>
+                      <p className="text-[13px] leading-[18px] text-muted-foreground">
+                        {shipSettingsUpdatedAt
+                          ? `Cập nhật lúc ${formatDateTimeVi(shipSettingsUpdatedAt)}`
+                          : "Đồng bộ với tính phí vận chuyển và tạo vận đơn."}
+                      </p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={shipSettingsLoading}
+                        onClick={() => void loadShippingSettings()}
+                      >
+                        <RefreshCw className="size-3.5" aria-hidden="true" />
+                        <span>{shipSettingsLoading ? "Đang tải..." : "Tải lại"}</span>
+                      </Button>
+                    </div>
+
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Hãng vận chuyển cho phép (bật ít nhất 1 hãng)</CardTitle>
+                      </CardHeader>
+                      <CardContent className="divide-y divide-border pt-0">
+                        {carrierChoices.map((car) => {
+                          const checked = enabledCarriers.includes(car.code);
+                          return (
+                            <div
+                              key={car.code}
+                              className="flex min-h-12 items-center justify-between gap-4 py-3 first:pt-0 last:pb-0"
+                            >
+                              <div className="min-w-0">
+                                <div className="text-sm font-medium text-foreground">
+                                  {car.label}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  Mã hãng: {car.code} · Báo giá khi cả sàn và shop đều bật
+                                </div>
+                              </div>
+                              <Switch
+                                checked={checked}
+                                onCheckedChange={(val) => toggleCarrierCode(car.code, val)}
+                                aria-label={`Bật hoặc tắt hãng ${car.label}`}
+                                disabled={shipSettingsSaving}
+                              />
+                            </div>
+                          );
+                        })}
+                      </CardContent>
+                    </Card>
+                  </section>
+
+                  <Separator />
+
+                  <section className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+                    <div className="space-y-1">
+                      <h3 className="text-sm font-semibold text-foreground">
+                        Quy cách kiện mặc định
+                      </h3>
+                      <p className="text-[13px] leading-[18px] text-muted-foreground">
+                        Áp dụng tính cước khi sản phẩm chưa có khối lượng hoặc kích thước riêng.
+                      </p>
+                    </div>
+
+                    <Card>
+                      <CardContent className="pt-4">
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                          <Field>
+                            <FieldLabel htmlFor="ship-def-weight">
+                              Khối lượng mặc định (gram)
+                            </FieldLabel>
+                            <Input
+                              id="ship-def-weight"
+                              type="number"
+                              min={1}
+                              max={50000}
+                              step={1}
+                              value={defaultWeightStr}
+                              onChange={(e) => setDefaultWeightStr(e.target.value)}
+                              disabled={shipSettingsSaving}
+                              required
+                              className="tabular-nums"
+                            />
+                          </Field>
+                          <Field>
+                            <FieldLabel htmlFor="ship-def-length">
+                              Chiều dài kiện mặc định (cm)
+                            </FieldLabel>
+                            <Input
+                              id="ship-def-length"
+                              type="number"
+                              min={1}
+                              max={200}
+                              step={1}
+                              value={defaultLengthStr}
+                              onChange={(e) => setDefaultLengthStr(e.target.value)}
+                              disabled={shipSettingsSaving}
+                              required
+                              className="tabular-nums"
+                            />
+                          </Field>
+                          <Field>
+                            <FieldLabel htmlFor="ship-def-width">
+                              Chiều rộng kiện mặc định (cm)
+                            </FieldLabel>
+                            <Input
+                              id="ship-def-width"
+                              type="number"
+                              min={1}
+                              max={200}
+                              step={1}
+                              value={defaultWidthStr}
+                              onChange={(e) => setDefaultWidthStr(e.target.value)}
+                              disabled={shipSettingsSaving}
+                              required
+                              className="tabular-nums"
+                            />
+                          </Field>
+                          <Field>
+                            <FieldLabel htmlFor="ship-def-height">
+                              Chiều cao kiện mặc định (cm)
+                            </FieldLabel>
+                            <Input
+                              id="ship-def-height"
+                              type="number"
+                              min={1}
+                              max={200}
+                              step={1}
+                              value={defaultHeightStr}
+                              onChange={(e) => setDefaultHeightStr(e.target.value)}
+                              disabled={shipSettingsSaving}
+                              required
+                              className="tabular-nums"
+                            />
+                          </Field>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </section>
+
+                  <Separator />
+
+                  <section className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+                    <div className="space-y-1">
+                      <h3 className="text-sm font-semibold text-foreground">Freeship gian hàng</h3>
+                      <p className="text-[13px] leading-[18px] text-muted-foreground">
+                        Tự động trừ phí ship cho đơn đạt ngưỡng và tính vào chi phí khuyến mãi của
+                        gian hàng.
+                      </p>
+                    </div>
+
+                    <Card>
+                      <CardContent className="space-y-4 pt-4">
+                        <div className="flex min-h-11 items-center justify-between gap-4">
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium text-foreground">
+                              Hỗ trợ miễn phí vận chuyển (Freeship shop)
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              Áp dụng tự động tại bước thanh toán khi đơn đạt điều kiện.
+                            </div>
                           </div>
-                          <input
-                            type="checkbox"
-                            className={common.toggleSwitch}
-                            checked={checked}
-                            onChange={(e) => toggleCarrierCode(car.code, e.target.checked)}
-                            aria-label={`Bật hoặc tắt hãng ${car.label}`}
+                          <Switch
+                            checked={freeShipEnabled}
+                            onCheckedChange={(next) => {
+                              setFreeShipEnabled(next);
+                              if (next) {
+                                if (
+                                  freeShipMinOrderStr.trim() === "" ||
+                                  Math.trunc(Number(freeShipMinOrderStr)) < 0
+                                ) {
+                                  setFreeShipMinOrderStr("199000");
+                                }
+                                if (Math.trunc(Number(freeShipMaxStr) || 0) <= 0) {
+                                  setFreeShipMaxStr("25000");
+                                }
+                              }
+                            }}
+                            aria-label="Bật hoặc tắt Freeship gian hàng"
                             disabled={shipSettingsSaving}
                           />
                         </div>
-                      );
-                    })}
-                  </div>
 
-                  <div className={styles.fields2}>
-                    <div className={common.field}>
-                      <label htmlFor="ship-def-weight" className={common.fieldLabel}>
-                        Khối lượng mặc định (gram)
-                      </label>
-                      <input
-                        id="ship-def-weight"
-                        type="number"
-                        min={1}
-                        max={50000}
-                        step={1}
-                        className={common.textInput}
-                        value={defaultWeightStr}
-                        onChange={(e) => setDefaultWeightStr(e.target.value)}
-                        disabled={shipSettingsSaving}
-                        required
-                      />
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="ship-def-length" className={common.fieldLabel}>
-                        Chiều dài kiện mặc định (cm)
-                      </label>
-                      <input
-                        id="ship-def-length"
-                        type="number"
-                        min={1}
-                        max={200}
-                        step={1}
-                        className={common.textInput}
-                        value={defaultLengthStr}
-                        onChange={(e) => setDefaultLengthStr(e.target.value)}
-                        disabled={shipSettingsSaving}
-                        required
-                      />
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="ship-def-width" className={common.fieldLabel}>
-                        Chiều rộng kiện mặc định (cm)
-                      </label>
-                      <input
-                        id="ship-def-width"
-                        type="number"
-                        min={1}
-                        max={200}
-                        step={1}
-                        className={common.textInput}
-                        value={defaultWidthStr}
-                        onChange={(e) => setDefaultWidthStr(e.target.value)}
-                        disabled={shipSettingsSaving}
-                        required
-                      />
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="ship-def-height" className={common.fieldLabel}>
-                        Chiều cao kiện mặc định (cm)
-                      </label>
-                      <input
-                        id="ship-def-height"
-                        type="number"
-                        min={1}
-                        max={200}
-                        step={1}
-                        className={common.textInput}
-                        value={defaultHeightStr}
-                        onChange={(e) => setDefaultHeightStr(e.target.value)}
-                        disabled={shipSettingsSaving}
-                        required
-                      />
-                    </div>
-                  </div>
+                        {freeShipEnabled && (
+                          <div className="grid grid-cols-1 gap-4 border-t border-border pt-4 sm:grid-cols-2">
+                            <Field>
+                              <FieldLabel htmlFor="ship-fs-min">
+                                Đơn tối thiểu áp dụng Freeship (VND)
+                              </FieldLabel>
+                              <Input
+                                id="ship-fs-min"
+                                type="number"
+                                min={0}
+                                step={1}
+                                value={freeShipMinOrderStr}
+                                onChange={(e) => setFreeShipMinOrderStr(e.target.value)}
+                                disabled={shipSettingsSaving}
+                                required
+                                className="tabular-nums"
+                              />
+                              <FieldDescription className="text-xs">
+                                {Math.max(0, Math.trunc(Number(freeShipMinOrderStr) || 0)) === 0
+                                  ? "Áp dụng cho mọi đơn hàng (0₫ = không yêu cầu giá trị tối thiểu)."
+                                  : `Áp dụng cho đơn từ ${formatVnd(Math.max(0, Math.trunc(Number(freeShipMinOrderStr) || 0)))}.`}
+                              </FieldDescription>
+                            </Field>
 
-                  <div>
-                    <div className={styles.switchRow}>
-                      <div className={styles.switchText}>
-                        <span className={styles.switchTitle}>
-                          Hỗ trợ miễn phí vận chuyển (Freeship shop)
-                        </span>
-                        <span className={styles.switchDesc}>
-                          Tự động trừ phí ship cho đơn đạt ngưỡng và tính vào chi phí khuyến mãi của
-                          gian hàng.
-                        </span>
-                      </div>
-                      <input
-                        type="checkbox"
-                        className={common.toggleSwitch}
-                        checked={freeShipEnabled}
-                        onChange={(e) => {
-                          const next = e.target.checked;
-                          setFreeShipEnabled(next);
-                          if (next) {
-                            if (
-                              freeShipMinOrderStr.trim() === "" ||
-                              Math.trunc(Number(freeShipMinOrderStr)) < 0
-                            ) {
-                              setFreeShipMinOrderStr("199000");
-                            }
-                            if (Math.trunc(Number(freeShipMaxStr) || 0) <= 0) {
-                              setFreeShipMaxStr("25000");
-                            }
-                          }
-                        }}
-                        aria-label="Bật hoặc tắt Freeship gian hàng"
-                        disabled={shipSettingsSaving}
-                      />
-                    </div>
+                            <Field>
+                              <FieldLabel htmlFor="ship-fs-max">
+                                Hỗ trợ phí ship tối đa / đơn (VND)
+                              </FieldLabel>
+                              <Input
+                                id="ship-fs-max"
+                                type="number"
+                                min={1}
+                                step={1}
+                                value={freeShipMaxStr}
+                                onChange={(e) => setFreeShipMaxStr(e.target.value)}
+                                disabled={shipSettingsSaving}
+                                required
+                                className="tabular-nums"
+                              />
+                              <FieldDescription className="text-xs">
+                                Bắt buộc lớn hơn 0₫ khi bật Freeship gian hàng.
+                              </FieldDescription>
+                            </Field>
+                          </div>
+                        )}
 
-                    {freeShipEnabled && (
-                      <div className={styles.fields2} style={{ marginTop: 12 }}>
-                        <div className={common.field}>
-                          <label htmlFor="ship-fs-min" className={common.fieldLabel}>
-                            Đơn tối thiểu áp dụng Freeship (VND)
-                          </label>
-                          <input
-                            id="ship-fs-min"
-                            type="number"
-                            min={0}
-                            step={1}
-                            className={common.textInput}
-                            value={freeShipMinOrderStr}
-                            onChange={(e) => setFreeShipMinOrderStr(e.target.value)}
-                            disabled={shipSettingsSaving}
-                            required
-                          />
-                          <span className={common.fieldHint}>
-                            {Math.max(0, Math.trunc(Number(freeShipMinOrderStr) || 0)) === 0
-                              ? "Áp dụng cho mọi đơn hàng (0₫ = không yêu cầu giá trị tối thiểu)."
-                              : `Áp dụng cho đơn từ ${formatVnd(Math.max(0, Math.trunc(Number(freeShipMinOrderStr) || 0)))}.`}
+                        {shipSettingsError ? <FieldError>{shipSettingsError}</FieldError> : null}
+                      </CardContent>
+                      <CardFooter className="justify-end border-t border-border pt-3">
+                        <Button type="submit" size="sm" disabled={shipSettingsSaving}>
+                          <Check className="size-4" aria-hidden="true" />
+                          <span>
+                            {shipSettingsSaving ? "Đang lưu..." : "Lưu cài đặt vận chuyển"}
                           </span>
-                        </div>
-                        <div className={common.field}>
-                          <label htmlFor="ship-fs-max" className={common.fieldLabel}>
-                            Hỗ trợ phí ship tối đa / đơn (VND)
-                          </label>
-                          <input
-                            id="ship-fs-max"
-                            type="number"
-                            min={1}
-                            step={1}
-                            className={common.textInput}
-                            value={freeShipMaxStr}
-                            onChange={(e) => setFreeShipMaxStr(e.target.value)}
-                            disabled={shipSettingsSaving}
-                            required
-                          />
-                          <span className={common.fieldHint}>
-                            Bắt buộc lớn hơn 0₫ khi bật Freeship gian hàng.
-                          </span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {shipSettingsError && (
-                    <p className={common.fieldError} role="alert">
-                      {shipSettingsError}
-                    </p>
-                  )}
-
-                  <div className={styles.formActions}>
-                    <Button
-                      type="submit"
-                      variant="ink"
-                      size="sm"
-                      shape="app"
-                      disabled={shipSettingsSaving}
-                    >
-                      <IconCheck size={14} />
-                      <span>{shipSettingsSaving ? "Đang lưu..." : "Lưu cài đặt vận chuyển"}</span>
-                    </Button>
-                  </div>
-                </div>
+                        </Button>
+                      </CardFooter>
+                    </Card>
+                  </section>
+                </>
               )}
             </form>
-          )}
+          </TabsContent>
 
-          {tab === "warehouse" && (
-            <div className={styles.twoCol}>
-              <section className={common.card} aria-labelledby="warehouse-heading">
-                <div className={common.cardHeader}>
-                  <h2 id="warehouse-heading" className={common.cardTitle}>
-                    Kho lấy hàng ({formatInt(addresses.length)})
-                  </h2>
-                </div>
+          <TabsContent value="warehouse" className="space-y-6">
+            <section
+              aria-labelledby="warehouse-heading"
+              className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]"
+            >
+              <div className="space-y-1">
+                <h2 id="warehouse-heading" className="text-sm font-semibold text-foreground">
+                  Kho lấy hàng ({formatInt(addresses.length)})
+                </h2>
+                <p className="text-[13px] leading-[18px] text-muted-foreground">
+                  Địa chỉ lấy hàng để tính cước vận chuyển và in thông tin người gửi trên nhãn A6.
+                </p>
+              </div>
 
-                {addressesError ? (
-                  <StateView
-                    kind="error"
-                    surface="app"
-                    title="Không thể tải danh sách địa chỉ"
-                    message={addressesError}
-                    actionLabel="Tải lại"
-                    onAction={() => router.refresh()}
-                  />
-                ) : addresses.length === 0 ? (
-                  <div className={common.inlineEmpty}>
-                    Chưa có địa chỉ kho lấy hàng nào được lưu.
-                  </div>
-                ) : (
-                  <div className={styles.addressList}>
-                    {addresses.map((addr) => {
-                      const isPickup = Boolean(
-                        shop?.pickup_address_id && addr.id === shop.pickup_address_id
-                      );
-                      const fullLine = [addr.street_address, addr.ward_name, addr.province_name]
-                        .filter(Boolean)
-                        .join(", ");
-                      return (
-                        <article
-                          key={addr.id}
-                          className={`${styles.addressItem} ${isPickup ? styles.addressItemPickup : ""}`}
-                        >
-                          <div className={styles.addressHead}>
-                            <div className={styles.addressIdentity}>
-                              <strong className={styles.addressName}>{addr.recipient_name}</strong>
-                              <span className={styles.addressPhone}>{addr.recipient_phone}</span>
+              <Card>
+                <CardContent className="pt-4">
+                  {addressesError ? (
+                    <ErrorState
+                      title="Không thể tải danh sách địa chỉ"
+                      description={addressesError}
+                      onRetry={() => router.refresh()}
+                      className="shadow-none"
+                    />
+                  ) : addresses.length === 0 ? (
+                    <p className="text-[13px] text-muted-foreground">
+                      Chưa có địa chỉ kho lấy hàng nào được lưu.
+                    </p>
+                  ) : (
+                    <div className="space-y-3">
+                      {addresses.map((addr) => {
+                        const isPickup = Boolean(
+                          shop?.pickup_address_id && addr.id === shop.pickup_address_id
+                        );
+                        const fullLine = [addr.street_address, addr.ward_name, addr.province_name]
+                          .filter(Boolean)
+                          .join(", ");
+                        return (
+                          <article
+                            key={addr.id}
+                            className={cn(
+                              "rounded-lg border p-3.5",
+                              isPickup ? "border-brand/40 bg-brand/5" : "border-border bg-card"
+                            )}
+                          >
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="text-sm font-semibold text-foreground">
+                                  {addr.recipient_name}
+                                </div>
+                                <div className="text-xs text-muted-foreground tabular-nums">
+                                  {addr.recipient_phone}
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                {isPickup && <StatusBadge tone="success">Kho mặc định</StatusBadge>}
+                                {addr.is_default && (
+                                  <Badge variant="neutral">Mặc định tài khoản</Badge>
+                                )}
+                              </div>
                             </div>
-                            <div className={styles.badgeRow}>
-                              {isPickup && (
-                                <span className={`${common.pill} ${common.pillPos}`}>
-                                  Kho mặc định
-                                </span>
-                              )}
-                              {addr.is_default && (
-                                <span className={common.pill}>Mặc định tài khoản</span>
-                              )}
-                            </div>
-                          </div>
-                          <p className={styles.addressLine}>{fullLine}</p>
-                        </article>
-                      );
-                    })}
-                  </div>
-                )}
-              </section>
-
-              <section className={common.card} aria-labelledby="site-policy-heading">
-                <div className={common.cardHeader}>
-                  <h2 id="site-policy-heading" className={common.cardTitle}>
-                    Site bán hàng
-                  </h2>
-                  <span className={statusPillClass(siteMeta.tone)}>{siteMeta.label}</span>
-                </div>
-
-                <div className={styles.kvList}>
-                  <div className={styles.kvRow}>
-                    <span className={styles.kvKey}>Tên miền</span>
-                    <span className={styles.kvVal}>{site.host || "Chưa thiết lập"}</span>
-                  </div>
-                  <div className={styles.kvRow}>
-                    <span className={styles.kvKey}>Trạng thái</span>
-                    <span className={styles.kvVal}>{siteMeta.label}</span>
-                  </div>
-                  {site.suspendedReason && (
-                    <div className={styles.kvRow}>
-                      <span className={styles.kvKey}>Lý do tạm khóa</span>
-                      <span className={styles.kvVal}>{site.suspendedReason}</span>
+                            <p className="mt-2 text-[13px] text-muted-foreground">{fullLine}</p>
+                          </article>
+                        );
+                      })}
                     </div>
                   )}
-                </div>
+                </CardContent>
+              </Card>
+            </section>
 
-                <div className={styles.inlineActions}>
-                  <Button variant="ink" size="sm" shape="app" href="/seller/site">
-                    <span>Mở Site Studio</span>
-                    <IconArrowUpRight size={14} />
+            <Separator />
+
+            <section
+              aria-labelledby="site-policy-heading"
+              className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]"
+            >
+              <div className="space-y-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 id="site-policy-heading" className="text-sm font-semibold text-foreground">
+                    Site bán hàng
+                  </h2>
+                  <StatusBadge tone={siteMeta.tone}>{siteMeta.label}</StatusBadge>
+                </div>
+                <p className="text-[13px] leading-[18px] text-muted-foreground">
+                  Tên miền phụ, trạng thái xuất bản và đường dẫn trực tiếp tới gian hàng.
+                </p>
+              </div>
+
+              <Card>
+                <CardContent className="pt-4">
+                  <dl className="divide-y divide-border text-sm">
+                    <div className="flex flex-col gap-1 py-2.5 first:pt-0 sm:flex-row sm:justify-between sm:gap-4">
+                      <dt className="text-[13px] text-muted-foreground">Tên miền</dt>
+                      <dd className="font-medium text-foreground sm:text-right">
+                        {site.host || "Chưa thiết lập"}
+                      </dd>
+                    </div>
+                    <div className="flex flex-col gap-1 py-2.5 last:pb-0 sm:flex-row sm:justify-between sm:gap-4">
+                      <dt className="text-[13px] text-muted-foreground">Trạng thái</dt>
+                      <dd className="text-foreground sm:text-right">{siteMeta.label}</dd>
+                    </div>
+                    {site.suspendedReason && (
+                      <div className="flex flex-col gap-1 py-2.5 last:pb-0 sm:flex-row sm:justify-between sm:gap-4">
+                        <dt className="text-[13px] text-muted-foreground">Lý do tạm khóa</dt>
+                        <dd className="text-destructive sm:text-right">{site.suspendedReason}</dd>
+                      </div>
+                    )}
+                  </dl>
+                </CardContent>
+                <CardFooter className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
+                  <Button size="sm" asChild>
+                    <Link href="/seller/site">
+                      <span>Mở Site Studio</span>
+                      <ArrowUpRight className="size-4" aria-hidden="true" />
+                    </Link>
                   </Button>
                   {site.url && (
                     <a
                       href={site.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className={common.cardLink}
+                      className="text-[13px] font-medium text-brand hover:underline"
                     >
                       Xem site đang chạy
                     </a>
                   )}
-                </div>
-              </section>
-            </div>
-          )}
+                </CardFooter>
+              </Card>
+            </section>
+          </TabsContent>
 
-          {tab === "autoreply" && (
-            <div className={styles.twoCol}>
-              <form
-                className={common.card}
-                onSubmit={(e) => void handleSaveAutoReply(e)}
-                aria-labelledby="autoreply-heading"
-              >
-                <div className={common.cardHeader}>
-                  <h2 id="autoreply-heading" className={common.cardTitle}>
-                    Trả lời tự động khi ngoại tuyến
-                  </h2>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    shape="app"
-                    disabled={autoReplyLoading}
-                    onClick={() => void loadAutoReply()}
-                  >
-                    <IconRefresh size={14} />
-                    <span>{autoReplyLoading ? "Đang tải..." : "Tải lại"}</span>
-                  </Button>
-                </div>
+          <TabsContent value="autoreply" className="space-y-6">
+            <section
+              aria-labelledby="autoreply-heading"
+              className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]"
+            >
+              <div className="space-y-2">
+                <h2 id="autoreply-heading" className="text-sm font-semibold text-foreground">
+                  Trả lời tự động khi ngoại tuyến
+                </h2>
+                <p className="text-[13px] leading-[18px] text-muted-foreground">
+                  Gửi lời chào ngay khi khách mở hội thoại ngoài giờ trực.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={autoReplyLoading}
+                  onClick={() => void loadAutoReply()}
+                >
+                  <RefreshCw className="size-3.5" aria-hidden="true" />
+                  <span>{autoReplyLoading ? "Đang tải..." : "Tải lại"}</span>
+                </Button>
+              </div>
 
-                {autoReplyUnavailable && (
-                  <div className={styles.noticeWell} role="status">
-                    Dịch vụ chat hiện chưa phản hồi. Bạn vẫn có thể soạn sẵn lời chào và thử lưu lại
-                    sau.
-                  </div>
-                )}
+              <Card>
+                <form onSubmit={(e) => void handleSaveAutoReply(e)}>
+                  <CardContent className="space-y-4 pt-4">
+                    {autoReplyUnavailable && (
+                      <Alert>
+                        <Info className="size-4" aria-hidden="true" />
+                        <AlertDescription>
+                          Dịch vụ chat hiện chưa phản hồi. Bạn vẫn có thể soạn sẵn lời chào và thử
+                          lưu lại sau.
+                        </AlertDescription>
+                      </Alert>
+                    )}
 
-                <div className={styles.fieldStack}>
-                  <div className={styles.switchRow}>
-                    <div className={styles.switchText}>
-                      <span className={styles.switchTitle}>Bật trả lời tự động</span>
-                      <span className={styles.switchDesc}>
-                        Gửi lời chào ngay khi khách mở hội thoại ngoài giờ trực.
-                      </span>
+                    <div className="flex min-h-11 items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-foreground">
+                          Bật trả lời tự động
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Gửi lời chào ngay khi khách mở hội thoại ngoài giờ trực.
+                        </div>
+                      </div>
+                      <Switch
+                        checked={autoReplyEnabled}
+                        onCheckedChange={setAutoReplyEnabled}
+                        aria-label="Bật hoặc tắt trả lời tự động khi ngoại tuyến"
+                      />
                     </div>
-                    <input
-                      type="checkbox"
-                      className={common.toggleSwitch}
-                      checked={autoReplyEnabled}
-                      onChange={(e) => setAutoReplyEnabled(e.target.checked)}
-                      aria-label="Bật hoặc tắt trả lời tự động khi ngoại tuyến"
-                    />
-                  </div>
 
-                  <div className={common.field}>
-                    <label htmlFor="auto-reply-msg" className={common.fieldLabel}>
-                      Nội dung lời chào ({formatInt(autoReplyMessage.length)} / 500)
-                    </label>
-                    <textarea
-                      id="auto-reply-msg"
-                      className={common.textArea}
-                      value={autoReplyMessage}
-                      onChange={(e) => {
-                        setAutoReplyMessage(e.target.value);
-                        if (autoReplyError) setAutoReplyError("");
-                      }}
-                      maxLength={500}
-                      placeholder="Nhập lời chào khi ngoại tuyến và giờ làm việc..."
-                    />
-                  </div>
-
-                  <div className={styles.presetRow}>
-                    {AUTO_REPLY_PRESETS.map((preset) => (
-                      <button
-                        key={preset.label}
-                        type="button"
-                        className={styles.presetBtn}
-                        onClick={() => {
-                          setAutoReplyMessage(preset.text);
-                          setAutoReplyError("");
+                    <Field data-invalid={Boolean(autoReplyError) || undefined}>
+                      <FieldLabel htmlFor="auto-reply-msg">
+                        Nội dung lời chào ({formatInt(autoReplyMessage.length)} / 500)
+                      </FieldLabel>
+                      <Textarea
+                        id="auto-reply-msg"
+                        rows={4}
+                        value={autoReplyMessage}
+                        onChange={(e) => {
+                          setAutoReplyMessage(e.target.value);
+                          if (autoReplyError) setAutoReplyError("");
                         }}
-                      >
-                        Dùng {preset.label.toLowerCase()}
-                      </button>
-                    ))}
-                  </div>
+                        maxLength={500}
+                        placeholder="Nhập lời chào khi ngoại tuyến và giờ làm việc..."
+                        aria-invalid={Boolean(autoReplyError)}
+                      />
+                    </Field>
 
-                  {autoReplyError && (
-                    <p className={common.fieldError} role="alert">
-                      {autoReplyError}
-                    </p>
-                  )}
+                    <div className="flex flex-wrap gap-2">
+                      {AUTO_REPLY_PRESETS.map((preset) => (
+                        <Button
+                          key={preset.label}
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setAutoReplyMessage(preset.text);
+                            setAutoReplyError("");
+                          }}
+                        >
+                          Dùng {preset.label.toLowerCase()}
+                        </Button>
+                      ))}
+                    </div>
 
-                  <div className={styles.formActions}>
-                    {autoReplyUpdatedAt && (
-                      <span className={common.cardMeta}>
+                    {autoReplyError ? <FieldError>{autoReplyError}</FieldError> : null}
+                  </CardContent>
+                  <CardFooter className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
+                    {autoReplyUpdatedAt ? (
+                      <span className="text-xs text-muted-foreground tabular-nums">
                         Cập nhật {formatDateTimeVi(autoReplyUpdatedAt)}
                       </span>
+                    ) : (
+                      <span />
                     )}
-                    <Button
-                      type="submit"
-                      variant="ink"
-                      size="sm"
-                      shape="app"
-                      disabled={autoReplySaving || autoReplyLoading}
-                    >
-                      <IconCheck size={14} />
+                    <Button type="submit" size="sm" disabled={autoReplySaving || autoReplyLoading}>
+                      <Check className="size-4" aria-hidden="true" />
                       <span>{autoReplySaving ? "Đang lưu..." : "Lưu cấu hình"}</span>
                     </Button>
-                  </div>
-                </div>
-              </form>
+                  </CardFooter>
+                </form>
+              </Card>
+            </section>
 
-              <section className={common.card} aria-labelledby="autoreply-preview-heading">
-                <div className={common.cardHeader}>
-                  <h2 id="autoreply-preview-heading" className={common.cardTitle}>
+            <Separator />
+
+            <section
+              aria-labelledby="autoreply-preview-heading"
+              className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]"
+            >
+              <div className="space-y-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2
+                    id="autoreply-preview-heading"
+                    className="text-sm font-semibold text-foreground"
+                  >
                     Xem trước hộp chat
                   </h2>
-                  <span className={statusPillClass(autoReplyEnabled ? "pos" : "neutral")}>
+                  <StatusBadge tone={autoReplyEnabled ? "success" : "neutral"}>
                     {autoReplyEnabled ? "Đang bật" : "Đang tắt"}
-                  </span>
+                  </StatusBadge>
                 </div>
+                <p className="text-[13px] leading-[18px] text-muted-foreground">
+                  Hiển thị giống tin nhắn tự động khách hàng nhận được trong hộp chat.
+                </p>
+              </div>
 
-                <div className={styles.previewWell}>
-                  <span className={styles.previewHeading}>{shopDisplayName}</span>
-                  <p className={styles.previewBubble}>
-                    {autoReplyMessage.trim() ||
-                      "Nhập lời chào bên trái để xem trước tin nhắn tự động."}
-                  </p>
-                </div>
-
-                <div className={styles.cardFootNote}>
-                  <span>Hội thoại trực tiếp với khách hàng</span>
-                  <Link href="/seller/chat" className={common.cardLink}>
+              <Card>
+                <CardContent className="pt-4">
+                  <div className="rounded-lg border border-border bg-muted/50 p-3.5">
+                    <div className="mb-1 text-xs font-semibold text-muted-foreground">
+                      {shopDisplayName}
+                    </div>
+                    <p className="text-sm leading-5 whitespace-pre-line text-foreground">
+                      {autoReplyMessage.trim() ||
+                        "Nhập lời chào bên trái để xem trước tin nhắn tự động."}
+                    </p>
+                  </div>
+                </CardContent>
+                <CardFooter className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 text-[13px]">
+                  <span className="text-muted-foreground">Hội thoại trực tiếp với khách hàng</span>
+                  <Link href="/seller/chat" className="font-medium text-brand hover:underline">
                     Mở Tin nhắn
                   </Link>
-                </div>
-              </section>
-            </div>
-          )}
-        </>
+                </CardFooter>
+              </Card>
+            </section>
+          </TabsContent>
+        </Tabs>
       )}
     </div>
   );

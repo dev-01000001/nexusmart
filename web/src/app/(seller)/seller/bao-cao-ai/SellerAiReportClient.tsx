@@ -2,17 +2,38 @@
 
 import React, { useCallback, useState } from "react";
 import Link from "next/link";
-import { Button, IconClock, IconRefresh, IconSpark, StateView } from "@/components";
+import { AlertTriangle, Clock, RefreshCw, Sparkles } from "lucide-react";
+import { EmptyState, ErrorState, MetricStrip, PageHeader } from "@/components/app";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { ApiError, api } from "@/lib/api";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { renderAssistantMarkdown } from "@/features/assistant/assistantMarkdown";
 import {
   normalizeSellerReport,
   type SellerReportPeriod,
   type SellerReportResult,
 } from "@/features/assistant/assistantTypes";
-import common from "@/features/seller/SellerCommon.module.css";
-import styles from "./page.module.css";
 
 interface ReportHistoryEntry {
   id: string;
@@ -128,14 +149,17 @@ export function SellerAiReportClient({ hasShop }: SellerAiReportClientProps) {
 
   if (!hasShop) {
     return (
-      <div className={common.page}>
-        <StateView
-          kind="empty"
-          surface="app"
+      <div className="space-y-4">
+        <PageHeader title="Báo cáo AI" />
+        <EmptyState
+          icon={Sparkles}
           title="Gian hàng chưa được kích hoạt"
-          message="Hoàn tất kích hoạt gian hàng để sử dụng báo cáo phân tích AI."
-          actionLabel="Về tổng quan"
-          actionHref="/seller"
+          description="Hoàn tất kích hoạt gian hàng để sử dụng báo cáo phân tích AI."
+          action={
+            <Button size="sm" asChild>
+              <Link href="/seller">Về tổng quan</Link>
+            </Button>
+          }
         />
       </div>
     );
@@ -153,311 +177,336 @@ export function SellerAiReportClient({ hasShop }: SellerAiReportClientProps) {
     void runReport(chip.label, nextPeriod);
   };
 
-  const kpiStripClass =
-    activeReport && activeReport.kpis.length === 3 ? common.balanceStrip3 : common.balanceStrip;
-
   return (
-    <div className={common.page} data-ui="seller-ai-report">
-      <header className={common.pageHeader}>
-        <div className={common.headerText}>
-          <h1 className={common.title}>Báo cáo AI</h1>
-        </div>
-        <div className={common.headerActions}>
-          <div className={common.segmented} role="group" aria-label="Chọn khoảng thời gian báo cáo">
-            {PERIOD_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
+    <div className="space-y-4">
+      <PageHeader
+        title="Báo cáo AI"
+        subtitle="Tổng hợp và nhận định trực tiếp trên dữ liệu đơn hàng, doanh thu và tồn kho gian hàng."
+        primaryAction={
+          <div
+            role="group"
+            aria-label="Chọn khoảng thời gian báo cáo"
+            className="inline-flex items-center gap-1 rounded-lg border border-border bg-card p-1 shadow-card"
+          >
+            {PERIOD_OPTIONS.map((opt) => {
+              const active = period === opt.value;
+              return (
+                <Button
+                  key={opt.value}
+                  type="button"
+                  size="sm"
+                  variant={active ? "secondary" : "ghost"}
+                  aria-pressed={active}
+                  onClick={() => setPeriod(opt.value)}
+                  className={cn(
+                    "min-h-10 min-w-[64px] px-2.5 text-[13px] md:h-8 md:min-h-0",
+                    active && "font-semibold"
+                  )}
+                >
+                  {opt.label}
+                </Button>
+              );
+            })}
+          </div>
+        }
+      />
+
+      <Card aria-label="Truy vấn báo cáo AI">
+        <CardContent className="space-y-3 pt-4">
+          <form className="flex flex-col gap-2 sm:flex-row" onSubmit={handleSubmit}>
+            <Input
+              type="text"
+              className="min-h-10 flex-1 bg-card"
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder="Ví dụ: Sản phẩm nào có tỷ lệ hoàn hủy cao nhất trong 30 ngày qua?"
+              maxLength={500}
+              aria-label="Nhập câu hỏi phân tích kinh doanh"
+            />
+            <Button type="submit" size="default" className="min-h-10 shrink-0" disabled={loading}>
+              <Sparkles className="size-4" aria-hidden="true" />
+              <span>{loading ? "Đang phân tích..." : "Phân tích"}</span>
+            </Button>
+          </form>
+
+          <div className="flex flex-wrap gap-2" role="group" aria-label="Câu hỏi gợi ý nhanh">
+            {QUICK_QUESTIONS.map((chip) => (
+              <Button
+                key={chip.label}
                 type="button"
-                className={`${common.segmentedBtn} ${
-                  period === opt.value ? common.segmentedBtnActive : ""
-                }`}
-                aria-pressed={period === opt.value}
-                onClick={() => setPeriod(opt.value)}
+                variant="outline"
+                size="sm"
+                disabled={loading}
+                onClick={() => handleQuickChip(chip)}
+                className="h-auto min-h-10 py-1.5 text-left text-[13px] font-normal whitespace-normal md:min-h-9"
               >
-                {opt.label}
-              </button>
+                {chip.label}
+              </Button>
             ))}
           </div>
-        </div>
-      </header>
 
-      <section className={common.card} aria-label="Truy vấn báo cáo AI">
-        <form className={styles.queryForm} onSubmit={handleSubmit}>
-          <input
-            type="text"
-            className={common.textInput}
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            placeholder="Ví dụ: Sản phẩm nào có tỷ lệ hoàn hủy cao nhất trong 30 ngày qua?"
-            maxLength={500}
-            aria-label="Nhập câu hỏi phân tích kinh doanh"
-          />
-          <Button type="submit" variant="ink" size="md" shape="app" disabled={loading}>
-            <IconSpark size={15} />
-            <span>{loading ? "Đang phân tích..." : "Phân tích"}</span>
-          </Button>
-        </form>
+          {errorState && errorState.kind === "invalid" && (
+            <p className="text-sm text-destructive" role="alert">
+              {errorState.message}
+            </p>
+          )}
 
-        <div className={styles.chipRow} role="group" aria-label="Câu hỏi gợi ý nhanh">
-          {QUICK_QUESTIONS.map((chip) => (
-            <button
-              key={chip.label}
-              type="button"
-              className={styles.quickChip}
-              disabled={loading}
-              onClick={() => handleQuickChip(chip)}
-            >
-              {chip.label}
-            </button>
-          ))}
-        </div>
+          {errorState && errorState.kind === "rate_limited" && (
+            <Alert variant="destructive">
+              <AlertTriangle className="size-4" aria-hidden="true" />
+              <AlertTitle>Đã đạt giới hạn lượt phân tích</AlertTitle>
+              <AlertDescription>{errorState.message}</AlertDescription>
+            </Alert>
+          )}
+        </CardContent>
+      </Card>
 
-        {errorState && errorState.kind === "invalid" && (
-          <p className={`${common.fieldError} ${styles.inlineError}`} role="alert">
-            {errorState.message}
-          </p>
-        )}
-
-        {errorState && errorState.kind === "rate_limited" && (
-          <div className={styles.limitBanner} role="alert">
-            <strong>Đã đạt giới hạn lượt phân tích</strong>
-            <span>{errorState.message}</span>
-          </div>
-        )}
-      </section>
-
-      <div className={styles.workspaceGrid}>
-        <div className={styles.mainCol}>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-start">
+        <div className="min-w-0 space-y-4">
           {loading ? (
-            <div className={common.card}>
-              <StateView
-                kind="loading"
-                surface="app"
-                skeletonVariant="table"
-                title="Đang tổng hợp số liệu và phân tích..."
-                rows={4}
-              />
-            </div>
+            <Card role="status" aria-label="Đang tổng hợp số liệu và phân tích...">
+              <CardHeader>
+                <CardTitle>Đang tổng hợp số liệu và phân tích...</CardTitle>
+                <CardDescription>
+                  Hệ thống đang truy xuất đơn hàng và tồn kho kỳ {getPeriodLabel(period)}.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <Skeleton className="h-16 w-full" />
+                  <Skeleton className="h-16 w-full" />
+                  <Skeleton className="h-16 w-full" />
+                </div>
+                <Skeleton className="h-4 w-3/4" />
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-5/6" />
+              </CardContent>
+            </Card>
           ) : errorState && errorState.kind === "unavailable" ? (
-            <StateView
-              kind="error"
-              surface="app"
+            <ErrorState
               title="Dịch vụ báo cáo AI tạm thời gián đoạn"
-              message={errorState.message}
-              actionLabel={lastSubmitted ? "Thử phân tích lại" : undefined}
-              onAction={
+              description={errorState.message}
+              onRetry={
                 lastSubmitted
                   ? () => void runReport(lastSubmitted.question, lastSubmitted.period)
                   : undefined
               }
             />
           ) : activeReport ? (
-            <div className={styles.reportStack}>
+            <div className="space-y-4">
               {activeReport.kpis.length > 0 && (
-                <div className={kpiStripClass} aria-label="Chỉ số tổng hợp từ dữ liệu nguồn">
-                  {activeReport.kpis.slice(0, 4).map((kpi) => (
-                    <div key={kpi.label} className={common.balanceCell}>
-                      <span className={common.balanceLabel}>{kpi.label}</span>
-                      <span className={common.balanceValue}>{kpi.value}</span>
-                      {kpi.caption && (
+                <section aria-label="Chỉ số tổng hợp từ dữ liệu nguồn">
+                  <MetricStrip
+                    items={activeReport.kpis.slice(0, 4).map((kpi) => ({
+                      label: kpi.label,
+                      value: kpi.value,
+                      hint: kpi.caption ? (
                         <span
-                          className={
-                            kpi.tone === "neg"
-                              ? common.deltaNeg
-                              : kpi.tone === "pos"
-                                ? common.deltaPos
-                                : common.balanceCaption
-                          }
+                          className={cn(
+                            kpi.tone === "neg" && "font-medium text-destructive",
+                            kpi.tone === "pos" && "font-medium text-badge-success-ink"
+                          )}
                         >
                           {kpi.caption}
                         </span>
-                      )}
-                    </div>
-                  ))}
-                </div>
+                      ) : undefined,
+                    }))}
+                  />
+                </section>
               )}
 
-              <section className={common.card} aria-labelledby="ai-narrative-heading">
-                <div className={common.cardHeader}>
-                  <div>
-                    <h2 id="ai-narrative-heading" className={common.cardTitle}>
-                      Nhận định dữ liệu
-                    </h2>
-                    <span className={common.cardMeta}>
-                      {activeReport.question
-                        ? `${activeReport.question} (${getPeriodLabel(activeReport.period)})`
-                        : getPeriodLabel(activeReport.period)}
-                    </span>
-                  </div>
+              <Card aria-labelledby="ai-narrative-heading">
+                <CardHeader>
+                  <CardTitle id="ai-narrative-heading">Nhận định dữ liệu</CardTitle>
+                  <CardDescription>
+                    {activeReport.question
+                      ? `${activeReport.question} (${getPeriodLabel(activeReport.period)})`
+                      : getPeriodLabel(activeReport.period)}
+                  </CardDescription>
                   {lastSubmitted && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      shape="app"
-                      disabled={loading}
-                      onClick={() => void runReport(lastSubmitted.question, lastSubmitted.period)}
-                    >
-                      <IconRefresh size={14} />
-                      <span>Chạy lại</span>
-                    </Button>
+                    <CardAction>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={loading}
+                        onClick={() => void runReport(lastSubmitted.question, lastSubmitted.period)}
+                      >
+                        <RefreshCw className="size-3.5" aria-hidden="true" />
+                        <span>Chạy lại</span>
+                      </Button>
+                    </CardAction>
                   )}
-                </div>
-
-                <div className={styles.narrativeBody}>
-                  {renderAssistantMarkdown(activeReport.answer, {
-                    stripUuids: false,
-                    LinkComponent: Link,
-                    classNames: {
-                      paragraph: styles.narrativeParagraph,
-                      list: styles.narrativeList,
-                      strong: styles.narrativeStrong,
-                      link: styles.narrativeLink,
-                    },
-                  })}
-                </div>
-              </section>
+                </CardHeader>
+                <CardContent>
+                  <div className="max-w-prose text-sm leading-6 text-foreground">
+                    {renderAssistantMarkdown(activeReport.answer, {
+                      stripUuids: false,
+                      LinkComponent: Link,
+                      classNames: {
+                        paragraph: "text-sm leading-6 text-foreground [&:not(:last-child)]:mb-3",
+                        list: "my-2 list-disc space-y-1.5 pl-5 text-sm leading-6 text-foreground",
+                        strong: "font-semibold text-foreground",
+                        link: "font-medium text-brand underline underline-offset-4 hover:text-brand/80",
+                      },
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
 
               {activeReport.rows.length > 0 && (
-                <section className={common.card} aria-labelledby="ai-source-table-heading">
-                  <div className={common.cardHeader}>
-                    <h2 id="ai-source-table-heading" className={common.cardTitle}>
+                <Card aria-labelledby="ai-source-table-heading">
+                  <CardHeader>
+                    <CardTitle id="ai-source-table-heading">
                       Bảng đối chiếu ({formatInt(activeReport.rows.length)})
-                    </h2>
-                  </div>
-                  <div className={common.tableWrap}>
-                    <table className={common.dataTable}>
-                      <thead>
-                        <tr>
-                          <th>Sản phẩm / Hạng mục</th>
-                          <th className={common.numCol}>SL bán</th>
-                          <th className={common.numCol}>Doanh thu</th>
-                          {activeReport.rows.some((r) => Boolean(r.extra)) && <th>Ghi chú</th>}
-                        </tr>
-                      </thead>
-                      <tbody>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-0 pb-0">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Sản phẩm / Hạng mục</TableHead>
+                          <TableHead className="text-right">SL bán</TableHead>
+                          <TableHead className="text-right">Doanh thu</TableHead>
+                          {activeReport.rows.some((r) => Boolean(r.extra)) && (
+                            <TableHead>Ghi chú</TableHead>
+                          )}
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
                         {activeReport.rows.map((row, idx) => (
-                          <tr key={`${row.label}-${idx}`}>
-                            <td>
-                              <span>{row.label}</span>
+                          <TableRow key={`${row.label}-${idx}`}>
+                            <TableCell className="whitespace-normal">
+                              <div className="font-medium text-foreground">{row.label}</div>
                               {row.subLabel && (
-                                <span className={common.cellSub}>{row.subLabel}</span>
+                                <div className="text-xs text-muted-foreground">{row.subLabel}</div>
                               )}
-                            </td>
-                            <td className={common.numCol}>
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums">
                               {typeof row.unitsSold === "number" ? formatInt(row.unitsSold) : "-"}
-                            </td>
-                            <td className={common.numCol}>
+                            </TableCell>
+                            <TableCell className="text-right font-medium tabular-nums">
                               {typeof row.revenueVnd === "number" ? formatVnd(row.revenueVnd) : "-"}
-                            </td>
+                            </TableCell>
                             {activeReport.rows.some((r) => Boolean(r.extra)) && (
-                              <td>{row.extra ?? "-"}</td>
+                              <TableCell className="whitespace-normal text-muted-foreground">
+                                {row.extra ?? "-"}
+                              </TableCell>
                             )}
-                          </tr>
+                          </TableRow>
                         ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
+                      </TableBody>
+                    </Table>
+                  </CardContent>
+                </Card>
               )}
 
               {activeReport.rows.length === 0 &&
                 activeReport.tableColumns &&
                 activeReport.genericRows &&
                 activeReport.genericRows.length > 0 && (
-                  <section className={common.card} aria-labelledby="ai-generic-table-heading">
-                    <div className={common.cardHeader}>
-                      <h2 id="ai-generic-table-heading" className={common.cardTitle}>
-                        Số liệu chi tiết
-                      </h2>
-                    </div>
-                    <div className={common.tableWrap}>
-                      <table className={common.dataTable}>
-                        <thead>
-                          <tr>
+                  <Card aria-labelledby="ai-generic-table-heading">
+                    <CardHeader>
+                      <CardTitle id="ai-generic-table-heading">Số liệu chi tiết</CardTitle>
+                    </CardHeader>
+                    <CardContent className="px-0 pb-0">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
                             {activeReport.tableColumns.map((col) => (
-                              <th key={col}>{col}</th>
+                              <TableHead key={col}>{col}</TableHead>
                             ))}
-                          </tr>
-                        </thead>
-                        <tbody>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
                           {activeReport.genericRows.map((row, rIdx) => (
-                            <tr key={rIdx}>
+                            <TableRow key={rIdx}>
                               {activeReport.tableColumns!.map((col) => {
                                 const val = row[col];
                                 const isNum = typeof val === "number";
                                 return (
-                                  <td key={col} className={isNum ? common.numCol : undefined}>
+                                  <TableCell
+                                    key={col}
+                                    className={cn(
+                                      isNum ? "text-right tabular-nums" : "whitespace-normal"
+                                    )}
+                                  >
                                     {isNum ? formatInt(val) : String(val ?? "-")}
-                                  </td>
+                                  </TableCell>
                                 );
                               })}
-                            </tr>
+                            </TableRow>
                           ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </section>
+                        </TableBody>
+                      </Table>
+                    </CardContent>
+                  </Card>
                 )}
             </div>
           ) : (
-            <section className={common.card}>
-              <StateView
-                kind="empty"
-                surface="app"
-                title="Chọn câu hỏi gợi ý hoặc nhập câu hỏi riêng"
-                message="Phân tích trực tiếp trên dữ liệu đơn hàng, doanh thu và tồn kho gian hàng."
-              />
-            </section>
+            <EmptyState
+              icon={Sparkles}
+              title="Chọn câu hỏi gợi ý hoặc nhập câu hỏi riêng"
+              description="Phân tích trực tiếp trên dữ liệu đơn hàng, doanh thu và tồn kho gian hàng."
+            />
           )}
         </div>
 
-        <aside className={styles.historyCol} aria-labelledby="ai-history-heading">
-          <section className={common.card}>
-            <div className={common.cardHeader}>
-              <div className={styles.historyTitleRow}>
-                <IconClock size={15} />
-                <h2 id="ai-history-heading" className={common.cardTitle}>
-                  Lịch sử phiên
-                </h2>
-              </div>
-              <span className={common.cardMeta}>{formatInt(history.length)}</span>
-            </div>
-
-            {history.length === 0 ? (
-              <div className={common.inlineEmpty}>Câu hỏi đã chạy sẽ lưu tại đây.</div>
-            ) : (
-              <ul className={styles.historyList}>
-                {history.map((entry) => {
-                  const isSelected =
-                    activeReport?.question === entry.question &&
-                    activeReport?.period === entry.period;
-                  return (
-                    <li key={entry.id}>
-                      <button
-                        type="button"
-                        className={`${styles.historyItem} ${
-                          isSelected ? styles.historyItemActive : ""
-                        }`}
-                        onClick={() => {
-                          setQuestion(entry.question);
-                          setPeriod(entry.period);
-                          setErrorState(null);
-                          setActiveReport(entry.result);
-                          setLastSubmitted({ question: entry.question, period: entry.period });
-                        }}
-                      >
-                        <span className={styles.historyQuestion}>{entry.question}</span>
-                        <span className={styles.historyMeta}>
-                          <span>{getPeriodLabel(entry.period)}</span>
-                          <span>{formatDateTimeVi(entry.createdAt)}</span>
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </section>
+        <aside aria-labelledby="ai-history-heading">
+          <Card>
+            <CardHeader>
+              <CardTitle id="ai-history-heading" className="flex items-center gap-2">
+                <Clock className="size-4 text-muted-foreground" aria-hidden="true" />
+                <span>Lịch sử phiên</span>
+              </CardTitle>
+              <CardAction>
+                <Badge variant="neutral" className="tabular-nums">
+                  {formatInt(history.length)}
+                </Badge>
+              </CardAction>
+            </CardHeader>
+            <CardContent>
+              {history.length === 0 ? (
+                <p className="text-[13px] text-muted-foreground">Câu hỏi đã chạy sẽ lưu tại đây.</p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {history.map((entry) => {
+                    const isSelected =
+                      activeReport?.question === entry.question &&
+                      activeReport?.period === entry.period;
+                    return (
+                      <li key={entry.id}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setQuestion(entry.question);
+                            setPeriod(entry.period);
+                            setErrorState(null);
+                            setActiveReport(entry.result);
+                            setLastSubmitted({ question: entry.question, period: entry.period });
+                          }}
+                          className={cn(
+                            "flex w-full flex-col gap-1 rounded-lg border px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                            isSelected
+                              ? "border-brand/40 bg-secondary text-foreground"
+                              : "border-transparent bg-muted/50 text-foreground hover:border-border hover:bg-accent/60"
+                          )}
+                        >
+                          <span className="line-clamp-2 text-[13px] font-medium">
+                            {entry.question}
+                          </span>
+                          <span className="flex items-center justify-between gap-2 text-xs text-muted-foreground tabular-nums">
+                            <span>{getPeriodLabel(entry.period)}</span>
+                            <span>{formatDateTimeVi(entry.createdAt)}</span>
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
         </aside>
       </div>
     </div>

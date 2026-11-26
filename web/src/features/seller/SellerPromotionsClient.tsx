@@ -2,12 +2,64 @@
 
 import React, { useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Button, IconCopy, IconPackage, IconPlus, ProgressBar, StateView } from "@/components";
+import { Copy, Package, Percent, Plus, Tag, Zap } from "lucide-react";
+import {
+  EmptyState,
+  ErrorState,
+  IndexRowCard,
+  IndexTable,
+  MetricStrip,
+  Money,
+  PageHeader,
+  StatusBadge,
+  type StatusTone,
+} from "@/components/app";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { formatDateTimeVi, formatDiscountPercent, formatInt, formatVnd } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { formatPromotionErrorMessage } from "@/features/checkout/messages";
 import { useSellerContext } from "./SellerShell";
-import { SellerDrawer, SellerSlidingTabs, statusPillClass } from "./SellerUiPrimitives";
 import { PromotionsDiscountProgramsTab } from "./PromotionsDiscountProgramsTab";
 import type {
   GwFlashSale,
@@ -23,8 +75,6 @@ import {
   parseUiState,
   VOUCHER_STATUS_META,
 } from "./types";
-import common from "./SellerCommon.module.css";
-import styles from "@/app/(seller)/seller/khuyen-mai/page.module.css";
 
 type PromoTab = "vouchers" | "programs" | "flash";
 type FlashItemStatusFilter = "ALL" | "PENDING" | "APPROVED" | "REJECTED";
@@ -45,6 +95,58 @@ function flashStatusOf(fs: GwFlashSale, nowMs: number): "ended" | "live" | "upco
 function getVoucherStatusKey(v: GwSellerVoucher): string {
   if (v.status) return v.status.toUpperCase();
   return v.is_active ? "ACTIVE" : "PAUSED";
+}
+
+function voucherStatusTone(statusKey: string): StatusTone {
+  switch (statusKey.toUpperCase()) {
+    case "ACTIVE":
+      return "success";
+    case "SCHEDULED":
+      return "info";
+    case "PAUSED":
+      return "attention";
+    case "DELETED":
+      return "critical";
+    case "EXPIRED":
+    default:
+      return "neutral";
+  }
+}
+
+function flashItemStatusTone(status: string): StatusTone {
+  switch (status.toUpperCase()) {
+    case "APPROVED":
+      return "success";
+    case "PENDING":
+      return "attention";
+    case "REJECTED":
+      return "critical";
+    default:
+      return "neutral";
+  }
+}
+
+function QuotaProgress({
+  value,
+  max,
+  leftLabel,
+  rightLabel,
+}: {
+  value: number;
+  max: number;
+  leftLabel: string;
+  rightLabel: string;
+}) {
+  const pct = max > 0 ? Math.min(100, Math.max(0, Math.round((value / max) * 100))) : 0;
+  return (
+    <div className="min-w-[132px] space-y-1">
+      <Progress value={pct} className="h-1.5" />
+      <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground tabular-nums">
+        <span>{leftLabel}</span>
+        <span>{rightLabel}</span>
+      </div>
+    </div>
+  );
 }
 
 export interface SellerPromotionsClientProps {
@@ -92,7 +194,7 @@ export function SellerPromotionsClient({
   const [showVoucherForm, setShowVoucherForm] = useState(false);
   const [editingVoucher, setEditingVoucher] = useState<GwSellerVoucher | null>(null);
   const [voucherActionBusyId, setVoucherActionBusyId] = useState<string | null>(null);
-  const [confirmDeleteVoucherId, setConfirmDeleteVoucherId] = useState<string | null>(null);
+  const [confirmDeleteVoucher, setConfirmDeleteVoucher] = useState<GwSellerVoucher | null>(null);
   const [drawerVoucherId, setDrawerVoucherId] = useState<string | null>(null);
 
   const [showProgramForm, setShowProgramForm] = useState(false);
@@ -437,7 +539,7 @@ export function SellerPromotionsClient({
     setVoucherActionBusyId(v.id);
     try {
       await api(`/api/seller/vouchers/${encodeURIComponent(v.id)}`, { method: "DELETE" });
-      setConfirmDeleteVoucherId(null);
+      setConfirmDeleteVoucher(null);
       await reloadVouchers();
       showToast(`Đã xóa voucher ${v.code}.`);
     } catch (err) {
@@ -517,372 +619,150 @@ export function SellerPromotionsClient({
     }
   };
 
+  const primaryAction =
+    tab === "vouchers" ? (
+      <Button
+        type="button"
+        size="sm"
+        onClick={() => {
+          resetVoucherForm();
+          setShowVoucherForm(true);
+        }}
+      >
+        <Plus className="size-4" aria-hidden="true" />
+        <span>Tạo voucher</span>
+      </Button>
+    ) : tab === "programs" ? (
+      <Button type="button" size="sm" onClick={() => setShowProgramForm(true)}>
+        <Plus className="size-4" aria-hidden="true" />
+        <span>Tạo giảm giá shop</span>
+      </Button>
+    ) : (
+      <Button
+        type="button"
+        size="sm"
+        disabled={openFlashSales.length === 0 || selectableFlashSkus.length === 0}
+        onClick={() => {
+          setFError(null);
+          setShowFlashForm(true);
+        }}
+      >
+        <Plus className="size-4" aria-hidden="true" />
+        <span>Đăng ký Flash sale</span>
+      </Button>
+    );
+
   return (
-    <div className={common.page}>
-      <header className={common.pageHeader}>
-        <h1 className={common.title}>Khuyến mãi</h1>
-        <div className={common.headerActions}>
-          {tab === "vouchers" && (
-            <Button
-              variant="primary"
-              size="sm"
-              shape="app"
-              onClick={() => {
-                if (showVoucherForm) {
-                  resetVoucherForm();
-                  setShowVoucherForm(false);
-                } else {
-                  resetVoucherForm();
-                  setShowVoucherForm(true);
-                }
-              }}
-            >
-              <IconPlus size={14} />
-              <span>{showVoucherForm ? "Đóng biểu mẫu" : "Tạo voucher"}</span>
-            </Button>
-          )}
-          {tab === "programs" && (
-            <Button
-              variant="primary"
-              size="sm"
-              shape="app"
-              onClick={() => setShowProgramForm((prev) => !prev)}
-            >
-              <IconPlus size={14} />
-              <span>{showProgramForm ? "Đóng biểu mẫu" : "Tạo giảm giá shop"}</span>
-            </Button>
-          )}
-          {tab === "flash" && (
-            <Button
-              variant="primary"
-              size="sm"
-              shape="app"
-              disabled={openFlashSales.length === 0 || selectableFlashSkus.length === 0}
-              onClick={() => setShowFlashForm((prev) => !prev)}
-            >
-              <IconPlus size={14} />
-              <span>{showFlashForm ? "Đóng biểu mẫu" : "Đăng ký Flash sale"}</span>
-            </Button>
-          )}
-        </div>
-      </header>
+    <div className="space-y-5">
+      <PageHeader
+        title="Khuyến mãi"
+        subtitle="Quản lý mã giảm giá, chương trình giảm giá gian hàng và suất Flash sale."
+        primaryAction={!uiState && !loadError ? primaryAction : undefined}
+      />
 
       {uiState === "loading" && (
-        <StateView
-          kind="loading"
-          surface="app"
-          skeletonVariant="table"
-          title="Đang tải khuyến mãi..."
-          rows={5}
-        />
+        <Card role="status" aria-label="Đang tải khuyến mãi...">
+          <CardContent className="space-y-3 py-6">
+            <Skeleton className="h-6 w-40" />
+            {Array.from({ length: 5 }).map((_, idx) => (
+              <Skeleton key={idx} className="h-10 w-full" />
+            ))}
+          </CardContent>
+        </Card>
       )}
 
       {(uiState === "error" || (loadError && !uiState)) && (
-        <StateView
-          kind="error"
-          surface="app"
+        <ErrorState
           title="Không thể tải khuyến mãi"
-          message={loadError ?? "Hệ thống khuyến mãi tạm gián đoạn."}
-          actionLabel="Thử lại"
-          onAction={() => router.refresh()}
+          description={loadError ?? "Hệ thống khuyến mãi tạm gián đoạn."}
+          onRetry={() => router.refresh()}
         />
       )}
 
       {!uiState && !loadError && (
-        <>
-          <SellerSlidingTabs
-            ariaLabel="Loại khuyến mãi"
-            value={tab}
-            onChange={setTab}
-            tabs={[
-              { key: "vouchers", label: "Voucher", count: vouchers.length },
-              { key: "programs", label: "Giảm giá shop", count: programsCount },
-              { key: "flash", label: "Flash sale", count: sellerFlashItems.length },
-            ]}
-          />
+        <Tabs value={tab} onValueChange={(v) => setTab(v as PromoTab)} className="space-y-5">
+          <div className="-mx-1 overflow-x-auto px-1">
+            <TabsList
+              aria-label="Loại khuyến mãi"
+              className="h-auto w-max min-w-full justify-start border-b border-border bg-transparent pb-2"
+            >
+              <TabsTrigger value="vouchers" className="min-h-10 gap-1.5 md:min-h-8">
+                <span>Voucher</span>
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {formatInt(vouchers.length)}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger value="programs" className="min-h-10 gap-1.5 md:min-h-8">
+                <span>Giảm giá shop</span>
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {formatInt(programsCount)}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger value="flash" className="min-h-10 gap-1.5 md:min-h-8">
+                <span>Flash sale</span>
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {formatInt(sellerFlashItems.length)}
+                </span>
+              </TabsTrigger>
+            </TabsList>
+          </div>
 
-          {tab === "vouchers" && (
-            <>
-              <section className={common.balanceStrip3} aria-label="Tổng hợp voucher">
-                <div className={common.balanceCell}>
-                  <span className={common.balanceLabel}>Đang bật</span>
-                  <span
-                    className={`${common.balanceValue} num ${activeVoucherCount === 0 ? common.balanceValueZero : ""}`}
-                    data-reveal="count"
-                    data-count-to={activeVoucherCount}
-                  >
-                    {formatInt(activeVoucherCount)}
-                  </span>
-                </div>
-                <div className={common.balanceCell}>
-                  <span className={common.balanceLabel}>Đã dùng / Phát hành</span>
-                  <span className={`${common.balanceValue} num`}>
-                    {formatInt(voucherUsedTotal)} / {formatInt(voucherQuotaTotal)}
-                  </span>
-                </div>
-                <div className={common.balanceCell}>
-                  <span className={common.balanceLabel}>Ngân sách đã chi</span>
-                  <span
-                    className={`${common.balanceValue} num ${voucherBudgetUsedTotal === 0 ? common.balanceValueZero : ""}`}
-                  >
-                    {formatVnd(voucherBudgetUsedTotal)}
-                  </span>
-                </div>
-              </section>
+          <TabsContent value="vouchers" className="space-y-4">
+            <section aria-label="Tổng hợp voucher">
+              <MetricStrip
+                items={[
+                  { label: "Đang bật", value: formatInt(activeVoucherCount) },
+                  {
+                    label: "Đã dùng / Phát hành",
+                    value: `${formatInt(voucherUsedTotal)} / ${formatInt(voucherQuotaTotal)}`,
+                  },
+                  {
+                    label: "Ngân sách đã chi",
+                    value: <Money vnd={voucherBudgetUsedTotal} size="lg" />,
+                  },
+                ]}
+              />
+            </section>
 
-              {showVoucherForm && (
-                <form
-                  className={styles.inlineFormCard}
-                  onSubmit={(e) => void handleSaveVoucher(e)}
-                  aria-label="Biểu mẫu voucher"
-                  noValidate
-                >
-                  <div className={common.cardHeader}>
-                    <h2 className={common.cardTitle}>
-                      {editingVoucher
-                        ? `Chỉnh sửa voucher ${editingVoucher.code}`
-                        : "Tạo mã giảm giá mới"}
-                    </h2>
-                  </div>
-
-                  {editingVoucher && editingVoucher.used_count > 0 && (
-                    <p className={common.fieldHint} style={{ marginBottom: 12 }}>
-                      Voucher đã có {formatInt(editingVoucher.used_count)} lượt sử dụng — chỉ được
-                      sửa tên hiển thị, tăng tổng lượt/ngân sách và gia hạn kết thúc.
-                    </p>
-                  )}
-
-                  {vError && (
-                    <p className={common.fieldError} role="alert" style={{ marginBottom: 12 }}>
-                      {vError}
-                    </p>
-                  )}
-
-                  <div className={styles.formGrid4}>
-                    <div className={common.field}>
-                      <label htmlFor="v-code" className={common.fieldLabel}>
-                        Mã voucher
-                      </label>
-                      <input
-                        id="v-code"
-                        type="text"
-                        className={common.textInput}
-                        value={vCode}
-                        onChange={(e) => setVCode(e.target.value)}
-                        placeholder="SHOP30K"
-                        disabled={Boolean(editingVoucher)}
-                      />
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="v-name" className={common.fieldLabel}>
-                        Tên hiển thị (tùy chọn)
-                      </label>
-                      <input
-                        id="v-name"
-                        type="text"
-                        className={common.textInput}
-                        value={vName}
-                        onChange={(e) => setVName(e.target.value)}
-                        placeholder="Giảm 25.000₫ đơn từ 300k"
-                      />
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="v-type" className={common.fieldLabel}>
-                        Kiểu giảm
-                      </label>
-                      <select
-                        id="v-type"
-                        className={common.textInput}
-                        value={vType}
-                        onChange={(e) => setVType(e.target.value as "FIXED" | "PERCENT")}
-                        disabled={
-                          Boolean(editingVoucher) &&
-                          !canEditVoucherField(editingVoucher!, "discount_type")
-                        }
-                      >
-                        <option value="FIXED">Số tiền cố định (VND)</option>
-                        <option value="PERCENT">Theo phần trăm (%)</option>
-                      </select>
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="v-val" className={common.fieldLabel}>
-                        {vType === "FIXED" ? "Mức giảm (VND)" : "Phần trăm (%)"}
-                      </label>
-                      <input
-                        id="v-val"
-                        type="number"
-                        step={1}
-                        className={common.textInput}
-                        value={vValue}
-                        onChange={(e) => setVValue(e.target.value)}
-                        disabled={
-                          Boolean(editingVoucher) &&
-                          !canEditVoucherField(
-                            editingVoucher!,
-                            vType === "FIXED" ? "value_vnd" : "discount_percent"
-                          )
-                        }
-                      />
-                    </div>
-                  </div>
-
-                  <div className={styles.formGrid4}>
-                    {vType === "PERCENT" && (
-                      <div className={common.field}>
-                        <label htmlFor="v-max" className={common.fieldLabel}>
-                          Giảm tối đa (VND)
-                        </label>
-                        <input
-                          id="v-max"
-                          type="number"
-                          min={0}
-                          step={1}
-                          className={common.textInput}
-                          value={vMaxDiscount}
-                          onChange={(e) => setVMaxDiscount(e.target.value)}
-                          disabled={
-                            Boolean(editingVoucher) &&
-                            !canEditVoucherField(editingVoucher!, "max_discount_vnd")
-                          }
-                        />
-                      </div>
-                    )}
-                    <div className={common.field}>
-                      <label htmlFor="v-min" className={common.fieldLabel}>
-                        Đơn tối thiểu (VND)
-                      </label>
-                      <input
-                        id="v-min"
-                        type="number"
-                        min={0}
-                        step={1}
-                        className={common.textInput}
-                        value={vMinOrder}
-                        onChange={(e) => setVMinOrder(e.target.value)}
-                        disabled={
-                          Boolean(editingVoucher) &&
-                          !canEditVoucherField(editingVoucher!, "min_order_vnd")
-                        }
-                      />
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="v-quota" className={common.fieldLabel}>
-                        Tổng lượt phát hành
-                      </label>
-                      <input
-                        id="v-quota"
-                        type="number"
-                        min={editingVoucher ? Math.max(1, editingVoucher.used_count) : 1}
-                        step={1}
-                        className={common.textInput}
-                        value={vQuota}
-                        onChange={(e) => setVQuota(e.target.value)}
-                      />
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="v-per-user" className={common.fieldLabel}>
-                        Giới hạn mỗi khách
-                      </label>
-                      <input
-                        id="v-per-user"
-                        type="number"
-                        min={1}
-                        step={1}
-                        className={common.textInput}
-                        value={vPerUser}
-                        onChange={(e) => setVPerUser(e.target.value)}
-                        disabled={
-                          Boolean(editingVoucher) &&
-                          !canEditVoucherField(editingVoucher!, "per_user_limit")
-                        }
-                      />
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="v-budget" className={common.fieldLabel}>
-                        Ngân sách tối đa (VND)
-                      </label>
-                      <input
-                        id="v-budget"
-                        type="number"
-                        min={0}
-                        step={1}
-                        className={common.textInput}
-                        value={vBudget}
-                        onChange={(e) => setVBudget(e.target.value)}
-                      />
-                    </div>
-                  </div>
-
-                  <div className={styles.formGrid3}>
-                    <div className={common.field}>
-                      <label htmlFor="v-start" className={common.fieldLabel}>
-                        Bắt đầu áp dụng
-                      </label>
-                      <input
-                        id="v-start"
-                        type="datetime-local"
-                        className={common.textInput}
-                        value={vStartsAt}
-                        onChange={(e) => setVStartsAt(e.target.value)}
-                        disabled={
-                          Boolean(editingVoucher) &&
-                          !canEditVoucherField(editingVoucher!, "starts_at")
-                        }
-                      />
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="v-end" className={common.fieldLabel}>
-                        Kết thúc áp dụng
-                      </label>
-                      <input
-                        id="v-end"
-                        type="datetime-local"
-                        className={common.textInput}
-                        value={vEndsAt}
-                        onChange={(e) => setVEndsAt(e.target.value)}
-                      />
-                    </div>
-                  </div>
-
-                  <div className={styles.formActions}>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      shape="app"
-                      onClick={() => {
-                        resetVoucherForm();
-                        setShowVoucherForm(false);
-                      }}
-                    >
-                      Hủy
-                    </Button>
-                    <Button type="submit" variant="primary" size="sm" shape="app" disabled={vBusy}>
-                      {vBusy ? "Đang lưu..." : editingVoucher ? "Lưu thay đổi" : "Phát hành mã"}
-                    </Button>
-                  </div>
-                </form>
-              )}
-
-              <section className={common.card} aria-label="Danh sách voucher">
+            <section aria-label="Danh sách voucher">
+              <IndexTable>
                 {vouchers.length === 0 ? (
-                  <div className={common.inlineEmpty}>Chưa có mã giảm giá nào.</div>
+                  <div className="p-4">
+                    <EmptyState
+                      icon={Tag}
+                      title="Chưa có mã giảm giá nào"
+                      description="Tạo mã voucher để kích cầu đơn hàng trên site gian hàng của bạn."
+                      action={
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            resetVoucherForm();
+                            setShowVoucherForm(true);
+                          }}
+                        >
+                          <Plus className="size-4" aria-hidden="true" />
+                          <span>Tạo voucher</span>
+                        </Button>
+                      }
+                      className="shadow-none"
+                    />
+                  </div>
                 ) : (
                   <>
-                    <div className={`${common.tableWrap} ${common.tableWrapDesktop}`}>
-                      <table className={common.dataTable}>
-                        <thead>
-                          <tr>
-                            <th>Mã voucher</th>
-                            <th>Điều kiện</th>
-                            <th className={common.numCol}>Mức giảm</th>
-                            <th>Lượt đã dùng</th>
-                            <th className={common.numCol}>Ngân sách</th>
-                            <th>Trạng thái</th>
-                            <th className={common.numCol}>Thao tác</th>
-                          </tr>
-                        </thead>
-                        <tbody>
+                    <div className="hidden md:block">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Mã voucher</TableHead>
+                            <TableHead>Điều kiện</TableHead>
+                            <TableHead className="text-right">Mức giảm</TableHead>
+                            <TableHead>Lượt đã dùng</TableHead>
+                            <TableHead className="text-right">Ngân sách</TableHead>
+                            <TableHead>Trạng thái</TableHead>
+                            <TableHead className="text-right">Thao tác</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
                           {vouchers.map((v) => {
                             const statusKey = getVoucherStatusKey(v);
                             const stMeta = VOUCHER_STATUS_META[statusKey] ?? {
@@ -896,116 +776,113 @@ export function SellerPromotionsClient({
                               ? `${v.discount_percent}%`
                               : formatVnd(v.value_vnd);
                             return (
-                              <tr key={v.id}>
-                                <td>
+                              <TableRow
+                                key={v.id}
+                                className="cursor-pointer"
+                                onClick={() => setDrawerVoucherId(v.id)}
+                              >
+                                <TableCell>
                                   <button
                                     type="button"
-                                    className={common.rowTriggerBtn}
-                                    onClick={() => setDrawerVoucherId(v.id)}
+                                    className="text-left font-semibold text-brand hover:underline"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setDrawerVoucherId(v.id);
+                                    }}
                                   >
                                     {v.code}
                                   </button>
                                   {v.ends_at && (
-                                    <span className={common.cellSub}>
+                                    <div className="text-xs text-muted-foreground tabular-nums">
                                       Đến {formatDateTimeVi(v.ends_at)}
-                                    </span>
+                                    </div>
                                   )}
-                                </td>
-                                <td className={styles.condCell}>
-                                  <span className={styles.condTitle} title={v.name}>
+                                </TableCell>
+                                <TableCell className="max-w-[260px] whitespace-normal">
+                                  <div
+                                    className="line-clamp-1 font-medium text-foreground"
+                                    title={v.name}
+                                  >
                                     {v.name}
-                                  </span>
-                                  <span className={common.cellSub}>
+                                  </div>
+                                  <div className="text-xs text-muted-foreground tabular-nums">
                                     Đơn từ {formatVnd(v.min_order_vnd)}
                                     {isPct && v.max_discount_vnd > 0
                                       ? `, tối đa ${formatVnd(v.max_discount_vnd)}`
                                       : ""}
-                                  </span>
-                                </td>
-                                <td className={common.numCol}>
-                                  <strong>{discountStr}</strong>
-                                </td>
-                                <td className={styles.quotaCell}>
-                                  <ProgressBar
+                                  </div>
+                                </TableCell>
+                                <TableCell className="text-right font-semibold tabular-nums">
+                                  {discountStr}
+                                </TableCell>
+                                <TableCell>
+                                  <QuotaProgress
                                     value={v.used_count}
                                     max={Math.max(1, v.quota)}
                                     leftLabel={`${formatInt(v.used_count)} / ${formatInt(v.quota)}`}
                                     rightLabel={`Còn ${formatInt(v.remaining_quota)}`}
                                   />
-                                </td>
-                                <td className={common.numCol}>
-                                  {formatVnd(v.used_budget_vnd)}
+                                </TableCell>
+                                <TableCell className="text-right tabular-nums">
+                                  <div>{formatVnd(v.used_budget_vnd)}</div>
                                   {v.budget_vnd > 0 && (
-                                    <span className={common.cellSub}>
+                                    <div className="text-xs text-muted-foreground">
                                       / {formatVnd(v.budget_vnd)}
-                                    </span>
+                                    </div>
                                   )}
-                                </td>
-                                <td>
-                                  <span className={statusPillClass(stMeta.tone)}>
+                                </TableCell>
+                                <TableCell>
+                                  <StatusBadge tone={voucherStatusTone(statusKey)}>
                                     {stMeta.label}
-                                  </span>
-                                </td>
-                                <td className={common.numCol}>
+                                  </StatusBadge>
+                                </TableCell>
+                                <TableCell
+                                  className="text-right"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
                                   {isDeleted ? (
-                                    <span className={common.cardMeta}>—</span>
+                                    <span className="text-xs text-muted-foreground">—</span>
                                   ) : (
-                                    <div className={styles.switchWrap}>
-                                      <button
+                                    <div className="inline-flex items-center justify-end gap-1">
+                                      <Button
                                         type="button"
-                                        className={styles.inlineBtn}
+                                        variant="ghost"
+                                        size="xs"
                                         disabled={isBusy}
                                         onClick={() => handleOpenEditVoucher(v)}
                                       >
                                         Sửa
-                                      </button>
-                                      <button
+                                      </Button>
+                                      <Button
                                         type="button"
-                                        className={styles.inlineBtn}
+                                        variant="ghost"
+                                        size="xs"
                                         disabled={isBusy}
                                         onClick={() => void handleToggleVoucherStatus(v)}
                                       >
                                         {statusKey === "ACTIVE" ? "Tạm dừng" : "Bật lại"}
-                                      </button>
-                                      {confirmDeleteVoucherId === v.id ? (
-                                        <>
-                                          <button
-                                            type="button"
-                                            className={`${styles.inlineBtn} ${styles.inlineDangerBtn}`}
-                                            disabled={isBusy}
-                                            onClick={() => void handleDeleteVoucher(v)}
-                                          >
-                                            Xác nhận xóa
-                                          </button>
-                                          <button
-                                            type="button"
-                                            className={styles.inlineBtn}
-                                            onClick={() => setConfirmDeleteVoucherId(null)}
-                                          >
-                                            Hủy
-                                          </button>
-                                        </>
-                                      ) : (
-                                        <button
-                                          type="button"
-                                          className={styles.inlineBtn}
-                                          disabled={isBusy}
-                                          onClick={() => setConfirmDeleteVoucherId(v.id)}
-                                        >
-                                          Xóa
-                                        </button>
-                                      )}
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="xs"
+                                        disabled={isBusy}
+                                        className="text-destructive hover:text-destructive"
+                                        onClick={() => setConfirmDeleteVoucher(v)}
+                                      >
+                                        Xóa
+                                      </Button>
                                     </div>
                                   )}
-                                </td>
-                              </tr>
+                                </TableCell>
+                              </TableRow>
                             );
                           })}
-                        </tbody>
-                      </table>
+                        </TableBody>
+                      </Table>
                     </div>
 
-                    <div className={common.mobileList}>
+                    <div className="divide-y divide-border md:hidden">
                       {vouchers.map((v) => {
                         const statusKey = getVoucherStatusKey(v);
                         const stMeta = VOUCHER_STATUS_META[statusKey] ?? {
@@ -1015,68 +892,60 @@ export function SellerPromotionsClient({
                         const isDeleted = statusKey === "DELETED";
                         const isBusy = voucherActionBusyId === v.id;
                         return (
-                          <div key={v.id} className={common.mobileRow}>
-                            <div className={common.mobileRowTop}>
-                              <div>
-                                <span className={styles.codeStrong}>{v.code}</span>
-                                <span className={common.cellSub}>{v.name}</span>
-                              </div>
-                              <span className={statusPillClass(stMeta.tone)}>{stMeta.label}</span>
+                          <div key={v.id} className="space-y-2.5 px-4 py-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setDrawerVoucherId(v.id)}
+                                className="min-w-0 text-left"
+                              >
+                                <div className="font-semibold text-brand">{v.code}</div>
+                                <div className="truncate text-xs text-muted-foreground">
+                                  {v.name}
+                                </div>
+                              </button>
+                              <StatusBadge tone={voucherStatusTone(statusKey)}>
+                                {stMeta.label}
+                              </StatusBadge>
                             </div>
-                            <ProgressBar
+                            <QuotaProgress
                               value={v.used_count}
                               max={Math.max(1, v.quota)}
                               leftLabel={`${formatInt(v.used_count)}/${formatInt(v.quota)}`}
                               rightLabel={`Còn ${formatInt(v.remaining_quota)}`}
                             />
                             {!isDeleted && (
-                              <div className={common.mobileRowMeta}>
-                                <div className={styles.actionPair}>
-                                  <button
-                                    type="button"
-                                    className={styles.inlineBtn}
-                                    disabled={isBusy}
-                                    onClick={() => handleOpenEditVoucher(v)}
-                                  >
-                                    Sửa
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={styles.inlineBtn}
-                                    disabled={isBusy}
-                                    onClick={() => void handleToggleVoucherStatus(v)}
-                                  >
-                                    {statusKey === "ACTIVE" ? "Tạm dừng" : "Bật lại"}
-                                  </button>
-                                  {confirmDeleteVoucherId === v.id ? (
-                                    <>
-                                      <button
-                                        type="button"
-                                        className={`${styles.inlineBtn} ${styles.inlineDangerBtn}`}
-                                        disabled={isBusy}
-                                        onClick={() => void handleDeleteVoucher(v)}
-                                      >
-                                        Xác nhận xóa
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className={styles.inlineBtn}
-                                        onClick={() => setConfirmDeleteVoucherId(null)}
-                                      >
-                                        Hủy
-                                      </button>
-                                    </>
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      className={styles.inlineBtn}
-                                      disabled={isBusy}
-                                      onClick={() => setConfirmDeleteVoucherId(v.id)}
-                                    >
-                                      Xóa
-                                    </button>
-                                  )}
-                                </div>
+                              <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="min-h-10"
+                                  disabled={isBusy}
+                                  onClick={() => handleOpenEditVoucher(v)}
+                                >
+                                  Sửa
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="min-h-10"
+                                  disabled={isBusy}
+                                  onClick={() => void handleToggleVoucherStatus(v)}
+                                >
+                                  {statusKey === "ACTIVE" ? "Tạm dừng" : "Bật lại"}
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={isBusy}
+                                  className="min-h-10 text-destructive hover:text-destructive"
+                                  onClick={() => setConfirmDeleteVoucher(v)}
+                                >
+                                  Xóa
+                                </Button>
                               </div>
                             )}
                           </div>
@@ -1085,11 +954,11 @@ export function SellerPromotionsClient({
                     </div>
                   </>
                 )}
-              </section>
-            </>
-          )}
+              </IndexTable>
+            </section>
+          </TabsContent>
 
-          {tab === "programs" && (
+          <TabsContent value="programs">
             <PromotionsDiscountProgramsTab
               shopName={shop?.name || "Gian hàng"}
               initialPrograms={initialDiscountPrograms}
@@ -1100,244 +969,113 @@ export function SellerPromotionsClient({
               onNotify={showToast}
               onCountChange={setProgramsCount}
             />
-          )}
+          </TabsContent>
 
-          {tab === "flash" && (
-            <>
-              {flashSales.length > 0 && (
-                <div
-                  className={common.countCards4}
-                  role="tablist"
-                  aria-label="Khung giờ Flash sale"
-                >
-                  {flashSales.slice(0, 4).map((slot) => {
-                    const countInSlot = sellerFlashItems.filter(
-                      (r) => r.flash_sale_id === slot.id
-                    ).length;
-                    const selected = selectedSlotId === slot.id;
-                    const st = flashStatusOf(slot, nowMs);
-                    const stLabel =
-                      st === "live" ? "Đang mở" : st === "upcoming" ? "Sắp mở" : "Đã kết thúc";
-                    return (
-                      <button
-                        key={slot.id}
-                        type="button"
-                        role="tab"
-                        aria-selected={selected}
-                        className={`${common.countCard} ${selected ? common.countCardSelected : ""}`}
-                        onClick={() =>
-                          setSelectedSlotId((prev) => (prev === slot.id ? "all" : slot.id))
-                        }
-                      >
-                        <span className={common.countCardLabel}>
-                          {slot.name} ({stLabel}
-                          {slot.min_discount_percent ? `, ≥${slot.min_discount_percent}%` : ""})
-                        </span>
-                        <span className={common.countCardValue}>{formatInt(countInSlot)} SKU</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-
-              {showFlashForm && (
-                <form
-                  className={styles.inlineFormCard}
-                  onSubmit={(e) => void handleRegisterFlash(e)}
-                  aria-label="Đăng ký SKU vào Flash sale"
-                  noValidate
-                >
-                  <div className={common.cardHeader}>
-                    <div>
-                      <h2 className={common.cardTitle}>Đăng ký suất Flash sale</h2>
-                      <span className={common.cardMeta}>
-                        {selectedFlashWindow?.min_discount_percent
-                          ? `Khung giờ yêu cầu giảm tối thiểu ${selectedFlashWindow.min_discount_percent}%`
-                          : "Quản trị viên duyệt suất Flash sale trước khi mở bán"}
-                      </span>
-                    </div>
-                  </div>
-
-                  {fError && (
-                    <p className={common.fieldError} role="alert" style={{ marginBottom: 12 }}>
-                      {fError}
-                    </p>
-                  )}
-
-                  <div className={styles.formGrid4}>
-                    <div className={common.field}>
-                      <label htmlFor="f-slot" className={common.fieldLabel}>
-                        Khung giờ
-                      </label>
-                      <select
-                        id="f-slot"
-                        className={common.textInput}
-                        value={fSlotId}
-                        onChange={(e) => setFSlotId(e.target.value)}
-                      >
-                        {openFlashSales.map((slot) => (
-                          <option key={slot.id} value={slot.id}>
-                            {slot.name}
-                            {slot.min_discount_percent
-                              ? ` (giảm ≥${slot.min_discount_percent}%)`
-                              : ""}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="f-sku" className={common.fieldLabel}>
-                        Biến thể SKU
-                      </label>
-                      <select
-                        id="f-sku"
-                        className={common.textInput}
-                        value={fSkuId}
-                        onChange={(e) => setFSkuId(e.target.value)}
-                      >
-                        {selectableFlashSkus.map(({ product, sku }) => (
-                          <option key={sku.id} value={sku.id}>
-                            {product.name} ({sku.sku_code}, {formatVnd(sku.price_vnd)}, tồn{" "}
-                            {sku.available_stock})
-                          </option>
-                        ))}
-                      </select>
-                      {selectedFlashSkuEntry && (
-                        <span className={common.fieldHint}>
-                          Giá gốc: {formatVnd(selectedFlashSkuEntry.sku.price_vnd)}
-                          {selectedFlashSkuEntry.sku.min_price_30d_vnd
-                            ? ` · Thấp nhất 30 ngày: ${formatVnd(selectedFlashSkuEntry.sku.min_price_30d_vnd)}`
-                            : ""}
-                        </span>
+          <TabsContent value="flash" className="space-y-4">
+            {flashSales.length > 0 && (
+              <div
+                className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
+                role="tablist"
+                aria-label="Khung giờ Flash sale"
+              >
+                {flashSales.slice(0, 4).map((slot) => {
+                  const countInSlot = sellerFlashItems.filter(
+                    (r) => r.flash_sale_id === slot.id
+                  ).length;
+                  const selected = selectedSlotId === slot.id;
+                  const st = flashStatusOf(slot, nowMs);
+                  const stLabel =
+                    st === "live" ? "Đang mở" : st === "upcoming" ? "Sắp mở" : "Đã kết thúc";
+                  return (
+                    <button
+                      key={slot.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={selected}
+                      onClick={() =>
+                        setSelectedSlotId((prev) => (prev === slot.id ? "all" : slot.id))
+                      }
+                      className={cn(
+                        "flex flex-col items-start gap-1 rounded-xl border bg-card px-4 py-3 text-left shadow-card transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        selected
+                          ? "border-brand bg-brand/5"
+                          : "border-transparent hover:border-border hover:bg-accent/40"
                       )}
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="f-price" className={common.fieldLabel}>
-                        Giá Flash sale (VND)
-                      </label>
-                      <input
-                        id="f-price"
-                        type="number"
-                        min={1}
-                        step={1}
-                        className={common.textInput}
-                        value={fPriceStr}
-                        onChange={(e) => setFPriceStr(e.target.value)}
-                      />
-                    </div>
-                    <div className={common.field}>
-                      <label htmlFor="f-quota" className={common.fieldLabel}>
-                        Suất cam kết
-                      </label>
-                      <input
-                        id="f-quota"
-                        type="number"
-                        min={1}
-                        step={1}
-                        className={common.textInput}
-                        value={fQuotaStr}
-                        onChange={(e) => setFQuotaStr(e.target.value)}
-                      />
-                    </div>
-                  </div>
+                    >
+                      <span className="line-clamp-2 text-xs text-muted-foreground">
+                        {slot.name} ({stLabel}
+                        {slot.min_discount_percent ? `, ≥${slot.min_discount_percent}%` : ""})
+                      </span>
+                      <span className="text-lg font-semibold text-foreground tabular-nums">
+                        {formatInt(countInSlot)} SKU
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
-                  <div className={styles.formGrid3}>
-                    <div className={common.field}>
-                      <label htmlFor="f-limit" className={common.fieldLabel}>
-                        Giới hạn mỗi khách
-                      </label>
-                      <input
-                        id="f-limit"
-                        type="number"
-                        min={1}
-                        max={10}
-                        step={1}
-                        className={common.textInput}
-                        value={fLimitStr}
-                        onChange={(e) => setFLimitStr(e.target.value)}
-                      />
-                    </div>
-                  </div>
-
-                  <div className={styles.formActions}>
+            <section aria-label="SKU tham gia Flash sale">
+              <IndexTable
+                tabs={[
+                  { key: "ALL", label: "Tất cả", count: flashItemCounts.ALL },
+                  { key: "PENDING", label: "Chờ duyệt", count: flashItemCounts.PENDING },
+                  { key: "APPROVED", label: "Đã duyệt", count: flashItemCounts.APPROVED },
+                  { key: "REJECTED", label: "Từ chối", count: flashItemCounts.REJECTED },
+                ]}
+                activeTab={flashStatusFilter}
+                onTabChange={(k) => setFlashStatusFilter(k as FlashItemStatusFilter)}
+                toolbar={
+                  selectedSlotId !== "all" ? (
                     <Button
                       type="button"
-                      variant="outline"
-                      size="sm"
-                      shape="app"
-                      onClick={() => setShowFlashForm(false)}
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => setSelectedSlotId("all")}
                     >
-                      Hủy
+                      Xem tất cả khung giờ
                     </Button>
-                    <Button type="submit" variant="primary" size="sm" shape="app" disabled={fBusy}>
-                      {fBusy ? "Đang gửi..." : "Đăng ký suất"}
-                    </Button>
-                  </div>
-                </form>
-              )}
-
-              <section className={common.card} aria-label="SKU tham gia Flash sale">
-                <div className={common.cardHeader}>
-                  <div>
-                    <h2 className={common.cardTitle}>
-                      Suất Flash sale đã đăng ký ({formatInt(filteredFlashRows.length)})
-                    </h2>
-                    {selectedSlotId !== "all" && (
-                      <button
-                        type="button"
-                        className={common.cardLink}
-                        onClick={() => setSelectedSlotId("all")}
-                      >
-                        Xem tất cả khung giờ
-                      </button>
-                    )}
-                  </div>
-                  <div
-                    className={common.segmented}
-                    role="tablist"
-                    aria-label="Lọc trạng thái duyệt"
-                  >
-                    {(
-                      [
-                        ["ALL", `Tất cả (${formatInt(flashItemCounts.ALL)})`],
-                        ["PENDING", `Chờ duyệt (${formatInt(flashItemCounts.PENDING)})`],
-                        ["APPROVED", `Đã duyệt (${formatInt(flashItemCounts.APPROVED)})`],
-                        ["REJECTED", `Từ chối (${formatInt(flashItemCounts.REJECTED)})`],
-                      ] as const
-                    ).map(([st, lbl]) => (
-                      <button
-                        key={st}
-                        type="button"
-                        role="tab"
-                        aria-selected={flashStatusFilter === st}
-                        className={`${common.segmentedBtn} ${flashStatusFilter === st ? common.segmentedBtnActive : ""}`}
-                        onClick={() => setFlashStatusFilter(st)}
-                      >
-                        {lbl}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
+                  ) : undefined
+                }
+              >
                 {filteredFlashRows.length === 0 ? (
-                  <div className={common.inlineEmpty}>
-                    Chưa có SKU đăng ký khớp bộ lọc hiện tại.
+                  <div className="p-4">
+                    <EmptyState
+                      icon={Zap}
+                      title="Chưa có SKU đăng ký khớp bộ lọc hiện tại"
+                      description="Chọn khung giờ đang mở và đăng ký SKU đủ tồn kho để tham gia Flash sale."
+                      action={
+                        openFlashSales.length > 0 && selectableFlashSkus.length > 0 ? (
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              setFError(null);
+                              setShowFlashForm(true);
+                            }}
+                          >
+                            <Plus className="size-4" aria-hidden="true" />
+                            <span>Đăng ký Flash sale</span>
+                          </Button>
+                        ) : undefined
+                      }
+                      className="shadow-none"
+                    />
                   </div>
                 ) : (
                   <>
-                    <div className={`${common.tableWrap} ${common.tableWrapDesktop}`}>
-                      <table className={common.dataTable}>
-                        <thead>
-                          <tr>
-                            <th>Sản phẩm &amp; SKU</th>
-                            <th>Khung giờ</th>
-                            <th className={common.numCol}>Giá Flash sale</th>
-                            <th>Suất còn lại</th>
-                            <th>Trạng thái</th>
-                            <th>Lý do từ chối</th>
-                          </tr>
-                        </thead>
-                        <tbody>
+                    <div className="hidden md:block">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Sản phẩm &amp; SKU</TableHead>
+                            <TableHead>Khung giờ</TableHead>
+                            <TableHead className="text-right">Giá Flash sale</TableHead>
+                            <TableHead>Suất còn lại</TableHead>
+                            <TableHead>Trạng thái</TableHead>
+                            <TableHead>Lý do từ chối</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
                           {filteredFlashRows.map((row) => {
                             const stMeta = FLASH_ITEM_STATUS_META[
                               row.item.status.toUpperCase()
@@ -1350,234 +1088,659 @@ export function SellerPromotionsClient({
                               row.item.total_slots - row.item.remaining_slots
                             );
                             return (
-                              <tr key={row.item.id}>
-                                <td>
-                                  <div className={styles.flashProdCell}>
+                              <TableRow key={row.item.id}>
+                                <TableCell className="max-w-[280px] whitespace-normal">
+                                  <div className="flex items-center gap-3">
                                     {row.thumb ? (
                                       <img
                                         src={row.thumb}
                                         alt={row.productName}
-                                        className={styles.flashThumb}
-                                        width={34}
-                                        height={44}
+                                        className="size-10 shrink-0 rounded-md border border-border bg-muted object-cover"
+                                        width={40}
+                                        height={40}
                                       />
                                     ) : (
                                       <span
-                                        className={`${common.thumbPlaceholder} ${styles.flashThumb}`}
+                                        className="flex size-10 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-muted-foreground"
                                         aria-hidden="true"
                                       >
-                                        <IconPackage size={15} />
+                                        <Package className="size-4" />
                                       </span>
                                     )}
-                                    <div className={styles.flashProdText}>
-                                      <span
-                                        className={styles.flashProdName}
+                                    <div className="min-w-0">
+                                      <div
+                                        className="line-clamp-1 font-medium text-foreground"
                                         title={row.productName}
                                       >
                                         {row.productName}
-                                      </span>
-                                      <span className={common.cellSub}>
+                                      </div>
+                                      <div className="text-xs text-muted-foreground">
                                         {row.skuCode}, tối đa {formatInt(row.item.per_user_limit)}
                                         /khách
-                                      </span>
+                                      </div>
                                     </div>
                                   </div>
-                                </td>
-                                <td>{row.windowName}</td>
-                                <td className={common.numCol}>
-                                  <strong>{formatVnd(row.item.flash_price_vnd)}</strong>
-                                  {row.originalPrice > row.item.flash_price_vnd && (
-                                    <span className={styles.discountTag}>
-                                      {formatDiscountPercent(
-                                        row.originalPrice,
-                                        row.item.flash_price_vnd
-                                      )}
-                                    </span>
-                                  )}
-                                </td>
-                                <td className={styles.quotaCell}>
-                                  <ProgressBar
+                                </TableCell>
+                                <TableCell className="whitespace-normal text-muted-foreground">
+                                  {row.windowName}
+                                </TableCell>
+                                <TableCell className="text-right tabular-nums">
+                                  <div className="flex items-center justify-end gap-1.5">
+                                    <Money vnd={row.item.flash_price_vnd} />
+                                    {row.originalPrice > row.item.flash_price_vnd && (
+                                      <Badge variant="warning">
+                                        {formatDiscountPercent(
+                                          row.originalPrice,
+                                          row.item.flash_price_vnd
+                                        )}
+                                      </Badge>
+                                    )}
+                                  </div>
+                                </TableCell>
+                                <TableCell>
+                                  <QuotaProgress
                                     value={used}
                                     max={Math.max(1, row.item.total_slots)}
                                     leftLabel={`${formatInt(used)}/${formatInt(row.item.total_slots)}`}
                                     rightLabel={`Còn ${formatInt(row.item.remaining_slots)}`}
                                   />
-                                </td>
-                                <td>
-                                  <span className={statusPillClass(stMeta.tone)}>
+                                </TableCell>
+                                <TableCell>
+                                  <StatusBadge tone={flashItemStatusTone(row.item.status)}>
                                     {stMeta.label}
-                                  </span>
-                                </td>
-                                <td>
+                                  </StatusBadge>
+                                </TableCell>
+                                <TableCell className="max-w-[200px] whitespace-normal">
                                   {row.item.rejection_reason ? (
-                                    <span className={common.fieldError}>
+                                    <span className="text-xs text-destructive">
                                       {row.item.rejection_reason}
                                     </span>
                                   ) : (
-                                    <span className={common.cardMeta}>—</span>
+                                    <span className="text-xs text-muted-foreground">—</span>
                                   )}
-                                </td>
-                              </tr>
+                                </TableCell>
+                              </TableRow>
                             );
                           })}
-                        </tbody>
-                      </table>
+                        </TableBody>
+                      </Table>
                     </div>
 
-                    <div className={common.mobileList}>
+                    <div className="md:hidden">
                       {filteredFlashRows.map((row) => {
                         const stMeta = FLASH_ITEM_STATUS_META[row.item.status.toUpperCase()] ?? {
                           label: row.item.status,
                           tone: "neutral" as const,
                         };
                         return (
-                          <div key={row.item.id} className={common.mobileRow}>
-                            <div className={common.mobileRowTop}>
-                              <div>
-                                <strong>{row.productName}</strong>
-                                <span className={common.cellSub}>
-                                  {row.skuCode} · {row.windowName}
+                          <IndexRowCard
+                            key={row.item.id}
+                            media={
+                              row.thumb ? (
+                                <img
+                                  src={row.thumb}
+                                  alt={row.productName}
+                                  className="size-10 rounded-md border border-border bg-muted object-cover"
+                                />
+                              ) : (
+                                <span
+                                  className="flex size-10 items-center justify-center rounded-md border border-border bg-muted text-muted-foreground"
+                                  aria-hidden="true"
+                                >
+                                  <Percent className="size-4" />
                                 </span>
-                              </div>
-                              <span className={statusPillClass(stMeta.tone)}>{stMeta.label}</span>
-                            </div>
-                            <div className={common.mobileRowMeta}>
-                              <strong className="num">{formatVnd(row.item.flash_price_vnd)}</strong>
-                              <span className="num">
-                                Còn {formatInt(row.item.remaining_slots)} /{" "}
-                                {formatInt(row.item.total_slots)}
-                              </span>
-                            </div>
-                            {row.item.rejection_reason && (
-                              <span className={common.fieldError}>{row.item.rejection_reason}</span>
-                            )}
-                          </div>
+                              )
+                            }
+                            title={row.productName}
+                            badge={
+                              <StatusBadge tone={flashItemStatusTone(row.item.status)}>
+                                {stMeta.label}
+                              </StatusBadge>
+                            }
+                            meta={
+                              <>
+                                <Money vnd={row.item.flash_price_vnd} size="sm" />
+                                <span>·</span>
+                                <span className="tabular-nums">
+                                  Còn {formatInt(row.item.remaining_slots)} /{" "}
+                                  {formatInt(row.item.total_slots)}
+                                </span>
+                                <span>·</span>
+                                <span>{row.windowName}</span>
+                                {row.item.rejection_reason && (
+                                  <span className="w-full text-destructive">
+                                    {row.item.rejection_reason}
+                                  </span>
+                                )}
+                              </>
+                            }
+                          />
                         );
                       })}
                     </div>
                   </>
                 )}
-              </section>
-            </>
-          )}
-        </>
+              </IndexTable>
+            </section>
+          </TabsContent>
+        </Tabs>
       )}
 
-      {/* Quick Voucher Detail Drawer */}
-      <SellerDrawer
-        open={Boolean(drawerVoucher)}
-        onClose={() => setDrawerVoucherId(null)}
-        title={drawerVoucher?.code ?? ""}
-        subtitle={drawerVoucher?.name}
-        badge={
-          drawerVoucher ? (
-            <span
-              className={statusPillClass(
-                (
-                  VOUCHER_STATUS_META[getVoucherStatusKey(drawerVoucher)] ?? {
-                    tone: "neutral" as const,
-                  }
-                ).tone
-              )}
-            >
-              {
-                (
-                  VOUCHER_STATUS_META[getVoucherStatusKey(drawerVoucher)] ?? {
-                    label: getVoucherStatusKey(drawerVoucher),
-                  }
-                ).label
-              }
-            </span>
-          ) : null
-        }
-        footer={
-          drawerVoucher ? (
-            <>
+      {/* Voucher Create / Edit Sheet */}
+      <Sheet
+        open={showVoucherForm}
+        onOpenChange={(open) => {
+          if (!open) {
+            resetVoucherForm();
+            setShowVoucherForm(false);
+          }
+        }}
+      >
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-lg">
+          <form
+            onSubmit={(e) => void handleSaveVoucher(e)}
+            aria-label="Biểu mẫu voucher"
+            noValidate
+            className="flex min-h-full flex-col"
+          >
+            <SheetHeader>
+              <SheetTitle>
+                {editingVoucher
+                  ? `Chỉnh sửa voucher ${editingVoucher.code}`
+                  : "Tạo mã giảm giá mới"}
+              </SheetTitle>
+              <SheetDescription>
+                {editingVoucher && editingVoucher.used_count > 0
+                  ? `Voucher đã có ${formatInt(editingVoucher.used_count)} lượt sử dụng — chỉ được sửa tên hiển thị, tăng tổng lượt/ngân sách và gia hạn kết thúc.`
+                  : "Thiết lập điều kiện áp dụng, mức giảm và ngân sách cho mã voucher gian hàng."}
+              </SheetDescription>
+            </SheetHeader>
+
+            <div className="flex-1 px-4 pb-4">
+              <FieldGroup className="gap-4">
+                {vError ? <FieldError>{vError}</FieldError> : null}
+
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <Field>
+                    <FieldLabel htmlFor="v-code">Mã voucher</FieldLabel>
+                    <Input
+                      id="v-code"
+                      type="text"
+                      value={vCode}
+                      onChange={(e) => setVCode(e.target.value)}
+                      placeholder="SHOP30K"
+                      disabled={Boolean(editingVoucher)}
+                    />
+                  </Field>
+
+                  <Field>
+                    <FieldLabel htmlFor="v-name">Tên hiển thị (tùy chọn)</FieldLabel>
+                    <Input
+                      id="v-name"
+                      type="text"
+                      value={vName}
+                      onChange={(e) => setVName(e.target.value)}
+                      placeholder="Giảm 25.000₫ đơn từ 300k"
+                    />
+                  </Field>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <Field>
+                    <FieldLabel htmlFor="v-type">Kiểu giảm</FieldLabel>
+                    <Select
+                      value={vType}
+                      onValueChange={(val) => setVType(val as "FIXED" | "PERCENT")}
+                      disabled={
+                        Boolean(editingVoucher) &&
+                        !canEditVoucherField(editingVoucher!, "discount_type")
+                      }
+                    >
+                      <SelectTrigger id="v-type" className="w-full bg-card">
+                        <SelectValue>
+                          {vType === "FIXED" ? "Số tiền cố định (VND)" : "Theo phần trăm (%)"}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="FIXED">Số tiền cố định (VND)</SelectItem>
+                        <SelectItem value="PERCENT">Theo phần trăm (%)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+
+                  <Field>
+                    <FieldLabel htmlFor="v-val">
+                      {vType === "FIXED" ? "Mức giảm (VND)" : "Phần trăm (%)"}
+                    </FieldLabel>
+                    <Input
+                      id="v-val"
+                      type="number"
+                      step={1}
+                      value={vValue}
+                      onChange={(e) => setVValue(e.target.value)}
+                      disabled={
+                        Boolean(editingVoucher) &&
+                        !canEditVoucherField(
+                          editingVoucher!,
+                          vType === "FIXED" ? "value_vnd" : "discount_percent"
+                        )
+                      }
+                      className="tabular-nums"
+                    />
+                  </Field>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  {vType === "PERCENT" && (
+                    <Field>
+                      <FieldLabel htmlFor="v-max">Giảm tối đa (VND)</FieldLabel>
+                      <Input
+                        id="v-max"
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={vMaxDiscount}
+                        onChange={(e) => setVMaxDiscount(e.target.value)}
+                        disabled={
+                          Boolean(editingVoucher) &&
+                          !canEditVoucherField(editingVoucher!, "max_discount_vnd")
+                        }
+                        className="tabular-nums"
+                      />
+                    </Field>
+                  )}
+
+                  <Field>
+                    <FieldLabel htmlFor="v-min">Đơn tối thiểu (VND)</FieldLabel>
+                    <Input
+                      id="v-min"
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={vMinOrder}
+                      onChange={(e) => setVMinOrder(e.target.value)}
+                      disabled={
+                        Boolean(editingVoucher) &&
+                        !canEditVoucherField(editingVoucher!, "min_order_vnd")
+                      }
+                      className="tabular-nums"
+                    />
+                  </Field>
+
+                  <Field>
+                    <FieldLabel htmlFor="v-quota">Tổng lượt phát hành</FieldLabel>
+                    <Input
+                      id="v-quota"
+                      type="number"
+                      min={editingVoucher ? Math.max(1, editingVoucher.used_count) : 1}
+                      step={1}
+                      value={vQuota}
+                      onChange={(e) => setVQuota(e.target.value)}
+                      className="tabular-nums"
+                    />
+                  </Field>
+
+                  <Field>
+                    <FieldLabel htmlFor="v-per-user">Giới hạn mỗi khách</FieldLabel>
+                    <Input
+                      id="v-per-user"
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={vPerUser}
+                      onChange={(e) => setVPerUser(e.target.value)}
+                      disabled={
+                        Boolean(editingVoucher) &&
+                        !canEditVoucherField(editingVoucher!, "per_user_limit")
+                      }
+                      className="tabular-nums"
+                    />
+                  </Field>
+
+                  <Field>
+                    <FieldLabel htmlFor="v-budget">Ngân sách tối đa (VND)</FieldLabel>
+                    <Input
+                      id="v-budget"
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={vBudget}
+                      onChange={(e) => setVBudget(e.target.value)}
+                      className="tabular-nums"
+                    />
+                  </Field>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <Field>
+                    <FieldLabel htmlFor="v-start">Bắt đầu áp dụng</FieldLabel>
+                    <Input
+                      id="v-start"
+                      type="datetime-local"
+                      value={vStartsAt}
+                      onChange={(e) => setVStartsAt(e.target.value)}
+                      disabled={
+                        Boolean(editingVoucher) &&
+                        !canEditVoucherField(editingVoucher!, "starts_at")
+                      }
+                    />
+                  </Field>
+
+                  <Field>
+                    <FieldLabel htmlFor="v-end">Kết thúc áp dụng</FieldLabel>
+                    <Input
+                      id="v-end"
+                      type="datetime-local"
+                      value={vEndsAt}
+                      onChange={(e) => setVEndsAt(e.target.value)}
+                    />
+                  </Field>
+                </div>
+              </FieldGroup>
+            </div>
+
+            <SheetFooter className="flex-row justify-end gap-2 border-t border-border">
               <Button
+                type="button"
                 variant="outline"
                 size="sm"
-                shape="app"
-                onClick={() => handleCopyCode(drawerVoucher.code)}
+                onClick={() => {
+                  resetVoucherForm();
+                  setShowVoucherForm(false);
+                }}
               >
-                <IconCopy size={14} />
-                <span>Sao chép mã</span>
+                Hủy
               </Button>
-              {getVoucherStatusKey(drawerVoucher) !== "DELETED" && (
-                <Button
-                  variant="primary"
-                  size="sm"
-                  shape="app"
-                  onClick={() => {
-                    const target = drawerVoucher;
-                    setDrawerVoucherId(null);
-                    handleOpenEditVoucher(target);
-                  }}
-                >
-                  Chỉnh sửa
-                </Button>
-              )}
-            </>
-          ) : null
-        }
+              <Button type="submit" size="sm" disabled={vBusy}>
+                {vBusy ? "Đang lưu..." : editingVoucher ? "Lưu thay đổi" : "Phát hành mã"}
+              </Button>
+            </SheetFooter>
+          </form>
+        </SheetContent>
+      </Sheet>
+
+      {/* Flash Sale Registration Sheet */}
+      <Sheet open={showFlashForm} onOpenChange={(open) => !open && setShowFlashForm(false)}>
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-lg">
+          <form
+            onSubmit={(e) => void handleRegisterFlash(e)}
+            aria-label="Đăng ký SKU vào Flash sale"
+            noValidate
+            className="flex min-h-full flex-col"
+          >
+            <SheetHeader>
+              <SheetTitle>Đăng ký suất Flash sale</SheetTitle>
+              <SheetDescription>
+                {selectedFlashWindow?.min_discount_percent
+                  ? `Khung giờ yêu cầu giảm tối thiểu ${selectedFlashWindow.min_discount_percent}%`
+                  : "Quản trị viên duyệt suất Flash sale trước khi mở bán."}
+              </SheetDescription>
+            </SheetHeader>
+
+            <div className="flex-1 px-4 pb-4">
+              <FieldGroup className="gap-4">
+                {fError ? <FieldError>{fError}</FieldError> : null}
+
+                <Field>
+                  <FieldLabel htmlFor="f-slot">Khung giờ</FieldLabel>
+                  <Select value={fSlotId || undefined} onValueChange={setFSlotId}>
+                    <SelectTrigger id="f-slot" className="w-full bg-card">
+                      <SelectValue placeholder="Chọn khung giờ Flash sale">
+                        {(() => {
+                          const slot = openFlashSales.find((s) => s.id === fSlotId);
+                          if (!slot) return null;
+                          return `${slot.name}${slot.min_discount_percent ? ` (giảm ≥${slot.min_discount_percent}%)` : ""}`;
+                        })()}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {openFlashSales.map((slot) => (
+                        <SelectItem key={slot.id} value={slot.id}>
+                          {slot.name}
+                          {slot.min_discount_percent
+                            ? ` (giảm ≥${slot.min_discount_percent}%)`
+                            : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+
+                <Field>
+                  <FieldLabel htmlFor="f-sku">Biến thể SKU</FieldLabel>
+                  <Select value={fSkuId || undefined} onValueChange={setFSkuId}>
+                    <SelectTrigger id="f-sku" className="w-full bg-card">
+                      <SelectValue placeholder="Chọn biến thể SKU">
+                        {selectedFlashSkuEntry
+                          ? `${selectedFlashSkuEntry.product.name} (${selectedFlashSkuEntry.sku.sku_code}, ${formatVnd(selectedFlashSkuEntry.sku.price_vnd)}, tồn ${selectedFlashSkuEntry.sku.available_stock})`
+                          : null}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {selectableFlashSkus.map(({ product, sku }) => (
+                        <SelectItem key={sku.id} value={sku.id}>
+                          {product.name} ({sku.sku_code}, {formatVnd(sku.price_vnd)}, tồn{" "}
+                          {sku.available_stock})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {selectedFlashSkuEntry && (
+                    <FieldDescription className="text-xs tabular-nums">
+                      Giá gốc: {formatVnd(selectedFlashSkuEntry.sku.price_vnd)}
+                      {selectedFlashSkuEntry.sku.min_price_30d_vnd
+                        ? ` · Thấp nhất 30 ngày: ${formatVnd(selectedFlashSkuEntry.sku.min_price_30d_vnd)}`
+                        : ""}
+                    </FieldDescription>
+                  )}
+                </Field>
+
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <Field>
+                    <FieldLabel htmlFor="f-price">Giá Flash sale (VND)</FieldLabel>
+                    <Input
+                      id="f-price"
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={fPriceStr}
+                      onChange={(e) => setFPriceStr(e.target.value)}
+                      className="tabular-nums"
+                    />
+                  </Field>
+
+                  <Field>
+                    <FieldLabel htmlFor="f-quota">Suất cam kết</FieldLabel>
+                    <Input
+                      id="f-quota"
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={fQuotaStr}
+                      onChange={(e) => setFQuotaStr(e.target.value)}
+                      className="tabular-nums"
+                    />
+                  </Field>
+                </div>
+
+                <Field>
+                  <FieldLabel htmlFor="f-limit">Giới hạn mỗi khách</FieldLabel>
+                  <Input
+                    id="f-limit"
+                    type="number"
+                    min={1}
+                    max={10}
+                    step={1}
+                    value={fLimitStr}
+                    onChange={(e) => setFLimitStr(e.target.value)}
+                    className="tabular-nums"
+                  />
+                </Field>
+              </FieldGroup>
+            </div>
+
+            <SheetFooter className="flex-row justify-end gap-2 border-t border-border">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setShowFlashForm(false)}
+              >
+                Hủy
+              </Button>
+              <Button type="submit" size="sm" disabled={fBusy}>
+                {fBusy ? "Đang gửi..." : "Đăng ký suất"}
+              </Button>
+            </SheetFooter>
+          </form>
+        </SheetContent>
+      </Sheet>
+
+      {/* Quick Voucher Detail Sheet */}
+      <Sheet
+        open={Boolean(drawerVoucher)}
+        onOpenChange={(open) => !open && setDrawerVoucherId(null)}
       >
-        {drawerVoucher && (
-          <div className={common.drawerKvList}>
-            <div className={common.drawerKvRow}>
-              <span className={common.drawerKvKey}>Mức giảm</span>
-              <span className={common.drawerKvVal}>
-                {drawerVoucher.discount_type.toUpperCase() === "PERCENT"
-                  ? `${drawerVoucher.discount_percent}%`
-                  : formatVnd(drawerVoucher.value_vnd)}
-              </span>
-            </div>
-            {drawerVoucher.max_discount_vnd > 0 && (
-              <div className={common.drawerKvRow}>
-                <span className={common.drawerKvKey}>Giảm tối đa</span>
-                <span className={common.drawerKvVal}>
-                  {formatVnd(drawerVoucher.max_discount_vnd)}
-                </span>
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-md">
+          {drawerVoucher ? (
+            <>
+              <SheetHeader>
+                <div className="flex flex-wrap items-center gap-2 pr-6">
+                  <SheetTitle>{drawerVoucher.code}</SheetTitle>
+                  <StatusBadge tone={voucherStatusTone(getVoucherStatusKey(drawerVoucher))}>
+                    {
+                      (
+                        VOUCHER_STATUS_META[getVoucherStatusKey(drawerVoucher)] ?? {
+                          label: getVoucherStatusKey(drawerVoucher),
+                        }
+                      ).label
+                    }
+                  </StatusBadge>
+                </div>
+                <SheetDescription>{drawerVoucher.name}</SheetDescription>
+              </SheetHeader>
+
+              <div className="px-4">
+                <dl className="divide-y divide-border text-sm">
+                  <div className="flex items-center justify-between gap-4 py-2.5">
+                    <dt className="text-[13px] text-muted-foreground">Mức giảm</dt>
+                    <dd className="font-semibold text-foreground tabular-nums">
+                      {drawerVoucher.discount_type.toUpperCase() === "PERCENT"
+                        ? `${drawerVoucher.discount_percent}%`
+                        : formatVnd(drawerVoucher.value_vnd)}
+                    </dd>
+                  </div>
+                  {drawerVoucher.max_discount_vnd > 0 && (
+                    <div className="flex items-center justify-between gap-4 py-2.5">
+                      <dt className="text-[13px] text-muted-foreground">Giảm tối đa</dt>
+                      <dd className="text-foreground tabular-nums">
+                        {formatVnd(drawerVoucher.max_discount_vnd)}
+                      </dd>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between gap-4 py-2.5">
+                    <dt className="text-[13px] text-muted-foreground">Đơn tối thiểu</dt>
+                    <dd className="text-foreground tabular-nums">
+                      {formatVnd(drawerVoucher.min_order_vnd)}
+                    </dd>
+                  </div>
+                  <div className="flex items-center justify-between gap-4 py-2.5">
+                    <dt className="text-[13px] text-muted-foreground">Đã dùng / Phát hành</dt>
+                    <dd className="text-foreground tabular-nums">
+                      {formatInt(drawerVoucher.used_count)} / {formatInt(drawerVoucher.quota)}
+                    </dd>
+                  </div>
+                  <div className="flex items-center justify-between gap-4 py-2.5">
+                    <dt className="text-[13px] text-muted-foreground">Ngân sách đã dùng</dt>
+                    <dd className="text-foreground tabular-nums">
+                      {formatVnd(drawerVoucher.used_budget_vnd)}
+                      {drawerVoucher.budget_vnd > 0
+                        ? ` / ${formatVnd(drawerVoucher.budget_vnd)}`
+                        : ""}
+                    </dd>
+                  </div>
+                  <div className="flex items-center justify-between gap-4 py-2.5">
+                    <dt className="text-[13px] text-muted-foreground">Giới hạn mỗi khách</dt>
+                    <dd className="text-foreground tabular-nums">
+                      {formatInt(drawerVoucher.per_user_limit)}
+                    </dd>
+                  </div>
+                  {drawerVoucher.starts_at && (
+                    <div className="flex items-center justify-between gap-4 py-2.5">
+                      <dt className="text-[13px] text-muted-foreground">Bắt đầu</dt>
+                      <dd className="text-foreground tabular-nums">
+                        {formatDateTimeVi(drawerVoucher.starts_at)}
+                      </dd>
+                    </div>
+                  )}
+                  {drawerVoucher.ends_at && (
+                    <div className="flex items-center justify-between gap-4 py-2.5">
+                      <dt className="text-[13px] text-muted-foreground">Kết thúc</dt>
+                      <dd className="text-foreground tabular-nums">
+                        {formatDateTimeVi(drawerVoucher.ends_at)}
+                      </dd>
+                    </div>
+                  )}
+                </dl>
               </div>
-            )}
-            <div className={common.drawerKvRow}>
-              <span className={common.drawerKvKey}>Đơn tối thiểu</span>
-              <span className={common.drawerKvVal}>{formatVnd(drawerVoucher.min_order_vnd)}</span>
-            </div>
-            <div className={common.drawerKvRow}>
-              <span className={common.drawerKvKey}>Đã dùng / Phát hành</span>
-              <span className={common.drawerKvVal}>
-                {formatInt(drawerVoucher.used_count)} / {formatInt(drawerVoucher.quota)}
-              </span>
-            </div>
-            <div className={common.drawerKvRow}>
-              <span className={common.drawerKvKey}>Ngân sách đã dùng</span>
-              <span className={common.drawerKvVal}>
-                {formatVnd(drawerVoucher.used_budget_vnd)}
-                {drawerVoucher.budget_vnd > 0 ? ` / ${formatVnd(drawerVoucher.budget_vnd)}` : ""}
-              </span>
-            </div>
-            <div className={common.drawerKvRow}>
-              <span className={common.drawerKvKey}>Giới hạn mỗi khách</span>
-              <span className={common.drawerKvVal}>{formatInt(drawerVoucher.per_user_limit)}</span>
-            </div>
-            {drawerVoucher.starts_at && (
-              <div className={common.drawerKvRow}>
-                <span className={common.drawerKvKey}>Bắt đầu</span>
-                <span className={common.drawerKvVal}>
-                  {formatDateTimeVi(drawerVoucher.starts_at)}
-                </span>
-              </div>
-            )}
-            {drawerVoucher.ends_at && (
-              <div className={common.drawerKvRow}>
-                <span className={common.drawerKvKey}>Kết thúc</span>
-                <span className={common.drawerKvVal}>
-                  {formatDateTimeVi(drawerVoucher.ends_at)}
-                </span>
-              </div>
-            )}
-          </div>
-        )}
-      </SellerDrawer>
+
+              <SheetFooter className="flex-row justify-end gap-2 border-t border-border">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleCopyCode(drawerVoucher.code)}
+                >
+                  <Copy className="size-3.5" aria-hidden="true" />
+                  <span>Sao chép mã</span>
+                </Button>
+                {getVoucherStatusKey(drawerVoucher) !== "DELETED" && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => {
+                      const target = drawerVoucher;
+                      setDrawerVoucherId(null);
+                      handleOpenEditVoucher(target);
+                    }}
+                  >
+                    Chỉnh sửa
+                  </Button>
+                )}
+              </SheetFooter>
+            </>
+          ) : null}
+        </SheetContent>
+      </Sheet>
+
+      {/* Delete Voucher Confirmation */}
+      <AlertDialog
+        open={Boolean(confirmDeleteVoucher)}
+        onOpenChange={(open) => !open && setConfirmDeleteVoucher(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Xóa voucher {confirmDeleteVoucher?.code}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Mã giảm giá sau khi xóa sẽ ngừng áp dụng trên gian hàng và không thể khôi phục.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Hủy</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={!confirmDeleteVoucher || voucherActionBusyId === confirmDeleteVoucher.id}
+              onClick={() => {
+                if (confirmDeleteVoucher) {
+                  void handleDeleteVoucher(confirmDeleteVoucher);
+                }
+              }}
+            >
+              Xác nhận xóa
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -1,15 +1,60 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertTriangle, Percent, Plus, Trash2 } from "lucide-react";
+import {
+  EmptyState,
+  ErrorState,
+  IndexTable,
+  MetricStrip,
+  StatusBadge,
+  type StatusTone,
+} from "@/components/app";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { api, getErrorMessage } from "@/lib/api";
-import { formatPromotionErrorMessage } from "@/features/checkout/messages";
-import { Button, StateView } from "@/components";
 import { formatDateTimeVi, formatDiscountPercent, formatInt, formatVnd } from "@/lib/format";
-import { statusPillClass } from "./SellerUiPrimitives";
+import { formatPromotionErrorMessage } from "@/features/checkout/messages";
 import type { GwSellerProduct, GwSellerSku, GwShopDiscountProgram } from "./sellerApiTypes";
 import { DISCOUNT_PROGRAM_STATUS_META, translateShopDiscountWarning } from "./types";
-import common from "./SellerCommon.module.css";
-import styles from "@/app/(seller)/seller/khuyen-mai/page.module.css";
 
 interface Props {
   shopName: string;
@@ -31,6 +76,19 @@ interface DraftItemRow {
 function toDatetimeLocalValue(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function programStatusTone(status: string): StatusTone {
+  switch (status.toUpperCase()) {
+    case "ACTIVE":
+      return "success";
+    case "SCHEDULED":
+      return "info";
+    case "ENDED":
+    case "CANCELLED":
+    default:
+      return "neutral";
+  }
 }
 
 export function PromotionsDiscountProgramsTab({
@@ -61,8 +119,8 @@ export function PromotionsDiscountProgramsTab({
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  // Inline end confirmation
-  const [confirmEndId, setConfirmEndId] = useState<string | null>(null);
+  // End confirmation dialog
+  const [confirmEndProgram, setConfirmEndProgram] = useState<GwShopDiscountProgram | null>(null);
   const [endingId, setEndingId] = useState<string | null>(null);
 
   const skuLookup = useMemo(() => {
@@ -302,7 +360,7 @@ export function PromotionsDiscountProgramsTab({
         `/api/seller/discount-programs/${encodeURIComponent(program.id)}/end`,
         { method: "POST" }
       );
-      setConfirmEndId(null);
+      setConfirmEndProgram(null);
       await loadPrograms();
       onNotify(`Đã kết thúc chương trình "${program.name}".`);
     } catch (err) {
@@ -334,580 +392,586 @@ export function PromotionsDiscountProgramsTab({
 
   if (loading && programs.length === 0) {
     return (
-      <StateView
-        kind="loading"
-        surface="app"
-        title="Đang tải chương trình giảm giá gian hàng..."
-        rows={4}
-      />
+      <Card role="status" aria-label="Đang tải chương trình giảm giá gian hàng...">
+        <CardContent className="space-y-3 py-6">
+          <Skeleton className="h-5 w-48" />
+          {Array.from({ length: 4 }).map((_, idx) => (
+            <Skeleton key={idx} className="h-10 w-full" />
+          ))}
+        </CardContent>
+      </Card>
     );
   }
 
   if (errorMsg) {
     return (
-      <StateView
-        kind="error"
-        surface="app"
+      <ErrorState
         title="Không thể tải chương trình giảm giá"
-        message={errorMsg}
-        actionLabel="Thử lại"
-        onAction={() => void loadPrograms()}
+        description={errorMsg}
+        onRetry={() => void loadPrograms()}
       />
     );
   }
 
   return (
-    <div className={styles.sectionStack}>
-      <section className={common.balanceStrip3} aria-label="Tổng hợp chương trình giảm giá shop">
-        <div className={common.balanceCell}>
-          <span className={common.balanceLabel}>Đang chạy</span>
-          <span
-            className={`${common.balanceValue} num ${activeCount === 0 ? common.balanceValueZero : ""}`}
-          >
-            {formatInt(activeCount)}
-          </span>
-        </div>
-        <div className={common.balanceCell}>
-          <span className={common.balanceLabel}>Đã lên lịch</span>
-          <span
-            className={`${common.balanceValue} num ${scheduledCount === 0 ? common.balanceValueZero : ""}`}
-          >
-            {formatInt(scheduledCount)}
-          </span>
-        </div>
-        <div className={common.balanceCell}>
-          <span className={common.balanceLabel}>SKU đang tham gia</span>
-          <span
-            className={`${common.balanceValue} num ${totalSkuItems === 0 ? common.balanceValueZero : ""}`}
-          >
-            {formatInt(totalSkuItems)}
-          </span>
-        </div>
+    <div className="space-y-4">
+      <section aria-label="Tổng hợp chương trình giảm giá shop">
+        <MetricStrip
+          items={[
+            { label: "Đang chạy", value: formatInt(activeCount) },
+            { label: "Đã lên lịch", value: formatInt(scheduledCount) },
+            { label: "SKU đang tham gia", value: formatInt(totalSkuItems) },
+          ]}
+        />
       </section>
 
       {serverWarnings.length > 0 && (
-        <section className={common.card} role="status" aria-label="Cảnh báo đối chiếu giá">
-          <div className={common.cardHeader}>
-            <span className={`${common.pill} ${common.pillWarn}`}>
-              Cảnh báo đối chiếu giá 30 ngày
-            </span>
-            <button type="button" className={common.cardLink} onClick={() => setServerWarnings([])}>
+        <Alert>
+          <AlertTriangle className="size-4" aria-hidden="true" />
+          <AlertTitle className="flex flex-wrap items-center justify-between gap-2">
+            <span>Cảnh báo đối chiếu giá 30 ngày</span>
+            <Button type="button" variant="ghost" size="xs" onClick={() => setServerWarnings([])}>
               Ẩn thông báo
-            </button>
-          </div>
-          <ul className={styles.warningList}>
-            {serverWarnings.map((w, idx) => (
-              <li key={idx}>{translateShopDiscountWarning(w, skuLookup)}</li>
-            ))}
-          </ul>
-        </section>
+            </Button>
+          </AlertTitle>
+          <AlertDescription>
+            <ul className="list-disc space-y-1 pl-4 text-xs">
+              {serverWarnings.map((w, idx) => (
+                <li key={idx}>{translateShopDiscountWarning(w, skuLookup)}</li>
+              ))}
+            </ul>
+          </AlertDescription>
+        </Alert>
       )}
 
-      {showForm && (
-        <form
-          className={styles.inlineFormCard}
-          onSubmit={(e) => void handleSubmit(e)}
-          aria-label="Biểu mẫu chương trình giảm giá shop"
-          noValidate
+      <section aria-labelledby="shop-discount-list-heading" className="space-y-2.5">
+        <h2 id="shop-discount-list-heading" className="text-sm font-semibold text-foreground">
+          Chương trình giảm giá của {shopName}
+        </h2>
+
+        <IndexTable
+          tabs={[
+            { key: "ALL", label: "Tất cả", count: programs.length },
+            { key: "ACTIVE", label: "Đang chạy" },
+            { key: "SCHEDULED", label: "Chờ chạy" },
+            { key: "ENDED", label: "Đã kết thúc" },
+          ]}
+          activeTab={statusFilter}
+          onTabChange={(k) => setStatusFilter(k as "ALL" | "ACTIVE" | "SCHEDULED" | "ENDED")}
         >
-          <div className={common.cardHeader}>
-            <div>
-              <h2 className={common.cardTitle}>
-                {editingId ? "Chỉnh sửa chương trình giảm giá" : "Tạo chương trình giảm giá shop"}
-              </h2>
-              <span className={common.cardMeta}>
-                Mỗi SKU chỉ thuộc 1 chương trình đang chạy tại một thời điểm
-              </span>
+          {filteredPrograms.length === 0 ? (
+            <div className="p-4">
+              <EmptyState
+                icon={Percent}
+                title="Chưa có chương trình giảm giá nào ở trạng thái đã chọn"
+                description="Tạo chương trình giảm giá theo SKU để áp giá ưu đãi trực tiếp trên site gian hàng."
+                action={
+                  <Button size="sm" onClick={onOpenForm}>
+                    <Plus className="size-4" aria-hidden="true" />
+                    <span>Tạo giảm giá shop</span>
+                  </Button>
+                }
+                className="shadow-none"
+              />
             </div>
-          </div>
-
-          {formError && (
-            <p className={common.fieldError} role="alert" style={{ marginBottom: 12 }}>
-              {formError}
-            </p>
-          )}
-
-          {selectableSkus.length === 0 ? (
-            <p className={common.cardMeta}>
-              Chưa có biến thể SKU đang mở bán để đưa vào chương trình giảm giá.
-            </p>
           ) : (
             <>
-              <div className={styles.formGrid3}>
-                <div className={common.field}>
-                  <label htmlFor="dp-name" className={common.fieldLabel}>
-                    Tên chương trình
-                  </label>
-                  <input
-                    id="dp-name"
-                    type="text"
-                    className={common.textInput}
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="Ưu đãi cuối tuần giảm 15%"
-                    required
-                  />
-                </div>
-                <div className={common.field}>
-                  <label htmlFor="dp-start" className={common.fieldLabel}>
-                    Bắt đầu áp dụng
-                  </label>
-                  <input
-                    id="dp-start"
-                    type="datetime-local"
-                    className={common.textInput}
-                    value={startsAt}
-                    onChange={(e) => setStartsAt(e.target.value)}
-                    required
-                  />
-                </div>
-                <div className={common.field}>
-                  <label htmlFor="dp-end" className={common.fieldLabel}>
-                    Kết thúc áp dụng
-                  </label>
-                  <input
-                    id="dp-end"
-                    type="datetime-local"
-                    className={common.textInput}
-                    value={endsAt}
-                    onChange={(e) => setEndsAt(e.target.value)}
-                    required
-                  />
-                </div>
+              <div className="hidden md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Tên chương trình</TableHead>
+                      <TableHead>Thời gian áp dụng</TableHead>
+                      <TableHead>SKU &amp; mức giảm</TableHead>
+                      <TableHead>Trạng thái</TableHead>
+                      <TableHead className="text-right">Thao tác</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredPrograms.map((program) => {
+                      const meta = DISCOUNT_PROGRAM_STATUS_META[program.status] ?? {
+                        label: program.status,
+                        tone: "neutral" as const,
+                      };
+                      const canModify =
+                        program.status === "ACTIVE" || program.status === "SCHEDULED";
+                      const hasInflationFlag = (program.items ?? []).some(
+                        (it) => it.price_inflation_flagged
+                      );
+                      return (
+                        <TableRow key={program.id}>
+                          <TableCell className="max-w-[220px] whitespace-normal">
+                            <div className="font-semibold text-foreground">{program.name}</div>
+                            <div className="text-xs text-muted-foreground tabular-nums">
+                              {formatInt(program.items?.length ?? 0)} biến thể SKU
+                            </div>
+                            {hasInflationFlag && (
+                              <Badge variant="warning" className="mt-1">
+                                Cảnh báo tăng giá 30 ngày
+                              </Badge>
+                            )}
+                          </TableCell>
+                          <TableCell className="tabular-nums">
+                            <div>
+                              {program.starts_at ? formatDateTimeVi(program.starts_at) : "—"}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              đến {program.ends_at ? formatDateTimeVi(program.ends_at) : "—"}
+                            </div>
+                          </TableCell>
+                          <TableCell className="max-w-[300px] whitespace-normal">
+                            <div className="space-y-1.5">
+                              {(program.items ?? []).slice(0, 3).map((it) => {
+                                const found = skuLookup.get(it.sku_id);
+                                const thumb =
+                                  found?.sku.image_url || found?.product.images?.[0] || null;
+                                return (
+                                  <div key={it.id || it.sku_id} className="flex items-center gap-2">
+                                    {thumb && (
+                                      <img
+                                        src={thumb}
+                                        alt={found?.product.name ?? it.sku_id}
+                                        width={28}
+                                        height={28}
+                                        className="size-7 shrink-0 rounded border border-border bg-muted object-cover"
+                                      />
+                                    )}
+                                    <div className="min-w-0 text-xs">
+                                      <div className="flex flex-wrap items-center gap-1.5">
+                                        <span className="font-medium text-foreground">
+                                          {found ? found.sku.sku_code : it.sku_id}:{" "}
+                                          <strong className="tabular-nums">
+                                            {formatVnd(it.discounted_price_vnd)}
+                                          </strong>
+                                        </span>
+                                        <Badge variant="warning">
+                                          {formatDiscountPercent(
+                                            it.original_price_vnd,
+                                            it.discounted_price_vnd
+                                          )}
+                                        </Badge>
+                                      </div>
+                                      <div className="text-muted-foreground tabular-nums">
+                                        Gốc {formatVnd(it.original_price_vnd)}
+                                        {it.per_user_limit > 0
+                                          ? ` · Tối đa ${formatInt(it.per_user_limit)}/khách`
+                                          : ""}
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                              {(program.items?.length ?? 0) > 3 && (
+                                <div className="text-xs text-muted-foreground">
+                                  + {formatInt((program.items?.length ?? 0) - 3)} SKU khác
+                                </div>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <StatusBadge tone={programStatusTone(program.status)}>
+                              {meta.label}
+                            </StatusBadge>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {canModify ? (
+                              <div className="inline-flex items-center justify-end gap-1">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="xs"
+                                  onClick={() => handleStartEdit(program)}
+                                >
+                                  Sửa
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="xs"
+                                  className="text-destructive hover:text-destructive"
+                                  disabled={endingId === program.id}
+                                  onClick={() => setConfirmEndProgram(program)}
+                                >
+                                  Kết thúc
+                                </Button>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
               </div>
 
-              <div className={common.cardHeader}>
-                <span className={common.fieldLabel}>
-                  Danh sách SKU ({formatInt(draftItems.length)})
-                </span>
-                <div className={styles.actionPair}>
-                  <input
-                    type="number"
-                    min={1}
-                    max={90}
-                    step={1}
-                    className={`${common.textInput} ${styles.quickPctInput}`}
-                    value={quickPct}
-                    onChange={(e) => setQuickPct(e.target.value)}
-                    aria-label="Phần trăm giảm nhanh"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    shape="app"
-                    onClick={handleApplyQuickPct}
-                  >
-                    Tính nhanh -{quickPct}%
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    shape="app"
-                    onClick={handleAddDraftRow}
-                  >
-                    Thêm SKU
-                  </Button>
-                </div>
-              </div>
-
-              <div className={styles.sectionStack}>
-                {draftItems.map((row, idx) => {
-                  const found = skuLookup.get(row.sku_id);
-                  const regPrice = found?.sku.price_vnd ?? 0;
-                  const min30d = found?.sku.min_price_30d_vnd ?? 0;
-                  const discVal = Math.trunc(Number(row.discounted_price_vnd) || 0);
+              <div className="divide-y divide-border md:hidden">
+                {filteredPrograms.map((program) => {
+                  const meta = DISCOUNT_PROGRAM_STATUS_META[program.status] ?? {
+                    label: program.status,
+                    tone: "neutral" as const,
+                  };
+                  const canModify = program.status === "ACTIVE" || program.status === "SCHEDULED";
                   return (
-                    <div key={`${row.sku_id}-${idx}`} className={styles.formGrid4}>
-                      <div className={common.field}>
-                        <label htmlFor={`dp-sku-${idx}`} className={common.fieldLabel}>
-                          Biến thể SKU
-                        </label>
-                        <select
-                          id={`dp-sku-${idx}`}
-                          className={common.textInput}
-                          value={row.sku_id}
-                          onChange={(e) => {
-                            const nextSkuId = e.target.value;
-                            const nextFound = skuLookup.get(nextSkuId);
-                            const pct = Math.max(
-                              1,
-                              Math.min(90, Math.trunc(Number(quickPct) || 15))
-                            );
-                            const suggested = nextFound
-                              ? Math.max(
-                                  1000,
-                                  Math.trunc((nextFound.sku.price_vnd * (100 - pct)) / 100)
-                                )
-                              : discVal;
-                            setDraftItems((prev) =>
-                              prev.map((item, i) =>
-                                i === idx
-                                  ? {
-                                      ...item,
-                                      sku_id: nextSkuId,
-                                      discounted_price_vnd: String(suggested),
-                                    }
-                                  : item
-                              )
-                            );
-                          }}
-                        >
-                          {selectableSkus.map(({ product, sku }) => (
-                            <option key={sku.id} value={sku.id}>
-                              {product.name} · {sku.sku_code} ({formatVnd(sku.price_vnd)})
-                            </option>
-                          ))}
-                        </select>
-                        {found && (
-                          <span className={common.fieldHint}>
-                            Giá gốc: {formatVnd(regPrice)}
-                            {min30d > 0 ? ` · Thấp nhất 30 ngày: ${formatVnd(min30d)}` : ""}
-                          </span>
+                    <div key={program.id} className="space-y-2 px-4 py-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="font-semibold text-foreground">{program.name}</div>
+                          <div className="text-xs text-muted-foreground tabular-nums">
+                            {formatInt(program.items?.length ?? 0)} SKU ·{" "}
+                            {program.starts_at ? formatDateTimeVi(program.starts_at) : "—"}
+                          </div>
+                        </div>
+                        <StatusBadge tone={programStatusTone(program.status)}>
+                          {meta.label}
+                        </StatusBadge>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                        <span className="tabular-nums">
+                          Hết hạn: {program.ends_at ? formatDateTimeVi(program.ends_at) : "—"}
+                        </span>
+                        {canModify && (
+                          <div className="flex items-center gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="min-h-10"
+                              onClick={() => handleStartEdit(program)}
+                            >
+                              Sửa
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="min-h-10 text-destructive hover:text-destructive"
+                              disabled={endingId === program.id}
+                              onClick={() => setConfirmEndProgram(program)}
+                            >
+                              Kết thúc
+                            </Button>
+                          </div>
                         )}
-                      </div>
-
-                      <div className={common.field}>
-                        <label htmlFor={`dp-price-${idx}`} className={common.fieldLabel}>
-                          Giá sau giảm (VND)
-                        </label>
-                        <input
-                          id={`dp-price-${idx}`}
-                          type="number"
-                          min={1}
-                          step={1}
-                          className={common.textInput}
-                          value={row.discounted_price_vnd}
-                          onChange={(e) =>
-                            setDraftItems((prev) =>
-                              prev.map((item, i) =>
-                                i === idx ? { ...item, discounted_price_vnd: e.target.value } : item
-                              )
-                            )
-                          }
-                          required
-                        />
-                        {regPrice > 0 && discVal > 0 && discVal < regPrice && (
-                          <span className={common.fieldHint}>
-                            Giảm {formatDiscountPercent(regPrice, discVal)} (tiết kiệm{" "}
-                            {formatVnd(regPrice - discVal)})
-                          </span>
-                        )}
-                      </div>
-
-                      <div className={common.field}>
-                        <label htmlFor={`dp-limit-${idx}`} className={common.fieldLabel}>
-                          Giới hạn / khách (0 = không giới hạn)
-                        </label>
-                        <input
-                          id={`dp-limit-${idx}`}
-                          type="number"
-                          min={0}
-                          step={1}
-                          className={common.textInput}
-                          value={row.per_user_limit}
-                          onChange={(e) =>
-                            setDraftItems((prev) =>
-                              prev.map((item, i) =>
-                                i === idx ? { ...item, per_user_limit: e.target.value } : item
-                              )
-                            )
-                          }
-                        />
-                      </div>
-
-                      <div className={common.field} style={{ justifyContent: "flex-end" }}>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          shape="app"
-                          disabled={draftItems.length <= 1}
-                          onClick={() => setDraftItems((prev) => prev.filter((_, i) => i !== idx))}
-                        >
-                          Bỏ SKU
-                        </Button>
                       </div>
                     </div>
                   );
                 })}
               </div>
+            </>
+          )}
+        </IndexTable>
+      </section>
 
-              <div className={styles.formActions}>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  shape="app"
-                  onClick={() => {
-                    resetForm();
-                    onCloseForm();
-                  }}
-                >
-                  Hủy
-                </Button>
-                <Button type="submit" variant="primary" size="sm" shape="app" disabled={submitting}>
+      {/* Create / Edit Discount Program Sheet */}
+      <Sheet
+        open={showForm}
+        onOpenChange={(open) => {
+          if (!open) {
+            resetForm();
+            onCloseForm();
+          }
+        }}
+      >
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-2xl">
+          <form
+            onSubmit={(e) => void handleSubmit(e)}
+            aria-label="Biểu mẫu chương trình giảm giá shop"
+            noValidate
+            className="flex min-h-full flex-col"
+          >
+            <SheetHeader>
+              <SheetTitle>
+                {editingId ? "Chỉnh sửa chương trình giảm giá" : "Tạo chương trình giảm giá shop"}
+              </SheetTitle>
+              <SheetDescription>
+                Mỗi SKU chỉ thuộc 1 chương trình đang chạy tại một thời điểm.
+              </SheetDescription>
+            </SheetHeader>
+
+            <div className="flex-1 space-y-5 px-4 pb-4">
+              {formError ? <FieldError>{formError}</FieldError> : null}
+
+              {selectableSkus.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  Chưa có biến thể SKU đang mở bán để đưa vào chương trình giảm giá.
+                </p>
+              ) : (
+                <>
+                  <FieldGroup className="gap-4">
+                    <Field>
+                      <FieldLabel htmlFor="dp-name">Tên chương trình</FieldLabel>
+                      <Input
+                        id="dp-name"
+                        type="text"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        placeholder="Ưu đãi cuối tuần giảm 15%"
+                        required
+                      />
+                    </Field>
+
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <Field>
+                        <FieldLabel htmlFor="dp-start">Bắt đầu áp dụng</FieldLabel>
+                        <Input
+                          id="dp-start"
+                          type="datetime-local"
+                          value={startsAt}
+                          onChange={(e) => setStartsAt(e.target.value)}
+                          required
+                        />
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor="dp-end">Kết thúc áp dụng</FieldLabel>
+                        <Input
+                          id="dp-end"
+                          type="datetime-local"
+                          value={endsAt}
+                          onChange={(e) => setEndsAt(e.target.value)}
+                          required
+                        />
+                      </Field>
+                    </div>
+                  </FieldGroup>
+
+                  <div className="space-y-3 border-t border-border pt-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-sm font-semibold text-foreground">
+                        Danh sách SKU ({formatInt(draftItems.length)})
+                      </span>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Input
+                          type="number"
+                          min={1}
+                          max={90}
+                          step={1}
+                          value={quickPct}
+                          onChange={(e) => setQuickPct(e.target.value)}
+                          aria-label="Phần trăm giảm nhanh"
+                          className="h-8 w-20 text-right tabular-nums"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={handleApplyQuickPct}
+                        >
+                          Tính nhanh -{quickPct}%
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={handleAddDraftRow}
+                        >
+                          <Plus className="size-3.5" aria-hidden="true" />
+                          <span>Thêm SKU</span>
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      {draftItems.map((row, idx) => {
+                        const found = skuLookup.get(row.sku_id);
+                        const regPrice = found?.sku.price_vnd ?? 0;
+                        const min30d = found?.sku.min_price_30d_vnd ?? 0;
+                        const discVal = Math.trunc(Number(row.discounted_price_vnd) || 0);
+                        return (
+                          <div
+                            key={`${row.sku_id}-${idx}`}
+                            className="space-y-3 rounded-lg border border-border bg-muted/35 p-3"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <Field className="flex-1">
+                                <FieldLabel htmlFor={`dp-sku-${idx}`}>Biến thể SKU</FieldLabel>
+                                <Select
+                                  value={row.sku_id}
+                                  onValueChange={(nextSkuId) => {
+                                    const nextFound = skuLookup.get(nextSkuId);
+                                    const pct = Math.max(
+                                      1,
+                                      Math.min(90, Math.trunc(Number(quickPct) || 15))
+                                    );
+                                    const suggested = nextFound
+                                      ? Math.max(
+                                          1000,
+                                          Math.trunc((nextFound.sku.price_vnd * (100 - pct)) / 100)
+                                        )
+                                      : discVal;
+                                    setDraftItems((prev) =>
+                                      prev.map((item, i) =>
+                                        i === idx
+                                          ? {
+                                              ...item,
+                                              sku_id: nextSkuId,
+                                              discounted_price_vnd: String(suggested),
+                                            }
+                                          : item
+                                      )
+                                    );
+                                  }}
+                                >
+                                  <SelectTrigger id={`dp-sku-${idx}`} className="w-full bg-card">
+                                    <SelectValue>
+                                      {found
+                                        ? `${found.product.name} · ${found.sku.sku_code} (${formatVnd(found.sku.price_vnd)})`
+                                        : row.sku_id}
+                                    </SelectValue>
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {selectableSkus.map(({ product, sku }) => (
+                                      <SelectItem key={sku.id} value={sku.id}>
+                                        {product.name} · {sku.sku_code} ({formatVnd(sku.price_vnd)})
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                                {found && (
+                                  <FieldDescription className="text-xs tabular-nums">
+                                    Giá gốc: {formatVnd(regPrice)}
+                                    {min30d > 0 ? ` · Thấp nhất 30 ngày: ${formatVnd(min30d)}` : ""}
+                                  </FieldDescription>
+                                )}
+                              </Field>
+
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon-sm"
+                                disabled={draftItems.length <= 1}
+                                aria-label="Bỏ SKU"
+                                className="mt-6 text-muted-foreground hover:text-destructive"
+                                onClick={() =>
+                                  setDraftItems((prev) => prev.filter((_, i) => i !== idx))
+                                }
+                              >
+                                <Trash2 className="size-4" aria-hidden="true" />
+                              </Button>
+                            </div>
+
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                              <Field>
+                                <FieldLabel htmlFor={`dp-price-${idx}`}>
+                                  Giá sau giảm (VND)
+                                </FieldLabel>
+                                <Input
+                                  id={`dp-price-${idx}`}
+                                  type="number"
+                                  min={1}
+                                  step={1}
+                                  value={row.discounted_price_vnd}
+                                  onChange={(e) =>
+                                    setDraftItems((prev) =>
+                                      prev.map((item, i) =>
+                                        i === idx
+                                          ? { ...item, discounted_price_vnd: e.target.value }
+                                          : item
+                                      )
+                                    )
+                                  }
+                                  required
+                                  className="bg-card tabular-nums"
+                                />
+                                {regPrice > 0 && discVal > 0 && discVal < regPrice && (
+                                  <FieldDescription className="text-xs tabular-nums">
+                                    Giảm {formatDiscountPercent(regPrice, discVal)} (tiết kiệm{" "}
+                                    {formatVnd(regPrice - discVal)})
+                                  </FieldDescription>
+                                )}
+                              </Field>
+
+                              <Field>
+                                <FieldLabel htmlFor={`dp-limit-${idx}`}>
+                                  Giới hạn / khách (0 = không giới hạn)
+                                </FieldLabel>
+                                <Input
+                                  id={`dp-limit-${idx}`}
+                                  type="number"
+                                  min={0}
+                                  step={1}
+                                  value={row.per_user_limit}
+                                  onChange={(e) =>
+                                    setDraftItems((prev) =>
+                                      prev.map((item, i) =>
+                                        i === idx
+                                          ? { ...item, per_user_limit: e.target.value }
+                                          : item
+                                      )
+                                    )
+                                  }
+                                  className="bg-card tabular-nums"
+                                />
+                              </Field>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <SheetFooter className="flex-row justify-end gap-2 border-t border-border">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  resetForm();
+                  onCloseForm();
+                }}
+              >
+                Hủy
+              </Button>
+              {selectableSkus.length > 0 && (
+                <Button type="submit" size="sm" disabled={submitting}>
                   {submitting
                     ? "Đang lưu..."
                     : editingId
                       ? "Cập nhật chương trình"
                       : "Lưu chương trình"}
                 </Button>
-              </div>
-            </>
-          )}
-        </form>
-      )}
+              )}
+            </SheetFooter>
+          </form>
+        </SheetContent>
+      </Sheet>
 
-      <section className={common.card} aria-labelledby="shop-discount-list-heading">
-        <div className={common.cardHeader}>
-          <div>
-            <h2 id="shop-discount-list-heading" className={common.cardTitle}>
-              Chương trình giảm giá của {shopName}
-            </h2>
-          </div>
-          <div className={common.segmented} role="tablist" aria-label="Lọc trạng thái chương trình">
-            {(
-              [
-                ["ALL", `Tất cả (${formatInt(programs.length)})`],
-                ["ACTIVE", "Đang chạy"],
-                ["SCHEDULED", "Chờ chạy"],
-                ["ENDED", "Đã kết thúc"],
-              ] as const
-            ).map(([k, lbl]) => (
-              <button
-                key={k}
-                type="button"
-                role="tab"
-                aria-selected={statusFilter === k}
-                className={`${common.segmentedBtn} ${statusFilter === k ? common.segmentedBtnActive : ""}`}
-                onClick={() => setStatusFilter(k)}
-              >
-                {lbl}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {filteredPrograms.length === 0 ? (
-          <div className={common.inlineEmpty}>
-            Chưa có chương trình giảm giá nào ở trạng thái đã chọn.
-          </div>
-        ) : (
-          <>
-            <div className={`${common.tableWrap} ${common.tableWrapDesktop}`}>
-              <table className={common.dataTable}>
-                <thead>
-                  <tr>
-                    <th>Tên chương trình</th>
-                    <th>Thời gian áp dụng</th>
-                    <th>SKU &amp; mức giảm</th>
-                    <th>Trạng thái</th>
-                    <th className={common.numCol}>Thao tác</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredPrograms.map((program) => {
-                    const meta = DISCOUNT_PROGRAM_STATUS_META[program.status] ?? {
-                      label: program.status,
-                      tone: "neutral" as const,
-                    };
-                    const canModify = program.status === "ACTIVE" || program.status === "SCHEDULED";
-                    const hasInflationFlag = (program.items ?? []).some(
-                      (it) => it.price_inflation_flagged
-                    );
-                    return (
-                      <tr key={program.id}>
-                        <td>
-                          <strong>{program.name}</strong>
-                          <span className={common.cellSub}>
-                            {formatInt(program.items?.length ?? 0)} biến thể SKU
-                          </span>
-                          {hasInflationFlag && (
-                            <span
-                              className={`${common.pill} ${common.pillWarn}`}
-                              style={{ marginTop: 4 }}
-                            >
-                              Cảnh báo tăng giá 30 ngày
-                            </span>
-                          )}
-                        </td>
-                        <td>
-                          <span>
-                            {program.starts_at ? formatDateTimeVi(program.starts_at) : "—"}
-                          </span>
-                          <span className={common.cellSub}>
-                            đến {program.ends_at ? formatDateTimeVi(program.ends_at) : "—"}
-                          </span>
-                        </td>
-                        <td>
-                          <div className={styles.programItemsList}>
-                            {(program.items ?? []).slice(0, 3).map((it) => {
-                              const found = skuLookup.get(it.sku_id);
-                              const thumb =
-                                found?.sku.image_url || found?.product.images?.[0] || null;
-                              return (
-                                <div key={it.id || it.sku_id} className={styles.programItemRow}>
-                                  {thumb && (
-                                    <img
-                                      src={thumb}
-                                      alt={found?.product.name ?? it.sku_id}
-                                      width={26}
-                                      height={34}
-                                      className={styles.programItemThumb}
-                                    />
-                                  )}
-                                  <div>
-                                    <span>
-                                      {found ? found.sku.sku_code : it.sku_id}:{" "}
-                                      <strong>{formatVnd(it.discounted_price_vnd)}</strong>
-                                    </span>
-                                    <span className={styles.discountTag}>
-                                      {formatDiscountPercent(
-                                        it.original_price_vnd,
-                                        it.discounted_price_vnd
-                                      )}
-                                    </span>
-                                    <span className={common.cellSub}>
-                                      Gốc {formatVnd(it.original_price_vnd)}
-                                      {it.per_user_limit > 0
-                                        ? ` · Tối đa ${formatInt(it.per_user_limit)}/khách`
-                                        : ""}
-                                    </span>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                            {(program.items?.length ?? 0) > 3 && (
-                              <span className={common.cellSub}>
-                                + {formatInt((program.items?.length ?? 0) - 3)} SKU khác
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td>
-                          <span className={statusPillClass(meta.tone)}>{meta.label}</span>
-                        </td>
-                        <td className={common.numCol}>
-                          {canModify ? (
-                            <div className={styles.switchWrap}>
-                              <button
-                                type="button"
-                                className={styles.inlineBtn}
-                                onClick={() => handleStartEdit(program)}
-                              >
-                                Sửa
-                              </button>
-                              {confirmEndId === program.id ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    className={`${styles.inlineBtn} ${styles.inlineDangerBtn}`}
-                                    disabled={endingId === program.id}
-                                    onClick={() => void handleEndProgram(program)}
-                                  >
-                                    {endingId === program.id ? "Đang dừng..." : "Xác nhận dừng"}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={styles.inlineBtn}
-                                    onClick={() => setConfirmEndId(null)}
-                                  >
-                                    Hủy
-                                  </button>
-                                </>
-                              ) : (
-                                <button
-                                  type="button"
-                                  className={styles.inlineBtn}
-                                  onClick={() => setConfirmEndId(program.id)}
-                                >
-                                  Kết thúc
-                                </button>
-                              )}
-                            </div>
-                          ) : (
-                            <span className={common.cardMeta}>—</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            <div className={common.mobileList}>
-              {filteredPrograms.map((program) => {
-                const meta = DISCOUNT_PROGRAM_STATUS_META[program.status] ?? {
-                  label: program.status,
-                  tone: "neutral" as const,
-                };
-                const canModify = program.status === "ACTIVE" || program.status === "SCHEDULED";
-                return (
-                  <div key={program.id} className={common.mobileRow}>
-                    <div className={common.mobileRowTop}>
-                      <div>
-                        <strong>{program.name}</strong>
-                        <span className={common.cellSub}>
-                          {formatInt(program.items?.length ?? 0)} SKU ·{" "}
-                          {program.starts_at ? formatDateTimeVi(program.starts_at) : "—"}
-                        </span>
-                      </div>
-                      <span className={statusPillClass(meta.tone)}>{meta.label}</span>
-                    </div>
-                    <div className={common.mobileRowMeta}>
-                      <span>
-                        Hết hạn: {program.ends_at ? formatDateTimeVi(program.ends_at) : "—"}
-                      </span>
-                      {canModify && (
-                        <div className={styles.actionPair}>
-                          <button
-                            type="button"
-                            className={styles.inlineBtn}
-                            onClick={() => handleStartEdit(program)}
-                          >
-                            Sửa
-                          </button>
-                          {confirmEndId === program.id ? (
-                            <>
-                              <button
-                                type="button"
-                                className={`${styles.inlineBtn} ${styles.inlineDangerBtn}`}
-                                disabled={endingId === program.id}
-                                onClick={() => void handleEndProgram(program)}
-                              >
-                                {endingId === program.id ? "Đang dừng..." : "Xác nhận"}
-                              </button>
-                              <button
-                                type="button"
-                                className={styles.inlineBtn}
-                                onClick={() => setConfirmEndId(null)}
-                              >
-                                Hủy
-                              </button>
-                            </>
-                          ) : (
-                            <button
-                              type="button"
-                              className={styles.inlineBtn}
-                              disabled={endingId === program.id}
-                              onClick={() => setConfirmEndId(program.id)}
-                            >
-                              Kết thúc
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </>
-        )}
-      </section>
+      {/* End Program Confirmation */}
+      <AlertDialog
+        open={Boolean(confirmEndProgram)}
+        onOpenChange={(open) => !open && setConfirmEndProgram(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Kết thúc chương trình &ldquo;{confirmEndProgram?.name}&rdquo;?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Các SKU trong chương trình sẽ quay về giá bán thường ngay lập tức.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Hủy</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={!confirmEndProgram || endingId === confirmEndProgram.id}
+              onClick={() => {
+                if (confirmEndProgram) {
+                  void handleEndProgram(confirmEndProgram);
+                }
+              }}
+            >
+              {confirmEndProgram && endingId === confirmEndProgram.id
+                ? "Đang dừng..."
+                : "Xác nhận dừng"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
