@@ -90,10 +90,10 @@ Trên site tối (`[data-site-theme-mode="dark"]`), `--ui-destructive` đổi sa
 ## 6. Luật cách ly (`UiScope`), đóng băng & Kiểm định Playwright
 
 - **Cách ly `UiScope` / `data-ui="true"`**: mọi vùng đã chuyển bọc trong `UiScope` xuất **`data-ui="true"`** (mã cũ đã dùng thuộc tính `data-ui` với giá trị khác, nên selector CSS mới luôn là `[data-ui="true"]` cho reset `[data-ui="true"] :where(...)` và override `revert-layer`), đồng thời cung cấp portal container qua `usePortalContainer()` giúp Dialog/Sheet/Popover/Select/Tooltip/DropdownMenu thừa kế `--ui-*` của site tối. **Không** gắn `data-ui="true"` vào trang/layout CSS Module cũ.
-- **Import `ui.css`, luật layer & `autoprefixer`**:
+- **Import `ui.css`, luật layer & PostCSS mặc định**:
   - `ui.css` chỉ import ở layout của từng khu vực đã chuyển (hiện ở `src/app/(design)/design/layout.tsx`), **không** import ở `src/app/layout.tsx` gốc để các trang cũ (kể cả site gian hàng) không tải thêm CSS chặn render.
   - Dòng đầu `src/styles/globals.css` chốt `@layer theme, base, components, utilities;`. Chỉ rule độ đặc hiệu ≤ `(0,0,1)` (phần tử, `*`, `::pseudo-element`) vào `@layer base`; 3 rule cũ có độ đặc hiệu cao hơn (`ul[class], ol[class]`, `:focus-visible`, `tbody tr:last-child td`) giữ nguyên ngoài layer và có override `revert-layer` ngoài layer cho `[data-ui="true"]` trong `ui.css`.
-  - `autoprefixer` (`devDependency`) được cấu hình trong `web/postcss.config.mjs` theo `MODERN_BROWSERSLIST_TARGET` của Next để giữ vendor prefix cho CSS cũ giống hệt mặc định, và sẽ gỡ ở phase 5 cùng CSS Modules.
+  - `web/postcss.config.mjs` thêm lại hai plugin mặc định của Next (`next/dist/compiled/postcss-flexbugs-fixes` + `next/dist/compiled/postcss-preset-env`, cùng tuỳ chọn) sau Tailwind; không thêm phụ thuộc; gỡ ở phase 5 cùng CSS Modules.
 - **Cấm trộn**: một component không vừa dùng Tailwind vừa dùng CSS Module. Không khai biến thô ngoài tiền tố `--ui-*` ở `:root`. Không cài phụ thuộc ngoài danh sách ADR-0011.
 - **Đóng băng sau phase 0**: `src/components/ui/` và `src/components/app/` đóng băng khi phase 1–4 chạy song song; swarm khu vực không chạy `shadcn add` và không tự sửa hai thư mục này.
 - **Ngôn ngữ**: 100% tiếng Việt tự nhiên, không rò thuật ngữ kỹ thuật (JWT, HMAC, Saga, Redis Lua, sandbox, sổ cái ghi kép, optimistic locking) trên giao diện người mua.

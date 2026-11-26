@@ -21,7 +21,7 @@
    - **`ui.css` chỉ import ở layout của từng khu vực đã chuyển** (phase 0 ở `src/app/(design)/design/layout.tsx`), **không** import ở `src/app/layout.tsx` gốc, và `Inter` đặt `preload: false` để các trang cũ (nhất là site gian hàng) không chịu thêm CSS chặn render hay tải sớm font chưa dùng.
    - **Luật layer của `globals.css`**: dòng đầu `globals.css` chốt thứ tự `@layer theme, base, components, utilities;` để giữ nguyên bất kể `ui.css` nạp sau. Chỉ các rule độ đặc hiệu ≤ `(0,0,1)` (phần tử thuần, `*`, `::pseudo-element`) được bọc vào `@layer base`; 3 rule cũ có độ đặc hiệu cao hơn (`ul[class], ol[class]`, `:focus-visible`, `tbody tr:last-child td`) giữ nguyên ngoài layer đúng vị trí cũ, đồng thời `ui.css` đặt 3 override `revert-layer` ngoài layer cho `[data-ui="true"]` để trả quyền ưu tiên về các layer bên trong `UiScope`.
    - **Khu vực đã chuyển bọc trong `UiScope` (`data-ui="true"`)**: vì mã cũ đã dùng thuộc tính `data-ui` với các giá trị khác (`data-ui=""`, `data-ui="site-assistant"`…), `UiScope` xuất rõ `data-ui="true"` và mọi selector của `ui.css` đều dùng `[data-ui="true"]` để không đụng phần cũ, kèm `usePortalContainer` cho các `*Portal` của Radix.
-   - **Giữ nguyên vendor prefix bằng `autoprefixer` (`devDependency`)**: do thêm `web/postcss.config.mjs` khiến Next bỏ PostCSS mặc định, cấu hình bổ sung plugin `autoprefixer` (mục tiêu `MODERN_BROWSERSLIST_TARGET` của Next, không dùng `postcss-preset-env` để tránh polyfill `@layer`) giữ đầu ra CSS cũ đồng nhất; gỡ ở phase 5 cùng CSS Modules.
+   - **Giữ nguyên pipeline PostCSS mặc định của Next cho CSS cũ**: do thêm `web/postcss.config.mjs` khiến Next bỏ pipeline mặc định, `postcss.config.mjs` thêm lại hai plugin mặc định của Next (`next/dist/compiled/postcss-flexbugs-fixes` + `next/dist/compiled/postcss-preset-env`, cùng tuỳ chọn) sau Tailwind; không thêm phụ thuộc; gỡ ở phase 5 cùng CSS Modules.
 4. **Đóng băng thư mục nền sau phase 0**: `web/src/components/ui/` và `web/src/components/app/` được hoàn thiện ở phase 0 cùng trang duyệt nội bộ `/design`, sau đó đóng băng để phase 1–4 triển khai song song theo khu vực. Phase 5 sẽ bật preflight và xoá CSS Module/token cũ.
 
 ## Phương án loại
@@ -58,6 +58,5 @@
   - `lucide-react`
   - `cmdk`
   - `sonner`
-- **Phụ thuộc `devDependency` tạm thời tới phase 5**:
-  - `autoprefixer` (chạy trong `web/postcss.config.mjs` với `flexbox: "no-2009"` và `MODERN_BROWSERSLIST_TARGET` để giữ nguyên `-webkit-sticky`, `-webkit-clip-path`, `-webkit-user-select` cho CSS Modules cũ; gỡ ở phase 5).
+- **Không thêm phụ thuộc PostCSS ngoài**: `web/postcss.config.mjs` thêm lại hai plugin mặc định của Next (`next/dist/compiled/postcss-flexbugs-fixes` + `next/dist/compiled/postcss-preset-env`, cùng tuỳ chọn) sau Tailwind; không thêm phụ thuộc; gỡ ở phase 5 cùng CSS Modules.
 - **Không cài thêm**: `next-themes`, `recharts` (giữ biểu đồ SVG nhẹ), `@tanstack/react-table` (dùng primitive `Table` với logic lọc/phân trang sẵn có), `react-hook-form`, `zod`, `react-day-picker` (dùng input ngày chuẩn trình duyệt), `vaul`, `input-otp`.

@@ -101,8 +101,9 @@ Lý do phía sau (suy ra từ yêu cầu, chủ dự án sửa nếu sai):
     PDP thụt lề). Trong vùng `UiScope`, `ui.css` có override ngoài layer dùng `revert-layer` để trả quyền cho
     base/utility của Tailwind.
   - `UiScope` xuất `data-ui="true"`, và selector luôn là `[data-ui="true"]`, vì mã cũ đã dùng `data-ui` với giá trị khác.
-  - Có `postcss.config.mjs` riêng thì Next bỏ autoprefixer mặc định, nên thêm devDependency `autoprefixer` với danh sách
-    trình duyệt mặc định của Next để CSS cũ giữ nguyên. Gỡ ở phase 5.
+  - Có `postcss.config.mjs` riêng thì Next bỏ cả pipeline PostCSS mặc định (`postcss-flexbugs-fixes` + `postcss-preset-env`),
+    nên config thêm lại đúng hai plugin đó (`next/dist/compiled/…`, cùng tuỳ chọn) sau Tailwind để CSS cũ biên dịch y như
+    trước, không thêm phụ thuộc. Gỡ ở phase 5. Soát bằng `.runs/shadcn-redesign/css-pipeline-diff.mjs` (0 file khác).
   - Soát bằng Playwright rằng các trang CSS Module cũ không đổi hình, và chụp thêm lúc bấm Tab ở 2–3 trang cũ để
     chắc vòng focus vẫn hiện.
 - Phase cuối (dọn dẹp) bật preflight (`@import "tailwindcss/preflight.css" layer(base)`), rồi xoá reset cũ.
