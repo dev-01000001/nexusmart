@@ -19,14 +19,29 @@ import {
 
 export const dynamic = "force-dynamic";
 
-const ALLOWED_TABS = new Set<EditorTab>([
-  "templates",
-  "theme",
-  "sections",
-  "code",
-  "domains",
-  "versions",
-]);
+function resolveTabQuery(rawTab: string | undefined): {
+  tab: EditorTab;
+  customizeSection: "theme" | "sections";
+} {
+  switch ((rawTab ?? "").trim().toLowerCase()) {
+    case "customize":
+    case "theme":
+      return { tab: "customize", customizeSection: "theme" };
+    case "sections":
+      return { tab: "customize", customizeSection: "sections" };
+    case "code":
+    case "json":
+      return { tab: "code", customizeSection: "theme" };
+    case "domains":
+    case "domain":
+      return { tab: "domains", customizeSection: "theme" };
+    case "versions":
+      return { tab: "versions", customizeSection: "theme" };
+    case "templates":
+    default:
+      return { tab: "templates", customizeSection: "theme" };
+  }
+}
 
 interface SellerSitePageProps {
   searchParams?: Promise<{ tab?: string | string[] }>;
@@ -50,8 +65,7 @@ export default async function SellerSitePage({ searchParams }: SellerSitePagePro
   const requestHost = resolveRequestHost(h, "");
   const requestProto = resolveRequestProto(h, `http://${requestHost || "localhost"}`);
   const rawTab = Array.isArray(sp.tab) ? sp.tab[0] : sp.tab;
-  const initialTab: EditorTab =
-    rawTab && ALLOWED_TABS.has(rawTab as EditorTab) ? (rawTab as EditorTab) : "templates";
+  const { tab: initialTab, customizeSection } = resolveTabQuery(rawTab);
 
   return (
     <SellerSiteEditorClient
@@ -62,6 +76,7 @@ export default async function SellerSitePage({ searchParams }: SellerSitePagePro
       initialTemplates={templatesRes.templates}
       domainsLoadError={domainsRes.error}
       initialTab={initialTab}
+      initialCustomizeSection={customizeSection}
       products={productsRes.data?.items ?? []}
       categories={categoriesRes.data ?? []}
       rootDomain={siteRes.rootDomain}

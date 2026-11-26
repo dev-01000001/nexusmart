@@ -1,16 +1,38 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
-import { Button, IconClose } from "@/components";
+import React, { useMemo, useState } from "react";
+import { Check, Eye, X } from "lucide-react";
+import { StatusBadge } from "@/components/app";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { cloneTemplateConfigForShop } from "@/features/site/templateCatalog";
 import { sanitizeSafeImageUrl } from "@/features/site/templateValidator";
-import common from "@/features/seller/SellerCommon.module.css";
+import { cn } from "@/lib/utils";
 import type { PlatformTemplateDTO, SiteTemplateConfig, TemplatePageKey } from "./siteEditorTypes";
-import { ARCHETYPE_OPTIONS, TEMPLATE_PAGE_TABS } from "./siteEditorUtils";
+import { ARCHETYPE_OPTIONS } from "./siteEditorUtils";
 import type { PreviewStorefrontDataset } from "./previewData";
+import { PreviewToolbar } from "./PreviewToolbar";
 import { SitePreviewContent } from "./SitePreviewContent";
 import { SitePreviewFrame, type DevicePreviewWidth } from "./SitePreviewFrame";
-import styles from "./SellerSiteEditor.module.css";
 
 export type { DevicePreviewWidth };
 
@@ -36,7 +58,7 @@ const TEMPLATE_GALLERY_PHOTOS: Record<string, string> = {
   "multi-sku-catalog": "/atmosphere/jacquard-loom-poster.jpg",
 };
 
-/** Crisp <= 8-word one-line summaries for each template card. */
+/** Crisp one-line summaries when template description is empty. */
 const TEMPLATE_SHORT_NOTES: Record<string, string> = {
   "minimal-fashion": "Lưới 3 cột so le, chữ tinh gọn",
   editorial: "Đầu trang tạp chí, ảnh lệch tầng",
@@ -64,10 +86,8 @@ function getTemplatePhoto(tpl: PlatformTemplateDTO): string {
   );
 }
 
-function getTemplateShortNote(tpl: PlatformTemplateDTO): string {
-  if (TEMPLATE_SHORT_NOTES[tpl.id]) return TEMPLATE_SHORT_NOTES[tpl.id];
-  const words = (tpl.description || "").trim().split(/\s+/).filter(Boolean);
-  return words.slice(0, 8).join(" ");
+function getTemplateDescription(tpl: PlatformTemplateDTO): string {
+  return (tpl.description || "").trim() || TEMPLATE_SHORT_NOTES[tpl.id] || "";
 }
 
 export function TemplateGalleryTab({
@@ -82,7 +102,7 @@ export function TemplateGalleryTab({
   const [previewTemplate, setPreviewTemplate] = useState<PlatformTemplateDTO | null>(null);
   const [previewPage, setPreviewPage] = useState<TemplatePageKey>("home");
   const [previewDevice, setPreviewDevice] = useState<DevicePreviewWidth>("1440");
-  const [confirmApplyId, setConfirmApplyId] = useState<string | null>(null);
+  const [confirmTemplate, setConfirmTemplate] = useState<PlatformTemplateDTO | null>(null);
 
   const previewConfig = useMemo(() => {
     if (!previewTemplate) return null;
@@ -93,259 +113,251 @@ export function TemplateGalleryTab({
     });
   }, [previewTemplate, currentConfig.theme, previewDataset.shop]);
 
-  useEffect(() => {
-    if (!previewTemplate) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setPreviewTemplate(null);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [previewTemplate]);
-
   const handleConfirmApply = async (tpl: PlatformTemplateDTO) => {
     await onApplyTemplate(tpl);
-    setConfirmApplyId(null);
+    setConfirmTemplate(null);
     if (previewTemplate?.id === tpl.id) {
       setPreviewTemplate(null);
     }
   };
 
   return (
-    <div className={styles.fieldStack}>
-      <div className={styles.templateGrid}>
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
         {templates.map((tpl) => {
           const isActive = currentTemplateId === tpl.id;
           const isApplying = applyingTemplateId === tpl.id;
-          const isConfirming = confirmApplyId === tpl.id;
           const theme = tpl.config.theme;
           const photoUrl = getTemplatePhoto(tpl);
-          const shortNote = getTemplateShortNote(tpl);
+          const description = getTemplateDescription(tpl);
+          const features =
+            tpl.tags && tpl.tags.length > 0
+              ? tpl.tags
+              : [labelOf(ARCHETYPE_OPTIONS, tpl.archetype)];
 
           return (
-            <article
+            <Card
               key={tpl.id}
-              className={`${styles.templateCard} ${isActive ? styles.templateCardActive : ""}`}
+              className={cn(
+                "justify-between transition-shadow",
+                isActive && "ring-2 ring-brand/60"
+              )}
             >
-              <div className={styles.templatePhotoWrap}>
-                <img
-                  src={photoUrl}
-                  alt={`Ảnh minh họa mẫu ${tpl.name}`}
-                  className={styles.templatePhoto}
-                  width={640}
-                  height={400}
-                />
-                <div className={styles.templatePhotoBadges}>
-                  <span
-                    className={styles.templateArchetypeBadge}
-                    style={{
-                      backgroundColor: theme.accent_color,
-                      color: theme.accent_text_color,
-                    }}
-                  >
-                    {labelOf(ARCHETYPE_OPTIONS, tpl.archetype)}
-                  </span>
-                  {isActive && (
-                    <span className={`${common.pill} ${common.pillPos}`}>Đang dùng</span>
-                  )}
-                </div>
-              </div>
-
-              <div className={styles.templateCardBody}>
-                <div className={styles.templateCardHead}>
-                  <div className={styles.templateCardTitleGroup}>
-                    <h3 className={styles.templateCardName}>{tpl.name}</h3>
-                    {shortNote && <p className={styles.templateCardNote}>{shortNote}</p>}
+              <CardHeader className="gap-2">
+                <div className="flex min-h-6 items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {isActive ? <StatusBadge tone="info">Đang dùng</StatusBadge> : null}
+                    <Badge variant="neutral" className="rounded-sm font-medium">
+                      {labelOf(ARCHETYPE_OPTIONS, tpl.archetype)}
+                    </Badge>
                   </div>
-                  <span className={styles.presetDots} aria-label="Bảng màu mẫu">
+                  <span
+                    className="inline-flex shrink-0 items-center gap-1"
+                    aria-label="Bảng màu mẫu"
+                  >
                     <span
-                      className={styles.presetDot}
+                      className="size-3 rounded-full border border-input/60"
                       style={{ backgroundColor: theme.bg_color }}
                       title={`Nền ${theme.bg_color}`}
                     />
                     <span
-                      className={styles.presetDot}
+                      className="size-3 rounded-full border border-input/60"
                       style={{ backgroundColor: theme.surface_color }}
                       title={`Thẻ ${theme.surface_color}`}
                     />
                     <span
-                      className={styles.presetDot}
+                      className="size-3 rounded-full border border-input/60"
                       style={{ backgroundColor: theme.text_color }}
                       title={`Chữ ${theme.text_color}`}
                     />
                     <span
-                      className={styles.presetDot}
+                      className="size-3 rounded-full border border-input/60"
                       style={{ backgroundColor: theme.accent_color }}
                       title={`Nhấn ${theme.accent_color}`}
                     />
                   </span>
                 </div>
 
-                {isConfirming ? (
-                  <div className={styles.confirmApplyBox}>
-                    <p className={styles.confirmApplyText}>
-                      Áp dụng mẫu <strong>{tpl.name}</strong> vào <strong>bản nháp</strong>? Trang
-                      công khai giữ nguyên tới khi bạn bấm Xuất bản.
-                    </p>
-                    <div className={styles.confirmApplyBtns}>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        shape="app"
-                        disabled={Boolean(applyingTemplateId)}
-                        onClick={() => setConfirmApplyId(null)}
-                      >
-                        Hủy
-                      </Button>
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        shape="app"
-                        disabled={Boolean(applyingTemplateId)}
-                        onClick={() => void handleConfirmApply(tpl)}
-                      >
-                        {isApplying ? "Đang áp dụng..." : "Xác nhận áp dụng nháp"}
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className={styles.templateCardActions}>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      shape="app"
-                      onClick={() => {
-                        setPreviewTemplate(tpl);
-                        setPreviewPage("home");
-                        setPreviewDevice("1440");
-                      }}
-                    >
-                      Xem trước
-                    </Button>
-                    <Button
-                      variant={isActive ? "secondary" : "primary"}
-                      size="sm"
-                      shape="app"
-                      disabled={Boolean(applyingTemplateId)}
-                      onClick={() => setConfirmApplyId(tpl.id)}
-                    >
-                      {isApplying
-                        ? "Đang áp dụng..."
-                        : isActive
-                          ? "Áp dụng lại mẫu gốc"
-                          : "Áp dụng vào bản nháp"}
-                    </Button>
-                  </div>
-                )}
-              </div>
-            </article>
+                <h2 className="text-2xl leading-8 font-semibold tracking-tight text-foreground">
+                  {tpl.name}
+                </h2>
+                <CardDescription className="line-clamp-2 min-h-9">{description}</CardDescription>
+              </CardHeader>
+
+              <CardContent className="flex flex-1 flex-col gap-4">
+                <div className="overflow-hidden rounded-lg border border-border bg-muted">
+                  <img
+                    src={photoUrl}
+                    alt={`Ảnh minh họa mẫu ${tpl.name}`}
+                    width={640}
+                    height={400}
+                    className="aspect-[16/10] w-full object-cover"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Button
+                    type="button"
+                    className="min-h-10 w-full md:min-h-9"
+                    variant={isActive ? "outline" : "default"}
+                    disabled={Boolean(applyingTemplateId)}
+                    onClick={() => setConfirmTemplate(tpl)}
+                  >
+                    {isApplying
+                      ? "Đang áp dụng..."
+                      : isActive
+                        ? "Áp dụng lại mẫu gốc"
+                        : "Dùng mẫu này"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="min-h-10 w-full md:min-h-8"
+                    onClick={() => {
+                      setPreviewTemplate(tpl);
+                      setPreviewPage("home");
+                      setPreviewDevice("1440");
+                    }}
+                  >
+                    <Eye className="size-4" aria-hidden="true" />
+                    <span>Xem trước</span>
+                  </Button>
+                </div>
+
+                <div className="mt-auto space-y-2 border-t border-border pt-3">
+                  <div className="text-xs font-semibold text-foreground">Đặc điểm bố cục</div>
+                  <ul className="space-y-1.5 text-[13px] text-muted-foreground">
+                    {features.map((feat) => (
+                      <li key={feat} className="flex items-start gap-2">
+                        <Check className="mt-0.5 size-4 shrink-0 text-brand" aria-hidden="true" />
+                        <span>{feat}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </CardContent>
+            </Card>
           );
         })}
       </div>
 
-      {previewTemplate && previewConfig && (
-        <div
-          className={styles.previewModalBackdrop}
-          role="dialog"
-          aria-modal="true"
-          aria-label={`Xem trước mẫu ${previewTemplate.name}`}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setPreviewTemplate(null);
-          }}
+      {/* Large Preview Dialog */}
+      <Dialog
+        open={Boolean(previewTemplate && previewConfig)}
+        onOpenChange={(open) => {
+          if (!open) setPreviewTemplate(null);
+        }}
+      >
+        <DialogContent
+          showCloseButton={false}
+          className="flex h-[90vh] max-h-[880px] w-[calc(100%-1.5rem)] max-w-[min(1280px,calc(100vw-1.5rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(1280px,calc(100vw-2rem))]"
         >
-          <div className={styles.previewModalPanel}>
-            <div className={styles.previewModalHeader}>
-              <div className={styles.previewModalMeta}>
-                <strong className={styles.previewModalTitle}>{previewTemplate.name}</strong>
-                <span className={styles.previewModalHint}>
-                  Xem trước với dữ liệu gian hàng, chưa thay đổi site công khai
-                </span>
-              </div>
-              <div className={styles.previewModalRight}>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  shape="app"
-                  disabled={Boolean(applyingTemplateId)}
-                  onClick={() => void handleConfirmApply(previewTemplate)}
-                >
-                  {applyingTemplateId === previewTemplate.id
-                    ? "Đang áp dụng..."
-                    : "Áp dụng vào bản nháp"}
-                </Button>
-                <button
-                  type="button"
-                  className={styles.previewModalCloseBtn}
-                  onClick={() => setPreviewTemplate(null)}
-                  aria-label="Đóng cửa sổ xem trước"
-                >
-                  <IconClose size={16} />
-                </button>
-              </div>
-            </div>
+          {previewTemplate && previewConfig ? (
+            <>
+              <DialogHeader className="flex flex-row flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3 text-left sm:px-5">
+                <div className="min-w-0 flex-1 space-y-0.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <DialogTitle className="truncate text-base font-semibold text-foreground">
+                      {previewTemplate.name}
+                    </DialogTitle>
+                    {currentTemplateId === previewTemplate.id ? (
+                      <StatusBadge tone="info">Đang dùng</StatusBadge>
+                    ) : null}
+                  </div>
+                  <DialogDescription className="text-[13px]">
+                    Xem trước với dữ liệu gian hàng, chưa thay đổi site công khai
+                  </DialogDescription>
+                </div>
 
-            <div className={styles.previewToolbar}>
-              <div
-                className={styles.pageSwitcherGroup}
-                role="tablist"
-                aria-label="Chọn trang xem trước"
-              >
-                {TEMPLATE_PAGE_TABS.map((tab) => (
-                  <button
-                    key={tab.key}
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
                     type="button"
-                    role="tab"
-                    aria-selected={previewPage === tab.key}
-                    className={`${styles.pageSwitchBtn} ${
-                      previewPage === tab.key ? styles.pageSwitchBtnActive : ""
-                    }`}
-                    onClick={() => setPreviewPage(tab.key)}
+                    size="sm"
+                    disabled={Boolean(applyingTemplateId)}
+                    onClick={() => setConfirmTemplate(previewTemplate)}
                   >
-                    {tab.shortLabel}
-                  </button>
-                ))}
-              </div>
+                    {applyingTemplateId === previewTemplate.id ? "Đang áp dụng..." : "Dùng mẫu này"}
+                  </Button>
+                  <DialogClose asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon-sm"
+                      aria-label="Đóng cửa sổ xem trước"
+                    >
+                      <X className="size-4" aria-hidden="true" />
+                    </Button>
+                  </DialogClose>
+                </div>
+              </DialogHeader>
 
-              <div className={styles.viewportGroup} role="group" aria-label="Kích thước khung xem">
-                {(["390", "768", "1440"] as const).map((w) => (
-                  <button
-                    key={w}
-                    type="button"
-                    aria-pressed={previewDevice === w}
-                    className={`${styles.viewportBtn} ${
-                      previewDevice === w ? styles.viewportBtnActive : ""
-                    }`}
-                    onClick={() => setPreviewDevice(w)}
-                  >
-                    {w}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className={styles.previewModalBody}>
-              <SitePreviewFrame
+              <PreviewToolbar
+                activePage={previewPage}
+                onPageChange={setPreviewPage}
                 device={previewDevice}
-                title={`Xem trước mẫu ${previewTemplate.name} (${previewDevice}px)`}
-                resetScrollKey={`${previewTemplate.id}:${previewPage}:${previewDevice}`}
-                viewportHeight={640}
-                onEscape={() => setPreviewTemplate(null)}
-              >
-                <SitePreviewContent
-                  config={previewConfig}
-                  page={previewPage}
-                  shop={previewDataset.shop}
-                  products={previewDataset.products}
-                  categories={previewDataset.categories}
-                  vouchers={previewDataset.vouchers}
-                  platformOrigin={platformOrigin}
-                />
-              </SitePreviewFrame>
-            </div>
-          </div>
-        </div>
-      )}
+                onDeviceChange={setPreviewDevice}
+              />
+
+              <div className="min-h-0 flex-1 overflow-y-auto bg-muted/60 p-4">
+                <SitePreviewFrame
+                  device={previewDevice}
+                  title={`Xem trước mẫu ${previewTemplate.name} (${previewDevice}px)`}
+                  resetScrollKey={`${previewTemplate.id}:${previewPage}:${previewDevice}`}
+                  viewportHeight={620}
+                  onEscape={() => setPreviewTemplate(null)}
+                >
+                  <SitePreviewContent
+                    config={previewConfig}
+                    page={previewPage}
+                    shop={previewDataset.shop}
+                    products={previewDataset.products}
+                    categories={previewDataset.categories}
+                    vouchers={previewDataset.vouchers}
+                    platformOrigin={platformOrigin}
+                  />
+                </SitePreviewFrame>
+              </div>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm Apply Template to Draft AlertDialog */}
+      <AlertDialog
+        open={confirmTemplate !== null}
+        onOpenChange={(open) => {
+          if (!open && !applyingTemplateId) setConfirmTemplate(null);
+        }}
+      >
+        <AlertDialogContent>
+          {confirmTemplate ? (
+            <>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Áp dụng mẫu {confirmTemplate.name}?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Áp dụng mẫu <strong>{confirmTemplate.name}</strong> vào <strong>bản nháp</strong>?
+                  Trang công khai của cửa hàng vẫn giữ nguyên cho tới khi bạn bấm Xuất bản.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={Boolean(applyingTemplateId)}>Hủy</AlertDialogCancel>
+                <AlertDialogAction
+                  disabled={Boolean(applyingTemplateId)}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void handleConfirmApply(confirmTemplate);
+                  }}
+                >
+                  {applyingTemplateId === confirmTemplate.id
+                    ? "Đang áp dụng..."
+                    : "Xác nhận áp dụng nháp"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </>
+          ) : null}
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

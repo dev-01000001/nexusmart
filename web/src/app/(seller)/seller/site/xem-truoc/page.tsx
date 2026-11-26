@@ -2,7 +2,9 @@ import React from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { headers } from "next/headers";
-import { StateView } from "@/components";
+import { LayoutTemplate } from "lucide-react";
+import { EmptyState, ErrorState, PageHeader } from "@/components/app";
+import { Button } from "@/components/ui/button";
 import { APP_ORIGINS } from "@/lib/server/config";
 import { resolveRequestHost, resolveRequestProto } from "@/lib/server/http";
 import { loadShopSiteRenderData } from "@/lib/server/sites";
@@ -12,12 +14,10 @@ import type { TemplatePageKey } from "@/features/site/templateTypes";
 import { requireSellerPage } from "@/features/seller/sellerServer";
 import { loadSellerSiteServer } from "@/features/seller/site/siteServer";
 import {
-  TEMPLATE_PAGE_TABS,
   createDefaultTemplateConfig,
   getSiteStatusMeta,
 } from "@/features/seller/site/siteEditorUtils";
-import { SitePreviewContent } from "@/features/seller/site/SitePreviewContent";
-import styles from "./page.module.css";
+import { SiteDraftPreviewClient } from "@/features/seller/site/SiteDraftPreviewClient";
 
 export const dynamic = "force-dynamic";
 
@@ -52,26 +52,21 @@ export default async function SellerSiteDraftPreviewPage({
 
   if (siteRes.error) {
     return (
-      <div className={styles.previewWrap}>
-        <div className={styles.previewBanner}>
-          <div className={styles.bannerLeft}>
-            <span className={styles.bannerTitle}>
-              Chế độ xem trước bản nháp, chưa hiển thị công khai
-            </span>
-          </div>
-          <div className={styles.bannerActions}>
-            <Link href="/seller/site" className={styles.backLink}>
-              Quay lại trình chỉnh sửa
-            </Link>
-          </div>
-        </div>
-        <StateView
-          kind="error"
-          surface="app"
+      <div className="space-y-4">
+        <PageHeader
+          title="Xem trước bản nháp"
+          backHref="/seller/site"
+          subtitle="Chế độ xem trước bản nháp, chưa hiển thị công khai"
+          primaryAction={
+            <Button variant="outline" size="sm" asChild>
+              <Link href="/seller/site">Quay lại trình chỉnh sửa</Link>
+            </Button>
+          }
+        />
+        <ErrorState
           title="Không thể tải bản nháp site riêng"
-          message={siteRes.error}
-          actionLabel="Quay lại trình chỉnh sửa"
-          actionHref="/seller/site"
+          description={siteRes.error}
+          retryHref="/seller/site"
         />
       </div>
     );
@@ -82,26 +77,26 @@ export default async function SellerSiteDraftPreviewPage({
   // Defense in depth: ensure returned site strictly matches authenticated seller's shop_id.
   if (!site || !session.user.shopId || site.shop_id !== session.user.shopId) {
     return (
-      <div className={styles.previewWrap}>
-        <div className={styles.previewBanner}>
-          <div className={styles.bannerLeft}>
-            <span className={styles.bannerTitle}>
-              Chế độ xem trước bản nháp, chưa hiển thị công khai
-            </span>
-          </div>
-          <div className={styles.bannerActions}>
-            <Link href="/seller/site" className={styles.backLink}>
-              Quay lại trình chỉnh sửa
-            </Link>
-          </div>
-        </div>
-        <StateView
-          kind="empty"
-          surface="app"
+      <div className="space-y-4">
+        <PageHeader
+          title="Xem trước bản nháp"
+          backHref="/seller/site"
+          subtitle="Chế độ xem trước bản nháp, chưa hiển thị công khai"
+          primaryAction={
+            <Button variant="outline" size="sm" asChild>
+              <Link href="/seller/site">Quay lại trình chỉnh sửa</Link>
+            </Button>
+          }
+        />
+        <EmptyState
+          icon={LayoutTemplate}
           title="Chưa có bản nháp site riêng"
-          message="Hãy chọn mẫu giao diện, tên miền phụ, chỉnh bảng màu và bấm Lưu nháp trong mục Site riêng trước khi xem trước."
-          actionLabel="Mở trình chỉnh sửa Site riêng"
-          actionHref="/seller/site"
+          description="Hãy chọn mẫu giao diện, tên miền phụ, chỉnh bảng màu và bấm Lưu nháp trong mục Site riêng trước khi xem trước."
+          action={
+            <Button size="sm" asChild>
+              <Link href="/seller/site">Mở trình chỉnh sửa Site riêng</Link>
+            </Button>
+          }
         />
       </div>
     );
@@ -132,56 +127,17 @@ export default async function SellerSiteDraftPreviewPage({
   const hostDisplay = site.primary_host || `${site.subdomain}.${rootDomain}`;
 
   return (
-    <div className={styles.previewWrap}>
-      <div className={styles.previewBanner} role="region" aria-label="Thanh xem trước bản nháp">
-        <div className={styles.bannerLeft}>
-          <span className={styles.bannerBadge}>{statusMeta.label}</span>
-          <span className={styles.bannerTitle}>
-            Chế độ xem trước bản nháp, chưa hiển thị công khai
-          </span>
-          <span className={styles.bannerHost}>
-            ({hostDisplay}, mẫu: {draftConfig.template_id})
-          </span>
-        </div>
-
-        <nav className={styles.viewSwitcher} aria-label="Chuyển trang xem trước bản nháp">
-          {TEMPLATE_PAGE_TABS.map((tab) => {
-            const href =
-              tab.key === "home"
-                ? "/seller/site/xem-truoc"
-                : `/seller/site/xem-truoc?view=${tab.key}`;
-            const isActive = activeView === tab.key;
-            return (
-              <Link
-                key={tab.key}
-                href={href}
-                className={`${styles.viewLink} ${isActive ? styles.viewLinkActive : ""}`}
-                aria-current={isActive ? "page" : undefined}
-              >
-                {tab.shortLabel}
-              </Link>
-            );
-          })}
-        </nav>
-
-        <div className={styles.bannerActions}>
-          <Link href="/seller/site" className={styles.backLink}>
-            Quay lại trình chỉnh sửa
-          </Link>
-        </div>
-      </div>
-
-      <div className={styles.previewFrame}>
-        <SitePreviewContent
-          config={draftConfig}
-          page={activeView}
-          shop={publicShop}
-          products={renderData.products}
-          categories={renderData.categories}
-          vouchers={renderData.vouchers}
-          platformOrigin={platformOrigin}
-        />
-      </div>
-    </div>
+    <SiteDraftPreviewClient
+      status={site.status}
+      statusLabel={statusMeta.label}
+      hostDisplay={hostDisplay}
+      activeView={activeView}
+      draftConfig={draftConfig}
+      shop={publicShop}
+      products={renderData.products}
+      categories={renderData.categories}
+      vouchers={renderData.vouchers}
+      platformOrigin={platformOrigin}
+    />
   );
 }

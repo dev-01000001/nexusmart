@@ -2,8 +2,8 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { cn } from "@/lib/utils";
 import { stripPreviewJsClass } from "./siteEditorUtils";
-import styles from "./SellerSiteEditor.module.css";
 
 export type DevicePreviewWidth = "1440" | "768" | "390";
 
@@ -26,7 +26,7 @@ html, body {
   margin: 0;
   padding: 0;
   overflow-x: hidden;
-  background: var(--bg-0, #ffffff);
+  background: var(--ui-card, #ffffff);
 }
 #nm-preview-root {
   min-height: 100%;
@@ -276,42 +276,51 @@ export function SitePreviewFrame({
 
   const targetWidth = Number(device);
   const scale = stageWidth > 0 ? Math.min(1, stageWidth / targetWidth) : 1;
-  const visualWidth = Math.max(240, Math.floor(targetWidth * scale));
+  const visualWidth =
+    stageWidth > 0 ? Math.min(stageWidth, Math.max(200, Math.floor(targetWidth * scale))) : 360;
   const scaledIframeHeight = Math.ceil(viewportHeight / scale);
 
-  const frameRadiusClass =
+  const frameBorderClass =
     device === "390"
-      ? styles.deviceFrame390
+      ? "rounded-[14px] border-input"
       : device === "768"
-        ? styles.deviceFrame768
-        : styles.deviceFrame1440;
+        ? "rounded-[10px] border-input"
+        : "rounded-lg border-border";
 
   return (
-    <div ref={stageRef} className={styles.previewFrameStageInner}>
+    <div ref={stageRef} className="flex w-full min-w-0 justify-center">
       <div
-        className={`${styles.deviceFrame} ${frameRadiusClass}`}
+        className={cn(
+          "mx-auto max-w-full overflow-hidden border bg-card transition-[width,border-radius] duration-200 ease-out",
+          frameBorderClass
+        )}
         style={{ width: `${visualWidth}px` }}
         data-preview-device={device}
       >
         {showChromeBar && (
-          <div className={styles.deviceFrameHeader}>
-            <span className={styles.deviceDots} aria-hidden="true">
-              <span className={styles.deviceDot} />
-              <span className={styles.deviceDot} />
-              <span className={styles.deviceDot} />
+          <div className="flex h-8 items-center justify-between gap-2 border-b border-border bg-muted/60 px-3 text-xs text-muted-foreground">
+            <span className="inline-flex shrink-0 items-center gap-1.5" aria-hidden="true">
+              <span className="size-2 rounded-full bg-input/60" />
+              <span className="size-2 rounded-full bg-input/60" />
+              <span className="size-2 rounded-full bg-input/60" />
             </span>
-            <span className={styles.deviceHostLabel}>{hostLabel || ""}</span>
-            <span className={styles.deviceWidthTag}>{device}px</span>
+            <span className="min-w-0 truncate text-xs text-foreground/80">{hostLabel || ""}</span>
+            <span className="shrink-0 text-xs whitespace-nowrap tabular-nums text-muted-foreground">
+              {device}px
+            </span>
           </div>
         )}
 
-        <div className={styles.previewIframeViewport} style={{ height: `${viewportHeight}px` }}>
+        <div
+          className="relative w-full overflow-hidden bg-card"
+          style={{ height: `${viewportHeight}px` }}
+        >
           <iframe
             ref={iframeRef}
             title={title}
             srcDoc={IFRAME_SRC_DOC}
             onLoad={syncIframeDocument}
-            className={styles.previewIframe}
+            className="block origin-top-left border-0 bg-card"
             style={{
               width: `${targetWidth}px`,
               height: `${scaledIframeHeight}px`,

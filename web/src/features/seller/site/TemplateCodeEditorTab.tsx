@@ -1,9 +1,21 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Button } from "@/components";
+import { AlertCircle, CheckCircle2, RefreshCw, RotateCcw, Wand2 } from "lucide-react";
+import { StatusBadge } from "@/components/app";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { cloneTemplateConfigForShop, findPlatformTemplate } from "@/features/site/templateCatalog";
-import common from "@/features/seller/SellerCommon.module.css";
+import { cn } from "@/lib/utils";
 import type {
   PlatformTemplateDTO,
   SiteTemplateConfig,
@@ -12,16 +24,15 @@ import type {
 } from "./siteEditorTypes";
 import {
   MAX_CONFIG_BYTES,
-  TEMPLATE_PAGE_TABS,
   buildCleanTemplateConfigPayload,
   countAllSections,
   formatBytesVi,
   validateSiteTemplateJson,
 } from "./siteEditorUtils";
 import type { PreviewStorefrontDataset } from "./previewData";
+import { PreviewToolbar } from "./PreviewToolbar";
 import { SitePreviewContent } from "./SitePreviewContent";
 import { SitePreviewFrame, type DevicePreviewWidth } from "./SitePreviewFrame";
-import styles from "./SellerSiteEditor.module.css";
 
 export interface TemplateCodeEditorTabProps {
   config: SiteTemplateConfig;
@@ -187,156 +198,177 @@ export function TemplateCodeEditorTab({
   const overByteLimit = byteCount > MAX_CONFIG_BYTES;
 
   return (
-    <div className={styles.codeWorkspace}>
-      {/* Left pane: Line-aware JSON editor + strict schema diagnostics */}
-      <section className={common.card} aria-label="Trình sửa mã template JSON v2">
-        <div className={styles.codeHeaderRow}>
-          <h2 className={common.cardTitle}>Mã JSON v2</h2>
-          <span
-            className={`${common.pill} ${overByteLimit ? common.pillNeg : ""}`}
-            aria-label="Dung lượng cấu hình"
-          >
-            {formatBytesVi(byteCount)} / {formatBytesVi(MAX_CONFIG_BYTES)} B
-          </span>
-        </div>
+    <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(380px,42%)_minmax(0,1fr)]">
+      {/* Left pane: Line-aware JSON editor + clickable schema diagnostics table */}
+      <Card aria-label="Trình sửa mã template JSON v2">
+        <CardHeader>
+          <CardTitle>Mã JSON v2</CardTitle>
+          <CardAction>
+            <Badge
+              variant={overByteLimit ? "critical" : "neutral"}
+              aria-label="Dung lượng cấu hình"
+              className="tabular-nums"
+            >
+              {formatBytesVi(byteCount)} / {formatBytesVi(MAX_CONFIG_BYTES)} B
+            </Badge>
+          </CardAction>
+        </CardHeader>
 
-        <div className={styles.codeToolbar}>
-          <div className={styles.codeToolbarActions}>
-            <Button variant="outline" size="sm" shape="app" onClick={handleBeautify}>
-              Định dạng
-            </Button>
-            <Button variant="outline" size="sm" shape="app" onClick={handleSyncFromVisual}>
-              Đồng bộ
-            </Button>
-            <Button variant="outline" size="sm" shape="app" onClick={handleResetToBaseTemplate}>
-              Đặt lại mẫu gốc
-            </Button>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Button type="button" variant="outline" size="sm" onClick={handleBeautify}>
+                <Wand2 className="size-3.5" aria-hidden="true" />
+                <span>Định dạng</span>
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={handleSyncFromVisual}>
+                <RefreshCw className="size-3.5" aria-hidden="true" />
+                <span>Đồng bộ</span>
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={handleResetToBaseTemplate}>
+                <RotateCcw className="size-3.5" aria-hidden="true" />
+                <span>Đặt lại mẫu gốc</span>
+              </Button>
+            </div>
+            <div aria-live="polite">
+              {validation.ok ? (
+                <StatusBadge tone="success" icon={CheckCircle2}>
+                  Hợp lệ, WCAG đạt
+                </StatusBadge>
+              ) : (
+                <StatusBadge tone="critical" icon={AlertCircle}>
+                  {validation.issues.length} lỗi cần sửa
+                </StatusBadge>
+              )}
+            </div>
           </div>
-          <div className={styles.codeStatusWrap} aria-live="polite">
-            {validation.ok ? (
-              <span className={`${common.pill} ${common.pillPos}`}>Hợp lệ, WCAG đạt</span>
-            ) : (
-              <span className={`${common.pill} ${common.pillNeg}`}>
-                {validation.issues.length} lỗi cần sửa
+
+          <div className="flex h-[500px] overflow-hidden rounded-lg border border-input bg-card">
+            <div
+              ref={gutterRef}
+              aria-hidden="true"
+              className="w-12 shrink-0 overflow-hidden border-r border-border bg-muted/60 py-3 text-right font-mono text-[13px] leading-[20px] text-muted-foreground tabular-nums select-none"
+            >
+              {Array.from({ length: lineCount }, (_, i) => {
+                const ln = i + 1;
+                const isErr = errorLines.has(ln);
+                const isFocused = highlightedLine === ln;
+                return (
+                  <div
+                    key={ln}
+                    className={cn(
+                      "h-[20px] pr-2 pl-1",
+                      isFocused
+                        ? "bg-brand font-semibold text-brand-foreground"
+                        : isErr
+                          ? "bg-badge-critical-bg font-semibold text-badge-critical-ink"
+                          : ""
+                    )}
+                  >
+                    {ln}
+                  </div>
+                );
+              })}
+            </div>
+            <textarea
+              ref={textareaRef}
+              value={codeText}
+              onChange={(e) => handleCodeChange(e.target.value)}
+              onScroll={handleScrollSync}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              wrap="off"
+              style={{ tabSize: 2 }}
+              aria-label="Nội dung mã JSON template v2"
+              className="h-full min-w-0 flex-1 resize-none overflow-auto border-0 bg-card px-3.5 py-3 font-mono text-[13px] leading-[20px] whitespace-pre text-foreground outline-none focus-visible:ring-0"
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[13px] text-muted-foreground tabular-nums">
+            <span>
+              {lineCount} dòng · {countAllSections(lastValidConfig)} khối ·{" "}
+              <code className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
+                {lastValidConfig.template_id}
+              </code>
+            </span>
+            {!validation.ok && (
+              <span className="font-medium text-badge-warning-ink">
+                Giữ bản xem trước hợp lệ gần nhất.
               </span>
             )}
           </div>
-        </div>
 
-        <div className={styles.codeEditorShell}>
-          <div ref={gutterRef} className={styles.codeGutter} aria-hidden="true">
-            {Array.from({ length: lineCount }, (_, i) => {
-              const ln = i + 1;
-              const isErr = errorLines.has(ln);
-              const isFocused = highlightedLine === ln;
-              return (
-                <div
-                  key={ln}
-                  className={`${styles.codeGutterLine} ${
-                    isFocused ? styles.codeGutterLineFocus : isErr ? styles.codeGutterLineErr : ""
-                  }`}
-                >
-                  {ln}
-                </div>
-              );
-            })}
-          </div>
-          <textarea
-            ref={textareaRef}
-            className={styles.codeTextarea}
-            value={codeText}
-            onChange={(e) => handleCodeChange(e.target.value)}
-            onScroll={handleScrollSync}
-            spellCheck={false}
-            autoCapitalize="off"
-            autoCorrect="off"
-            wrap="off"
-            aria-label="Nội dung mã JSON template v2"
-          />
-        </div>
-
-        <div className={styles.codeFooterMeta}>
-          <span>
-            {lineCount} dòng, {countAllSections(lastValidConfig)} khối,{" "}
-            <code>{lastValidConfig.template_id}</code>
-          </span>
-          {!validation.ok && (
-            <span className={styles.codeStaleNotice}>Giữ bản xem trước hợp lệ gần nhất.</span>
+          {!validation.ok && validation.issues.length > 0 && (
+            <div
+              className="overflow-hidden rounded-lg border border-destructive/30 bg-badge-critical-bg/40"
+              role="alert"
+              aria-label="Danh sách lỗi mã template"
+            >
+              <div className="border-b border-destructive/20 px-3 py-2 text-xs font-semibold text-badge-critical-ink">
+                Bảng lỗi — nhấn vào từng dòng để nhảy tới vị trí chính xác
+              </div>
+              <div className="max-h-56 overflow-y-auto bg-card/85">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="hover:bg-transparent">
+                      <TableHead className="h-8 px-2.5 text-xs">Vị trí</TableHead>
+                      <TableHead className="h-8 px-2.5 text-xs">Chi tiết lỗi</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {validation.issues.map((issue, idx) => (
+                      <TableRow
+                        key={`${issue.line}-${issue.column}-${issue.code}-${idx}`}
+                        className="cursor-pointer hover:bg-badge-critical-bg/45"
+                        onClick={() => handleJumpToIssue(issue)}
+                      >
+                        <TableCell className="h-auto px-2.5 py-2 align-top">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleJumpToIssue(issue);
+                            }}
+                            className="inline-flex min-h-7 items-center rounded-sm bg-badge-critical-bg px-2 py-0.5 font-mono text-xs font-semibold text-badge-critical-ink hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          >
+                            Dòng {issue.line}:{issue.column}
+                          </button>
+                        </TableCell>
+                        <TableCell className="h-auto px-2.5 py-2 align-top text-xs whitespace-normal text-foreground">
+                          <div className="flex flex-wrap items-baseline gap-1.5">
+                            <span className="font-mono text-[11px] font-medium text-badge-critical-ink">
+                              [{issue.code}]
+                            </span>
+                            <code className="font-mono text-[11px] text-muted-foreground">
+                              {issue.path}
+                            </code>
+                          </div>
+                          <p className="mt-0.5 leading-snug text-foreground">{issue.message}</p>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
           )}
-        </div>
+        </CardContent>
+      </Card>
 
-        {!validation.ok && validation.issues.length > 0 && (
-          <div
-            className={styles.diagnosticsBox}
-            role="alert"
-            aria-label="Danh sách lỗi mã template"
-          >
-            <div className={styles.diagnosticsHead}>Nhấn vào lỗi để nhảy tới vị trí chính xác</div>
-            <ul className={styles.diagnosticsList}>
-              {validation.issues.map((issue, idx) => (
-                <li key={`${issue.line}-${issue.column}-${issue.code}-${idx}`}>
-                  <button
-                    type="button"
-                    className={styles.diagnosticBtn}
-                    onClick={() => handleJumpToIssue(issue)}
-                  >
-                    <span className={styles.diagnosticLoc}>
-                      Dòng {issue.line}:{issue.column}
-                    </span>
-                    <span className={styles.diagnosticCode}>[{issue.code}]</span>
-                    <span className={styles.diagnosticMsg}>
-                      <code>{issue.path}</code>: {issue.message}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </section>
+      {/* Right pane: Live Preview with 5-page switcher & 390 / 768 / 1440 device frame */}
+      <Card
+        aria-label="Xem trước trực tiếp mã template"
+        className="gap-0 overflow-hidden py-0 xl:sticky xl:top-[72px]"
+      >
+        <PreviewToolbar
+          activePage={previewPage}
+          onPageChange={setPreviewPage}
+          device={previewDevice}
+          onDeviceChange={setPreviewDevice}
+        />
 
-      {/* Right pane (>= 60%): Live Preview with 5-page switcher & 390 / 768 / 1440 device frame */}
-      <section className={styles.previewPaneSticky} aria-label="Xem trước trực tiếp mã template">
-        <div className={styles.previewPaneBar}>
-          <div
-            className={styles.pageSwitcherGroup}
-            role="tablist"
-            aria-label="Chọn trang xem trước"
-          >
-            {TEMPLATE_PAGE_TABS.map((tab) => (
-              <button
-                key={tab.key}
-                type="button"
-                role="tab"
-                aria-selected={previewPage === tab.key}
-                className={`${styles.pageSwitchBtn} ${
-                  previewPage === tab.key ? styles.pageSwitchBtnActive : ""
-                }`}
-                onClick={() => setPreviewPage(tab.key)}
-              >
-                {tab.shortLabel}
-              </button>
-            ))}
-          </div>
-
-          <div className={styles.viewportGroup} role="group" aria-label="Khung xem trực tiếp">
-            {(["390", "768", "1440"] as const).map((w) => (
-              <button
-                key={w}
-                type="button"
-                aria-pressed={previewDevice === w}
-                className={`${styles.viewportBtn} ${
-                  previewDevice === w ? styles.viewportBtnActive : ""
-                }`}
-                onClick={() => setPreviewDevice(w)}
-              >
-                {w}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className={styles.previewStage}>
+        <div className="overflow-hidden bg-muted/60 p-3 sm:p-4">
           <SitePreviewFrame
             device={previewDevice}
             title={`Xem trước mã template (${previewDevice}px)`}
@@ -354,7 +386,7 @@ export function TemplateCodeEditorTab({
             />
           </SitePreviewFrame>
         </div>
-      </section>
+      </Card>
     </div>
   );
 }
