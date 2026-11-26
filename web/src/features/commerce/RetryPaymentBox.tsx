@@ -1,7 +1,9 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { AlertCircle, CheckCircle2, Clock, ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import type { Order } from "@/data/orders";
 import type {
   GatewayOrder,
@@ -15,9 +17,25 @@ import type {
 import { ApiError, api, getErrorMessage, refreshSessionOnce } from "@/lib/api";
 import { GATEWAY_PAYMENT_METHOD_LABELS, formatVnd } from "@/lib/format";
 import { validateSafePayUrl } from "@/lib/payment-url";
-import { Button } from "@/components/Button";
-import { StateView } from "@/components/StateView";
+import { ErrorState } from "@/components/app/ErrorState";
+import { StatusBadge } from "@/components/app/StatusBadge";
+import type { StatusTone } from "@/components/app/statusTone";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
 import { VietQrPreview } from "./VietQrPreview";
+import { SiteLoadingSkeleton } from "./ui/SiteLoadingSkeleton";
 import { formatCountdown, getPaymentStatusView } from "@/features/checkout/messages";
 import {
   type StableReferenceCache,
@@ -29,7 +47,6 @@ import {
   shouldApplyPaymentFetchResult,
 } from "@/features/checkout/helpers";
 import type { GwPayment } from "./types";
-import styles from "./commerce.module.css";
 
 export interface RetryPaymentBoxProps {
   paymentId?: string;
@@ -53,11 +70,11 @@ const POLL_INTERVAL_MS = 3500;
 const SSE_FALLBACK_POLL_MS = 2500;
 const METHOD_ORDER: readonly GatewayPaymentMethod[] = ["VIETQR", "ZALOPAY", "COD"];
 
-function statusToneClass(tone: "pos" | "warn" | "neg" | "neutral"): string {
-  if (tone === "pos") return styles.tonePos;
-  if (tone === "warn") return styles.toneWarn;
-  if (tone === "neg") return styles.toneNeg;
-  return styles.toneNeutral;
+function mapPaymentTone(tone: "pos" | "warn" | "neg" | "neutral"): StatusTone {
+  if (tone === "pos") return "success";
+  if (tone === "warn") return "warning";
+  if (tone === "neg") return "critical";
+  return "neutral";
 }
 
 function getMethodHeading(method: string): string {
@@ -416,17 +433,6 @@ export function RetryPaymentBox({
     void fetchPayment(activePaymentId, true);
   }, [countdownExpired, activePaymentId, fetchPayment]);
 
-  useEffect(() => {
-    if (!codConfirmOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !retryingRef.current) {
-        setCodConfirmOpen(false);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [codConfirmOpen]);
-
   const handleManualCheck = async () => {
     setCheckingStatus(true);
     setRetryFeedback(null);
@@ -551,23 +557,23 @@ export function RetryPaymentBox({
   };
 
   if (loading) {
-    return <StateView kind="loading" title="Đang tải thông tin giao dịch thanh toán..." rows={3} />;
+    return <SiteLoadingSkeleton title="Đang tải thông tin giao dịch thanh toán..." rows={3} />;
   }
 
   if (!activePaymentId || loadError || !payment) {
     return (
-      <StateView
-        kind="error"
+      <ErrorState
         title="Không thể tải thông tin thanh toán"
-        message={loadError ?? "Giao dịch không tồn tại hoặc không thuộc tài khoản của bạn."}
-        actionLabel={activePaymentId ? "Thử tải lại" : "Xem đơn hàng"}
-        onAction={activePaymentId ? () => void fetchPayment(activePaymentId, false) : undefined}
-        actionHref={activePaymentId ? undefined : "/don-hang"}
+        description={loadError ?? "Giao dịch không tồn tại hoặc không thuộc tài khoản của bạn."}
+        onRetry={activePaymentId ? () => void fetchPayment(activePaymentId, false) : undefined}
+        retryHref={activePaymentId ? undefined : "/don-hang"}
+        className="border border-border shadow-none"
       />
     );
   }
 
   const statusView = getPaymentStatusView(payment.status, payment.method);
+  const badgeTone = mapPaymentTone(statusView.tone);
   const transferRef = payment.provider_ref || payment.order_group_id || payment.payment_id;
   const allocatedOrderIds = Array.from(
     new Set(
@@ -613,70 +619,81 @@ export function RetryPaymentBox({
 
   return (
     <div
-      className={styles.retryBox}
+      className="space-y-4 rounded-xl border border-border bg-card p-4 sm:p-5"
       role="region"
       aria-label={`Thông tin thanh toán ${getMethodHeading(payment.method)} ${transferRef}`}
     >
-      <div className={styles.retryHead}>
-        <div className={styles.paymentTitleGroup}>
-          <p className={styles.retryTitle}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <p className="text-base font-semibold text-foreground">
             {getMethodHeading(payment.method)} ·{" "}
-            <span className="num">{formatVnd(payment.amount_vnd)}</span>
+            <span className="tabular-nums">{formatVnd(payment.amount_vnd)}</span>
           </p>
-          <span className={`${styles.statusTag} ${statusToneClass(statusView.tone)}`}>
+          <StatusBadge
+            tone={badgeTone}
+            icon={
+              badgeTone === "success"
+                ? CheckCircle2
+                : badgeTone === "critical"
+                  ? AlertCircle
+                  : Clock
+            }
+          >
             {statusView.label}
-          </span>
+          </StatusBadge>
         </div>
 
         {tracksExpiry && remainingSeconds !== null && (
-          <span
-            className={`${styles.countdownPill} ${
-              countdownExpired ? styles.toneNeg : styles.toneNeutral
-            } num`}
+          <Badge
+            variant={countdownExpired ? "critical" : "neutral"}
+            className="gap-1.5 px-2.5 py-1 text-xs font-semibold tabular-nums"
           >
-            {countdownExpired
-              ? "Đã quá hạn thanh toán"
-              : `Còn lại ${formatCountdown(remainingSeconds)}`}
-          </span>
+            <Clock className="size-3.5" aria-hidden="true" />
+            <span>
+              {countdownExpired
+                ? "Đã quá hạn thanh toán"
+                : `Còn lại ${formatCountdown(remainingSeconds)}`}
+            </span>
+          </Badge>
         )}
       </div>
 
-      <p className={styles.retryText}>{statusView.description}</p>
+      <p className="text-sm leading-relaxed text-muted-foreground">{statusView.description}</p>
 
       {isPending && isZaloPay && (
-        <div className={styles.surfacePanel}>
-          <p className={styles.fieldLabel}>Liên kết thanh toán Ví ZaloPay</p>
-          <p className={styles.fieldHint} style={{ marginTop: 6 }}>
-            Mã tham chiếu giao dịch: <strong className="num">{transferRef}</strong> · Số tiền:{" "}
-            <strong className="num">{formatVnd(payment.amount_vnd)}</strong>
+        <div className="space-y-3 rounded-lg border border-border bg-muted/40 p-4">
+          <p className="text-sm font-semibold text-foreground">Liên kết thanh toán Ví ZaloPay</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Mã tham chiếu giao dịch:{" "}
+            <strong className="font-semibold text-foreground tabular-nums">{transferRef}</strong> ·
+            Số tiền:{" "}
+            <strong className="font-semibold text-foreground tabular-nums">
+              {formatVnd(payment.amount_vnd)}
+            </strong>
           </p>
           {validatedPayUrl?.safe && validatedPayUrl.href ? (
-            <div className={styles.formActions} style={{ marginTop: 12 }}>
-              <a
-                href={validatedPayUrl.href}
-                target={validatedPayUrl.isExternal ? "_blank" : undefined}
-                rel={validatedPayUrl.isExternal ? "noopener noreferrer" : undefined}
-                className={`${styles.wrapBtn} ${styles.zaloPayLinkBtn}`}
-              >
-                Thanh toán qua ZaloPay
-              </a>
+            <div className="pt-1">
+              <Button asChild className="min-h-10 shadow-none">
+                <a
+                  href={validatedPayUrl.href}
+                  target={validatedPayUrl.isExternal ? "_blank" : undefined}
+                  rel={validatedPayUrl.isExternal ? "noopener noreferrer" : undefined}
+                >
+                  <span>Thanh toán qua ZaloPay</span>
+                  <ExternalLink className="size-4" aria-hidden="true" />
+                </a>
+              </Button>
             </div>
           ) : (
-            <p
-              className={`${styles.feedbackBox} ${styles.feedbackError}`}
-              role="alert"
-              style={{ marginTop: 10 }}
-            >
-              Liên kết thanh toán ZaloPay chưa sẵn sàng hoặc không hợp lệ. Vui lòng tạo lại liên kết
-              hoặc chọn phương thức thanh toán khác bên dưới.
-            </p>
+            <Alert variant="destructive" className="shadow-none">
+              <AlertCircle className="size-4" aria-hidden="true" />
+              <AlertDescription>
+                Liên kết thanh toán ZaloPay chưa sẵn sàng hoặc không hợp lệ. Vui lòng tạo lại liên
+                kết hoặc chọn phương thức thanh toán khác bên dưới.
+              </AlertDescription>
+            </Alert>
           )}
-          <p
-            className={styles.paymentLiveStatus}
-            role="status"
-            aria-live="polite"
-            style={{ marginTop: 12 }}
-          >
+          <p className="text-xs text-muted-foreground" role="status" aria-live="polite">
             {countdownExpired
               ? "Hạn giữ đơn đã qua và đơn hàng sẽ tự động hủy. Vui lòng kiểm tra trạng thái đơn hoặc đặt lại đơn mới từ giỏ hàng."
               : "Đang tự động theo dõi trạng thái thanh toán từ Ví ZaloPay..."}
@@ -685,7 +702,7 @@ export function RetryPaymentBox({
       )}
 
       {isPending && !isZaloPay && (
-        <>
+        <div className="space-y-3">
           <VietQrPreview
             amount={payment.amount_vnd}
             reference={transferRef}
@@ -693,76 +710,108 @@ export function RetryPaymentBox({
             qrCode={payment.qr_code}
             expiresAt={payment.expires_at}
           />
-          <p className={styles.paymentLiveStatus} role="status" aria-live="polite">
-            {countdownExpired
-              ? "Hạn giữ đơn đã qua và đơn hàng sẽ tự động hủy. Vui lòng kiểm tra trạng thái đơn hoặc đặt lại đơn mới từ giỏ hàng."
-              : "Đang tự động theo dõi trạng thái chuyển khoản từ ngân hàng..."}
+          <p
+            className="flex items-center gap-2 text-xs text-muted-foreground"
+            role="status"
+            aria-live="polite"
+          >
+            {!countdownExpired && (
+              <span
+                className="inline-block size-2 shrink-0 rounded-full bg-brand"
+                aria-hidden="true"
+              />
+            )}
+            <span>
+              {countdownExpired
+                ? "Hạn giữ đơn đã qua và đơn hàng sẽ tự động hủy. Vui lòng kiểm tra trạng thái đơn hoặc đặt lại đơn mới từ giỏ hàng."
+                : "Đang tự động theo dõi trạng thái chuyển khoản từ ngân hàng..."}
+            </span>
           </p>
-        </>
-      )}
-
-      {retryFeedback && (
-        <div
-          className={`${styles.feedbackBox} ${
-            retryFeedback.tone === "error"
-              ? styles.feedbackError
-              : retryFeedback.tone === "success"
-                ? styles.feedbackSuccess
-                : styles.feedbackInfo
-          }`}
-          role={retryFeedback.tone === "error" ? "alert" : "status"}
-        >
-          <p>{retryFeedback.message}</p>
-          {retryFeedback.code === "COD_PHONE_NOT_VERIFIED" && (
-            <div className={styles.formActions}>
-              <Button variant="secondary" size="sm" href="/tai-khoan#xac-minh-sdt">
-                Xác minh SĐT ngay
-              </Button>
-            </div>
-          )}
         </div>
       )}
 
-      <div className={styles.formActions}>
+      {retryFeedback && (
+        <Alert
+          variant={retryFeedback.tone === "error" ? "destructive" : "default"}
+          className={
+            retryFeedback.tone === "success"
+              ? "border-badge-success-ink/25 bg-badge-success-bg text-badge-success-ink shadow-none"
+              : retryFeedback.tone === "info"
+                ? "border-badge-info-ink/25 bg-badge-info-bg text-badge-info-ink shadow-none"
+                : "shadow-none"
+          }
+          role={retryFeedback.tone === "error" ? "alert" : "status"}
+        >
+          <AlertDescription
+            className={
+              retryFeedback.tone === "success"
+                ? "text-badge-success-ink"
+                : retryFeedback.tone === "info"
+                  ? "text-badge-info-ink"
+                  : undefined
+            }
+          >
+            <p>{retryFeedback.message}</p>
+            {retryFeedback.code === "COD_PHONE_NOT_VERIFIED" && (
+              <div className="pt-2">
+                <Button asChild variant="outline" size="sm" className="min-h-9 shadow-none">
+                  <Link href="/tai-khoan#xac-minh-sdt">Xác minh SĐT ngay</Link>
+                </Button>
+              </div>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+
+      <Separator />
+
+      <div className="flex flex-wrap items-center gap-2.5">
         {normalizedStatus === "SUCCEEDED" ? (
           <>
-            <Button variant="primary" size="md" href={primaryOrderHref}>
-              {orderIds.length > 1 ? "Xem các đơn hàng của bạn" : "Xem chi tiết đơn hàng"}
+            <Button asChild className="min-h-10 shadow-none">
+              <Link href={primaryOrderHref}>
+                {orderIds.length > 1 ? "Xem các đơn hàng của bạn" : "Xem chi tiết đơn hàng"}
+              </Link>
             </Button>
-            <Button variant="secondary" size="md" href="/san-pham">
-              Tiếp tục mua sắm
+            <Button asChild variant="outline" className="min-h-10 shadow-none">
+              <Link href="/san-pham">Tiếp tục mua sắm</Link>
             </Button>
           </>
         ) : (
           <>
             {canRetry && canRetryCurrentMethod && (
               <Button
-                variant={isPending ? "secondary" : "primary"}
-                size="md"
-                className={styles.wrapBtn}
+                type="button"
+                variant={isPending ? "outline" : "default"}
+                className="min-h-10 whitespace-normal shadow-none"
                 disabled={retryingMethod !== null}
                 onClick={() => void handleRetryOrSwitch(currentRetryMethod)}
               >
-                {retryingMethod === currentRetryMethod
-                  ? isZaloPay
-                    ? "Đang tạo liên kết ZaloPay..."
-                    : "Đang tạo mã VietQR mới..."
-                  : isPending
+                {retryingMethod === currentRetryMethod && (
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                )}
+                <span>
+                  {retryingMethod === currentRetryMethod
                     ? isZaloPay
-                      ? "Tạo liên kết ZaloPay mới"
-                      : "Tạo mã VietQR mới"
-                    : isZaloPay
-                      ? "Thanh toán lại qua ZaloPay"
-                      : "Thanh toán lại qua VietQR"}
+                      ? "Đang tạo liên kết ZaloPay..."
+                      : "Đang tạo mã VietQR mới..."
+                    : isPending
+                      ? isZaloPay
+                        ? "Tạo liên kết ZaloPay mới"
+                        : "Tạo mã VietQR mới"
+                      : isZaloPay
+                        ? "Thanh toán lại qua ZaloPay"
+                        : "Thanh toán lại qua VietQR"}
+                </span>
               </Button>
             )}
             {canRetry &&
               switchableMethods.map((methodOption) => (
                 <Button
                   key={methodOption}
-                  variant="secondary"
-                  size="md"
-                  className={styles.wrapBtn}
+                  type="button"
+                  variant="outline"
+                  className="min-h-10 whitespace-normal shadow-none"
                   disabled={retryingMethod !== null}
                   onClick={() => {
                     if (methodOption === "COD") {
@@ -774,42 +823,57 @@ export function RetryPaymentBox({
                     void handleRetryOrSwitch(methodOption);
                   }}
                 >
-                  {retryingMethod === methodOption
-                    ? "Đang chuyển phương thức..."
-                    : methodOption === "COD"
-                      ? "Đổi sang COD"
-                      : methodOption === "ZALOPAY"
-                        ? "Đổi sang Ví ZaloPay"
-                        : "Đổi sang VietQR"}
+                  {retryingMethod === methodOption && (
+                    <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                  )}
+                  <span>
+                    {retryingMethod === methodOption
+                      ? "Đang chuyển phương thức..."
+                      : methodOption === "COD"
+                        ? "Đổi sang COD"
+                        : methodOption === "ZALOPAY"
+                          ? "Đổi sang Ví ZaloPay"
+                          : "Đổi sang VietQR"}
+                  </span>
                 </Button>
               ))}
             {isPending && (
               <Button
+                type="button"
                 variant="secondary"
-                size="md"
+                className="min-h-10 shadow-none"
                 disabled={checkingStatus}
                 onClick={() => void handleManualCheck()}
               >
-                {checkingStatus ? "Đang kiểm tra..." : "Kiểm tra trạng thái"}
+                <RefreshCw
+                  className={`size-4 ${checkingStatus ? "animate-spin" : ""}`}
+                  aria-hidden="true"
+                />
+                <span>{checkingStatus ? "Đang kiểm tra..." : "Kiểm tra trạng thái"}</span>
               </Button>
             )}
             {!hideWaitingPageLink && isPending && (
-              <Button variant="ink" size="md" href={waitingHref}>
-                Mở trang chờ thanh toán
+              <Button asChild className="min-h-10 shadow-none">
+                <Link href={waitingHref}>Mở trang chờ thanh toán</Link>
               </Button>
             )}
             {isExpiredState && (
-              <Button variant="primary" size="md" href="/gio-hang">
-                Đặt lại từ giỏ hàng
+              <Button asChild className="min-h-10 shadow-none">
+                <Link href="/gio-hang">Đặt lại từ giỏ hàng</Link>
               </Button>
             )}
             {(isExpiredState || normalizedStatus === "CANCELLED") && (
-              <Button variant="secondary" size="md" href="/don-hang">
-                Xem danh sách đơn hàng
+              <Button asChild variant="outline" className="min-h-10 shadow-none">
+                <Link href="/don-hang">Xem danh sách đơn hàng</Link>
               </Button>
             )}
             {onCancel && (
-              <Button variant="ghost" size="md" onClick={onCancel}>
+              <Button
+                type="button"
+                variant="ghost"
+                className="min-h-10 shadow-none"
+                onClick={onCancel}
+              >
                 Đóng
               </Button>
             )}
@@ -817,58 +881,55 @@ export function RetryPaymentBox({
         )}
       </div>
 
-      {codConfirmOpen && (
-        <div
-          className={styles.confirmBackdrop}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="cod-switch-dialog-title"
-          onClick={(e) => {
-            if (e.target === e.currentTarget && !retryingRef.current) {
-              setCodConfirmOpen(false);
-            }
-          }}
-        >
-          <div className={styles.confirmDialog}>
-            <h3 id="cod-switch-dialog-title" className={styles.confirmTitle}>
-              Xác nhận đổi sang thanh toán khi nhận hàng (COD)
-            </h3>
-            <p className={styles.confirmBody}>
+      <AlertDialog
+        open={codConfirmOpen}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen && retryingRef.current) return;
+          setCodConfirmOpen(nextOpen);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Xác nhận đổi sang thanh toán khi nhận hàng (COD)</AlertDialogTitle>
+            <AlertDialogDescription>
               Sau khi xác nhận, đơn hàng sẽ được chuyển ngay sang trạng thái{" "}
-              <strong>Đã xác nhận</strong> với hình thức thanh toán khi nhận hàng và không thể quay
-              lại thanh toán trực tuyến.
-            </p>
-            <ul className={styles.confirmList}>
-              <li className={styles.confirmListItem}>
-                <span>Số tiền thanh toán khi nhận hàng</span>
-                <strong className="num">{formatVnd(payment.amount_vnd)}</strong>
-              </li>
-              <li className={styles.confirmListItem}>
-                <span>Hình thức mới</span>
-                <strong>Thanh toán khi nhận hàng (COD)</strong>
-              </li>
-            </ul>
-            <div className={styles.formActions}>
-              <Button
-                variant="secondary"
-                size="md"
-                disabled={retryingMethod !== null}
-                onClick={() => setCodConfirmOpen(false)}
-              >
-                Quay lại
-              </Button>
-              <Button
-                variant="primary"
-                size="md"
-                disabled={retryingMethod !== null}
-                onClick={() => void handleRetryOrSwitch("COD")}
-              >
-                {retryingMethod === "COD" ? "Đang xác nhận COD..." : "Xác nhận đổi sang COD"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+              <strong className="font-semibold text-foreground">Đã xác nhận</strong> với hình thức
+              thanh toán khi nhận hàng và không thể quay lại thanh toán trực tuyến.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <ul className="space-y-2 rounded-lg border border-border bg-muted/40 p-3.5 text-sm">
+            <li className="flex items-center justify-between gap-3">
+              <span className="text-muted-foreground">Số tiền thanh toán khi nhận hàng</span>
+              <strong className="font-semibold text-foreground tabular-nums">
+                {formatVnd(payment.amount_vnd)}
+              </strong>
+            </li>
+            <li className="flex items-center justify-between gap-3">
+              <span className="text-muted-foreground">Hình thức mới</span>
+              <strong className="font-semibold text-foreground">
+                Thanh toán khi nhận hàng (COD)
+              </strong>
+            </li>
+          </ul>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={retryingMethod !== null} className="min-h-10 shadow-none">
+              Quay lại
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={retryingMethod !== null}
+              className="min-h-10 shadow-none"
+              onClick={(e) => {
+                e.preventDefault();
+                void handleRetryOrSwitch("COD");
+              }}
+            >
+              {retryingMethod === "COD" ? "Đang xác nhận COD..." : "Xác nhận đổi sang COD"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

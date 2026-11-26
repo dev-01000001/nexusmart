@@ -1,7 +1,8 @@
 import React, { Suspense } from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { StateView } from "@/components";
+import { SiteLoadingSkeleton } from "@/features/commerce/ui/SiteLoadingSkeleton";
+import { SitePageFrame } from "@/features/commerce/ui/SitePageFrame";
 import { buildSiteMetadata } from "@/lib/site/seo";
 import { loadSiteContext, loadSiteVouchers } from "@/features/site/siteContext.server";
 import { VoucherClient } from "./VoucherClient";
@@ -38,9 +39,9 @@ export default async function SiteVoucherPage({ params }: PageProps) {
   return (
     <Suspense
       fallback={
-        <div style={{ padding: "32px var(--margin)" }}>
-          <StateView kind="loading" title="Đang tải mã giảm giá của cửa hàng..." rows={5} />
-        </div>
+        <SitePageFrame>
+          <SiteLoadingSkeleton title="Đang tải mã giảm giá của cửa hàng..." rows={4} />
+        </SitePageFrame>
       }
     >
       <VoucherClient brandName={data.brandName} vouchers={data.vouchers} loadError={data.error} />

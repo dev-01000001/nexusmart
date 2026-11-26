@@ -1,10 +1,11 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Check, Copy, QrCode, RefreshCw } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { formatDateTimeVi, formatVnd } from "@/lib/format";
-import { Button } from "@/components/Button";
-import { IconCheck, IconCopy } from "@/components/Icons";
-import styles from "./commerce.module.css";
+import { cn } from "@/lib/utils";
 
 export interface VietQrPreviewProps {
   amount: number;
@@ -144,9 +145,20 @@ export function VietQrPreview({ amount, reference, qrUrl, qrCode, expiresAt }: V
 
   const showRemoteQr = Boolean(effectiveQrUrl) && !imgFailed;
 
+  const copyBtnClass = (done: boolean) =>
+    cn(
+      "min-h-10 shrink-0 shadow-none sm:min-h-8",
+      done && "border-badge-success-ink/30 bg-badge-success-bg text-badge-success-ink"
+    );
+
   return (
-    <div className={styles.qrStage}>
-      <div className={styles.qrFrame} data-reveal="scale">
+    <div className="grid grid-cols-1 gap-5 md:grid-cols-[248px_minmax(0,1fr)] md:items-start">
+      <div
+        className={cn(
+          "mx-auto flex w-full max-w-[248px] items-center justify-center rounded-xl border border-border p-3",
+          showRemoteQr ? "bg-white" : "bg-card"
+        )}
+      >
         {showRemoteQr ? (
           <img
             src={effectiveQrUrl}
@@ -154,12 +166,16 @@ export function VietQrPreview({ amount, reference, qrUrl, qrCode, expiresAt }: V
             width={232}
             height={232}
             referrerPolicy="no-referrer"
-            className={styles.qrImage}
+            className="aspect-square w-full max-w-[224px] rounded-md object-contain"
             onError={() => setImgFailed(true)}
           />
         ) : (
-          <div role="status" className={styles.qrFallbackBox}>
-            <span className={styles.qrFallbackText}>
+          <div
+            role="status"
+            className="flex aspect-square w-full flex-col items-center justify-center gap-3 rounded-lg bg-muted p-4 text-center"
+          >
+            <QrCode className="size-8 text-muted-foreground" aria-hidden="true" />
+            <span className="text-xs leading-relaxed text-muted-foreground">
               {safeQrUrl
                 ? "Không tải được ảnh mã VietQR."
                 : "Chưa có ảnh mã VietQR từ cổng thanh toán."}
@@ -167,107 +183,145 @@ export function VietQrPreview({ amount, reference, qrUrl, qrCode, expiresAt }: V
             {safeQrUrl && (
               <Button
                 type="button"
-                variant="secondary"
+                variant="outline"
                 size="sm"
+                className="min-h-9 shadow-none"
                 onClick={() => {
                   setImgFailed(false);
                   setReloadNonce((n) => n + 1);
                 }}
               >
-                Tải lại ảnh QR
+                <RefreshCw className="size-3.5" aria-hidden="true" />
+                <span>Tải lại ảnh QR</span>
               </Button>
             )}
           </div>
         )}
       </div>
 
-      <div className={styles.qrDetails}>
-        <div className={styles.qrRow}>
-          <div className={styles.qrRowMain}>
-            <span className={styles.qrLabel}>Số tiền chuyển khoản</span>
-            <span className={`${styles.qrAmount} num`}>{formatVnd(amount)}</span>
+      <div className="min-w-0 space-y-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3.5 py-2.5">
+          <div className="min-w-0 space-y-0.5">
+            <span className="block text-xs text-muted-foreground">Số tiền chuyển khoản</span>
+            <span className="block text-lg font-semibold text-foreground tabular-nums">
+              {formatVnd(amount)}
+            </span>
           </div>
-          <button
+          <Button
             type="button"
-            className={`${styles.copyBtn} ${copiedKey === "amount" ? styles.copyBtnDone : ""}`}
+            variant="outline"
+            size="sm"
+            className={copyBtnClass(copiedKey === "amount")}
             onClick={() => void handleCopy("amount", String(amount))}
           >
-            {copiedKey === "amount" ? <IconCheck size={14} /> : <IconCopy size={14} />}
+            {copiedKey === "amount" ? (
+              <Check className="size-3.5" aria-hidden="true" />
+            ) : (
+              <Copy className="size-3.5" aria-hidden="true" />
+            )}
             <span>{copiedKey === "amount" ? "Đã chép" : "Chép số tiền"}</span>
-          </button>
+          </Button>
         </div>
 
-        <div className={styles.qrRow}>
-          <div className={styles.qrRowMain}>
-            <span className={styles.qrLabel}>Nội dung bắt buộc</span>
-            <span className={`${styles.qrVal} num`}>{bankMeta.transferNote}</span>
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3.5 py-2.5">
+          <div className="min-w-0 space-y-0.5">
+            <span className="block text-xs text-muted-foreground">Nội dung bắt buộc</span>
+            <span className="block break-all text-sm font-semibold text-foreground tabular-nums">
+              {bankMeta.transferNote}
+            </span>
           </div>
-          <button
+          <Button
             type="button"
-            className={`${styles.copyBtn} ${copiedKey === "reference" ? styles.copyBtnDone : ""}`}
+            variant="outline"
+            size="sm"
+            className={copyBtnClass(copiedKey === "reference")}
             onClick={() => void handleCopy("reference", bankMeta.transferNote)}
           >
-            {copiedKey === "reference" ? <IconCheck size={14} /> : <IconCopy size={14} />}
+            {copiedKey === "reference" ? (
+              <Check className="size-3.5" aria-hidden="true" />
+            ) : (
+              <Copy className="size-3.5" aria-hidden="true" />
+            )}
             <span>{copiedKey === "reference" ? "Đã chép" : "Chép nội dung"}</span>
-          </button>
+          </Button>
         </div>
 
         {(bankMeta.bankName || bankMeta.accountNo || bankMeta.accountName) && (
-          <div className={styles.qrRow}>
-            <div className={styles.qrRowMain}>
-              {bankMeta.bankName && <span className={styles.qrLabel}>{bankMeta.bankName}</span>}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3.5 py-2.5">
+            <div className="min-w-0 space-y-0.5">
+              {bankMeta.bankName && (
+                <span className="block text-xs text-muted-foreground">{bankMeta.bankName}</span>
+              )}
               {bankMeta.accountNo && (
-                <span className={`${styles.qrVal} num`}>{bankMeta.accountNo}</span>
+                <span className="block text-sm font-semibold text-foreground tabular-nums">
+                  {bankMeta.accountNo}
+                </span>
               )}
               {bankMeta.accountName && (
-                <span className={styles.qrLabel}>{bankMeta.accountName}</span>
+                <span className="block text-xs text-muted-foreground">{bankMeta.accountName}</span>
               )}
             </div>
             {bankMeta.accountNo && (
-              <button
+              <Button
                 type="button"
-                className={`${styles.copyBtn} ${copiedKey === "account" ? styles.copyBtnDone : ""}`}
+                variant="outline"
+                size="sm"
+                className={copyBtnClass(copiedKey === "account")}
                 onClick={() => void handleCopy("account", bankMeta.accountNo!.replace(/\s+/g, ""))}
               >
-                {copiedKey === "account" ? <IconCheck size={14} /> : <IconCopy size={14} />}
+                {copiedKey === "account" ? (
+                  <Check className="size-3.5" aria-hidden="true" />
+                ) : (
+                  <Copy className="size-3.5" aria-hidden="true" />
+                )}
                 <span>{copiedKey === "account" ? "Đã chép" : "Chép STK"}</span>
-              </button>
+              </Button>
             )}
           </div>
         )}
 
         {qrCode && (
-          <div className={styles.qrRow}>
-            <div className={styles.qrRowMain}>
-              <span className={styles.qrLabel}>Chuỗi dữ liệu VietQR</span>
-              <span className={`${styles.qrVal} num`}>
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3.5 py-2.5">
+            <div className="min-w-0 space-y-0.5">
+              <span className="block text-xs text-muted-foreground">Chuỗi dữ liệu VietQR</span>
+              <span className="block break-all text-xs font-medium text-foreground tabular-nums">
                 {qrCode.length > 36 ? `${qrCode.slice(0, 36)}…` : qrCode}
               </span>
             </div>
-            <button
+            <Button
               type="button"
-              className={`${styles.copyBtn} ${copiedKey === "qr" ? styles.copyBtnDone : ""}`}
+              variant="outline"
+              size="sm"
+              className={copyBtnClass(copiedKey === "qr")}
               onClick={() => void handleCopy("qr", qrCode)}
             >
-              {copiedKey === "qr" ? <IconCheck size={14} /> : <IconCopy size={14} />}
+              {copiedKey === "qr" ? (
+                <Check className="size-3.5" aria-hidden="true" />
+              ) : (
+                <Copy className="size-3.5" aria-hidden="true" />
+              )}
               <span>{copiedKey === "qr" ? "Đã chép" : "Chép chuỗi QR"}</span>
-            </button>
+            </Button>
           </div>
         )}
 
         {expiresAt && (
-          <div className={styles.qrRow}>
-            <div className={styles.qrRowMain}>
-              <span className={styles.qrLabel}>Hạn chuyển khoản</span>
-              <span className={`${styles.qrVal} num`}>{formatDateTimeVi(expiresAt)}</span>
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3.5 py-2.5">
+            <div className="min-w-0 space-y-0.5">
+              <span className="block text-xs text-muted-foreground">Hạn chuyển khoản</span>
+              <span className="block text-sm font-medium text-foreground tabular-nums">
+                {formatDateTimeVi(expiresAt)}
+              </span>
             </div>
           </div>
         )}
 
-        <p className={styles.qrNote}>
-          Mở ứng dụng ngân hàng để quét mã và chuyển đúng số tiền cùng nội dung chuyển khoản. Đơn
-          hàng sẽ được xác nhận tự động, không cần nhập số thẻ.
-        </p>
+        <Alert className="border-border bg-muted/30 shadow-none">
+          <AlertDescription className="text-xs leading-relaxed">
+            Mở ứng dụng ngân hàng để quét mã và chuyển đúng số tiền cùng nội dung chuyển khoản. Đơn
+            hàng sẽ được xác nhận tự động, không cần nhập số thẻ.
+          </AlertDescription>
+        </Alert>
       </div>
     </div>
   );

@@ -1,14 +1,30 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Button } from "@/components/Button";
-import {
-  filterPreparedWards,
-  prepareSearchableWards,
-  reconcileWardAfterFilter,
-} from "./addressHelpers";
+import dynamic from "next/dynamic";
+import { AlertTriangle, ChevronsUpDown, Loader2 } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
+import { filterPreparedWards, prepareSearchableWards } from "./addressHelpers";
 import { focusAndShakeInvalid } from "./formFeedback";
-import styles from "./commerce.module.css";
+import type { LocationComboboxProps } from "./ui/LocationCombobox";
+
+const LocationCombobox = dynamic<LocationComboboxProps>(
+  () => import("./ui/LocationCombobox").then((m) => m.LocationCombobox),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex min-h-10 w-full items-center justify-between rounded-md border border-input bg-card px-3 text-sm text-muted-foreground">
+        <span>Đang tải danh sách...</span>
+        <ChevronsUpDown className="size-4 shrink-0 opacity-50" aria-hidden="true" />
+      </div>
+    ),
+  }
+);
 
 export interface LocationOption {
   code: string;
@@ -61,9 +77,9 @@ export interface AddressFieldsFormProps {
 type FieldKey = "recipient" | "phone" | "location" | "street";
 
 /**
- * Shared address fields, client validation, unified province/ward selects (3,321-ward safe:
- * never auto-selects wards[0], clears ward when excluded by search query, warns when ward
- * has cod_supported === false), and focus/shake feedback used by checkout & account forms.
+ * Shared address fields, client validation, searchable 2-level province/ward pickers
+ * (3,321-ward safe: never auto-selects wards[0], diacritic-insensitive search via Popover + Command,
+ * warns when ward has cod_supported === false), and focus/shake feedback used by checkout & account forms.
  */
 export function AddressFieldsForm({
   idPrefix,
@@ -77,7 +93,7 @@ export function AddressFieldsForm({
   loadingWards,
   onProvinceChange,
   onWardChange,
-  onWardFilterCleared,
+  onWardFilterCleared: _onWardFilterCleared,
   legacyWardInactiveNotice = null,
   minStreetLength = 4,
   formClassName,
@@ -93,13 +109,13 @@ export function AddressFieldsForm({
   onCancel,
   onValidSubmit,
 }: AddressFieldsFormProps) {
+  void _onWardFilterCleared;
   const formRef = useRef<HTMLFormElement | null>(null);
   const [recipientName, setRecipientName] = useState(initialValues.recipientName);
   const [phone, setPhone] = useState(initialValues.phone);
   const [streetAddress, setStreetAddress] = useState(initialValues.streetAddress);
   const [isDefault, setIsDefault] = useState(initialValues.isDefault);
   const [wardQuery, setWardQuery] = useState("");
-  const [wardFilterClearedNotice, setWardFilterClearedNotice] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<FieldKey, string>>>({});
   const [errorPulse, setErrorPulse] = useState(0);
 
@@ -112,7 +128,6 @@ export function AddressFieldsForm({
   // Reset ward search query when province changes
   useEffect(() => {
     setWardQuery("");
-    setWardFilterClearedNotice(null);
   }, [provinceCode]);
 
   const selectedProvince = useMemo(
@@ -128,8 +143,6 @@ export function AddressFieldsForm({
     [preparedWards, wardQuery]
   );
 
-  const hasWardFilterMiss = Boolean(wardQuery.trim()) && filteredWards.length === 0;
-
   const clearFieldError = (key: FieldKey) => {
     setFieldErrors((prev) => {
       if (!prev[key]) return prev;
@@ -141,24 +154,14 @@ export function AddressFieldsForm({
 
   const handleProvinceSelect = (nextCode: string) => {
     setWardQuery("");
-    setWardFilterClearedNotice(null);
     clearFieldError("location");
     onProvinceChange(nextCode);
   };
 
-  const handleWardFilterChange = (nextQuery: string) => {
-    setWardQuery(nextQuery);
-    const nextFiltered = filterPreparedWards(preparedWards, nextQuery);
-    const reconciled = reconcileWardAfterFilter(nextFiltered, wardCode);
-    if (reconciled.clearedByFilter) {
-      onWardChange("");
-      onWardFilterCleared?.();
-      setWardFilterClearedNotice(
-        "Phường/xã đang chọn không nằm trong kết quả lọc mới — vui lòng chọn lại phường/xã bên dưới."
-      );
-    } else if (wardFilterClearedNotice && nextFiltered.length > 0 && !nextQuery.trim()) {
-      setWardFilterClearedNotice(null);
-    }
+  const handleWardSelect = (nextCode: string) => {
+    onWardChange(nextCode);
+    setWardQuery("");
+    clearFieldError("location");
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -175,7 +178,7 @@ export function AddressFieldsForm({
     if (!/^0\d{9,10}$/.test(cleanPhone)) {
       nextErrors.phone = "Số điện thoại cần 10 hoặc 11 chữ số, bắt đầu bằng 0.";
     }
-    if (!selectedProvince || !selectedWard || hasWardFilterMiss) {
+    if (!selectedProvince || !selectedWard) {
       nextErrors.location = "Chọn đầy đủ Tỉnh/Thành phố và Phường/Xã.";
     }
     if (cleanStreet.length < minStreetLength) {
@@ -202,21 +205,24 @@ export function AddressFieldsForm({
   const provId = `${idPrefix}-province`;
   const wardId = `${idPrefix}-ward`;
   const streetId = `${idPrefix}-street`;
+  const defaultId = `${idPrefix}-default`;
   const locErrId = `${idPrefix}-location-error`;
 
   return (
-    <form ref={formRef} className={formClassName} onSubmit={handleSubmit} noValidate>
-      <div className={styles.formGrid}>
-        <div className={styles.field} data-shake-target="">
-          <label htmlFor={recId} className={styles.fieldLabel}>
-            Họ và tên người nhận
-          </label>
-          <input
+    <form ref={formRef} className={cn("w-full", formClassName)} onSubmit={handleSubmit} noValidate>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Field
+          className="gap-1.5"
+          data-invalid={Boolean(fieldErrors.recipient) || undefined}
+          data-shake-target=""
+        >
+          <FieldLabel htmlFor={recId}>Họ và tên người nhận</FieldLabel>
+          <Input
             id={recId}
             name={fieldNames.recipient}
             type="text"
             autoComplete="name"
-            className={`${styles.input} ${fieldErrors.recipient ? styles.inputInvalid : ""}`}
+            className="min-h-10 bg-card"
             aria-invalid={Boolean(fieldErrors.recipient) || undefined}
             aria-describedby={fieldErrors.recipient ? `${recId}-error` : undefined}
             value={recipientName}
@@ -227,23 +233,23 @@ export function AddressFieldsForm({
             placeholder="Nguyễn Minh Quân"
             required
           />
-          {fieldErrors.recipient && (
-            <p id={`${recId}-error`} className={styles.fieldError} role="alert">
-              {fieldErrors.recipient}
-            </p>
-          )}
-        </div>
+          {fieldErrors.recipient ? (
+            <FieldError id={`${recId}-error`}>{fieldErrors.recipient}</FieldError>
+          ) : null}
+        </Field>
 
-        <div className={styles.field} data-shake-target="">
-          <label htmlFor={phoneId} className={styles.fieldLabel}>
-            Số điện thoại
-          </label>
-          <input
+        <Field
+          className="gap-1.5"
+          data-invalid={Boolean(fieldErrors.phone) || undefined}
+          data-shake-target=""
+        >
+          <FieldLabel htmlFor={phoneId}>Số điện thoại</FieldLabel>
+          <Input
             id={phoneId}
             name={fieldNames.phone}
             type="tel"
             autoComplete="tel"
-            className={`${styles.input} ${fieldErrors.phone ? styles.inputInvalid : ""}`}
+            className="min-h-10 bg-card tabular-nums"
             aria-invalid={Boolean(fieldErrors.phone) || undefined}
             aria-describedby={fieldErrors.phone ? `${phoneId}-error` : undefined}
             value={phone}
@@ -254,155 +260,112 @@ export function AddressFieldsForm({
             placeholder="0912 486 305"
             required
           />
-          {fieldErrors.phone && (
-            <p id={`${phoneId}-error`} className={styles.fieldError} role="alert">
-              {fieldErrors.phone}
-            </p>
-          )}
-        </div>
+          {fieldErrors.phone ? (
+            <FieldError id={`${phoneId}-error`}>{fieldErrors.phone}</FieldError>
+          ) : null}
+        </Field>
 
-        {topSlot}
+        {topSlot ? <div className="sm:col-span-2">{topSlot}</div> : null}
 
-        <div className={styles.field} data-shake-target="">
-          <label htmlFor={provId} className={styles.fieldLabel}>
+        <Field
+          className="gap-1.5"
+          data-invalid={Boolean(fieldErrors.location) || undefined}
+          data-shake-target=""
+        >
+          <FieldLabel htmlFor={provId}>
             Tỉnh / Thành phố ({provinces.length > 0 ? `${provinces.length} tỉnh/thành` : "mới"})
-          </label>
-          <select
+          </FieldLabel>
+          <input type="hidden" name={fieldNames.province} value={provinceCode} />
+          <LocationCombobox
             id={provId}
-            name={fieldNames.province}
-            autoComplete="address-level1"
-            aria-label="Chọn Tỉnh hoặc Thành phố"
-            aria-invalid={Boolean(fieldErrors.location) || undefined}
-            aria-describedby={fieldErrors.location ? locErrId : undefined}
-            className={`${styles.select} ${fieldErrors.location ? styles.selectInvalid : ""}`}
+            options={provinces}
             value={provinceCode}
-            onChange={(e) => handleProvinceSelect(e.target.value)}
-            disabled={loadingProvinces || provinces.length === 0}
-          >
-            {loadingProvinces && <option value="">Đang tải tỉnh thành...</option>}
-            {!loadingProvinces && provinces.length === 0 && (
-              <option value="">Chưa có dữ liệu</option>
-            )}
-            {provinces.map((p) => (
-              <option key={p.code} value={p.code}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </div>
+            onChange={handleProvinceSelect}
+            placeholder="Chọn tỉnh/thành phố"
+            searchPlaceholder="Tìm tỉnh hoặc thành phố..."
+            emptyMessage="Không tìm thấy tỉnh/thành phố phù hợp."
+            ariaLabel="Chọn Tỉnh hoặc Thành phố"
+            ariaInvalid={Boolean(fieldErrors.location)}
+            ariaDescribedBy={fieldErrors.location ? locErrId : undefined}
+            disabled={submitting}
+            loading={loadingProvinces}
+            loadingLabel="Đang tải tỉnh thành..."
+          />
+        </Field>
 
-        <div className={styles.field} data-shake-target="">
-          <div className={styles.fieldLabelRow}>
-            <label htmlFor={wardId} className={styles.fieldLabel}>
+        <Field
+          className="gap-1.5"
+          data-invalid={Boolean(fieldErrors.location) || undefined}
+          data-shake-target=""
+        >
+          <div className="flex items-center justify-between gap-2">
+            <FieldLabel htmlFor={wardId}>
               Phường / Xã
               {!loadingWards && wards.length > 0 && (
-                <span className="num" aria-live="polite">
+                <span className="font-normal text-muted-foreground tabular-nums" aria-live="polite">
                   {" "}
                   ({filteredWards.length}/{wards.length})
                 </span>
               )}
-            </label>
-            {wardQuery && (
-              <button
-                type="button"
-                className={styles.fieldInlineAction}
-                onClick={() => handleWardFilterChange("")}
-              >
-                Xóa lọc
-              </button>
-            )}
+            </FieldLabel>
           </div>
-          <div
-            className={`${styles.unifiedSelectBox} ${
-              fieldErrors.location ? styles.unifiedSelectBoxInvalid : ""
-            }`}
-          >
-            {!loadingWards && wards.length > 10 && (
-              <input
-                id={`${idPrefix}-ward-search`}
-                type="search"
-                aria-label="Lọc danh sách phường xã"
-                className={styles.unifiedFilterInput}
-                value={wardQuery}
-                onChange={(e) => handleWardFilterChange(e.target.value)}
-                placeholder={
-                  selectedProvince
-                    ? `Gõ tên phường/xã tại ${selectedProvince.name}…`
-                    : "Gõ tên phường/xã…"
-                }
-                disabled={loadingWards || wards.length === 0 || submitting}
-              />
-            )}
-            <select
-              id={wardId}
-              name={fieldNames.ward}
-              autoComplete="address-level2"
-              aria-label="Chọn Phường hoặc Xã"
-              aria-invalid={Boolean(fieldErrors.location) || undefined}
-              aria-describedby={fieldErrors.location ? locErrId : undefined}
-              className={styles.unifiedSelect}
-              value={hasWardFilterMiss ? "" : wardCode}
-              onChange={(e) => {
-                onWardChange(e.target.value);
-                setWardFilterClearedNotice(null);
-                clearFieldError("location");
-              }}
-              disabled={loadingWards || wards.length === 0 || submitting}
-            >
-              {loadingWards ? (
-                <option value="">Đang tải phường xã...</option>
-              ) : wards.length === 0 ? (
-                <option value="">Chưa có dữ liệu</option>
-              ) : hasWardFilterMiss ? (
-                <option value="" disabled>
-                  Không tìm thấy phường/xã phù hợp
-                </option>
-              ) : (
-                <>
-                  <option value="">Chọn phường/xã</option>
-                  {filteredWards.map((w) => (
-                    <option key={w.code} value={w.code}>
-                      {w.name}
-                    </option>
-                  ))}
-                </>
-              )}
-            </select>
-          </div>
-          {legacyWardInactiveNotice && (
-            <p className={styles.fieldHint} role="status">
+          <input type="hidden" name={fieldNames.ward} value={wardCode} />
+          <LocationCombobox
+            id={wardId}
+            searchInputId={`${idPrefix}-ward-search`}
+            options={wards}
+            value={wardCode}
+            onChange={handleWardSelect}
+            placeholder="Chọn phường/xã"
+            searchPlaceholder={
+              selectedProvince
+                ? `Tìm phường/xã tại ${selectedProvince.name}...`
+                : "Tìm phường/xã..."
+            }
+            emptyMessage="Không tìm thấy phường/xã phù hợp."
+            ariaLabel="Chọn Phường hoặc Xã"
+            ariaInvalid={Boolean(fieldErrors.location)}
+            ariaDescribedBy={fieldErrors.location ? locErrId : undefined}
+            disabled={submitting}
+            loading={loadingWards}
+            loadingLabel="Đang tải phường xã..."
+            query={wardQuery}
+            onQueryChange={setWardQuery}
+          />
+          {legacyWardInactiveNotice ? (
+            <p className="text-xs leading-relaxed text-muted-foreground" role="status">
               {legacyWardInactiveNotice}
             </p>
-          )}
-          {wardFilterClearedNotice && (
-            <p className={styles.fieldHint} role="status">
-              {wardFilterClearedNotice}
-            </p>
-          )}
-          {selectedWard?.cod_supported === false && (
-            <p className={`${styles.feedbackBox} ${styles.feedbackWarn}`} role="status">
-              Khu vực này hiện chưa hỗ trợ thanh toán khi nhận hàng (COD). Bạn vẫn có thể thanh toán
-              trực tuyến bằng VietQR hoặc Ví ZaloPay.
-            </p>
-          )}
-        </div>
+          ) : null}
+          {selectedWard?.cod_supported === false ? (
+            <Alert className="mt-1 border-badge-warning-ink/20 bg-badge-warning-bg text-badge-warning-ink shadow-none">
+              <AlertTriangle className="size-4" aria-hidden="true" />
+              <AlertDescription className="text-xs text-badge-warning-ink">
+                Khu vực này hiện chưa hỗ trợ thanh toán khi nhận hàng (COD). Bạn vẫn có thể thanh
+                toán trực tuyến bằng VietQR hoặc Ví ZaloPay.
+              </AlertDescription>
+            </Alert>
+          ) : null}
+        </Field>
 
-        {fieldErrors.location && (
-          <p id={locErrId} className={`${styles.fieldError} ${styles.formFull}`} role="alert">
+        {fieldErrors.location ? (
+          <FieldError id={locErrId} className="sm:col-span-2">
             {fieldErrors.location}
-          </p>
-        )}
+          </FieldError>
+        ) : null}
 
-        <div className={`${styles.field} ${styles.formFull}`} data-shake-target="">
-          <label htmlFor={streetId} className={styles.fieldLabel}>
-            Số nhà, tên đường
-          </label>
-          <input
+        <Field
+          className="gap-1.5 sm:col-span-2"
+          data-invalid={Boolean(fieldErrors.street) || undefined}
+          data-shake-target=""
+        >
+          <FieldLabel htmlFor={streetId}>Số nhà, tên đường</FieldLabel>
+          <Input
             id={streetId}
             name={fieldNames.street}
             type="text"
             autoComplete="street-address"
-            className={`${styles.input} ${fieldErrors.street ? styles.inputInvalid : ""}`}
+            className="min-h-10 bg-card"
             aria-invalid={Boolean(fieldErrors.street) || undefined}
             aria-describedby={fieldErrors.street ? `${streetId}-error` : undefined}
             value={streetAddress}
@@ -413,50 +376,59 @@ export function AddressFieldsForm({
             placeholder="Số 248 Võ Văn Tần"
             required
           />
-          {fieldErrors.street && (
-            <p id={`${streetId}-error`} className={styles.fieldError} role="alert">
-              {fieldErrors.street}
-            </p>
-          )}
-        </div>
+          {fieldErrors.street ? (
+            <FieldError id={`${streetId}-error`}>{fieldErrors.street}</FieldError>
+          ) : null}
+        </Field>
 
-        {metaSlot}
+        {metaSlot ? <div className="sm:col-span-2">{metaSlot}</div> : null}
 
-        <div className={styles.formFull}>
-          <label className={styles.checkboxRow}>
-            <input
-              type="checkbox"
-              className={styles.checkbox}
+        <div className="sm:col-span-2">
+          <label
+            htmlFor={defaultId}
+            className="inline-flex min-h-10 cursor-pointer items-center gap-2.5 text-sm text-foreground select-none"
+          >
+            <Checkbox
+              id={defaultId}
               checked={isDefault}
-              onChange={(e) => setIsDefault(e.target.checked)}
+              onCheckedChange={(checked) => setIsDefault(checked === true)}
             />
             <span>Đặt làm địa chỉ mặc định</span>
           </label>
         </div>
 
-        {externalError && (
-          <p className={`${styles.fieldError} ${styles.formFull}`} data-shake-alert="" role="alert">
-            {externalError}
-          </p>
-        )}
+        {externalError ? (
+          <Alert variant="destructive" className="shadow-none sm:col-span-2" data-shake-alert="">
+            <AlertDescription>{externalError}</AlertDescription>
+          </Alert>
+        ) : null}
 
-        <div className={`${styles.formActions} ${styles.formFull}`}>
+        <div className="flex flex-wrap items-center gap-2.5 pt-1 sm:col-span-2">
           <Button
             type="submit"
-            variant={submitVariant}
-            size="md"
-            className={styles.wrapBtn}
-            loading={submitting}
-            loadingLabel={loadingLabel}
-            disabled={submitDisabled}
+            variant={submitVariant === "ink" || submitVariant === "primary" ? "default" : "default"}
+            className="min-h-10 shadow-none"
+            disabled={submitDisabled || submitting}
           >
-            {submitLabel}
+            {submitting ? (
+              <>
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                <span>{loadingLabel}</span>
+              </>
+            ) : (
+              submitLabel
+            )}
           </Button>
-          {onCancel && (
-            <Button type="button" variant="secondary" size="md" onClick={onCancel}>
+          {onCancel ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="min-h-10 shadow-none"
+              onClick={onCancel}
+            >
               Hủy
             </Button>
-          )}
+          ) : null}
         </div>
       </div>
     </form>

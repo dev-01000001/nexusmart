@@ -3,6 +3,19 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import {
+  AlertCircle,
+  AlertTriangle,
+  Check,
+  CreditCard,
+  Loader2,
+  LogIn,
+  MapPin,
+  ShoppingBag,
+  Tag,
+  Truck,
+  UserRound,
+} from "lucide-react";
 import type { Product } from "@/data/products";
 import type { Shop } from "@/data/shops";
 import type {
@@ -13,11 +26,30 @@ import type {
 } from "@/lib/gateway-types";
 import { ApiError, api } from "@/lib/api";
 import { formatInt, formatSignedVnd, formatVnd } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { useStore } from "@/context/StoreContext";
 import { useSession } from "@/components/SessionProvider";
-import { Button, IconCheck, StateView } from "@/components";
+import { EmptyState } from "@/components/app/EmptyState";
+import { ErrorState } from "@/components/app/ErrorState";
+import { StatusBadge } from "@/components/app/StatusBadge";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { AddressForm } from "@/features/commerce/AddressForm";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
+import { SiteLoadingSkeleton } from "@/features/commerce/ui/SiteLoadingSkeleton";
+import { SitePageFrame, SitePageHeader } from "@/features/commerce/ui/SitePageFrame";
 import {
   buildCheckoutIdempotencySignature,
   canMutateCheckoutFlashSelection,
@@ -59,8 +91,6 @@ import type {
   GwDiscountBreakdown,
   GwVoucher,
 } from "@/features/commerce/types";
-import shared from "@/features/commerce/commerce.module.css";
-import styles from "./page.module.css";
 
 type CheckoutStage = "address" | "shipping" | "payment";
 
@@ -131,6 +161,10 @@ function generateClientAttemptKey(): string {
     return crypto.randomUUID();
   }
   return `chk-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function quoteValue(carrierCode: string, serviceCode: string): string {
+  return `${carrierCode}::${serviceCode}`;
 }
 
 export function CheckoutClient({
@@ -294,6 +328,7 @@ export function CheckoutClient({
     cartItems.length,
     isSubmitting,
   ]);
+
   const shopDiscountBySku = useMemo(() => {
     const map: Record<string, GatewayActiveShopDiscount> = {};
     for (const d of initialShopDiscounts) {
@@ -301,6 +336,7 @@ export function CheckoutClient({
     }
     return map;
   }, [initialShopDiscounts]);
+
   const flashState = useMemo(
     () =>
       resolveCartFlashSaleState({
@@ -1010,103 +1046,93 @@ export function CheckoutClient({
   };
 
   const renderHeader = () => (
-    <section className={shared.pageHeader}>
-      <div className={shared.headerLeadGroup}>
-        <h1 className={`${shared.pageTitle} lines`}>
-          <span className="line">
-            <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
-              Thanh toán
-            </span>
-          </span>
-        </h1>
-        <p className={shared.pageLead} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
-          {brandName}
-        </p>
-      </div>
-      <div className={shared.headerAside} data-rise="" style={{ "--i": 2 } as React.CSSProperties}>
-        <Button variant="secondary" size="md" href="/gio-hang">
-          Giỏ hàng
+    <SitePageHeader
+      title="Thanh toán"
+      subtitle={brandName}
+      action={
+        <Button asChild variant="outline" className="min-h-10 shadow-none">
+          <Link href="/gio-hang">Giỏ hàng</Link>
         </Button>
-      </div>
-    </section>
+      }
+    />
   );
 
   if (sessionLoading || (isAuthenticated && cartLoading && !cart)) {
     return (
-      <div className={shared.page}>
+      <SitePageFrame>
         {renderHeader()}
-        <section className={shared.section}>
-          <StateView
-            kind="loading"
-            skeletonVariant="detail"
-            title="Đang tải thanh toán..."
-            rows={4}
-          />
-        </section>
-      </div>
+        <SiteLoadingSkeleton title="Đang tải thanh toán..." rows={4} variant="detail" />
+      </SitePageFrame>
     );
   }
 
   if (!isAuthenticated) {
     return (
-      <div className={shared.page}>
+      <SitePageFrame>
         {renderHeader()}
-        <section className={shared.section}>
-          <StateView
-            kind="empty"
-            title="Đăng nhập để hoàn tất đơn hàng."
-            actionLabel="Đăng nhập"
-            actionHref="/dang-nhap?next=%2Fthanh-toan"
-          />
-        </section>
-      </div>
+        <EmptyState
+          icon={LogIn}
+          title="Đăng nhập để hoàn tất đơn hàng."
+          description={`Đăng nhập để chọn địa chỉ nhận hàng và phương thức thanh toán tại ${brandName}.`}
+          className="border border-border shadow-none"
+          action={
+            <Button asChild className="min-h-10 shadow-none">
+              <Link href="/dang-nhap?next=%2Fthanh-toan">Đăng nhập</Link>
+            </Button>
+          }
+        />
+      </SitePageFrame>
     );
   }
 
   if (cartError && !cart) {
     return (
-      <div className={shared.page}>
+      <SitePageFrame>
         {renderHeader()}
-        <section className={shared.section}>
-          <StateView
-            kind="error"
-            title="Chưa kết nối được trang thanh toán."
-            message={cartError}
-            actionLabel="Thử lại"
-            onAction={() => void refreshCart()}
-          />
-        </section>
-      </div>
+        <ErrorState
+          title="Chưa kết nối được trang thanh toán."
+          description={cartError}
+          onRetry={() => void refreshCart()}
+          className="border border-border shadow-none"
+        />
+      </SitePageFrame>
     );
   }
 
   if (!activeGroup || cartItems.length === 0) {
     const showOrderCheckNotice = pendingOrderCheckHint || submitGuard.keyUncertainty !== "none";
     return (
-      <div className={shared.page}>
+      <SitePageFrame>
         {renderHeader()}
-        <section className={shared.section}>
-          {showOrderCheckNotice ? (
-            <StateView
-              kind="empty"
-              title="Đơn hàng trước có thể đã được tạo."
-              message="Giỏ hàng hiện đã trống. Vui lòng kiểm tra mục Đơn hàng của tôi trước khi đặt lại."
-              actionLabel="Đơn hàng của tôi"
-              actionHref="/don-hang"
-            />
-          ) : (
-            <StateView
-              kind="empty"
-              title="Chưa có sản phẩm nào để thanh toán."
-              actionLabel="Xem sản phẩm"
-              actionHref="/san-pham"
-            />
-          )}
-        </section>
+        {showOrderCheckNotice ? (
+          <EmptyState
+            icon={ShoppingBag}
+            title="Đơn hàng trước có thể đã được tạo."
+            description="Giỏ hàng hiện đã trống. Vui lòng kiểm tra mục Đơn hàng của tôi trước khi đặt lại."
+            className="border border-border shadow-none"
+            action={
+              <Button asChild className="min-h-10 shadow-none">
+                <Link href="/don-hang">Đơn hàng của tôi</Link>
+              </Button>
+            }
+          />
+        ) : (
+          <EmptyState
+            icon={ShoppingBag}
+            title="Chưa có sản phẩm nào để thanh toán."
+            description={`Chọn sản phẩm tại ${brandName} rồi quay lại hoàn tất đơn hàng.`}
+            className="border border-border shadow-none"
+            action={
+              <Button asChild className="min-h-10 shadow-none">
+                <Link href="/san-pham">Xem sản phẩm</Link>
+              </Button>
+            }
+          />
+        )}
         {addonProducts.length > 0 && (
           <ProductAddonStrip title={`Gợi ý từ ${brandName}`} products={addonProducts} />
         )}
-      </div>
+      </SitePageFrame>
     );
   }
 
@@ -1119,7 +1145,6 @@ export function CheckoutClient({
 
   const payLabel = PAYMENT_METHOD_COPY[paymentMethod].shortLabel;
   const ctaLabel = `Đặt hàng ${formatVnd(finalPayable)} (${payLabel})`;
-  const mobileCtaLabel = `Đặt ${formatVnd(finalPayable)}`;
   const canPlaceOrder =
     !isSubmitting &&
     !isCalculating &&
@@ -1128,842 +1153,1000 @@ export function CheckoutClient({
     Boolean(selectedAddress) &&
     activePaymentEval.allowed;
 
-  return (
-    <div className={`${shared.page} ${styles.mobileSpacer}`}>
-      {renderHeader()}
-
-      <section className={shared.section}>
-        <div className={styles.checkoutGrid}>
-          <div className={styles.stageStack}>
-            {/* Stage 1: Địa chỉ nhận hàng */}
-            <section className={styles.stageCard} aria-labelledby="stage-address-title">
-              <div className={styles.stageHeader}>
-                <div className={styles.stageHeaderLeft}>
-                  <span
-                    className={`${styles.stageMarker} ${
-                      addressDone && !addressOpen
-                        ? styles.stageMarkerDone
-                        : addressOpen
-                          ? styles.stageMarkerActive
-                          : ""
-                    }`}
-                    aria-hidden="true"
-                  >
-                    {addressDone && !addressOpen ? (
-                      <IconCheck size={14} />
-                    ) : addressOpen ? (
-                      <span className={styles.stageMarkerActiveDot} />
-                    ) : null}
+  const renderOrderSummaryBody = (inputIdPrefix: string) => (
+    <div className="space-y-4">
+      <div className="divide-y divide-border">
+        {cartItems.map((it) => {
+          const skuId = it.raw.sku_id;
+          const liveFlash = flashState.liveFlashBySku[skuId] ?? null;
+          const availableLiveFlash = flashState.availableLiveFlashBySku[skuId] ?? null;
+          const isFlashOptedOut = Boolean(availableLiveFlash) && !liveFlash;
+          const flashEval = flashLineEvals[skuId] ?? null;
+          const flashInspection = flashState.inspectionBySku[skuId] ?? null;
+          const lp = resolveDisplayedLinePricing({
+            regularUnitPriceVnd: it.raw.price_vnd,
+            quantity: it.raw.quantity,
+            isFlashLine: Boolean(liveFlash),
+            flashUnitPriceVnd: liveFlash?.flashPriceVnd,
+            flashShortfall: Boolean(flashEval?.needsRegularPriceChoice),
+            activeShopDiscount: shopDiscountBySku[skuId] ?? null,
+            shopBreakdown,
+            isInPreview: Boolean(shopBreakdown),
+          });
+          return (
+            <div key={skuId} className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
+              <img
+                src={it.image}
+                alt={it.productName}
+                width={896}
+                height={1200}
+                className="aspect-[3/4] w-14 shrink-0 rounded-md border border-border bg-muted object-cover"
+              />
+              <div className="min-w-0 flex-1 space-y-1">
+                <p className="line-clamp-2 text-sm leading-snug font-medium text-foreground">
+                  {it.productName}
+                </p>
+                <div className="flex flex-wrap items-center gap-1">
+                  {splitVariantParts(it.variantLabel).map((part) => (
+                    <Badge
+                      key={part}
+                      variant="secondary"
+                      className="rounded-sm px-1.5 py-0 text-[11px] font-normal"
+                    >
+                      {part}
+                    </Badge>
+                  ))}
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    ×{it.raw.quantity}
                   </span>
-
-                  <div className={styles.stageTitleGroup}>
-                    <h2 id="stage-address-title" className={styles.stageTitle}>
-                      Địa chỉ nhận hàng
-                    </h2>
-
-                    {!addressOpen && selectedAddress && (
-                      <div className={styles.stageCompactSummary}>
-                        <button
+                </div>
+                {(liveFlash || isFlashOptedOut) && (
+                  <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                    {liveFlash ? (
+                      <>
+                        <StatusBadge tone="warning">Flash sale</StatusBadge>
+                        <Button
                           type="button"
-                          aria-expanded={false}
-                          aria-controls="stage-address-body"
-                          className={styles.stageSummaryBtn}
-                          onClick={() => setOpenStage("address")}
+                          variant="ghost"
+                          size="xs"
+                          className="h-7 text-xs text-brand hover:text-brand"
+                          disabled={isSubmitting || !canMutateFlashSelection}
+                          onClick={() => optOutFlashSaleSku(skuId)}
                         >
-                          <span className={styles.stageSummaryMetaRow}>
-                            <strong>{selectedAddress.recipient_name}</strong>
-                            <span className="num">{selectedAddress.recipient_phone}</span>
-                          </span>
-                          <span className={styles.stageSummarySub}>
-                            {formatAddressLine(
-                              selectedAddress.street_address,
-                              selectedAddress.ward_name,
-                              selectedAddress.province_name
-                            )}
-                          </span>
-                        </button>
-                      </div>
+                          Mua giá thường
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <StatusBadge tone="neutral">Giá thường</StatusBadge>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="xs"
+                          className="h-7 text-xs text-brand hover:text-brand"
+                          disabled={isSubmitting || !canMutateFlashSelection}
+                          onClick={() => restoreFlashSaleSku(skuId)}
+                        >
+                          Dùng giá Flash
+                        </Button>
+                      </>
                     )}
                   </div>
-                </div>
-
-                {!addressOpen && selectedAddress && (
-                  <button
-                    type="button"
-                    aria-expanded={false}
-                    aria-controls="stage-address-body"
-                    aria-label="Sửa địa chỉ nhận hàng"
-                    className={styles.editBtn}
-                    onClick={() => setOpenStage("address")}
-                  >
-                    Sửa
-                  </button>
                 )}
+                {flashEval?.reason ? (
+                  <p className="text-xs leading-snug font-medium text-destructive">
+                    {flashEval.reason}
+                  </p>
+                ) : flashInspection && flashInspection.state !== "live" ? (
+                  <p className="text-xs leading-snug text-muted-foreground">
+                    {flashInspection.message}
+                  </p>
+                ) : null}
+              </div>
+              <span className="shrink-0 text-sm font-semibold text-foreground tabular-nums">
+                {formatVnd(lp.lineTotalVnd)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {unavailableCount > 0 && (
+        <Alert
+          className="border-badge-warning-ink/25 bg-badge-warning-bg py-2.5 text-badge-warning-ink shadow-none"
+          role="status"
+        >
+          <AlertTriangle className="size-4" aria-hidden="true" />
+          <AlertDescription className="text-xs text-badge-warning-ink">
+            <strong className="font-semibold tabular-nums">{unavailableCount}</strong> sản phẩm
+            không khả dụng trong giỏ hàng đã được bỏ qua.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      <Separator />
+
+      <form className="space-y-2.5" onSubmit={handleApplyCode} noValidate>
+        <label
+          htmlFor={`${inputIdPrefix}-code-input`}
+          className="flex items-center gap-1.5 text-xs font-semibold text-foreground"
+        >
+          <Tag className="size-3.5 text-muted-foreground" aria-hidden="true" />
+          <span>Mã giảm giá</span>
+        </label>
+        <div className="flex items-stretch gap-2">
+          <Input
+            id={`${inputIdPrefix}-code-input`}
+            type="text"
+            className="min-h-10 flex-1 bg-background"
+            aria-describedby={promoFeedback ? `${inputIdPrefix}-code-feedback` : undefined}
+            value={promoCodeInput}
+            onChange={(e) => setPromoCodeInput(e.target.value)}
+            placeholder="Nhập mã"
+          />
+          <Button
+            type="submit"
+            variant="secondary"
+            className="min-h-10 shrink-0 shadow-none"
+            disabled={promoValidating}
+          >
+            {promoValidating ? (
+              <>
+                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                <span>Đang kiểm tra</span>
+              </>
+            ) : (
+              "Áp dụng"
+            )}
+          </Button>
+        </div>
+        {promoFeedback && (
+          <Alert
+            id={`${inputIdPrefix}-code-feedback`}
+            variant={promoFeedback.ok ? "default" : "destructive"}
+            className={cn(
+              "py-2.5 shadow-none",
+              promoFeedback.ok &&
+                "border-badge-success-ink/25 bg-badge-success-bg text-badge-success-ink"
+            )}
+            role={promoFeedback.ok ? "status" : "alert"}
+          >
+            <AlertDescription
+              className={cn("text-xs", promoFeedback.ok && "text-badge-success-ink")}
+            >
+              {promoFeedback.message}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {shopVouchers.length > 0 && (
+          <div className="flex flex-wrap gap-2 pt-0.5">
+            {shopVouchers.map((v) => {
+              const reason = formatVoucherIneligibleReason(v, subtotal, anchorNowMs);
+              const eligible = reason === null;
+              const active =
+                (selectedVoucherId === v.id || selectedVoucherId === v.code) && eligible;
+              return (
+                <button
+                  key={v.id}
+                  type="button"
+                  disabled={!eligible}
+                  onClick={() => setSelectedVoucher(active ? null : v.id)}
+                  title={
+                    eligible ? `Còn ${formatInt(v.remaining_quota)} lượt` : (reason ?? undefined)
+                  }
+                  className={cn(
+                    "inline-flex min-h-10 max-w-full flex-col items-start rounded-lg border px-2.5 py-1.5 text-left transition-colors",
+                    active
+                      ? "border-brand bg-accent text-foreground"
+                      : "border-border bg-background text-foreground hover:bg-accent/60",
+                    !eligible && "cursor-not-allowed opacity-50"
+                  )}
+                >
+                  <span className="text-xs font-bold tracking-wide">{v.code}</span>
+                  <span className="text-[11px] text-muted-foreground">
+                    {formatVoucherHeadline(v)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </form>
+
+      {(previewError || (breakdown?.warnings?.length ?? 0) > 0) && (
+        <Alert
+          className="border-badge-warning-ink/25 bg-badge-warning-bg py-2.5 text-badge-warning-ink shadow-none"
+          role="status"
+        >
+          <AlertDescription className="text-xs text-badge-warning-ink">
+            {previewError ?? breakdown?.warnings[0]}
+          </AlertDescription>
+        </Alert>
+      )}
+
+      <Separator />
+
+      <dl className="space-y-2 text-sm">
+        <div className="flex items-baseline justify-between gap-3">
+          <dt className="text-muted-foreground">
+            Tạm tính (<span className="tabular-nums">{totalQty}</span>)
+          </dt>
+          <dd className="font-medium text-foreground tabular-nums">{formatVnd(subtotal)}</dd>
+        </div>
+        {flashDiscount > 0 && (
+          <div className="flex items-baseline justify-between gap-3">
+            <dt className="text-muted-foreground">Flash sale</dt>
+            <dd className="font-semibold text-badge-success-ink tabular-nums">
+              {formatSignedVnd(-flashDiscount)}
+            </dd>
+          </div>
+        )}
+        {shopProgramDiscount > 0 && (
+          <div className="flex items-baseline justify-between gap-3">
+            <dt className="text-muted-foreground">Giảm giá chương trình gian hàng</dt>
+            <dd className="font-semibold text-badge-success-ink tabular-nums">
+              {formatSignedVnd(-shopProgramDiscount)}
+            </dd>
+          </div>
+        )}
+        <div className="flex items-baseline justify-between gap-3">
+          <dt className="text-muted-foreground">Mã giảm giá</dt>
+          <dd className="font-semibold text-badge-success-ink tabular-nums">
+            {shopVoucherTotal > 0 ? formatSignedVnd(-shopVoucherTotal) : "0₫"}
+          </dd>
+        </div>
+        <div className="flex items-baseline justify-between gap-3">
+          <dt className="text-muted-foreground">
+            Phí vận chuyển{quotesIsEstimated ? " (tạm tính)" : ""}
+          </dt>
+          {!selectedAddress ? (
+            <dd className="text-xs text-muted-foreground">Tính theo địa chỉ</dd>
+          ) : quotesPending ? (
+            <dd>
+              <Skeleton className="h-4 w-20" aria-label="Đang tính phí vận chuyển" />
+            </dd>
+          ) : hasAuthoritativeShipping ? (
+            <dd className="font-medium text-foreground tabular-nums">
+              {formatVnd(shippingFeeTotal)}
+            </dd>
+          ) : (
+            <dd className="text-xs text-muted-foreground">Phí tính khi đặt</dd>
+          )}
+        </div>
+        {shopFreeshipDiscount > 0 && (
+          <div className="flex items-baseline justify-between gap-3">
+            <dt className="text-muted-foreground">Gian hàng hỗ trợ phí ship</dt>
+            <dd className="font-semibold text-badge-success-ink tabular-nums">
+              {formatSignedVnd(-shopFreeshipDiscount)}
+            </dd>
+          </div>
+        )}
+      </dl>
+    </div>
+  );
+
+  const renderPlaceOrderFooter = () => (
+    <div className="space-y-3 border-t border-border bg-muted/40 px-4 py-4 md:px-5">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-sm font-medium text-muted-foreground">Tổng thanh toán</span>
+        {isCalculating ? (
+          <Skeleton className="h-7 w-28" aria-label="Đang tính tổng thanh toán" />
+        ) : (
+          <span className="text-2xl font-bold text-foreground tabular-nums">
+            {formatVnd(finalPayable)}
+          </span>
+        )}
+      </div>
+
+      {submitGuard.keyUncertainty !== "none" && !formError && (
+        <Alert
+          className="border-badge-warning-ink/25 bg-badge-warning-bg text-badge-warning-ink shadow-none"
+          role="status"
+        >
+          <AlertTriangle className="size-4" aria-hidden="true" />
+          <AlertDescription className="space-y-2 text-xs text-badge-warning-ink">
+            <p>{AMBIGUOUS_CHECKOUT_MESSAGE}</p>
+            <div className="flex flex-wrap gap-2">
+              <Button asChild variant="outline" size="sm" className="min-h-9 shadow-none">
+                <Link href="/don-hang">Đơn hàng của tôi</Link>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="min-h-9 shadow-none"
+                disabled={isSubmitting}
+                onClick={handleStartNewOrderAttempt}
+              >
+                Đặt đơn mới
+              </Button>
+            </div>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {formError && (
+        <Alert variant="destructive" className="shadow-none" role="alert">
+          <AlertCircle className="size-4" aria-hidden="true" />
+          <AlertDescription className="space-y-2 text-xs">
+            <p>{formError}</p>
+            {sessionExpired && (
+              <div className="flex flex-wrap gap-2">
+                <Button asChild variant="outline" size="sm" className="min-h-9 shadow-none">
+                  <Link href="/dang-nhap?next=%2Fthanh-toan">Đăng nhập lại</Link>
+                </Button>
+              </div>
+            )}
+            {formErrorCode === "COD_PHONE_NOT_VERIFIED" && (
+              <div className="flex flex-wrap gap-2">
+                <Button asChild variant="outline" size="sm" className="min-h-9 shadow-none">
+                  <Link href="/tai-khoan#xac-minh-sdt">Xác minh SĐT ngay</Link>
+                </Button>
+              </div>
+            )}
+            {submitGuard.keyUncertainty !== "none" && (
+              <div className="flex flex-wrap gap-2">
+                <Button asChild variant="outline" size="sm" className="min-h-9 shadow-none">
+                  <Link href="/don-hang">Đơn hàng của tôi</Link>
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="min-h-9 shadow-none"
+                  disabled={isSubmitting}
+                  onClick={handleStartNewOrderAttempt}
+                >
+                  Đặt đơn mới
+                </Button>
+              </div>
+            )}
+            {submitGuard.checkoutFailedPrior && submitGuard.keyUncertainty === "none" && (
+              <div className="flex flex-wrap gap-2">
+                <Button asChild variant="outline" size="sm" className="min-h-9 shadow-none">
+                  <Link href="/don-hang">Đơn hàng của tôi</Link>
+                </Button>
+              </div>
+            )}
+            {submitGuard.flashBlocked && canMutateFlashSelection && hasFlashSaleItem && (
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="min-h-9 shadow-none"
+                  disabled={isSubmitting}
+                  onClick={handleOptOutAllFlashSkus}
+                >
+                  Bỏ Flash sale, mua giá thường
+                </Button>
+              </div>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+
+      <Button
+        type="button"
+        size="lg"
+        className="min-h-11 w-full whitespace-normal text-center shadow-none"
+        disabled={!canPlaceOrder}
+        onClick={() => void handlePlaceOrder()}
+      >
+        {isSubmitting ? (
+          <>
+            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            <span>Đang tạo đơn hàng</span>
+          </>
+        ) : isCalculating ? (
+          "Đang tính…"
+        ) : (
+          ctaLabel
+        )}
+      </Button>
+    </div>
+  );
+
+  return (
+    <SitePageFrame>
+      {renderHeader()}
+
+      {/* Mobile collapsible order summary accordion at top */}
+      <div className="mb-5 lg:hidden">
+        <Card className="overflow-hidden border border-border py-0 shadow-none">
+          <Accordion type="single" collapsible>
+            <AccordionItem value="mobile-summary" className="border-b-0">
+              <AccordionTrigger className="min-h-12 items-center px-4 py-3.5 hover:no-underline">
+                <span className="flex min-w-0 flex-1 items-center justify-between gap-2 pr-2">
+                  <span className="inline-flex items-center gap-2 text-sm font-semibold text-foreground">
+                    <ShoppingBag className="size-4 shrink-0 text-brand" aria-hidden="true" />
+                    <span>
+                      Xem đơn hàng ·{" "}
+                      <span className="tabular-nums">
+                        {isCalculating ? "Đang tính…" : formatVnd(finalPayable)}
+                      </span>
+                    </span>
+                  </span>
+                  <Badge variant="secondary" className="rounded-full tabular-nums">
+                    {totalQty} SP
+                  </Badge>
+                </span>
+              </AccordionTrigger>
+              <AccordionContent className="border-t border-border px-4 pt-4 pb-4">
+                {renderOrderSummaryBody("co-mobile")}
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.95fr)] lg:gap-8">
+        {/* Left column: contact + 3 checkout stages */}
+        <div className="min-w-0 space-y-4">
+          {user && (
+            <Card className="border border-border py-3.5 shadow-none">
+              <CardContent className="flex flex-wrap items-center justify-between gap-2 px-4 md:px-5">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-secondary text-foreground">
+                    <UserRound className="size-4" aria-hidden="true" />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-muted-foreground">Liên hệ</p>
+                    <p className="truncate text-sm font-semibold text-foreground">
+                      {user.fullName || user.email}
+                      {user.fullName && user.email ? (
+                        <span className="font-normal text-muted-foreground"> · {user.email}</span>
+                      ) : null}
+                    </p>
+                  </div>
+                </div>
+                {user.phone ? (
+                  <span className="text-xs text-muted-foreground tabular-nums">{user.phone}</span>
+                ) : null}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Stage 1: Địa chỉ nhận hàng */}
+          <Card
+            className="border border-border py-0 shadow-none"
+            aria-labelledby="stage-address-title"
+          >
+            <div className="flex items-start justify-between gap-3 px-4 py-4 md:px-5">
+              <div className="flex min-w-0 flex-1 items-start gap-3">
+                <span
+                  className={cn(
+                    "mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
+                    addressDone && !addressOpen
+                      ? "border-badge-success-ink/30 bg-badge-success-bg text-badge-success-ink"
+                      : addressOpen
+                        ? "border-brand bg-primary text-primary-foreground"
+                        : "border-border bg-muted text-muted-foreground"
+                  )}
+                  aria-hidden="true"
+                >
+                  {addressDone && !addressOpen ? (
+                    <Check className="size-3.5" />
+                  ) : (
+                    <MapPin className="size-3.5" />
+                  )}
+                </span>
+
+                <div className="min-w-0 flex-1 space-y-1">
+                  <h2 id="stage-address-title" className="text-base font-semibold text-foreground">
+                    Địa chỉ nhận hàng
+                  </h2>
+
+                  {!addressOpen && selectedAddress && (
+                    <button
+                      type="button"
+                      aria-expanded={false}
+                      aria-controls="stage-address-body"
+                      onClick={() => setOpenStage("address")}
+                      className="flex w-full flex-col items-start gap-0.5 rounded-md text-left text-sm transition-opacity hover:opacity-80"
+                    >
+                      <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-foreground">
+                        <strong className="font-semibold">{selectedAddress.recipient_name}</strong>
+                        <span className="text-muted-foreground tabular-nums">
+                          {selectedAddress.recipient_phone}
+                        </span>
+                      </span>
+                      <span className="text-xs leading-relaxed text-muted-foreground">
+                        {formatAddressLine(
+                          selectedAddress.street_address,
+                          selectedAddress.ward_name,
+                          selectedAddress.province_name
+                        )}
+                      </span>
+                    </button>
+                  )}
+                </div>
               </div>
 
-              <div id="stage-address-body" hidden={!addressOpen}>
-                {addressOpen && (
-                  <div className={styles.stageBody}>
-                    {addressesLoading && addresses.length === 0 ? (
-                      <StateView
-                        kind="loading"
-                        skeletonVariant="detail"
-                        title="Đang tải địa chỉ..."
-                        rows={2}
-                      />
-                    ) : addresses.length > 0 ? (
-                      <>
-                        <div
-                          className={styles.addressList}
-                          role="radiogroup"
-                          aria-label="Chọn địa chỉ nhận hàng"
-                        >
-                          {addresses.map((addr) => {
-                            const isSelected = selectedAddress?.id === addr.id;
-                            return (
-                              <button
-                                key={addr.id}
-                                type="button"
-                                role="radio"
-                                aria-checked={isSelected}
-                                className={`${styles.addressOption} ${
-                                  isSelected ? styles.addressOptionSelected : ""
-                                }`}
-                                onClick={() => {
-                                  setSelectedAddressId(addr.id);
-                                  setShowNewAddressForm(false);
-                                  setOpenStage("shipping");
-                                }}
-                              >
-                                <span className={styles.addressTopRow}>
-                                  <span className={styles.addressName}>
-                                    <span>{addr.recipient_name}</span>
-                                    <span className={`${styles.addressPhone} num`}>
+              {!addressOpen && selectedAddress && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-expanded={false}
+                  aria-controls="stage-address-body"
+                  aria-label="Sửa địa chỉ nhận hàng"
+                  className="min-h-10 shrink-0 text-brand shadow-none hover:text-brand sm:min-h-8"
+                  onClick={() => setOpenStage("address")}
+                >
+                  Sửa
+                </Button>
+              )}
+            </div>
+
+            <div id="stage-address-body" hidden={!addressOpen}>
+              {addressOpen && (
+                <div className="space-y-4 border-t border-border px-4 py-4 md:px-5">
+                  {addressesLoading && addresses.length === 0 ? (
+                    <SiteLoadingSkeleton title="Đang tải địa chỉ..." rows={2} />
+                  ) : addresses.length > 0 ? (
+                    <>
+                      <RadioGroup
+                        role="radiogroup"
+                        aria-label="Chọn địa chỉ nhận hàng"
+                        value={selectedAddress?.id ?? ""}
+                        onValueChange={(nextId) => {
+                          setSelectedAddressId(nextId);
+                          setShowNewAddressForm(false);
+                          setOpenStage("shipping");
+                        }}
+                        className="gap-2.5"
+                      >
+                        {addresses.map((addr) => {
+                          const isSelected = selectedAddress?.id === addr.id;
+                          const itemId = `checkout-addr-${addr.id}`;
+                          return (
+                            <label
+                              key={addr.id}
+                              htmlFor={itemId}
+                              className={cn(
+                                "flex cursor-pointer items-start gap-3 rounded-lg border p-3.5 transition-colors",
+                                isSelected
+                                  ? "border-brand bg-accent/60"
+                                  : "border-border bg-background hover:bg-accent/40"
+                              )}
+                            >
+                              <RadioGroupItem value={addr.id} id={itemId} className="mt-0.5" />
+                              <span className="flex min-w-0 flex-1 flex-col gap-1">
+                                <span className="flex flex-wrap items-center justify-between gap-2">
+                                  <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+                                    <strong className="font-semibold text-foreground">
+                                      {addr.recipient_name}
+                                    </strong>
+                                    <span className="text-muted-foreground tabular-nums">
                                       {addr.recipient_phone}
                                     </span>
                                   </span>
-                                  <span className={shared.formActions}>
+                                  <span className="flex flex-wrap items-center gap-1.5">
                                     {addr.is_default && (
-                                      <span className={`${shared.statusTag} ${shared.toneNeutral}`}>
-                                        Mặc định
-                                      </span>
+                                      <StatusBadge tone="neutral">Mặc định</StatusBadge>
                                     )}
                                     {isSelected && (
-                                      <span className={`${shared.statusTag} ${shared.tonePos}`}>
-                                        Đang chọn
-                                      </span>
+                                      <StatusBadge tone="success">Đang chọn</StatusBadge>
                                     )}
                                   </span>
                                 </span>
-                                <span className={styles.addressLine}>
+                                <span className="text-xs leading-relaxed text-muted-foreground">
                                   {formatAddressLine(
                                     addr.street_address,
                                     addr.ward_name,
                                     addr.province_name
                                   )}
                                 </span>
-                              </button>
-                            );
-                          })}
-                        </div>
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </RadioGroup>
 
-                        <div className={styles.stageFooterRow}>
+                      <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="min-h-10 shadow-none sm:min-h-9"
+                          onClick={() => setShowNewAddressForm((v) => !v)}
+                        >
+                          {showNewAddressForm ? "Đóng biểu mẫu" : "Thêm địa chỉ mới"}
+                        </Button>
+                        {!showNewAddressForm && selectedAddress && (
                           <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => setShowNewAddressForm((v) => !v)}
-                          >
-                            {showNewAddressForm ? "Đóng biểu mẫu" : "Thêm địa chỉ mới"}
-                          </Button>
-                          {!showNewAddressForm && selectedAddress && (
-                            <Button
-                              variant="ink"
-                              size="sm"
-                              onClick={() => setOpenStage("shipping")}
-                            >
-                              Tiếp tục giao hàng
-                            </Button>
-                          )}
-                        </div>
-                      </>
-                    ) : null}
-
-                    {showNewAddressForm && (
-                      <AddressForm
-                        defaultName={user?.fullName ?? ""}
-                        defaultPhone={user?.phone ?? ""}
-                        submitLabel="Lưu và giao tới địa chỉ này"
-                        onSaved={(created) => {
-                          setAddresses((prev) => [
-                            created,
-                            ...prev.map((a) =>
-                              created.is_default ? { ...a, is_default: false } : a
-                            ),
-                          ]);
-                          setSelectedAddressId(created.id);
-                          setShowNewAddressForm(false);
-                          setFormError(null);
-                          setOpenStage("payment");
-                        }}
-                        onCancel={
-                          addresses.length > 0 ? () => setShowNewAddressForm(false) : undefined
-                        }
-                      />
-                    )}
-                  </div>
-                )}
-              </div>
-            </section>
-
-            {/* Stage 2: Giao hàng */}
-            <section
-              className={`${styles.stageCard} ${!addressDone ? styles.stageCardMuted : ""}`}
-              aria-labelledby="stage-shipping-title"
-            >
-              <div className={styles.stageHeader}>
-                <div className={styles.stageHeaderLeft}>
-                  <span
-                    className={`${styles.stageMarker} ${
-                      shippingDone && !shippingOpen
-                        ? styles.stageMarkerDone
-                        : shippingOpen
-                          ? styles.stageMarkerActive
-                          : ""
-                    }`}
-                    aria-hidden="true"
-                  >
-                    {shippingDone && !shippingOpen ? (
-                      <IconCheck size={14} />
-                    ) : shippingOpen ? (
-                      <span className={styles.stageMarkerActiveDot} />
-                    ) : null}
-                  </span>
-
-                  <div className={styles.stageTitleGroup}>
-                    <h2 id="stage-shipping-title" className={styles.stageTitle}>
-                      Giao hàng
-                    </h2>
-
-                    {!addressDone ? (
-                      <p className={styles.stageSummaryLine}>Chọn địa chỉ để tính cước.</p>
-                    ) : !shippingOpen ? (
-                      quotesPending ? (
-                        <p className={styles.stageSummaryLine}>Đang tính phí vận chuyển…</p>
-                      ) : activeQuote ? (
-                        <div className={styles.stageCompactSummary}>
-                          <button
                             type="button"
-                            aria-expanded={false}
-                            aria-controls="stage-shipping-body"
-                            className={styles.stageSummaryBtn}
+                            size="sm"
+                            className="min-h-10 shadow-none sm:min-h-9"
                             onClick={() => setOpenStage("shipping")}
                           >
-                            <span className={styles.stageSummaryMetaRow}>
-                              <strong>
-                                {formatCarrierLabel(
-                                  activeQuote.carrier_code,
-                                  activeQuote.carrier_name
-                                )}
-                              </strong>
-                              <span>
-                                {formatServiceLabel(
-                                  activeQuote.service_code,
-                                  activeQuote.service_name
-                                )}
-                              </span>
-                              <span className={`${styles.stageSummaryFee} num`}>
-                                {formatVnd(activeQuote.fee_vnd)}
-                              </span>
-                            </span>
-                          </button>
-                        </div>
-                      ) : (
-                        <p className={styles.stageSummaryLine}>
-                          {quotesFailed ? "Phí tính khi đặt." : "Tính phí theo địa chỉ nhận hàng."}
-                        </p>
-                      )
-                    ) : null}
-                  </div>
-                </div>
+                            Tiếp tục giao hàng
+                          </Button>
+                        )}
+                      </div>
+                    </>
+                  ) : null}
 
-                {addressDone && !shippingOpen && (
-                  <button
-                    type="button"
-                    aria-expanded={false}
-                    aria-controls="stage-shipping-body"
-                    aria-label="Sửa đơn vị vận chuyển"
-                    className={styles.editBtn}
-                    onClick={() => setOpenStage("shipping")}
-                  >
-                    Sửa
-                  </button>
-                )}
+                  {showNewAddressForm && (
+                    <AddressForm
+                      defaultName={user?.fullName ?? ""}
+                      defaultPhone={user?.phone ?? ""}
+                      submitLabel="Lưu và giao tới địa chỉ này"
+                      onSaved={(created) => {
+                        setAddresses((prev) => [
+                          created,
+                          ...prev.map((a) =>
+                            created.is_default ? { ...a, is_default: false } : a
+                          ),
+                        ]);
+                        setSelectedAddressId(created.id);
+                        setShowNewAddressForm(false);
+                        setFormError(null);
+                        setOpenStage("payment");
+                      }}
+                      onCancel={
+                        addresses.length > 0 ? () => setShowNewAddressForm(false) : undefined
+                      }
+                    />
+                  )}
+                </div>
+              )}
+            </div>
+          </Card>
+
+          {/* Stage 2: Giao hàng */}
+          <Card
+            className={cn("border border-border py-0 shadow-none", !addressDone && "opacity-70")}
+            aria-labelledby="stage-shipping-title"
+          >
+            <div className="flex items-start justify-between gap-3 px-4 py-4 md:px-5">
+              <div className="flex min-w-0 flex-1 items-start gap-3">
+                <span
+                  className={cn(
+                    "mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
+                    shippingDone && !shippingOpen
+                      ? "border-badge-success-ink/30 bg-badge-success-bg text-badge-success-ink"
+                      : shippingOpen
+                        ? "border-brand bg-primary text-primary-foreground"
+                        : "border-border bg-muted text-muted-foreground"
+                  )}
+                  aria-hidden="true"
+                >
+                  {shippingDone && !shippingOpen ? (
+                    <Check className="size-3.5" />
+                  ) : (
+                    <Truck className="size-3.5" />
+                  )}
+                </span>
+
+                <div className="min-w-0 flex-1 space-y-1">
+                  <h2 id="stage-shipping-title" className="text-base font-semibold text-foreground">
+                    Giao hàng
+                  </h2>
+
+                  {!addressDone ? (
+                    <p className="text-xs text-muted-foreground">Chọn địa chỉ để tính cước.</p>
+                  ) : !shippingOpen ? (
+                    quotesPending ? (
+                      <p className="text-xs text-muted-foreground">Đang tính phí vận chuyển…</p>
+                    ) : activeQuote ? (
+                      <button
+                        type="button"
+                        aria-expanded={false}
+                        aria-controls="stage-shipping-body"
+                        onClick={() => setOpenStage("shipping")}
+                        className="flex w-full flex-wrap items-center gap-x-2.5 gap-y-0.5 rounded-md text-left text-sm transition-opacity hover:opacity-80"
+                      >
+                        <strong className="font-semibold text-foreground">
+                          {formatCarrierLabel(activeQuote.carrier_code, activeQuote.carrier_name)}
+                        </strong>
+                        <span className="text-muted-foreground">
+                          {formatServiceLabel(activeQuote.service_code, activeQuote.service_name)}
+                        </span>
+                        <span className="font-semibold text-foreground tabular-nums">
+                          {formatVnd(activeQuote.fee_vnd)}
+                        </span>
+                      </button>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        {quotesFailed ? "Phí tính khi đặt." : "Tính phí theo địa chỉ nhận hàng."}
+                      </p>
+                    )
+                  ) : null}
+                </div>
               </div>
 
-              <div id="stage-shipping-body" hidden={!shippingOpen}>
-                {shippingOpen && (
-                  <div className={styles.stageBody}>
-                    {quotesPending ? (
-                      <p className={styles.addressShipLine}>Đang tính cước vận chuyển…</p>
-                    ) : quotes.length > 0 ? (
-                      <div
-                        className={styles.deliveryOptions}
-                        role="radiogroup"
-                        aria-label={`Chọn đơn vị vận chuyển cho ${brandName}`}
-                      >
-                        {quotes.map((q) => {
-                          const active =
-                            activeQuote?.carrier_code === q.carrier_code &&
-                            activeQuote?.service_code === q.service_code;
-                          return (
-                            <button
-                              key={`${q.carrier_code}-${q.service_code}`}
-                              type="button"
-                              role="radio"
-                              aria-checked={active}
-                              className={`${styles.deliveryOptionBtn} ${
-                                active ? styles.deliveryOptionActive : ""
-                              }`}
-                              onClick={() => {
-                                setSelectedCarrier({
-                                  carrier_code: q.carrier_code,
-                                  service_code: q.service_code,
-                                });
-                                setOpenStage("payment");
-                              }}
-                            >
-                              <span className={styles.deliveryOptionHead}>
-                                <span className={styles.paymentTitle}>
+              {addressDone && !shippingOpen && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-expanded={false}
+                  aria-controls="stage-shipping-body"
+                  aria-label="Sửa đơn vị vận chuyển"
+                  className="min-h-10 shrink-0 text-brand shadow-none hover:text-brand sm:min-h-8"
+                  onClick={() => setOpenStage("shipping")}
+                >
+                  Sửa
+                </Button>
+              )}
+            </div>
+
+            <div id="stage-shipping-body" hidden={!shippingOpen}>
+              {shippingOpen && (
+                <div className="space-y-4 border-t border-border px-4 py-4 md:px-5">
+                  {quotesPending ? (
+                    <p className="text-sm text-muted-foreground">Đang tính cước vận chuyển…</p>
+                  ) : quotes.length > 0 ? (
+                    <RadioGroup
+                      role="radiogroup"
+                      aria-label={`Chọn đơn vị vận chuyển cho ${brandName}`}
+                      value={
+                        activeQuote
+                          ? quoteValue(activeQuote.carrier_code, activeQuote.service_code)
+                          : ""
+                      }
+                      onValueChange={(nextVal) => {
+                        const found = quotes.find(
+                          (q) => quoteValue(q.carrier_code, q.service_code) === nextVal
+                        );
+                        if (!found) return;
+                        setSelectedCarrier({
+                          carrier_code: found.carrier_code,
+                          service_code: found.service_code,
+                        });
+                        setOpenStage("payment");
+                      }}
+                      className="gap-2.5"
+                    >
+                      {quotes.map((q) => {
+                        const val = quoteValue(q.carrier_code, q.service_code);
+                        const active =
+                          activeQuote?.carrier_code === q.carrier_code &&
+                          activeQuote?.service_code === q.service_code;
+                        const itemId = `checkout-ship-${q.carrier_code}-${q.service_code}`;
+                        return (
+                          <label
+                            key={val}
+                            htmlFor={itemId}
+                            className={cn(
+                              "flex cursor-pointer items-start gap-3 rounded-lg border p-3.5 transition-colors",
+                              active
+                                ? "border-brand bg-accent/60"
+                                : "border-border bg-background hover:bg-accent/40"
+                            )}
+                          >
+                            <RadioGroupItem value={val} id={itemId} className="mt-0.5" />
+                            <span className="flex min-w-0 flex-1 flex-col gap-1">
+                              <span className="flex items-baseline justify-between gap-2">
+                                <span className="text-sm font-semibold text-foreground">
                                   {formatCarrierLabel(q.carrier_code, q.carrier_name)}
                                 </span>
-                                <span className={`${styles.deliveryFee} num`}>
+                                <span className="shrink-0 text-sm font-semibold text-foreground tabular-nums">
                                   {formatVnd(q.fee_vnd)}
                                 </span>
                               </span>
-                              <span className={styles.addressShipLine}>
+                              <span className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
                                 <span>{formatServiceLabel(q.service_code, q.service_name)}</span>
                                 <span>
-                                  Dự kiến <span className="num">{q.estimated_days}</span> ngày
+                                  Dự kiến{" "}
+                                  <span className="font-medium tabular-nums">
+                                    {q.estimated_days}
+                                  </span>{" "}
+                                  ngày
                                 </span>
                               </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <p className={styles.addressShipLine}>
-                        Phí vận chuyển được xác nhận tự động khi đặt đơn.
-                      </p>
-                    )}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </RadioGroup>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      Phí vận chuyển được xác nhận tự động khi đặt đơn.
+                    </p>
+                  )}
 
-                    <div className={styles.stageFooterRow}>
-                      <Button variant="ink" size="sm" onClick={() => setOpenStage("payment")}>
-                        Tiếp tục thanh toán
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </section>
-
-            {/* Stage 3: Phương thức thanh toán */}
-            <section
-              className={`${styles.stageCard} ${!addressDone ? styles.stageCardMuted : ""}`}
-              aria-labelledby="stage-payment-title"
-            >
-              <div className={styles.stageHeader}>
-                <div className={styles.stageHeaderLeft}>
-                  <span
-                    className={`${styles.stageMarker} ${
-                      addressDone && !paymentOpen
-                        ? styles.stageMarkerDone
-                        : paymentOpen
-                          ? styles.stageMarkerActive
-                          : ""
-                    }`}
-                    aria-hidden="true"
-                  >
-                    {addressDone && !paymentOpen ? (
-                      <IconCheck size={14} />
-                    ) : paymentOpen ? (
-                      <span className={styles.stageMarkerActiveDot} />
-                    ) : null}
-                  </span>
-
-                  <div className={styles.stageTitleGroup}>
-                    <h2 id="stage-payment-title" className={styles.stageTitle}>
-                      Thanh toán
-                    </h2>
-                    {!addressDone ? (
-                      <p className={styles.stageSummaryLine}>Chọn sau khi nhập địa chỉ.</p>
-                    ) : !paymentOpen ? (
-                      <p className={styles.stageSummaryLine}>
-                        {PAYMENT_METHOD_COPY[paymentMethod].title}
-                      </p>
-                    ) : null}
+                  <div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="min-h-10 shadow-none sm:min-h-9"
+                      onClick={() => setOpenStage("payment")}
+                    >
+                      Tiếp tục thanh toán
+                    </Button>
                   </div>
                 </div>
+              )}
+            </div>
+          </Card>
 
-                {addressDone && !paymentOpen && (
-                  <button
-                    type="button"
-                    aria-expanded={false}
-                    aria-controls="stage-payment-body"
-                    aria-label="Sửa phương thức thanh toán"
-                    className={styles.editBtn}
-                    onClick={() => setOpenStage("payment")}
-                  >
-                    Sửa
-                  </button>
-                )}
+          {/* Stage 3: Phương thức thanh toán */}
+          <Card
+            className={cn("border border-border py-0 shadow-none", !addressDone && "opacity-70")}
+            aria-labelledby="stage-payment-title"
+          >
+            <div className="flex items-start justify-between gap-3 px-4 py-4 md:px-5">
+              <div className="flex min-w-0 flex-1 items-start gap-3">
+                <span
+                  className={cn(
+                    "mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
+                    addressDone && !paymentOpen
+                      ? "border-badge-success-ink/30 bg-badge-success-bg text-badge-success-ink"
+                      : paymentOpen
+                        ? "border-brand bg-primary text-primary-foreground"
+                        : "border-border bg-muted text-muted-foreground"
+                  )}
+                  aria-hidden="true"
+                >
+                  {addressDone && !paymentOpen ? (
+                    <Check className="size-3.5" />
+                  ) : (
+                    <CreditCard className="size-3.5" />
+                  )}
+                </span>
+
+                <div className="min-w-0 flex-1 space-y-1">
+                  <h2 id="stage-payment-title" className="text-base font-semibold text-foreground">
+                    Thanh toán
+                  </h2>
+                  {!addressDone ? (
+                    <p className="text-xs text-muted-foreground">Chọn sau khi nhập địa chỉ.</p>
+                  ) : !paymentOpen ? (
+                    <p className="text-sm text-muted-foreground">
+                      {PAYMENT_METHOD_COPY[paymentMethod].title}
+                    </p>
+                  ) : null}
+                </div>
               </div>
 
-              <div id="stage-payment-body" hidden={!paymentOpen}>
-                {paymentOpen && (
-                  <div className={styles.stageBody}>
-                    <div
-                      className={styles.paymentGrid}
-                      role="radiogroup"
-                      aria-label="Chọn phương thức thanh toán"
-                    >
-                      {(["VIETQR", "ZALOPAY", "COD"] as const).map((methodKey) => {
-                        const entry = paymentMethodEvals.get(methodKey);
-                        if (!entry || !entry.config.enabled) return null;
-                        const copy = PAYMENT_METHOD_COPY[methodKey];
-                        const selected = paymentMethod === methodKey;
-                        const { allowed, reason, blockCode } = entry.evalResult;
-                        const maxVnd = entry.config.max_order_vnd;
-                        const minVnd = entry.config.min_order_vnd;
-                        return (
-                          <button
-                            key={methodKey}
-                            type="button"
-                            role="radio"
-                            aria-checked={selected}
-                            disabled={blockCode === "FLASH_SALE"}
-                            className={`${styles.paymentTile} ${
-                              selected ? styles.paymentTileSelected : ""
-                            }`}
-                            onClick={() => {
-                              if (blockCode === "FLASH_SALE") return;
-                              setPaymentMethod(methodKey);
-                              setFormError(null);
-                              setFormErrorCode(null);
-                            }}
-                          >
-                            <span className={styles.paymentHead}>
-                              <span className={styles.paymentTitle}>{copy.title}</span>
-                              <span className={styles.paymentCheck} aria-hidden="true">
-                                <IconCheck size={13} />
+              {addressDone && !paymentOpen && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-expanded={false}
+                  aria-controls="stage-payment-body"
+                  aria-label="Sửa phương thức thanh toán"
+                  className="min-h-10 shrink-0 text-brand shadow-none hover:text-brand sm:min-h-8"
+                  onClick={() => setOpenStage("payment")}
+                >
+                  Sửa
+                </Button>
+              )}
+            </div>
+
+            <div id="stage-payment-body" hidden={!paymentOpen}>
+              {paymentOpen && (
+                <div className="space-y-3 border-t border-border px-4 py-4 md:px-5">
+                  <RadioGroup
+                    role="radiogroup"
+                    aria-label="Chọn phương thức thanh toán"
+                    value={paymentMethod}
+                    onValueChange={(val) => {
+                      const methodKey = val as GatewayPaymentMethod;
+                      if (
+                        paymentMethodEvals.get(methodKey)?.evalResult.blockCode === "FLASH_SALE"
+                      ) {
+                        return;
+                      }
+                      setPaymentMethod(methodKey);
+                      setFormError(null);
+                      setFormErrorCode(null);
+                    }}
+                    className="gap-2.5"
+                  >
+                    {(["VIETQR", "ZALOPAY", "COD"] as const).map((methodKey) => {
+                      const entry = paymentMethodEvals.get(methodKey);
+                      if (!entry || !entry.config.enabled) return null;
+                      const copy = PAYMENT_METHOD_COPY[methodKey];
+                      const selected = paymentMethod === methodKey;
+                      const { allowed, reason, blockCode } = entry.evalResult;
+                      const maxVnd = entry.config.max_order_vnd;
+                      const minVnd = entry.config.min_order_vnd;
+                      const isDisabled = blockCode === "FLASH_SALE";
+                      const itemId = `checkout-pay-${methodKey.toLowerCase()}`;
+
+                      return (
+                        <label
+                          key={methodKey}
+                          htmlFor={itemId}
+                          className={cn(
+                            "flex items-start gap-3 rounded-lg border p-3.5 transition-colors",
+                            isDisabled
+                              ? "cursor-not-allowed border-border bg-muted/40 opacity-60"
+                              : selected
+                                ? "cursor-pointer border-brand bg-accent/60"
+                                : "cursor-pointer border-border bg-background hover:bg-accent/40"
+                          )}
+                        >
+                          <RadioGroupItem
+                            value={methodKey}
+                            id={itemId}
+                            disabled={isDisabled}
+                            className="mt-0.5"
+                          />
+                          <span className="flex min-w-0 flex-1 flex-col gap-1">
+                            <span className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="text-sm font-semibold text-foreground">
+                                {copy.title}
                               </span>
+                              {selected && <StatusBadge tone="info">Đang chọn</StatusBadge>}
                             </span>
-                            <span className={styles.paymentDesc}>
+                            <span className="text-xs leading-relaxed text-muted-foreground">
                               {copy.description}
                               {minVnd > 0 && (
                                 <>
                                   {" "}
-                                  Tối thiểu <span className="num">{formatVnd(minVnd)}</span>.
+                                  Tối thiểu{" "}
+                                  <span className="tabular-nums">{formatVnd(minVnd)}</span>.
                                 </>
                               )}
                               {maxVnd > 0 && (
                                 <>
                                   {" "}
-                                  Tối đa <span className="num">{formatVnd(maxVnd)}</span>.
+                                  Tối đa <span className="tabular-nums">{formatVnd(maxVnd)}</span>.
                                 </>
                               )}
                             </span>
                             {!allowed && reason && (
-                              <span className={shared.fieldError}>{reason}</span>
+                              <span className="text-xs font-medium text-destructive">{reason}</span>
                             )}
                             {blockCode === "PHONE_NOT_VERIFIED" && (
-                              <span className={styles.addressShipLine}>
+                              <span className="text-xs text-muted-foreground">
                                 Cần xác minh SĐT trước khi đặt COD.
                               </span>
                             )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {paymentMethodEvals.get("COD")?.evalResult.blockCode ===
-                      "PHONE_NOT_VERIFIED" && (
-                      <div className={styles.stageFooterRow}>
-                        <Link href="/tai-khoan#xac-minh-sdt" className={shared.breadcrumbLink}>
-                          Xác minh số điện thoại ngay để bật COD →
-                        </Link>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </section>
-          </div>
-
-          {/* Sticky order summary column */}
-          <aside className={styles.reviewCol} aria-label="Chi tiết thanh toán">
-            <div className={styles.reviewInner}>
-              <h2 className={styles.reviewTitle}>
-                Đơn hàng (<span className="num">{totalQty}</span>)
-              </h2>
-
-              <div className={styles.shopSliceItems}>
-                {cartItems.map((it) => {
-                  const skuId = it.raw.sku_id;
-                  const liveFlash = flashState.liveFlashBySku[skuId] ?? null;
-                  const availableLiveFlash = flashState.availableLiveFlashBySku[skuId] ?? null;
-                  const isFlashOptedOut = Boolean(availableLiveFlash) && !liveFlash;
-                  const flashEval = flashLineEvals[skuId] ?? null;
-                  const flashInspection = flashState.inspectionBySku[skuId] ?? null;
-                  const lp = resolveDisplayedLinePricing({
-                    regularUnitPriceVnd: it.raw.price_vnd,
-                    quantity: it.raw.quantity,
-                    isFlashLine: Boolean(liveFlash),
-                    flashUnitPriceVnd: liveFlash?.flashPriceVnd,
-                    flashShortfall: Boolean(flashEval?.needsRegularPriceChoice),
-                    activeShopDiscount: shopDiscountBySku[skuId] ?? null,
-                    shopBreakdown,
-                    isInPreview: Boolean(shopBreakdown),
-                  });
-                  return (
-                    <div key={skuId} className={styles.miniItem}>
-                      <img
-                        src={it.image}
-                        alt={it.productName}
-                        width={896}
-                        height={1200}
-                        className={styles.miniThumb}
-                      />
-                      <div className={styles.miniInfo}>
-                        <span className={styles.miniName}>{it.productName}</span>
-                        <span className={styles.miniMeta}>
-                          {splitVariantParts(it.variantLabel).map((part) => (
-                            <span key={part}>{part}</span>
-                          ))}
-                          <span className="num">×{it.raw.quantity}</span>
-                        </span>
-                        {(liveFlash || isFlashOptedOut) && (
-                          <div className={styles.miniFlashRow}>
-                            {liveFlash ? (
-                              <>
-                                <span className={`${shared.statusTag} ${shared.toneWarn}`}>
-                                  Flash sale
-                                </span>
-                                <button
-                                  type="button"
-                                  className={styles.flashToggleBtn}
-                                  disabled={isSubmitting || !canMutateFlashSelection}
-                                  onClick={() => optOutFlashSaleSku(skuId)}
-                                >
-                                  Mua giá thường
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                <span className={`${shared.statusTag} ${shared.toneNeutral}`}>
-                                  Giá thường
-                                </span>
-                                <button
-                                  type="button"
-                                  className={styles.flashToggleBtn}
-                                  disabled={isSubmitting || !canMutateFlashSelection}
-                                  onClick={() => restoreFlashSaleSku(skuId)}
-                                >
-                                  Dùng giá Flash
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        )}
-                        {flashEval?.reason ? (
-                          <span className={`${styles.miniLineNote} ${styles.miniLineWarn}`}>
-                            {flashEval.reason}
                           </span>
-                        ) : flashInspection && flashInspection.state !== "live" ? (
-                          <span className={styles.miniLineNote}>{flashInspection.message}</span>
-                        ) : null}
-                      </div>
-                      <span className={`${styles.miniPrice} num`}>
-                        {formatVnd(lp.lineTotalVnd)}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-              {unavailableCount > 0 && (
-                <p className={`${shared.feedbackBox} ${shared.feedbackWarn}`} role="status">
-                  <strong className="num">{unavailableCount}</strong> sản phẩm không khả dụng trong
-                  giỏ hàng đã được bỏ qua.
-                </p>
-              )}
-
-              <form className={styles.promoSection} onSubmit={handleApplyCode} noValidate>
-                <label htmlFor="co-code-input" className={shared.fieldLabel}>
-                  Mã giảm giá
-                </label>
-                <div className={shared.codeInputRow}>
-                  <input
-                    id="co-code-input"
-                    type="text"
-                    className={shared.input}
-                    aria-describedby={promoFeedback ? "co-code-feedback" : undefined}
-                    value={promoCodeInput}
-                    onChange={(e) => setPromoCodeInput(e.target.value)}
-                    placeholder="Nhập mã"
-                  />
-                  <Button
-                    type="submit"
-                    variant="ink"
-                    size="md"
-                    loading={promoValidating}
-                    loadingLabel="Đang kiểm tra"
-                  >
-                    Áp dụng
-                  </Button>
-                </div>
-                {promoFeedback && (
-                  <p
-                    id="co-code-feedback"
-                    className={`${shared.feedbackBox} ${
-                      promoFeedback.ok ? shared.feedbackSuccess : shared.feedbackError
-                    }`}
-                    role={promoFeedback.ok ? "status" : "alert"}
-                  >
-                    {promoFeedback.message}
-                  </p>
-                )}
-
-                {shopVouchers.length > 0 && (
-                  <div className={styles.voucherChips}>
-                    {shopVouchers.map((v) => {
-                      const reason = formatVoucherIneligibleReason(v, subtotal, anchorNowMs);
-                      const eligible = reason === null;
-                      const active =
-                        (selectedVoucherId === v.id || selectedVoucherId === v.code) && eligible;
-                      return (
-                        <button
-                          key={v.id}
-                          type="button"
-                          disabled={!eligible}
-                          className={`${styles.voucherChip} ${
-                            active ? styles.voucherChipActive : ""
-                          }`}
-                          onClick={() => setSelectedVoucher(active ? null : v.id)}
-                          title={
-                            eligible
-                              ? `Còn ${formatInt(v.remaining_quota)} lượt`
-                              : (reason ?? undefined)
-                          }
-                        >
-                          <span className={styles.voucherChipCode}>{v.code}</span>
-                          <span className={styles.voucherChipVal}>{formatVoucherHeadline(v)}</span>
-                        </button>
+                        </label>
                       );
                     })}
-                  </div>
-                )}
-              </form>
+                  </RadioGroup>
 
-              {(previewError || (breakdown?.warnings?.length ?? 0) > 0) && (
-                <p className={`${shared.feedbackBox} ${shared.feedbackWarn}`} role="status">
-                  {previewError ?? breakdown?.warnings[0]}
-                </p>
-              )}
-
-              <dl className={styles.ledgerList}>
-                <div className={styles.ledgerRow}>
-                  <dt className={styles.ledgerLabel}>
-                    Tạm tính (<span className="num">{totalQty}</span>)
-                  </dt>
-                  <dd className="num">{formatVnd(subtotal)}</dd>
-                </div>
-                {flashDiscount > 0 && (
-                  <div className={styles.ledgerRow}>
-                    <dt className={styles.ledgerLabel}>Flash sale</dt>
-                    <dd className={`${styles.ledgerDiscount} num`}>
-                      {formatSignedVnd(-flashDiscount)}
-                    </dd>
-                  </div>
-                )}
-                {shopProgramDiscount > 0 && (
-                  <div className={styles.ledgerRow}>
-                    <dt className={styles.ledgerLabel}>Giảm giá chương trình gian hàng</dt>
-                    <dd className={`${styles.ledgerDiscount} num`}>
-                      {formatSignedVnd(-shopProgramDiscount)}
-                    </dd>
-                  </div>
-                )}
-                <div className={styles.ledgerRow}>
-                  <dt className={styles.ledgerLabel}>Mã giảm giá</dt>
-                  <dd className={`${styles.ledgerDiscount} num`}>
-                    {shopVoucherTotal > 0 ? formatSignedVnd(-shopVoucherTotal) : "0₫"}
-                  </dd>
-                </div>
-                <div className={styles.ledgerRow}>
-                  <dt className={styles.ledgerLabel}>
-                    Phí vận chuyển{quotesIsEstimated ? " (tạm tính)" : ""}
-                  </dt>
-                  {!selectedAddress ? (
-                    <dd className={styles.ledgerPendingNote}>Tính theo địa chỉ</dd>
-                  ) : quotesPending ? (
-                    <dd>
-                      <span className={styles.feeSkeleton} aria-label="Đang tính phí vận chuyển" />
-                    </dd>
-                  ) : hasAuthoritativeShipping ? (
-                    <dd className="num">{formatVnd(shippingFeeTotal)}</dd>
-                  ) : (
-                    <dd className={styles.ledgerPendingNote}>Phí tính khi đặt</dd>
-                  )}
-                </div>
-                {shopFreeshipDiscount > 0 && (
-                  <div className={styles.ledgerRow}>
-                    <dt className={styles.ledgerLabel}>Gian hàng hỗ trợ phí ship</dt>
-                    <dd className={`${styles.ledgerDiscount} num`}>
-                      {formatSignedVnd(-shopFreeshipDiscount)}
-                    </dd>
-                  </div>
-                )}
-              </dl>
-            </div>
-
-            <div className={styles.ctaBand}>
-              <div className={styles.grandBand}>
-                <span className={styles.grandLabel}>Tổng thanh toán</span>
-                {isCalculating ? (
-                  <span className={styles.grandSkeleton} aria-label="Đang tính tổng thanh toán" />
-                ) : (
-                  <span className={`${styles.grandVal} num`}>{formatVnd(finalPayable)}</span>
-                )}
-              </div>
-
-              {submitGuard.keyUncertainty !== "none" && !formError && (
-                <div className={`${shared.feedbackBox} ${shared.feedbackWarn}`} role="status">
-                  <p>{AMBIGUOUS_CHECKOUT_MESSAGE}</p>
-                  <div className={styles.alertActions}>
-                    <Button variant="secondary" size="sm" href="/don-hang">
-                      Đơn hàng của tôi
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      disabled={isSubmitting}
-                      onClick={handleStartNewOrderAttempt}
-                    >
-                      Đặt đơn mới
-                    </Button>
-                  </div>
-                </div>
-              )}
-
-              {formError && (
-                <div className={`${shared.feedbackBox} ${shared.feedbackError}`} role="alert">
-                  <p>{formError}</p>
-                  {sessionExpired && (
-                    <div className={styles.alertActions}>
-                      <Button variant="secondary" size="sm" href="/dang-nhap?next=%2Fthanh-toan">
-                        Đăng nhập lại
-                      </Button>
-                    </div>
-                  )}
-                  {formErrorCode === "COD_PHONE_NOT_VERIFIED" && (
-                    <div className={styles.alertActions}>
-                      <Button variant="secondary" size="sm" href="/tai-khoan#xac-minh-sdt">
-                        Xác minh SĐT ngay
-                      </Button>
-                    </div>
-                  )}
-                  {submitGuard.keyUncertainty !== "none" && (
-                    <div className={styles.alertActions}>
-                      <Button variant="secondary" size="sm" href="/don-hang">
-                        Đơn hàng của tôi
-                      </Button>
+                  {paymentMethodEvals.get("COD")?.evalResult.blockCode === "PHONE_NOT_VERIFIED" && (
+                    <div className="pt-1">
                       <Button
-                        variant="secondary"
+                        asChild
+                        variant="link"
                         size="sm"
-                        disabled={isSubmitting}
-                        onClick={handleStartNewOrderAttempt}
+                        className="h-auto min-h-9 px-0 text-brand"
                       >
-                        Đặt đơn mới
-                      </Button>
-                    </div>
-                  )}
-                  {submitGuard.checkoutFailedPrior && submitGuard.keyUncertainty === "none" && (
-                    <div className={styles.alertActions}>
-                      <Button variant="secondary" size="sm" href="/don-hang">
-                        Đơn hàng của tôi
-                      </Button>
-                    </div>
-                  )}
-                  {submitGuard.flashBlocked && canMutateFlashSelection && hasFlashSaleItem && (
-                    <div className={styles.alertActions}>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={isSubmitting}
-                        onClick={handleOptOutAllFlashSkus}
-                      >
-                        Bỏ Flash sale, mua giá thường
+                        <Link href="/tai-khoan#xac-minh-sdt">
+                          Xác minh số điện thoại ngay để bật COD
+                        </Link>
                       </Button>
                     </div>
                   )}
                 </div>
               )}
-
-              <Button
-                variant="primary"
-                size="lg"
-                fullWidth
-                className={shared.wrapBtn}
-                loading={isSubmitting}
-                loadingLabel="Đang tạo đơn hàng"
-                disabled={!canPlaceOrder}
-                onClick={handlePlaceOrder}
-              >
-                <span className={styles.stableBtnLabel}>
-                  <span className={styles.stableBtnSizer} aria-hidden="true">
-                    {ctaLabel}
-                  </span>
-                  <span className={styles.stableBtnSizer} aria-hidden="true">
-                    Đang tính…
-                  </span>
-                  <span className={styles.stableBtnLive}>
-                    {isCalculating ? "Đang tính…" : ctaLabel}
-                  </span>
-                </span>
-              </Button>
             </div>
-          </aside>
-        </div>
-      </section>
+          </Card>
 
-      <div className={styles.mobileCheckoutBar} aria-label="Xác nhận đặt hàng nhanh">
-        <div>
-          <p className={styles.miniMeta}>{payLabel}</p>
-          {isCalculating ? (
-            <span className={styles.feeSkeleton} aria-label="Đang tính tổng thanh toán" />
-          ) : (
-            <p className={`${styles.addressName} num`}>{formatVnd(finalPayable)}</p>
-          )}
+          {/* Mobile full-width Place Order CTA card */}
+          <Card className="overflow-hidden border border-border py-0 shadow-none lg:hidden">
+            {renderPlaceOrderFooter()}
+          </Card>
         </div>
-        <Button
-          variant="primary"
-          size="md"
-          loading={isSubmitting}
-          loadingLabel="Đang đặt"
-          disabled={!canPlaceOrder}
-          onClick={handlePlaceOrder}
+
+        {/* Desktop sticky right order summary column */}
+        <aside
+          className="hidden min-w-0 lg:sticky lg:top-24 lg:block"
+          aria-label="Chi tiết thanh toán"
         >
-          <span className={styles.stableBtnLabel}>
-            <span className={styles.stableBtnSizer} aria-hidden="true">
-              {mobileCtaLabel}
-            </span>
-            <span className={styles.stableBtnSizer} aria-hidden="true">
-              Đang tính…
-            </span>
-            <span className={styles.stableBtnLive}>
-              {isCalculating ? "Đang tính…" : mobileCtaLabel}
-            </span>
-          </span>
-        </Button>
+          <Card className="overflow-hidden border border-border py-0 shadow-none">
+            <CardHeader className="border-b border-border py-4">
+              <CardTitle className="text-base font-semibold text-foreground">
+                Đơn hàng (<span className="tabular-nums">{totalQty}</span>)
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="py-4">{renderOrderSummaryBody("co")}</CardContent>
+            {renderPlaceOrderFooter()}
+          </Card>
+        </aside>
       </div>
-    </div>
+    </SitePageFrame>
   );
 }

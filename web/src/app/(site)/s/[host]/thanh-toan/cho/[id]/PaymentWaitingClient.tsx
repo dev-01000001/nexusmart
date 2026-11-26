@@ -3,15 +3,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { AlertTriangle, CheckCircle2, ExternalLink } from "lucide-react";
 import type { GatewayOrder, GatewayPayment } from "@/lib/gateway-types";
 import { formatVnd } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";
-import { Button, StateView } from "@/components";
+import { ErrorState } from "@/components/app/ErrorState";
+import { Money } from "@/components/app/Money";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
 import { RetryPaymentBox } from "@/features/commerce/RetryPaymentBox";
+import { SitePageFrame, SitePageHeader } from "@/features/commerce/ui/SitePageFrame";
 import { computeShopAllocationPayableVnd, readCheckoutWarnings } from "@/features/checkout/helpers";
 import type { GwPayment } from "@/features/commerce/types";
-import shared from "@/features/commerce/commerce.module.css";
-import styles from "./page.module.css";
 
 export interface PaymentWaitingClientProps {
   brandName: string;
@@ -112,63 +117,63 @@ export function PaymentWaitingClient({
 
   if (initialError && !snapshot) {
     return (
-      <div className={shared.page}>
-        <div className={styles.stageWrap}>
-          <header className={styles.stageHead}>
-            <h1 className={shared.pageTitle}>Chờ thanh toán</h1>
-          </header>
-          <StateView
-            kind="error"
+      <SitePageFrame narrow>
+        <SitePageHeader title="Chờ thanh toán" subtitle={brandName} centered />
+        <div className="space-y-4">
+          <ErrorState
             title="Chưa thể hiển thị thông tin thanh toán."
-            message={initialError}
-            actionLabel="Xem đơn hàng"
-            actionHref={orderDetailHref}
+            description={initialError}
+            retryHref={orderDetailHref}
+            className="border border-border shadow-none"
           />
-          <div className={styles.actionsCenter}>
-            <Button variant="secondary" size="md" href="/don-hang">
-              Đơn hàng của tôi
+          <div className="flex justify-center">
+            <Button asChild variant="outline" className="min-h-10 shadow-none">
+              <Link href="/don-hang">Đơn hàng của tôi</Link>
             </Button>
           </div>
         </div>
-      </div>
+      </SitePageFrame>
     );
   }
 
   return (
-    <div className={shared.page}>
-      <div className={styles.stageWrap}>
-        <header className={styles.stageHead}>
-          <h1 className={`${shared.pageTitle} lines`}>
-            <span className="line">
-              <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
-                {pageTitle}
-              </span>
-            </span>
-          </h1>
-          <p className={shared.pageLead} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
-            {pageLead}
-          </p>
-        </header>
+    <SitePageFrame narrow>
+      <SitePageHeader title={pageTitle} subtitle={pageLead} centered />
 
-        <section className={styles.sheet}>
+      <Card className="border border-border shadow-none">
+        <CardContent className="space-y-5">
           {checkoutWarnings.length > 0 && (
-            <div className={`${shared.feedbackBox} ${shared.feedbackWarn}`} role="status">
-              {checkoutWarnings.map((w) => (
-                <p key={w}>{w}</p>
-              ))}
-            </div>
+            <Alert
+              className="border-badge-warning-ink/25 bg-badge-warning-bg text-badge-warning-ink shadow-none"
+              role="status"
+            >
+              <AlertTriangle className="size-4" aria-hidden="true" />
+              <AlertDescription className="space-y-1 text-xs text-badge-warning-ink">
+                {checkoutWarnings.map((w) => (
+                  <p key={w}>{w}</p>
+                ))}
+              </AlertDescription>
+            </Alert>
           )}
 
           {paidRedirecting && (
-            <div className={`${shared.feedbackBox} ${shared.feedbackSuccess}`} role="status">
-              Thanh toán đã được xác nhận. Đang chuyển tới chi tiết đơn hàng…
-            </div>
+            <Alert
+              className="border-badge-success-ink/25 bg-badge-success-bg text-badge-success-ink shadow-none"
+              role="status"
+            >
+              <CheckCircle2 className="size-4" aria-hidden="true" />
+              <AlertDescription className="text-badge-success-ink">
+                Thanh toán đã được xác nhận. Đang chuyển tới chi tiết đơn hàng…
+              </AlertDescription>
+            </Alert>
           )}
 
           {snapshot && (
-            <div className={styles.allocRow}>
-              <span>{isPaid ? "Tổng đã thanh toán" : "Tổng cần thanh toán"}</span>
-              <strong className="num">{formatVnd(snapshot.amount_vnd)}</strong>
+            <div className="flex flex-wrap items-baseline justify-between gap-2 rounded-lg border border-border bg-muted/40 px-4 py-3">
+              <span className="text-sm text-muted-foreground">
+                {isPaid ? "Tổng đã thanh toán" : "Tổng cần thanh toán"}
+              </span>
+              <Money vnd={snapshot.amount_vnd} size="lg" />
             </div>
           )}
 
@@ -182,26 +187,34 @@ export function PaymentWaitingClient({
           />
 
           {snapshot?.shop_allocations && snapshot.shop_allocations.length > 0 && (
-            <div className={styles.allocSection}>
-              <h3 className={styles.allocHeading}>Đơn hàng</h3>
-              {snapshot.shop_allocations.map((alloc) => (
-                <div key={alloc.order_id} className={styles.allocRow}>
-                  <div className={shared.formActions}>
-                    <span>{brandName}</span>
-                    <Link
-                      href={`/don-hang/${encodeURIComponent(alloc.order_id)}`}
-                      className={styles.orderLink}
-                    >
-                      Mở đơn
-                    </Link>
+            <div className="space-y-3 pt-1">
+              <Separator />
+              <h2 className="text-sm font-semibold text-foreground">Đơn hàng</h2>
+              <div className="space-y-2">
+                {snapshot.shop_allocations.map((alloc) => (
+                  <div
+                    key={alloc.order_id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-background px-3.5 py-2.5 text-sm"
+                  >
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span className="font-medium text-foreground">{brandName}</span>
+                      <Button asChild variant="link" size="sm" className="h-auto px-0 text-brand">
+                        <Link href={`/don-hang/${encodeURIComponent(alloc.order_id)}`}>
+                          <span>Mở đơn</span>
+                          <ExternalLink className="size-3.5" aria-hidden="true" />
+                        </Link>
+                      </Button>
+                    </div>
+                    <span className="font-semibold text-foreground tabular-nums">
+                      {formatVnd(computeShopAllocationPayableVnd(alloc))}
+                    </span>
                   </div>
-                  <span className="num">{formatVnd(computeShopAllocationPayableVnd(alloc))}</span>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           )}
-        </section>
-      </div>
-    </div>
+        </CardContent>
+      </Card>
+    </SitePageFrame>
   );
 }

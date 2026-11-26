@@ -1,7 +1,8 @@
 import React, { Suspense } from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { StateView } from "@/components";
+import { SiteLoadingSkeleton } from "@/features/commerce/ui/SiteLoadingSkeleton";
+import { SitePageFrame } from "@/features/commerce/ui/SitePageFrame";
 import { buildSiteMetadata } from "@/lib/site/seo";
 import { loadSiteContext, loadSiteFlashSales } from "@/features/site/siteContext.server";
 import { FlashSaleClient } from "./FlashSaleClient";
@@ -38,9 +39,9 @@ export default async function SiteFlashSalePage({ params }: PageProps) {
   return (
     <Suspense
       fallback={
-        <div style={{ padding: "32px var(--margin)" }}>
-          <StateView kind="loading" title="Đang tải khung giờ Flash sale..." rows={6} />
-        </div>
+        <SitePageFrame>
+          <SiteLoadingSkeleton title="Đang tải khung giờ Flash sale..." rows={4} variant="grid" />
+        </SitePageFrame>
       }
     >
       <FlashSaleClient

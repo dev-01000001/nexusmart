@@ -1,11 +1,15 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowRightLeft, ChevronDown, ChevronUp, Loader2 } from "lucide-react";
 import type { GatewayMapLegacyAddressResponse } from "@/lib/gateway-types";
 import { ApiError, api, getErrorMessage } from "@/lib/api";
 import { normalizeVietnamese } from "@/lib/search";
 import { useStore } from "@/context/StoreContext";
-import { Button } from "@/components/Button";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
 import { AddressFieldsForm, type AddressFieldValues } from "./AddressFieldsForm";
 import {
   type MappedLegacyAddressCodes,
@@ -13,7 +17,6 @@ import {
   resolveLoadedWardSelection,
 } from "./addressHelpers";
 import type { GwAddress, GwProvince, GwWard } from "./types";
-import styles from "./commerce.module.css";
 
 export interface AddressSubmitPayload {
   recipient_name: string;
@@ -296,95 +299,106 @@ export function AddressForm({
   };
 
   const legacySlot = (
-    <div className={`${styles.field} ${styles.formFull}`}>
-      <div className={styles.formActions} style={{ marginTop: 0 }}>
+    <div className="space-y-3">
+      <div>
         <Button
           type="button"
-          variant="secondary"
+          variant="outline"
           size="sm"
-          className={styles.wrapBtnSm}
+          className="min-h-10 whitespace-normal text-left shadow-none sm:min-h-9"
           disabled={submitting}
+          aria-expanded={legacyPanelOpen}
           onClick={() => {
             setLegacyPanelOpen((v) => !v);
             setLegacyMapError(null);
           }}
         >
-          {legacyPanelOpen
-            ? "Ẩn công cụ quy đổi địa chỉ cũ"
-            : "Quy đổi địa chỉ cũ (Tỉnh / Quận / Phường)"}
+          <ArrowRightLeft className="size-3.5 shrink-0" aria-hidden="true" />
+          <span>
+            {legacyPanelOpen
+              ? "Ẩn công cụ quy đổi địa chỉ cũ"
+              : "Quy đổi địa chỉ cũ (Tỉnh / Quận / Phường)"}
+          </span>
+          {legacyPanelOpen ? (
+            <ChevronUp className="size-3.5 shrink-0" aria-hidden="true" />
+          ) : (
+            <ChevronDown className="size-3.5 shrink-0" aria-hidden="true" />
+          )}
         </Button>
       </div>
 
       {legacyPanelOpen && (
-        <div className={styles.legacyMapBox}>
-          <p className={styles.fieldHint}>
+        <div className="space-y-3 rounded-lg border border-border bg-muted/40 p-3.5 sm:p-4">
+          <p className="text-xs leading-relaxed text-muted-foreground">
             Nhập địa chỉ hành chính cũ (trước sáp nhập 34 tỉnh/thành) để hệ thống tự điền Tỉnh/Thành
             phố và Phường/Xã mới.
           </p>
-          <div className={styles.legacyMapGrid}>
-            <div className={styles.field}>
-              <label htmlFor="addr-legacy-province" className={styles.fieldLabel}>
-                Tỉnh / Thành phố cũ
-              </label>
-              <input
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <Field className="gap-1.5">
+              <FieldLabel htmlFor="addr-legacy-province">Tỉnh / Thành phố cũ</FieldLabel>
+              <Input
                 id="addr-legacy-province"
                 type="text"
-                className={styles.input}
+                className="min-h-10 bg-card"
                 value={legacyProvince}
                 onChange={(e) => setLegacyProvince(e.target.value)}
                 placeholder="Ví dụ: TP. Hồ Chí Minh, Bình Dương..."
                 disabled={mappingLegacy || submitting}
               />
-            </div>
-            <div className={styles.field}>
-              <label htmlFor="addr-legacy-district" className={styles.fieldLabel}>
-                Quận / Huyện cũ
-              </label>
-              <input
+            </Field>
+            <Field className="gap-1.5">
+              <FieldLabel htmlFor="addr-legacy-district">Quận / Huyện cũ</FieldLabel>
+              <Input
                 id="addr-legacy-district"
                 type="text"
-                className={styles.input}
+                className="min-h-10 bg-card"
                 value={legacyDistrict}
                 onChange={(e) => setLegacyDistrict(e.target.value)}
                 placeholder="Ví dụ: Quận 1, Thành phố Thủ Đức..."
                 disabled={mappingLegacy || submitting}
               />
-            </div>
-            <div className={styles.field}>
-              <label htmlFor="addr-legacy-ward" className={styles.fieldLabel}>
-                Phường / Xã cũ
-              </label>
-              <input
+            </Field>
+            <Field className="gap-1.5">
+              <FieldLabel htmlFor="addr-legacy-ward">Phường / Xã cũ</FieldLabel>
+              <Input
                 id="addr-legacy-ward"
                 type="text"
-                className={styles.input}
+                className="min-h-10 bg-card"
                 value={legacyWard}
                 onChange={(e) => setLegacyWard(e.target.value)}
                 placeholder="Ví dụ: Phường Bến Nghé..."
                 disabled={mappingLegacy || submitting}
               />
-            </div>
+            </Field>
           </div>
-          {legacyMapError && (
-            <p className={styles.fieldError} role="alert">
-              {legacyMapError}
-            </p>
-          )}
-          {legacyMapNotice && (
-            <p className={`${styles.feedbackBox} ${styles.feedbackSuccess}`} role="status">
-              {legacyMapNotice}
-            </p>
-          )}
-          <div className={styles.formActions} style={{ marginTop: 0 }}>
+
+          {legacyMapError ? <FieldError>{legacyMapError}</FieldError> : null}
+
+          {legacyMapNotice ? (
+            <Alert className="border-badge-success-ink/20 bg-badge-success-bg text-badge-success-ink shadow-none">
+              <AlertDescription className="text-xs text-badge-success-ink">
+                {legacyMapNotice}
+              </AlertDescription>
+            </Alert>
+          ) : null}
+
+          <div>
             <Button
               type="button"
-              variant="ink"
+              variant="secondary"
               size="sm"
-              className={styles.wrapBtnSm}
+              className="min-h-10 shadow-none sm:min-h-9"
               disabled={mappingLegacy || submitting}
               onClick={() => void handleMapLegacyAddress()}
             >
-              {mappingLegacy ? "Đang quy đổi..." : "Quy đổi sang địa chỉ mới"}
+              {mappingLegacy ? (
+                <>
+                  <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                  <span>Đang quy đổi...</span>
+                </>
+              ) : (
+                "Quy đổi sang địa chỉ mới"
+              )}
             </Button>
           </div>
         </div>
@@ -413,7 +427,7 @@ export function AddressForm({
       onWardFilterCleared={() => setMappedLegacyCodes(null)}
       legacyWardInactiveNotice={legacyWardInactiveNotice}
       minStreetLength={4}
-      formClassName={styles.surfacePanel}
+      formClassName="rounded-xl border border-border bg-card p-4 sm:p-5"
       submitVariant="ink"
       submitLabel={submitLabel ?? (isEditing ? "Cập nhật địa chỉ" : "Lưu địa chỉ nhận hàng")}
       loadingLabel="Đang lưu"
