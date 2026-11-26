@@ -1,0 +1,26 @@
+# Storefront site sai-gon — đủ 21 trang + 4 tab /tai-khoan?tab=... (--site sai-gon --login buyer)
+/
+/san-pham
+/san-pham/ao-thun-the-thao-dryfit-xanh-co-vit
+/tim-kiem
+/flash-sale
+/voucher
+/gio-hang
+/thanh-toan
+/thanh-toan/cho/0607a1b7-98e7-4a56-82eb-ebea0b15a1de
+/thanh-toan/mock-zalopay
+/don-hang
+/don-hang/be8b7691-218b-4399-90e3-28daffc74722
+/tra-cuu-don-hang
+/tra-cuu-don
+/tai-khoan
+/tai-khoan?tab=tong-quan
+/tai-khoan?tab=dia-chi
+/tai-khoan?tab=voucher
+/tai-khoan?tab=yeu-thich
+/gioi-thieu
+/chinh-sach
+/dang-nhap
+/dang-ky
+/quen-mat-khau
+/dat-lai-mat-khau

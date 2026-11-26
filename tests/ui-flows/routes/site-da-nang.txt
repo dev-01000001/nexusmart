@@ -1,0 +1,26 @@
+# Storefront site da-nang — đủ 21 trang + 4 tab /tai-khoan?tab=... (--site da-nang --login buyer)
+/
+/san-pham
+/san-pham/ao-polo-pique-cotton-kem-nhat
+/tim-kiem
+/flash-sale
+/voucher
+/gio-hang
+/thanh-toan
+/thanh-toan/cho/39a3937b-ff12-41f1-a09d-d59121cd1455
+/thanh-toan/mock-zalopay
+/don-hang
+/don-hang/4391f5fa-6db5-4d79-a268-0c98ae869e2b
+/tra-cuu-don-hang
+/tra-cuu-don
+/tai-khoan
+/tai-khoan?tab=tong-quan
+/tai-khoan?tab=dia-chi
+/tai-khoan?tab=voucher
+/tai-khoan?tab=yeu-thich
+/gioi-thieu
+/chinh-sach
+/dang-nhap
+/dang-ky
+/quen-mat-khau
+/dat-lai-mat-khau

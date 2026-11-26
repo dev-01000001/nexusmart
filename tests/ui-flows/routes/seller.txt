@@ -1,0 +1,18 @@
+# Seller portal — đủ 16 trang /seller/** (chạy với --login seller trên host gốc)
+# Order ID và Product ID lấy từ dữ liệu seed thật của seller@nexusmart.local (Xưởng Dệt Bạch Đằng)
+/seller
+/seller/don-hang
+/seller/don-hang/0b978ed5-2a02-45df-887b-7a1cea9c76c8
+/seller/san-pham
+/seller/san-pham/moi
+/seller/san-pham/773a9474-156c-4d89-8bff-7a66296410e5
+/seller/tra-hang
+/seller/khuyen-mai
+/seller/chat
+/seller/tuong-tac
+/seller/site
+/seller/site/xem-truoc
+/seller/site/ten-mien
+/seller/tai-chinh
+/seller/bao-cao-ai
+/seller/ho-so

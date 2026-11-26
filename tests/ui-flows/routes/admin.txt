@@ -1,0 +1,10 @@
+# Admin portal — đủ 9 trang /admin/** (chạy với --login admin trên host gốc)
+/admin
+/admin/gian-hang
+/admin/kiem-duyet
+/admin/sites
+/admin/flash-sale
+/admin/doi-soat
+/admin/khieu-nai
+/admin/cau-hinh
+/admin/audit-log

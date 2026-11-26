@@ -1,0 +1,26 @@
+# Storefront site ha-noi (custom primary_host: hanoi-knit.verified.test) — đủ 21 trang + 4 tab /tai-khoan?tab=...
+/
+/san-pham
+/san-pham/ao-polo-det-kim-min-den-than
+/tim-kiem
+/flash-sale
+/voucher
+/gio-hang
+/thanh-toan
+/thanh-toan/cho/deb2f69c-06cc-4f65-bdc5-c0e6260e9148
+/thanh-toan/mock-zalopay
+/don-hang
+/don-hang/bc2c38b2-25b5-464c-914d-21db69ffb7bc
+/tra-cuu-don-hang
+/tra-cuu-don
+/tai-khoan
+/tai-khoan?tab=tong-quan
+/tai-khoan?tab=dia-chi
+/tai-khoan?tab=voucher
+/tai-khoan?tab=yeu-thich
+/gioi-thieu
+/chinh-sach
+/dang-nhap
+/dang-ky
+/quen-mat-khau
+/dat-lai-mat-khau

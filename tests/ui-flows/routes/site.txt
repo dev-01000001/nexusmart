@@ -1,0 +1,28 @@
+# Storefront site — đủ 21 trang của (site)/s/[host] + 4 tab /tai-khoan?tab=...
+# Mặc định dùng slug/order_id/payment_id thật của site bach-dang (chạy với --site bach-dang --login buyer).
+# Các site seed khác có file riêng site-{sai-gon,da-nang,ha-noi}.txt do cô lập tenant theo Host.
+/
+/san-pham
+/san-pham/combo-3-quan-lot-boxer-modal
+/tim-kiem
+/flash-sale
+/voucher
+/gio-hang
+/thanh-toan
+/thanh-toan/cho/c8aebbe0-c317-4f81-a7d0-0e2c220dbd52
+/thanh-toan/mock-zalopay
+/don-hang
+/don-hang/d07e5930-9a57-45fe-90f6-f304f85916b2
+/tra-cuu-don-hang
+/tra-cuu-don
+/tai-khoan
+/tai-khoan?tab=tong-quan
+/tai-khoan?tab=dia-chi
+/tai-khoan?tab=voucher
+/tai-khoan?tab=yeu-thich
+/gioi-thieu
+/chinh-sach
+/dang-nhap
+/dang-ky
+/quen-mat-khau
+/dat-lai-mat-khau

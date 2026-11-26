@@ -1,0 +1,8 @@
+# Platform root host — đủ 7 trang (chạy không đăng nhập trên nexusmart.localhost)
+/
+/ve-nexusmart
+/tro-giup
+/dang-nhap
+/dang-ky
+/quen-mat-khau
+/dat-lai-mat-khau
