@@ -194,6 +194,9 @@ func (m *MemoryStore) UpsertReviewSummary(_ context.Context, summary ReviewSumma
 		summary.UpdatedAt = time.Now().UTC()
 	}
 	cp := summary
+	if existing, ok := m.reviewSummaries[summary.ProductID]; ok && existing.ShopID != "" {
+		cp.ShopID = existing.ShopID
+	}
 	cp.Pros = append([]string(nil), summary.Pros...)
 	cp.Cons = append([]string(nil), summary.Cons...)
 	m.reviewSummaries[summary.ProductID] = cp

@@ -20,6 +20,7 @@ import (
 	"github.com/nexusmart/core/services/assistant/internal/tools"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
 )
 
 // ChatStreamer is the minimal service interface required by the SSE chat HTTP handler.
@@ -29,13 +30,25 @@ type ChatStreamer interface {
 
 // Config configures the assistant HTTP server.
 type Config struct {
-	ServiceName string
-	Service     ChatStreamer
-	AuthManager *auth.Manager
-	RED         *metrics.RED
-	Gatherer    prometheus.Gatherer
-	ReadyCheck  func(context.Context) error
-	Logger      *slog.Logger
+	ServiceName       string
+	Service           ChatStreamer
+	AuthManager       *auth.Manager
+	RevocationChecker auth.TokenRevocationChecker
+	RED               *metrics.RED
+	Gatherer          prometheus.Gatherer
+	ReadyCheck        func(context.Context) error
+	Logger            *slog.Logger
+}
+
+// NewRedisRevocationChecker adapts a go-redis client to pkg/common/auth's shared
+// single-MGET revocation checker (`user:revoked_jti:<jti>` and `user:revoked_before:<sub>`).
+func NewRedisRevocationChecker(client *redis.Client) auth.TokenRevocationChecker {
+	if client == nil {
+		return auth.NewMGetRevocationChecker(nil)
+	}
+	return auth.NewMGetRevocationChecker(auth.MGetFunc(func(ctx context.Context, keys ...string) ([]any, error) {
+		return client.MGet(ctx, keys...).Result()
+	}))
 }
 
 type errorEnvelope struct {
@@ -95,13 +108,13 @@ func New(cfg Config) http.Handler {
 
 	r.Handle("/metrics", promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{}))
 
-	chatHandler := handleChatSSE(cfg.Service, cfg.AuthManager, log)
+	chatHandler := handleChatSSE(cfg.Service, cfg.AuthManager, cfg.RevocationChecker, log)
 	r.Post("/assistant/chat", chatHandler)
 
 	return r
 }
 
-func handleChatSSE(svc ChatStreamer, jwtMgr *auth.Manager, log *slog.Logger) http.HandlerFunc {
+func handleChatSSE(svc ChatStreamer, jwtMgr *auth.Manager, revoker auth.TokenRevocationChecker, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		if svc == nil {
@@ -109,7 +122,8 @@ func handleChatSSE(svc ChatStreamer, jwtMgr *auth.Manager, log *slog.Logger) htt
 			return
 		}
 
-		// Optional Bearer JWT: invalid token -> 401; missing token -> anonymous public RAG.
+		// Optional Bearer JWT: invalid/revoked token -> 401 (revocation store error -> fail-closed 503);
+		// missing token -> anonymous public RAG.
 		var cc tools.CallContext
 		authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
 		if authHeader != "" {
@@ -121,6 +135,18 @@ func handleChatSSE(svc ChatStreamer, jwtMgr *auth.Manager, log *slog.Logger) htt
 			if err != nil {
 				writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "invalid or expired access token", 0)
 				return
+			}
+			if revoker != nil {
+				revoked, rErr := revoker.IsTokenRevoked(ctx, claims)
+				if rErr != nil {
+					log.ErrorContext(ctx, "token revocation check failed", slog.String("error", rErr.Error()))
+					writeError(w, r, http.StatusServiceUnavailable, "UNAVAILABLE", "authentication service unavailable", 0)
+					return
+				}
+				if revoked {
+					writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "access token has been revoked", 0)
+					return
+				}
 			}
 			cc.UserID = claims.UserID()
 			cc.UserRole = claims.Role

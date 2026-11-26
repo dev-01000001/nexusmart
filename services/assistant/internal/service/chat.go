@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/nexusmart/core/services/assistant/internal/guardrail"
@@ -16,10 +17,14 @@ import (
 )
 
 const (
-	promptVersion   = "prompt_v1"
-	maxChatMessages = 30
-	maxToolRounds   = 5
-	safeRefusalText = "Xin lỗi, tôi không thể thực hiện yêu cầu này vì không nằm trong phạm vi an toàn được phép của NexusMart. Tôi có thể hỗ trợ bạn tìm kiếm sản phẩm trong gian hàng, giải đáp chính sách, tra cứu đơn hàng của bạn hoặc chuyển tiếp sang nhân viên hỗ trợ."
+	promptVersion             = "prompt_v1"
+	maxChatMessages           = 30
+	maxAssistantMessages      = 15
+	maxAssistantMsgRunes      = 2000
+	maxToolRounds             = 5
+	maxCachedToolResultsBytes = 64 * 1024
+	redactedHistoryUserText   = "[tin nhắn trước đã được lược bỏ]"
+	safeRefusalText           = "Xin lỗi, tôi không thể thực hiện yêu cầu này vì không nằm trong phạm vi an toàn được phép của NexusMart. Tôi có thể hỗ trợ bạn tìm kiếm sản phẩm trong gian hàng, giải đáp chính sách, tra cứu đơn hàng của bạn hoặc chuyển tiếp sang nhân viên hỗ trợ."
 )
 
 // ChatMessage represents one message in a chat conversation request.
@@ -82,10 +87,11 @@ type DoneEventData struct {
 }
 
 type cachedChatEntry struct {
-	Text      string                      `json:"text"`
-	Citations []string                    `json:"citations,omitempty"`
-	Products  []guardrail.GroundedProduct `json:"products,omitempty"`
-	Model     string                      `json:"model,omitempty"`
+	Text        string                      `json:"text"`
+	Citations   []string                    `json:"citations,omitempty"`
+	Products    []guardrail.GroundedProduct `json:"products,omitempty"`
+	ToolResults []ToolResultEventData       `json:"tool_results,omitempty"`
+	Model       string                      `json:"model,omitempty"`
 }
 
 // StreamChat orchestrates guardrails, caching, quotas, LLM streaming, tool execution,
@@ -102,15 +108,17 @@ func (s *Service) StreamChat(ctx context.Context, cc tools.CallContext, req Chat
 		return newDomainErr(ErrInvalidArgument, "INVALID_ARGUMENT", fmt.Sprintf("messages count exceeds maximum of %d", maxChatMessages), 0)
 	}
 
+	latestUserIdx := -1
 	latestUserText := ""
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		role := strings.ToLower(strings.TrimSpace(req.Messages[i].Role))
-		if role == "" || role == llm.RoleUser {
+		if role != llm.RoleAssistant {
+			latestUserIdx = i
 			latestUserText = strings.TrimSpace(req.Messages[i].Content)
 			break
 		}
 	}
-	if latestUserText == "" {
+	if latestUserIdx < 0 || latestUserText == "" {
 		return newDomainErr(ErrInvalidArgument, "INVALID_ARGUMENT", "latest user message must not be empty", 0)
 	}
 
@@ -149,53 +157,60 @@ func (s *Service) StreamChat(ctx context.Context, cc tools.CallContext, req Chat
 		}
 	}
 
-	// 2. Run input guardrail on latest user message (and check length/injection across history).
-	if s.guardrail != nil {
-		check := s.guardrail.CheckUserInput(latestUserText)
+	// 2. Run input guardrail & length limit on the latest user message only
+	// (earlier violating/overlong user messages are redacted before LLM without blocking or adding strikes).
+	blockedCategory := ""
+	latestRaw := req.Messages[latestUserIdx].Content
+	if utf8.RuneCountInString(latestRaw) > guardrail.MaxUserInputRunes {
+		blockedCategory = "input_too_long"
+	} else if s.guardrail != nil {
+		check := s.guardrail.CheckUserInput(latestRaw)
 		if check.Blocked || !check.Allowed {
-			category := check.Category
-			if category == "" {
-				category = "input_blocked"
+			blockedCategory = check.Category
+			if blockedCategory == "" {
+				blockedCategory = "input_blocked"
 			}
-			s.metrics.IncGuardrailBlock(category, "input")
-			s.logger.WarnContext(ctx, "assistant input blocked by guardrail",
-				slog.String("category", category),
-				slog.String("shop_id", cc.ShopID),
-				slog.String("user_role", cc.UserRole),
-			)
-
-			if s.quota != nil {
-				strikeDec, strikeErr := s.quota.RecordAbuseStrike(ctx, subject)
-				if strikeErr == nil && strikeDec.Locked {
-					s.recordUsageLog(ctx, cc.UserID, cc.ShopID, "chat", "", llm.Usage{}, time.Since(start).Milliseconds(), 0, false, "abuse_locked")
-					return newDomainErr(
-						ErrAbuseLocked,
-						"ABUSE_LOCKED",
-						"Tài khoản tạm thời bị khoá tính năng trợ lý AI do phát hiện yêu cầu vi phạm chính sách lặp lại. Vui lòng thử lại sau.",
-						strikeDec.RetryAfterSec,
-					)
-				}
-			}
-
-			ttftMs := time.Since(start).Milliseconds()
-			if err := emit(SSEEvent{Type: "token", Data: TokenEventData{Text: safeRefusalText}}); err != nil {
-				return err
-			}
-			latencyMs := time.Since(start).Milliseconds()
-			s.metrics.ObserveTTFT("chat", false, "guardrail", time.Duration(ttftMs)*time.Millisecond)
-			s.recordUsageLog(ctx, cc.UserID, cc.ShopID, "chat", "guardrail", llm.Usage{}, latencyMs, ttftMs, false, category)
-			return emit(SSEEvent{
-				Type: "done",
-				Data: DoneEventData{
-					ConversationID: convID,
-					MessageID:      msgID,
-					Model:          "guardrail",
-					TTFTMs:         ttftMs,
-					LatencyMs:      latencyMs,
-					Blocked:        true,
-				},
-			})
 		}
+	}
+	if blockedCategory != "" {
+		s.metrics.IncGuardrailBlock(blockedCategory, "input")
+		s.logger.WarnContext(ctx, "assistant input blocked by guardrail",
+			slog.String("category", blockedCategory),
+			slog.String("shop_id", cc.ShopID),
+			slog.String("user_role", cc.UserRole),
+		)
+
+		if s.quota != nil {
+			strikeDec, strikeErr := s.quota.RecordAbuseStrike(ctx, subject)
+			if strikeErr == nil && strikeDec.Locked {
+				s.recordUsageLog(ctx, cc.UserID, cc.ShopID, "chat", "", llm.Usage{}, time.Since(start).Milliseconds(), 0, false, "abuse_locked")
+				return newDomainErr(
+					ErrAbuseLocked,
+					"ABUSE_LOCKED",
+					"Tài khoản tạm thời bị khoá tính năng trợ lý AI do phát hiện yêu cầu vi phạm chính sách lặp lại. Vui lòng thử lại sau.",
+					strikeDec.RetryAfterSec,
+				)
+			}
+		}
+
+		ttftMs := time.Since(start).Milliseconds()
+		if err := emit(SSEEvent{Type: "token", Data: TokenEventData{Text: safeRefusalText}}); err != nil {
+			return err
+		}
+		latencyMs := time.Since(start).Milliseconds()
+		s.metrics.ObserveTTFT("chat", false, "guardrail", time.Duration(ttftMs)*time.Millisecond)
+		s.recordUsageLog(ctx, cc.UserID, cc.ShopID, "chat", "guardrail", llm.Usage{}, latencyMs, ttftMs, false, blockedCategory)
+		return emit(SSEEvent{
+			Type: "done",
+			Data: DoneEventData{
+				ConversationID: convID,
+				MessageID:      msgID,
+				Model:          "guardrail",
+				TTFTMs:         ttftMs,
+				LatencyMs:      latencyMs,
+				Blocked:        true,
+			},
+		})
 	}
 
 	// 3. Cache lookup for single-turn non-confirmed queries (only non-private answers are ever cached).
@@ -212,6 +227,11 @@ func (s *Service) StreamChat(ctx context.Context, cc tools.CallContext, req Chat
 			var cached cachedChatEntry
 			if unmarshalErr := json.Unmarshal(raw, &cached); unmarshalErr == nil && strings.TrimSpace(cached.Text) != "" {
 				s.metrics.IncCache("chat", true)
+				for _, tr := range cached.ToolResults {
+					if err := emit(SSEEvent{Type: "tool_result", Data: tr}); err != nil {
+						return err
+					}
+				}
 				ttftMs := time.Since(start).Milliseconds()
 				if err := emit(SSEEvent{Type: "token", Data: TokenEventData{Text: cached.Text}}); err != nil {
 					return err
@@ -238,9 +258,10 @@ func (s *Service) StreamChat(ctx context.Context, cc tools.CallContext, req Chat
 		s.metrics.IncCache("chat", false)
 	}
 
-	// 4. Check per-user daily token quota & global daily VND cost cap.
+	// 4. Sanitize/bound conversation history, then check per-user daily token quota & global daily VND cost cap.
+	llmMsgs := s.prepareChatMessages(req.Messages, latestUserIdx)
 	estimatedTokens := int64(450)
-	for _, m := range req.Messages {
+	for _, m := range llmMsgs {
 		estimatedTokens += int64(llm.EstimateTokens(m.Content))
 	}
 	if err := s.checkAndReserveQuota(ctx, subject, estimatedTokens); err != nil {
@@ -251,7 +272,7 @@ func (s *Service) StreamChat(ctx context.Context, cc tools.CallContext, req Chat
 		return err
 	}
 
-	// 5. Prepare role-filtered tools & LLM conversation messages.
+	// 5. Prepare role-filtered tools & system prompt.
 	var allowedTools []llm.ToolDefinition
 	allowedToolSet := make(map[string]bool)
 	if s.tools != nil {
@@ -261,33 +282,22 @@ func (s *Service) StreamChat(ctx context.Context, cc tools.CallContext, req Chat
 		}
 	}
 
-	llmMsgs := make([]llm.Message, 0, len(req.Messages))
-	for _, m := range req.Messages {
-		role := strings.ToLower(strings.TrimSpace(m.Role))
-		if role != llm.RoleAssistant {
-			role = llm.RoleUser
-		}
-		llmMsgs = append(llmMsgs, llm.Message{
-			Role:    role,
-			Content: m.Content,
-		})
-	}
-
 	systemPrompt := buildChatSystemPrompt(cc)
 
 	var (
-		totalUsage        llm.Usage
-		retrievedProducts []guardrail.GroundedProduct
-		retrievedSeen     = make(map[string]bool)
-		groundingItems    []guardrail.GroundedProduct
-		groundingSeen     = make(map[string]bool)
-		citations         []string
-		citationSeen      = make(map[string]bool)
-		toolCallAudit     []map[string]any
-		usedPrivateTool   bool
-		fullText          strings.Builder
-		ttftMs            int64 = -1
-		emittedAnyToken   bool
+		totalUsage         llm.Usage
+		retrievedProducts  []guardrail.GroundedProduct
+		retrievedSeen      = make(map[string]bool)
+		groundingItems     []guardrail.GroundedProduct
+		groundingSeen      = make(map[string]bool)
+		citations          []string
+		citationSeen       = make(map[string]bool)
+		toolCallAudit      []map[string]any
+		emittedToolResults []ToolResultEventData
+		usedPrivateTool    bool
+		fullText           strings.Builder
+		ttftMs             int64 = -1
+		emittedAnyToken    bool
 	)
 
 	// 6. Execute streaming LLM + tool calling loop (up to maxToolRounds).
@@ -405,20 +415,22 @@ func (s *Service) StreamChat(ctx context.Context, cc tools.CallContext, req Chat
 				"ok":   res.OK,
 			})
 
+			toolResult := ToolResultEventData{
+				ID:                   tc.ID,
+				Name:                 tc.Name,
+				OK:                   res.OK,
+				RequiresAuth:         res.RequiresAuth,
+				RequiresConfirmation: res.RequiresConfirmation,
+				Error:                res.Error,
+				Data:                 res.Data,
+			}
 			if err := emit(SSEEvent{
 				Type: "tool_result",
-				Data: ToolResultEventData{
-					ID:                   tc.ID,
-					Name:                 tc.Name,
-					OK:                   res.OK,
-					RequiresAuth:         res.RequiresAuth,
-					RequiresConfirmation: res.RequiresConfirmation,
-					Error:                res.Error,
-					Data:                 res.Data,
-				},
+				Data: toolResult,
 			}); err != nil {
 				return err
 			}
+			emittedToolResults = append(emittedToolResults, toolResult)
 
 			resJSON, _ := json.Marshal(res)
 			llmMsgs = append(llmMsgs, llm.Message{
@@ -471,11 +483,18 @@ func (s *Service) StreamChat(ctx context.Context, cc tools.CallContext, req Chat
 	s.metrics.ObserveTTFT("chat", false, modelName, time.Duration(ttftMs)*time.Millisecond)
 
 	if s.quota != nil && cacheKey != "" && !usedPrivateTool && !hallucinated && !redacted && strings.TrimSpace(finalText) != "" {
+		var cachedToolResults []ToolResultEventData
+		if len(emittedToolResults) > 0 {
+			if trBytes, trErr := json.Marshal(emittedToolResults); trErr == nil && len(trBytes) <= maxCachedToolResultsBytes {
+				cachedToolResults = emittedToolResults
+			}
+		}
 		entryBytes, marshalErr := json.Marshal(cachedChatEntry{
-			Text:      finalText,
-			Citations: citations,
-			Products:  retrievedProducts,
-			Model:     modelName,
+			Text:        finalText,
+			Citations:   citations,
+			Products:    retrievedProducts,
+			ToolResults: cachedToolResults,
+			Model:       modelName,
 		})
 		if marshalErr == nil {
 			if setErr := s.quota.SetCache(ctx, cacheKey, entryBytes, s.cfg.CacheTTL); setErr != nil {
@@ -501,6 +520,70 @@ func (s *Service) StreamChat(ctx context.Context, cc tools.CallContext, req Chat
 			Products:       retrievedProducts,
 		},
 	})
+}
+
+func (s *Service) prepareChatMessages(msgs []ChatMessage, latestUserIdx int) []llm.Message {
+	totalAssistant := 0
+	for _, m := range msgs {
+		if strings.ToLower(strings.TrimSpace(m.Role)) == llm.RoleAssistant {
+			totalAssistant++
+		}
+	}
+	skipAssistant := 0
+	if totalAssistant > maxAssistantMessages {
+		skipAssistant = totalAssistant - maxAssistantMessages
+	}
+
+	llmMsgs := make([]llm.Message, 0, len(msgs)-skipAssistant)
+	for i, m := range msgs {
+		role := strings.ToLower(strings.TrimSpace(m.Role))
+		if role == llm.RoleAssistant {
+			if skipAssistant > 0 {
+				skipAssistant--
+				continue
+			}
+			content := truncateRunes(m.Content, maxAssistantMsgRunes)
+			if s.guardrail != nil && strings.TrimSpace(content) != "" {
+				san := s.guardrail.SanitizeUntrustedData("assistant_history", content)
+				if san.InjectionFound {
+					s.metrics.IncGuardrailBlock("assistant_history_injection", "untrusted_data")
+				}
+				if san.InjectionFound || san.SanitizedText != "" {
+					content = san.SanitizedText
+				}
+				content, _ = s.guardrail.FilterOutput(content)
+				content = truncateRunes(content, maxAssistantMsgRunes)
+			}
+			llmMsgs = append(llmMsgs, llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: content,
+			})
+			continue
+		}
+
+		content := m.Content
+		if i != latestUserIdx && s.isViolatingUserHistory(content) {
+			content = redactedHistoryUserText
+		}
+		llmMsgs = append(llmMsgs, llm.Message{
+			Role:    llm.RoleUser,
+			Content: content,
+		})
+	}
+	return llmMsgs
+}
+
+func (s *Service) isViolatingUserHistory(content string) bool {
+	if utf8.RuneCountInString(content) > guardrail.MaxUserInputRunes {
+		return true
+	}
+	if s.guardrail != nil {
+		check := s.guardrail.CheckUserInput(content)
+		if check.Blocked || !check.Allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) persistChatTurn(

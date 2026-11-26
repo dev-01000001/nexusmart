@@ -232,7 +232,7 @@ func (s *PGStore) UpsertReviewSummary(ctx context.Context, summary ReviewSummary
 		INSERT INTO assistant_review_summaries (product_id, shop_id, review_count, average_rating, summary, pros_json, cons_json, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8)
 		ON CONFLICT (product_id) DO UPDATE SET
-			shop_id = EXCLUDED.shop_id,
+			shop_id = CASE WHEN assistant_review_summaries.shop_id = '' THEN EXCLUDED.shop_id ELSE assistant_review_summaries.shop_id END,
 			review_count = EXCLUDED.review_count,
 			average_rating = EXCLUDED.average_rating,
 			summary = EXCLUDED.summary,

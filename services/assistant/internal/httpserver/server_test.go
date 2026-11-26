@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/metrics"
 	"github.com/nexusmart/core/services/assistant/internal/guardrail"
@@ -19,6 +21,7 @@ import (
 	"github.com/nexusmart/core/services/assistant/internal/service"
 	"github.com/nexusmart/core/services/assistant/internal/tools"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/redis/go-redis/v9"
 )
 
 type fakeChatSvc struct {
@@ -202,5 +205,101 @@ func TestHTTPServerAnonymousQuotaIsolatedByForwardedClientIP(t *testing.T) {
 	_ = respB.Body.Close()
 	if respB.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for independent IP B, got %d", respB.StatusCode)
+	}
+}
+
+func TestHTTPServerJWTRevocationFailClosed(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer func() { _ = rdb.Close() }()
+
+	jwtMgr, err := auth.NewManager("assistant-revocation-test-secret", auth.DefaultAccessTTL)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	logoutTok, logoutJTI, _, err := jwtMgr.SignAccessToken("user-logout", auth.RoleBuyer, "")
+	if err != nil {
+		t.Fatalf("SignAccessToken logout: %v", err)
+	}
+	lockedTok, _, _, err := jwtMgr.SignAccessToken("user-locked", auth.RoleBuyer, "")
+	if err != nil {
+		t.Fatalf("SignAccessToken locked: %v", err)
+	}
+	lockedClaims, err := jwtMgr.VerifyAccessToken(lockedTok)
+	if err != nil {
+		t.Fatalf("VerifyAccessToken locked: %v", err)
+	}
+
+	streamCalls := 0
+	handler := New(Config{
+		ServiceName:       "assistant",
+		AuthManager:       jwtMgr,
+		RevocationChecker: NewRedisRevocationChecker(rdb),
+		Service: &fakeChatSvc{
+			fn: func(_ context.Context, _ tools.CallContext, _ service.ChatRequest, emit func(service.SSEEvent) error) error {
+				streamCalls++
+				return emit(service.SSEEvent{Type: "done", Data: service.DoneEventData{ConversationID: "c1", MessageID: "m1"}})
+			},
+		},
+	})
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	postChat := func(bearer string) (*http.Response, errorEnvelope) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/assistant/chat", bytes.NewBufferString(`{"messages":[{"role":"user","content":"Xin chào"}]}`))
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("do request: %v", err)
+		}
+		defer resp.Body.Close()
+		var env errorEnvelope
+		if resp.StatusCode != http.StatusOK {
+			_ = json.NewDecoder(resp.Body).Decode(&env)
+		}
+		return resp, env
+	}
+
+	// 1. Revoked JTI (logout) -> 401 UNAUTHENTICATED, StreamChat not called.
+	_ = mr.Set(auth.RevokedJTIKeyPrefix+logoutJTI, "1")
+	resp, env := postChat(logoutTok)
+	if resp.StatusCode != http.StatusUnauthorized || env.Error.Code != "UNAUTHENTICATED" || streamCalls != 0 {
+		t.Fatalf("revoked JTI: want 401 UNAUTHENTICATED calls=0, got status=%d env=%+v calls=%d", resp.StatusCode, env, streamCalls)
+	}
+
+	// 2. Revoked before >= iat (password change / lock / role change) -> 401 UNAUTHENTICATED.
+	_ = mr.Set(auth.RevokedBeforeKeyPrefix+"user-locked", strconv.FormatInt(lockedClaims.IssuedAt.Unix(), 10))
+	resp, env = postChat(lockedTok)
+	if resp.StatusCode != http.StatusUnauthorized || env.Error.Code != "UNAUTHENTICATED" || streamCalls != 0 {
+		t.Fatalf("revoked_before == iat: want 401 UNAUTHENTICATED calls=0, got status=%d env=%+v calls=%d", resp.StatusCode, env, streamCalls)
+	}
+
+	// 3. Corrupt revoked_before fails closed with 401 UNAUTHENTICATED.
+	_ = mr.Set(auth.RevokedBeforeKeyPrefix+"user-locked", "corrupt")
+	resp, env = postChat(lockedTok)
+	if resp.StatusCode != http.StatusUnauthorized || env.Error.Code != "UNAUTHENTICATED" || streamCalls != 0 {
+		t.Fatalf("corrupt revoked_before: want 401 UNAUTHENTICATED calls=0, got status=%d env=%+v calls=%d", resp.StatusCode, env, streamCalls)
+	}
+
+	// 4. Token issued strictly AFTER revoked_before succeeds with 200.
+	_ = mr.Set(auth.RevokedBeforeKeyPrefix+"user-locked", strconv.FormatInt(lockedClaims.IssuedAt.Unix()-10, 10))
+	resp, _ = postChat(lockedTok)
+	if resp.StatusCode != http.StatusOK || streamCalls != 1 {
+		t.Fatalf("token after revoked_before: want 200 calls=1, got status=%d calls=%d", resp.StatusCode, streamCalls)
+	}
+
+	// 5. Redis error fails closed with 503 UNAVAILABLE for authenticated requests,
+	//    while anonymous public RAG requests still succeed with 200.
+	mr.Close()
+	resp, env = postChat(lockedTok)
+	if resp.StatusCode != http.StatusServiceUnavailable || env.Error.Code != "UNAVAILABLE" || streamCalls != 1 {
+		t.Fatalf("redis error on authed request: want 503 UNAVAILABLE calls=1, got status=%d env=%+v calls=%d", resp.StatusCode, env, streamCalls)
+	}
+	resp, _ = postChat("")
+	if resp.StatusCode != http.StatusOK || streamCalls != 2 {
+		t.Fatalf("anonymous request during redis error: want 200 calls=2, got status=%d calls=%d", resp.StatusCode, streamCalls)
 	}
 }

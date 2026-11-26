@@ -131,3 +131,35 @@ func TestMemoryStoreLifecycle(t *testing.T) {
 		t.Fatalf("expected duplicate event mark inserted=false, got inserted=%v err=%v", inserted, err)
 	}
 }
+
+func TestMemoryStoreUpsertReviewSummaryPreservesExistingShopID(t *testing.T) {
+	ctx := context.Background()
+	st := NewMemoryStore()
+
+	if err := st.UpsertReviewSummary(ctx, ReviewSummary{
+		ProductID:     "prod-keep",
+		ShopID:        "shop-owner",
+		ReviewCount:   10,
+		AverageRating: 4.5,
+		Summary:       "Ban đầu",
+	}); err != nil {
+		t.Fatalf("initial UpsertReviewSummary: %v", err)
+	}
+
+	// Updating with empty or different shop_id must NOT overwrite existing non-empty shop_id.
+	for _, attemptShop := range []string{"", "shop-attacker"} {
+		if err := st.UpsertReviewSummary(ctx, ReviewSummary{
+			ProductID:     "prod-keep",
+			ShopID:        attemptShop,
+			ReviewCount:   11,
+			AverageRating: 4.6,
+			Summary:       "Cập nhật",
+		}); err != nil {
+			t.Fatalf("update UpsertReviewSummary(%q): %v", attemptShop, err)
+		}
+		got, err := st.GetReviewSummary(ctx, "prod-keep")
+		if err != nil || got.ShopID != "shop-owner" {
+			t.Fatalf("after attempt %q: expected preserved shop_id=shop-owner, got %+v err=%v", attemptShop, got, err)
+		}
+	}
+}

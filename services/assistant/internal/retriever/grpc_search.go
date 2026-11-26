@@ -116,6 +116,30 @@ func (r *ChainedRetriever) getProductViaProductGRPC(ctx context.Context, product
 	return &hit, nil
 }
 
+func (r *ChainedRetriever) getSKUViaProductGRPC(ctx context.Context, skuID string) (*SKUInfo, error) {
+	resp, err := r.productClient.GetSKUsBatch(stripOutgoingAuth(ctx), &productv1.GetSKUsBatchRequest{
+		SkuIds: []string{skuID},
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, sk := range resp.GetSkus() {
+		if sk != nil && sk.GetId() == skuID {
+			return &SKUInfo{
+				ID:             sk.GetId(),
+				ProductID:      sk.GetProductId(),
+				ShopID:         sk.GetShopId(),
+				ProductName:    sk.GetProductName(),
+				Name:           sk.GetName(),
+				PriceVND:       sk.GetPriceVnd(),
+				AvailableStock: sk.GetAvailableStock(),
+				IsActive:       sk.GetIsActive(),
+			}, nil
+		}
+	}
+	return nil, ErrSKUNotFound
+}
+
 func searchProductHitToProductHit(it *searchv1.SearchProductHit) ProductHit {
 	if it == nil {
 		return ProductHit{}

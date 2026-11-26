@@ -159,12 +159,10 @@ func (m *MockProvider) StreamChat(ctx context.Context, req ChatRequest, onEvent 
 	if isAddToCartIntent(folded) && hasTool(req.Tools, "add_to_cart") {
 		skuID := extractSKUIDFromHistory(req.Messages)
 		qty := extractQuantity(folded)
-		confirmed := hasAnySubstr(folded, "dong y", "xac nhan", "ok them", "chac chan")
 		if skuID != "" || req.UserRole == "" {
 			args := map[string]any{
-				"sku_id":    skuID,
-				"quantity":  qty,
-				"confirmed": confirmed,
+				"sku_id":   skuID,
+				"quantity": qty,
 			}
 			tc := &ToolCall{
 				ID:        m.nextToolCallID(),
@@ -405,6 +403,9 @@ func isASCIIAlphaNum(b byte) bool {
 func parseReportPeriod(folded string) string {
 	if hasAnySubstr(folded, "hom nay", "trong ngay", "today") {
 		return "today"
+	}
+	if hasAnySubstr(folded, "90 ngay", "3 thang", "quy nay", "quy qua", "90d") {
+		return "90d"
 	}
 	if hasAnySubstr(folded, "30 ngay", "thang nay", "thang qua", "30d", "1 thang") {
 		return "30d"
@@ -958,7 +959,8 @@ func renderAddToCart(okVal, requiresAuth, requiresConfirm bool, errMsg string, d
 	} else if prodName != "" {
 		label = prodName
 	}
-	return fmt.Sprintf("Đã thêm vào giỏ hàng thành công: %s (số lượng: %d). Bạn có thể kiểm tra tại [Giỏ hàng](/cart). Lưu ý: trợ lý AI không tự động thanh toán, bạn vui lòng tự xác nhận đặt hàng trên hệ thống.", label, qty)
+	cartURL := firstNonEmpty(strVal(data["cart_url"]), "/gio-hang")
+	return fmt.Sprintf("Đã thêm vào giỏ hàng thành công: %s (số lượng: %d). Bạn có thể kiểm tra tại [Giỏ hàng](%s). Lưu ý: trợ lý AI không tự động thanh toán, bạn vui lòng tự xác nhận đặt hàng trên hệ thống.", label, qty, cartURL)
 }
 
 func renderSellerReport(okVal, requiresAuth bool, errMsg string, data map[string]any) string {

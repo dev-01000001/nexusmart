@@ -3,6 +3,7 @@ package retriever_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"net"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -111,6 +113,8 @@ func (f *fakeSearchServer) SimilarProducts(ctx context.Context, req *searchv1.Si
 type fakeProductServer struct {
 	productv1.UnimplementedProductServiceServer
 	products []*productv1.Product
+	skus     []*productv1.SKU
+	failSKU  bool
 }
 
 func (f *fakeProductServer) ListProducts(_ context.Context, _ *productv1.ListProductsRequest) (*productv1.ListProductsResponse, error) {
@@ -127,6 +131,23 @@ func (f *fakeProductServer) GetProduct(_ context.Context, req *productv1.GetProd
 		}
 	}
 	return nil, status.Error(codes.NotFound, "not found")
+}
+
+func (f *fakeProductServer) GetSKUsBatch(_ context.Context, req *productv1.GetSKUsBatchRequest) (*productv1.GetSKUsBatchResponse, error) {
+	if f.failSKU {
+		return nil, status.Error(codes.Unavailable, "product service down")
+	}
+	want := make(map[string]bool, len(req.GetSkuIds()))
+	for _, id := range req.GetSkuIds() {
+		want[id] = true
+	}
+	var out []*productv1.SKU
+	for _, sk := range f.skus {
+		if want[sk.GetId()] {
+			out = append(out, sk)
+		}
+	}
+	return &productv1.GetSKUsBatchResponse{Skus: out}, nil
 }
 
 func startTestGRPC(t *testing.T, register func(*grpc.Server), opts ...grpc.ServerOption) string {
@@ -552,5 +573,131 @@ func TestInMemoryRetrieverHybridVietnameseShopIsolationAndPriceFilters(t *testin
 		if s.ID == "p-bd-1" {
 			t.Errorf("SimilarProducts included seed product itself")
 		}
+	}
+}
+
+func TestChainedRetrieverGetSKUProductGRPCAndGatewayFallback(t *testing.T) {
+	t.Parallel()
+
+	prodSrv := &fakeProductServer{
+		skus: []*productv1.SKU{
+			{Id: "sku-active", ProductId: "p-1", ShopId: "shop-a", ProductName: "Áo A", Name: "M", PriceVnd: 199000, AvailableStock: 5, IsActive: true},
+			{Id: "sku-inactive", ProductId: "p-2", ShopId: "shop-a", ProductName: "Áo ẩn", Name: "S", IsActive: false},
+		},
+	}
+	prodAddr := startTestGRPC(t, func(s *grpc.Server) {
+		productv1.RegisterProductServiceServer(s, prodSrv)
+	})
+
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/products" && r.URL.Query().Get("sku_ids") == "sku-gw-1" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"products": []map[string]any{
+					{
+						"id":      "p-gw",
+						"shop_id": "shop-gw",
+						"name":    "Áo GW",
+						"status":  "APPROVED",
+						"skus": []map[string]any{
+							{"id": "sku-gw-1", "product_id": "p-gw", "shop_id": "shop-gw", "name": "L", "price_vnd": 250000, "available_stock": 3, "is_active": true},
+						},
+					},
+				},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"products": []any{}})
+	}))
+	defer gw.Close()
+
+	ret, err := retriever.NewChainedRetriever(retriever.ChainedConfig{
+		ProductGRPCAddr: prodAddr,
+		GatewayURL:      gw.URL,
+		Timeout:         2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewChainedRetriever: %v", err)
+	}
+	defer func() { _ = ret.Close() }()
+
+	gotActive, err := ret.GetSKU(context.Background(), "sku-active")
+	if err != nil || gotActive.ShopID != "shop-a" || !gotActive.IsActive {
+		t.Fatalf("GetSKU active: got=%+v err=%v", gotActive, err)
+	}
+
+	gotInactive, err := ret.GetSKU(context.Background(), "sku-inactive")
+	if err != nil || gotInactive.ShopID != "shop-a" || gotInactive.IsActive {
+		t.Fatalf("GetSKU inactive: got=%+v err=%v", gotInactive, err)
+	}
+
+	if _, err := ret.GetSKU(context.Background(), "sku-missing"); !errors.Is(err, retriever.ErrSKUNotFound) {
+		t.Fatalf("GetSKU missing: want ErrSKUNotFound, got %v", err)
+	}
+
+	// Product gRPC down -> falls back to Gateway REST /api/v1/products?sku_ids=...
+	prodSrv.failSKU = true
+	gotGW, err := ret.GetSKU(context.Background(), "sku-gw-1")
+	if err != nil || gotGW.ShopID != "shop-gw" || !gotGW.IsActive {
+		t.Fatalf("GetSKU gateway fallback: got=%+v err=%v", gotGW, err)
+	}
+}
+
+func TestChainedRetrieverGetProductShortCircuitsNotFound(t *testing.T) {
+	t.Parallel()
+
+	prodAddr := startTestGRPC(t, func(s *grpc.Server) {
+		productv1.RegisterProductServiceServer(s, &fakeProductServer{
+			products: []*productv1.Product{
+				{Id: "prod-present", ShopId: "shop-a", Name: "Áo tồn tại"},
+			},
+		})
+	})
+
+	var gwHits atomic.Int32
+	failingGW := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		gwHits.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer failingGW.Close()
+
+	ret, err := retriever.NewChainedRetriever(retriever.ChainedConfig{
+		ProductGRPCAddr: prodAddr,
+		GatewayURL:      failingGW.URL,
+		Timeout:         2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewChainedRetriever: %v", err)
+	}
+	defer func() { _ = ret.Close() }()
+
+	if _, err := ret.GetProduct(context.Background(), "prod-missing"); !errors.Is(err, retriever.ErrProductNotFound) {
+		t.Fatalf("GetProduct missing: want ErrProductNotFound, got %v", err)
+	}
+	if got := gwHits.Load(); got != 0 {
+		t.Fatalf("GetProduct NotFound must short-circuit without calling Gateway REST, got %d gateway hits", got)
+	}
+
+	// Gateway-only 404 also returns ErrProductNotFound cleanly on first attempt without retrying.
+	var gw404Hits atomic.Int32
+	gw404 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		gw404Hits.Add(1)
+		http.NotFound(w, nil)
+	}))
+	defer gw404.Close()
+
+	retGWOnly, err := retriever.NewChainedRetriever(retriever.ChainedConfig{
+		GatewayURL: gw404.URL,
+		Timeout:    2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewChainedRetriever gw-only: %v", err)
+	}
+	defer func() { _ = retGWOnly.Close() }()
+
+	if _, err := retGWOnly.GetProduct(context.Background(), "prod-missing"); !errors.Is(err, retriever.ErrProductNotFound) {
+		t.Fatalf("GetProduct gw 404: want ErrProductNotFound, got %v", err)
+	}
+	if got := gw404Hits.Load(); got != 1 {
+		t.Fatalf("GetProduct gw 404 must not retry, got %d hits", got)
 	}
 }

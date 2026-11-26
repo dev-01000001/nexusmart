@@ -22,6 +22,24 @@ type SKUHit struct {
 	PriceVND       int64             `json:"price_vnd"`
 	AvailableStock int32             `json:"available_stock"`
 	Attributes     map[string]string `json:"attributes,omitempty"`
+	Inactive       bool              `json:"inactive,omitempty"`
+}
+
+// SKUInfo holds authoritative SKU ownership and sale-active status for cart validation.
+type SKUInfo struct {
+	ID             string
+	ProductID      string
+	ShopID         string
+	ProductName    string
+	Name           string
+	PriceVND       int64
+	AvailableStock int32
+	IsActive       bool
+}
+
+// SKULookup resolves authoritative SKU ownership and active sale status.
+type SKULookup interface {
+	GetSKU(ctx context.Context, skuID string) (*SKUInfo, error)
 }
 
 // ProductHit is a normalized product returned from Search gRPC or fallback Product API.

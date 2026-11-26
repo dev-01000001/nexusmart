@@ -531,8 +531,10 @@ func normalizePeriod(period string) string {
 	switch strings.ToLower(strings.TrimSpace(period)) {
 	case "today", "1d", "hom_nay":
 		return "today"
-	case "30d", "month", "thang":
+	case "30d", "month", "this_month", "thang":
 		return "30d"
+	case "90d", "quarter", "this_quarter", "quy":
+		return "90d"
 	default:
 		return "7d"
 	}
@@ -562,6 +564,8 @@ func buildSellerReportNarrative(shopID, period, question string, m SellerReportM
 		periodLabel = "hôm nay"
 	case "30d":
 		periodLabel = "30 ngày qua"
+	case "90d":
+		periodLabel = "90 ngày qua"
 	}
 
 	var b strings.Builder

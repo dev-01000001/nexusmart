@@ -15,6 +15,9 @@ import (
 // ErrProductNotFound is returned when a product ID does not exist in the catalog.
 var ErrProductNotFound = errors.New("product not found")
 
+// ErrSKUNotFound is returned when a SKU ID does not exist in the catalog.
+var ErrSKUNotFound = errors.New("sku not found")
+
 const (
 	memBM25K1 = 1.5
 	memBM25B  = 0.75
@@ -37,6 +40,7 @@ type InMemoryRetriever struct {
 	mu        sync.RWMutex
 	products  []indexedProduct
 	byID      map[string]int
+	skuByID   map[string]SKUInfo
 	idf       map[string]float64
 	avgDocLen float64
 	guardrail guardrail.Engine
@@ -46,6 +50,7 @@ type InMemoryRetriever struct {
 func NewInMemoryRetriever(products []ProductHit, g guardrail.Engine) *InMemoryRetriever {
 	indexed := make([]indexedProduct, 0, len(products))
 	byID := make(map[string]int, len(products))
+	skuByID := make(map[string]SKUInfo, len(products)*2)
 	df := make(map[string]int, 256)
 	totalLen := 0
 
@@ -62,6 +67,20 @@ func NewInMemoryRetriever(products []ProductHit, g guardrail.Engine) *InMemoryRe
 		}
 		totalLen += len(tokens)
 		byID[p.ID] = len(indexed)
+		for _, s := range p.SKUs {
+			if id := strings.TrimSpace(s.ID); id != "" {
+				skuByID[id] = SKUInfo{
+					ID:             id,
+					ProductID:      p.ID,
+					ShopID:         p.ShopID,
+					ProductName:    p.Name,
+					Name:           s.Name,
+					PriceVND:       s.PriceVND,
+					AvailableStock: s.AvailableStock,
+					IsActive:       !s.Inactive,
+				}
+			}
+		}
 		indexed = append(indexed, indexedProduct{
 			hit:        p,
 			tf:         tf,
@@ -88,6 +107,7 @@ func NewInMemoryRetriever(products []ProductHit, g guardrail.Engine) *InMemoryRe
 	return &InMemoryRetriever{
 		products:  indexed,
 		byID:      byID,
+		skuByID:   skuByID,
 		idf:       idf,
 		avgDocLen: avgLen,
 		guardrail: g,
@@ -312,6 +332,21 @@ func (m *InMemoryRetriever) GetProduct(ctx context.Context, productID string) (*
 
 	hit = sanitizeHit(hit, m.guardrail)
 	return &hit, nil
+}
+
+// GetSKU looks up a SKU by ID and returns its shop ownership and active sale status.
+func (m *InMemoryRetriever) GetSKU(ctx context.Context, skuID string) (*SKUInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	info, ok := m.skuByID[strings.TrimSpace(skuID)]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, ErrSKUNotFound
+	}
+	cp := info
+	return &cp, nil
 }
 
 func matchesFilters(ip indexedProduct, shopID, normCat string, minPrice, maxPrice int64) bool {

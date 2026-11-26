@@ -144,6 +144,37 @@ func (c *HTTPGatewayClient) GetSellerBalance(ctx context.Context, rawBearer stri
 	return decodeMap(body)
 }
 
+// GetSellerReport calls GET /api/v1/seller/reports (backed by OrderService.GetSellerReport)
+// using strictly the seller's own JWT.
+func (c *HTTPGatewayClient) GetSellerReport(ctx context.Context, rawBearer, fromDate, toDate string, topLimit int32) (map[string]any, error) {
+	q := url.Values{}
+	if fromDate != "" {
+		q.Set("from_date", fromDate)
+	}
+	if toDate != "" {
+		q.Set("to_date", toDate)
+	}
+	if topLimit > 0 {
+		q.Set("top_limit", fmt.Sprintf("%d", topLimit))
+	}
+	path := "/api/v1/seller/reports"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	body, err := c.doJSON(ctx, http.MethodGet, path, rawBearer, nil, true)
+	if err != nil {
+		return nil, err
+	}
+	obj, err := decodeMap(body)
+	if err != nil {
+		return nil, err
+	}
+	if inner, ok := obj["report"].(map[string]any); ok {
+		return inner, nil
+	}
+	return obj, nil
+}
+
 // ListSellerProducts calls GET /api/v1/seller/products using the seller's JWT.
 func (c *HTTPGatewayClient) ListSellerProducts(ctx context.Context, rawBearer string) ([]map[string]any, error) {
 	body, err := c.doJSON(ctx, http.MethodGet, "/api/v1/seller/products?page=1&page_size=100", rawBearer, nil, true)

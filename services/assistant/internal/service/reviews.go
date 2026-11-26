@@ -10,8 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/assistant/internal/llm"
+	"github.com/nexusmart/core/services/assistant/internal/retriever"
 	"github.com/nexusmart/core/services/assistant/internal/store"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // ReviewInput represents a single product review supplied for batch summarization.
@@ -127,6 +131,46 @@ func (s *Service) RefreshReviewSummary(ctx context.Context, productID, shopID st
 	if productID == "" {
 		return nil, newDomainErr(ErrInvalidArgument, "INVALID_ARGUMENT", "product_id is required", 0)
 	}
+
+	// Object-level ownership check for sellers: verify product belongs to caller's verified shop.
+	if claims, ok := auth.ClaimsFromContext(ctx); ok && strings.EqualFold(claims.Role, auth.RoleSeller) {
+		sellerShop := strings.TrimSpace(claims.ShopID)
+		if sellerShop == "" {
+			return nil, newDomainErr(ErrForbidden, "FORBIDDEN", "seller shop claim missing", 0)
+		}
+		if shopID != "" && shopID != sellerShop {
+			return nil, newDomainErr(ErrForbidden, "FORBIDDEN", "không có quyền làm mới tóm tắt đánh giá cho gian hàng khác", 0)
+		}
+		if s.products == nil {
+			return nil, fmt.Errorf("product verifier not configured")
+		}
+		lookupCtx := ctx
+		if rawTok := strings.TrimSpace(auth.RawTokenFromContext(ctx)); rawTok != "" {
+			lookupCtx = auth.InjectOutgoingGRPC(ctx, rawTok)
+		}
+		prod, err := s.products.GetProduct(lookupCtx, productID)
+		if err != nil {
+			if errors.Is(err, retriever.ErrProductNotFound) || status.Code(err) == codes.NotFound {
+				return nil, newDomainErr(ErrNotFound, "NOT_FOUND", "không tìm thấy sản phẩm", 0)
+			}
+			return nil, fmt.Errorf("verify product ownership: %w", err)
+		}
+		if prod == nil {
+			return nil, newDomainErr(ErrNotFound, "NOT_FOUND", "không tìm thấy sản phẩm", 0)
+		}
+		if strings.TrimSpace(prod.ShopID) == "" || prod.ShopID != sellerShop {
+			return nil, newDomainErr(ErrForbidden, "FORBIDDEN", "không có quyền làm mới tóm tắt đánh giá cho sản phẩm của gian hàng khác", 0)
+		}
+		shopID = prod.ShopID
+	}
+
+	// Preserve existing summary shop_id so refreshes never overwrite an established shop owner.
+	if s.store != nil {
+		if existing, err := s.store.GetReviewSummary(ctx, productID); err == nil && existing != nil && strings.TrimSpace(existing.ShopID) != "" {
+			shopID = strings.TrimSpace(existing.ShopID)
+		}
+	}
+
 	minReq := int32(s.cfg.MinReviewsSummary)
 
 	// 1. Upsert incoming reviews into store.
@@ -153,6 +197,14 @@ func (s *Service) RefreshReviewSummary(ctx context.Context, productID, shopID st
 		allReviews, err = s.store.ListReviewsByProduct(ctx, productID)
 		if err != nil {
 			return nil, fmt.Errorf("list reviews: %w", err)
+		}
+		if shopID == "" {
+			for _, r := range allReviews {
+				if strings.TrimSpace(r.ShopID) != "" {
+					shopID = strings.TrimSpace(r.ShopID)
+					break
+				}
+			}
 		}
 	} else {
 		for _, r := range reviews {

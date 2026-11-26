@@ -7,8 +7,11 @@ import (
 
 	assistantv1 "github.com/nexusmart/core/gen/go/nexusmart/assistant/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
+	"github.com/nexusmart/core/services/assistant/internal/config"
 	"github.com/nexusmart/core/services/assistant/internal/llm"
+	"github.com/nexusmart/core/services/assistant/internal/retriever"
 	"github.com/nexusmart/core/services/assistant/internal/service"
+	"github.com/nexusmart/core/services/assistant/internal/store"
 	"github.com/nexusmart/core/services/assistant/internal/tools"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -191,5 +194,46 @@ func TestGRPCServerVerifiedClaimsAndErrorMapping(t *testing.T) {
 		ShopId:    "shop-other",
 	}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("expected PermissionDenied for internal service token, got %v", err)
+	}
+}
+
+func TestGRPCRefreshReviewSummarySellerCannotOverwriteOtherShopProduct(t *testing.T) {
+	cfg := config.Load()
+	cfg.MinReviewsSummary = 1
+	st := store.NewMemoryStore()
+	memRet := retriever.NewInMemoryRetriever([]retriever.ProductHit{
+		{ID: "prod-shop-a", ShopID: "shop-a", Name: "SP Shop A"},
+		{ID: "prod-shop-b", ShopID: "shop-b", Name: "SP Shop B"},
+	}, nil)
+	svc := service.New(service.Deps{
+		Config:   cfg,
+		LLM:      llm.NewMockProvider(100, 200),
+		Products: memRet,
+		Store:    st,
+	})
+	srv := New(svc)
+
+	sellerAClaims := &auth.Claims{Role: auth.RoleSeller, ShopID: "shop-a"}
+	sellerAClaims.Subject = "seller-a"
+	sellerACtx := auth.WithClaims(context.Background(), sellerAClaims)
+
+	// Seller A sends ShopId="" with Shop B's ProductId -> MUST be rejected PermissionDenied!
+	_, err := srv.RefreshReviewSummary(sellerACtx, &assistantv1.RefreshReviewSummaryRequest{
+		ProductId: "prod-shop-b",
+		ShopId:    "",
+		Reviews:   []*assistantv1.ReviewInput{{ReviewId: "r-fake", Rating: 1, Comment: "Fake"}},
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("seller A refreshing shop B product with empty shop_id: want PermissionDenied, got %v", err)
+	}
+
+	// Seller A refreshing own product succeeds.
+	resp, err := srv.RefreshReviewSummary(sellerACtx, &assistantv1.RefreshReviewSummaryRequest{
+		ProductId: "prod-shop-a",
+		ShopId:    "",
+		Reviews:   []*assistantv1.ReviewInput{{ReviewId: "r-ok", Rating: 5, Comment: "Tốt"}},
+	})
+	if err != nil || !resp.GetSummary().GetAvailable() {
+		t.Fatalf("seller A refreshing own product failed: resp=%+v err=%v", resp, err)
 	}
 }

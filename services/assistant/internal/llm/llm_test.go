@@ -407,6 +407,7 @@ func TestMockProvider_Turn0Routing(t *testing.T) {
 			{"cart", "Đồng ý thêm sku-bd-01-m số lượng 2 vào giỏ hàng", allPublicTools(), "buyer", "add_to_cart"},
 			{"handoff", "Tôi bị chuyển nhầm tiền, cho tôi gặp nhân viên hỗ trợ", allPublicTools(), "buyer", "handoff_to_agent"},
 			{"seller allowed", "Báo cáo doanh thu 30 ngày của gian hàng", allSellerTools(), "seller", "get_seller_report"},
+			{"seller 90d", "Báo cáo doanh thu 90 ngày của gian hàng", allSellerTools(), "seller", "get_seller_report"},
 			{"seller denied for buyer", "Cho xem doanh thu và tỷ lệ hủy gian hàng", allPublicTools(), "buyer", ""},
 		}
 
@@ -442,6 +443,14 @@ func TestMockProvider_Turn0Routing(t *testing.T) {
 				}
 				if got == nil || got.Name != tcCase.wantTool {
 					t.Fatalf("expected tool %q, got %+v (text=%q)", tcCase.wantTool, got, text.String())
+				}
+				if tcCase.name == "cart" {
+					if _, hasConfirmed := got.Arguments["confirmed"]; hasConfirmed {
+						t.Fatalf("mock add_to_cart must not emit confirmed argument: %+v", got.Arguments)
+					}
+				}
+				if tcCase.name == "seller 90d" && got.Arguments["period"] != "90d" {
+					t.Fatalf("expected period=90d, got %+v", got.Arguments)
 				}
 			})
 		}
@@ -510,8 +519,8 @@ func TestMockProvider_Turn1GroundedRendering(t *testing.T) {
 			t.Errorf("expected confirmation prompt, got %q", confirmOut)
 		}
 		okOut := runTurn1("add_to_cart", `{"ok":true,"data":{"sku_id":"sku-bd-01-m","quantity":2}}`)
-		if !strings.Contains(okOut, "/cart") || !strings.Contains(okOut, "không tự động thanh toán") {
-			t.Errorf("expected cart link and no-auto-checkout note, got %q", okOut)
+		if !strings.Contains(okOut, "/gio-hang") || !strings.Contains(okOut, "không tự động thanh toán") {
+			t.Errorf("expected /gio-hang link and no-auto-checkout note, got %q", okOut)
 		}
 	})
 

@@ -8,15 +8,18 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
 	"github.com/nexusmart/core/services/assistant/internal/guardrail"
 	"github.com/nexusmart/core/services/assistant/internal/llm"
 	"github.com/nexusmart/core/services/assistant/internal/policy"
 	"github.com/nexusmart/core/services/assistant/internal/resilience"
 	"github.com/nexusmart/core/services/assistant/internal/retriever"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Tool names exposed by the AI Assistant registry.
@@ -29,14 +32,33 @@ const (
 	ToolGetSellerReport = "get_seller_report"
 )
 
+// RegistryOption configures optional dependencies on Registry.
+type RegistryOption func(*Registry)
+
+// WithOrderReportClient configures the OrderService.GetSellerReport client used by get_seller_report.
+func WithOrderReportClient(c SellerReportClient) RegistryOption {
+	return func(r *Registry) {
+		r.orderReports = c
+	}
+}
+
+// WithNow overrides the clock used for Asia/Ho_Chi_Minh report date-range calculation (for unit tests).
+func WithNow(fn func() time.Time) RegistryOption {
+	return func(r *Registry) {
+		r.now = fn
+	}
+}
+
 // Registry implements tools.Executor with strict role-based tool exposure,
 // end-user JWT forwarding, storefront shop isolation, and confirmation checks.
 type Registry struct {
-	productRet retriever.ProductRetriever
-	policyRet  policy.Retriever
-	gw         GatewayClient
-	guardrail  guardrail.Engine
-	log        *slog.Logger
+	productRet   retriever.ProductRetriever
+	policyRet    policy.Retriever
+	gw           GatewayClient
+	orderReports SellerReportClient
+	guardrail    guardrail.Engine
+	log          *slog.Logger
+	now          func() time.Time
 }
 
 // NewRegistry constructs a tool Registry.
@@ -46,17 +68,32 @@ func NewRegistry(
 	gw GatewayClient,
 	g guardrail.Engine,
 	log *slog.Logger,
+	opts ...RegistryOption,
 ) *Registry {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Registry{
+	reg := &Registry{
 		productRet: productRet,
 		policyRet:  policyRet,
 		gw:         gw,
 		guardrail:  g,
 		log:        log,
+		now:        time.Now,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(reg)
+		}
+	}
+	return reg
+}
+
+func (r *Registry) nowTime() time.Time {
+	if r != nil && r.now != nil {
+		return r.now()
+	}
+	return time.Now()
 }
 
 // AllowedTools returns the role-filtered set of LLM tool schemas.
@@ -112,7 +149,6 @@ func (r *Registry) AllowedTools(role string) []llm.ToolDefinition {
 					"sku_id":       map[string]any{"type": "string", "description": "Mã SKU cần thêm vào giỏ"},
 					"quantity":     map[string]any{"type": "integer", "description": "Số lượng (> 0)"},
 					"product_name": map[string]any{"type": "string", "description": "Tên sản phẩm để hiển thị xác nhận"},
-					"confirmed":    map[string]any{"type": "boolean", "description": "True khi người mua đã xác nhận thêm vào giỏ"},
 				},
 			},
 		},
@@ -137,7 +173,7 @@ func (r *Registry) AllowedTools(role string) []llm.ToolDefinition {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"period":   map[string]any{"type": "string", "description": "Khoảng thời gian báo cáo (ví dụ: 7d, 30d, this_week, this_month)"},
+					"period":   map[string]any{"type": "string", "description": "Khoảng thời gian báo cáo (ví dụ: 7d, 30d, 90d, this_week, this_month)"},
 					"question": map[string]any{"type": "string", "description": "Câu hỏi kinh doanh của người bán"},
 				},
 			},
@@ -307,6 +343,14 @@ func (r *Registry) execGetOrderStatus(ctx context.Context, cc CallContext, args 
 		if err != nil {
 			return mapOrderError(ToolGetOrderStatus, err)
 		}
+		if scopedShop := strings.TrimSpace(cc.ShopID); scopedShop != "" && !orderBelongsToStorefront(order, scopedShop) {
+			return Result{
+				Name:    ToolGetOrderStatus,
+				OK:      false,
+				Private: true,
+				Error:   errOrderNotFoundOrForbidden,
+			}
+		}
 		return Result{
 			Name:    ToolGetOrderStatus,
 			OK:      true,
@@ -371,7 +415,45 @@ func (r *Registry) execAddToCart(ctx context.Context, cc CallContext, args map[s
 		}
 	}
 
-	confirmed := cc.Confirmed || boolArg(args, "confirmed")
+	if scopedShop := strings.TrimSpace(cc.ShopID); scopedShop != "" {
+		lookup, ok := r.productRet.(retriever.SKULookup)
+		if !ok || lookup == nil {
+			return Result{
+				Name:    ToolAddToCart,
+				OK:      false,
+				Private: true,
+				Error:   "không thể xác minh sản phẩm của gian hàng lúc này",
+			}
+		}
+		skuInfo, err := lookup.GetSKU(ctx, skuID)
+		if err != nil {
+			if errors.Is(err, retriever.ErrSKUNotFound) {
+				return Result{
+					Name:    ToolAddToCart,
+					OK:      false,
+					Private: true,
+					Error:   "sản phẩm không thuộc gian hàng này hoặc không còn đang bán",
+				}
+			}
+			r.log.Warn("add_to_cart sku verification failed", slog.String("sku_id", skuID), slog.String("error", err.Error()))
+			return Result{
+				Name:    ToolAddToCart,
+				OK:      false,
+				Private: true,
+				Error:   "không thể xác minh sản phẩm của gian hàng lúc này",
+			}
+		}
+		if skuInfo == nil || skuInfo.ShopID != scopedShop || !skuInfo.IsActive {
+			return Result{
+				Name:    ToolAddToCart,
+				OK:      false,
+				Private: true,
+				Error:   "sản phẩm không thuộc gian hàng này hoặc không còn đang bán",
+			}
+		}
+	}
+
+	confirmed := cc.Confirmed
 	priceVND := int64Arg(args, "price_vnd", 0)
 	if !confirmed {
 		productName := stringArg(args, "product_name")
@@ -414,6 +496,12 @@ func (r *Registry) execAddToCart(ctx context.Context, cc CallContext, args map[s
 		return Result{Name: ToolAddToCart, OK: false, Private: true, Error: "không thể thêm sản phẩm vào giỏ hàng lúc này"}
 	}
 
+	var rawCart, clamped any
+	if resp != nil {
+		rawCart = resp["cart"]
+		clamped = resp["clamped_to_stock"]
+	}
+
 	return Result{
 		Name:    ToolAddToCart,
 		OK:      true,
@@ -421,9 +509,9 @@ func (r *Registry) execAddToCart(ctx context.Context, cc CallContext, args map[s
 		Data: map[string]any{
 			"sku_id":           skuID,
 			"quantity":         qty,
-			"cart":             resp["cart"],
-			"clamped_to_stock": resp["clamped_to_stock"],
-			"cart_url":         "/cart",
+			"cart":             scopeCartToShop(rawCart, strings.TrimSpace(cc.ShopID)),
+			"clamped_to_stock": clamped,
+			"cart_url":         "/gio-hang",
 		},
 	}
 }
@@ -449,23 +537,48 @@ func (r *Registry) execGetSellerReport(ctx context.Context, cc CallContext, args
 		}
 	}
 
-	if r.gw == nil {
-		return Result{Name: ToolGetSellerReport, OK: false, Private: true, Error: "dịch vụ báo cáo người bán tạm thời chưa khả dụng"}
-	}
+	const sellerReportTopLimit = 5
+	period, fromDate, toDate := reportDateRangeForPeriod(stringArg(args, "period"), r.nowTime())
 
-	orders, err := r.gw.ListSellerOrders(ctx, cc.RawBearer)
-	if err != nil {
-		return mapSellerReportError(err)
-	}
-	balance, err := r.gw.GetSellerBalance(ctx, cc.RawBearer)
-	if err != nil {
-		return mapSellerReportError(err)
-	}
-
-	metrics := computeSellerMetrics(orders, balance)
-	period := stringArg(args, "period")
-	if period == "" {
-		period = "all"
+	var (
+		metrics sellerReportMetrics
+		err     error
+	)
+	switch {
+	case r.orderReports != nil:
+		rep, repErr := r.orderReports.GetSellerReport(ctx, cc.RawBearer, &orderv1.GetSellerReportRequest{
+			ShopId:   cc.SellerShopID,
+			FromDate: fromDate,
+			ToDate:   toDate,
+			TopLimit: sellerReportTopLimit,
+		})
+		if repErr != nil {
+			return mapSellerReportError(repErr)
+		}
+		var balance map[string]any
+		if r.gw != nil {
+			balance, err = r.gw.GetSellerBalance(ctx, cc.RawBearer)
+			if err != nil {
+				return mapSellerReportError(err)
+			}
+		}
+		metrics = sellerMetricsFromOrderReport(rep, balance)
+	default:
+		gwRep, ok := r.gw.(interface {
+			GetSellerReport(ctx context.Context, rawBearer, fromDate, toDate string, topLimit int32) (map[string]any, error)
+		})
+		if !ok || r.gw == nil {
+			return Result{Name: ToolGetSellerReport, OK: false, Private: true, Error: "dịch vụ báo cáo người bán tạm thời chưa khả dụng"}
+		}
+		repMap, repErr := gwRep.GetSellerReport(ctx, cc.RawBearer, fromDate, toDate, sellerReportTopLimit)
+		if repErr != nil {
+			return mapSellerReportError(repErr)
+		}
+		balance, balErr := r.gw.GetSellerBalance(ctx, cc.RawBearer)
+		if balErr != nil {
+			return mapSellerReportError(balErr)
+		}
+		metrics = sellerMetricsFromReportMap(repMap, balance)
 	}
 
 	metricsMap := map[string]any{
@@ -601,119 +714,72 @@ type sellerReportMetrics struct {
 	topProducts         []map[string]any
 }
 
-type productAgg struct {
-	productID   string
-	productName string
-	unitsSold   int32
-	revenueVND  int64
+func sellerMetricsFromOrderReport(rep *orderv1.GetSellerReportResponse, balance map[string]any) sellerReportMetrics {
+	var m sellerReportMetrics
+	if rep != nil {
+		m.totalOrders = int(clampInt32(rep.GetTotalOrders()))
+		m.completedOrders = int(clampInt32(rep.GetCompletedOrders()))
+		m.cancelledOrders = int(clampInt32(rep.GetCancelledOrders()))
+		m.cancelRatePct = float64(rep.GetCancelRateBps()) / 100.0
+		m.grossRevenueVND = rep.GetGmvVnd()
+
+		srcTop := rep.GetTopProducts()
+		if len(srcTop) > 5 {
+			srcTop = srcTop[:5]
+		}
+		m.topProducts = make([]map[string]any, 0, len(srcTop))
+		for _, tp := range srcTop {
+			if tp == nil {
+				continue
+			}
+			m.topProducts = append(m.topProducts, map[string]any{
+				"product_id":   tp.GetProductId(),
+				"product_name": tp.GetProductName(),
+				"units_sold":   clampInt32(tp.GetUnitsSold()),
+				"revenue_vnd":  tp.GetRevenueVnd(),
+			})
+		}
+	} else {
+		m.topProducts = []map[string]any{}
+	}
+	populateBalanceMetrics(&m, balance)
+	return m
 }
 
-func computeSellerMetrics(orders []map[string]any, balance map[string]any) sellerReportMetrics {
+func sellerMetricsFromReportMap(rep map[string]any, balance map[string]any) sellerReportMetrics {
 	var m sellerReportMetrics
-	m.totalOrders = len(orders)
+	m.totalOrders = int(clampInt32(int64FromAny(rep["total_orders"])))
+	m.completedOrders = int(clampInt32(int64FromAny(rep["completed_orders"])))
+	m.cancelledOrders = int(clampInt32(int64FromAny(rep["cancelled_orders"])))
+	m.cancelRatePct = float64(int64FromAny(rep["cancel_rate_bps"])) / 100.0
+	m.grossRevenueVND = int64FromAny(rep["gmv_vnd"])
 
-	byProd := make(map[string]*productAgg)
-	for _, ord := range orders {
-		st := strings.ToUpper(strings.TrimSpace(stringFromAny(ord["status"])))
-		switch st {
-		case "COMPLETED":
-			m.completedOrders++
-		case "CANCELLED":
-			m.cancelledOrders++
-		}
-
-		if st == "CANCELLED" || st == "RETURNED" {
-			continue
-		}
-
-		orderRev := int64FromAny(ord["total_payable_vnd"])
-		if orderRev <= 0 {
-			orderRev = int64FromAny(ord["subtotal_vnd"])
-		}
-
-		var itemsRev int64
-		if rawItems, ok := ord["items"].([]any); ok {
-			for _, rawIt := range rawItems {
-				it, ok := rawIt.(map[string]any)
-				if !ok {
-					continue
-				}
-				pid := strings.TrimSpace(stringFromAny(it["product_id"]))
-				pname := strings.TrimSpace(stringFromAny(it["product_name"]))
-				if pid == "" {
-					pid = pname
-				}
-				qty := int32FromAny(it["quantity"])
-				if qty <= 0 {
-					qty = 1
-				}
-				line := int64FromAny(it["line_total_vnd"])
-				if line <= 0 {
-					unit := int64FromAny(it["effective_unit_price_vnd"])
-					if unit <= 0 {
-						unit = int64FromAny(it["unit_price_vnd"])
-					}
-					line = unit * int64(qty)
-				}
-				itemsRev += line
-				if pid != "" {
-					agg, exists := byProd[pid]
-					if !exists {
-						agg = &productAgg{productID: pid, productName: pname}
-						byProd[pid] = agg
-					}
-					if agg.productName == "" && pname != "" {
-						agg.productName = pname
-					}
-					agg.unitsSold += qty
-					agg.revenueVND += line
-				}
+	m.topProducts = []map[string]any{}
+	if rawTop, ok := rep["top_products"].([]any); ok {
+		for _, rawIt := range rawTop {
+			if len(m.topProducts) >= 5 {
+				break
 			}
-		} else if typedItems, ok := ord["items"].([]map[string]any); ok {
-			for _, it := range typedItems {
-				pid := strings.TrimSpace(stringFromAny(it["product_id"]))
-				pname := strings.TrimSpace(stringFromAny(it["product_name"]))
-				if pid == "" {
-					pid = pname
-				}
-				qty := int32FromAny(it["quantity"])
-				if qty <= 0 {
-					qty = 1
-				}
-				line := int64FromAny(it["line_total_vnd"])
-				if line <= 0 {
-					unit := int64FromAny(it["effective_unit_price_vnd"])
-					if unit <= 0 {
-						unit = int64FromAny(it["unit_price_vnd"])
-					}
-					line = unit * int64(qty)
-				}
-				itemsRev += line
-				if pid != "" {
-					agg, exists := byProd[pid]
-					if !exists {
-						agg = &productAgg{productID: pid, productName: pname}
-						byProd[pid] = agg
-					}
-					if agg.productName == "" && pname != "" {
-						agg.productName = pname
-					}
-					agg.unitsSold += qty
-					agg.revenueVND += line
-				}
+			it, ok := rawIt.(map[string]any)
+			if !ok {
+				continue
 			}
+			m.topProducts = append(m.topProducts, map[string]any{
+				"product_id":   strings.TrimSpace(stringFromAny(it["product_id"])),
+				"product_name": strings.TrimSpace(stringFromAny(it["product_name"])),
+				"units_sold":   clampInt32(int64FromAny(it["units_sold"])),
+				"revenue_vnd":  int64FromAny(it["revenue_vnd"]),
+			})
 		}
-
-		if orderRev <= 0 {
-			orderRev = itemsRev
-		}
-		m.grossRevenueVND += orderRev
 	}
+	populateBalanceMetrics(&m, balance)
+	return m
+}
 
-	if m.totalOrders > 0 {
-		m.cancelRatePct = math.Round((float64(m.cancelledOrders)/float64(m.totalOrders))*10000) / 100
+func populateBalanceMetrics(m *sellerReportMetrics, balance map[string]any) {
+	if m == nil || balance == nil {
+		return
 	}
-
 	m.availableBalanceVND = int64FromAny(balance["available_vnd"])
 	if m.availableBalanceVND == 0 {
 		m.availableBalanceVND = int64FromAny(balance["available_balance_vnd"])
@@ -722,34 +788,149 @@ func computeSellerMetrics(orders []map[string]any, balance map[string]any) selle
 	if m.pendingBalanceVND == 0 {
 		m.pendingBalanceVND = int64FromAny(balance["pending_balance_vnd"])
 	}
+}
 
-	ranked := make([]*productAgg, 0, len(byProd))
-	for _, agg := range byProd {
-		ranked = append(ranked, agg)
+func clampInt32(v int64) int32 {
+	if v > math.MaxInt32 {
+		return math.MaxInt32
 	}
-	sort.Slice(ranked, func(i, j int) bool {
-		if ranked[i].revenueVND != ranked[j].revenueVND {
-			return ranked[i].revenueVND > ranked[j].revenueVND
+	if v < math.MinInt32 {
+		return math.MinInt32
+	}
+	return int32(v)
+}
+
+const errOrderNotFoundOrForbidden = "không tìm thấy đơn hàng hoặc bạn không có quyền truy cập đơn hàng này"
+
+// orderBelongsToStorefront enforces the same storefront rule as web/src/lib/server/storefront.ts assertInStorefront:
+// sales_channel must be STOREFRONT, storefront_shop_id must equal shopID, and if shop_id is set it must match shopID.
+func orderBelongsToStorefront(order map[string]any, shopID string) bool {
+	shopID = strings.TrimSpace(shopID)
+	if order == nil || shopID == "" {
+		return false
+	}
+	if strings.ToUpper(strings.TrimSpace(stringFromAny(order["sales_channel"]))) != "STOREFRONT" {
+		return false
+	}
+	if strings.TrimSpace(stringFromAny(order["storefront_shop_id"])) != shopID {
+		return false
+	}
+	if orderShopID := strings.TrimSpace(stringFromAny(order["shop_id"])); orderShopID != "" && orderShopID != shopID {
+		return false
+	}
+	return true
+}
+
+// scopeCartToShop filters a gateway cartDTO map to keep only shop_groups matching shopID
+// and recomputes total_items, total_vnd, subtotal_vnd, and total_weight_grams (excluding unavailable items),
+// matching web/src/lib/server/storefront.ts scopeCartToShop and services/gateway/internal/router/handlers_cart.go cartDTO.
+func scopeCartToShop(rawCart any, shopID string) any {
+	if shopID == "" || rawCart == nil {
+		return rawCart
+	}
+	cartMap, ok := rawCart.(map[string]any)
+	if !ok {
+		return nil
+	}
+	rawGroups, hasGroups := cartMap["shop_groups"]
+	if !hasGroups {
+		if cartShop := strings.TrimSpace(stringFromAny(cartMap["shop_id"])); cartShop != "" && cartShop != shopID {
+			return map[string]any{
+				"user_id":     stringFromAny(cartMap["user_id"]),
+				"shop_groups": []map[string]any{},
+				"total_items": int32(0),
+				"total_vnd":   int64(0),
+			}
 		}
-		if ranked[i].unitsSold != ranked[j].unitsSold {
-			return ranked[i].unitsSold > ranked[j].unitsSold
+		cloned := make(map[string]any, len(cartMap))
+		for k, v := range cartMap {
+			cloned[k] = v
 		}
-		return ranked[i].productID < ranked[j].productID
-	})
-	if len(ranked) > 5 {
-		ranked = ranked[:5]
+		return cloned
 	}
 
-	m.topProducts = make([]map[string]any, 0, len(ranked))
-	for _, agg := range ranked {
-		m.topProducts = append(m.topProducts, map[string]any{
-			"product_id":   agg.productID,
-			"product_name": agg.productName,
-			"units_sold":   agg.unitsSold,
-			"revenue_vnd":  agg.revenueVND,
-		})
+	origGroups := toMapSlice(rawGroups)
+	filteredGroups := make([]map[string]any, 0, len(origGroups))
+	var totalItems int64
+	var totalVND int64
+
+	for _, g := range origGroups {
+		if strings.TrimSpace(stringFromAny(g["shop_id"])) != shopID {
+			continue
+		}
+		origItems := toMapSlice(g["items"])
+		filteredItems := make([]map[string]any, 0, len(origItems))
+		var hasUnavailable bool
+		var computedSubtotal int64
+		var computedWeight int64
+		for _, it := range origItems {
+			if itShop := strings.TrimSpace(stringFromAny(it["shop_id"])); itShop != "" && itShop != shopID {
+				continue
+			}
+			itCopy := make(map[string]any, len(it))
+			for k, v := range it {
+				itCopy[k] = v
+			}
+			filteredItems = append(filteredItems, itCopy)
+			if boolFromAny(it["unavailable"]) {
+				hasUnavailable = true
+				continue
+			}
+			qty := int64FromAny(it["quantity"])
+			totalItems += qty
+			computedSubtotal += int64FromAny(it["price_vnd"]) * qty
+			computedWeight += int64FromAny(it["weight_grams"]) * qty
+		}
+
+		subtotalVND := computedSubtotal
+		if _, hasSub := g["subtotal_vnd"]; hasSub && !hasUnavailable && len(filteredItems) == len(origItems) {
+			subtotalVND = int64FromAny(g["subtotal_vnd"])
+		}
+		totalWeightGrams := clampInt32(computedWeight)
+		if _, hasW := g["total_weight_grams"]; hasW && !hasUnavailable && len(filteredItems) == len(origItems) {
+			totalWeightGrams = clampInt32(int64FromAny(g["total_weight_grams"]))
+		}
+
+		gCopy := make(map[string]any, len(g))
+		for k, v := range g {
+			gCopy[k] = v
+		}
+		gCopy["items"] = filteredItems
+		gCopy["subtotal_vnd"] = subtotalVND
+		gCopy["total_weight_grams"] = totalWeightGrams
+
+		filteredGroups = append(filteredGroups, gCopy)
+		totalVND += subtotalVND
 	}
-	return m
+
+	return map[string]any{
+		"user_id":     stringFromAny(cartMap["user_id"]),
+		"shop_groups": filteredGroups,
+		"total_items": clampInt32(totalItems),
+		"total_vnd":   totalVND,
+	}
+}
+
+func toMapSlice(v any) []map[string]any {
+	switch s := v.(type) {
+	case []map[string]any:
+		return s
+	case []any:
+		out := make([]map[string]any, 0, len(s))
+		for _, el := range s {
+			if m, ok := el.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func boolFromAny(v any) bool {
+	b, _ := v.(bool)
+	return b
 }
 
 func mapOrderError(toolName string, err error) Result {
@@ -759,13 +940,24 @@ func mapOrderError(toolName string, err error) Result {
 		case http.StatusUnauthorized:
 			return Result{Name: toolName, OK: false, RequiresAuth: true, Private: true, Error: "phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại"}
 		case http.StatusForbidden, http.StatusNotFound:
-			return Result{Name: toolName, OK: false, Private: true, Error: "không tìm thấy đơn hàng hoặc bạn không có quyền truy cập đơn hàng này"}
+			return Result{Name: toolName, OK: false, Private: true, Error: errOrderNotFoundOrForbidden}
 		}
 	}
 	return Result{Name: toolName, OK: false, Private: true, Error: "không thể tra cứu đơn hàng lúc này, vui lòng thử lại sau"}
 }
 
 func mapSellerReportError(err error) Result {
+	if errors.Is(err, ErrMissingBearerToken) {
+		return Result{Name: ToolGetSellerReport, OK: false, RequiresAuth: true, Private: true, Error: "phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại"}
+	}
+	if st, ok := status.FromError(err); ok {
+		switch st.Code() {
+		case codes.Unauthenticated:
+			return Result{Name: ToolGetSellerReport, OK: false, RequiresAuth: true, Private: true, Error: "phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại"}
+		case codes.PermissionDenied:
+			return Result{Name: ToolGetSellerReport, OK: false, Private: true, Error: "chỉ người bán đã xác thực gian hàng mới có quyền xem báo cáo kinh doanh"}
+		}
+	}
 	var statusErr *resilience.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		switch statusErr.StatusCode {
@@ -796,21 +988,6 @@ func extractConversationID(resp map[string]any) string {
 
 func stringArg(args map[string]any, key string) string {
 	return strings.TrimSpace(stringFromAny(args[key]))
-}
-
-func boolArg(args map[string]any, key string) bool {
-	v, ok := args[key]
-	if !ok || v == nil {
-		return false
-	}
-	switch t := v.(type) {
-	case bool:
-		return t
-	case string:
-		return strings.EqualFold(strings.TrimSpace(t), "true")
-	default:
-		return false
-	}
 }
 
 func int64Arg(args map[string]any, key string, fallback int64) int64 {

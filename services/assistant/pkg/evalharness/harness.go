@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
+	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/logger"
 	"github.com/nexusmart/core/pkg/common/metrics"
@@ -94,7 +96,13 @@ func NewStack(cfg StackConfig) (*Stack, error) {
 
 	prodRet := retriever.NewInMemoryRetriever(hits, guard)
 	log := logger.New("assistant-eval", logger.WithWriter(io.Discard))
-	toolReg := tools.NewRegistry(prodRet, polRAG, cfg.Gateway, guard, log)
+	var toolGW tools.GatewayClient
+	var toolOpts []tools.RegistryOption
+	if cfg.Gateway != nil {
+		toolGW = &evalGatewayAdapter{MockGateway: cfg.Gateway}
+		toolOpts = append(toolOpts, tools.WithOrderReportClient(&evalOrderReportAdapter{gw: cfg.Gateway}))
+	}
+	toolReg := tools.NewRegistry(prodRet, polRAG, toolGW, guard, log, toolOpts...)
 	quotaMgr := quota.NewMemoryManager(quota.Config{
 		DailyUserTokenLimit: tokenLimit,
 		DailyCostLimitVND:   costLimit,
@@ -214,4 +222,140 @@ func NewStack(cfg StackConfig) (*Stack, error) {
 			return guard.VerifyGrounding(text, allowedShopID, gp)
 		},
 	}, nil
+}
+
+// evalGatewayAdapter normalizes offline eval order fixtures that omit sales_channel/storefront_shop_id
+// while keeping tools.Registry strict fail-closed for production Gateway responses.
+type evalGatewayAdapter struct {
+	MockGateway
+}
+
+func (a *evalGatewayAdapter) GetOrder(ctx context.Context, rawBearer, orderID string) (map[string]any, error) {
+	order, err := a.MockGateway.GetOrder(ctx, rawBearer, orderID)
+	if err != nil || order == nil {
+		return order, err
+	}
+	_, hasChannel := order["sales_channel"]
+	_, hasStorefrontShop := order["storefront_shop_id"]
+	shopID, _ := order["shop_id"].(string)
+	if !hasChannel && !hasStorefrontShop && strings.TrimSpace(shopID) != "" {
+		cloned := make(map[string]any, len(order)+2)
+		for k, v := range order {
+			cloned[k] = v
+		}
+		cloned["sales_channel"] = "STOREFRONT"
+		cloned["storefront_shop_id"] = strings.TrimSpace(shopID)
+		return cloned, nil
+	}
+	return order, nil
+}
+
+// evalOrderReportAdapter adapts an offline evalharness.MockGateway fixture to tools.SellerReportClient
+// so evals/assistant runs without a live order gRPC server while production always uses OrderService.GetSellerReport.
+type evalOrderReportAdapter struct {
+	gw MockGateway
+}
+
+func (a *evalOrderReportAdapter) GetSellerReport(ctx context.Context, rawBearer string, req *orderv1.GetSellerReportRequest) (*orderv1.GetSellerReportResponse, error) {
+	orders, err := a.gw.ListSellerOrders(ctx, rawBearer)
+	if err != nil {
+		return nil, err
+	}
+	var total, completed, cancelled, gmv int64
+	type prodStat struct {
+		id, name string
+		units    int64
+		rev      int64
+	}
+	byProd := make(map[string]*prodStat)
+	for _, ord := range orders {
+		total++
+		st := strings.ToUpper(strings.TrimSpace(fmt.Sprint(ord["status"])))
+		switch st {
+		case "COMPLETED":
+			completed++
+		case "CANCELLED":
+			cancelled++
+		}
+		if st == "CANCELLED" || st == "RETURNED" {
+			continue
+		}
+		gmv += evalInt64(ord["total_payable_vnd"])
+		if items, ok := ord["items"].([]map[string]any); ok {
+			for _, it := range items {
+				pid := strings.TrimSpace(fmt.Sprint(it["product_id"]))
+				pname := strings.TrimSpace(fmt.Sprint(it["product_name"]))
+				if pid == "" {
+					pid = pname
+				}
+				if pid == "" {
+					continue
+				}
+				ps, exists := byProd[pid]
+				if !exists {
+					ps = &prodStat{id: pid, name: pname}
+					byProd[pid] = ps
+				}
+				qty := evalInt64(it["quantity"])
+				if qty <= 0 {
+					qty = 1
+				}
+				ps.units += qty
+				ps.rev += evalInt64(it["line_total_vnd"])
+			}
+		}
+	}
+	var cancelRateBps int32
+	if total > 0 {
+		cancelRateBps = int32((cancelled * 10000) / total)
+	}
+	ranked := make([]*prodStat, 0, len(byProd))
+	for _, ps := range byProd {
+		ranked = append(ranked, ps)
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].rev != ranked[j].rev {
+			return ranked[i].rev > ranked[j].rev
+		}
+		return ranked[i].id < ranked[j].id
+	})
+	limit := int(req.GetTopLimit())
+	if limit <= 0 || limit > len(ranked) {
+		limit = len(ranked)
+	}
+	top := make([]*orderv1.TopProductStat, 0, limit)
+	for _, ps := range ranked[:limit] {
+		top = append(top, &orderv1.TopProductStat{
+			ProductId:   ps.id,
+			ProductName: ps.name,
+			UnitsSold:   ps.units,
+			RevenueVnd:  ps.rev,
+		})
+	}
+	return &orderv1.GetSellerReportResponse{
+		ShopId:          req.GetShopId(),
+		FromDate:        req.GetFromDate(),
+		ToDate:          req.GetToDate(),
+		GmvVnd:          gmv,
+		TotalOrders:     total,
+		CompletedOrders: completed,
+		CancelledOrders: cancelled,
+		CancelRateBps:   cancelRateBps,
+		TopProducts:     top,
+	}, nil
+}
+
+func evalInt64(v any) int64 {
+	switch t := v.(type) {
+	case int:
+		return int64(t)
+	case int32:
+		return int64(t)
+	case int64:
+		return t
+	case float64:
+		return int64(t)
+	default:
+		return 0
+	}
 }

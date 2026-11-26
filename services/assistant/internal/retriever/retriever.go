@@ -20,6 +20,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // ChainedConfig configures the multi-tier product retrieval chain.
@@ -266,17 +268,26 @@ func (r *ChainedRetriever) GetProduct(ctx context.Context, productID string) (*P
 			sanitized := sanitizeHit(*hit, r.guardrail)
 			return &sanitized, nil
 		}
+		if errors.Is(err, ErrProductNotFound) || status.Code(err) == codes.NotFound {
+			return nil, ErrProductNotFound
+		}
 		lastErr = err
 	}
 
 	if r.gatewayURL != "" {
-		hit, err := resilience.CallWithRetry(ctx, r.gatewayCB, 2, 50*time.Millisecond, r.timeout, resilience.IsTransientHTTPError,
+		isTransient := func(err error) bool {
+			return !errors.Is(err, ErrProductNotFound) && resilience.IsTransientHTTPError(err)
+		}
+		hit, err := resilience.CallWithRetry(ctx, r.gatewayCB, 2, 50*time.Millisecond, r.timeout, isTransient,
 			func(attemptCtx context.Context) (*ProductHit, error) {
 				return r.getProductViaGatewayREST(attemptCtx, productID)
 			})
 		if err == nil && hit != nil {
 			sanitized := sanitizeHit(*hit, r.guardrail)
 			return &sanitized, nil
+		}
+		if errors.Is(err, ErrProductNotFound) {
+			return nil, ErrProductNotFound
 		}
 		lastErr = err
 	}
@@ -285,6 +296,150 @@ func (r *ChainedRetriever) GetProduct(ctx context.Context, productID string) (*P
 		return nil, errors.New("no product backend configured")
 	}
 	return nil, fmt.Errorf("get product %q failed: %w", productID, lastErr)
+}
+
+// GetSKU resolves authoritative SKU shop ownership and active sale status via Product gRPC
+// (GetSKUsBatch) with Gateway REST fallback.
+func (r *ChainedRetriever) GetSKU(ctx context.Context, skuID string) (*SKUInfo, error) {
+	skuID = strings.TrimSpace(skuID)
+	if skuID == "" {
+		return nil, errors.New("skuID is required")
+	}
+
+	var lastErr error
+	if r.productClient != nil {
+		info, err := resilience.CallWithRetry(ctx, r.productCB, 2, 50*time.Millisecond, r.timeout, resilience.IsTransientGRPCError,
+			func(attemptCtx context.Context) (*SKUInfo, error) {
+				return r.getSKUViaProductGRPC(attemptCtx, skuID)
+			})
+		if err == nil {
+			return info, nil
+		}
+		if errors.Is(err, ErrSKUNotFound) {
+			return nil, ErrSKUNotFound
+		}
+		lastErr = err
+		r.log.Warn("product gRPC GetSKUsBatch unavailable, trying gateway fallback", slog.String("error", err.Error()))
+	}
+
+	if r.gatewayURL != "" {
+		isTransient := func(err error) bool {
+			return !errors.Is(err, ErrSKUNotFound) && resilience.IsTransientHTTPError(err)
+		}
+		info, err := resilience.CallWithRetry(ctx, r.gatewayCB, 2, 50*time.Millisecond, r.timeout, isTransient,
+			func(attemptCtx context.Context) (*SKUInfo, error) {
+				return r.getSKUViaGatewayREST(attemptCtx, skuID)
+			})
+		if err == nil {
+			return info, nil
+		}
+		if errors.Is(err, ErrSKUNotFound) {
+			return nil, ErrSKUNotFound
+		}
+		lastErr = err
+	}
+
+	if lastErr == nil {
+		return nil, errors.New("no product backend configured")
+	}
+	return nil, fmt.Errorf("get sku %q failed: %w", skuID, lastErr)
+}
+
+func (r *ChainedRetriever) getSKUViaGatewayREST(ctx context.Context, skuID string) (*SKUInfo, error) {
+	params := url.Values{}
+	params.Set("sku_ids", skuID)
+	params.Set("page", "1")
+	params.Set("page_size", "5")
+
+	endpoint := r.gatewayURL + "/api/v1/products?" + params.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+
+	resp, err := r.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, ErrSKUNotFound
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &resilience.HTTPStatusError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+
+	type gwSKU struct {
+		ID             string `json:"id"`
+		ProductID      string `json:"product_id"`
+		ShopID         string `json:"shop_id"`
+		ProductName    string `json:"product_name"`
+		Name           string `json:"name"`
+		PriceVND       int64  `json:"price_vnd"`
+		AvailableStock int32  `json:"available_stock"`
+		IsActive       *bool  `json:"is_active"`
+	}
+	type gwProd struct {
+		ID     string  `json:"id"`
+		ShopID string  `json:"shop_id"`
+		Name   string  `json:"name"`
+		Status string  `json:"status"`
+		SKUs   []gwSKU `json:"skus"`
+	}
+	var payload struct {
+		Products []gwProd `json:"products"`
+		Items    []gwProd `json:"items"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("decode gateway sku lookup response: %w", err)
+	}
+	list := payload.Products
+	if len(list) == 0 {
+		list = payload.Items
+	}
+	for _, p := range list {
+		pStatus := strings.ToUpper(strings.TrimSpace(p.Status))
+		prodOnSale := pStatus == "" || pStatus == "APPROVED" || pStatus == "OUT_OF_STOCK"
+		for _, s := range p.SKUs {
+			if s.ID != skuID {
+				continue
+			}
+			shopID := strings.TrimSpace(s.ShopID)
+			if shopID == "" {
+				shopID = strings.TrimSpace(p.ShopID)
+			}
+			prodID := strings.TrimSpace(s.ProductID)
+			if prodID == "" {
+				prodID = strings.TrimSpace(p.ID)
+			}
+			prodName := strings.TrimSpace(s.ProductName)
+			if prodName == "" {
+				prodName = strings.TrimSpace(p.Name)
+			}
+			active := prodOnSale
+			if s.IsActive != nil {
+				active = prodOnSale && *s.IsActive
+			}
+			return &SKUInfo{
+				ID:             s.ID,
+				ProductID:      prodID,
+				ShopID:         shopID,
+				ProductName:    prodName,
+				Name:           s.Name,
+				PriceVND:       s.PriceVND,
+				AvailableStock: s.AvailableStock,
+				IsActive:       active,
+			}, nil
+		}
+	}
+	return nil, ErrSKUNotFound
 }
 
 func (r *ChainedRetriever) searchViaGatewayREST(ctx context.Context, q SearchQuery) ([]ProductHit, int64, error) {

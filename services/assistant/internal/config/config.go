@@ -28,6 +28,7 @@ type Config struct {
 	GatewayURL      string
 	SearchGRPCAddr  string
 	ProductGRPCAddr string
+	OrderGRPCAddr   string
 	ChatGRPCAddr    string
 
 	// LLM settings (LLM_MODE=mock|anthropic).
@@ -85,6 +86,7 @@ func Load() Config {
 		GatewayURL:      strings.TrimRight(env.EnvString("GATEWAY_URL", "http://gateway:8080"), "/"),
 		SearchGRPCAddr:  env.EnvString("SEARCH_GRPC_ADDR", "search:50059"),
 		ProductGRPCAddr: env.EnvString("PRODUCT_GRPC_ADDR", "product:50052"),
+		OrderGRPCAddr:   env.EnvString("ORDER_GRPC_ADDR", "order:50055"),
 		ChatGRPCAddr:    env.EnvString("CHAT_GRPC_ADDR", "chat:50060"),
 
 		LLMMode:            strings.ToLower(strings.TrimSpace(env.EnvString("LLM_MODE", "mock"))),

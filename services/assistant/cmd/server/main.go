@@ -43,7 +43,11 @@ import (
 	"google.golang.org/grpc/reflection"
 )
 
-var validDBNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+var (
+	validDBNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+	redisWaitAttempts  = 6
+	redisWaitInterval  = 500 * time.Millisecond
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -98,34 +102,16 @@ func run() error {
 		dataStore = store.NewMemoryStore()
 	}
 
-	// 2. Quota, cost cap, abuse lockout, and cache manager: Redis primary with memory fallback.
+	// 2. Quota, cost cap, abuse lockout, and cache manager: Redis when REDIS_ADDR is set, in-memory otherwise.
 	quotaCfg := quota.Config{
 		DailyUserTokenLimit: cfg.DailyUserTokenLimit,
 		DailyCostLimitVND:   cfg.DailyCostLimitVND,
 		AbuseStrikeLimit:    cfg.AbuseStrikeLimit,
 		AbuseLockoutWindow:  cfg.AbuseLockoutWindow,
 	}
-	var (
-		quotaMgr quota.Manager
-		rdb      *redis.Client
-	)
-	if strings.TrimSpace(cfg.RedisAddr) != "" {
-		rdb = redis.NewClient(&redis.Options{
-			Addr:     cfg.RedisAddr,
-			Password: cfg.RedisPassword,
-		})
-		if pingErr := waitForRedis(ctx, rdb, log); pingErr == nil {
-			quotaMgr = quota.NewRedisManager(rdb, quotaCfg)
-			defer func() { _ = rdb.Close() }()
-		} else {
-			_ = rdb.Close()
-			rdb = nil
-			log.Warn("redis unavailable; falling back to in-memory quota/cache manager", slog.String("error", pingErr.Error()))
-			quotaMgr = quota.NewMemoryManager(quotaCfg)
-		}
-	} else {
-		log.Warn("REDIS_ADDR not set; using in-memory quota/cache manager")
-		quotaMgr = quota.NewMemoryManager(quotaCfg)
+	quotaMgr, rdb, revocationChecker := initQuotaAndRevocation(ctx, cfg.RedisAddr, cfg.RedisPassword, quotaCfg, log)
+	if rdb != nil {
+		defer func() { _ = rdb.Close() }()
 	}
 
 	// 3. Guardrail, LLM provider (mock | anthropic), Policy RAG, Product retriever, and Tools.
@@ -164,7 +150,18 @@ func run() error {
 		return err
 	}
 
-	toolReg := tools.NewRegistry(prodRet, polRet, gwClient, guard, log)
+	var toolOpts []tools.RegistryOption
+	if strings.TrimSpace(cfg.OrderGRPCAddr) != "" {
+		orderReportClient, oErr := tools.NewGRPCOrderReportClient(cfg.OrderGRPCAddr, cfg.ServiceName, 8*time.Second, resilience.NewCircuitBreaker(5, 15*time.Second))
+		if oErr != nil {
+			log.Error("failed to init order gRPC client", slog.String("error", oErr.Error()))
+			return oErr
+		}
+		defer func() { _ = orderReportClient.Close() }()
+		toolOpts = append(toolOpts, tools.WithOrderReportClient(orderReportClient))
+	}
+
+	toolReg := tools.NewRegistry(prodRet, polRet, gwClient, guard, log, toolOpts...)
 
 	red := metrics.NewRED(cfg.ServiceName, prometheus.DefaultRegisterer)
 	assistantMetrics := service.NewMetrics(prometheus.DefaultRegisterer)
@@ -242,25 +239,16 @@ func run() error {
 	}()
 
 	// 7. Start HTTP SSE + ops server on :8091 (WriteTimeout: 0 to allow long SSE streams).
-	readyFn := func(rctx context.Context) error {
-		checkCtx, cancel := context.WithTimeout(rctx, 2*time.Second)
-		defer cancel()
-		if err := dataStore.Ping(checkCtx); err != nil {
-			return fmt.Errorf("store: %w", err)
-		}
-		if err := quotaMgr.Ping(checkCtx); err != nil {
-			return fmt.Errorf("quota: %w", err)
-		}
-		return nil
-	}
+	readyFn := buildReadyCheck(dataStore, quotaMgr, rdb)
 	httpHandler := httpserver.New(httpserver.Config{
-		ServiceName: cfg.ServiceName,
-		Service:     svc,
-		AuthManager: jwtMgr,
-		RED:         red,
-		Gatherer:    prometheus.DefaultGatherer,
-		ReadyCheck:  readyFn,
-		Logger:      log,
+		ServiceName:       cfg.ServiceName,
+		Service:           svc,
+		AuthManager:       jwtMgr,
+		RevocationChecker: revocationChecker,
+		RED:               red,
+		Gatherer:          prometheus.DefaultGatherer,
+		ReadyCheck:        readyFn,
+		Logger:            log,
 	})
 
 	httpSrv := &http.Server{
@@ -399,9 +387,56 @@ func ensureDatabaseExists(ctx context.Context, dsn string, log *slog.Logger) err
 	return nil
 }
 
+func initQuotaAndRevocation(
+	ctx context.Context,
+	redisAddr, redisPassword string,
+	quotaCfg quota.Config,
+	log *slog.Logger,
+) (quota.Manager, *redis.Client, auth.TokenRevocationChecker) {
+	if strings.TrimSpace(redisAddr) != "" {
+		rdb := redis.NewClient(&redis.Options{
+			Addr:     redisAddr,
+			Password: redisPassword,
+		})
+		if pingErr := waitForRedis(ctx, rdb, log); pingErr != nil {
+			log.Warn("redis unavailable at startup; keeping Redis quota/cache manager until Redis recovers", slog.String("error", pingErr.Error()))
+		}
+		return quota.NewRedisManager(rdb, quotaCfg), rdb, httpserver.NewRedisRevocationChecker(rdb)
+	}
+	log.Warn("REDIS_ADDR not set; using in-memory quota/cache manager")
+	return quota.NewMemoryManager(quotaCfg), nil, nil
+}
+
+func buildReadyCheck(dataStore store.Store, quotaMgr quota.Manager, rdb *redis.Client) func(context.Context) error {
+	return func(rctx context.Context) error {
+		checkCtx, cancel := context.WithTimeout(rctx, 2*time.Second)
+		defer cancel()
+		if dataStore != nil {
+			if err := dataStore.Ping(checkCtx); err != nil {
+				return fmt.Errorf("store: %w", err)
+			}
+		}
+		if rdb != nil {
+			if err := rdb.Ping(checkCtx).Err(); err != nil {
+				return fmt.Errorf("redis: %w", err)
+			}
+		}
+		if quotaMgr != nil {
+			if err := quotaMgr.Ping(checkCtx); err != nil {
+				return fmt.Errorf("quota: %w", err)
+			}
+		}
+		return nil
+	}
+}
+
 func waitForRedis(ctx context.Context, rdb *redis.Client, log *slog.Logger) error {
 	var lastErr error
-	for i := 0; i < 6; i++ {
+	attempts := redisWaitAttempts
+	if attempts <= 0 {
+		attempts = 1
+	}
+	for i := 0; i < attempts; i++ {
 		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		err := rdb.Ping(pingCtx).Err()
 		cancel()
@@ -413,7 +448,7 @@ func waitForRedis(ctx context.Context, rdb *redis.Client, log *slog.Logger) erro
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(redisWaitInterval):
 		}
 	}
 	return lastErr
