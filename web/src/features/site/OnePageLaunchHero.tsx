@@ -1,13 +1,13 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { buttonVariants } from "@/components/ui/button";
 import type { Product } from "@/data/products";
 import { formatVnd } from "@/lib/format";
 import { sanitizeSafeHref } from "@/lib/site/theme";
+import { cn } from "@/lib/utils";
 import { SafeActionLink } from "./SafeActionLink";
 import { sanitizeSafeImageUrl } from "./templateValidator";
-import styles from "./site.module.css";
-import tplStyles from "./siteTemplates.module.css";
 
 export interface OnePageLaunchHeroProps {
   title: string;
@@ -127,11 +127,11 @@ export function OnePageLaunchHero({
   const currentStage = stages[activeIdx] ?? stages[0];
 
   return (
-    <div className={tplStyles.launchHero}>
-      <div className={tplStyles.launchStickyViewport}>
-        <div className={tplStyles.launchHeaderRow}>
+    <div className="relative flex flex-col gap-6">
+      <div className="z-[5] flex flex-col gap-[clamp(18px,2.5vw,28px)] rounded-lg bg-background p-[clamp(16px,2.5vw,32px)] lg:sticky lg:top-[72px]">
+        <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
           <HeadingTag
-            className={tplStyles.launchTitle}
+            className="max-w-[18ch] text-[clamp(32px,4.4vw,60px)] leading-[1.06] font-bold tracking-[-0.025em] text-foreground"
             data-rise=""
             style={{ "--i": 0 } as React.CSSProperties}
           >
@@ -139,7 +139,7 @@ export function OnePageLaunchHero({
           </HeadingTag>
           {subtitle?.trim() && (
             <p
-              className={tplStyles.launchSub}
+              className="max-w-[38ch] text-base text-muted-foreground"
               data-rise=""
               style={{ "--i": 1 } as React.CSSProperties}
             >
@@ -148,8 +148,8 @@ export function OnePageLaunchHero({
           )}
         </div>
 
-        <div className={tplStyles.launchStageGrid}>
-          <div className={tplStyles.launchStagePills} role="group" aria-label="Chặng xem sản phẩm">
+        <div className="grid grid-cols-1 items-center gap-[clamp(16px,2.5vw,36px)] lg:grid-cols-[minmax(0,3.5fr)_minmax(260px,4.5fr)_minmax(0,3.5fr)]">
+          <div className="flex flex-col gap-2" role="group" aria-label="Chặng xem sản phẩm">
             {stages.map((st, idx) => {
               const active = idx === activeIdx;
               return (
@@ -157,26 +157,29 @@ export function OnePageLaunchHero({
                   key={st.key}
                   type="button"
                   aria-pressed={active}
-                  className={`${tplStyles.launchStageBtn} ${
-                    active ? tplStyles.launchStageBtnActive : ""
-                  }`}
                   onClick={() => setActiveIdx(idx)}
+                  className={cn(
+                    "grid min-h-11 w-full grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2.5 gap-y-0.5 rounded-lg border px-4 py-3.5 text-left transition-colors",
+                    active
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border bg-card text-card-foreground hover:bg-accent hover:text-accent-foreground"
+                  )}
                 >
                   {st.swatchHex && (
                     <span
-                      className={tplStyles.launchSwatchDot}
+                      className="row-span-2 size-3 rounded-full border border-current/35"
                       style={{ backgroundColor: st.swatchHex }}
                       aria-hidden="true"
                     />
                   )}
-                  <span className={tplStyles.launchStageLabel}>{st.label}</span>
-                  <span className={tplStyles.launchStageDesc}>{st.detail}</span>
+                  <span className="text-[15px] leading-snug font-semibold">{st.label}</span>
+                  <span className="text-[13px] leading-[1.4] opacity-85">{st.detail}</span>
                 </button>
               );
             })}
           </div>
 
-          <div className={tplStyles.launchCenterFrame}>
+          <div className="relative aspect-[3/4] max-h-[520px] w-full overflow-hidden rounded-lg bg-card">
             {stages.map((st, idx) => (
               <img
                 key={`${st.key}-${idx}`}
@@ -185,18 +188,23 @@ export function OnePageLaunchHero({
                 aria-hidden={idx !== activeIdx}
                 width={896}
                 height={1200}
-                className={`${tplStyles.launchFrameImg} ${
-                  idx === activeIdx ? tplStyles.launchFrameImgActive : ""
-                }`}
+                className={cn(
+                  "absolute inset-0 size-full object-cover object-[center_16%] transition-all duration-300",
+                  idx === activeIdx ? "scale-100 opacity-100" : "scale-[1.02] opacity-0"
+                )}
               />
             ))}
           </div>
 
-          <div className={tplStyles.launchSideCaption}>
-            <p className={tplStyles.launchCaptionName}>{product?.name || title}</p>
-            <p className={tplStyles.launchCaptionDetail}>{currentStage.detail}</p>
+          <div className="flex flex-col gap-2.5 rounded-lg border border-border bg-card p-5 text-card-foreground">
+            <p className="text-xl leading-[1.15] font-bold text-foreground">
+              {product?.name || title}
+            </p>
+            <p className="text-[15px] leading-[1.5] text-muted-foreground">{currentStage.detail}</p>
             {product && (
-              <p className={`${tplStyles.launchCaptionPrice} num`}>{formatVnd(product.price)}</p>
+              <p className="text-[22px] font-semibold text-brand tabular-nums">
+                {formatVnd(product.price)}
+              </p>
             )}
           </div>
         </div>
@@ -204,7 +212,7 @@ export function OnePageLaunchHero({
 
       {/* Scroll chapter triggers on desktop (skipped in static preview) */}
       {!previewMode && (
-        <div className={tplStyles.launchScrollTrack} aria-hidden="true">
+        <div className="hidden flex-col lg:flex" aria-hidden="true">
           {stages.map((st, idx) => (
             <div
               key={st.key}
@@ -212,25 +220,31 @@ export function OnePageLaunchHero({
                 markerRefs.current[idx] = el;
               }}
               data-stage-idx={idx}
-              className={tplStyles.launchScrollStep}
+              className="h-[36svh]"
             />
           ))}
         </div>
       )}
 
       {/* Persistent always-visible Buy dock */}
-      <div className={tplStyles.launchBuyDock} data-mobile-buybar="">
-        <div className={tplStyles.launchBuyMeta}>
-          <span className={tplStyles.launchBuyName}>{product?.name || title}</span>
+      <div
+        className="fixed inset-x-0 bottom-0 z-25 flex w-full items-center justify-between gap-4 bg-[var(--site-band-bg)] px-4 py-3 text-[var(--site-band-ink)] sm:sticky sm:bottom-4 sm:mx-auto sm:w-[min(640px,100%)] sm:rounded-lg"
+        data-mobile-buybar=""
+      >
+        <div className="flex min-w-0 flex-col pl-1">
+          <span className="truncate text-[15px] font-semibold">{product?.name || title}</span>
           {product && (
-            <span className={`${tplStyles.launchBuyPrice} num`}>{formatVnd(product.price)}</span>
+            <span className="text-sm tabular-nums opacity-85">{formatVnd(product.price)}</span>
           )}
         </div>
         <SafeActionLink
           href={buyHref}
           fallbackHref="/san-pham"
           label={ctaLabel}
-          className={`${styles.btnPrimary} ${tplStyles.launchBuyCta}`}
+          className={cn(
+            buttonVariants({ variant: "default", size: "lg" }),
+            "min-h-11 shrink-0 px-5 whitespace-nowrap shadow-none"
+          )}
           previewMode={previewMode}
         />
       </div>

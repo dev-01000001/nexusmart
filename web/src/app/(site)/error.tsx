@@ -1,8 +1,8 @@
 "use client";
 
 import React from "react";
-import { Button } from "@/components/Button";
-import styles from "./error.module.css";
+import { ErrorState } from "@/components/app/ErrorState";
+import { UiScope } from "@/components/ui/ui-scope";
 
 interface SiteErrorProps {
   error: Error & { digest?: string };
@@ -16,20 +16,21 @@ interface SiteErrorProps {
  */
 export default function SiteError({ reset }: SiteErrorProps) {
   return (
-    <main className={styles.page}>
-      <section className={styles.panel} role="alert" aria-labelledby="site-error-title">
-        <h1 id="site-error-title" className={`${styles.title} type-normal`}>
+    <UiScope className="flex min-h-svh items-center justify-center bg-background px-4 py-12 text-foreground">
+      <main className="w-full max-w-[520px]" aria-labelledby="site-error-title">
+        <h1
+          id="site-error-title"
+          className="mb-4 text-center text-2xl font-semibold tracking-tight text-foreground"
+        >
           Hệ thống đang tạm bận.
         </h1>
-        <p className={styles.message}>
-          Cửa hàng tạm thời chưa thể tải nội dung lúc này. Bạn vui lòng thử lại sau ít phút.
-        </p>
-        <div className={styles.actions}>
-          <Button variant="primary" size="md" shape="square" onClick={() => reset()}>
-            Thử lại
-          </Button>
-        </div>
-      </section>
-    </main>
+        <ErrorState
+          title="Chưa thể tải nội dung cửa hàng"
+          description="Cửa hàng tạm thời chưa thể tải nội dung lúc này. Bạn vui lòng thử lại sau ít phút."
+          onRetry={() => reset()}
+          className="border border-border shadow-none"
+        />
+      </main>
+    </UiScope>
   );
 }

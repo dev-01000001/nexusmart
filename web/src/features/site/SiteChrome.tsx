@@ -1,17 +1,28 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { Menu, Search, ShoppingBag } from "lucide-react";
 import { useSession } from "@/components/SessionProvider";
-import { IconBag, IconClose, IconMenu, IconSearch } from "@/components/Icons";
-import { useModalFocusTrap } from "@/components/modalFocus";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { useStore } from "@/context/StoreContext";
-import { SiteSearchBar } from "@/features/search";
+import { cn } from "@/lib/utils";
 import { SITE_NAV_ITEMS, stripInternalSitePrefix, type SiteNavKey } from "./siteNav";
-import styles from "./site.module.css";
 
 export { SITE_NAV_ITEMS, stripInternalSitePrefix, type SiteNavKey };
+
+const SiteMobileDrawer = dynamic(
+  () => import("./shell/SiteMobileDrawer").then((mod) => mod.SiteMobileDrawer),
+  { ssr: false }
+);
+
+const SiteSearchModal = dynamic(
+  () => import("./shell/SiteSearchModal").then((mod) => mod.SiteSearchModal),
+  { ssr: false }
+);
 
 /**
  * Visible pathname on a site host. The middleware rewrites `/<path>` to `/s/<host>/<path>`;
@@ -30,15 +41,24 @@ export function SiteNav({ previewMode = false }: { previewMode?: boolean }) {
   const pathname = useSitePathname();
   return (
     <nav
-      className={`${styles.headerNav} ${previewMode ? styles.headerNavPreview : ""}`}
+      className={cn(
+        "items-center gap-x-5 gap-y-1.5",
+        previewMode ? "flex flex-wrap" : "hidden shrink-0 flex-nowrap lg:flex"
+      )}
       aria-label="Điều hướng cửa hàng"
     >
       {SITE_NAV_ITEMS.map((item) => {
         const active = !previewMode && isActive(pathname, item.href);
-        const className = `${styles.navLink} ${active ? styles.navLinkActive : ""}`;
+        const linkCls = cn(
+          "relative inline-flex items-center py-1.5 text-[15px] font-medium whitespace-nowrap transition-colors",
+          active
+            ? "text-brand after:scale-x-100"
+            : "text-foreground hover:text-brand after:scale-x-0 hover:after:scale-x-100",
+          "after:absolute after:inset-x-0 after:bottom-0.5 after:h-0.5 after:origin-left after:bg-brand after:transition-transform after:duration-200"
+        );
         if (previewMode) {
           return (
-            <span key={item.key} className={className}>
+            <span key={item.key} className={linkCls}>
               {item.label}
             </span>
           );
@@ -47,7 +67,7 @@ export function SiteNav({ previewMode = false }: { previewMode?: boolean }) {
           <Link
             key={item.key}
             href={item.href}
-            className={className}
+            className={linkCls}
             aria-current={active ? "page" : undefined}
           >
             {item.label}
@@ -61,14 +81,13 @@ export function SiteNav({ previewMode = false }: { previewMode?: boolean }) {
 export interface SiteHeaderActionsProps {
   brandName?: string;
   shopId?: string;
-  /** When true (default), renders Swarm G `SiteSearchBar` inside overlay/drawer; when false, plain form. */
+  /** When true (default), renders Swarm G `SiteSearchBar` inside search modal; when false, plain form. */
   showSearchSlot?: boolean;
 }
 
 /**
- * Header actions: Search icon -> full-screen clip-path search overlay,
- * authenticated account/order links, Cart icon with non-elastic count pop,
- * and mobile slide-over drawer.
+ * Header actions: Search button (lazy Dialog), authenticated account/order links,
+ * Cart button with live count badge, and mobile left Sheet (lazy-loaded via next/dynamic).
  */
 export function SiteHeaderActions({
   brandName = "Cửa hàng",
@@ -80,24 +99,18 @@ export function SiteHeaderActions({
   const { cartCount } = useStore();
 
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [drawerClosing, setDrawerClosing] = useState(false);
-  const [searchState, setSearchState] = useState<"closed" | "open" | "closing">("closed");
+  const [drawerMounted, setDrawerMounted] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchMounted, setSearchMounted] = useState(false);
   const [badgePop, setBadgePop] = useState(false);
 
   const prevCartRef = useRef<number>(cartCount);
-  const overlayRef = useRef<HTMLDivElement | null>(null);
-  const drawerPanelRef = useRef<HTMLDivElement | null>(null);
-  const searchRestoreFocusRef = useRef(true);
-  const drawerRestoreFocusRef = useRef(true);
-  const searchCloseTimerRef = useRef<number | null>(null);
-  const drawerCloseTimerRef = useRef<number | null>(null);
 
   const loginHref =
     pathname === "/" || pathname.startsWith("/dang-")
       ? "/dang-nhap"
       : `/dang-nhap?next=${encodeURIComponent(pathname)}`;
 
-  // Subtle non-elastic badge pulse (scale 1 -> 1.12 -> 1) when items are added to cart.
   useEffect(() => {
     if (cartCount > prevCartRef.current) {
       setBadgePop(true);
@@ -109,375 +122,152 @@ export function SiteHeaderActions({
   }, [cartCount]);
 
   useEffect(() => {
-    return () => {
-      if (searchCloseTimerRef.current !== null) window.clearTimeout(searchCloseTimerRef.current);
-      if (drawerCloseTimerRef.current !== null) window.clearTimeout(drawerCloseTimerRef.current);
-    };
-  }, []);
-
-  // Close overlays on navigation without stealing focus back to header buttons.
-  useEffect(() => {
-    searchRestoreFocusRef.current = false;
-    drawerRestoreFocusRef.current = false;
     setDrawerOpen(false);
-    setDrawerClosing(false);
-    setSearchState("closed");
+    setSearchOpen(false);
   }, [pathname]);
 
-  const closeSearch = useCallback(
-    (restoreFocus = true) => {
-      if (searchState !== "open") return;
-      searchRestoreFocusRef.current = restoreFocus;
-      setSearchState("closing");
-      searchCloseTimerRef.current = window.setTimeout(() => {
-        searchCloseTimerRef.current = null;
-        setSearchState("closed");
-      }, 180);
-    },
-    [searchState]
-  );
-
-  const closeDrawer = useCallback(
-    (restoreFocus = true) => {
-      if (!drawerOpen || drawerClosing) return;
-      drawerRestoreFocusRef.current = restoreFocus;
-      setDrawerClosing(true);
-      drawerCloseTimerRef.current = window.setTimeout(() => {
-        drawerCloseTimerRef.current = null;
-        setDrawerOpen(false);
-        setDrawerClosing(false);
-      }, 180);
-    },
-    [drawerOpen, drawerClosing]
-  );
-
-  const openSearchOverlay = () => {
-    if (searchCloseTimerRef.current !== null) {
-      window.clearTimeout(searchCloseTimerRef.current);
-      searchCloseTimerRef.current = null;
-    }
-    searchRestoreFocusRef.current = true;
-    setSearchState("open");
+  const handleOpenSearch = () => {
+    setSearchMounted(true);
+    setSearchOpen(true);
   };
 
-  const openDrawer = () => {
-    if (drawerCloseTimerRef.current !== null) {
-      window.clearTimeout(drawerCloseTimerRef.current);
-      drawerCloseTimerRef.current = null;
-    }
-    drawerRestoreFocusRef.current = true;
-    setDrawerClosing(false);
+  const handleOpenDrawer = () => {
+    setDrawerMounted(true);
     setDrawerOpen(true);
   };
 
-  const resolveSearchInitialFocus = useCallback((container: HTMLElement): HTMLElement | null => {
-    return container.querySelector<HTMLElement>('input[type="search"], input[role="combobox"]');
-  }, []);
-
-  useModalFocusTrap({
-    open: searchState === "open",
-    containerRef: overlayRef,
-    resolveInitialFocus: resolveSearchInitialFocus,
-    onEscape: () => closeSearch(true),
-    shouldRestoreFocusRef: searchRestoreFocusRef,
-  });
-
-  useModalFocusTrap({
-    open: drawerOpen && !drawerClosing,
-    containerRef: drawerPanelRef,
-    onEscape: () => closeDrawer(true),
-    shouldRestoreFocusRef: drawerRestoreFocusRef,
-  });
-
   const cartBadge =
     cartCount > 0 ? (
-      <span
-        className={`${styles.headerCartCount} ${badgePop ? styles.headerCartCountPop : ""} num`}
+      <Badge
+        variant="secondary"
+        className={cn(
+          "h-5 min-w-5 rounded-full bg-primary-foreground px-1.5 text-xs font-bold text-primary tabular-nums transition-transform duration-200",
+          badgePop && "scale-110"
+        )}
       >
         {cartCount}
-      </span>
+      </Badge>
     ) : null;
 
   return (
     <>
-      <div className={styles.headerActionsDesktop}>
-        <button
+      <div className="hidden shrink-0 items-center gap-3 lg:flex">
+        <Button
           type="button"
-          className={styles.headerIconBtn}
-          onClick={openSearchOverlay}
-          aria-expanded={searchState === "open"}
+          variant="ghost"
+          size="icon"
+          onClick={handleOpenSearch}
+          aria-expanded={searchOpen}
           aria-label={`Tìm kiếm tại ${brandName}`}
+          className="size-10 text-foreground hover:bg-accent hover:text-brand"
         >
-          <IconSearch size={18} />
-        </button>
+          <Search className="size-[18px]" aria-hidden="true" />
+        </Button>
 
         {isAuthenticated && user ? (
           <>
-            <Link href="/don-hang" className={styles.headerTextAction}>
+            <Link
+              href="/don-hang"
+              className="inline-flex min-h-10 items-center px-1 text-sm font-medium whitespace-nowrap text-foreground transition-colors hover:text-brand"
+            >
               Đơn hàng
             </Link>
-            <Link href="/tai-khoan" className={styles.headerTextAction}>
+            <Link
+              href="/tai-khoan"
+              className="inline-flex min-h-10 items-center px-1 text-sm font-medium whitespace-nowrap text-foreground transition-colors hover:text-brand"
+            >
               Tài khoản
             </Link>
           </>
         ) : (
-          <Link href={loginHref} className={styles.headerTextAction}>
+          <Link
+            href={loginHref}
+            className="inline-flex min-h-10 items-center px-1 text-sm font-medium whitespace-nowrap text-foreground transition-colors hover:text-brand"
+          >
             Đăng nhập
           </Link>
         )}
 
-        <Link
-          href="/gio-hang"
-          className={styles.headerCartBtn}
-          aria-label={cartCount > 0 ? `Giỏ hàng, ${cartCount} sản phẩm` : "Giỏ hàng"}
+        <Button
+          asChild
+          size="default"
+          className="h-10 gap-2 px-3.5 font-semibold whitespace-nowrap shadow-none"
         >
-          <IconBag size={18} />
-          <span className={styles.headerCartLabel}>Giỏ</span>
-          {cartBadge}
-        </Link>
+          <Link
+            href="/gio-hang"
+            aria-label={cartCount > 0 ? `Giỏ hàng, ${cartCount} sản phẩm` : "Giỏ hàng"}
+          >
+            <ShoppingBag className="size-[18px]" aria-hidden="true" />
+            <span>Giỏ</span>
+            {cartBadge}
+          </Link>
+        </Button>
       </div>
 
-      <div className={styles.headerActionsMobile}>
-        <button
+      <div className="flex shrink-0 items-center gap-1.5 lg:hidden">
+        <Button
           type="button"
-          className={styles.headerIconBtn}
-          onClick={openSearchOverlay}
-          aria-expanded={searchState === "open"}
+          variant="ghost"
+          size="icon"
+          onClick={handleOpenSearch}
+          aria-expanded={searchOpen}
           aria-label={`Tìm kiếm tại ${brandName}`}
+          className="size-11 text-foreground hover:bg-accent hover:text-brand"
         >
-          <IconSearch size={18} />
-        </button>
+          <Search className="size-[18px]" aria-hidden="true" />
+        </Button>
 
-        <Link
-          href="/gio-hang"
-          className={styles.headerCartBtnCompact}
-          aria-label={cartCount > 0 ? `Giỏ hàng, ${cartCount} sản phẩm` : "Giỏ hàng"}
-        >
-          <IconBag size={18} />
-          {cartBadge}
-        </Link>
+        <Button asChild size="default" className="h-11 min-w-11 gap-1.5 px-2.5 shadow-none">
+          <Link
+            href="/gio-hang"
+            aria-label={cartCount > 0 ? `Giỏ hàng, ${cartCount} sản phẩm` : "Giỏ hàng"}
+          >
+            <ShoppingBag className="size-[18px]" aria-hidden="true" />
+            {cartBadge}
+          </Link>
+        </Button>
 
-        <button
+        <Button
           type="button"
-          className={styles.mobileMenuBtn}
-          onClick={openDrawer}
+          variant="secondary"
+          size="icon"
+          onClick={handleOpenDrawer}
           aria-expanded={drawerOpen}
           aria-label="Mở trình đơn cửa hàng"
+          className="size-11 shadow-none"
         >
-          <IconMenu size={18} />
-        </button>
+          <Menu className="size-[18px]" aria-hidden="true" />
+        </Button>
       </div>
 
-      {searchState !== "closed" && (
-        <div
-          ref={overlayRef}
-          tabIndex={-1}
-          className={`${styles.searchOverlay} ${
-            searchState === "closing" ? styles.searchOverlayClosing : ""
-          }`}
-          role="dialog"
-          aria-modal="true"
-          aria-label={`Tìm kiếm sản phẩm tại ${brandName}`}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) closeSearch(true);
-          }}
-        >
-          <div className={styles.searchOverlayInner}>
-            <div className={styles.searchOverlayTop}>
-              <span className={styles.searchOverlayBrand}>{brandName}</span>
-              <button
-                type="button"
-                className={styles.siteDrawerClose}
-                onClick={() => closeSearch(true)}
-                aria-label="Đóng ô tìm kiếm"
-              >
-                <IconClose size={20} />
-              </button>
-            </div>
-
-            <div className={styles.searchOverlayBody}>
-              <p className={styles.searchOverlayPrompt}>Tìm trong {brandName}</p>
-              {showSearchSlot ? (
-                <SiteSearchBar
-                  brandName={brandName}
-                  shopId={shopId}
-                  placeholder="Tên mẫu, chất liệu, màu sắc..."
-                  onNavigate={() => closeSearch(false)}
-                />
-              ) : (
-                <form
-                  action="/tim-kiem"
-                  method="get"
-                  role="search"
-                  className={styles.siteDrawerSearch}
-                  onSubmit={() => closeSearch(false)}
-                >
-                  <label htmlFor="site-overlay-search" className="sr-only">
-                    Tìm sản phẩm trong {brandName}
-                  </label>
-                  <input
-                    id="site-overlay-search"
-                    name="q"
-                    type="search"
-                    placeholder="Tên mẫu, chất liệu..."
-                    className={styles.siteDrawerSearchInput}
-                    enterKeyHint="search"
-                  />
-                  <button type="submit" className={styles.siteDrawerSearchBtn}>
-                    Tìm
-                  </button>
-                </form>
-              )}
-
-              <div className={styles.searchOverlayLinks}>
-                <Link
-                  href="/san-pham"
-                  className={styles.searchQuickLink}
-                  onClick={() => closeSearch(false)}
-                >
-                  Tất cả sản phẩm
-                </Link>
-                <Link
-                  href="/flash-sale"
-                  className={styles.searchQuickLink}
-                  onClick={() => closeSearch(false)}
-                >
-                  Flash sale
-                </Link>
-                <Link
-                  href="/voucher"
-                  className={styles.searchQuickLink}
-                  onClick={() => closeSearch(false)}
-                >
-                  Mã giảm giá
-                </Link>
-              </div>
-            </div>
-          </div>
-        </div>
+      {searchMounted && (
+        <SiteSearchModal
+          open={searchOpen}
+          onOpenChange={setSearchOpen}
+          brandName={brandName}
+          shopId={shopId}
+          showSearchSlot={showSearchSlot}
+        />
       )}
 
-      {drawerOpen && (
-        <div
-          className={`${styles.siteDrawerBackdrop} ${
-            drawerClosing ? styles.siteDrawerBackdropClosing : ""
-          }`}
-          role="presentation"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) closeDrawer(true);
-          }}
-        >
-          <div
-            ref={drawerPanelRef}
-            tabIndex={-1}
-            className={`${styles.siteDrawerPanel} ${
-              drawerClosing ? styles.siteDrawerPanelClosing : ""
-            }`}
-            data-ui="site-drawer"
-            role="dialog"
-            aria-modal="true"
-            aria-label={`Điều hướng ${brandName}`}
-          >
-            <div className={styles.siteDrawerHead}>
-              <span className={styles.siteDrawerBrand}>{brandName}</span>
-              <button
-                type="button"
-                className={styles.siteDrawerClose}
-                onClick={() => closeDrawer(true)}
-                aria-label="Đóng trình đơn"
-              >
-                <IconClose size={18} />
-              </button>
-            </div>
-
-            <nav className={styles.siteDrawerNav} aria-label="Điều hướng di động">
-              {SITE_NAV_ITEMS.map((item) => (
-                <Link
-                  key={item.key}
-                  href={item.href}
-                  className={`${styles.siteDrawerLink} ${isActive(pathname, item.href) ? styles.siteDrawerLinkActive : ""}`}
-                  onClick={() => closeDrawer(false)}
-                >
-                  {item.label}
-                </Link>
-              ))}
-              <Link
-                href="/chinh-sach"
-                className={`${styles.siteDrawerLink} ${isActive(pathname, "/chinh-sach") ? styles.siteDrawerLinkActive : ""}`}
-                onClick={() => closeDrawer(false)}
-              >
-                Chính sách
-              </Link>
-            </nav>
-
-            <div className={styles.siteDrawerActions}>
-              {isAuthenticated && user ? (
-                <>
-                  <Link
-                    href="/don-hang"
-                    className={styles.siteDrawerPrimary}
-                    onClick={() => closeDrawer(false)}
-                  >
-                    Đơn hàng
-                  </Link>
-                  <Link
-                    href="/tai-khoan"
-                    className={styles.siteDrawerSecondary}
-                    onClick={() => closeDrawer(false)}
-                  >
-                    Tài khoản
-                  </Link>
-                </>
-              ) : (
-                <>
-                  <Link
-                    href={loginHref}
-                    className={styles.siteDrawerPrimary}
-                    onClick={() => closeDrawer(false)}
-                  >
-                    Đăng nhập
-                  </Link>
-                  <Link
-                    href="/dang-ky"
-                    className={styles.siteDrawerSecondary}
-                    onClick={() => closeDrawer(false)}
-                  >
-                    Tạo tài khoản
-                  </Link>
-                </>
-              )}
-              <Link
-                href="/tra-cuu-don-hang"
-                className={styles.siteDrawerSecondary}
-                onClick={() => closeDrawer(false)}
-              >
-                Tra cứu đơn
-              </Link>
-            </div>
-          </div>
-        </div>
+      {drawerMounted && (
+        <SiteMobileDrawer
+          open={drawerOpen}
+          onOpenChange={setDrawerOpen}
+          brandName={brandName}
+          pathname={pathname}
+          isAuthenticated={Boolean(isAuthenticated && user)}
+          loginHref={loginHref}
+        />
       )}
     </>
   );
 }
 
-/** Toast from the store context (add to cart, voucher saved…). */
+/**
+ * Compatibility export: store toasts are now bridged into the lazy-loaded Sonner
+ * `<SiteToaster />` mounted in `s/[host]/layout.tsx`.
+ */
 export function SiteToast() {
-  const { toastMessage, dismissToast } = useStore();
-
-  useEffect(() => {
-    if (!toastMessage) return;
-    const timer = window.setTimeout(dismissToast, 3600);
-    return () => window.clearTimeout(timer);
-  }, [toastMessage, dismissToast]);
-
-  if (!toastMessage) return null;
-  return (
-    <div className={styles.siteToast} role="status" aria-live="polite">
-      <span>{toastMessage}</span>
-      <button type="button" className={styles.siteToastClose} onClick={dismissToast}>
-        Đóng
-      </button>
-    </div>
-  );
+  return null;
 }

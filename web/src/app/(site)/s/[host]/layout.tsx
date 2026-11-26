@@ -1,7 +1,9 @@
 import React from "react";
 import { notFound } from "next/navigation";
-import { SiteShell } from "@/features/site";
+import { SiteShell } from "@/features/site/SiteShell";
+import { SiteToaster } from "@/features/site/shell/SiteToaster";
 import { loadSiteContext } from "@/features/site/siteContext.server";
+import "@/styles/ui.css";
 
 interface SiteHostLayoutProps {
   children: React.ReactNode;
@@ -20,6 +22,7 @@ export default async function SiteHostLayout({ children, params }: SiteHostLayou
       shopName={ctx.payload.shop.name}
       shopId={ctx.payload.site.shop_id}
       platformOrigin={ctx.platformOrigin}
+      toaster={<SiteToaster />}
     >
       {children}
     </SiteShell>

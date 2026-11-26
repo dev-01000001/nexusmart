@@ -1,12 +1,44 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { IconChat, IconClose, IconSpark } from "@/components/Icons";
-import { getFocusableElements, hasOpenModal } from "@/components/modalFocus";
-import { SiteAssistantWidget } from "@/features/assistant";
-import { OPEN_SITE_CHAT_EVENT, SiteChatWidget, type OpenSiteChatDetail } from "@/features/chat";
+import dynamic from "next/dynamic";
+import { MessageCircle, Sparkles, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { OPEN_SITE_CHAT_EVENT, type OpenSiteChatDetail } from "@/features/chat/chatTypes";
+import { cn } from "@/lib/utils";
 import { useSitePathname } from "./SiteChrome";
-import styles from "./SiteSupportDock.module.css";
+
+const SiteAssistantWidget = dynamic(
+  () => import("@/features/assistant/SiteAssistantWidget").then((mod) => mod.SiteAssistantWidget),
+  {
+    ssr: false,
+    loading: () => (
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex h-[120px] w-[min(360px,calc(100vw-24px))] items-center justify-center rounded-xl border border-border bg-card px-4 text-sm text-muted-foreground shadow-overlay"
+      >
+        Đang mở trợ lý mua sắm…
+      </div>
+    ),
+  }
+);
+
+const SiteChatWidget = dynamic(
+  () => import("@/features/chat/SiteChatWidget").then((mod) => mod.SiteChatWidget),
+  {
+    ssr: false,
+    loading: () => (
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex h-[120px] w-[min(360px,calc(100vw-24px))] items-center justify-center rounded-xl border border-border bg-card px-4 text-sm text-muted-foreground shadow-overlay"
+      >
+        Đang mở khung trò chuyện…
+      </div>
+    ),
+  }
+);
 
 export interface SiteSupportDockProps {
   shopId: string;
@@ -19,7 +51,7 @@ type DockMode = "closed" | "chooser" | "assistant" | "chat";
 
 /**
  * Single unified floating support launcher combining AI Assistant and Shop Chat.
- * Opens a compact choice sheet (or goes straight to the single enabled channel),
+ * Opens a compact choice panel (or goes straight to the single enabled channel),
  * lifts cleanly above the mobile sticky buy bar on PDPs, and handles assistant->chat handoff.
  */
 export function SiteSupportDock({
@@ -30,13 +62,11 @@ export function SiteSupportDock({
 }: SiteSupportDockProps) {
   const pathname = useSitePathname();
   const [mode, setMode] = useState<DockMode>("closed");
-  const [closing, setClosing] = useState(false);
   const [assistantMounted, setAssistantMounted] = useState(false);
   const [chatMounted, setChatMounted] = useState(false);
   const [handoffConversationId, setHandoffConversationId] = useState<string | null>(null);
   const launcherRef = useRef<HTMLButtonElement | null>(null);
   const chooserRef = useRef<HTMLElement | null>(null);
-  const closeTimerRef = useRef<number | null>(null);
   const aboveStickyBar = pathname.startsWith("/gio-hang") || pathname.startsWith("/thanh-toan");
 
   const openMode = useCallback((next: Exclude<DockMode, "closed">) => {
@@ -45,33 +75,16 @@ export function SiteSupportDock({
     setMode(next);
   }, []);
 
-  const clearCloseTimer = useCallback(() => {
-    if (closeTimerRef.current !== null) {
-      window.clearTimeout(closeTimerRef.current);
-      closeTimerRef.current = null;
-    }
-  }, []);
-
   const closeDock = useCallback(
     (restoreFocus = true) => {
-      if (mode === "closed" || closing) return;
-      clearCloseTimer();
-      setClosing(true);
+      if (mode === "closed") return;
+      setMode("closed");
       if (restoreFocus && launcherRef.current?.isConnected) {
         launcherRef.current.focus({ preventScroll: true });
       }
-      closeTimerRef.current = window.setTimeout(() => {
-        closeTimerRef.current = null;
-        setMode("closed");
-        setClosing(false);
-      }, 160);
     },
-    [clearCloseTimer, closing, mode]
+    [mode]
   );
-
-  useEffect(() => {
-    return () => clearCloseTimer();
-  }, [clearCloseTimer]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -82,8 +95,6 @@ export function SiteSupportDock({
         setHandoffConversationId(convId);
       }
       if (showChat) {
-        clearCloseTimer();
-        setClosing(false);
         openMode("chat");
       } else {
         closeDock(true);
@@ -91,27 +102,30 @@ export function SiteSupportDock({
     };
     window.addEventListener(OPEN_SITE_CHAT_EVENT, onOpenChat);
     return () => window.removeEventListener(OPEN_SITE_CHAT_EVENT, onOpenChat);
-  }, [clearCloseTimer, closeDock, openMode, showChat]);
+  }, [closeDock, openMode, showChat]);
 
   useEffect(() => {
-    if (mode !== "chooser" || closing) return;
+    if (mode !== "chooser") return;
     const chooser = chooserRef.current;
     if (!chooser) return;
-    const target = getFocusableElements(chooser)[0] ?? chooser;
+    const target = chooser.querySelector<HTMLElement>("button:not([disabled])") ?? chooser;
     target.focus({ preventScroll: true });
-  }, [mode, closing]);
+  }, [mode]);
 
   useEffect(() => {
-    if (mode === "closed" || closing) return;
+    if (mode === "closed") return;
     const onKeyDown = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape" && !hasOpenModal()) {
+      const modalOpen = Boolean(
+        document.querySelector('[role="dialog"][aria-modal="true"], [role="alertdialog"]')
+      );
+      if (ev.key === "Escape" && !modalOpen) {
         ev.preventDefault();
         closeDock(true);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [mode, closing, closeDock]);
+  }, [mode, closeDock]);
 
   if (!showChat && !showAssistant) return null;
 
@@ -120,8 +134,6 @@ export function SiteSupportDock({
       closeDock(true);
       return;
     }
-    clearCloseTimer();
-    setClosing(false);
     if (showAssistant && showChat) {
       openMode("chooser");
     } else if (showAssistant) {
@@ -136,7 +148,12 @@ export function SiteSupportDock({
 
   return (
     <div
-      className={styles.dock}
+      className={cn(
+        "fixed right-3 bottom-4 z-[64] flex flex-col items-end gap-2.5 font-sans text-foreground md:right-5 md:bottom-5",
+        mode !== "closed" && "z-[70]",
+        aboveStickyBar && "max-md:bottom-[calc(88px+env(safe-area-inset-bottom,0px))]",
+        "[[data-site-root]:has([data-mobile-buybar])_&]:max-md:bottom-[calc(88px+env(safe-area-inset-bottom,0px))]"
+      )}
       data-ui="site-support-dock"
       data-open={mode !== "closed"}
       data-above-sticky={aboveStickyBar ? "true" : undefined}
@@ -145,47 +162,65 @@ export function SiteSupportDock({
         <section
           ref={chooserRef}
           tabIndex={-1}
-          className={`${styles.sheet} ${closing ? styles.sheetClosing : ""}`}
+          className="w-[min(320px,calc(100vw-24px))] overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-overlay animate-in fade-in slide-in-from-bottom-2 duration-200"
           role="dialog"
           aria-label={`Chọn kênh hỗ trợ ${brandName}`}
         >
-          <header className={styles.sheetHead}>
-            <span className={styles.sheetTitle}>Hỗ trợ {brandName}</span>
-            <button
+          <header className="flex items-center justify-between gap-3 border-b border-border bg-muted px-4 py-3">
+            <span className="min-w-0 truncate text-sm font-semibold text-foreground">
+              Hỗ trợ {brandName}
+            </span>
+            <Button
               type="button"
-              className={styles.closeBtn}
+              variant="ghost"
+              size="icon-sm"
               onClick={() => closeDock(true)}
               aria-label="Đóng bảng chọn hỗ trợ"
+              className="size-8 shrink-0 text-muted-foreground hover:bg-card hover:text-foreground"
             >
-              <IconClose size={16} />
-            </button>
+              <X className="size-4" aria-hidden="true" />
+            </Button>
           </header>
 
-          <div className={styles.optionList}>
+          <div className="flex flex-col gap-1.5 p-2.5">
             {showAssistant && (
               <button
                 type="button"
-                className={styles.optionBtn}
                 onClick={() => openMode("assistant")}
+                className="flex min-h-[54px] w-full items-center gap-3 rounded-lg bg-background px-3 py-2.5 text-left text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
               >
-                <span className={styles.optionIcon} aria-hidden="true">
-                  <IconSpark size={18} />
+                <span
+                  className="inline-flex size-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground"
+                  aria-hidden="true"
+                >
+                  <Sparkles className="size-[18px]" />
                 </span>
-                <span className={styles.optionText}>
-                  <span className={styles.optionName}>Trợ lý mua sắm AI</span>
-                  <span className={styles.optionHint}>Tư vấn mẫu, chọn size, tra đơn</span>
+                <span className="flex min-w-0 flex-col gap-0.5">
+                  <span className="text-sm leading-tight font-semibold">Trợ lý mua sắm AI</span>
+                  <span className="text-[13px] leading-snug text-muted-foreground">
+                    Tư vấn mẫu, chọn size, tra đơn
+                  </span>
                 </span>
               </button>
             )}
 
             {showChat && (
-              <button type="button" className={styles.optionBtn} onClick={() => openMode("chat")}>
-                <span className={styles.optionIcon} aria-hidden="true">
-                  <IconChat size={18} />
+              <button
+                type="button"
+                onClick={() => openMode("chat")}
+                className="flex min-h-[54px] w-full items-center gap-3 rounded-lg bg-background px-3 py-2.5 text-left text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              >
+                <span
+                  className="inline-flex size-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground"
+                  aria-hidden="true"
+                >
+                  <MessageCircle className="size-[18px]" />
                 </span>
-                <span className={styles.optionText}>
-                  <span className={styles.optionName}>Nhắn tin cửa hàng</span>
-                  <span className={styles.optionHint}>Trao đổi trực tiếp với nhân viên</span>
+                <span className="flex min-w-0 flex-col gap-0.5">
+                  <span className="text-sm leading-tight font-semibold">Nhắn tin cửa hàng</span>
+                  <span className="text-[13px] leading-snug text-muted-foreground">
+                    Trao đổi trực tiếp với nhân viên
+                  </span>
                 </span>
               </button>
             )}
@@ -195,9 +230,7 @@ export function SiteSupportDock({
 
       {assistantMounted && showAssistant && (
         <div
-          className={`${styles.panelSlot} ${
-            mode === "assistant" && closing ? styles.sheetClosing : ""
-          }`}
+          className="animate-in fade-in slide-in-from-bottom-2 duration-200"
           hidden={mode !== "assistant"}
           inert={mode !== "assistant" || undefined}
         >
@@ -206,7 +239,7 @@ export function SiteSupportDock({
             brandName={brandName}
             defaultOpen
             embedded
-            active={mode === "assistant" && !closing}
+            active={mode === "assistant"}
             onClose={closeDock}
           />
         </div>
@@ -214,7 +247,7 @@ export function SiteSupportDock({
 
       {chatMounted && showChat && (
         <div
-          className={`${styles.panelSlot} ${mode === "chat" && closing ? styles.sheetClosing : ""}`}
+          className="animate-in fade-in slide-in-from-bottom-2 duration-200"
           hidden={mode !== "chat"}
           inert={mode !== "chat" || undefined}
         >
@@ -224,7 +257,7 @@ export function SiteSupportDock({
             externalConversationId={handoffConversationId}
             defaultOpen
             embedded
-            active={mode === "chat" && !closing}
+            active={mode === "chat"}
             onClose={closeDock}
           />
         </div>
@@ -233,19 +266,21 @@ export function SiteSupportDock({
       <button
         ref={launcherRef}
         type="button"
-        className={styles.launcher}
         onClick={handleTriggerClick}
         aria-expanded={mode !== "closed"}
         aria-label={mode !== "closed" ? "Đóng hỗ trợ" : "Hỗ trợ"}
+        className="inline-flex size-12 items-center justify-center rounded-full bg-[var(--site-band-bg)] text-sm font-semibold tracking-[-0.01em] text-[var(--site-band-ink)] transition-colors hover:bg-primary hover:text-primary-foreground active:scale-[0.97] md:h-11 md:w-auto md:min-w-11 md:gap-2 md:px-[18px]"
       >
         {mode !== "closed" ? (
-          <IconClose size={18} />
+          <X className="size-[18px]" aria-hidden="true" />
         ) : showAssistant && !showChat ? (
-          <IconSpark size={17} />
+          <Sparkles className="size-[17px]" aria-hidden="true" />
         ) : (
-          <IconChat size={17} />
+          <MessageCircle className="size-[17px]" aria-hidden="true" />
         )}
-        <span className={styles.launcherText}>{mode !== "closed" ? "Đóng" : singleLabel}</span>
+        <span className="hidden leading-none md:inline">
+          {mode !== "closed" ? "Đóng" : singleLabel}
+        </span>
       </button>
     </div>
   );

@@ -1,16 +1,40 @@
 import React from "react";
 import Link from "next/link";
+import { MessageSquareQuote, Package, TableProperties, Ticket } from "lucide-react";
+import { EmptyState } from "@/components/app/EmptyState";
+import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import type { CategoryInfo, Product } from "@/data/products";
 import type { Voucher } from "@/data/vouchers";
 import { formatInt, formatVnd } from "@/lib/format";
 import { sanitizeSafeHref } from "@/lib/site/theme";
 import type { SiteConfig, SitePublicShopDTO } from "@/lib/site/types";
-import { DenseGridHeroSearch } from "./DenseGridHeroSearch";
-import { MultiSkuDirectory } from "./MultiSkuDirectory";
-import { OnePageLaunchHero } from "./OnePageLaunchHero";
+import { cn } from "@/lib/utils";
 import { SafeActionLink } from "./SafeActionLink";
-import { parseNumericStat } from "./siteMetrics";
 import { SiteProductCard } from "./SiteProductCard";
+import { renderHeroSection } from "./sections/SiteHeroSection";
+import {
+  renderInlineBlocks,
+  renderMaskedHeading,
+  renderSingleBlock,
+  renderStatCard,
+  SITE_PRIMARY_BTN_CLS,
+  SITE_SECTION_LINK_CLS,
+} from "./sections/SiteSectionBlocks";
+import {
+  archetypeTitleTone,
+  containerWidthClass,
+  sectionPaddingClass,
+  sectionSurfaceClass,
+  SITE_PX,
+} from "./shell/siteStyleVars";
 import type {
   SectionSurface,
   SiteArchetype,
@@ -25,8 +49,6 @@ import {
   normalizeSiteTemplateConfig,
   sanitizeSafeImageUrl,
 } from "./templateValidator";
-import styles from "./site.module.css";
-import tplStyles from "./siteTemplates.module.css";
 
 export interface SiteRendererProps {
   config: SiteConfig | SiteTemplateConfig;
@@ -52,36 +74,6 @@ function formatVoucherBenefit(voucher: Voucher): string {
     return `Giảm ${voucher.discountValue}%${cap}`;
   }
   return `Giảm ${formatVnd(voucher.discountValue)}`;
-}
-
-/** Splits a Vietnamese headline cleanly into two balanced halves for flanking minimal-fashion portrait. */
-function splitHeadlineHalves(text: string): [string, string] {
-  const words = text.trim().split(/\s+/).filter(Boolean);
-  if (words.length <= 1) return [text.trim(), ""];
-  const mid = Math.ceil(words.length / 2);
-  return [words.slice(0, mid).join(" "), words.slice(mid).join(" ")];
-}
-
-function renderStatCard(
-  block: Extract<SiteSectionBlock, { type: "stat" }>,
-  itemClass: string
-): React.ReactNode {
-  const parsed = parseNumericStat(block.props.value);
-  return (
-    <div key={block.id} className={itemClass}>
-      <span
-        className={`${tplStyles.metricValue} num`}
-        data-reveal={parsed ? "count" : undefined}
-        data-count-to={parsed ? String(parsed.to) : undefined}
-        data-count-prefix={parsed?.prefix || undefined}
-        data-count-suffix={parsed?.suffix || undefined}
-      >
-        {block.props.value}
-      </span>
-      <span className={tplStyles.metricLabel}>{block.props.label}</span>
-      {block.props.note?.trim() && <span className={tplStyles.metricNote}>{block.props.note}</span>}
-    </div>
-  );
 }
 
 function selectFeaturedProducts(
@@ -140,11 +132,14 @@ function selectCollectionProducts(
 }
 
 /**
- * Orphan-free grid resolver:
- * - 1 item -> full-row horizontal showcase
- * - 2 items -> 2 half-width cards
- * - 3 items -> 3 columns (staggered on minimal-fashion)
- * - Respects archetype signature grids even on legacy v1 converted sites.
+ * Orphan-free Tailwind product grid resolver preserving each archetype's structural signature:
+ * - 1 item -> full-row single wide showcase
+ * - 2 items -> 2 columns
+ * - minimal-fashion -> staggered 3-column gallery
+ * - editorial -> asymmetric magazine grid (first card spans 2 cols)
+ * - dense-grid -> 5-column wall
+ * - luxury-maison -> spacious 2-column gallery
+ * - multi-sku-catalog -> 2-col compact-row list
  */
 function resolveProductGridClass(
   archetype: SiteArchetype,
@@ -152,215 +147,35 @@ function resolveProductGridClass(
   columns: number | undefined,
   count: number
 ): string {
-  if (count <= 1) return tplStyles.gridSingle;
-  if (count === 2) return tplStyles.gridCols2;
-  if (variant === "list-sku") return tplStyles.gridListSku;
+  if (count <= 1) return "grid grid-cols-1";
+  if (count === 2) return "grid grid-cols-1 gap-[clamp(20px,3vw,36px)] sm:grid-cols-2";
+  if (variant === "list-sku") return "grid grid-cols-1 gap-3 lg:grid-cols-2";
   if (
     variant === "editorial-asym" ||
     (archetype === "editorial" && (!variant || variant === "grid-4"))
   ) {
-    return tplStyles.gridEditorialAsym;
+    return "grid grid-cols-2 items-start gap-3 lg:grid-cols-3 lg:gap-[clamp(18px,2.4vw,32px)] [&>:first-child]:col-span-2";
   }
   if (
     archetype === "minimal-fashion" &&
     (!variant || variant === "grid-3" || variant === "grid-4")
   ) {
-    return tplStyles.gridStagger3;
+    return "grid grid-cols-2 items-start gap-3 lg:grid-cols-3 lg:gap-[clamp(20px,2.8vw,36px)] lg:[&>:nth-child(3n+2)]:mt-[clamp(28px,4vw,56px)]";
   }
   if (variant === "dense-5" || columns === 5 || archetype === "dense-grid") {
-    if (count >= 5) return tplStyles.gridCols5;
-    if (count === 3) return tplStyles.gridCols3;
-    return tplStyles.gridCols4;
+    if (count >= 5) return "grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5 lg:gap-4";
+    if (count === 3)
+      return "grid grid-cols-2 gap-3 lg:grid-cols-3 lg:gap-[var(--site-gutter,24px)]";
+    return "grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-[var(--site-gutter,24px)]";
   }
   if (variant === "grid-2" || columns === 2 || archetype === "luxury-maison") {
-    return tplStyles.gridCols2;
+    return "grid grid-cols-1 gap-[clamp(20px,3vw,36px)] sm:grid-cols-2";
   }
   if (variant === "grid-3" || columns === 3 || count === 3) {
-    return tplStyles.gridCols3;
+    return "grid grid-cols-2 gap-3 lg:grid-cols-3 lg:gap-[var(--site-gutter,24px)]";
   }
-  if (count === 5) return tplStyles.gridCols5;
-  return tplStyles.gridCols4;
-}
-
-/**
- * Resolves the effective hero mode so every archetype (including legacy v1 seeded sites
- * converted with default `variant: "split"`) displays its unmistakable signature hero.
- */
-function resolveEffectiveHeroMode(archetype: SiteArchetype, variant: string | undefined): string {
-  const explicit = (variant || "").trim();
-  if (
-    archetype === "one-page-launch" &&
-    (!explicit || explicit === "fullbleed" || explicit === "split")
-  ) {
-    return "one-page-launch";
-  }
-  if (
-    archetype === "multi-sku-catalog" &&
-    (!explicit || explicit === "compact-bar" || explicit === "split")
-  ) {
-    return "multi-sku-catalog";
-  }
-  if (
-    archetype === "dense-grid" &&
-    (!explicit || explicit === "compact-bar" || explicit === "split")
-  ) {
-    return "dense-grid";
-  }
-  if (!explicit || explicit === "split") {
-    switch (archetype) {
-      case "minimal-fashion":
-        return "centered";
-      case "editorial":
-        return "editorial";
-      case "craft-atelier":
-        return "atelier";
-      case "sport-active":
-        return "sport-diagonal";
-      case "luxury-maison":
-        return "luxury-framed";
-      case "classic":
-        return "fullbleed";
-      default:
-        return "fullbleed";
-    }
-  }
-  return explicit;
-}
-
-function renderMaskedHeading(Tag: "h1" | "h2", text: string, className: string, immediate = false) {
-  return (
-    <Tag
-      className={`${className} ${immediate ? "lines" : ""}`}
-      data-reveal={immediate ? undefined : "lines"}
-    >
-      <span className="line">
-        <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
-          {text}
-        </span>
-      </span>
-    </Tag>
-  );
-}
-
-function renderSingleBlock(block: SiteSectionBlock, previewMode: boolean): React.ReactNode {
-  switch (block.type) {
-    case "heading":
-      return block.props.level === "h2" ? (
-        <h2 key={block.id} className={tplStyles.blockHeadingH2}>
-          {block.props.text}
-        </h2>
-      ) : (
-        <h3 key={block.id} className={tplStyles.blockHeadingH3}>
-          {block.props.text}
-        </h3>
-      );
-    case "paragraph":
-      return (
-        <p key={block.id} className={tplStyles.blockParagraph}>
-          {block.props.text}
-        </p>
-      );
-    case "badge":
-      return (
-        <span
-          key={block.id}
-          className={tplStyles.blockBadge}
-          data-tone={block.props.tone || "neutral"}
-        >
-          {block.props.label}
-        </span>
-      );
-    case "cta": {
-      const styleClass =
-        block.props.style === "secondary"
-          ? styles.btnSecondary
-          : block.props.style === "link"
-            ? tplStyles.blockCtaLink
-            : styles.btnPrimary;
-      return (
-        <SafeActionLink
-          key={block.id}
-          href={block.props.href}
-          label={block.props.label}
-          className={styleClass}
-          previewMode={previewMode}
-        />
-      );
-    }
-    case "image": {
-      const imgUrl = sanitizeSafeImageUrl(block.props.image_url);
-      if (!imgUrl) return null;
-      return (
-        <figure key={block.id} className={tplStyles.blockFigure}>
-          <div
-            className={tplStyles.blockImageFrame}
-            data-aspect={block.props.aspect || "4:3"}
-            data-reveal="clip"
-          >
-            <img
-              src={imgUrl}
-              alt={block.props.alt || block.props.caption || "Ảnh cửa hàng"}
-              width={1200}
-              height={900}
-              className={tplStyles.blockImg}
-            />
-          </div>
-          {block.props.caption?.trim() && (
-            <figcaption className={tplStyles.blockCaption}>{block.props.caption}</figcaption>
-          )}
-        </figure>
-      );
-    }
-    case "stat":
-      return renderStatCard(block, tplStyles.metricsCard);
-    case "policy":
-      return (
-        <article key={block.id} className={styles.policyItem}>
-          <h3 className={styles.policyHeading}>{block.props.heading}</h3>
-          <p className={styles.policyDetail}>{block.props.detail}</p>
-        </article>
-      );
-    case "quote":
-      return (
-        <blockquote key={block.id} className={tplStyles.blockQuote}>
-          <p className={tplStyles.blockQuoteBody}>“{block.props.body}”</p>
-          <cite className={tplStyles.blockQuoteCite}>
-            {block.props.author}
-            {block.props.role?.trim() ? `, ${block.props.role}` : ""}
-          </cite>
-        </blockquote>
-      );
-    case "feature":
-      return (
-        <div key={block.id} className={tplStyles.blockFeatureCard}>
-          {block.props.tag?.trim() && (
-            <span className={tplStyles.blockFeatureTag}>{block.props.tag}</span>
-          )}
-          <h3 className={tplStyles.blockFeatureTitle}>{block.props.title}</h3>
-          <p className={tplStyles.blockFeatureDetail}>{block.props.detail}</p>
-        </div>
-      );
-  }
-}
-
-function renderInlineBlocks(blocks: SiteSectionBlock[] | undefined, previewMode: boolean) {
-  if (!blocks || blocks.length === 0) return null;
-  const inlineBadgesAndCtas = blocks.filter((b) => b.type === "badge" || b.type === "cta");
-  const flowBlocks = blocks.filter((b) => b.type !== "badge" && b.type !== "cta");
-  return (
-    <>
-      {inlineBadgesAndCtas.length > 0 && (
-        <div className={tplStyles.blocksInlineRow}>
-          {inlineBadgesAndCtas.map((b) => renderSingleBlock(b, previewMode))}
-        </div>
-      )}
-      {flowBlocks.length > 0 && (
-        <div className={tplStyles.blocksStack}>
-          {flowBlocks.map((b) => renderSingleBlock(b, previewMode))}
-        </div>
-      )}
-    </>
-  );
+  if (count === 5) return "grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5 lg:gap-4";
+  return "grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-[var(--site-gutter,24px)]";
 }
 
 function sectionSurfaceAttr(section: SiteSectionV2, fallback: SectionSurface): SectionSurface {
@@ -371,482 +186,68 @@ function sectionPaddingAttr(section: SiteSectionV2): string | undefined {
   return section.settings?.padding || undefined;
 }
 
-function renderHeroSection(
-  section: Extract<SiteSectionV2, { type: "hero" }>,
-  tpl: SiteTemplateConfig,
-  shop: SitePublicShopDTO,
-  products: Product[],
-  categories: CategoryInfo[],
-  isFirstHeading: boolean,
-  previewMode: boolean
-) {
-  const { props, variant, blocks } = section;
-  const archetype = tpl.layout.archetype;
-  const mode = resolveEffectiveHeroMode(archetype, variant);
-  const brandName = tpl.theme.brand_name?.trim() || shop.name;
-
-  const primaryProductImg =
-    sanitizeSafeImageUrl(products[0]?.onModelImage) || sanitizeSafeImageUrl(products[0]?.image);
-  const secondaryProductImg =
-    sanitizeSafeImageUrl(products[1]?.onModelImage) ||
-    sanitizeSafeImageUrl(products[1]?.image) ||
-    "/banners/fabric-closeup.jpg";
-
-  const heroImg =
-    sanitizeSafeImageUrl(props.image_url) ||
-    sanitizeSafeImageUrl(tpl.theme.banner_url) ||
-    primaryProductImg ||
-    "/banners/vietnam-workshop.jpg";
-
-  const ctaLabel = props.cta_label?.trim() || "Xem sản phẩm";
-  const ctaHref = sanitizeSafeHref(props.cta_href, "/san-pham");
-  const titleText = props.title.trim() || brandName;
-  const subtitleText = props.subtitle?.trim() || "";
-  const HeadingTag = isFirstHeading ? "h1" : "h2";
-
-  // 1) ONE-PAGE LAUNCH: sticky center product spotlight with 3 color/angle stages + persistent buy bar
-  if (mode === "one-page-launch") {
-    const rawLaunchHref = props.cta_href?.trim() ? sanitizeSafeHref(props.cta_href, "") : "";
-    return (
-      <section
-        key={section.id}
-        id={section.id}
-        className={`${tplStyles.sectionWrap} ${tplStyles.heroWrapFlush}`}
-        data-section-type="hero"
-        data-section-variant={variant || "fullbleed"}
-        data-surface={sectionSurfaceAttr(section, "bg")}
-      >
-        <div className={tplStyles.sectionInner}>
-          <OnePageLaunchHero
-            title={titleText}
-            subtitle={subtitleText}
-            ctaLabel={ctaLabel}
-            ctaHref={rawLaunchHref}
-            fallbackImage={heroImg}
-            product={products[0]}
-            isFirstHeading={isFirstHeading}
-            previewMode={previewMode}
-          />
-          {renderInlineBlocks(blocks, previewMode)}
-        </div>
-      </section>
-    );
-  }
-
-  // 2) MULTI-SKU CATALOG: typographic row-by-row directory with anchored hover image
-  if (mode === "multi-sku-catalog") {
-    return (
-      <section
-        key={section.id}
-        id={section.id}
-        className={tplStyles.sectionWrap}
-        data-section-type="hero"
-        data-section-variant={variant || "compact-bar"}
-        data-surface={sectionSurfaceAttr(section, "bg")}
-        data-padding="compact"
-      >
-        <div className={tplStyles.sectionInner}>
-          <MultiSkuDirectory
-            title={titleText}
-            subtitle={subtitleText}
-            ctaLabel={ctaLabel}
-            ctaHref={ctaHref}
-            products={products}
-            fallbackImage={heroImg}
-            isFirstHeading={isFirstHeading}
-            previewMode={previewMode}
-          />
-          {renderInlineBlocks(blocks, previewMode)}
-        </div>
-      </section>
-    );
-  }
-
-  // 3) DENSE GRID: zero hero image, straight into prominent search bar + category rail
-  if (mode === "dense-grid" || mode === "compact-bar") {
-    return (
-      <section
-        key={section.id}
-        id={section.id}
-        className={tplStyles.sectionWrap}
-        data-section-type="hero"
-        data-section-variant={variant || "compact-bar"}
-        data-surface={sectionSurfaceAttr(section, "surface")}
-        data-padding="compact"
-      >
-        <div className={tplStyles.sectionInner}>
-          <DenseGridHeroSearch
-            title={titleText}
-            subtitle={subtitleText}
-            brandName={brandName}
-            shopId={shop.id}
-            categories={categories}
-            productCount={products.length}
-            isFirstHeading={isFirstHeading}
-            previewMode={previewMode}
-          />
-          {renderInlineBlocks(blocks, previewMode)}
-        </div>
-      </section>
-    );
-  }
-
-  // 4) MINIMAL FASHION: centered 3:4 portrait with headline split left & right
-  if (mode === "centered") {
-    const portraitImg = primaryProductImg || heroImg;
-    const [leftHalf, rightHalf] = splitHeadlineHalves(titleText);
-    return (
-      <section
-        key={section.id}
-        id={section.id}
-        className={tplStyles.sectionWrap}
-        data-section-type="hero"
-        data-section-variant={variant || "centered"}
-        data-surface={sectionSurfaceAttr(section, "bg")}
-        data-padding="generous"
-      >
-        <div className={tplStyles.sectionInner}>
-          <div className={tplStyles.heroMinimalStage}>
-            <HeadingTag
-              className={tplStyles.heroMinimalSplitTitle}
-              data-rise=""
-              style={{ "--i": 0 } as React.CSSProperties}
-            >
-              <span className={tplStyles.heroMinimalHalfLeft}>{leftHalf}</span>
-              {rightHalf && <span className={tplStyles.heroMinimalHalfRight}> {rightHalf}</span>}
-            </HeadingTag>
-
-            <figure className={tplStyles.heroMinimalPortrait} data-reveal="clip">
-              <img
-                src={portraitImg}
-                alt={titleText}
-                width={896}
-                height={1200}
-                className={styles.heroMediaImg}
-              />
-            </figure>
-
-            <div
-              className={tplStyles.heroMinimalFoot}
-              data-rise=""
-              style={{ "--i": 2 } as React.CSSProperties}
-            >
-              {subtitleText && <p className={tplStyles.heroMinimalSub}>{subtitleText}</p>}
-              <SafeActionLink
-                href={ctaHref}
-                label={ctaLabel}
-                className={styles.btnPrimary}
-                previewMode={previewMode}
-              />
-              {renderInlineBlocks(blocks, previewMode)}
-            </div>
-          </div>
-        </div>
-      </section>
-    );
-  }
-
-  // 5) EDITORIAL: colossal tight headline overlaid across two vertically staggered photos
-  if (mode === "editorial") {
-    const photoA = heroImg;
-    const photoB =
-      secondaryProductImg !== photoA ? secondaryProductImg : "/banners/fabric-closeup.jpg";
-    return (
-      <section
-        key={section.id}
-        id={section.id}
-        className={tplStyles.sectionWrap}
-        data-section-type="hero"
-        data-section-variant={variant || "editorial"}
-        data-surface={sectionSurfaceAttr(section, "bg")}
-        data-padding="normal"
-      >
-        <div className={tplStyles.sectionInner}>
-          <div className={tplStyles.heroEditorialCanvas}>
-            <div className={tplStyles.heroEditorialTypeLayer}>
-              {renderMaskedHeading(HeadingTag, titleText, tplStyles.heroEditorialGiantTitle, true)}
-              <div
-                className={tplStyles.heroEditorialMeta}
-                data-rise=""
-                style={{ "--i": 2 } as React.CSSProperties}
-              >
-                {subtitleText && <p className={tplStyles.heroEditorialSub}>{subtitleText}</p>}
-                <SafeActionLink
-                  href={ctaHref}
-                  label={ctaLabel}
-                  className={styles.btnPrimary}
-                  previewMode={previewMode}
-                />
-              </div>
-            </div>
-
-            <figure className={tplStyles.heroEditorialPhotoA} data-reveal="clip">
-              <img
-                src={photoA}
-                alt={titleText}
-                width={1000}
-                height={1333}
-                className={styles.heroMediaImg}
-              />
-            </figure>
-
-            <figure className={tplStyles.heroEditorialPhotoB} data-reveal="clip">
-              <img
-                src={photoB}
-                alt={`Chi tiết chất liệu ${brandName}`}
-                width={900}
-                height={900}
-                className={styles.heroMediaImg}
-              />
-            </figure>
-          </div>
-          {renderInlineBlocks(blocks, previewMode)}
-        </div>
-      </section>
-    );
-  }
-
-  // 6) CRAFT ATELIER: full-bleed fabric photograph with wide headline anchored bottom-left
-  if (mode === "atelier") {
-    const craftHeroImg =
-      sanitizeSafeImageUrl(props.image_url) ||
-      sanitizeSafeImageUrl(tpl.theme.banner_url) ||
-      primaryProductImg ||
-      "/banners/fabric-closeup.jpg";
-    return (
-      <section
-        key={section.id}
-        id={section.id}
-        className={`${tplStyles.sectionWrap} ${tplStyles.heroFullbleedBleed}`}
-        data-section-type="hero"
-        data-section-variant={variant || "atelier"}
-        data-surface="bg"
-      >
-        <div className={tplStyles.heroAtelierFull}>
-          <figure className={tplStyles.heroAtelierBackdrop} data-reveal="clip">
-            <img
-              src={craftHeroImg}
-              alt={titleText}
-              width={1600}
-              height={1000}
-              className={styles.heroMediaImg}
-            />
-          </figure>
-          <div className={tplStyles.heroAtelierCornerPlate}>
-            {renderMaskedHeading(HeadingTag, titleText, tplStyles.heroAtelierTitle, true)}
-            {subtitleText && (
-              <p
-                className={tplStyles.heroAtelierSub}
-                data-rise=""
-                style={{ "--i": 1 } as React.CSSProperties}
-              >
-                {subtitleText}
-              </p>
-            )}
-            <div
-              className={styles.heroActions}
-              data-rise=""
-              style={{ "--i": 2 } as React.CSSProperties}
-            >
-              <SafeActionLink
-                href={ctaHref}
-                label={ctaLabel}
-                className={styles.btnPrimary}
-                previewMode={previewMode}
-              />
-            </div>
-            {renderInlineBlocks(blocks, previewMode)}
-          </div>
-        </div>
-      </section>
-    );
-  }
-
-  // 7) SPORT ACTIVE: dark ground, 16-20vw condensed poster headline + diagonal clip-path action photo
-  if (mode === "sport-diagonal") {
-    return (
-      <section
-        key={section.id}
-        id={section.id}
-        className={tplStyles.sectionWrap}
-        data-section-type="hero"
-        data-section-variant={variant || "sport-diagonal"}
-        data-surface={sectionSurfaceAttr(section, "bg")}
-        data-padding="normal"
-      >
-        <div className={tplStyles.sectionInner}>
-          <div className={tplStyles.heroSportStage}>
-            <HeadingTag
-              className={tplStyles.heroSportPosterTitle}
-              data-rise=""
-              style={{ "--i": 0 } as React.CSSProperties}
-            >
-              {titleText}
-            </HeadingTag>
-
-            <div className={tplStyles.heroSportBottom}>
-              <figure className={tplStyles.heroSportSlashFrame} data-reveal="clip">
-                <img
-                  src={heroImg}
-                  alt={titleText}
-                  width={1365}
-                  height={768}
-                  className={styles.heroMediaImg}
-                />
-              </figure>
-
-              <div
-                className={tplStyles.heroSportCtaCol}
-                data-rise=""
-                style={{ "--i": 2 } as React.CSSProperties}
-              >
-                {subtitleText && <p className={tplStyles.heroSportSub}>{subtitleText}</p>}
-                <SafeActionLink
-                  href={ctaHref}
-                  label={ctaLabel}
-                  className={styles.btnPrimary}
-                  previewMode={previewMode}
-                />
-                {renderInlineBlocks(blocks, previewMode)}
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-    );
-  }
-
-  // 8) LUXURY MAISON: deliberately small framed photo centered in expansive quiet field, 1200ms slow open
-  if (mode === "luxury-framed") {
-    return (
-      <section
-        key={section.id}
-        id={section.id}
-        className={tplStyles.sectionWrap}
-        data-section-type="hero"
-        data-section-variant={variant || "luxury-framed"}
-        data-surface={sectionSurfaceAttr(section, "bg")}
-        data-padding="normal"
-      >
-        <div className={tplStyles.sectionInner}>
-          <div className={tplStyles.heroLuxurySanctuary}>
-            <HeadingTag
-              className={tplStyles.heroLuxuryTitle}
-              data-rise=""
-              style={{ "--i": 0 } as React.CSSProperties}
-            >
-              {titleText}
-            </HeadingTag>
-
-            <figure className={tplStyles.heroLuxurySmallFrame} data-reveal="scale">
-              <img
-                src={heroImg}
-                alt={titleText}
-                width={900}
-                height={1125}
-                className={styles.heroMediaImg}
-              />
-            </figure>
-
-            <div
-              className={tplStyles.heroLuxuryFoot}
-              data-rise=""
-              style={{ "--i": 2 } as React.CSSProperties}
-            >
-              {subtitleText && <p className={tplStyles.heroLuxurySub}>{subtitleText}</p>}
-              <SafeActionLink
-                href={ctaHref}
-                label={ctaLabel}
-                className={tplStyles.heroLuxuryLink}
-                previewMode={previewMode}
-              />
-              {renderInlineBlocks(blocks, previewMode)}
-            </div>
-          </div>
-        </div>
-      </section>
-    );
-  }
-
-  // 9) CLASSIC / FULLBLEED: full-bleed photograph with clean bottom-anchored headline bar
-  return (
-    <section
-      key={section.id}
-      id={section.id}
-      className={`${tplStyles.sectionWrap} ${tplStyles.heroFullbleedBleed}`}
-      data-section-type="hero"
-      data-section-variant={variant || "fullbleed"}
-      data-surface="bg"
-    >
-      <div className={tplStyles.heroClassicFull}>
-        <figure className={tplStyles.heroClassicBackdrop} data-reveal="clip">
-          <img
-            src={heroImg}
-            alt={titleText}
-            width={1600}
-            height={1000}
-            className={styles.heroMediaImg}
-          />
-        </figure>
-        <div className={tplStyles.heroClassicBottomBar}>
-          <div className={tplStyles.heroClassicBottomInner}>
-            <div className={tplStyles.heroClassicCopy}>
-              {renderMaskedHeading(HeadingTag, titleText, tplStyles.heroClassicTitle, true)}
-              {subtitleText && <p className={tplStyles.heroClassicSub}>{subtitleText}</p>}
-            </div>
-            <SafeActionLink
-              href={ctaHref}
-              label={ctaLabel}
-              className={styles.btnPrimary}
-              previewMode={previewMode}
-            />
-          </div>
-          {blocks && blocks.length > 0 && (
-            <div className={tplStyles.sectionInner}>{renderInlineBlocks(blocks, previewMode)}</div>
-          )}
-        </div>
-      </div>
-    </section>
-  );
+function subtitleColorForSurface(surface: SectionSurface): string {
+  return surface === "band" || surface === "accent-soft"
+    ? "text-current opacity-85"
+    : "text-muted-foreground";
 }
 
 function renderFeaturedProductsSection(
   section: Extract<SiteSectionV2, { type: "featured_products" }>,
-  archetype: SiteArchetype,
+  tpl: SiteTemplateConfig,
   products: Product[],
   cardStyle: SiteCardStyle,
   previewMode: boolean
 ) {
   const { props, variant, settings, blocks } = section;
+  const archetype = tpl.layout.archetype;
   const maxItems =
     settings?.max_items && settings.max_items > 0 ? settings.max_items : (props.limit ?? 8);
   const items = selectFeaturedProducts(products, props.product_ids, maxItems);
   const gridClass = resolveProductGridClass(archetype, variant, settings?.columns, items.length);
   const effectiveCardStyle: SiteCardStyle = variant === "list-sku" ? "compact-row" : cardStyle;
   const isCentered = settings?.align === "center" || archetype === "luxury-maison";
+  const surf = sectionSurfaceAttr(section, "bg");
+  const titleCls = cn("text-[clamp(24px,2.8vw,38px)] text-inherit", archetypeTitleTone(archetype));
 
   return (
     <section
       key={section.id}
       id={section.id}
-      className={tplStyles.sectionWrap}
+      className={cn(
+        "w-full",
+        SITE_PX,
+        sectionPaddingClass(settings?.padding),
+        sectionSurfaceClass(surf)
+      )}
       data-section-type="featured_products"
       data-section-variant={variant || "grid-4"}
-      data-surface={sectionSurfaceAttr(section, "bg")}
+      data-surface={surf}
       data-padding={sectionPaddingAttr(section)}
     >
-      <div className={tplStyles.sectionInner}>
-        <div className={isCentered ? tplStyles.sectionHeadCentered : styles.sectionHead}>
-          <div className={styles.sectionHeadCopy}>
-            {renderMaskedHeading("h2", props.title || "Sản phẩm nổi bật", styles.sectionTitle)}
+      <div className={containerWidthClass(tpl.layout.container_width)}>
+        <div
+          className={
+            isCentered
+              ? "mb-[clamp(28px,3.5vw,44px)] flex flex-col items-center gap-2.5 text-center"
+              : "mb-[clamp(24px,3vw,38px)] flex flex-wrap items-end justify-between gap-x-6 gap-y-4"
+          }
+        >
+          <div className={cn("flex min-w-0 flex-col gap-2", isCentered && "items-center")}>
+            {renderMaskedHeading("h2", props.title || "Sản phẩm nổi bật", titleCls)}
             {props.subtitle?.trim() && (
-              <p className={`${styles.sectionSubtitle} ${tplStyles.mutedOnSurface}`}>
+              <p
+                className={cn(
+                  "max-w-[54ch] text-base leading-[1.55]",
+                  subtitleColorForSurface(surf)
+                )}
+              >
                 {props.subtitle}
               </p>
             )}
           </div>
           {!previewMode && (
-            <Link href="/san-pham" className={styles.sectionLink}>
+            <Link href="/san-pham" className={SITE_SECTION_LINK_CLS}>
               Xem tất cả
             </Link>
           )}
@@ -867,9 +268,11 @@ function renderFeaturedProductsSection(
             ))}
           </div>
         ) : (
-          <div className={styles.emptyPanel}>
-            <p className={styles.prosePara}>Cửa hàng đang cập nhật sản phẩm mới.</p>
-          </div>
+          <EmptyState
+            icon={Package}
+            title="Cửa hàng đang cập nhật sản phẩm mới."
+            className="border border-border shadow-none"
+          />
         )}
 
         {renderInlineBlocks(blocks, previewMode)}
@@ -886,6 +289,7 @@ function renderCollectionSection(
   previewMode: boolean
 ) {
   const { props, variant, settings, blocks } = section;
+  const archetype = tpl.layout.archetype;
   const maxItems =
     settings?.max_items && settings.max_items > 0 ? settings.max_items : (props.limit ?? 4);
   const items = selectCollectionProducts(
@@ -902,30 +306,37 @@ function renderCollectionSection(
   const viewHref = props.category_slug
     ? `/san-pham?cat=${encodeURIComponent(props.category_slug)}`
     : "/san-pham";
-  const gridClass = resolveProductGridClass(
-    tpl.layout.archetype,
-    undefined,
-    settings?.columns,
-    items.length
-  );
+  const gridClass = resolveProductGridClass(archetype, undefined, settings?.columns, items.length);
+  const surf = sectionSurfaceAttr(section, "surface");
+  const titleCls = cn("text-[clamp(24px,2.8vw,38px)] text-inherit", archetypeTitleTone(archetype));
 
   return (
     <section
       key={section.id}
       id={section.id}
-      className={tplStyles.sectionWrap}
+      className={cn(
+        "w-full",
+        SITE_PX,
+        sectionPaddingClass(settings?.padding),
+        sectionSurfaceClass(surf)
+      )}
       data-section-type="collection"
       data-section-variant={variant || "split"}
-      data-surface={sectionSurfaceAttr(section, "surface")}
+      data-surface={surf}
       data-padding={sectionPaddingAttr(section)}
     >
-      <div className={tplStyles.sectionInner}>
+      <div className={containerWidthClass(tpl.layout.container_width)}>
         {variant === "compact" ? (
-          <div className={styles.sectionHead}>
-            <div className={styles.sectionHeadCopy}>
-              {renderMaskedHeading("h2", props.title || "Bộ sưu tập", styles.sectionTitle)}
+          <div className="mb-[clamp(24px,3vw,38px)] flex flex-wrap items-end justify-between gap-x-6 gap-y-4">
+            <div className="flex min-w-0 flex-col gap-2">
+              {renderMaskedHeading("h2", props.title || "Bộ sưu tập", titleCls)}
               {props.subtitle?.trim() && (
-                <p className={`${styles.sectionSubtitle} ${tplStyles.mutedOnSurface}`}>
+                <p
+                  className={cn(
+                    "max-w-[54ch] text-base leading-[1.55]",
+                    subtitleColorForSurface(surf)
+                  )}
+                >
                   {props.subtitle}
                 </p>
               )}
@@ -933,29 +344,36 @@ function renderCollectionSection(
             <SafeActionLink
               href={viewHref}
               label="Xem tất cả"
-              className={styles.sectionLink}
+              className={SITE_SECTION_LINK_CLS}
               previewMode={previewMode}
             />
           </div>
         ) : (
-          <div className={styles.collectionSplit}>
-            <div className={styles.collectionBanner} data-reveal="clip">
+          <div className="mb-[clamp(24px,3vw,40px)] grid grid-cols-1 items-stretch gap-[clamp(20px,3vw,36px)] lg:grid-cols-12">
+            <div
+              className="aspect-[16/10] min-w-0 overflow-hidden rounded-lg bg-muted lg:col-span-7"
+              data-reveal="clip"
+            >
               <img
                 src={bannerImg}
                 alt={props.title || "Bộ sưu tập"}
                 width={1365}
                 height={768}
-                className={styles.collectionBannerImg}
+                className="block size-full object-cover"
               />
             </div>
-            <div className={styles.collectionIntro}>
-              {renderMaskedHeading("h2", props.title || "Bộ sưu tập", styles.sectionTitle)}
-              {props.subtitle?.trim() && <p className={styles.sectionSubtitle}>{props.subtitle}</p>}
-              <div className={styles.heroActions}>
+            <div className="flex min-w-0 flex-col justify-center gap-3.5 rounded-lg bg-background p-[clamp(22px,3vw,36px)] text-foreground lg:col-span-5">
+              {renderMaskedHeading("h2", props.title || "Bộ sưu tập", titleCls)}
+              {props.subtitle?.trim() && (
+                <p className="max-w-[54ch] text-base leading-[1.55] text-muted-foreground">
+                  {props.subtitle}
+                </p>
+              )}
+              <div className="mt-1 flex flex-wrap gap-3">
                 <SafeActionLink
                   href={viewHref}
                   label="Khám phá"
-                  className={styles.btnPrimary}
+                  className={SITE_PRIMARY_BTN_CLS}
                   previewMode={previewMode}
                 />
               </div>
@@ -986,43 +404,60 @@ function renderCollectionSection(
 
 function renderTextSection(
   section: Extract<SiteSectionV2, { type: "text" }>,
+  tpl: SiteTemplateConfig,
   previewMode: boolean
 ) {
   const { props, variant, settings, blocks } = section;
+  const archetype = tpl.layout.archetype;
   const paragraphs = props.body
     .split(/\n{2,}/)
     .map((p) => p.trim())
     .filter(Boolean);
   const isCentered =
     variant === "centered" || props.align === "center" || settings?.align === "center";
+  const surf = sectionSurfaceAttr(section, "bg");
+  const titleCls = cn("text-[clamp(24px,2.8vw,38px)] text-inherit", archetypeTitleTone(archetype));
+  const proseCls = "max-w-[62ch] text-base leading-[1.65] text-inherit";
 
   return (
     <section
       key={section.id}
       id={section.id}
-      className={tplStyles.sectionWrap}
+      className={cn(
+        "w-full",
+        SITE_PX,
+        sectionPaddingClass(settings?.padding),
+        sectionSurfaceClass(surf)
+      )}
       data-section-type="text"
       data-section-variant={variant || "split"}
-      data-surface={sectionSurfaceAttr(section, "bg")}
+      data-surface={surf}
       data-padding={sectionPaddingAttr(section)}
     >
-      <div className={tplStyles.sectionInner}>
+      <div className={containerWidthClass(tpl.layout.container_width)}>
         {variant === "monograph" ? (
-          <div className={tplStyles.textMonograph}>
-            {renderMaskedHeading("h2", props.title, styles.sectionTitle)}
+          <div className="mx-auto flex max-w-[56ch] flex-col items-center gap-4 py-[clamp(24px,3.5vw,44px)] text-center">
+            {renderMaskedHeading("h2", props.title, titleCls)}
             {paragraphs.map((para, idx) => (
-              <p key={idx} className={styles.prosePara}>
+              <p key={idx} className={proseCls}>
                 {para}
               </p>
             ))}
             {renderInlineBlocks(blocks, previewMode)}
           </div>
         ) : variant === "pullquote" ? (
-          <div className={tplStyles.textPullquote}>
-            <h2 className={tplStyles.textPullquoteLead}>{props.title}</h2>
-            <div className={styles.textSectionBodyCol}>
+          <div className="grid grid-cols-1 items-start gap-[clamp(24px,3vw,48px)] lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+            <h2
+              className={cn(
+                "text-[clamp(26px,2.8vw,38px)] leading-[1.12] text-inherit",
+                archetypeTitleTone(archetype)
+              )}
+            >
+              {props.title}
+            </h2>
+            <div className="flex min-w-0 flex-col gap-3.5">
               {paragraphs.map((para, idx) => (
-                <p key={idx} className={styles.prosePara}>
+                <p key={idx} className={proseCls}>
                   {para}
                 </p>
               ))}
@@ -1030,23 +465,23 @@ function renderTextSection(
             </div>
           </div>
         ) : isCentered ? (
-          <div className={styles.textSectionCenter}>
-            {renderMaskedHeading("h2", props.title, styles.sectionTitle)}
+          <div className="mx-auto flex max-w-[60ch] flex-col items-center gap-4 text-center">
+            {renderMaskedHeading("h2", props.title, titleCls)}
             {paragraphs.map((para, idx) => (
-              <p key={idx} className={styles.prosePara}>
+              <p key={idx} className={proseCls}>
                 {para}
               </p>
             ))}
             {renderInlineBlocks(blocks, previewMode)}
           </div>
         ) : (
-          <div className={styles.textSectionGrid}>
-            <div className={styles.textSectionTitleCol}>
-              {renderMaskedHeading("h2", props.title, styles.sectionTitle)}
+          <div className="grid grid-cols-1 items-start gap-[clamp(20px,3vw,44px)] lg:grid-cols-12">
+            <div className="min-w-0 lg:col-span-5">
+              {renderMaskedHeading("h2", props.title, titleCls)}
             </div>
-            <div className={styles.textSectionBodyCol}>
+            <div className="flex min-w-0 flex-col gap-3.5 lg:col-span-7">
               {paragraphs.map((para, idx) => (
-                <p key={idx} className={styles.prosePara}>
+                <p key={idx} className={proseCls}>
                   {para}
                 </p>
               ))}
@@ -1064,78 +499,98 @@ function renderBannerSection(
   tpl: SiteTemplateConfig,
   previewMode: boolean
 ) {
-  const { props, variant, blocks } = section;
+  const { props, variant, settings, blocks } = section;
+  const archetype = tpl.layout.archetype;
   const imgSrc =
     sanitizeSafeImageUrl(props.image_url) ||
     sanitizeSafeImageUrl(tpl.theme.banner_url) ||
     "/banners/campaign-everyday.jpg";
-  const surface = sectionSurfaceAttr(
+  const surf = sectionSurfaceAttr(
     section,
     variant === "framed" ? "surface" : variant === "compact" ? "accent-soft" : "band"
   );
+  const titleCls = cn("text-[clamp(24px,2.8vw,38px)] text-inherit", archetypeTitleTone(archetype));
 
   return (
     <section
       key={section.id}
       id={section.id}
-      className={tplStyles.sectionWrap}
+      className={cn(
+        "w-full",
+        SITE_PX,
+        sectionPaddingClass(settings?.padding),
+        sectionSurfaceClass(surf)
+      )}
       data-section-type="banner"
       data-section-variant={variant || "band"}
-      data-surface={surface}
+      data-surface={surf}
       data-padding={sectionPaddingAttr(section)}
     >
-      <div className={tplStyles.sectionInner}>
+      <div className={containerWidthClass(tpl.layout.container_width)}>
         {variant === "compact" ? (
-          <div className={tplStyles.bannerCompact}>
-            <div className={styles.sectionHeadCopy}>
-              <h2 className={styles.sectionTitle}>{props.title}</h2>
+          <div className="flex flex-wrap items-center justify-between gap-x-7 gap-y-4">
+            <div className="flex min-w-0 flex-col gap-2">
+              <h2 className={titleCls}>{props.title}</h2>
               {props.subtitle?.trim() && (
-                <p className={tplStyles.blockParagraph}>{props.subtitle}</p>
+                <p className="max-w-[60ch] text-base leading-[1.6] text-inherit opacity-90">
+                  {props.subtitle}
+                </p>
               )}
             </div>
             {props.cta_label?.trim() && (
               <SafeActionLink
                 href={sanitizeSafeHref(props.cta_href, "/san-pham")}
                 label={props.cta_label}
-                className={styles.btnPrimary}
+                className={SITE_PRIMARY_BTN_CLS}
                 previewMode={previewMode}
               />
             )}
           </div>
         ) : variant === "framed" ? (
-          <div className={tplStyles.bannerFramed}>
-            <h2 className={styles.sectionTitle}>{props.title}</h2>
-            {props.subtitle?.trim() && <p className={styles.prosePara}>{props.subtitle}</p>}
+          <div className="flex flex-col items-center gap-4 rounded-lg border border-border bg-card p-[clamp(28px,4vw,48px)] text-center text-card-foreground">
+            <h2 className={titleCls}>{props.title}</h2>
+            {props.subtitle?.trim() && (
+              <p className="max-w-[60ch] text-base leading-[1.6] text-muted-foreground">
+                {props.subtitle}
+              </p>
+            )}
             {props.cta_label?.trim() && (
               <SafeActionLink
                 href={sanitizeSafeHref(props.cta_href, "/san-pham")}
                 label={props.cta_label}
-                className={styles.btnPrimary}
+                className={SITE_PRIMARY_BTN_CLS}
                 previewMode={previewMode}
               />
             )}
             {renderInlineBlocks(blocks, previewMode)}
           </div>
         ) : variant === "split-image" ? (
-          <div className={tplStyles.bannerSplitImage}>
-            <div className={styles.bannerMedia} data-reveal="clip">
+          <div className="grid grid-cols-1 items-center gap-[clamp(20px,3vw,44px)] lg:grid-cols-2">
+            <div
+              className="aspect-video min-w-0 overflow-hidden rounded-lg bg-muted"
+              data-reveal="clip"
+            >
               <img
                 src={imgSrc}
                 alt={props.title}
                 width={1365}
                 height={768}
-                className={styles.collectionBannerImg}
+                className="block size-full object-cover"
               />
             </div>
-            <div className={styles.bannerCopy}>
-              {renderMaskedHeading("h2", props.title, styles.sectionTitle)}
-              {props.subtitle?.trim() && <p className={styles.bannerSubtitle}>{props.subtitle}</p>}
+            <div className="flex min-w-0 flex-col gap-3.5">
+              {renderMaskedHeading("h2", props.title, titleCls)}
+              {props.subtitle?.trim() && (
+                <p className="max-w-[52ch] text-[17px] leading-[1.55] text-inherit opacity-90">
+                  {props.subtitle}
+                </p>
+              )}
               {props.cta_label?.trim() && (
-                <div className={styles.heroActions}>
+                <div className="mt-1 flex flex-wrap gap-3">
                   <SafeActionLink
                     href={sanitizeSafeHref(props.cta_href, "/san-pham")}
                     label={props.cta_label}
-                    className={styles.btnOnBand}
+                    className={SITE_PRIMARY_BTN_CLS}
                     previewMode={previewMode}
                   />
                 </div>
@@ -1144,29 +599,36 @@ function renderBannerSection(
             </div>
           </div>
         ) : (
-          <div className={styles.bannerGrid}>
-            <div className={styles.bannerCopy}>
-              {renderMaskedHeading("h2", props.title, styles.sectionTitle)}
-              {props.subtitle?.trim() && <p className={styles.bannerSubtitle}>{props.subtitle}</p>}
+          <div className="grid grid-cols-1 items-center gap-[clamp(20px,3vw,44px)] lg:grid-cols-12">
+            <div className="flex min-w-0 flex-col gap-3.5 lg:col-span-5">
+              {renderMaskedHeading("h2", props.title, titleCls)}
+              {props.subtitle?.trim() && (
+                <p className="max-w-[52ch] text-[17px] leading-[1.55] text-inherit opacity-90">
+                  {props.subtitle}
+                </p>
+              )}
               {props.cta_label?.trim() && (
-                <div className={styles.heroActions}>
+                <div className="mt-1 flex flex-wrap gap-3">
                   <SafeActionLink
                     href={sanitizeSafeHref(props.cta_href, "/san-pham")}
                     label={props.cta_label}
-                    className={styles.btnOnBand}
+                    className={SITE_PRIMARY_BTN_CLS}
                     previewMode={previewMode}
                   />
                 </div>
               )}
               {renderInlineBlocks(blocks, previewMode)}
             </div>
-            <div className={styles.bannerMedia} data-reveal="clip">
+            <div
+              className="aspect-video min-w-0 overflow-hidden rounded-lg bg-muted lg:col-span-7"
+              data-reveal="clip"
+            >
               <img
                 src={imgSrc}
                 alt={props.title}
                 width={1365}
                 height={768}
-                className={styles.collectionBannerImg}
+                className="block size-full object-cover"
               />
             </div>
           </div>
@@ -1178,62 +640,77 @@ function renderBannerSection(
 
 function renderVoucherStripSection(
   section: Extract<SiteSectionV2, { type: "voucher_strip" }>,
+  tpl: SiteTemplateConfig,
   vouchers: Voucher[],
   previewMode: boolean
 ) {
-  const { props, variant, blocks } = section;
+  const { props, variant, settings, blocks } = section;
+  const archetype = tpl.layout.archetype;
   const cap = Math.max(1, Math.min(6, props.limit && props.limit > 0 ? props.limit : 6));
   const shopOnlyVouchers = vouchers.filter((v) => v.scope === "shop").slice(0, cap);
+  const surf = sectionSurfaceAttr(section, "surface");
+  const titleCls = cn("text-[clamp(24px,2.8vw,38px)] text-inherit", archetypeTitleTone(archetype));
 
   return (
     <section
       key={section.id}
       id={section.id}
-      className={tplStyles.sectionWrap}
+      className={cn(
+        "w-full",
+        SITE_PX,
+        sectionPaddingClass(settings?.padding),
+        sectionSurfaceClass(surf)
+      )}
       data-section-type="voucher_strip"
       data-section-variant={variant || "grid"}
-      data-surface={sectionSurfaceAttr(section, "surface")}
+      data-surface={surf}
       data-padding={sectionPaddingAttr(section)}
     >
-      <div className={tplStyles.sectionInner}>
-        <div className={styles.sectionHead}>
-          <div className={styles.sectionHeadCopy}>
-            {renderMaskedHeading("h2", props.title || "Ưu đãi cửa hàng", styles.sectionTitle)}
+      <div className={containerWidthClass(tpl.layout.container_width)}>
+        <div className="mb-[clamp(24px,3vw,38px)] flex flex-wrap items-end justify-between gap-x-6 gap-y-4">
+          <div className="flex min-w-0 flex-col gap-2">
+            {renderMaskedHeading("h2", props.title || "Ưu đãi cửa hàng", titleCls)}
             {props.subtitle?.trim() && (
-              <p className={`${styles.sectionSubtitle} ${tplStyles.mutedOnSurface}`}>
+              <p
+                className={cn(
+                  "max-w-[54ch] text-base leading-[1.55]",
+                  subtitleColorForSurface(surf)
+                )}
+              >
                 {props.subtitle}
               </p>
             )}
           </div>
           {!previewMode && shopOnlyVouchers.length > 0 && (
-            <Link href="/voucher" className={styles.sectionLink}>
+            <Link href="/voucher" className={SITE_SECTION_LINK_CLS}>
               Tất cả mã giảm giá
             </Link>
           )}
         </div>
 
         {shopOnlyVouchers.length === 1 ? (
-          /* Single voucher: full-row horizontal ticket band (zero blank half-screen!) */
-          <article className={tplStyles.voucherSingleBand}>
-            <div className={tplStyles.voucherSingleCodeCol}>
-              <span className={tplStyles.voucherBigCode}>{shopOnlyVouchers[0].code}</span>
+          <article className="grid grid-cols-1 items-center gap-x-8 gap-y-3.5 rounded-lg border border-border bg-background p-[clamp(22px,3vw,36px)] text-foreground md:grid-cols-[auto_minmax(0,1fr)_auto]">
+            <div className="flex items-center">
+              <span className="text-[clamp(28px,3.6vw,44px)] leading-[1.04] font-extrabold tracking-[0.02em] text-brand">
+                {shopOnlyVouchers[0].code}
+              </span>
             </div>
-            <div className={tplStyles.voucherSingleInfoCol}>
-              <h3 className={styles.voucherHeadline}>
+            <div className="flex min-w-0 flex-col gap-1">
+              <h3 className="text-lg font-semibold text-foreground">
                 {formatVoucherBenefit(shopOnlyVouchers[0])}
               </h3>
-              <p className={styles.voucherDetail}>
+              <p className="text-sm leading-[1.5] text-muted-foreground tabular-nums">
                 {shopOnlyVouchers[0].minOrderValue > 0
                   ? `Đơn từ ${formatVnd(shopOnlyVouchers[0].minOrderValue)}`
                   : "Áp dụng mọi đơn tại cửa hàng"}
                 {`, còn ${formatInt(shopOnlyVouchers[0].remainingUses)} lượt`}
               </p>
             </div>
-            <div className={tplStyles.voucherSingleActionCol}>
+            <div className="flex items-center">
               {previewMode ? (
-                <span className={styles.btnPrimary}>Lưu mã</span>
+                <span className={SITE_PRIMARY_BTN_CLS}>Lưu mã</span>
               ) : (
-                <Link href="/voucher" className={styles.btnPrimary}>
+                <Link href="/voucher" className={SITE_PRIMARY_BTN_CLS}>
                   Lưu mã
                 </Link>
               )}
@@ -1242,23 +719,27 @@ function renderVoucherStripSection(
         ) : shopOnlyVouchers.length > 1 ? (
           variant === "compact-bar" ? (
             <div
-              className={
-                shopOnlyVouchers.length === 2
-                  ? tplStyles.voucherCompactRow2
-                  : tplStyles.voucherCompactRow
-              }
+              className={cn(
+                "grid grid-cols-1 gap-3 sm:grid-cols-2",
+                shopOnlyVouchers.length === 2 ? "lg:grid-cols-2" : "lg:grid-cols-3"
+              )}
               data-reveal="rows"
             >
               {shopOnlyVouchers.map((voucher) => (
-                <article key={voucher.id || voucher.code} className={tplStyles.voucherCompactPill}>
-                  <div>
-                    <p className={styles.voucherCode}>{voucher.code}</p>
-                    <p className={styles.voucherDetail}>{formatVoucherBenefit(voucher)}</p>
+                <article
+                  key={voucher.id || voucher.code}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-border bg-card px-4 py-3.5 text-card-foreground"
+                >
+                  <div className="min-w-0">
+                    <p className="text-lg font-bold tracking-[0.02em] text-brand">{voucher.code}</p>
+                    <p className="text-sm leading-[1.5] text-muted-foreground">
+                      {formatVoucherBenefit(voucher)}
+                    </p>
                   </div>
                   {previewMode ? (
-                    <span className={styles.sectionLink}>Lưu</span>
+                    <span className={SITE_SECTION_LINK_CLS}>Lưu</span>
                   ) : (
-                    <Link href="/voucher" className={styles.sectionLink}>
+                    <Link href="/voucher" className={SITE_SECTION_LINK_CLS}>
                       Lưu
                     </Link>
                   )}
@@ -1267,28 +748,34 @@ function renderVoucherStripSection(
             </div>
           ) : (
             <div
-              className={
-                shopOnlyVouchers.length === 2 ? tplStyles.voucherGrid2 : styles.voucherGrid
-              }
+              className={cn(
+                "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                shopOnlyVouchers.length === 2 ? "lg:grid-cols-2" : "lg:grid-cols-3"
+              )}
               data-reveal="rows"
             >
               {shopOnlyVouchers.map((voucher) => (
-                <article key={voucher.id || voucher.code} className={styles.voucherCard}>
-                  <p className={styles.voucherCode}>{voucher.code}</p>
-                  <h3 className={styles.voucherHeadline}>{formatVoucherBenefit(voucher)}</h3>
-                  <p className={styles.voucherDetail}>
+                <article
+                  key={voucher.id || voucher.code}
+                  className="flex min-w-0 flex-col gap-2.5 rounded-lg border border-border bg-background p-[clamp(20px,2.4vw,28px)] text-foreground"
+                >
+                  <p className="text-xl font-bold tracking-[0.02em] text-brand">{voucher.code}</p>
+                  <h3 className="text-lg font-semibold text-foreground">
+                    {formatVoucherBenefit(voucher)}
+                  </h3>
+                  <p className="text-sm leading-[1.5] text-muted-foreground">
                     {voucher.minOrderValue > 0
                       ? `Đơn từ ${formatVnd(voucher.minOrderValue)}`
                       : "Áp dụng toàn cửa hàng"}
                   </p>
-                  <div className={styles.voucherFoot}>
-                    <span className={`${styles.voucherQuota} num`}>
+                  <div className="mt-auto flex flex-wrap items-center justify-between gap-2.5 pt-2">
+                    <span className="text-sm text-muted-foreground tabular-nums">
                       Còn {formatInt(voucher.remainingUses)} lượt
                     </span>
                     {previewMode ? (
-                      <span className={styles.sectionLink}>Lưu mã</span>
+                      <span className={SITE_SECTION_LINK_CLS}>Lưu mã</span>
                     ) : (
-                      <Link href="/voucher" className={styles.sectionLink}>
+                      <Link href="/voucher" className={SITE_SECTION_LINK_CLS}>
                         Lưu mã
                       </Link>
                     )}
@@ -1298,9 +785,11 @@ function renderVoucherStripSection(
             </div>
           )
         ) : (
-          <div className={styles.emptyPanel}>
-            <p className={styles.prosePara}>Chưa có mã giảm giá đang mở.</p>
-          </div>
+          <EmptyState
+            icon={Ticket}
+            title="Chưa có mã giảm giá đang mở."
+            className="border border-border shadow-none"
+          />
         )}
 
         {renderInlineBlocks(blocks, previewMode)}
@@ -1311,60 +800,62 @@ function renderVoucherStripSection(
 
 function renderPoliciesSection(
   section: Extract<SiteSectionV2, { type: "policies" }>,
-  archetype: SiteArchetype,
+  tpl: SiteTemplateConfig,
   previewMode: boolean
 ) {
-  const { props, variant, blocks } = section;
+  const { props, variant, settings, blocks } = section;
+  const archetype = tpl.layout.archetype;
   const policyBlocks = (blocks ?? []).filter((b) => b.type === "policy");
   const extraBlocks = (blocks ?? []).filter((b) => b.type !== "policy");
   const items = [
     ...props.items,
     ...policyBlocks.map((b) => ({ heading: b.props.heading, detail: b.props.detail })),
   ];
+  const surf = sectionSurfaceAttr(section, "bg");
+  const titleCls = cn("text-[clamp(24px,2.8vw,38px)] text-inherit", archetypeTitleTone(archetype));
 
-  // Signature horizontal filmstrip strictly for craft-atelier default/timeline policies
   const useCraftFilmstrip = archetype === "craft-atelier" && (!variant || variant === "timeline");
 
-  const containerClass =
+  const gridClass =
     variant === "timeline"
-      ? tplStyles.policyTimeline
+      ? "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4"
       : variant === "compact-list"
-        ? tplStyles.policyCompactList
-        : variant === "cards"
-          ? tplStyles.policyCardsGrid
-          : items.length === 3
-            ? tplStyles.policyCardsGrid
-            : styles.policyGrid;
+        ? "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
+        : variant === "cards" || items.length === 3
+          ? "grid grid-cols-1 gap-[var(--site-gutter,24px)] sm:grid-cols-2 lg:grid-cols-3"
+          : "grid grid-cols-1 gap-[clamp(16px,2vw,24px)] sm:grid-cols-2";
 
-  const itemClass =
-    variant === "timeline"
-      ? tplStyles.policyTimelineStep
-      : variant === "compact-list"
-        ? tplStyles.policyCompactItem
-        : variant === "cards"
-          ? tplStyles.policyFramedCard
-          : styles.policyItem;
+  const itemCardClass = cn(
+    "flex min-w-0 flex-col gap-2 rounded-lg border border-border",
+    surf === "surface" ? "bg-background text-foreground" : "bg-card text-card-foreground",
+    variant === "compact-list" ? "p-[18px]" : "p-[clamp(20px,2.5vw,28px)]"
+  );
 
   return (
     <section
       key={section.id}
       id={section.id}
-      className={tplStyles.sectionWrap}
+      className={cn(
+        "w-full",
+        SITE_PX,
+        sectionPaddingClass(settings?.padding),
+        sectionSurfaceClass(surf)
+      )}
       data-section-type="policies"
       data-section-variant={variant || "grid"}
-      data-surface={sectionSurfaceAttr(section, "bg")}
+      data-surface={surf}
       data-padding={sectionPaddingAttr(section)}
     >
-      <div className={tplStyles.sectionInner}>
-        <div className={styles.sectionHead}>
-          <div className={styles.sectionHeadCopy}>
-            {renderMaskedHeading("h2", props.title || "Chính sách", styles.sectionTitle)}
+      <div className={containerWidthClass(tpl.layout.container_width)}>
+        <div className="mb-[clamp(24px,3vw,38px)] flex flex-wrap items-end justify-between gap-x-6 gap-y-4">
+          <div className="flex min-w-0 flex-col gap-2">
+            {renderMaskedHeading("h2", props.title || "Chính sách", titleCls)}
           </div>
         </div>
 
         {useCraftFilmstrip ? (
           <div
-            className={tplStyles.craftFilmstrip}
+            className="flex snap-x snap-mandatory gap-[clamp(14px,2vw,24px)] overflow-x-auto pb-3"
             role="list"
             aria-label={props.title || "Công đoạn tại xưởng"}
             data-reveal="rows"
@@ -1372,32 +863,35 @@ function renderPoliciesSection(
             {items.map((item, idx) => (
               <article
                 key={`${section.id}-${idx}`}
-                className={tplStyles.craftFilmCard}
+                className="flex flex-[0_0_clamp(260px,28vw,340px)] snap-start flex-col gap-3.5 overflow-hidden rounded-lg border border-border bg-background text-foreground"
                 role="listitem"
               >
-                <div className={tplStyles.craftFilmMedia} data-reveal="clip">
+                <div className="aspect-[4/3] w-full overflow-hidden bg-muted" data-reveal="clip">
                   <img
                     src={CRAFT_FILMSTRIP_IMAGES[idx % CRAFT_FILMSTRIP_IMAGES.length]}
                     alt={item.heading}
                     width={640}
                     height={480}
-                    className={tplStyles.blockImg}
-                    loading="lazy"
+                    className="block size-full object-cover"
                   />
                 </div>
-                <div className={tplStyles.craftFilmBody}>
-                  <h3 className={styles.policyHeading}>{item.heading}</h3>
-                  <p className={styles.policyDetail}>{item.detail}</p>
+                <div className="flex flex-col gap-1.5 px-4 pb-4">
+                  <h3 className="text-lg font-semibold text-foreground">{item.heading}</h3>
+                  <p className="max-w-[56ch] text-[15px] leading-[1.55] text-muted-foreground">
+                    {item.detail}
+                  </p>
                 </div>
               </article>
             ))}
           </div>
         ) : (
-          <div className={containerClass} data-reveal="rows">
+          <div className={gridClass} data-reveal="rows">
             {items.map((item, idx) => (
-              <article key={`${section.id}-${idx}`} className={itemClass}>
-                <h3 className={styles.policyHeading}>{item.heading}</h3>
-                <p className={styles.policyDetail}>{item.detail}</p>
+              <article key={`${section.id}-${idx}`} className={itemCardClass}>
+                <h3 className="text-lg font-semibold text-foreground">{item.heading}</h3>
+                <p className="max-w-[56ch] text-[15px] leading-[1.55] text-muted-foreground">
+                  {item.detail}
+                </p>
               </article>
             ))}
           </div>
@@ -1411,14 +905,18 @@ function renderPoliciesSection(
 
 function renderLookbookSection(
   section: Extract<SiteSectionV2, { type: "lookbook" }>,
+  tpl: SiteTemplateConfig,
   products: Product[],
   previewMode: boolean
 ) {
-  const { props, variant, blocks } = section;
+  const { props, variant, settings, blocks } = section;
+  const archetype = tpl.layout.archetype;
   const imageBlocks = (blocks ?? []).filter(
     (b): b is Extract<SiteSectionBlock, { type: "image" }> => b.type === "image"
   );
   const otherBlocks = (blocks ?? []).filter((b) => b.type !== "image");
+  const surf = sectionSurfaceAttr(section, "surface");
+  const titleCls = cn("text-[clamp(24px,2.8vw,38px)] text-inherit", archetypeTitleTone(archetype));
 
   const fallbackImages: Array<Extract<SiteSectionBlock, { type: "image" }>> =
     imageBlocks.length > 0
@@ -1439,29 +937,40 @@ function renderLookbookSection(
             },
           }));
 
+  const isAsym3 = variant !== "duo-split" && variant !== "strip-4";
   const gridClass =
     variant === "duo-split"
-      ? tplStyles.lookbookDuo
+      ? "grid grid-cols-1 gap-[var(--site-gutter,24px)] sm:grid-cols-2"
       : variant === "strip-4"
-        ? tplStyles.lookbookStrip4
-        : tplStyles.lookbookAsym3;
+        ? "grid grid-cols-1 gap-[var(--site-gutter,24px)] sm:grid-cols-2 lg:grid-cols-4"
+        : "grid grid-cols-1 gap-[var(--site-gutter,24px)] lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] lg:grid-rows-2 [&>:first-child]:lg:row-span-2";
 
   return (
     <section
       key={section.id}
       id={section.id}
-      className={tplStyles.sectionWrap}
+      className={cn(
+        "w-full",
+        SITE_PX,
+        sectionPaddingClass(settings?.padding),
+        sectionSurfaceClass(surf)
+      )}
       data-section-type="lookbook"
       data-section-variant={variant || "asym-3"}
-      data-surface={sectionSurfaceAttr(section, "surface")}
+      data-surface={surf}
       data-padding={sectionPaddingAttr(section)}
     >
-      <div className={tplStyles.sectionInner}>
-        <div className={styles.sectionHead}>
-          <div className={styles.sectionHeadCopy}>
-            {renderMaskedHeading("h2", props.title || "Lookbook", styles.sectionTitle)}
+      <div className={containerWidthClass(tpl.layout.container_width)}>
+        <div className="mb-[clamp(24px,3vw,38px)] flex flex-wrap items-end justify-between gap-x-6 gap-y-4">
+          <div className="flex min-w-0 flex-col gap-2">
+            {renderMaskedHeading("h2", props.title || "Lookbook", titleCls)}
             {props.subtitle?.trim() && (
-              <p className={`${styles.sectionSubtitle} ${tplStyles.mutedOnSurface}`}>
+              <p
+                className={cn(
+                  "max-w-[54ch] text-base leading-[1.55]",
+                  subtitleColorForSurface(surf)
+                )}
+              >
                 {props.subtitle}
               </p>
             )}
@@ -1470,14 +979,16 @@ function renderLookbookSection(
             <SafeActionLink
               href={sanitizeSafeHref(props.cta_href, "/san-pham")}
               label={props.cta_label}
-              className={styles.sectionLink}
+              className={SITE_SECTION_LINK_CLS}
               previewMode={previewMode}
             />
           )}
         </div>
 
         <div className={gridClass}>
-          {fallbackImages.map((blk) => renderSingleBlock(blk, previewMode))}
+          {fallbackImages.map((blk, idx) =>
+            renderSingleBlock(blk, previewMode, { fillImageHeight: isAsym3 && idx === 0 })
+          )}
         </div>
 
         {renderInlineBlocks(otherBlocks, previewMode)}
@@ -1488,46 +999,60 @@ function renderLookbookSection(
 
 function renderMetricsStripSection(
   section: Extract<SiteSectionV2, { type: "metrics_strip" }>,
+  tpl: SiteTemplateConfig,
   previewMode: boolean
 ) {
-  const { props, variant, blocks } = section;
+  const { props, variant, settings, blocks } = section;
+  const archetype = tpl.layout.archetype;
   const statBlocks = (blocks ?? []).filter(
     (b): b is Extract<SiteSectionBlock, { type: "stat" }> => b.type === "stat"
   );
   const otherBlocks = (blocks ?? []).filter((b) => b.type !== "stat");
+  const surf = sectionSurfaceAttr(section, "surface");
+  const titleCls = cn("text-[clamp(24px,2.8vw,38px)] text-inherit", archetypeTitleTone(archetype));
 
   const isCards3 = variant !== "telemetry" && (variant === "cards-3" || statBlocks.length === 3);
 
   const gridClass =
     variant === "telemetry"
-      ? tplStyles.metricsTelemetry
+      ? "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
       : isCards3
-        ? tplStyles.metricsCards3
-        : tplStyles.metricsBar4;
+        ? "grid grid-cols-1 gap-[var(--site-gutter,24px)] sm:grid-cols-3"
+        : "grid grid-cols-1 divide-y divide-border overflow-hidden rounded-lg border border-border bg-card sm:grid-cols-2 sm:divide-x lg:grid-cols-4 lg:divide-y-0";
 
   const itemClass =
     variant === "telemetry"
-      ? tplStyles.telemetryTile
+      ? "flex min-w-0 flex-col gap-1.5 rounded-lg border border-border bg-background p-[clamp(18px,2.2vw,24px)]"
       : isCards3
-        ? tplStyles.metricsCard
-        : tplStyles.metricsBarItem;
+        ? "flex min-w-0 flex-col gap-1.5 rounded-lg border border-border bg-background p-[clamp(20px,2.5vw,28px)]"
+        : "flex min-w-0 flex-col gap-1.5 bg-card p-[clamp(20px,2.5vw,28px)]";
 
   return (
     <section
       key={section.id}
       id={section.id}
-      className={tplStyles.sectionWrap}
+      className={cn(
+        "w-full",
+        SITE_PX,
+        sectionPaddingClass(settings?.padding),
+        sectionSurfaceClass(surf)
+      )}
       data-section-type="metrics_strip"
       data-section-variant={variant || "bar-4"}
-      data-surface={sectionSurfaceAttr(section, "surface")}
+      data-surface={surf}
       data-padding={sectionPaddingAttr(section)}
     >
-      <div className={tplStyles.sectionInner}>
-        <div className={styles.sectionHead}>
-          <div className={styles.sectionHeadCopy}>
-            {renderMaskedHeading("h2", props.title, styles.sectionTitle)}
+      <div className={containerWidthClass(tpl.layout.container_width)}>
+        <div className="mb-[clamp(24px,3vw,38px)] flex flex-wrap items-end justify-between gap-x-6 gap-y-4">
+          <div className="flex min-w-0 flex-col gap-2">
+            {renderMaskedHeading("h2", props.title, titleCls)}
             {props.subtitle?.trim() && (
-              <p className={`${styles.sectionSubtitle} ${tplStyles.mutedOnSurface}`}>
+              <p
+                className={cn(
+                  "max-w-[54ch] text-base leading-[1.55]",
+                  subtitleColorForSurface(surf)
+                )}
+              >
                 {props.subtitle}
               </p>
             )}
@@ -1548,10 +1073,12 @@ function renderMetricsStripSection(
 
 function renderSkuMatrixSection(
   section: Extract<SiteSectionV2, { type: "sku_matrix" }>,
+  tpl: SiteTemplateConfig,
   products: Product[],
   previewMode: boolean
 ) {
   const { props, variant, settings, blocks } = section;
+  const archetype = tpl.layout.archetype;
   const cleanCat = (props.category_slug || "").trim().toLowerCase();
   const matchingProducts = cleanCat
     ? products.filter((p) => p.categorySlug.toLowerCase() === cleanCat)
@@ -1564,6 +1091,8 @@ function renderSkuMatrixSection(
       settings?.max_items && settings.max_items > 0 ? settings.max_items : (props.limit ?? 12)
     )
   );
+  const surf = sectionSurfaceAttr(section, "surface");
+  const titleCls = cn("text-[clamp(24px,2.8vw,38px)] text-inherit", archetypeTitleTone(archetype));
 
   const colorMapByProduct = new Map<string, Map<string, { name: string; hex: string }>>();
   for (const p of matchingProducts) {
@@ -1585,7 +1114,7 @@ function renderSkuMatrixSection(
             product: p,
             sku,
             colorName: color?.name ?? sku.colorCode,
-            colorHex: color?.hex ?? "#1F3038",
+            colorHex: color?.hex ?? "currentColor",
           };
         })
     )
@@ -1595,68 +1124,89 @@ function renderSkuMatrixSection(
     <section
       key={section.id}
       id={section.id}
-      className={tplStyles.sectionWrap}
+      className={cn(
+        "w-full",
+        SITE_PX,
+        sectionPaddingClass(settings?.padding),
+        sectionSurfaceClass(surf)
+      )}
       data-section-type="sku_matrix"
       data-section-variant={variant || "compact-table"}
-      data-surface={sectionSurfaceAttr(section, "surface")}
+      data-surface={surf}
       data-padding={sectionPaddingAttr(section)}
     >
-      <div className={tplStyles.sectionInner}>
-        <div className={styles.sectionHead}>
-          <div className={styles.sectionHeadCopy}>
-            {renderMaskedHeading("h2", props.title || "Bảng SKU đặt nhanh", styles.sectionTitle)}
+      <div className={containerWidthClass(tpl.layout.container_width)}>
+        <div className="mb-[clamp(24px,3vw,38px)] flex flex-wrap items-end justify-between gap-x-6 gap-y-4">
+          <div className="flex min-w-0 flex-col gap-2">
+            {renderMaskedHeading("h2", props.title || "Bảng SKU đặt nhanh", titleCls)}
             {props.subtitle?.trim() && (
-              <p className={`${styles.sectionSubtitle} ${tplStyles.mutedOnSurface}`}>
+              <p
+                className={cn(
+                  "max-w-[54ch] text-base leading-[1.55]",
+                  subtitleColorForSurface(surf)
+                )}
+              >
                 {props.subtitle}
               </p>
             )}
           </div>
           {!previewMode && (
-            <Link href="/san-pham" className={styles.sectionLink}>
+            <Link href="/san-pham" className={SITE_SECTION_LINK_CLS}>
               Toàn bộ bảng SKU
             </Link>
           )}
         </div>
 
         {rows.length === 0 ? (
-          <div className={styles.emptyPanel}>
-            <p className={styles.prosePara}>Chưa có biến thể SKU hiển thị.</p>
-          </div>
+          <EmptyState
+            icon={TableProperties}
+            title="Chưa có biến thể SKU hiển thị."
+            className="border border-border shadow-none"
+          />
         ) : variant === "grouped" ? (
-          <div className={tplStyles.skuGroupedList} data-reveal="rows">
+          <div className="flex flex-col gap-3.5" data-reveal="rows">
             {matchingProducts.slice(0, Math.min(8, maxRows)).map((product) => {
               const skus = product.skus.filter((s) => showOos || s.stock > 0);
               if (skus.length === 0) return null;
               return (
-                <article key={product.id} className={tplStyles.skuGroupCard}>
-                  <div className={tplStyles.skuGroupHead}>
+                <article
+                  key={product.id}
+                  className="flex flex-col gap-3 rounded-lg border border-border bg-background p-5 text-foreground"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <h3 className={styles.policyHeading}>{product.name}</h3>
-                      <p className={`${tplStyles.cardSpec} num`}>{formatVnd(product.price)}</p>
+                      <h3 className="text-lg font-semibold text-foreground">{product.name}</h3>
+                      <p className="text-[13px] text-muted-foreground tabular-nums">
+                        {formatVnd(product.price)}
+                      </p>
                     </div>
                     {previewMode ? (
-                      <span className={styles.sectionLink}>Đặt mua</span>
+                      <span className={SITE_SECTION_LINK_CLS}>Đặt mua</span>
                     ) : (
                       <Link
                         href={`/san-pham/${encodeURIComponent(product.slug)}`}
-                        className={styles.sectionLink}
+                        className={SITE_SECTION_LINK_CLS}
                       >
                         Đặt mua
                       </Link>
                     )}
                   </div>
-                  <div className={tplStyles.skuPillGrid}>
+                  <div className="flex flex-wrap gap-2">
                     {skus.slice(0, 12).map((sku) => {
                       const colorName =
                         colorMapByProduct.get(product.id)?.get(sku.colorCode)?.name ??
                         sku.colorCode;
                       return (
-                        <span key={sku.skuCode} className={`${tplStyles.skuMiniPill} num`}>
-                          <strong>
+                        <Badge
+                          key={sku.skuCode}
+                          variant={sku.stock > 0 ? "secondary" : "outline"}
+                          className="gap-1.5 rounded-sm px-2.5 py-1 text-[13px] tabular-nums"
+                        >
+                          <strong className="font-semibold">
                             {colorName} / {sku.size}
                           </strong>
                           <span>{sku.stock > 0 ? `Còn ${formatInt(sku.stock)}` : "Hết hàng"}</span>
-                        </span>
+                        </Badge>
                       );
                     })}
                   </div>
@@ -1665,61 +1215,64 @@ function renderSkuMatrixSection(
             })}
           </div>
         ) : (
-          <div className={tplStyles.tableScrollWrap}>
-            <table className={tplStyles.skuTable}>
-              <thead>
-                <tr>
-                  <th>Sản phẩm</th>
-                  <th>SKU</th>
-                  <th>Màu</th>
-                  <th>Size</th>
-                  <th>Đơn giá</th>
-                  <th>Tồn</th>
-                  <th>Đặt nhanh</th>
-                </tr>
-              </thead>
-              <tbody data-reveal="rows">
+          <div className="overflow-hidden rounded-lg border border-border bg-background">
+            <Table className="min-w-[620px]">
+              <TableHeader className="bg-muted">
+                <TableRow className="hover:bg-transparent">
+                  <TableHead>Sản phẩm</TableHead>
+                  <TableHead>SKU</TableHead>
+                  <TableHead>Màu</TableHead>
+                  <TableHead>Size</TableHead>
+                  <TableHead>Đơn giá</TableHead>
+                  <TableHead>Tồn</TableHead>
+                  <TableHead>Đặt nhanh</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody data-reveal="rows">
                 {rows.map((row) => (
-                  <tr key={row.key}>
-                    <td>
-                      <strong>{row.product.name}</strong>
-                    </td>
-                    <td className={`${tplStyles.skuCodeMono} num`}>{row.sku.skuCode}</td>
-                    <td>
-                      <span className={tplStyles.colorSwatchInline}>
+                  <TableRow key={row.key}>
+                    <TableCell className="font-semibold whitespace-normal text-foreground">
+                      {row.product.name}
+                    </TableCell>
+                    <TableCell className="text-[13px] text-muted-foreground">
+                      {row.sku.skuCode}
+                    </TableCell>
+                    <TableCell>
+                      <span className="inline-flex items-center gap-2">
                         <span
-                          className={tplStyles.colorDot}
+                          className="size-3 shrink-0 rounded-full border border-foreground/25"
                           style={{ backgroundColor: row.colorHex }}
                           aria-hidden="true"
                         />
                         <span>{row.colorName}</span>
                       </span>
-                    </td>
-                    <td>{row.sku.size}</td>
-                    <td className="num">{formatVnd(row.sku.price)}</td>
-                    <td>
-                      <span
-                        className={`${tplStyles.stockBadge} ${row.sku.stock <= 0 ? tplStyles.stockBadgeOut : ""} num`}
+                    </TableCell>
+                    <TableCell>{row.sku.size}</TableCell>
+                    <TableCell>{formatVnd(row.sku.price)}</TableCell>
+                    <TableCell>
+                      <Badge
+                        variant={row.sku.stock > 0 ? "success" : "neutral"}
+                        className="tabular-nums"
                       >
                         {row.sku.stock > 0 ? `Còn ${formatInt(row.sku.stock)}` : "Hết hàng"}
-                      </span>
-                    </td>
-                    <td>
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
                       {previewMode ? (
-                        <span className={styles.sectionLink}>Chọn</span>
+                        <span className={SITE_SECTION_LINK_CLS}>Chọn</span>
                       ) : (
                         <Link
                           href={`/san-pham/${encodeURIComponent(row.product.slug)}`}
-                          className={styles.sectionLink}
+                          className={SITE_SECTION_LINK_CLS}
                         >
                           Đặt mua
                         </Link>
                       )}
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
         )}
 
@@ -1731,35 +1284,49 @@ function renderSkuMatrixSection(
 
 function renderTestimonialsSection(
   section: Extract<SiteSectionV2, { type: "testimonials" }>,
+  tpl: SiteTemplateConfig,
   previewMode: boolean
 ) {
-  const { props, variant, blocks } = section;
+  const { props, variant, settings, blocks } = section;
+  const archetype = tpl.layout.archetype;
   const quoteBlocks = (blocks ?? []).filter(
     (b): b is Extract<SiteSectionBlock, { type: "quote" }> => b.type === "quote"
   );
   const otherBlocks = (blocks ?? []).filter((b) => b.type !== "quote");
+  const surf = sectionSurfaceAttr(section, "surface");
+  const titleCls = cn("text-[clamp(24px,2.8vw,38px)] text-inherit", archetypeTitleTone(archetype));
 
   const gridClass =
     variant === "editorial-quotes" || quoteBlocks.length === 2
-      ? tplStyles.testimonialsEditorial
-      : tplStyles.testimonialsGrid3;
+      ? "grid grid-cols-1 gap-[clamp(20px,3vw,36px)] sm:grid-cols-2"
+      : "grid grid-cols-1 gap-[var(--site-gutter,24px)] sm:grid-cols-2 lg:grid-cols-3";
 
   return (
     <section
       key={section.id}
       id={section.id}
-      className={tplStyles.sectionWrap}
+      className={cn(
+        "w-full",
+        SITE_PX,
+        sectionPaddingClass(settings?.padding),
+        sectionSurfaceClass(surf)
+      )}
       data-section-type="testimonials"
       data-section-variant={variant || "grid-3"}
-      data-surface={sectionSurfaceAttr(section, "surface")}
+      data-surface={surf}
       data-padding={sectionPaddingAttr(section)}
     >
-      <div className={tplStyles.sectionInner}>
-        <div className={styles.sectionHead}>
-          <div className={styles.sectionHeadCopy}>
-            {renderMaskedHeading("h2", props.title || "Nhận xét khách hàng", styles.sectionTitle)}
+      <div className={containerWidthClass(tpl.layout.container_width)}>
+        <div className="mb-[clamp(24px,3vw,38px)] flex flex-wrap items-end justify-between gap-x-6 gap-y-4">
+          <div className="flex min-w-0 flex-col gap-2">
+            {renderMaskedHeading("h2", props.title || "Nhận xét khách hàng", titleCls)}
             {props.subtitle?.trim() && (
-              <p className={`${styles.sectionSubtitle} ${tplStyles.mutedOnSurface}`}>
+              <p
+                className={cn(
+                  "max-w-[54ch] text-base leading-[1.55]",
+                  subtitleColorForSurface(surf)
+                )}
+              >
                 {props.subtitle}
               </p>
             )}
@@ -1769,21 +1336,26 @@ function renderTestimonialsSection(
         {quoteBlocks.length > 0 ? (
           <div className={gridClass} data-reveal="rows">
             {quoteBlocks.map((q) => (
-              <blockquote key={q.id} className={tplStyles.testimonialCard}>
-                <p className={tplStyles.testimonialQuote}>“{q.props.body}”</p>
+              <blockquote
+                key={q.id}
+                className="m-0 flex flex-col justify-between gap-4 rounded-lg border border-border bg-background p-[clamp(20px,2.6vw,28px)] text-foreground"
+              >
+                <p className="text-base leading-[1.6] text-foreground">“{q.props.body}”</p>
                 <footer>
-                  <p className={tplStyles.testimonialAuthor}>{q.props.author}</p>
+                  <p className="text-sm font-semibold text-foreground">{q.props.author}</p>
                   {q.props.role?.trim() && (
-                    <p className={tplStyles.testimonialRole}>{q.props.role}</p>
+                    <p className="text-[13px] text-muted-foreground">{q.props.role}</p>
                   )}
                 </footer>
               </blockquote>
             ))}
           </div>
         ) : (
-          <div className={styles.emptyPanel}>
-            <p className={styles.prosePara}>Chưa có nhận xét nào.</p>
-          </div>
+          <EmptyState
+            icon={MessageSquareQuote}
+            title="Chưa có nhận xét nào."
+            className="border border-border shadow-none"
+          />
         )}
 
         {renderInlineBlocks(otherBlocks, previewMode)}
@@ -1828,22 +1400,31 @@ export function SiteRenderer({
   if (visibleSections.length === 0) {
     const brandName = tpl.theme.brand_name?.trim() || shop.name;
     return (
-      <section className={styles.heroSection}>
-        <div className={tplStyles.sectionInner}>
+      <section className={cn("w-full py-[clamp(28px,4vw,56px)]", SITE_PX)}>
+        <div className={containerWidthClass(tpl.layout.container_width)}>
           <div
-            className={styles.emptyPanel}
+            className="flex flex-col items-start gap-3 rounded-lg border border-border bg-card p-[clamp(24px,4vw,44px)] text-card-foreground"
             data-rise=""
             style={{ "--i": 0 } as React.CSSProperties}
           >
-            <h1 className={styles.heroTitle}>{brandName}</h1>
+            <h1
+              className={cn(
+                "text-[clamp(32px,4.2vw,56px)] text-foreground",
+                archetypeTitleTone(archetype)
+              )}
+            >
+              {brandName}
+            </h1>
             {tpl.theme.tagline?.trim() && (
-              <p className={styles.heroSubtitle}>{tpl.theme.tagline}</p>
+              <p className="max-w-[52ch] text-[17px] leading-[1.55] text-muted-foreground">
+                {tpl.theme.tagline}
+              </p>
             )}
-            <div className={styles.heroActions}>
+            <div className="mt-1 flex flex-wrap gap-3">
               <SafeActionLink
                 href="/san-pham"
                 label="Xem sản phẩm"
-                className={styles.btnPrimary}
+                className={SITE_PRIMARY_BTN_CLS}
                 previewMode={previewMode}
               />
             </div>
@@ -1856,10 +1437,15 @@ export function SiteRenderer({
   return (
     <>
       {!sectionsOverride && firstHeroIndex === -1 && (
-        <section className={styles.pageHeadBand}>
-          <div className={tplStyles.sectionInner}>
+        <section
+          className={cn("w-full pt-[clamp(28px,3.8vw,48px)] pb-[clamp(20px,2.5vw,30px)]", SITE_PX)}
+        >
+          <div className={containerWidthClass(tpl.layout.container_width)}>
             <h1
-              className={styles.pageTitle}
+              className={cn(
+                "text-[clamp(32px,4.4vw,60px)] text-foreground",
+                archetypeTitleTone(archetype)
+              )}
               data-rise=""
               style={{ "--i": 0 } as React.CSSProperties}
             >
@@ -1867,7 +1453,7 @@ export function SiteRenderer({
             </h1>
             {tpl.theme.tagline?.trim() && (
               <p
-                className={styles.pageLead}
+                className="mt-2.5 max-w-[56ch] text-[17px] leading-[1.55] text-muted-foreground"
                 data-rise=""
                 style={{ "--i": 1 } as React.CSSProperties}
               >
@@ -1891,31 +1477,25 @@ export function SiteRenderer({
               previewMode
             );
           case "featured_products":
-            return renderFeaturedProductsSection(
-              section,
-              archetype,
-              products,
-              cardStyle,
-              previewMode
-            );
+            return renderFeaturedProductsSection(section, tpl, products, cardStyle, previewMode);
           case "collection":
             return renderCollectionSection(section, tpl, products, cardStyle, previewMode);
           case "text":
-            return renderTextSection(section, previewMode);
+            return renderTextSection(section, tpl, previewMode);
           case "banner":
             return renderBannerSection(section, tpl, previewMode);
           case "voucher_strip":
-            return renderVoucherStripSection(section, vouchers, previewMode);
+            return renderVoucherStripSection(section, tpl, vouchers, previewMode);
           case "policies":
-            return renderPoliciesSection(section, archetype, previewMode);
+            return renderPoliciesSection(section, tpl, previewMode);
           case "lookbook":
-            return renderLookbookSection(section, products, previewMode);
+            return renderLookbookSection(section, tpl, products, previewMode);
           case "metrics_strip":
-            return renderMetricsStripSection(section, previewMode);
+            return renderMetricsStripSection(section, tpl, previewMode);
           case "sku_matrix":
-            return renderSkuMatrixSection(section, products, previewMode);
+            return renderSkuMatrixSection(section, tpl, products, previewMode);
           case "testimonials":
-            return renderTestimonialsSection(section, previewMode);
+            return renderTestimonialsSection(section, tpl, previewMode);
         }
       })}
     </>

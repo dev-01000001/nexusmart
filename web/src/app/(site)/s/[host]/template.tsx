@@ -1,6 +1,5 @@
 import React from "react";
-import { PageTransition } from "@/components/PageTransition";
 
 export default function SiteTemplate({ children }: { children: React.ReactNode }) {
-  return <PageTransition>{children}</PageTransition>;
+  return <div className="animate-in fade-in duration-200">{children}</div>;
 }

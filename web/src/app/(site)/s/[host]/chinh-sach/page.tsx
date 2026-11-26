@@ -2,7 +2,7 @@ import React from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { buildSiteMetadata } from "@/lib/site/seo";
-import { SiteInfoView } from "@/features/site";
+import { SiteInfoView } from "@/features/site/SiteInfoView";
 import { loadSiteContext, loadSiteTemplateBundle } from "@/features/site/siteContext.server";
 
 interface PageProps {

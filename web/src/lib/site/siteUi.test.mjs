@@ -3,7 +3,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { PLATFORM_TEMPLATES } from "../../features/site/templateCatalog.ts";
 import {
-  SITE_FONT_STACK,
   SITE_UI_FONT_STACKS,
   buildSiteUiVars,
   contrastRatio,
@@ -31,7 +30,7 @@ test("site ui font stacks map every allowed font", () => {
   const fallback = SITE_UI_FONT_STACKS[DEFAULT_SITE_THEME.font_family];
   assert.equal(resolveSiteUiFontStack("comic-sans"), fallback);
   assert.equal(resolveSiteUiFontStack(undefined), fallback);
-  assert.equal(resolveSiteFontStack("inter"), SITE_FONT_STACK);
+  assert.equal(resolveSiteFontStack("inter"), SITE_UI_FONT_STACKS.inter);
 });
 
 test("every platform template yields accessible ui vars", () => {

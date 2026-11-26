@@ -19,6 +19,7 @@ import { validateCustomHostname } from "./domains.ts";
 import { createSiteHostCache } from "./cache.ts";
 import {
   SITE_FONT_STACK,
+  SITE_UI_FONT_STACKS,
   buildSiteThemeVars,
   checkThemeContrast,
   contrastRatio,
@@ -28,6 +29,7 @@ import {
 } from "./theme.ts";
 import {
   ALLOWED_SITE_FONTS,
+  DEFAULT_SITE_THEME,
   MAX_SITE_SECTIONS,
   SITE_FONT_LABELS,
   SITE_THEME_PRESETS,
@@ -951,29 +953,30 @@ test("WCAG contrast, safe URL sanitization, and CSS theme vars enforce security 
     brand_name: "Kho Basic Sài Gòn",
   });
   assert.equal(darkVars["--site-bg"], "#14181C");
-  assert.equal(darkVars["--site-font"], SITE_FONT_STACK);
+  assert.equal(darkVars["--site-font"], SITE_UI_FONT_STACKS["be-vietnam-pro"]);
   assert.ok(contrastRatio(darkVars["--site-muted"], darkVars["--site-bg"]) >= 4.5);
   assert.ok(contrastRatio(darkVars["--site-muted"], darkVars["--site-surface"]) >= 4.5);
 
-  // resolveSiteFontStack always resolves to Archivo regardless of enum value, undefined, or garbage
+  // resolveSiteFontStack maps each allowed font to its real next/font variable stack,
+  // and falls back safely to the default site font for invalid or unknown inputs.
+  const defaultStack = SITE_UI_FONT_STACKS[DEFAULT_SITE_THEME.font_family];
   assert.equal(SITE_FONT_STACK, "var(--font-archivo), system-ui, sans-serif");
   for (const fontEnum of ALLOWED_SITE_FONTS) {
     assert.equal(
       resolveSiteFontStack(fontEnum),
-      SITE_FONT_STACK,
-      `expected Archivo stack for enum ${fontEnum}`
+      SITE_UI_FONT_STACKS[fontEnum],
+      `expected real font stack for enum ${fontEnum}`
     );
-    assert.equal(
-      SITE_FONT_LABELS[fontEnum],
-      "Archivo",
-      `expected Archivo label for enum ${fontEnum}`
+    assert.ok(
+      typeof SITE_FONT_LABELS[fontEnum] === "string" && SITE_FONT_LABELS[fontEnum].length > 0,
+      `expected non-empty label for enum ${fontEnum}`
     );
   }
   for (const weird of [undefined, "", "Comic Sans MS", "Times New Roman", "work_sans", "12345"]) {
     assert.equal(
       resolveSiteFontStack(weird),
-      SITE_FONT_STACK,
-      `expected Archivo stack for input ${String(weird)}`
+      defaultStack,
+      `expected default font stack fallback for input ${String(weird)}`
     );
   }
 

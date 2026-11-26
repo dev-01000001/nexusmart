@@ -151,9 +151,8 @@ export function sanitizeSafeHref(raw: string | undefined | null, fallback = ""):
 
 export const SITE_FONT_STACK = "var(--font-archivo), system-ui, sans-serif";
 
-export function resolveSiteFontStack(_fontFamily?: SiteFontFamily | string): string {
-  void _fontFamily;
-  return SITE_FONT_STACK;
+export function resolveSiteFontStack(fontFamily?: SiteFontFamily | string): string {
+  return resolveSiteUiFontStack(fontFamily);
 }
 
 export const SITE_UI_FONT_STACKS: Record<SiteFontFamily, string> = {
