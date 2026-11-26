@@ -263,7 +263,10 @@ test("Item 6: CHECKOUT_FAILED rotates idempotency key; ambiguous error preserves
     "RATE_LIMITED",
     "Bạn thao tác quá nhanh, vui lòng thử lại sau ít phút."
   );
-  assert.equal(classifyCheckoutSubmitError(err429Rate, { hasFlashSaleItem: false }), "definite_failure");
+  assert.equal(
+    classifyCheckoutSubmitError(err429Rate, { hasFlashSaleItem: false }),
+    "definite_failure"
+  );
   assert.match(translateCheckoutError(err429Rate, { hasVouchers: false }), /quá nhanh/i);
   assert.doesNotMatch(translateCheckoutError(err429Rate, { hasVouchers: false }), /mã ưu đãi/i);
 
@@ -436,5 +439,8 @@ test("Mục 3: pending checkout key enforces 30-minute TTL, clears on logout/use
   );
   assert.ok(storeSrc.includes("prunePendingCheckoutKeyForUser"));
   assert.ok(checkoutSrc.includes("shouldClearPendingKeyOnConfirmedEmptyCart"));
-  assert.ok(checkoutSrc.includes('actionHref="/don-hang"'));
+  assert.ok(
+    checkoutSrc.includes("<EmptyState") && checkoutSrc.includes('href="/don-hang"'),
+    "CheckoutClient must render an EmptyState CTA linking to /don-hang when cart empties after uncertain checkout"
+  );
 });

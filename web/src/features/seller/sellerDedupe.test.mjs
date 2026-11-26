@@ -90,9 +90,17 @@ const VIRTUAL_MODULES = {
     export function revalidateTag() {}
     export function revalidatePath() {}
   `,
-  "virtual:css-module": `export default {};`,
-  "virtual:components": `
-    export function StateView(props) { return { component: "StateView", props }; }
+  "virtual:next-link": `
+    export default function Link(props) { return { component: "Link", props }; }
+  `,
+  "virtual:stylesheet": `export default {};`,
+  "virtual:components-app": `
+    export function ErrorState(props) { return { component: "ErrorState", props }; }
+    export function EmptyState(props) { return { component: "EmptyState", props }; }
+    export function AppShell(props) { return { component: "AppShell", props }; }
+  `,
+  "virtual:ui-scope": `
+    export function UiScope(props) { return { component: "UiScope", props }; }
   `,
   "virtual:seller-shell": `
     export function SellerShell(props) { return { component: "SellerShell", props }; }
@@ -127,8 +135,12 @@ registerHooks({
     if (specifier === "next/navigation")
       return { shortCircuit: true, url: "virtual:next-navigation" };
     if (specifier === "next/cache") return { shortCircuit: true, url: "virtual:next-cache" };
-    if (specifier.endsWith(".module.css")) return { shortCircuit: true, url: "virtual:css-module" };
-    if (specifier === "@/components") return { shortCircuit: true, url: "virtual:components" };
+    if (specifier === "next/link") return { shortCircuit: true, url: "virtual:next-link" };
+    if (specifier.endsWith(".css")) return { shortCircuit: true, url: "virtual:stylesheet" };
+    if (specifier === "@/components/app")
+      return { shortCircuit: true, url: "virtual:components-app" };
+    if (specifier === "@/components/ui/ui-scope")
+      return { shortCircuit: true, url: "virtual:ui-scope" };
     if (specifier === "@/features/seller/SellerShell")
       return { shortCircuit: true, url: "virtual:seller-shell" };
     if (specifier === "@/features/seller/SellerStateGuard")
@@ -305,7 +317,9 @@ function installGatewayMock(overrides = {}) {
       });
     }
     if (url.pathname === "/api/v1/seller/categories") {
-      return jsonRes({ categories: [{ id: "cat-1", name: "Áo", slug: "ao", parent_id: "", sort_order: 1 }] });
+      return jsonRes({
+        categories: [{ id: "cat-1", name: "Áo", slug: "ao", parent_id: "", sort_order: 1 }],
+      });
     }
     if (url.pathname === "/api/v1/seller/products") {
       const items = makeSampleProducts();
@@ -375,10 +389,7 @@ test("2. /seller/don-hang full SSR (SellerLayout + SellerOrdersPage) deduplicate
   const mock = installGatewayMock();
   try {
     const { layoutTree, pageTree } = await runInRequestScope(async () => {
-      const [l, p] = await Promise.all([
-        SellerLayout({ children: null }),
-        SellerOrdersPage(),
-      ]);
+      const [l, p] = await Promise.all([SellerLayout({ children: null }), SellerOrdersPage()]);
       return { layoutTree: l, pageTree: p };
     });
 
@@ -392,7 +403,11 @@ test("2. /seller/don-hang full SSR (SellerLayout + SellerOrdersPage) deduplicate
     );
     assert.equal(orderCalls[0].params.page_size, String(a8.SELLER_ORDERS_PAGE_SIZE));
     assert.equal(orderCalls[0].params.include_status_counts, "true");
-    assert.equal(mock.calls.length, 7, "full SSR /seller/don-hang should make 7 gateway calls total (was 8)");
+    assert.equal(
+      mock.calls.length,
+      7,
+      "full SSR /seller/don-hang should make 7 gateway calls total (was 8)"
+    );
 
     // SellerShell badge reflects full status_counts (15 CONFIRMED + 12 PREPARING = 27), not truncated to page items
     assert.equal(layoutTree.props.pendingOrdersCount, 27);
@@ -474,8 +489,15 @@ test("4. /seller/san-pham RSC computes initialTabCounts with 0 extra calls when 
     const pageTree = await runInRequestScope(() => SellerProductsPage());
     assert.equal(smallMock.calls.filter((c) => c.pathname === "/api/v1/users/me").length, 1);
     assert.equal(smallMock.calls.filter((c) => c.pathname === "/api/v1/seller/products").length, 1);
-    assert.equal(smallMock.calls.filter((c) => c.pathname === "/api/v1/seller/categories").length, 1);
-    assert.equal(smallMock.calls.length, 3, "soft nav to /seller/san-pham (<=20 items) must make only 3 gateway calls");
+    assert.equal(
+      smallMock.calls.filter((c) => c.pathname === "/api/v1/seller/categories").length,
+      1
+    );
+    assert.equal(
+      smallMock.calls.length,
+      3,
+      "soft nav to /seller/san-pham (<=20 items) must make only 3 gateway calls"
+    );
 
     const clientNode = findReactNodeByProp(pageTree, (n) => "initialProducts" in (n.props ?? {}));
     assert.ok(clientNode, "SellerProductsPage must render SellerProductsClient");
@@ -520,7 +542,11 @@ test("4. /seller/san-pham RSC computes initialTabCounts with 0 extra calls when 
     const redundantAllCountCall = prodCalls.find(
       (c) => c.params.page_size === "1" && !c.params.status && !c.params.low_stock
     );
-    assert.equal(redundantAllCountCall, undefined, "must not re-query 'all' when initialTotal is known");
+    assert.equal(
+      redundantAllCountCall,
+      undefined,
+      "must not re-query 'all' when initialTotal is known"
+    );
 
     const clientNode = findReactNodeByProp(pageTree, (n) => "initialProducts" in (n.props ?? {}));
     assert.deepEqual(clientNode.props.initialTabCounts, {

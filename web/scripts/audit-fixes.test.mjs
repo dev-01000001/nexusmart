@@ -88,7 +88,16 @@ describe("Wave 1 web audit fixes — unit tests", () => {
       {
         content: [],
         categories: {
-          categories: [{ id: "c-1", slug: "do-lot", name: "Đồ lót", description: "", featuredImage: "", productCount: 1 }],
+          categories: [
+            {
+              id: "c-1",
+              slug: "do-lot",
+              name: "Đồ lót",
+              description: "",
+              featuredImage: "",
+              productCount: 1,
+            },
+          ],
           slugById: new Map([["c-1", "do-lot"]]),
         },
         shopIdByBackend: new Map(),
@@ -142,8 +151,14 @@ describe("Wave 1 web audit fixes — unit tests", () => {
       resolve(WEB_SRC, "app/api/checkout/shipping-quote/route.ts"),
       "utf8"
     );
-    assert.ok(!/from_province_code\s*:\s*""/.test(cartSrc), "CartClient must not send empty from_province_code");
-    assert.ok(!/from_ward_code\s*:\s*""/.test(cartSrc), "CartClient must not send empty from_ward_code");
+    assert.ok(
+      !/from_province_code\s*:\s*""/.test(cartSrc),
+      "CartClient must not send empty from_province_code"
+    );
+    assert.ok(
+      !/from_ward_code\s*:\s*""/.test(cartSrc),
+      "CartClient must not send empty from_ward_code"
+    );
     assert.ok(
       !/from_province_code\s*:\s*""/.test(checkoutSrc),
       "CheckoutClient must not send empty from_province_code"
@@ -198,7 +213,11 @@ describe("Wave 1 web audit fixes — unit tests", () => {
       "canRetryPayment helper must exist in web/src/features/checkout/helpers.ts"
     );
 
-    assert.equal(checkoutHelpersMod.canRetryPayment("EXPIRED"), false, "EXPIRED must not be retryable");
+    assert.equal(
+      checkoutHelpersMod.canRetryPayment("EXPIRED"),
+      false,
+      "EXPIRED must not be retryable"
+    );
     assert.equal(
       checkoutHelpersMod.canRetryPayment("PENDING", true),
       false,
@@ -305,12 +324,24 @@ describe("Wave 1 web audit fixes — unit tests", () => {
     assert.equal(liveMatch.perUserLimit, 2);
 
     assert.equal(
-      checkoutHelpersMod.resolveLiveFlashSaleItem(flashSales, "fi-upcoming", "sku-1", 179000, nowMs),
+      checkoutHelpersMod.resolveLiveFlashSaleItem(
+        flashSales,
+        "fi-upcoming",
+        "sku-1",
+        179000,
+        nowMs
+      ),
       null,
       "upcoming flash sale item must NOT resolve"
     );
     assert.equal(
-      checkoutHelpersMod.resolveLiveFlashSaleItem(flashSales, "fi-live", "sku-other", 179000, nowMs),
+      checkoutHelpersMod.resolveLiveFlashSaleItem(
+        flashSales,
+        "fi-live",
+        "sku-other",
+        179000,
+        nowMs
+      ),
       null,
       "mismatched SKU must NOT resolve"
     );
@@ -343,12 +374,18 @@ describe("Wave 1 web audit fixes — unit tests", () => {
 
     assert.equal(redirectMod.resolvePostLoginRedirect("seller", null), "/seller");
     assert.equal(redirectMod.resolvePostLoginRedirect("seller", "/"), "/seller");
-    assert.equal(redirectMod.resolvePostLoginRedirect("seller", "/seller/don-hang"), "/seller/don-hang");
+    assert.equal(
+      redirectMod.resolvePostLoginRedirect("seller", "/seller/don-hang"),
+      "/seller/don-hang"
+    );
     assert.equal(redirectMod.resolvePostLoginRedirect("seller", "//evil.com"), "/seller");
 
     assert.equal(redirectMod.resolvePostLoginRedirect("admin", null), "/admin");
     assert.equal(redirectMod.resolvePostLoginRedirect("super_admin", null), "/admin");
-    assert.equal(redirectMod.resolvePostLoginRedirect("admin", "/admin/doi-soat"), "/admin/doi-soat");
+    assert.equal(
+      redirectMod.resolvePostLoginRedirect("admin", "/admin/doi-soat"),
+      "/admin/doi-soat"
+    );
     assert.equal(redirectMod.resolvePostLoginRedirect("admin", "/"), "/admin");
 
     assert.equal(redirectMod.resolvePostLoginRedirect("buyer", null), "/");
@@ -457,7 +494,10 @@ describe("Wave 1 web audit fixes — unit tests", () => {
     // Resubmission eligibility matching services/user RegisterShop
     assert.equal(orderMetaMod.canSubmitShopApplication(null), true);
     assert.equal(
-      orderMetaMod.canSubmitShopApplication({ status: "REJECTED", rejection_reason: "Thiếu hồ sơ" }),
+      orderMetaMod.canSubmitShopApplication({
+        status: "REJECTED",
+        rejection_reason: "Thiếu hồ sơ",
+      }),
       true
     );
     assert.equal(
@@ -571,18 +611,9 @@ describe("Wave 1 web audit fixes — unit tests", () => {
       "isPaymentDeadlinePassed must be exported from web/src/features/checkout/helpers.ts"
     );
     const nowMs = Date.parse("2026-11-22T12:00:00Z");
-    assert.equal(
-      checkoutHelpersMod.isPaymentDeadlinePassed("2026-11-22T11:59:59Z", nowMs),
-      true
-    );
-    assert.equal(
-      checkoutHelpersMod.isPaymentDeadlinePassed("2026-11-22T12:00:00Z", nowMs),
-      true
-    );
-    assert.equal(
-      checkoutHelpersMod.isPaymentDeadlinePassed("2026-11-22T12:00:01Z", nowMs),
-      false
-    );
+    assert.equal(checkoutHelpersMod.isPaymentDeadlinePassed("2026-11-22T11:59:59Z", nowMs), true);
+    assert.equal(checkoutHelpersMod.isPaymentDeadlinePassed("2026-11-22T12:00:00Z", nowMs), true);
+    assert.equal(checkoutHelpersMod.isPaymentDeadlinePassed("2026-11-22T12:00:01Z", nowMs), false);
     assert.equal(checkoutHelpersMod.isPaymentDeadlinePassed("", nowMs), false);
 
     const baseOrder = {
@@ -864,18 +895,26 @@ describe("Wave 1 web audit fixes — unit tests", () => {
     // W6: next.config.ts & runtime middleware CSP include connect-src allowing the public chat WebSocket origin
     const nextConfigMod = await import("../next.config.ts");
     const rules = await nextConfigMod.default.headers();
-    const cspRule = rules.find((r) =>
-      r.headers.some((h) => h.key === "Content-Security-Policy")
-    );
+    const cspRule = rules.find((r) => r.headers.some((h) => h.key === "Content-Security-Policy"));
     const cspValue = cspRule?.headers.find((h) => h.key === "Content-Security-Policy")?.value ?? "";
     assert.match(cspValue, /connect-src 'self' wss?:\/\//);
     assert.equal(cspValue.includes("gateway-bff"), false);
     assert.ok(middlewareSrc.includes("buildSiteCspHeader"));
 
     // W7: /admin queue items wrap cleanly without horizontal overflow at 390px
-    const adminCss = readFileSync(resolve(WEB_SRC, "app/(admin)/admin/page.module.css"), "utf8");
-    assert.ok(adminCss.includes("overflow-wrap: anywhere"));
-    assert.ok(adminCss.includes("white-space: normal"));
+    const adminOverviewSrc = readFileSync(
+      resolve(WEB_SRC, "features/admin/AdminOverviewClient.tsx"),
+      "utf8"
+    );
+    assert.ok(
+      adminOverviewSrc.includes("whitespace-normal"),
+      "/admin queue items must allow line wrapping (whitespace-normal)"
+    );
+    assert.ok(
+      adminOverviewSrc.includes("[overflow-wrap:anywhere]") ||
+        adminOverviewSrc.includes("break-words"),
+      "/admin queue items must break long unbroken words without horizontal overflow"
+    );
 
     // W9: seller & admin report JSON routes enforce validateReportDateRange (<= 366 days) & accept from/to aliases
     const formatMod = await import("../src/lib/format.ts");
@@ -889,7 +928,10 @@ describe("Wave 1 web audit fixes — unit tests", () => {
       "app/api/admin/reports/export/route.ts",
     ]) {
       const src = readFileSync(resolve(WEB_SRC, rel), "utf8");
-      assert.ok(src.includes("validateReportDateRange"), `${rel} must call validateReportDateRange`);
+      assert.ok(
+        src.includes("validateReportDateRange"),
+        `${rel} must call validateReportDateRange`
+      );
       assert.ok(src.includes('q.get("from")'), `${rel} must accept from/to query aliases`);
     }
   });

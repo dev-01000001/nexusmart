@@ -316,13 +316,10 @@ describe("AdminConfigValidators — banned-keywords rescan & search reindex", ()
       ok: true,
       value: { keyword_ids: [], dry_run: true, cursor: "", limit: 100 },
     });
-    assert.deepEqual(
-      validateRescanBannedKeywordsInput({ dry_run: false, keyword_ids: ["kw-1"] }),
-      {
-        ok: true,
-        value: { keyword_ids: ["kw-1"], dry_run: false, cursor: "", limit: 500 },
-      }
-    );
+    assert.deepEqual(validateRescanBannedKeywordsInput({ dry_run: false, keyword_ids: ["kw-1"] }), {
+      ok: true,
+      value: { keyword_ids: ["kw-1"], dry_run: false, cursor: "", limit: 500 },
+    });
 
     for (const bad of [
       {},
@@ -399,10 +396,17 @@ describe("AdminConfigValidators — banned-keywords rescan & search reindex", ()
     const postRoutePath = resolve(WEB_SRC, "app/api/admin/search/reindex/route.ts");
     const getRoutePath = resolve(WEB_SRC, "app/api/admin/search/reindex/[jobId]/route.ts");
     assert.equal(existsSync(postRoutePath), true, "POST /api/admin/search/reindex must exist");
-    assert.equal(existsSync(getRoutePath), true, "GET /api/admin/search/reindex/[jobId] must exist");
+    assert.equal(
+      existsSync(getRoutePath),
+      true,
+      "GET /api/admin/search/reindex/[jobId] must exist"
+    );
 
     const postSrc = readFileSync(postRoutePath, "utf8");
-    assert.ok(postSrc.includes("apiRoute("), "POST reindex BFF must wrap handler in apiRoute (CSRF)");
+    assert.ok(
+      postSrc.includes("apiRoute("),
+      "POST reindex BFF must wrap handler in apiRoute (CSRF)"
+    );
     assert.ok(postSrc.includes('assertCapability("search.reindex")'));
     assert.ok(postSrc.includes("/api/v1/admin/search/reindex"));
 
@@ -423,7 +427,10 @@ describe("AdminConfigValidators — banned-keywords rescan & search reindex", ()
     assert.ok(configClientSrc.includes('roleHasCapability(role, "search.reindex")'));
     assert.ok(configClientSrc.includes("AdminSearchReindexBlock"));
     assert.ok(reindexBlockSrc.includes('useAdminCapability("search.reindex")'));
-    assert.ok(reindexBlockSrc.includes("AdminConfirmDialog"));
+    assert.ok(
+      reindexBlockSrc.includes("ConfirmActionDialog") || reindexBlockSrc.includes("AlertDialog"),
+      "AdminSearchReindexBlock must require confirmation dialog before triggering reindex"
+    );
     assert.ok(reindexBlockSrc.includes("Dựng lại chỉ mục"));
   });
 });

@@ -1032,44 +1032,57 @@ describe("Wave 3b-3 Round 6 — W2–W6 real-browser QA fixes", () => {
   });
 
   test("W3–W6: seller/don-hang sticky actionCol + compact <=1340, single-line item summary, wrapped order codes & CSV 'Dòng dữ liệu'", () => {
-    const donHangCss = readSrc("app/(seller)/seller/don-hang/page.module.css");
     const donHangTsx = readSrc("features/seller/SellerOrdersClient.tsx");
     const sanPhamTsx = readSrc("features/seller/SellerProductsClient.tsx");
 
+    const hasAllTokens = (snippet, tokens) => tokens.every((tok) => snippet.includes(tok));
+    const stickyHeadMatch = donHangTsx.match(/<TableHead\b[^>]*className="([^"]*sticky[^"]*)"/);
+    const stickyCellMatch = donHangTsx.match(/<TableCell\b[^>]*className="([^"]*sticky[^"]*)"/);
     assert.ok(
-      /\.actionCol[\s\S]*?position:\s*sticky;[\s\S]*?right:\s*0;[\s\S]*?background:\s*var\(--bg-0\);[\s\S]*?border-left:\s*1px\s+solid\s+var\(--border\)/.test(
-        donHangCss
+      stickyHeadMatch &&
+        stickyCellMatch &&
+        hasAllTokens(stickyHeadMatch[1], [
+          "sticky",
+          "right-0",
+          "border-l",
+          "border-border",
+          "bg-card",
+        ]) &&
+        hasAllTokens(stickyCellMatch[1], [
+          "sticky",
+          "right-0",
+          "border-l",
+          "border-border",
+          "bg-card",
+        ]),
+      "W5: seller orders action column header & cell must be sticky right-0 with bg-card and left border-border"
+    );
+    assert.ok(
+      donHangTsx.includes("xl:block") &&
+        donHangTsx.includes("max-w-[200px]") &&
+        donHangTsx.includes("xl:max-w-[240px]"),
+      "W5: compact responsive breakpoint (<xl) must exist for seller orders table"
+    );
+    assert.ok(
+      /<div\b[^>]*className="[^"]*\btruncate\b[^"]*"[^>]*>\s*\{summarizeOrderItems\(o\.items\)\}/.test(
+        donHangTsx
       ),
-      "W5: .actionCol must be sticky right:0 with --bg-0 background and 1px left border"
+      "W6: order item summary must remain single-line truncated"
+    );
+    const orderCodesCellMatch = donHangTsx.match(
+      /<TableCell\b[^>]*className="([^"]*)"[^>]*>\s*\{\(item\.order_codes/
     );
     assert.ok(
-      donHangCss.includes("@media (max-width: 1340px)") &&
-        donHangCss.includes(".itemColCell") &&
-        donHangCss.includes(".buyerCell"),
-      "W5: <=1340px compact breakpoint must exist for seller orders table"
+      orderCodesCellMatch &&
+        hasAllTokens(orderCodesCellMatch[1], ["break-words", "whitespace-normal"]),
+      "W6: picking-list order codes cell must wrap long tracking/order codes"
     );
     assert.ok(
-      /\.itemSummaryCell[\s\S]*?text-overflow:\s*ellipsis;[\s\S]*?white-space:\s*nowrap/.test(
-        donHangCss
-      ),
-      "W6: .itemSummaryCell must remain single-line truncated"
-    );
-    assert.ok(
-      /\.orderCodesCell[\s\S]*?word-break:\s*break-word/.test(donHangCss),
-      "W6: .orderCodesCell must wrap long tracking/order codes"
-    );
-    assert.ok(
-      donHangTsx.includes("styles.ordersTable") &&
-        donHangTsx.includes("styles.actionCol") &&
-        donHangTsx.includes("styles.itemSummaryCell"),
-      "W3/W5/W6: SellerOrdersClient must apply sticky action and truncated summary classes"
-    );
-    assert.ok(
-      sanPhamTsx.includes("<th>Dòng dữ liệu</th>"),
+      /<(?:th|TableHead)\b[^>]*>\s*Dòng dữ liệu\s*<\/(?:th|TableHead)>/.test(sanPhamTsx),
       "W4: CSV error table must label row_number column as 'Dòng dữ liệu'"
     );
     assert.equal(
-      sanPhamTsx.includes("<th>Dòng</th>"),
+      /<(?:th|TableHead)\b[^>]*>\s*Dòng\s*<\/(?:th|TableHead)>/.test(sanPhamTsx),
       false,
       "W4: CSV error table must not use ambiguous 'Dòng' header"
     );

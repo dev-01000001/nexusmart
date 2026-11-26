@@ -693,11 +693,11 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
     );
 
     // #3: Toolbar stays mounted while loading/reloading so keyboard focus is preserved
-    const toolbarPos = approvalsSrc.indexOf("shared.toolbar");
-    const loadingViewPos = approvalsSrc.indexOf('kind="loading"');
+    const toolbarPos = approvalsSrc.indexOf("<FilterSelect");
+    const loadingViewPos = approvalsSrc.indexOf("<TableLoadingSkeleton");
     assert.ok(
       toolbarPos > 0 && loadingViewPos > toolbarPos,
-      "AdminApprovalsPanel must render filter toolbar before loading StateView"
+      "AdminApprovalsPanel must render filter toolbar before loading skeleton"
     );
 
     // #6: canAccessAdminPath must default-deny unknown & deleted admin routes while allowing all 9 active pages
@@ -742,11 +742,13 @@ describe("Wave 3b-2 web — A7 Internal Staff Governance & RBAC", () => {
   });
 
   test("7. [Review #4, #5, #7] COD switch confirmation dialog + sync lock, neutral mock-zalopay, and isolated E2E shop", () => {
-    // #4: RetryPaymentBox COD confirmation modal with amount & synchronous double-submit lock
+    // #4: RetryPaymentBox COD confirmation modal (Radix AlertDialog) with amount & synchronous double-submit lock
     const retryBoxSrc = readSrc("features/commerce/RetryPaymentBox.tsx");
     assert.ok(
-      retryBoxSrc.includes('role="dialog"') && retryBoxSrc.includes("confirmDialog"),
-      "RetryPaymentBox must render an accessible confirmation dialog for irreversible COD switch"
+      retryBoxSrc.includes("<AlertDialog") &&
+        retryBoxSrc.includes("<AlertDialogContent") &&
+        retryBoxSrc.includes("<AlertDialogTitle"),
+      "RetryPaymentBox must render an accessible AlertDialog confirmation for irreversible COD switch"
     );
     assert.ok(
       retryBoxSrc.includes("codConfirmOpen") && retryBoxSrc.includes("retryingRef"),

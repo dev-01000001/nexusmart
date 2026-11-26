@@ -103,7 +103,11 @@ describe("Wave 2b web features — unit tests", () => {
       shopIdByBackend: new Map(),
     });
     assert.ok(plain, "mergeProducts must map approved gateway product");
-    assert.equal(plain.originalPrice, undefined, "generic product must NOT fabricate originalPrice");
+    assert.equal(
+      plain.originalPrice,
+      undefined,
+      "generic product must NOT fabricate originalPrice"
+    );
     assert.equal(plain.price, 179000);
 
     // Single-price rule via live resolveSkuEffectivePromotion: shop discount vs Flash > Shop Discount
@@ -138,7 +142,11 @@ describe("Wave 2b web features — unit tests", () => {
       activeShopDiscount,
     });
     assert.equal(withBoth.kind, "flash");
-    assert.equal(withBoth.effectiveUnitPriceVnd, 129000, "live flash price must override shop discount");
+    assert.equal(
+      withBoth.effectiveUnitPriceVnd,
+      129000,
+      "live flash price must override shop discount"
+    );
     assert.equal(withBoth.originalUnitPriceVnd, 179000);
 
     // Price.tsx supports maxAmount & ProductCard.tsx passes maxAmount for price range
@@ -572,7 +580,10 @@ describe("Wave 2b web features — unit tests", () => {
     const adminFlashSrc =
       readFileSync(resolve(WEB_SRC, "app/(admin)/admin/flash-sale/page.tsx"), "utf8") +
       "\n" +
-      readFileSync(resolve(WEB_SRC, "app/(admin)/admin/flash-sale/AdminFlashSaleClient.tsx"), "utf8");
+      readFileSync(
+        resolve(WEB_SRC, "app/(admin)/admin/flash-sale/AdminFlashSaleClient.tsx"),
+        "utf8"
+      );
     assert.ok(adminFlashSrc.includes("include_inactive=true"));
     assert.ok(adminFlashSrc.includes("category_ids"));
     assert.ok(adminFlashSrc.includes("admin/flash-sale-items"));
@@ -603,11 +614,11 @@ describe("Wave 2b web features — unit tests", () => {
       readFileSync(resolve(WEB_SRC, "features/admin/AdminReconciliationClient.tsx"), "utf8");
     assert.ok(doiSoatSrc.includes("admin/orders/needs-review"));
     assert.ok(doiSoatSrc.includes("/resolve-review"));
-    // Mobile cards for ledger table (390px bug fix)
-    const mobileListMatches = doiSoatSrc.match(/shared\.mobileList/g) ?? [];
+    // Mobile cards for ledger, reconcile, orders, and queues (390px bug fix)
+    const mobileListMatches = doiSoatSrc.match(/\bmd:hidden\b/g) ?? [];
     assert.ok(
-      mobileListMatches.length >= 4,
-      `admin/doi-soat must render shared.mobileList for ledger, reconcile, orders, and queues (found ${mobileListMatches.length})`
+      mobileListMatches.length >= 4 && doiSoatSrc.includes("<IndexRowCard"),
+      `admin/doi-soat must render md:hidden mobile IndexRowCard lists for ledger, reconcile, orders, and queues (found ${mobileListMatches.length})`
     );
 
     const adminHomeSrc =
@@ -621,7 +632,10 @@ describe("Wave 2b web features — unit tests", () => {
     const kiemDuyetSrc =
       readFileSync(resolve(WEB_SRC, "app/(admin)/admin/kiem-duyet/page.tsx"), "utf8") +
       "\n" +
-      readFileSync(resolve(WEB_SRC, "app/(admin)/admin/kiem-duyet/AdminModerationClient.tsx"), "utf8");
+      readFileSync(
+        resolve(WEB_SRC, "app/(admin)/admin/kiem-duyet/AdminModerationClient.tsx"),
+        "utf8"
+      );
     assert.ok(kiemDuyetSrc.includes('title="Kiểm duyệt nội dung"'));
   });
 
@@ -1726,7 +1740,10 @@ describe("Wave 2b web features — unit tests", () => {
     assert.equal(existsSync(resolve(WEB_SRC, "features/seller/PromotionsBundleTab.tsx")), false);
     assert.equal(existsSync(resolve(WEB_SRC, "features/seller/sellerStore.ts")), false);
     assert.equal(existsSync(resolve(WEB_SRC, "mock/MockStoreContext.tsx")), false);
-    assert.equal(existsSync(resolve(WEB_SRC, "features/admin/AdminProductModerationTab.tsx")), false);
+    assert.equal(
+      existsSync(resolve(WEB_SRC, "features/admin/AdminProductModerationTab.tsx")),
+      false
+    );
     const searchSrc = readFileSync(resolve(WEB_SRC, "lib/search.ts"), "utf8");
     assert.equal(searchSrc.includes("getInstantSearchSuggestions"), false);
     assert.equal(searchSrc.includes("InstantSearchResult"), false);
@@ -1736,7 +1753,7 @@ describe("Wave 2b web features — unit tests", () => {
     assert.equal(vietQrSrc.includes("2026 8841 9001"), false);
     assert.equal(vietQrSrc.includes("decodeURIComponent"), false);
 
-    // P1-6 mobileList on 3 admin panels + gian-hang unified drawer selection
+    // P1-6 mobile card lists on 3 admin panels + gian-hang unified Sheet selection
     for (const rel of [
       "features/admin/AdminBannedKeywordsTab.tsx",
       "features/admin/AdminUsersPanel.tsx",
@@ -1744,8 +1761,8 @@ describe("Wave 2b web features — unit tests", () => {
     ]) {
       const src = readFileSync(resolve(WEB_SRC, rel), "utf8");
       assert.ok(
-        src.includes("shared.mobileList"),
-        `${rel} must render shared.mobileList for <=720px`
+        /\b(?:sm|md):hidden\b/.test(src),
+        `${rel} must render a mobile card list (md:hidden / sm:hidden) for narrow viewports`
       );
     }
     const gianHangSrc = readFileSync(
@@ -1753,8 +1770,8 @@ describe("Wave 2b web features — unit tests", () => {
       "utf8"
     );
     assert.ok(
-      gianHangSrc.includes("AdminDrawer") && gianHangSrc.includes("setSelectedId"),
-      "admin/gian-hang must manage desktop & mobile inspection through unified AdminDrawer + selectedId"
+      gianHangSrc.includes("<Sheet") && gianHangSrc.includes("setSelectedId"),
+      "admin/gian-hang must manage desktop & mobile inspection through unified Sheet + selectedId"
     );
 
     // P1-11 apiBlob helper with 401 refresh
@@ -1907,11 +1924,15 @@ describe("Wave 2b web features — unit tests", () => {
     assert.equal(checkoutHelpersMod.isAmbiguousCheckoutSubmitError(authErr), false);
     assert.equal(checkoutHelpersMod.classifyCheckoutSubmitError(authErr), "unauthenticated");
 
-    // #3 No hard-coded inline styles in VietQrPreview and CheckoutClient recovery actions
+    // #3 No hard-coded inline styles in VietQrPreview (with explicit QR fallback state) and CheckoutClient
     const vietQrSrc = readFileSync(resolve(WEB_SRC, "features/commerce/VietQrPreview.tsx"), "utf8");
     assert.equal(vietQrSrc.includes("style={{"), false, "VietQrPreview must not use inline styles");
-    assert.ok(vietQrSrc.includes("styles.qrFallbackBox"));
-    assert.ok(vietQrSrc.includes("styles.qrFallbackText"));
+    assert.ok(
+      vietQrSrc.includes('role="status"') &&
+        vietQrSrc.includes("Không tải được ảnh mã VietQR.") &&
+        vietQrSrc.includes("Tải lại ảnh QR"),
+      "VietQrPreview must render accessible fallback status box and reload action when QR image fails"
+    );
 
     const checkoutSrc = readFileSync(
       resolve(WEB_SRC, "app/(site)/s/[host]/thanh-toan/CheckoutClient.tsx"),

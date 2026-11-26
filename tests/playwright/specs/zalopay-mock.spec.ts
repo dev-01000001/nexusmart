@@ -37,7 +37,7 @@ test.describe("Storefront ZaloPay Mock & Method Switching Flow", () => {
 
       await expect(addBtn).toBeEnabled();
       await addBtn.click();
-      await expect(page.getByRole("link", { name: "Mở giỏ hàng" })).toBeVisible();
+      await expect(page.getByRole("link", { name: "Xem giỏ hàng" })).toBeVisible();
     });
 
     await test.step("2. Checkout on /thanh-toan with Ví điện tử ZaloPay", async () => {

@@ -73,7 +73,7 @@ test.describe("Storefront Buyer E2E Journey", () => {
       await expect(addToCartBtn).toBeEnabled();
       await addToCartBtn.click();
 
-      const openCartLink = page.getByRole("link", { name: "Mở giỏ hàng" });
+      const openCartLink = page.getByRole("link", { name: "Xem giỏ hàng" });
       await expect(openCartLink).toBeVisible();
       await openCartLink.click();
 

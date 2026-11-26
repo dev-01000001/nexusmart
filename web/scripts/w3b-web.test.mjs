@@ -139,7 +139,9 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
 
     const pdpViewSrc = readSrc("features/site/SitePdpView.tsx");
     assert.equal(pdpViewSrc.includes("SAMPLE_REVIEWS"), false);
-    assert.ok(pdpViewSrc.includes("formatRatingFromX100") && pdpViewSrc.includes("rating_avg_x100"));
+    assert.ok(
+      pdpViewSrc.includes("formatRatingFromX100") && pdpViewSrc.includes("rating_avg_x100")
+    );
     assert.ok(pdpViewSrc.includes('referrerPolicy="no-referrer"'));
     assert.equal(
       pdpViewSrc.includes(".buyer_id") ||
@@ -175,14 +177,8 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
       );
     }
 
-    assert.equal(
-      reviewHelpers.isOrderItemReviewed("item-1", [{ order_item_id: "item-1" }]),
-      true
-    );
-    assert.equal(
-      reviewHelpers.isOrderItemReviewed("item-2", [{ order_item_id: "item-1" }]),
-      false
-    );
+    assert.equal(reviewHelpers.isOrderItemReviewed("item-1", [{ order_item_id: "item-1" }]), true);
+    assert.equal(reviewHelpers.isOrderItemReviewed("item-2", [{ order_item_id: "item-1" }]), false);
 
     // Verify OrderDetailClientView gates review UI & submission through canReviewOrderStatus
     const detailSrc = readSrc("features/account/OrderDetailClientView.tsx");
@@ -306,13 +302,28 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
 
     // 5d. Independent assertions (no || mask) for seller form, admin banned tab, kiem-duyet KPI & mock labels, categories
     const sellerFormSrc = readSrc("features/seller/ProductFormView.tsx");
-    assert.ok(sellerFormSrc.includes("flagged_keywords"), "ProductFormView must render flagged_keywords");
-    assert.ok(sellerFormSrc.includes("is_prohibited"), "ProductFormView must disable is_prohibited categories");
+    assert.ok(
+      sellerFormSrc.includes("flagged_keywords"),
+      "ProductFormView must render flagged_keywords"
+    );
+    assert.ok(
+      sellerFormSrc.includes("is_prohibited"),
+      "ProductFormView must disable is_prohibited categories"
+    );
 
     const kwTabSrc = readSrc("features/admin/AdminBannedKeywordsTab.tsx");
-    assert.ok(kwTabSrc.includes("AbortController"), "AdminBannedKeywordsTab must abort on stop/unmount");
-    assert.ok(kwTabSrc.includes("Gián đoạn ở lô"), "AdminBannedKeywordsTab must report mid-loop interruption");
-    assert.ok(kwTabSrc.includes("m-kw-edit-active-"), "Mobile edit card must include active toggle");
+    assert.ok(
+      kwTabSrc.includes("AbortController"),
+      "AdminBannedKeywordsTab must abort on stop/unmount"
+    );
+    assert.ok(
+      kwTabSrc.includes("Gián đoạn ở lô"),
+      "AdminBannedKeywordsTab must report mid-loop interruption"
+    );
+    assert.ok(
+      kwTabSrc.includes("m-kw-edit-active-"),
+      "Mobile edit card must include active toggle"
+    );
 
     const kiemDuyetSrc =
       readSrc("app/(admin)/admin/kiem-duyet/page.tsx") +
@@ -406,12 +417,7 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
     // Pre-normalize & filter across 3,321 wards
     const bigWards = Array.from({ length: 3321 }, (_, idx) => ({
       code: String(10000 + idx),
-      name:
-        idx === 42
-          ? "Phường Bến Nghé"
-          : idx === 2033
-            ? "Đặc khu Hoàng Sa"
-            : `Xã Mẫu Số ${idx}`,
+      name: idx === 42 ? "Phường Bến Nghé" : idx === 2033 ? "Đặc khu Hoàng Sa" : `Xã Mẫu Số ${idx}`,
       province_code: "79",
       cod_supported: idx !== 2033,
     }));
@@ -492,8 +498,16 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
     const addrFormSrc = readSrc("features/commerce/AddressForm.tsx");
     const addrFieldsSrc = readSrc("features/commerce/AddressFieldsForm.tsx");
     const combinedAddrSrc = `${addrFormSrc}\n${addrFieldsSrc}`;
-    assert.equal(combinedAddrSrc.includes('role="combobox"'), false, "custom combobox must be removed");
-    assert.equal(combinedAddrSrc.includes('role="listbox"'), false, "custom listbox must be removed");
+    assert.equal(
+      combinedAddrSrc.includes('role="combobox"'),
+      false,
+      "custom combobox must be removed"
+    );
+    assert.equal(
+      combinedAddrSrc.includes('role="listbox"'),
+      false,
+      "custom listbox must be removed"
+    );
     assert.ok(addrFormSrc.includes('idPrefix="addr"'));
     assert.ok(addrFieldsSrc.includes("`${idPrefix}-ward-search`"));
     assert.ok(addrFieldsSrc.includes("`${idPrefix}-ward`"));
@@ -531,7 +545,11 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
       },
     });
     assert.ok(otpCooldown.message.includes("45 giây"), `got: ${otpCooldown.message}`);
-    assert.equal(otpCooldown.message.includes("ngân hàng"), false, `leaked bank message: ${otpCooldown.message}`);
+    assert.equal(
+      otpCooldown.message.includes("ngân hàng"),
+      false,
+      `leaked bank message: ${otpCooldown.message}`
+    );
 
     // Phone OTP 429 hourly limit — must NOT fall into bank OTP message
     const otpHourly = errMap.sanitizeGatewayError(429, {
@@ -541,20 +559,34 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
       },
     });
     assert.ok(otpHourly.message.includes("số điện thoại"), `got: ${otpHourly.message}`);
-    assert.equal(otpHourly.message.includes("ngân hàng"), false, `leaked bank message: ${otpHourly.message}`);
+    assert.equal(
+      otpHourly.message.includes("ngân hàng"),
+      false,
+      `leaked bank message: ${otpHourly.message}`
+    );
 
     // Phone already in use
     const phoneInUse = errMap.sanitizeGatewayError(409, {
       error: { code: "ALREADY_EXISTS", message: "phone is already in use" },
     });
-    assert.ok(phoneInUse.message.includes("Số điện thoại này đã được sử dụng"), `got: ${phoneInUse.message}`);
+    assert.ok(
+      phoneInUse.message.includes("Số điện thoại này đã được sử dụng"),
+      `got: ${phoneInUse.message}`
+    );
 
     // BANNED_CONTENT on review — zero English leaked
     const bannedRev = errMap.sanitizeGatewayError(400, {
-      error: { code: "INVALID_ARGUMENT", message: "BANNED_CONTENT: review contains prohibited content" },
+      error: {
+        code: "INVALID_ARGUMENT",
+        message: "BANNED_CONTENT: review contains prohibited content",
+      },
     });
     assert.equal(bannedRev.code, "BANNED_CONTENT");
-    assert.equal(/review contains|prohibited content/i.test(bannedRev.message), false, `leaked English: ${bannedRev.message}`);
+    assert.equal(
+      /review contains|prohibited content/i.test(bannedRev.message),
+      false,
+      `leaked English: ${bannedRev.message}`
+    );
 
     // BANNED_CONTENT on product — keeps keyword list ONLY, zero English sentence prefix
     const bannedProd = errMap.sanitizeGatewayError(400, {
@@ -564,11 +596,18 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
       },
     });
     assert.ok(bannedProd.message.includes("hang gia, zalo rieng"), `got: ${bannedProd.message}`);
-    assert.equal(/product contains/i.test(bannedProd.message), false, `leaked English: ${bannedProd.message}`);
+    assert.equal(
+      /product contains/i.test(bannedProd.message),
+      false,
+      `leaked English: ${bannedProd.message}`
+    );
 
     // Per-line CSV errors -> "Dòng N: ..."
     const csvAmountErr = errMap.sanitizeGatewayError(400, {
-      error: { code: "INVALID_ARGUMENT", message: "line 2: cod_amount_vnd must contain digits only" },
+      error: {
+        code: "INVALID_ARGUMENT",
+        message: "line 2: cod_amount_vnd must contain digits only",
+      },
     });
     assert.ok(csvAmountErr.message.startsWith("Dòng 2:"), `got: ${csvAmountErr.message}`);
     assert.ok(csvAmountErr.message.includes("số nguyên VND"), `got: ${csvAmountErr.message}`);
@@ -582,7 +621,8 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
     const futureDateErr = errMap.sanitizeGatewayError(400, {
       error: {
         code: "INVALID_ARGUMENT",
-        message: "reconciliation date 2099-01-01 cannot be in the future (today in Asia/Ho_Chi_Minh is 2026-11-24)",
+        message:
+          "reconciliation date 2099-01-01 cannot be in the future (today in Asia/Ho_Chi_Minh is 2026-11-24)",
       },
     });
     assert.ok(futureDateErr.message.includes("tương lai"), `got: ${futureDateErr.message}`);
@@ -591,7 +631,8 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
     const wardReq = errMap.sanitizeGatewayError(409, {
       error: {
         code: "FAILED_PRECONDITION",
-        message: "ADDRESS_WARD_REQUIRED: shipping address must specify both province_code and ward_code",
+        message:
+          "ADDRESS_WARD_REQUIRED: shipping address must specify both province_code and ward_code",
       },
     });
     assert.equal(wardReq.code, "ADDRESS_WARD_REQUIRED");
@@ -621,7 +662,10 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
 
     // B: CheckoutClient reads live session user and never client-blocks non-Flash COD in handlePlaceOrder
     const checkoutSrc = readSrc("app/(site)/s/[host]/thanh-toan/CheckoutClient.tsx");
-    assert.ok(checkoutSrc.includes("useSession()"), "CheckoutClient must sync phone_verified from useSession()");
+    assert.ok(
+      checkoutSrc.includes("useSession()"),
+      "CheckoutClient must sync phone_verified from useSession()"
+    );
     assert.equal(
       checkoutSrc.includes('codCheck.blockCode === "PHONE_NOT_VERIFIED"'),
       false,
@@ -639,9 +683,21 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
   test("10. [A5/E18/A] canSellerShipOrder never locks QUEUED orders and shows retry-now label", async () => {
     const sellerTypes = await import("../src/features/seller/types.ts");
 
-    assert.equal(sellerTypes.canSellerShipOrder("CONFIRMED", ""), true, "CONFIRMED without tracking must be shippable");
-    assert.equal(sellerTypes.canSellerShipOrder("PREPARING", ""), true, "PREPARING without tracking (including QUEUED) must remain retryable");
-    assert.equal(sellerTypes.canSellerShipOrder("PREPARING", "GHN123456"), false, "once tracking_code exists, ship button must hide");
+    assert.equal(
+      sellerTypes.canSellerShipOrder("CONFIRMED", ""),
+      true,
+      "CONFIRMED without tracking must be shippable"
+    );
+    assert.equal(
+      sellerTypes.canSellerShipOrder("PREPARING", ""),
+      true,
+      "PREPARING without tracking (including QUEUED) must remain retryable"
+    );
+    assert.equal(
+      sellerTypes.canSellerShipOrder("PREPARING", "GHN123456"),
+      false,
+      "once tracking_code exists, ship button must hide"
+    );
     assert.equal(sellerTypes.canSellerShipOrder("CANCELLED", ""), false);
 
     const queuedMeta = sellerTypes.getSellerOrderDisplayMeta({
@@ -676,7 +732,8 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
     const adminTypes = await import("../src/features/admin/types.ts");
 
     // Quoted RFC 4180 headers & UTF-8 BOM must pass client pre-check
-    const quotedCsv = '\uFEFF"tracking_code","cod_amount_vnd","delivered_at"\n"GHN001","250000","2026-11-24T10:00:00+07:00"\n';
+    const quotedCsv =
+      '\uFEFF"tracking_code","cod_amount_vnd","delivered_at"\n"GHN001","250000","2026-11-24T10:00:00+07:00"\n';
     const quotedRes = codHelper.validateCodCsvText(quotedCsv);
     assert.equal(quotedRes.error, null, `quoted RFC 4180 CSV must pass, got: ${quotedRes.error}`);
     assert.equal(quotedRes.rowCount, 1);
@@ -701,7 +758,10 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
 
     // r9 #2 & r10 E.2: Single shared carrier display function across buyer, seller & admin
     const fmtMod = await import("../src/lib/format.ts");
-    assert.equal(fmtMod.formatCarrierLabel("ghn", "Giao Hang Nhanh (GHN)"), "Giao Hàng Nhanh (GHN)");
+    assert.equal(
+      fmtMod.formatCarrierLabel("ghn", "Giao Hang Nhanh (GHN)"),
+      "Giao Hàng Nhanh (GHN)"
+    );
     assert.equal(fmtMod.formatCarrierLabel("mock_express", "Mock Express"), "Chuyển phát Nexus");
     assert.equal(fmtMod.formatCarrierLabel("ghtk", "Giao Hàng Tiết Kiệm"), "Giao Hàng Tiết Kiệm");
     assert.equal(/mock_express/i.test(fmtMod.formatCarrierLabel("mock_express")), false);
@@ -762,7 +822,11 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
     );
     assert.equal(mpLimit, 2 * 1024 * 1024 + 64 * 1024);
     assert.equal(
-      proxySec.resolveMaxBffBodyBytes("POST", ["admin", "reconciliation", "cod", "import"], "text/csv"),
+      proxySec.resolveMaxBffBodyBytes(
+        "POST",
+        ["admin", "reconciliation", "cod", "import"],
+        "text/csv"
+      ),
       2 * 1024 * 1024
     );
     assert.equal(
@@ -806,8 +870,11 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
     );
     assert.ok(doiSoatSrc.includes("paginateCodItems"));
     assert.ok(
-      doiSoatSrc.includes("shared.mobileList") && doiSoatSrc.includes("AdminDrawer"),
-      "doi-soat must support mobile list & detail inspection"
+      /\bmd:hidden\b/.test(doiSoatSrc) &&
+        doiSoatSrc.includes("<IndexRowCard") &&
+        doiSoatSrc.includes("<Sheet") &&
+        doiSoatSrc.includes("setDrawerTarget"),
+      "doi-soat must support mobile list (md:hidden + IndexRowCard) & detail Sheet inspection"
     );
   });
 

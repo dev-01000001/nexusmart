@@ -79,9 +79,25 @@ describe("Wave 3a web requirements — unit tests", () => {
         price: 200_000,
         image: "/products/ao-thun-cotton-trang.png",
         gallery: ["/products/ao-thun-cotton-trang.png"],
-        colors: [{ code: "trang", name: "Trắng", hex: "#ffffff", image: "/products/ao-thun-cotton-trang.png" }],
+        colors: [
+          {
+            code: "trang",
+            name: "Trắng",
+            hex: "#ffffff",
+            image: "/products/ao-thun-cotton-trang.png",
+          },
+        ],
         sizes: ["M"],
-        skus: [{ skuId: "sku-50", skuCode: "SKU-50", colorCode: "trang", size: "M", price: 200_000, stock: 30 }],
+        skus: [
+          {
+            skuId: "sku-50",
+            skuCode: "SKU-50",
+            colorCode: "trang",
+            size: "M",
+            price: 200_000,
+            stock: 30,
+          },
+        ],
         highlights: [],
         description: "",
         sizeChart: [],
@@ -864,7 +880,10 @@ describe("Wave 3a web requirements — unit tests", () => {
   test("10. D1 (Round 3): Seller server loads /api/v1/seller/categories for commission_rate_bps (with missing-field guard in ProductFormView) and no seller/admin file reads commission_rate_bps from public routes", () => {
     const productFormPath = resolve(WEB_SRC, "features/seller/ProductFormView.tsx");
     const productFormSrc = readFileSync(productFormPath, "utf8");
-    const sellerServerSrc = readFileSync(resolve(WEB_SRC, "features/seller/sellerServer.ts"), "utf8");
+    const sellerServerSrc = readFileSync(
+      resolve(WEB_SRC, "features/seller/sellerServer.ts"),
+      "utf8"
+    );
 
     assert.ok(
       sellerServerSrc.includes("/api/v1/seller/categories"),
@@ -889,7 +908,8 @@ describe("Wave 3a web requirements — unit tests", () => {
       ...collectFilesRecursive(resolve(WEB_SRC, "app/(admin)"), [".ts", ".tsx"]),
       ...collectFilesRecursive(resolve(WEB_SRC, "features/admin"), [".ts", ".tsx"]),
     ];
-    const publicCatalogApiRe = /api(?:<[^>]+>)?\(\s*["'`](?:\/api\/)?(?:categories|products(?:[/?]|["'`]))/;
+    const publicCatalogApiRe =
+      /api(?:<[^>]+>)?\(\s*["'`](?:\/api\/)?(?:categories|products(?:[/?]|["'`]))/;
     for (const file of sellerAdminFiles) {
       const src = readFileSync(file, "utf8");
       if (src.includes("commission_rate_bps")) {
@@ -973,10 +993,10 @@ describe("Wave 3a web requirements — unit tests", () => {
       resolve(WEB_SRC, "features/admin/AdminShopsClient.tsx"),
       "utf8"
     );
-    // P1-2: unified drawer selection prevents stale desktop/mobile dual state
+    // P1-2: unified Sheet selection prevents stale desktop/mobile dual state
     assert.ok(
-      gianHangSrc.includes("AdminDrawer") && gianHangSrc.includes("setSelectedId(shop.id)"),
-      "AdminShopsClient must use unified AdminDrawer selection"
+      gianHangSrc.includes("<Sheet") && gianHangSrc.includes("setSelectedId(shop.id)"),
+      "AdminShopsClient must use unified Sheet + setSelectedId selection"
     );
     // P2-12: per-ID sequence counters & per-ID submitting records & PENDING-only buttons
     assert.ok(gianHangSrc.includes("ownerReqSeqRef"), "must track per-owner request sequence");
@@ -1004,12 +1024,7 @@ describe("Wave 3a web requirements — unit tests", () => {
     );
     // P2-17: loading state when !bankState, role="alert" on bank error
     assert.ok(gianHangSrc.includes("!bankState || bankState.loading"));
-    assert.ok(
-      /role="alert"[^>]*>\s*\{bankState\.error\}/.test(gianHangSrc) ||
-        /className=\{shared\.validationError\}\s+role="alert">\s*\{bankState\.error\}/.test(
-          gianHangSrc
-        )
-    );
+    assert.ok(/role="alert"[^>]*>\s*\{bankState\.error\}/.test(gianHangSrc));
   });
 
   test("13. [P1-3] Partial sku_ids batch failure preserves fulfilled shop-discount batches", async () => {
@@ -2064,13 +2079,9 @@ describe("Wave 3a web requirements — unit tests", () => {
       );
     }
 
-    // P3-2 & admin token: bankReqSeqRef bump in handleBankReview & no #e3e8eb
+    // P3-2 & admin token: bankReqSeqRef bump in handleBankReview & design border token (no #e3e8eb)
     const adminShopSrc = readFileSync(
       resolve(WEB_SRC, "features/admin/AdminShopsClient.tsx"),
-      "utf8"
-    );
-    const adminShopCss = readFileSync(
-      resolve(WEB_SRC, "app/(admin)/admin/gian-hang/page.module.css"),
       "utf8"
     );
     const bankReviewStart = adminShopSrc.indexOf("const handleBankReview =");
@@ -2085,8 +2096,8 @@ describe("Wave 3a web requirements — unit tests", () => {
       "/admin/gian-hang must not hardcode #e3e8eb inline"
     );
     assert.ok(
-      adminShopCss.includes("var(--border)"),
-      "/admin/gian-hang CSS module must use var(--border) token"
+      adminShopSrc.includes("border-border"),
+      "/admin/gian-hang must use design system border-border token"
     );
   });
 
