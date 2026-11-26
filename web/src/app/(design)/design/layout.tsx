@@ -5,6 +5,7 @@ import { UiScope } from "@/components/ui/ui-scope";
 import { ADMIN_STAFF_ROLES } from "@/lib/admin-rbac";
 import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
 import { requireRole } from "@/lib/server/session";
+import "@/styles/ui.css";
 
 export const metadata: Metadata = {
   title: "Thiết kế (nội bộ)",

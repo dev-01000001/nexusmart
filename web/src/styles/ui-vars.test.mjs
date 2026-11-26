@@ -156,3 +156,111 @@ test("app palette matches spec", () => {
     );
   }
 });
+
+function extractAllBlocks(css, headerRegex) {
+  const clean = stripComments(css);
+  const blocks = [];
+  const globalRe = new RegExp(headerRegex.source, "g");
+  let match;
+  while ((match = globalRe.exec(clean)) !== null) {
+    let idx = match.index + match[0].length;
+    let depth = 1;
+    const start = idx;
+    while (idx < clean.length && depth > 0) {
+      const ch = clean[idx];
+      if (ch === "{") depth++;
+      else if (ch === "}") depth--;
+      idx++;
+    }
+    if (depth === 0) {
+      blocks.push({ start: match.index, end: idx, body: clean.slice(start, idx - 1) });
+      globalRe.lastIndex = idx;
+    }
+  }
+  return blocks;
+}
+
+function stripAtLayerBlocks(css) {
+  const clean = stripComments(css);
+  const blocks = extractAllBlocks(clean, /@layer\s+[a-z0-9_-]+\s*\{/i);
+  let out = "";
+  let cursor = 0;
+  for (const b of blocks) {
+    out += clean.slice(cursor, b.start);
+    cursor = b.end;
+  }
+  out += clean.slice(cursor);
+  return out;
+}
+
+test("globals @layer base only holds element-level selectors", () => {
+  const globalsCss = readCss("./globals.css");
+  const baseBlocks = extractAllBlocks(globalsCss, /@layer\s+base\s*\{/);
+  assert.ok(baseBlocks.length > 0, "globals.css must contain @layer base blocks");
+
+  const forbidden = [];
+  for (const block of baseBlocks) {
+    for (const match of block.body.matchAll(/([^{}]+)\{/g)) {
+      const rawSelectorList = match[1].trim();
+      if (!rawSelectorList) continue;
+      for (const sel of rawSelectorList.split(",")) {
+        const s = sel.trim();
+        if (!s) continue;
+        // Disallow class (.), attribute ([), or single-colon pseudo-class (: not part of ::)
+        const withoutDoubleColon = s.replace(/::/g, "");
+        if (s.includes(".") || s.includes("[") || withoutDoubleColon.includes(":")) {
+          forbidden.push(s);
+        }
+      }
+    }
+  }
+
+  assert.deepEqual(
+    forbidden,
+    [],
+    `globals.css @layer base must only contain element/universal/::pseudo-element selectors (<= (0,0,1)), found: ${forbidden.join(", ")}`
+  );
+});
+
+test("ui.css has unlayered revert-layer overrides for legacy unlayered rules", () => {
+  const unlayered = stripAtLayerBlocks(readCss("./ui.css"));
+  const normalized = unlayered.replace(/\s+/g, " ");
+
+  assert.match(
+    normalized,
+    /\[data-ui="true"\]\s*:is\(ul,\s*ol\)\[class\]\s*\{[^}]*padding:\s*revert-layer;[^}]*list-style:\s*revert-layer;/i,
+    "ui.css must have unlayered revert-layer override for [data-ui=\"true\"] :is(ul, ol)[class]"
+  );
+  assert.match(
+    normalized,
+    /\[data-ui="true"\]\s*:focus-visible\s*\{[^}]*outline:\s*revert-layer;[^}]*outline-offset:\s*revert-layer;/i,
+    "ui.css must have unlayered revert-layer override for [data-ui=\"true\"] :focus-visible"
+  );
+  assert.match(
+    normalized,
+    /\[data-ui="true"\]\s*tbody\s+tr:last-child\s+td\s*\{[^}]*border-bottom:\s*revert-layer;/i,
+    "ui.css must have unlayered revert-layer override for [data-ui=\"true\"] tbody tr:last-child td"
+  );
+});
+
+test("ui.css is imported in design layout, not root layout, and globals pins layer order", () => {
+  const rootLayout = readCss("../app/layout.tsx");
+  const designLayout = readCss("../app/(design)/design/layout.tsx");
+  const globalsCss = readCss("./globals.css");
+
+  assert.equal(
+    rootLayout.includes("ui.css"),
+    false,
+    "src/app/layout.tsx must not import ui.css globally"
+  );
+  assert.equal(
+    designLayout.includes("@/styles/ui.css"),
+    true,
+    "src/app/(design)/design/layout.tsx must import @/styles/ui.css"
+  );
+  assert.match(
+    stripComments(globalsCss).trimStart(),
+    /^@layer\s+theme,\s*base,\s*components,\s*utilities;/,
+    "src/styles/globals.css must declare @layer theme, base, components, utilities; as its first statement"
+  );
+});

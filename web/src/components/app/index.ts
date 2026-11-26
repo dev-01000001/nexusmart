@@ -7,6 +7,7 @@ export * from "./IndexTable";
 export * from "./KpiChartCard";
 export * from "./MetricStrip";
 export * from "./Money";
+export * from "./navMatch";
 export * from "./PageHeader";
 export * from "./SaveBar";
 export * from "./SetupGuide";

@@ -82,7 +82,7 @@ Lý do phía sau (suy ra từ yêu cầu, chủ dự án sửa nếu sai):
 
 ### 5.1 Tailwind v4 không preflight trong lúc chuyển dần
 - Cài `tailwindcss`, `@tailwindcss/postcss`, tạo `postcss.config.mjs`.
-- Trong `src/styles/ui.css` (file mới, import ở `src/app/layout.tsx` **trước** `globals.css`):
+- Trong `src/styles/ui.css` (file mới). **Không import ở root layout**, mà ở layout của từng khu vực đã chuyển (phase 0: `(design)`; phase 1–4: layout của khu vực đó), để trang cũ không tải thêm 15 KB gzip CSS. `globals.css` mở đầu bằng `@layer theme, base, components, utilities;` để thứ tự layer cố định:
   ```css
   @layer theme, base, components, utilities;
   @import "tailwindcss/theme.css" layer(theme);
@@ -92,11 +92,17 @@ Lý do phía sau (suy ra từ yêu cầu, chủ dự án sửa nếu sai):
   ```
   Chưa import preflight, vì preflight sẽ đổi heading, margin và nút ở cả 53 trang cùng lúc.
 - `globals.css` hiện không nằm trong layer nào, nên rule kiểu `h1 {…}`, `button {…}`, `a {…}` của nó sẽ thắng utility
-  của shadcn. Phase 0 chỉ chuyển **rule chọn theo phần tử** (`html`, `body`, `h1`–`h6`, `p`, `a`, `button`, `input`,
-  `img`…) vào `@layer base`.
-  - Rule theo class, thuộc tính hay trạng thái giữ **ngoài layer**: `:focus-visible`, `[data-reveal]`, `.sr-only`, `.type-*`…
-    Lý do: rule CSS Module ngoài layer thắng mọi rule trong layer bất kể độ đặc hiệu, nên nếu đẩy cả `:focus-visible`
-    vào layer thì vòng focus ở trang cũ có thể mất.
+  của shadcn. Phase 0 chỉ chuyển rule có **độ đặc hiệu ≤ (0,0,1)** (chỉ phần tử, `*`, `::pseudo-element`: `html`,
+  `body`, `h1`–`h6`, `p`, `a`, `button`, `img`…) vào `@layer base`.
+  - Rule theo class, thuộc tính hay trạng thái giữ **ngoài layer**: `ul[class], ol[class]`, `:focus-visible`,
+    `tbody tr:last-child td`, `[data-reveal]`, `.sr-only`, `.type-*`…
+    Lý do: các rule này có độ đặc hiệu cao hơn rule CSS Module và đang thắng nó (ví dụ `ul[class]` (0,1,1) thắng
+    `.pdpDetailList` (0,1,0)). Đưa vào layer thì chúng thua, và trang cũ đổi hình (bản đầu của phase 0 đã làm danh sách
+    PDP thụt lề). Trong vùng `UiScope`, `ui.css` có override ngoài layer dùng `revert-layer` để trả quyền cho
+    base/utility của Tailwind.
+  - `UiScope` xuất `data-ui="true"`, và selector luôn là `[data-ui="true"]`, vì mã cũ đã dùng `data-ui` với giá trị khác.
+  - Có `postcss.config.mjs` riêng thì Next bỏ autoprefixer mặc định, nên thêm devDependency `autoprefixer` với danh sách
+    trình duyệt mặc định của Next để CSS cũ giữ nguyên. Gỡ ở phase 5.
   - Soát bằng Playwright rằng các trang CSS Module cũ không đổi hình, và chụp thêm lúc bấm Tab ở 2–3 trang cũ để
     chắc vòng focus vẫn hiện.
 - Phase cuối (dọn dẹp) bật preflight (`@import "tailwindcss/preflight.css" layer(base)`), rồi xoá reset cũ.
@@ -365,7 +371,7 @@ trong bảng thì dùng neutral, và agy liệt kê chúng trong báo cáo.
 
 ### 8.4 Trang nền tảng (host gốc)
 - `PlatformHeader`/`PlatformFooter` và trang chủ: chuyển sang Tailwind/shadcn, **giữ nguyên bố cục, màu và gradient** của bản
-  trang chủ mới nhất trên `main` (vòng 2 theo `.agents/briefs/home-shopify-v2.md`, thay bản `a9a4b1f`). Font Inter (vòng 2 đã dùng).
+  trang chủ mới nhất trên `main` (vòng 2 theo `.agents/briefs/home-shopify-v2.md`, commit `04fec00` đang chạy production, thay bản `a9a4b1f`). Font Inter (vòng 2 đã dùng).
 - `/ve-nexusmart`: giữ bố cục 4 màn ảnh toàn chiều rộng hiện có, chỉ chuyển công nghệ và font.
 - `/tro-giup`: trang nội dung khổ 720px, tiêu đề theo §6.2. Câu hỏi thường gặp dùng `accordion`.
 

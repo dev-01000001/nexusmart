@@ -7,7 +7,7 @@ description: 'Hệ thống thiết kế UI NexusMart trên shadcn/ui (style new-
 
 Đặc tả đầy đủ: [design.md](../../../.agents/briefs/shadcn-redesign/design.md) · Quyết định kiến trúc: [ADR-0011](../../../docs/adr/0011-shadcn-ui-tailwind-v4.md). Ảnh tham chiếu Figma ở `.agents/briefs/shadcn-redesign/figma/`.
 
-Mọi khu vực đã chuyển dùng chung một bộ component shadcn/ui (`web/src/components/ui/`) và pattern ứng dụng (`web/src/components/app/`), styling qua Tailwind v4 (`web/src/styles/ui.css`) và lớp biến thô `--ui-*`. **Chưa bật preflight** tới phase 5 để bảo toàn các trang CSS Module chưa chuyển.
+Mọi khu vực đã chuyển dùng chung một bộ component shadcn/ui (`web/src/components/ui/`) và pattern ứng dụng (`web/src/components/app/`), styling qua Tailwind v4 (`web/src/styles/ui.css`, import ở layout từng khu vực đã chuyển, không ở `src/app/layout.tsx` gốc) và lớp biến thô `--ui-*`. **Chưa bật preflight** tới phase 5 để bảo toàn các trang CSS Module chưa chuyển.
 
 ## 1. Bảng màu & Token (`--ui-*`, §6.1)
 
@@ -43,7 +43,7 @@ Trên site tối (`[data-site-theme-mode="dark"]`), `--ui-destructive` đổi sa
 
 ## 2. Chữ, khoảng cách, bo góc & bóng (§6.2–§6.4)
 
-- **Chữ**: **Inter** (`--font-inter`, `subsets: ["latin", "vietnamese"]`) cho phần ứng dụng; mọi số liệu và tiền VND (`formatVnd`) dùng `tabular-nums`.
+- **Chữ**: **Inter** (`--font-inter`, `subsets: ["latin", "vietnamese"]`, `preload: false`) cho phần ứng dụng; mọi số liệu và tiền VND (`formatVnd`) dùng `tabular-nums`.
   - Tiêu đề trang: `20px / 28px / 650` · Tiêu đề thẻ: `14px / 20px / 650` · Chữ thân: `14px / 20px / 450`.
   - Chữ phụ, đầu cột bảng, nhãn: `13px / 18px / 450–550` · Nhãn trạng thái: `12px / 16px / 550` · Số KPI: `24px / 32px / 650`.
 - **Khoảng cách**: thang 4px; đệm thẻ `16px` (`≥ 768`: `16px 20px`), khoảng giữa thẻ `16px`, lề trang `16 / 24 / 32px` (`≥ 1280`). Vùng chạm mobile ≥ 40×40px.
@@ -89,7 +89,11 @@ Trên site tối (`[data-site-theme-mode="dark"]`), `--ui-destructive` đổi sa
 
 ## 6. Luật cách ly (`UiScope`), đóng băng & Kiểm định Playwright
 
-- **Cách ly `UiScope` / `data-ui`**: mọi vùng đã chuyển bọc trong `UiScope` (gắn `data-ui` để áp reset thu hẹp `[data-ui] :where(...)` và cung cấp portal container qua `usePortalContainer()` giúp Dialog/Sheet/Popover/Select/Tooltip/DropdownMenu thừa kế `--ui-*` của site tối). **Không** gắn `data-ui` vào trang/layout CSS Module cũ.
+- **Cách ly `UiScope` / `data-ui="true"`**: mọi vùng đã chuyển bọc trong `UiScope` xuất **`data-ui="true"`** (mã cũ đã dùng thuộc tính `data-ui` với giá trị khác, nên selector CSS mới luôn là `[data-ui="true"]` cho reset `[data-ui="true"] :where(...)` và override `revert-layer`), đồng thời cung cấp portal container qua `usePortalContainer()` giúp Dialog/Sheet/Popover/Select/Tooltip/DropdownMenu thừa kế `--ui-*` của site tối. **Không** gắn `data-ui="true"` vào trang/layout CSS Module cũ.
+- **Import `ui.css`, luật layer & `autoprefixer`**:
+  - `ui.css` chỉ import ở layout của từng khu vực đã chuyển (hiện ở `src/app/(design)/design/layout.tsx`), **không** import ở `src/app/layout.tsx` gốc để các trang cũ (kể cả site gian hàng) không tải thêm CSS chặn render.
+  - Dòng đầu `src/styles/globals.css` chốt `@layer theme, base, components, utilities;`. Chỉ rule độ đặc hiệu ≤ `(0,0,1)` (phần tử, `*`, `::pseudo-element`) vào `@layer base`; 3 rule cũ có độ đặc hiệu cao hơn (`ul[class], ol[class]`, `:focus-visible`, `tbody tr:last-child td`) giữ nguyên ngoài layer và có override `revert-layer` ngoài layer cho `[data-ui="true"]` trong `ui.css`.
+  - `autoprefixer` (`devDependency`) được cấu hình trong `web/postcss.config.mjs` theo `MODERN_BROWSERSLIST_TARGET` của Next để giữ vendor prefix cho CSS cũ giống hệt mặc định, và sẽ gỡ ở phase 5 cùng CSS Modules.
 - **Cấm trộn**: một component không vừa dùng Tailwind vừa dùng CSS Module. Không khai biến thô ngoài tiền tố `--ui-*` ở `:root`. Không cài phụ thuộc ngoài danh sách ADR-0011.
 - **Đóng băng sau phase 0**: `src/components/ui/` và `src/components/app/` đóng băng khi phase 1–4 chạy song song; swarm khu vực không chạy `shadcn add` và không tự sửa hai thư mục này.
 - **Ngôn ngữ**: 100% tiếng Việt tự nhiên, không rò thuật ngữ kỹ thuật (JWT, HMAC, Saga, Redis Lua, sandbox, sổ cái ghi kép, optimistic locking) trên giao diện người mua.

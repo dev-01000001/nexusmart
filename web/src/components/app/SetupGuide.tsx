@@ -122,41 +122,47 @@ export function SetupGuide({ title, steps, storageKey, className }: SetupGuidePr
                     <CollapsibleTrigger asChild>
                       <button
                         type="button"
-                        className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        className="flex w-full items-start gap-3 px-3 py-2.5 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring sm:items-center"
                       >
-                        {step.status === "done" ? (
-                          <CheckCircle2
-                            className="size-5 shrink-0 text-brand"
-                            aria-label="Đã hoàn thành"
-                          />
-                        ) : step.status === "unknown" ? (
-                          <HelpCircle
-                            className="size-5 shrink-0 text-muted-foreground"
-                            aria-label="Chưa kiểm tra được"
-                          />
-                        ) : (
-                          <CircleDashed
-                            className="size-5 shrink-0 text-input"
-                            aria-label="Chưa hoàn thành"
-                          />
-                        )}
-                        <span
-                          className={cn(
-                            "min-w-0 flex-1 truncate font-medium",
-                            step.status === "done"
-                              ? "text-muted-foreground line-through"
-                              : "text-foreground"
+                        <span className="mt-0.5 shrink-0 sm:mt-0">
+                          {step.status === "done" ? (
+                            <CheckCircle2
+                              className="size-5 text-brand"
+                              aria-label="Đã hoàn thành"
+                            />
+                          ) : step.status === "unknown" ? (
+                            <HelpCircle
+                              className="size-5 text-muted-foreground"
+                              aria-label="Chưa kiểm tra được"
+                            />
+                          ) : (
+                            <CircleDashed
+                              className="size-5 text-input"
+                              aria-label="Chưa hoàn thành"
+                            />
                           )}
-                        >
-                          {step.title}
                         </span>
-                        <span className="flex shrink-0 flex-wrap items-center gap-1.5">
-                          {step.optional ? <Badge variant="neutral">Tuỳ chọn</Badge> : null}
-                          {step.status === "unknown" ? (
-                            <StatusBadge tone="neutral">Chưa kiểm tra được</StatusBadge>
-                          ) : null}
-                          {step.badge ? (
-                            <StatusBadge tone={step.badge.tone}>{step.badge.label}</StatusBadge>
+                        <span className="flex min-w-0 flex-1 flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
+                          <span
+                            className={cn(
+                              "min-w-0 flex-1 line-clamp-2 leading-5 font-medium",
+                              step.status === "done"
+                                ? "text-muted-foreground line-through"
+                                : "text-foreground"
+                            )}
+                          >
+                            {step.title}
+                          </span>
+                          {step.optional || step.status === "unknown" || step.badge ? (
+                            <span className="flex shrink-0 flex-wrap items-center gap-1.5">
+                              {step.optional ? <Badge variant="neutral">Tuỳ chọn</Badge> : null}
+                              {step.status === "unknown" ? (
+                                <StatusBadge tone="neutral">Chưa kiểm tra được</StatusBadge>
+                              ) : null}
+                              {step.badge ? (
+                                <StatusBadge tone={step.badge.tone}>{step.badge.label}</StatusBadge>
+                              ) : null}
+                            </span>
                           ) : null}
                         </span>
                       </button>

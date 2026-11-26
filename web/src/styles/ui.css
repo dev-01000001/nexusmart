@@ -227,3 +227,18 @@
     outline-offset: 2px;
   }
 }
+
+/* Return control to layers inside UiScope for the 3 unlayered legacy rules in globals.css. */
+[data-ui="true"] :is(ul, ol)[class] {
+  padding: revert-layer;
+  list-style: revert-layer;
+}
+
+[data-ui="true"] :focus-visible {
+  outline: revert-layer;
+  outline-offset: revert-layer;
+}
+
+[data-ui="true"] tbody tr:last-child td {
+  border-bottom: revert-layer;
+}

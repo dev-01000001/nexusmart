@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ChevronDown, ExternalLink, Menu, PanelLeft, Search, type LucideIcon } from "lucide-react";
 import { NexusMark } from "@/components/Icons";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/sidebar";
 import { UiScope } from "@/components/ui/ui-scope";
 import { cn } from "@/lib/utils";
+import { resolveActiveNav } from "./navMatch";
 
 export interface AppNavItem {
   href: string;
@@ -94,22 +95,6 @@ function getInitials(name: string): string {
   return `${words[0][0] ?? ""}${words[words.length - 1][0] ?? ""}`.toUpperCase();
 }
 
-function isPathActive(
-  pathname: string,
-  href: string,
-  homeHref: string,
-  match?: "exact" | "prefix"
-): boolean {
-  const cleanPath = pathname.replace(/\/+$/, "") || "/";
-  const cleanHref = href.split("?")[0].replace(/\/+$/, "") || "/";
-  const cleanHome = homeHref.replace(/\/+$/, "") || "/";
-  const mode = match ?? (cleanHref === cleanHome ? "exact" : "prefix");
-  if (mode === "exact") {
-    return cleanPath === cleanHref;
-  }
-  return cleanPath === cleanHref || cleanPath.startsWith(`${cleanHref}/`);
-}
-
 function AppShellInner({
   area,
   areaLabel,
@@ -122,9 +107,23 @@ function AppShellInner({
   children,
 }: AppShellProps) {
   const pathname = usePathname() || "/";
+  const searchParams = useSearchParams();
+  const rawSearch = searchParams.toString();
+  const search = rawSearch ? `?${rawSearch}` : "";
   const router = useRouter();
   const { toggleSidebar, setOpen, setOpenMobile } = useSidebar();
   const [commandOpen, setCommandOpen] = React.useState(false);
+
+  const { activeHref, activeChildHref } = React.useMemo(
+    () =>
+      resolveActiveNav(
+        navGroups.flatMap((group) => group.items),
+        pathname,
+        search,
+        homeHref
+      ),
+    [navGroups, pathname, search, homeHref]
+  );
 
   // Default to icon-collapsed on tablet (768–1023px) if user has not persisted a preference
   React.useEffect(() => {
@@ -310,12 +309,7 @@ function AppShellInner({
                   <SidebarMenu>
                     {group.items.map((item) => {
                       const Icon = item.icon;
-                      const selfActive = isPathActive(pathname, item.href, homeHref, item.match);
-                      const childActive =
-                        item.children?.some((c) =>
-                          isPathActive(pathname, c.href, homeHref, "prefix")
-                        ) ?? false;
-                      const active = selfActive || childActive;
+                      const active = item.href === activeHref;
 
                       return (
                         <SidebarMenuItem key={item.href}>
@@ -374,12 +368,7 @@ function AppShellInner({
                           {active && item.children && item.children.length > 0 ? (
                             <SidebarMenuSub>
                               {item.children.map((sub) => {
-                                const subActive = isPathActive(
-                                  pathname,
-                                  sub.href,
-                                  homeHref,
-                                  "exact"
-                                );
+                                const subActive = sub.href === activeChildHref;
                                 return (
                                   <SidebarMenuSubItem key={sub.href}>
                                     <SidebarMenuSubButton

@@ -5,7 +5,6 @@ import { SessionProvider } from "@/components/SessionProvider";
 import { StoreProvider } from "@/context/StoreContext";
 import { fontVariableClassNames } from "@/lib/fonts";
 import { getSession, type SessionUser } from "@/lib/server/session";
-import "@/styles/ui.css";
 import "@/styles/tokens.css";
 import "@/styles/globals.css";
 

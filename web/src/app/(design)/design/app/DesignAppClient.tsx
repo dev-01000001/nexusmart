@@ -138,30 +138,36 @@ const SELLER_NAV_GROUPS: AppNavGroup[] = [
     items: [
       { href: "/design/app?kieu=a9", label: "Tổng quan", icon: Home, match: "exact" },
       { href: "/design/app?kieu=a2", label: "Đơn hàng", icon: ShoppingBag, badge: 3 },
-      { href: "/design/app?kieu=a1", label: "Trả hàng", icon: RotateCcw, badge: 1 },
+      { href: "/design/app?kieu=a1&muc=tra-hang", label: "Trả hàng", icon: RotateCcw, badge: 1 },
       {
-        href: "/design/app",
+        href: "/design/app?kieu=a1",
         label: "Sản phẩm & Kho hàng",
         icon: Package,
+        match: "exact",
         children: [
           { href: "/design/app?kieu=a3", label: "Thêm sản phẩm mới" },
-          { href: "/design/app?kieu=a1", label: "Tồn kho theo SKU" },
+          { href: "/design/app?kieu=a1&view=ton-kho", label: "Tồn kho theo SKU" },
         ],
       },
-      { href: "/design/app?kieu=a4", label: "Khuyến mãi", icon: Percent },
+      { href: "/design/app?kieu=a4&muc=khuyen-mai", label: "Khuyến mãi", icon: Percent },
     ],
   },
   {
     title: "Khách hàng",
     items: [
       { href: "/design/app?kieu=a6", label: "Tin nhắn", icon: MessageSquare, badge: 1 },
-      { href: "/design/app?kieu=a5", label: "Tương tác", icon: Users },
+      { href: "/design/app?kieu=a5&muc=tuong-tac", label: "Tương tác", icon: Users },
     ],
   },
   {
     title: "Cửa hàng",
     items: [
-      { href: "/design/app?kieu=a7", label: "Site bán hàng", icon: LayoutTemplate },
+      {
+        href: "/design/app?kieu=a7",
+        label: "Site bán hàng",
+        icon: LayoutTemplate,
+        children: [{ href: "/design/app?kieu=a8", label: "Thư viện mẫu" }],
+      },
       { href: "/design/site", label: "Xem site mẫu", icon: Store, external: true },
       { href: "/design/app?kieu=a4", label: "Tài chính & Báo cáo AI", icon: Wallet },
       { href: "/design/app?kieu=a5", label: "Hồ sơ gian hàng", icon: Settings },

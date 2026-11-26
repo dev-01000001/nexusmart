@@ -10,6 +10,7 @@ export const inter = Inter({
   subsets: ["latin", "vietnamese"],
   variable: "--font-inter",
   display: "swap",
+  preload: false,
 });
 
 export const siteWorkSans = Work_Sans({
