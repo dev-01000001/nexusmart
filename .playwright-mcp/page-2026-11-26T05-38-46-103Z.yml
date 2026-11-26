@@ -1,0 +1,141 @@
+- generic [ref=e2]:
+  - link "Bỏ qua đến nội dung" [ref=e3] [cursor=pointer]:
+    - /url: "#main-content"
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - link "NexusMart trang chủ" [ref=e6] [cursor=pointer]:
+        - /url: /
+        - generic [ref=e9]: NexusMart
+      - navigation "Điều hướng nền tảng" [ref=e10]:
+        - link "Cửa hàng" [ref=e11] [cursor=pointer]:
+          - /url: /#danh-ba-gian-hang
+        - link "Về NexusMart" [ref=e12] [cursor=pointer]:
+          - /url: /ve-nexusmart
+        - link "Trợ giúp" [ref=e13] [cursor=pointer]:
+          - /url: /tro-giup
+      - generic [ref=e14]:
+        - link "Đăng nhập" [ref=e15] [cursor=pointer]:
+          - /url: /dang-nhap
+        - link "Mở gian hàng" [ref=e16] [cursor=pointer]:
+          - /url: /dang-ky?role=seller
+  - main [ref=e17]:
+    - generic [ref=e19]:
+      - region "Giới thiệu nền tảng NexusMart" [ref=e20]:
+        - generic [ref=e21]:
+          - heading "Cửa hàng mang tên bạn" [level=1] [ref=e22]:
+            - generic [ref=e23]: Cửa hàng
+            - generic [ref=e25]: mang tên bạn
+          - generic [ref=e27]:
+            - paragraph [ref=e28]: Gõ tên thương hiệu, xem cửa hàng riêng hiện ra ngay.
+            - generic [ref=e29]:
+              - generic [ref=e30]:
+                - generic [ref=e31]: Tên thương hiệu của bạn
+                - generic [ref=e32]:
+                  - textbox "Tên thương hiệu của bạn" [ref=e33]:
+                    - /placeholder: ten-thuong-hieu
+                  - generic [aria-hidden] [ref=e34]: .nexusmartai.store
+                - link "Mở gian hàng" [ref=e35] [cursor=pointer]:
+                  - /url: /dang-ky?role=seller
+              - paragraph [ref=e38]
+        - generic [ref=e39]:
+          - generic [ref=e40]:
+            - generic [ref=e41]:
+              - generic [ref=e43]: phong-chay-active
+              - generic [ref=e44]: .nexusmartai.store
+            - generic [ref=e45]:
+              - group "Chọn giao diện cửa hàng mẫu" [ref=e46]:
+                - button "Mẫu Thể thao" [pressed] [ref=e47] [cursor=pointer]
+                - button "Mẫu Maison" [ref=e49] [cursor=pointer]
+                - button "Mẫu Xưởng dệt" [ref=e51] [cursor=pointer]
+                - button "Mẫu Tạp chí" [ref=e53] [cursor=pointer]
+              - button "Tạm dừng chuyển mẫu tự động" [ref=e55] [cursor=pointer]
+          - generic [ref=e58]:
+            - generic [ref=e59]:
+              - generic [ref=e60]: Phòng Chạy Active
+              - generic [ref=e61]:
+                - generic [ref=e62]: Dry-Fit 145gsm
+                - generic [ref=e63]: Co giãn 4 chiều
+            - generic [ref=e64]:
+              - img "Cửa hàng thời trang thể thao vận động ngoài trời" [ref=e66]
+              - generic [ref=e67]:
+                - img "Mẫu áo thun Dry-Fit thoáng khí" [ref=e69]
+                - generic [ref=e70]:
+                  - paragraph [ref=e71]: Nhẹ bước chạy nắng sớm
+                  - generic [ref=e72]: Bộ sưu tập mới
+      - region "Cửa hàng đang mở" [ref=e73]:
+        - heading "Cửa hàng đang mở" [level=2] [ref=e75]
+        - generic [ref=e77]:
+          - paragraph [ref=e79]: Chưa có cửa hàng nào xuất bản.
+          - link "Mở gian hàng" [ref=e81] [cursor=pointer]:
+            - /url: /dang-ky?role=seller
+      - region "Ba bước lên sóng" [ref=e84]:
+        - heading "Ba bước lên sóng" [level=2] [ref=e86]
+        - generic [ref=e87]:
+          - generic [ref=e88]:
+            - button "Chọn giao diện riêng" [ref=e90] [cursor=pointer]
+            - button "Đăng sản phẩm lên kệ" [ref=e93] [cursor=pointer]
+            - button "Nhận đơn, quét VietQR" [ref=e96] [cursor=pointer]
+          - generic [ref=e100]:
+            - group "Chọn mẫu giao diện" [ref=e101]:
+              - button "Mẫu Thể thao" [pressed] [ref=e102] [cursor=pointer]:
+                - generic [ref=e104]: Thể thao
+              - button "Mẫu Maison" [ref=e105] [cursor=pointer]:
+                - generic [ref=e107]: Maison
+              - button "Mẫu Xưởng dệt" [ref=e108] [cursor=pointer]:
+                - generic [ref=e110]: Xưởng dệt
+              - button "Mẫu Tạp chí" [ref=e111] [cursor=pointer]:
+                - generic [ref=e113]: Tạp chí
+            - generic [ref=e114]:
+              - img "Cửa hàng thời trang thể thao vận động ngoài trời" [ref=e116]
+              - generic [ref=e117]:
+                - img "Mẫu áo thun Dry-Fit thoáng khí" [ref=e119]
+                - generic [ref=e120]:
+                  - generic [ref=e121]: Phòng Chạy Active
+                  - generic [ref=e122]: Nhẹ bước chạy nắng sớm
+      - region "Từ khung cửi tới cửa hàng" [ref=e123]:
+        - heading "Từ khung cửi tới cửa hàng" [level=2] [ref=e125]
+        - generic "Cận cảnh khung dệt Jacquard đang đan sợi vải nhịp nhàng" [ref=e128]
+      - region "Câu hỏi thường gặp" [ref=e129]:
+        - generic [ref=e130]:
+          - heading "Câu hỏi thường gặp" [level=2] [ref=e132]
+          - generic [ref=e133]:
+            - group [ref=e134]:
+              - generic "NexusMart khác gì sàn thương mại điện tử?" [ref=e135] [cursor=pointer]
+            - group [ref=e138]:
+              - generic "Khách mua hàng và xem đơn ở đâu?" [ref=e139] [cursor=pointer]
+            - group [ref=e142]:
+              - generic "Có đổi giao diện sau khi xuất bản không?" [ref=e143] [cursor=pointer]
+            - group [ref=e146]:
+              - generic "Cửa hàng hỗ trợ thanh toán nào?" [ref=e147] [cursor=pointer]
+            - group [ref=e150]:
+              - generic "Khi nào cửa hàng hiện trong danh bạ?" [ref=e151] [cursor=pointer]
+      - region "Bắt đầu mở gian hàng" [ref=e154]:
+        - generic [ref=e155]:
+          - generic [ref=e156]:
+            - generic [ref=e157]: Mở
+            - generic [ref=e158]: Tên thương hiệu
+            - textbox "Tên thương hiệu" [ref=e159]:
+              - /placeholder: tên thương hiệu
+            - button "hôm nay." [ref=e160] [cursor=pointer]
+          - paragraph [ref=e161]
+  - contentinfo [ref=e162]:
+    - generic [ref=e163]:
+      - generic [ref=e164]:
+        - generic [ref=e165]: Nền tảng cửa hàng độc lập
+        - link "hotro@nexusmart.vn" [ref=e166] [cursor=pointer]:
+          - /url: mailto:hotro@nexusmart.vn
+      - navigation "Liên kết chân trang" [ref=e167]:
+        - link "Cửa hàng" [ref=e168] [cursor=pointer]:
+          - /url: /#danh-ba-gian-hang
+        - link "Về NexusMart" [ref=e169] [cursor=pointer]:
+          - /url: /ve-nexusmart
+        - link "Trợ giúp" [ref=e170] [cursor=pointer]:
+          - /url: /tro-giup
+        - link "Kênh người bán" [ref=e171] [cursor=pointer]:
+          - /url: /seller
+      - generic [ref=e172]:
+        - link "Đăng nhập" [ref=e173] [cursor=pointer]:
+          - /url: /dang-nhap
+        - generic [ref=e174]: © 2026
+    - img [ref=e176]:
+      - generic [ref=e177]: NexusMart

@@ -1,0 +1,5 @@
+[    5609ms] [LOG] https://gtm3.shopify.com/logging?container=GTM-TZ26LP8&c=VN&541=s-343&141=s-541&110=s-297&490=s-513&836=s-277&849=s-510&850=s-509&120=s-272&139=s-261&896=s-259&223=s-25&em= @ https://gtm.shopify.com/gtm.js?id=GTM-TZ26LP8&dl=dataLayer:1074
+[   22665ms] [WARNING] [.WebGL-0x1840212aa00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels @ https://www.shopify.com/vn:1
+[   22673ms] [WARNING] [.WebGL-0x1840212aa00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels @ https://www.shopify.com/vn:1
+[   53389ms] [WARNING] [.WebGL-0x1840212aa00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels @ https://www.shopify.com/vn:1
+[   54060ms] [WARNING] [.WebGL-0x1840212aa00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat) @ https://www.shopify.com/vn:1
