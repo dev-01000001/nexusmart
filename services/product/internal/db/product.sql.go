@@ -2614,6 +2614,40 @@ func (q *Queries) ListExistingShopSKUCodes(ctx context.Context, arg ListExisting
 	return items, nil
 }
 
+const listModerationSKUsByProductIDs = `-- name: ListModerationSKUsByProductIDs :many
+SELECT product_id, name, attributes
+FROM skus
+WHERE product_id = ANY($1::text[])
+  AND status <> 'INACTIVE'
+ORDER BY created_at ASC, id ASC
+`
+
+type ListModerationSKUsByProductIDsRow struct {
+	ProductID  string
+	Name       string
+	Attributes []byte
+}
+
+func (q *Queries) ListModerationSKUsByProductIDs(ctx context.Context, productIds []string) ([]ListModerationSKUsByProductIDsRow, error) {
+	rows, err := q.db.Query(ctx, listModerationSKUsByProductIDs, productIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListModerationSKUsByProductIDsRow{}
+	for rows.Next() {
+		var i ListModerationSKUsByProductIDsRow
+		if err := rows.Scan(&i.ProductID, &i.Name, &i.Attributes); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProductImportRows = `-- name: ListProductImportRows :many
 SELECT id, job_id, row_number, status, error_code, error_message,
        product_name, sku_code, category_id, price_vnd, stock, weight_grams,

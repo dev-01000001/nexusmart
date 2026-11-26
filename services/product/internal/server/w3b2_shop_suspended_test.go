@@ -224,11 +224,11 @@ func TestW3B2_ShopSuspended_LifecycleVisibilityGuardsAndReserve_MemoryStore(t *t
 	if err != nil {
 		t.Fatalf("public GetProduct(slug, stub=true) suspended approved: %v", err)
 	}
-	if !stubAppr.GetDiscontinued() || stubAppr.GetProduct() != nil || stubAppr.GetDiscontinuedCategoryId() != catID || stubAppr.GetDiscontinuedName() != "" {
+	if !stubAppr.GetDiscontinued() || stubAppr.GetProduct() != nil || stubAppr.GetDiscontinuedCategoryId() != catID || stubAppr.GetDiscontinuedName() != "" || stubAppr.GetDiscontinuedShopId() != "shop-1" {
 		t.Fatalf("E13/F12 suspended approved stub mismatch: %+v", stubAppr)
 	}
 	stubHidSusp, err := srv.GetProduct(ctx, &productv1.GetProductRequest{Slug: "ao-khoac-an-alpha", IncludeDiscontinuedStub: true})
-	if err != nil || !stubHidSusp.GetDiscontinued() || stubHidSusp.GetProduct() != nil || stubHidSusp.GetDiscontinuedName() != "" {
+	if err != nil || !stubHidSusp.GetDiscontinued() || stubHidSusp.GetProduct() != nil || stubHidSusp.GetDiscontinuedName() != "" || stubHidSusp.GetDiscontinuedShopId() != "shop-1" {
 		t.Fatalf("E13/F12 suspended hidden stub mismatch: %+v err=%v", stubHidSusp, err)
 	}
 	if _, err := srv.GetProduct(ctx, &productv1.GetProductRequest{Slug: "ao-moi-cho-duyet-alpha", IncludeDiscontinuedStub: true}); status.Code(err) != codes.NotFound {
@@ -397,8 +397,8 @@ func TestW3B2_ShopSuspended_LifecycleVisibilityGuardsAndReserve_MemoryStore(t *t
 	}
 	// Seller-hidden product remains HIDDEN and restores E13 HIDDEN discontinued stub WITH name!
 	hidAfter, err := srv.GetProduct(ctx, &productv1.GetProductRequest{Slug: "ao-khoac-an-alpha", IncludeDiscontinuedStub: true})
-	if err != nil || !hidAfter.GetDiscontinued() || hidAfter.GetDiscontinuedName() != "Áo Khoác Ẩn Alpha" {
-		t.Fatalf("post-unsuspend HIDDEN product must keep HIDDEN status & E13 name, got %+v err=%v", hidAfter, err)
+	if err != nil || !hidAfter.GetDiscontinued() || hidAfter.GetDiscontinuedName() != "Áo Khoác Ẩn Alpha" || hidAfter.GetDiscontinuedShopId() != "shop-1" {
+		t.Fatalf("post-unsuspend HIDDEN product must keep HIDDEN status & E13 name/shop_id, got %+v err=%v", hidAfter, err)
 	}
 	// GetSKUsBatch public is active again!
 	batchAfter, err := srv.GetSKUsBatch(buyerCtx, &productv1.GetSKUsBatchRequest{SkuIds: []string{skuApprID}})
@@ -654,7 +654,7 @@ func TestPGStore_W3B2_ShopSuspended_RealPGAndNATS(t *testing.T) {
 	}
 
 	stubResp, err := srv.GetProduct(ctx, &productv1.GetProductRequest{Slug: runPrefix + "-giay-appr", IncludeDiscontinuedStub: true})
-	if err != nil || !stubResp.GetDiscontinued() || stubResp.GetProduct() != nil || stubResp.GetDiscontinuedCategoryId() != catID || stubResp.GetDiscontinuedName() != "" {
+	if err != nil || !stubResp.GetDiscontinued() || stubResp.GetProduct() != nil || stubResp.GetDiscontinuedCategoryId() != catID || stubResp.GetDiscontinuedName() != "" || stubResp.GetDiscontinuedShopId() != shop1ID {
 		t.Fatalf("PG suspended slug stub mismatch: %+v err=%v", stubResp, err)
 	}
 	if _, err := srv.GetProduct(ctx, &productv1.GetProductRequest{Slug: runPrefix + "-giay-pend", IncludeDiscontinuedStub: true}); status.Code(err) != codes.NotFound {
@@ -771,7 +771,7 @@ func TestPGStore_W3B2_ShopSuspended_RealPGAndNATS(t *testing.T) {
 		t.Fatalf("PG prodHid after unsuspend: want status=HIDDEN shop_suspended=false, got status=%s shop_suspended=%v", hidStatus, hidSusp)
 	}
 	hidStubAfter, err := srv.GetProduct(ctx, &productv1.GetProductRequest{Slug: runPrefix + "-giay-hid", IncludeDiscontinuedStub: true})
-	if err != nil || !hidStubAfter.GetDiscontinued() || hidStubAfter.GetDiscontinuedName() != "PG Giày Tự Ẩn "+runPrefix {
+	if err != nil || !hidStubAfter.GetDiscontinued() || hidStubAfter.GetDiscontinuedName() != "PG Giày Tự Ẩn "+runPrefix || hidStubAfter.GetDiscontinuedShopId() != shop1ID {
 		t.Fatalf("PG post-unsuspend HIDDEN E13 stub mismatch: %+v err=%v", hidStubAfter, err)
 	}
 

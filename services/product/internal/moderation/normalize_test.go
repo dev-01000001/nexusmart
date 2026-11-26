@@ -440,3 +440,201 @@ func TestMatch_RandomPartialSplitSubsetsAlwaysMatch(t *testing.T) {
 		}
 	}
 }
+
+// matchCompiledReference implements the original unoptimized matcher (full NFKD tokenize + buildDocTokens + ruleMatchesDoc)
+// as an oracle to verify bit-for-bit behavioral equivalence with the optimized matcher.
+func tokenizeReferenceNFKD(input string) []normToken {
+	if strings.TrimSpace(input) == "" {
+		return nil
+	}
+	// Prefix with a zero-width Cf char to force the exact NFKD slow path in tokenize without altering output.
+	return tokenize("\u200b"+input, false)
+}
+
+func matchCompiledReference(rules []CompiledRule, fields ...string) MatchResult {
+	if len(rules) == 0 || len(fields) == 0 {
+		return MatchResult{}
+	}
+	docs := make([]docTokens, 0, len(fields))
+	for _, field := range fields {
+		if strings.TrimSpace(field) == "" {
+			continue
+		}
+		toks := tokenizeReferenceNFKD(field)
+		if len(toks) == 0 {
+			continue
+		}
+		docs = append(docs, buildDocTokens(toks))
+	}
+	if len(docs) == 0 {
+		return MatchResult{}
+	}
+
+	blockedSet := make(map[string]struct{})
+	flaggedSet := make(map[string]struct{})
+	allSet := make(map[string]struct{})
+	for i := range rules {
+		rule := &rules[i]
+		matched := false
+		for j := range docs {
+			if ruleMatchesDoc(rule, &docs[j]) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		term := strings.TrimSpace(rule.Term)
+		if term == "" {
+			term = rule.NormalizedTerm
+		}
+		allSet[term] = struct{}{}
+		switch rule.Action {
+		case ActionBlock:
+			blockedSet[term] = struct{}{}
+		case ActionReview:
+			flaggedSet[term] = struct{}{}
+		}
+	}
+	res := MatchResult{
+		Blocked:      len(blockedSet) > 0,
+		Flagged:      len(flaggedSet) > 0,
+		BlockedTerms: sortedKeys(blockedSet),
+		FlaggedTerms: sortedKeys(flaggedSet),
+		MatchedTerms: sortedKeys(allSet),
+	}
+	if res.Blocked {
+		res.HighestAction = ActionBlock
+	} else if res.Flagged {
+		res.HighestAction = ActionReview
+	}
+	return res
+}
+
+func TestFastTokenizeMatchesNFKD_AllASCIIAndVietnamese(t *testing.T) {
+	// Every ASCII byte 0..127 and all 134 precomposed Vietnamese letters must tokenize identically
+	// via the fast lookup path and the NFKD path.
+	for b := 0; b < 128; b++ {
+		s := string([]byte{byte(b)})
+		if !reflect.DeepEqual(tokenize(s, true), tokenize("\u200b"+s, true)) {
+			t.Fatalf("ASCII 0x%02x tokenize mismatch", b)
+		}
+	}
+	const vietLetters = "ÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚÝàáâãèéêìíòóôõùúýĂăĐđĨĩŨũƠơƯư" +
+		"ẠạẢảẤấẦầẨẩẪẫẬậẮắẰằẲẳẴẵẶặẸẹẺẻẼẽẾếỀềỂểỄễỆệỈỉỊị" +
+		"ỌọỎỏỐốỒồỔổỖỗỘộỚớỜờỞởỠỡỢợỤụỦủỨứỪừỬửỮữỰựỲỳỴỵỶỷỸỹ"
+	if len([]rune(vietLetters)) != 134 {
+		t.Fatalf("expected 134 Vietnamese letters, got %d", len([]rune(vietLetters)))
+	}
+	for _, r := range vietLetters {
+		s := string(r)
+		if !reflect.DeepEqual(tokenize(s, true), tokenize("\u200b"+s, true)) {
+			t.Fatalf("Vietnamese rune %q (U+%04X) tokenize mismatch", r, r)
+		}
+	}
+	for _, s := range []string{"h\u200bàng", "ha\u0300ng", "hà\u0336ng", "МА TÚY", "Äpfel", "Łódź", "𝑓𝑎𝑘𝑒", string([]byte{0xff, 0xfe})} {
+		if _, ok := scanFastFieldBigrams(s); ok {
+			t.Fatalf("scanFastFieldBigrams unexpectedly accepted slow-path string %q", s)
+		}
+	}
+}
+
+func TestMinBigrams_CrossBoundaryCollapseSoundness(t *testing.T) {
+	// Rule "xxaa ab" has intra-token bigram 'a'->'a' in token "xxaa", but its compact form collapses
+	// "xxaa"+"ab" -> "xxab" (no 'a'->'a'). Rules (b) and (c) MUST still match without false negatives.
+	compiled := CompileRules([]Rule{{ID: "r1", Term: "xxaa ab", Action: ActionBlock}})
+	for _, text := range []string{"xxaa ab", "xxab", "x.x.a.b", "xxaa a b", "xx a a a b"} {
+		got := MatchCompiled(compiled, text)
+		want := matchCompiledReference(compiled, text)
+		if !got.Blocked || !reflect.DeepEqual(got, want) {
+			t.Fatalf("text=%q: got=%+v want=%+v (expected Blocked=true)", text, got, want)
+		}
+	}
+	for _, clean := range []string{"xxaa", "xxac", "x.x.a.c"} {
+		got := MatchCompiled(compiled, clean)
+		want := matchCompiledReference(compiled, clean)
+		if got.Blocked || !reflect.DeepEqual(got, want) {
+			t.Fatalf("clean text=%q: got=%+v want=%+v (expected clean)", clean, got, want)
+		}
+	}
+}
+
+func TestMatchCompiled_EquivalenceWithReference_Randomized(t *testing.T) {
+	rng := rand.New(rand.NewSource(20261126))
+	allRuleDefs := []Rule{
+		{ID: "r1", Term: "hàng giả", Action: ActionBlock},
+		{ID: "r2", Term: "ma túy", Action: ActionBlock},
+		{ID: "r3", Term: "cần sa", Action: ActionBlock},
+		{ID: "r4", Term: "súng", Action: ActionBlock},
+		{ID: "r5", Term: "đá", Action: ActionReview},
+		{ID: "r6", Term: "fake", Action: ActionBlock},
+		{ID: "r7", Term: "cam kết 100%", Action: ActionReview},
+		{ID: "r8", Term: "thuốc lắc", Action: ActionBlock},
+		{ID: "r9", Term: "xxaa ab", Action: ActionBlock},
+		{ID: "r10", Term: "28 69", Action: ActionReview},
+		{ID: "r11", Term: "ab", Action: ActionBlock},
+		{ID: "r12", Term: "vũ khí", Action: ActionBlock},
+		{ID: "r13", Term: "cá độ", Action: ActionReview},
+		{ID: "r14", Term: "hàng cấm xk", Action: ActionBlock},
+	}
+	allCompiled := CompileRules(allRuleDefs)
+
+	vocab := []string{
+		"áo", "thun", "hàng", "giả", "hãng", "giá", "hang", "gia", "h@ng", "gi4",
+		"ma", "túy", "tuý", "tùy", "mã", "tủ", "y", "m.a", "t.u.y", "m", "a", "t", "u",
+		"cần", "căn", "sa", "sàn", "súng", "sung", "$ung", "suúung", "sùúung", "đá", "da", "d4",
+		"fake", "f@k3", "faaaake", "f.a.k.e", "breakfast", "cam", "kết", "100%", "1000",
+		"thuốc", "lắc", "l.ắ.c", "l.á", "c", "xxab", "xxaa", "ab", "x.x.a.b", "28", "69", "2869",
+		"vũ", "khí", "kh.í", "cá", "độ", "cà", "đo", "cấm", "xk", "h.a.n.g.c.a.m",
+		"h\u200bàng", "ha\u0300ng", "hà\u0336ng", "МА", "ТÚY", "f\u03b1k\u03b5", "ｆａｋｅ",
+		"chất", "lượng", "cao", "cấp", "cotton", "XL", "(60kg)", "Đen", "Trắng", "   ", "",
+	}
+
+	makeFields := func() []string {
+		nFields := 1 + rng.Intn(4)
+		fields := make([]string, nFields)
+		for f := 0; f < nFields; f++ {
+			nWords := rng.Intn(10)
+			if nWords == 0 {
+				fields[f] = ""
+				continue
+			}
+			var sb strings.Builder
+			for w := 0; w < nWords; w++ {
+				if w > 0 {
+					switch rng.Intn(5) {
+					case 0:
+						sb.WriteByte('.')
+					case 1:
+						sb.WriteString(" - ")
+					case 2:
+						sb.WriteByte('/')
+					default:
+						sb.WriteByte(' ')
+					}
+				}
+				sb.WriteString(vocab[rng.Intn(len(vocab))])
+			}
+			fields[f] = sb.String()
+		}
+		return fields
+	}
+
+	for iter := 0; iter < 600; iter++ {
+		fields := makeFields()
+		gotAll := MatchCompiled(allCompiled, fields...)
+		wantAll := matchCompiledReference(allCompiled, fields...)
+		if !reflect.DeepEqual(gotAll, wantAll) {
+			t.Fatalf("iter=%d allRules fields=%q:\ngot =%+v\nwant=%+v", iter, fields, gotAll, wantAll)
+		}
+
+		rIdx := rng.Intn(len(allCompiled))
+		single := allCompiled[rIdx : rIdx+1]
+		gotSingle := MatchCompiled(single, fields...)
+		wantSingle := matchCompiledReference(single, fields...)
+		if !reflect.DeepEqual(gotSingle, wantSingle) {
+			t.Fatalf("iter=%d singleRule=%q fields=%q:\ngot =%+v\nwant=%+v", iter, single[0].Term, fields, gotSingle, wantSingle)
+		}
+	}
+}

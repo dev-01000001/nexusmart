@@ -1077,6 +1077,39 @@ func (m *MemoryStore) ListSKUsByProductIDs(ctx context.Context, productIDs []str
 	return out, nil
 }
 
+func (m *MemoryStore) ListModerationSKUsByProductIDs(_ context.Context, productIDs []string) ([]ModerationSKU, error) {
+	if len(productIDs) == 0 {
+		return []ModerationSKU{}, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	want := make(map[string]bool, len(productIDs))
+	for _, id := range productIDs {
+		want[id] = true
+	}
+	matched := make([]SKU, 0)
+	for _, s := range m.skus {
+		if want[s.ProductID] && s.Status != SKUStatusInactive {
+			matched = append(matched, s)
+		}
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		if !matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
+			return matched[i].CreatedAt.Before(matched[j].CreatedAt)
+		}
+		return matched[i].ID < matched[j].ID
+	})
+	out := make([]ModerationSKU, 0, len(matched))
+	for _, s := range matched {
+		out = append(out, ModerationSKU{
+			ProductID:  s.ProductID,
+			Name:       s.Name,
+			Attributes: cloneMap(s.Attributes),
+		})
+	}
+	return out, nil
+}
+
 func (m *MemoryStore) ListAllSKUsByProductID(ctx context.Context, productID string) ([]SKU, error) {
 	asOf := AsOfFromContext(ctx)
 	m.mu.Lock()
@@ -2621,6 +2654,50 @@ func (t *memTx) DeactivateSKU(ctx context.Context, skuID string) error {
 	t.stagedSKUs[skuID] = cloneSKU(cur)
 	t.deactivatedSKUs[skuID] = true
 	return nil
+}
+
+func (t *memTx) ListModerationSKUsByProductIDs(_ context.Context, productIDs []string) ([]ModerationSKU, error) {
+	if len(productIDs) == 0 {
+		return []ModerationSKU{}, nil
+	}
+	want := make(map[string]bool, len(productIDs))
+	for _, id := range productIDs {
+		want[id] = true
+	}
+	raw := make(map[string]SKU)
+	t.store.mu.Lock()
+	for id, s := range t.store.skus {
+		if want[s.ProductID] {
+			raw[id] = s
+		}
+	}
+	t.store.mu.Unlock()
+	for id, s := range t.stagedSKUs {
+		if want[s.ProductID] {
+			raw[id] = s
+		}
+	}
+	matched := make([]SKU, 0, len(raw))
+	for _, s := range raw {
+		if s.Status != SKUStatusInactive {
+			matched = append(matched, s)
+		}
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		if !matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
+			return matched[i].CreatedAt.Before(matched[j].CreatedAt)
+		}
+		return matched[i].ID < matched[j].ID
+	})
+	out := make([]ModerationSKU, 0, len(matched))
+	for _, s := range matched {
+		out = append(out, ModerationSKU{
+			ProductID:  s.ProductID,
+			Name:       s.Name,
+			Attributes: cloneMap(s.Attributes),
+		})
+	}
+	return out, nil
 }
 
 func (t *memTx) ListSKUsByProductIDs(ctx context.Context, productIDs []string) ([]SKU, error) {

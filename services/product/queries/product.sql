@@ -629,6 +629,13 @@ WHERE s.product_id = ANY(sqlc.arg(product_ids)::text[])
   AND s.status <> 'INACTIVE'
 ORDER BY s.created_at ASC, s.id ASC;
 
+-- name: ListModerationSKUsByProductIDs :many
+SELECT product_id, name, attributes
+FROM skus
+WHERE product_id = ANY(sqlc.arg(product_ids)::text[])
+  AND status <> 'INACTIVE'
+ORDER BY created_at ASC, id ASC;
+
 -- name: ListAllSKUsByProductID :many
 SELECT
     s.id, s.product_id, p.shop_id, p.name AS product_name, s.sku_code, s.name,

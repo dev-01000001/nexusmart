@@ -916,6 +916,25 @@ func (p *pgQueries) ListSKUsByProductIDs(ctx context.Context, productIDs []strin
 	return out, nil
 }
 
+func (p *pgQueries) ListModerationSKUsByProductIDs(ctx context.Context, productIDs []string) ([]ModerationSKU, error) {
+	if len(productIDs) == 0 {
+		return []ModerationSKU{}, nil
+	}
+	rows, err := p.q.ListModerationSKUsByProductIDs(ctx, productIDs)
+	if err != nil {
+		return nil, mapPgError(err)
+	}
+	out := make([]ModerationSKU, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ModerationSKU{
+			ProductID:  r.ProductID,
+			Name:       r.Name,
+			Attributes: unmarshalStringMap(r.Attributes),
+		})
+	}
+	return out, nil
+}
+
 func (p *pgQueries) ListAllSKUsByProductID(ctx context.Context, productID string) ([]SKU, error) {
 	asOf := AsOfFromContext(ctx)
 	rows, err := p.q.ListAllSKUsByProductID(ctx, db.ListAllSKUsByProductIDParams{
@@ -1745,10 +1764,10 @@ func marshalStringMap(in map[string]string) ([]byte, error) {
 }
 
 func unmarshalStringMap(b []byte) map[string]string {
-	out := map[string]string{}
-	if len(b) == 0 {
-		return out
+	if len(b) == 0 || (len(b) == 2 && b[0] == '{' && b[1] == '}') {
+		return map[string]string{}
 	}
+	out := map[string]string{}
 	if err := json.Unmarshal(b, &out); err != nil || out == nil {
 		return map[string]string{}
 	}

@@ -2025,21 +2025,21 @@ func TestPGStore_W2BIntegration(t *testing.T) {
 				t.Fatalf("PG Rescan rejection_reason = %q, want %q", pBlockAfter.GetProduct().GetRejectionReason(), wantVietReason)
 			}
 
-			// E13 on real Postgres: pBlock was previously approved and is now REJECTED -> discontinued stub with EMPTY name!
+			// E13 on real Postgres: pBlock was previously approved and is now REJECTED -> discontinued stub with EMPTY name & shop_id!
 			stubRej, err := srv.GetProduct(ctx, &productv1.GetProductRequest{
 				Slug: runPrefix + "-rescan-block", IncludeDiscontinuedStub: true,
 			})
-			if err != nil || !stubRej.GetDiscontinued() || stubRej.GetProduct() != nil || stubRej.GetDiscontinuedCategoryId() != normCatID || stubRej.GetDiscontinuedName() != "" {
+			if err != nil || !stubRej.GetDiscontinued() || stubRej.GetProduct() != nil || stubRej.GetDiscontinuedCategoryId() != normCatID || stubRej.GetDiscontinuedName() != "" || stubRej.GetDiscontinuedShopId() != pBlock.GetProduct().GetShopId() {
 				t.Fatalf("PG E13 REJECTED stub = %+v err=%v", stubRej, err)
 			}
-			// Soft-delete pBlock -> still discontinued stub with EMPTY name!
+			// Soft-delete pBlock -> still discontinued stub with EMPTY name & shop_id!
 			if _, err := srv.DeleteProduct(sellerCtx, &productv1.DeleteProductRequest{Id: pBlock.GetProduct().GetId()}); err != nil {
 				t.Fatalf("DeleteProduct pBlock: %v", err)
 			}
 			stubDel, err := srv.GetProduct(ctx, &productv1.GetProductRequest{
 				Slug: runPrefix + "-rescan-block", IncludeDiscontinuedStub: true,
 			})
-			if err != nil || !stubDel.GetDiscontinued() || stubDel.GetProduct() != nil || stubDel.GetDiscontinuedCategoryId() != normCatID || stubDel.GetDiscontinuedName() != "" {
+			if err != nil || !stubDel.GetDiscontinued() || stubDel.GetProduct() != nil || stubDel.GetDiscontinuedCategoryId() != normCatID || stubDel.GetDiscontinuedName() != "" || stubDel.GetDiscontinuedShopId() != pBlock.GetProduct().GetShopId() {
 				t.Fatalf("PG E13 deleted stub = %+v err=%v", stubDel, err)
 			}
 		})
@@ -2142,9 +2142,9 @@ func TestPGStore_W2BIntegration(t *testing.T) {
 			}
 
 			migSrv := New(store.NewPgStore(migPool), nil)
-			// prod-hidden-was-approved -> 200 discontinued stub WITH name!
+			// prod-hidden-was-approved -> 200 discontinued stub WITH name and shop_id!
 			stub, err := migSrv.GetProduct(ctx, &productv1.GetProductRequest{Slug: "hidden-was-live", IncludeDiscontinuedStub: true})
-			if err != nil || !stub.GetDiscontinued() || stub.GetDiscontinuedCategoryId() != "cat-m8" || stub.GetDiscontinuedName() != "Hidden Was Live" {
+			if err != nil || !stub.GetDiscontinued() || stub.GetDiscontinuedCategoryId() != "cat-m8" || stub.GetDiscontinuedName() != "Hidden Was Live" || stub.GetDiscontinuedShopId() != "s1" {
 				t.Fatalf("backfilled hidden-was-live stub = %+v err=%v", stub, err)
 			}
 			// prod-hidden-never-approved & prod-pending -> 404 NotFound (proving DB evidence, never inferred from HIDDEN status!).

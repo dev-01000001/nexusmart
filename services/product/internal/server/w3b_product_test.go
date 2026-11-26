@@ -879,16 +879,20 @@ func TestW3B_DiscontinuedStub_E13(t *testing.T) {
 	if _, err := srv.GetProduct(pubCtx, &productv1.GetProductRequest{Slug: "giay-chay-bo"}); status.Code(err) != codes.NotFound {
 		t.Fatalf("HIDDEN without stub flag: want NotFound, got %v", err)
 	}
-	// With include_discontinued_stub -> 200 discontinued stub WITH name, NO Product/SKUs.
+	// With include_discontinued_stub -> 200 discontinued stub WITH name, shop_id, NO Product/SKUs.
 	stubHid, err := srv.GetProduct(pubCtx, &productv1.GetProductRequest{Slug: "giay-chay-bo", IncludeDiscontinuedStub: true})
 	if err != nil {
 		t.Fatalf("HIDDEN with stub flag: %v", err)
 	}
-	if !stubHid.GetDiscontinued() || stubHid.GetProduct() != nil || stubHid.GetDiscontinuedCategoryId() != catID || stubHid.GetDiscontinuedName() != "Giày Chạy Bộ" {
-		t.Fatalf("HIDDEN stub = %+v, want discontinued=true cat=%s name=Giày Chạy Bộ product=nil", stubHid, catID)
+	if !stubHid.GetDiscontinued() || stubHid.GetProduct() != nil || stubHid.GetDiscontinuedCategoryId() != catID || stubHid.GetDiscontinuedName() != "Giày Chạy Bộ" || stubHid.GetDiscontinuedShopId() != "shop-1" {
+		t.Fatalf("HIDDEN stub = %+v, want discontinued=true cat=%s shop=shop-1 name=Giày Chạy Bộ product=nil", stubHid, catID)
+	}
+	// Lookup by ID must NOT return a discontinued stub even when IncludeDiscontinuedStub=true.
+	if _, err := srv.GetProduct(pubCtx, &productv1.GetProductRequest{Id: hidP.GetProduct().GetId(), IncludeDiscontinuedStub: true}); status.Code(err) != codes.NotFound {
+		t.Fatalf("HIDDEN by ID with stub flag: want NotFound, got %v", err)
 	}
 
-	// 4. Previously APPROVED -> REJECTED (admin takedown): discontinued=true, category_id, EMPTY name!
+	// 4. Previously APPROVED -> REJECTED (admin takedown): discontinued=true, category_id, shop_id, EMPTY name!
 	_, _ = srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
 		ProductId: hidP.GetProduct().GetId(), Decision: productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_REJECT, Reason: "policy",
 	})
@@ -896,18 +900,46 @@ func TestW3B_DiscontinuedStub_E13(t *testing.T) {
 	if err != nil {
 		t.Fatalf("REJECTED with stub flag: %v", err)
 	}
-	if !stubRej.GetDiscontinued() || stubRej.GetProduct() != nil || stubRej.GetDiscontinuedCategoryId() != catID || stubRej.GetDiscontinuedName() != "" {
-		t.Fatalf("REJECTED stub = %+v, want discontinued=true cat=%s name='' product=nil", stubRej, catID)
+	if !stubRej.GetDiscontinued() || stubRej.GetProduct() != nil || stubRej.GetDiscontinuedCategoryId() != catID || stubRej.GetDiscontinuedName() != "" || stubRej.GetDiscontinuedShopId() != "shop-1" {
+		t.Fatalf("REJECTED stub = %+v, want discontinued=true cat=%s shop=shop-1 name='' product=nil", stubRej, catID)
 	}
 
-	// 5. Previously APPROVED -> soft-deleted: discontinued=true, category_id, EMPTY name!
+	// 5. Previously APPROVED -> soft-deleted: discontinued=true, category_id, shop_id, EMPTY name!
 	_, _ = srv.DeleteProduct(sellerCtx, &productv1.DeleteProductRequest{Id: hidP.GetProduct().GetId()})
 	stubDel, err := srv.GetProduct(pubCtx, &productv1.GetProductRequest{Slug: "giay-chay-bo", IncludeDiscontinuedStub: true})
 	if err != nil {
 		t.Fatalf("soft-deleted with stub flag: %v", err)
 	}
-	if !stubDel.GetDiscontinued() || stubDel.GetProduct() != nil || stubDel.GetDiscontinuedCategoryId() != catID || stubDel.GetDiscontinuedName() != "" {
-		t.Fatalf("soft-deleted stub = %+v, want discontinued=true cat=%s name='' product=nil", stubDel, catID)
+	if !stubDel.GetDiscontinued() || stubDel.GetProduct() != nil || stubDel.GetDiscontinuedCategoryId() != catID || stubDel.GetDiscontinuedName() != "" || stubDel.GetDiscontinuedShopId() != "shop-1" {
+		t.Fatalf("soft-deleted stub = %+v, want discontinued=true cat=%s shop=shop-1 name='' product=nil", stubDel, catID)
+	}
+
+	// 6. Multi-shop isolation: discontinued products from another shop carry their own shop_id.
+	seller2Ctx := ctxWithRole("seller-2", "seller", "shop-2")
+	shop2P, _ := srv.CreateProduct(seller2Ctx, &productv1.CreateProductRequest{
+		CategoryId: catID, Name: "Dép Shop 2", Slug: "dep-shop-2",
+		Skus: []*productv1.SKUInput{{SkuCode: "DS2-1", PriceVnd: 120000, Stock: 4}},
+	})
+	_, _ = srv.AdminReviewProduct(adminCtx, &productv1.AdminReviewProductRequest{
+		ProductId: shop2P.GetProduct().GetId(), Decision: productv1.ProductReviewDecision_PRODUCT_REVIEW_DECISION_APPROVE,
+	})
+	_, _ = srv.UpdateProduct(seller2Ctx, &productv1.UpdateProductRequest{
+		Id: shop2P.GetProduct().GetId(), Status: productv1.ProductStatus_PRODUCT_STATUS_HIDDEN,
+	})
+	stubShop2, err := srv.GetProduct(pubCtx, &productv1.GetProductRequest{Slug: "dep-shop-2", IncludeDiscontinuedStub: true})
+	if err != nil {
+		t.Fatalf("shop-2 HIDDEN with stub flag: %v", err)
+	}
+	if !stubShop2.GetDiscontinued() || stubShop2.GetDiscontinuedShopId() != "shop-2" || stubShop2.GetDiscontinuedName() != "Dép Shop 2" {
+		t.Fatalf("shop-2 HIDDEN stub = %+v, want discontinued=true shop=shop-2 name=Dép Shop 2", stubShop2)
+	}
+	_, _ = srv.DeleteProduct(seller2Ctx, &productv1.DeleteProductRequest{Id: shop2P.GetProduct().GetId()})
+	stubShop2Del, err := srv.GetProduct(pubCtx, &productv1.GetProductRequest{Slug: "dep-shop-2", IncludeDiscontinuedStub: true})
+	if err != nil {
+		t.Fatalf("shop-2 soft-deleted with stub flag: %v", err)
+	}
+	if !stubShop2Del.GetDiscontinued() || stubShop2Del.GetDiscontinuedShopId() != "shop-2" || stubShop2Del.GetDiscontinuedName() != "" {
+		t.Fatalf("shop-2 soft-deleted stub = %+v, want discontinued=true shop=shop-2 name=''", stubShop2Del)
 	}
 }
 

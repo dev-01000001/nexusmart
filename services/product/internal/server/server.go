@@ -1509,6 +1509,7 @@ func (s *Server) GetProduct(ctx context.Context, req *productv1.GetProductReques
 					return &productv1.GetProductResponse{
 						Discontinued:           true,
 						DiscontinuedCategoryId: delProd.CategoryID,
+						DiscontinuedShopId:     delProd.ShopID,
 					}, nil
 				}
 				if !errors.Is(delErr, store.ErrNotFound) {
@@ -1535,6 +1536,7 @@ func (s *Server) GetProduct(ctx context.Context, req *productv1.GetProductReques
 				Discontinued:           true,
 				DiscontinuedCategoryId: prod.CategoryID,
 				DiscontinuedName:       discontinuedName,
+				DiscontinuedShopId:     prod.ShopID,
 			}, nil
 		}
 		return nil, status.Error(codes.NotFound, "product not found")

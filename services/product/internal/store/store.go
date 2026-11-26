@@ -259,6 +259,12 @@ type ListBannedKeywordsFilter struct {
 	Offset          int32
 }
 
+type ModerationSKU struct {
+	ProductID  string
+	Name       string
+	Attributes map[string]string
+}
+
 type SKU struct {
 	ID                     string
 	ProductID              string
@@ -506,6 +512,7 @@ type Queries interface {
 	DeactivateSKUsByProduct(ctx context.Context, productID string) error
 	DeactivateSKU(ctx context.Context, skuID string) error
 	ListSKUsByProductIDs(ctx context.Context, productIDs []string) ([]SKU, error)
+	ListModerationSKUsByProductIDs(ctx context.Context, productIDs []string) ([]ModerationSKU, error)
 	ListAllSKUsByProductID(ctx context.Context, productID string) ([]SKU, error)
 	GetSKUsBatch(ctx context.Context, skuIDs []string) ([]SKU, error)
 	GetSKUWithContext(ctx context.Context, skuID string) (SKU, error)

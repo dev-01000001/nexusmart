@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -19,7 +20,57 @@ const (
 	// ponytail: trần ghép (maxMergeRawFactor*len(kw)+maxMergeRawPad), chuỗi lặp dài hơn chỉ bị luật (c) bắt.
 	maxMergeRawFactor = 4
 	maxMergeRawPad    = 8
+
+	vietLat1Start, vietLat1End = 0x00C0, 0x01B0
+	vietExtStart, vietExtEnd   = 0x1EA0, 0x1EF9
 )
+
+var (
+	asciiParsed [128]parsedChar
+	vietLat1    [vietLat1End - vietLat1Start + 1]parsedChar
+	vietExt     [vietExtEnd - vietExtStart + 1]parsedChar
+)
+
+func init() {
+	for b := 0; b < 128; b++ {
+		lr := unicode.ToLower(rune(b))
+		fr := foldLeet(lr)
+		asciiParsed[b] = parsedChar{base: fr, shaped: fr, leet: fr != lr, isAlnum: (fr >= 'a' && fr <= 'z') || (fr >= '0' && fr <= '9')}
+	}
+	const vietLetters = "ÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚÝàáâãèéêìíòóôõùúýĂăĐđĨĩŨũƠơƯư" +
+		"ẠạẢảẤấẦầẨẩẪẫẬậẮắẰằẲẳẴẵẶặẸẹẺẻẼẽẾếỀềỂểỄễỆệỈỉỊị" +
+		"ỌọỎỏỐốỒồỔổỖỗỘộỚớỜờỞởỠỡỢợỤụỦủỨứỪừỬửỮữỰựỲỳỴỵỶỷỸỹ"
+	for _, r := range vietLetters {
+		c := parsedChar{base: 'd', shaped: 'đ', isAlnum: true}
+		if r != 'Đ' && r != 'đ' {
+			for _, nr := range norm.NFKD.String(string(r)) {
+				if !isCombiningMark(nr) {
+					lr := unicode.ToLower(nr)
+					c = parsedChar{base: lr, shaped: lr, isAlnum: true}
+				} else if bit := vietnameseToneBit(nr); bit != 0 {
+					c.toneMask |= bit
+				} else {
+					applyVietnameseQuality(&c, nr)
+				}
+			}
+		}
+		if r >= vietExtStart {
+			vietExt[r-vietExtStart] = c
+		} else {
+			vietLat1[r-vietLat1Start] = c
+		}
+	}
+}
+
+func lookupVietnameseChar(r rune) (parsedChar, bool) {
+	if r >= vietExtStart && r <= vietExtEnd {
+		return vietExt[r-vietExtStart], vietExt[r-vietExtStart].isAlnum
+	}
+	if r >= vietLat1Start && r <= vietLat1End {
+		return vietLat1[r-vietLat1Start], vietLat1[r-vietLat1Start].isAlnum
+	}
+	return parsedChar{}, false
+}
 
 const (
 	toneGrave uint8 = 1 << iota // huyền (\u0300)
@@ -76,6 +127,7 @@ type CompiledRule struct {
 	compactToneMask         uint8
 	compactRuneLen          int
 	bigrams                 [26]uint32 // bits 0..25: intra-token bigram a->b; bit 26: letter a present
+	minBigrams              [26]uint32 // necessary bigrams across rules (a), (b), and (c) for early skipping
 	hasDiacritic            bool
 	allowCompactSingleToken bool
 }
@@ -152,6 +204,14 @@ func CompileRule(r Rule) (CompiledRule, bool) {
 	for _, t := range tokens {
 		addTokenBigrams(&bigrams, t.chars)
 	}
+	minBigrams := bigrams
+	if compactRuneLen >= minCompactMatchRunes {
+		var compactBigrams [26]uint32
+		addTokenBigrams(&compactBigrams, compactChars)
+		for i := range minBigrams {
+			minBigrams[i] &= compactBigrams[i]
+		}
+	}
 
 	// For single-token accented rules (e.g. "súng"), do not let folded rule (b)
 	// bypass rule (a)'s exact-diacritic check (e.g. "bổ sung" must not match "súng").
@@ -166,6 +226,7 @@ func CompileRule(r Rule) (CompiledRule, bool) {
 		compactToneMask:         compactToneMask,
 		compactRuneLen:          compactRuneLen,
 		bigrams:                 bigrams,
+		minBigrams:              minBigrams,
 		hasDiacritic:            hasDiacritic,
 		allowCompactSingleToken: allowCompactSingle,
 	}, true
@@ -193,37 +254,42 @@ func MatchCompiled(rules []CompiledRule, fields ...string) MatchResult {
 		return MatchResult{}
 	}
 
-	docs := make([]docTokens, 0, len(fields))
+	matched := make([]bool, len(rules))
+	matchedCount := 0
 	for _, field := range fields {
-		if strings.TrimSpace(field) == "" {
+		if field == "" {
+			continue
+		}
+		if fb, fastOK := scanFastFieldBigrams(field); fastOK && !anyRuleMatchesBigrams(rules, matched, &fb) {
 			continue
 		}
 		toks := tokenize(field, false)
 		if len(toks) == 0 {
 			continue
 		}
-		docs = append(docs, buildDocTokens(toks))
+		doc := buildDocTokens(toks)
+		for i := range rules {
+			if !matched[i] && ruleMatchesDoc(&rules[i], &doc) {
+				matched[i] = true
+				matchedCount++
+			}
+		}
+		if matchedCount == len(rules) {
+			break
+		}
 	}
-	if len(docs) == 0 {
+	if matchedCount == 0 {
 		return MatchResult{}
 	}
 
 	blockedSet := make(map[string]struct{})
 	flaggedSet := make(map[string]struct{})
-	allSet := make(map[string]struct{})
-
+	allSet := make(map[string]struct{}, matchedCount)
 	for i := range rules {
-		rule := &rules[i]
-		matched := false
-		for j := range docs {
-			if ruleMatchesDoc(rule, &docs[j]) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
+		if !matched[i] {
 			continue
 		}
+		rule := &rules[i]
 		term := strings.TrimSpace(rule.Term)
 		if term == "" {
 			term = rule.NormalizedTerm
@@ -252,6 +318,74 @@ func MatchCompiled(rules []CompiledRule, fields ...string) MatchResult {
 	return res
 }
 
+func anyRuleMatchesBigrams(rules []CompiledRule, matched []bool, fb *[26]uint32) bool {
+	for i := range rules {
+		if !matched[i] && hasAllBigrams(fb, &rules[i].minBigrams) {
+			return true
+		}
+	}
+	return false
+}
+
+// scanFastFieldBigrams computes a sound superset of doc.bigrams without allocating when input
+// consists solely of ASCII bytes and precomposed Vietnamese letters.
+func scanFastFieldBigrams(input string) (bigrams [26]uint32, ok bool) {
+	var inTok bool
+	var tokLen, runLen int
+	var tokFirst, tokPrev, prevShort byte
+	flushShort := func() {
+		if tokLen <= maxShortTokenRunes {
+			if prevShort >= 'a' && prevShort <= 'z' && tokFirst >= 'a' && tokFirst <= 'z' {
+				bigrams[prevShort-'a'] |= 1 << (tokFirst - 'a')
+			}
+			prevShort = tokPrev
+		} else {
+			prevShort = 0
+		}
+		inTok = false
+	}
+	for i := 0; i < len(input); {
+		var c parsedChar
+		if b := input[i]; b < utf8.RuneSelf {
+			c, i = asciiParsed[b], i+1
+		} else {
+			r, size := utf8.DecodeRuneInString(input[i:])
+			vc, vok := lookupVietnameseChar(r)
+			if !vok {
+				return [26]uint32{}, false
+			}
+			c, i = vc, i+size
+		}
+		if !c.isAlnum {
+			if inTok {
+				flushShort()
+			}
+			continue
+		}
+		base := byte(c.base)
+		if base >= 'a' && base <= 'z' {
+			bigrams[base-'a'] |= 1 << 26
+			if inTok && tokPrev >= 'a' && tokPrev <= 'z' {
+				bigrams[tokPrev-'a'] |= 1 << (base - 'a')
+			}
+		}
+		if !inTok {
+			inTok, tokFirst, tokPrev, runLen, tokLen = true, base, base, 1, 1
+		} else if base == tokPrev {
+			runLen++
+			if runLen == 3 {
+				tokLen--
+			}
+		} else {
+			tokPrev, runLen, tokLen = base, 1, tokLen+1
+		}
+	}
+	if inTok {
+		flushShort()
+	}
+	return bigrams, true
+}
+
 type shortRun struct {
 	tokens     []normToken
 	foldedFlat string // collapseRepeats3 of concatenated t.folded (fast pre-filter)
@@ -269,10 +403,9 @@ type docTokens struct {
 
 func buildDocTokens(tokens []normToken) docTokens {
 	dt := docTokens{
-		tokens:      tokens,
-		positions:   make(map[string][]int, len(tokens)),
-		shortStarts: make(map[rune][]int, 32),
-		foldedSet:   make(map[string]struct{}, len(tokens)),
+		tokens:    tokens,
+		positions: make(map[string][]int, len(tokens)),
+		foldedSet: make(map[string]struct{}, len(tokens)),
 	}
 	var runBuf strings.Builder
 	runStart := -1
@@ -281,7 +414,7 @@ func buildDocTokens(tokens []normToken) docTokens {
 			return
 		}
 		merged := collapseRepeats3(runBuf.String())
-		if len([]rune(merged)) >= minCompactMatchRunes {
+		if utf8.RuneCountInString(merged) >= minCompactMatchRunes {
 			dt.shortRuns = append(dt.shortRuns, shortRun{
 				tokens:     tokens[runStart:end],
 				foldedFlat: merged,
@@ -302,6 +435,9 @@ func buildDocTokens(tokens []normToken) docTokens {
 		if t.runeLen <= maxShortTokenRunes {
 			if len(t.chars) > 0 {
 				b := t.chars[0].base
+				if dt.shortStarts == nil {
+					dt.shortStarts = make(map[rune][]int, 8)
+				}
 				dt.shortStarts[b] = append(dt.shortStarts[b], i)
 				if prevShort >= 'a' && prevShort <= 'z' && b >= 'a' && b <= 'z' {
 					dt.bigrams[prevShort-'a'] |= 1 << (b - 'a')
@@ -322,6 +458,10 @@ func buildDocTokens(tokens []normToken) docTokens {
 }
 
 func ruleMatchesDoc(rule *CompiledRule, doc *docTokens) bool {
+	if !hasAllBigrams(&doc.bigrams, &rule.minBigrams) {
+		return false
+	}
+
 	// (a) Sequence alignment on token boundaries (1-to-1 per-token E9(a) or merged >=2 short tokens <=2 runes).
 	kLen := len(rule.tokens)
 	if kLen > 0 && kLen <= len(doc.tokens) && hasAllBigrams(&doc.bigrams, &rule.bigrams) {
@@ -529,50 +669,55 @@ func tokenize(input string, needRaw bool) []normToken {
 		return nil
 	}
 
-	s := norm.NFKD.String(input)
-	parsed := make([]parsedChar, 0, len(s))
-	lastIdx := -1
-
-	for _, r := range s {
-		if unicode.Is(unicode.Cf, r) {
+	parsed := make([]parsedChar, 0, len(input))
+	fastOK := true
+	for i := 0; i < len(input); {
+		if b := input[i]; b < utf8.RuneSelf {
+			parsed = append(parsed, asciiParsed[b])
+			i++
 			continue
 		}
-		if isCombiningMark(r) {
-			if lastIdx >= 0 && isVietnameseVowelBase(parsed[lastIdx].base) {
-				if toneBit := vietnameseToneBit(r); toneBit != 0 {
-					parsed[lastIdx].toneMask |= toneBit
-				} else {
-					applyVietnameseQuality(&parsed[lastIdx], r)
-				}
+		r, size := utf8.DecodeRuneInString(input[i:])
+		if vc, ok := lookupVietnameseChar(r); ok {
+			parsed = append(parsed, vc)
+			i += size
+			continue
+		}
+		fastOK = false
+		break
+	}
+	if !fastOK {
+		parsed = parsed[:0]
+		lastIdx := -1
+		for _, r := range norm.NFKD.String(input) {
+			if unicode.Is(unicode.Cf, r) {
+				continue
 			}
-			continue
-		}
-
-		// Fold homoglyphs BEFORE ToLower because upper/lower Greek confusables differ (e.g. Η->h, η->n).
-		lr := unicode.ToLower(foldHomoglyph(r))
-		if lr == 'đ' {
-			parsed = append(parsed, parsedChar{
-				base:    'd',
-				shaped:  'đ',
-				isAlnum: true,
-			})
-			lastIdx = len(parsed) - 1
-			continue
-		}
-
-		fr := foldLeet(lr)
-		isLeet := fr != lr
-		isAlnum := unicode.IsLetter(fr) || unicode.IsDigit(fr)
-		parsed = append(parsed, parsedChar{
-			base:    fr,
-			shaped:  fr,
-			leet:    isLeet,
-			isAlnum: isAlnum,
-		})
-		if isAlnum {
-			lastIdx = len(parsed) - 1
-		} else {
-			lastIdx = -1
+			if isCombiningMark(r) {
+				if lastIdx >= 0 && isVietnameseVowelBase(parsed[lastIdx].base) {
+					if toneBit := vietnameseToneBit(r); toneBit != 0 {
+						parsed[lastIdx].toneMask |= toneBit
+					} else {
+						applyVietnameseQuality(&parsed[lastIdx], r)
+					}
+				}
+				continue
+			}
+			// Fold homoglyphs BEFORE ToLower because upper/lower Greek confusables differ (e.g. Η->h, η->n).
+			lr := unicode.ToLower(foldHomoglyph(r))
+			if lr == 'đ' {
+				parsed = append(parsed, parsedChar{base: 'd', shaped: 'đ', isAlnum: true})
+				lastIdx = len(parsed) - 1
+				continue
+			}
+			fr := foldLeet(lr)
+			isAlnum := unicode.IsLetter(fr) || unicode.IsDigit(fr)
+			parsed = append(parsed, parsedChar{base: fr, shaped: fr, leet: fr != lr, isAlnum: isAlnum})
+			if isAlnum {
+				lastIdx = len(parsed) - 1
+			} else {
+				lastIdx = -1
+			}
 		}
 	}
 
@@ -659,6 +804,9 @@ func tokenize(input string, needRaw bool) []normToken {
 		}
 	}
 	flushTok(len(collapsed))
+	if len(tokens) == 0 {
+		return nil
+	}
 	return tokens
 }
 

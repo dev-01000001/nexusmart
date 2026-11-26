@@ -235,16 +235,19 @@ func (s *Server) PreviewBannedKeyword(ctx context.Context, req *productv1.Previe
 		cursor   string
 	)
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, status.FromContextError(err).Err()
+		}
 		batch, err := s.store.ListProductsForModerationScan(ctx, cursor, defaultRescanBatchSize)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "scan products for preview: %v", err)
+			return nil, moderationScanError(ctx, "scan products for preview", err)
 		}
 		if len(batch) == 0 {
 			break
 		}
 		skusByProd, err := s.loadModerationSKUsByProducts(ctx, s.store, batch)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "load product skus for preview: %v", err)
+			return nil, moderationScanError(ctx, "load product skus for preview", err)
 		}
 		for _, p := range batch {
 			fields := collectProductModerationFields(p.Name, p.Description, productModerationSlug{
@@ -279,6 +282,13 @@ func (s *Server) PreviewBannedKeyword(ctx context.Context, req *productv1.Previe
 		AffectedCount: affected,
 		Samples:       samples,
 	}, nil
+}
+
+func moderationScanError(ctx context.Context, op string, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return status.FromContextError(ctxErr).Err()
+	}
+	return status.Errorf(codes.Internal, "%s: %v", op, err)
 }
 
 // RescanProductsForBannedContent scans products in cursor-paginated batches of up to 500 (E11).
@@ -437,11 +447,11 @@ func (s *Server) RescanProductsForBannedContent(ctx context.Context, req *produc
 				}
 				return getErr
 			}
-			curSKUs, skuErr := q.ListSKUsByProductIDs(ctx, []string{cur.ID})
+			curSKUs, skuErr := q.ListModerationSKUsByProductIDs(ctx, []string{cur.ID})
 			if skuErr != nil {
 				return skuErr
 			}
-			curModSKUs := toModerationSKUsFromStore(curSKUs)
+			curModSKUs := toModerationSKUsFromModerationStore(curSKUs)
 
 			isProhibCur := false
 			if len(keywordIDs) == 0 {
@@ -624,6 +634,14 @@ func toModerationSKUsFromInputs(in []normalizedSKUInput) []moderationSKU {
 	return out
 }
 
+func toModerationSKUsFromModerationStore(skus []store.ModerationSKU) []moderationSKU {
+	out := make([]moderationSKU, 0, len(skus))
+	for _, sk := range skus {
+		out = append(out, moderationSKU{Name: sk.Name, Attributes: sk.Attributes})
+	}
+	return out
+}
+
 func (s *Server) loadModerationSKUsByProducts(ctx context.Context, q store.Queries, prods []store.Product) (map[string][]moderationSKU, error) {
 	if len(prods) == 0 {
 		return map[string][]moderationSKU{}, nil
@@ -632,7 +650,7 @@ func (s *Server) loadModerationSKUsByProducts(ctx context.Context, q store.Queri
 	for i, p := range prods {
 		ids[i] = p.ID
 	}
-	skus, err := q.ListSKUsByProductIDs(ctx, ids)
+	skus, err := q.ListModerationSKUsByProductIDs(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
