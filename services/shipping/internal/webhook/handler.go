@@ -242,11 +242,15 @@ func parseStatusID(raw json.RawMessage) string {
 	return strings.Trim(s, "\"")
 }
 
+// vietnamLocation is fixed UTC+7 (ICT) so timezone-less GHTK timestamps never depend on host tzdata.
+var vietnamLocation = time.FixedZone("ICT", 7*60*60)
+
 func parseWebhookTime(raw string) (time.Time, error) {
-	if ts, err := time.Parse(time.RFC3339, raw); err == nil {
+	s := strings.TrimSpace(raw)
+	if ts, err := time.Parse(time.RFC3339, s); err == nil {
 		return ts.UTC(), nil
 	}
-	if ts, err := time.Parse("2006-01-02 15:04:05", raw); err == nil {
+	if ts, err := time.ParseInLocation("2006-01-02 15:04:05", s, vietnamLocation); err == nil {
 		return ts.UTC(), nil
 	}
 	return time.Time{}, errors.New("invalid timestamp")

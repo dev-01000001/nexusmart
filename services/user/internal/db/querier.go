@@ -123,6 +123,7 @@ type Querier interface {
 	SuspendShop(ctx context.Context, arg SuspendShopParams) (Shop, error)
 	UnsuspendShop(ctx context.Context, arg UnsuspendShopParams) (Shop, error)
 	UpdateAddress(ctx context.Context, arg UpdateAddressParams) (Address, error)
+	UpdateCustomDomainProvisioned(ctx context.Context, arg UpdateCustomDomainProvisionedParams) (Domain, error)
 	UpdateDomainCFRecordID(ctx context.Context, arg UpdateDomainCFRecordIDParams) (Domain, error)
 	UpdateDomainError(ctx context.Context, arg UpdateDomainErrorParams) (Domain, error)
 	UpdateDomainVerificationState(ctx context.Context, arg UpdateDomainVerificationStateParams) (Domain, error)

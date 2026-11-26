@@ -35,6 +35,9 @@ var ErrInvalidCarrierToken = errors.New("invalid carrier API token")
 // while CreateShipment rejects it immediately as non-retryable without calling GHN.
 var ErrMissingGHNMapping = errors.New("phường chưa có mã GHN, chọn hãng khác")
 
+// ErrRedeliveryUnsupported indicates the carrier does not expose an API endpoint for redelivery requests.
+var ErrRedeliveryUnsupported = errors.New("carrier does not support redelivery API")
+
 // NonRetryableError wraps errors that should not be retried (e.g., 4xx validation errors).
 type NonRetryableError struct {
 	Err error

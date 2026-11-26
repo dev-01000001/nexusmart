@@ -11,6 +11,7 @@ import (
 	"github.com/nexusmart/core/services/chat/internal/service"
 	"github.com/nexusmart/core/services/chat/internal/store"
 	"github.com/nexusmart/core/services/chat/internal/ticket"
+	"github.com/nexusmart/core/services/chat/internal/userclient"
 	"github.com/nexusmart/core/services/chat/internal/validator"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -376,7 +377,25 @@ func mapError(err error) error {
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, service.ErrShopInactive):
 		return status.Error(codes.FailedPrecondition, err.Error())
+	case isUpstreamUnavailable(err):
+		return status.Error(codes.Unavailable, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}
+}
+
+func isUpstreamUnavailable(err error) bool {
+	if errors.Is(err, userclient.ErrCircuitOpen) {
+		return true
+	}
+	var stErr interface{ GRPCStatus() *status.Status }
+	if errors.As(err, &stErr) {
+		if st := stErr.GRPCStatus(); st != nil {
+			switch st.Code() {
+			case codes.Unavailable, codes.DeadlineExceeded:
+				return true
+			}
+		}
+	}
+	return false
 }

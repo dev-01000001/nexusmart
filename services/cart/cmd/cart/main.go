@@ -45,7 +45,7 @@ func run(serviceName string, log *slog.Logger) error {
 
 	grpcPort := env.EnvString("GRPC_PORT", "50053")
 	httpPort := env.EnvString("HTTP_PORT", "8083")
-	redisAddr := env.EnvString("REDIS_ADDR", "redis:6379")
+	redisAddr, redisPassword := loadRedisConfig()
 	productAddr := env.EnvString("PRODUCT_GRPC_ADDR", "product:50052")
 	userAddr := env.EnvString("USER_GRPC_ADDR", "")
 	jwtSecret := env.EnvString("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me")
@@ -76,7 +76,7 @@ func run(serviceName string, log *slog.Logger) error {
 		return fmt.Errorf("init service token manager (SERVICE_JWT_SECRET): %w", err)
 	}
 
-	rdb, err := connectRedisWithRetry(ctx, redisAddr, log)
+	rdb, err := connectRedisWithRetry(ctx, redisAddr, redisPassword, log)
 	if err != nil {
 		return fmt.Errorf("connect redis: %w", err)
 	}
@@ -170,9 +170,14 @@ func run(serviceName string, log *slog.Logger) error {
 	return nil
 }
 
-func connectRedisWithRetry(ctx context.Context, addr string, log *slog.Logger) (*redis.Client, error) {
+func loadRedisConfig() (string, string) {
+	return env.EnvString("REDIS_ADDR", "redis:6379"), env.EnvString("REDIS_PASSWORD", "")
+}
+
+func connectRedisWithRetry(ctx context.Context, addr, password string, log *slog.Logger) (*redis.Client, error) {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:         addr,
+		Password:     password,
 		DialTimeout:  3 * time.Second,
 		ReadTimeout:  3 * time.Second,
 		WriteTimeout: 3 * time.Second,

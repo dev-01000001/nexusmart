@@ -2,6 +2,8 @@ package grpcserver
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/nexusmart/core/services/chat/internal/service"
 	"github.com/nexusmart/core/services/chat/internal/store"
 	"github.com/nexusmart/core/services/chat/internal/ticket"
+	"github.com/nexusmart/core/services/chat/internal/userclient"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -134,5 +137,95 @@ func TestGRPCServerAuthPermissionsAndTicketExchange(t *testing.T) {
 	})
 	if err != nil || !upResp.GetConfig().GetEnabled() {
 		t.Fatalf("upsert auto reply config failed: resp=%+v err=%v", upResp, err)
+	}
+}
+
+type stubShopChecker struct {
+	err error
+}
+
+func (s stubShopChecker) VerifyActiveShop(_ context.Context, _ string) error {
+	return s.err
+}
+
+func TestCreateOrGetConversation_MapsUpstreamGRPCUnavailableAndPreservesOtherCodes(t *testing.T) {
+	buyerCtx := ctxWithClaims("buyer-1", "buyer", "")
+
+	cases := []struct {
+		name     string
+		checkErr error
+		wantCode codes.Code
+	}{
+		{
+			name:     "wrapped upstream Unavailable -> Unavailable",
+			checkErr: fmt.Errorf("verify active shop: %w", status.Error(codes.Unavailable, "user service down")),
+			wantCode: codes.Unavailable,
+		},
+		{
+			name:     "wrapped upstream DeadlineExceeded -> Unavailable",
+			checkErr: fmt.Errorf("verify active shop: %w", status.Error(codes.DeadlineExceeded, "user service timeout")),
+			wantCode: codes.Unavailable,
+		},
+		{
+			name:     "direct upstream Unavailable -> Unavailable",
+			checkErr: status.Error(codes.Unavailable, "product service down"),
+			wantCode: codes.Unavailable,
+		},
+		{
+			name:     "direct upstream DeadlineExceeded -> Unavailable",
+			checkErr: status.Error(codes.DeadlineExceeded, "order service timeout"),
+			wantCode: codes.Unavailable,
+		},
+		{
+			name:     "userclient circuit breaker open -> Unavailable",
+			checkErr: userclient.ErrCircuitOpen,
+			wantCode: codes.Unavailable,
+		},
+		{
+			name:     "shop not found stays NotFound",
+			checkErr: userclient.ErrShopNotFound,
+			wantCode: codes.NotFound,
+		},
+		{
+			name:     "shop inactive stays FailedPrecondition",
+			checkErr: userclient.ErrShopInactive,
+			wantCode: codes.FailedPrecondition,
+		},
+		{
+			name:     "upstream Internal stays Internal",
+			checkErr: fmt.Errorf("verify active shop: %w", status.Error(codes.Internal, "upstream crash")),
+			wantCode: codes.Internal,
+		},
+		{
+			name:     "upstream PermissionDenied stays Internal",
+			checkErr: fmt.Errorf("verify active shop: %w", status.Error(codes.PermissionDenied, "denied")),
+			wantCode: codes.Internal,
+		},
+		{
+			name:     "upstream ResourceExhausted stays Internal",
+			checkErr: fmt.Errorf("verify active shop: %w", status.Error(codes.ResourceExhausted, "rate limited")),
+			wantCode: codes.Internal,
+		},
+		{
+			name:     "plain non-gRPC error stays Internal",
+			checkErr: errors.New("unexpected failure"),
+			wantCode: codes.Internal,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := store.NewMemStore()
+			h := hub.New(nil, "inst-upstream-test", nil, nil)
+			svc := service.NewChatService(st, h, nil, nil, nil, service.WithShopChecker(stubShopChecker{err: tc.checkErr}))
+			srv := New(svc)
+
+			_, err := srv.CreateOrGetConversation(buyerCtx, &chatv1.CreateOrGetConversationRequest{
+				ShopId: "shop-1",
+			})
+			if got := status.Code(err); got != tc.wantCode {
+				t.Fatalf("status.Code(err) = %v, want %v (err=%v)", got, tc.wantCode, err)
+			}
+		})
 	}
 }

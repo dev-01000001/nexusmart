@@ -864,7 +864,10 @@ func (s *Server) ListShopSuspensionApprovals(ctx context.Context, input ListShop
 		shopIDPtr = &sid
 	}
 
-	page, pageSize := normalizePagination(input.Page, input.PageSize)
+	page, pageSize, err := normalizePagination(input.Page, input.PageSize)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.store.ListShopSuspensionApprovals(ctx, db.ListShopSuspensionApprovalsParams{
 		Status:     st,
 		ShopID:     shopIDPtr,
@@ -1278,7 +1281,10 @@ func (s *Server) ListUserActivities(ctx context.Context, input ListUserActivitie
 		return nil, status.Error(codes.Internal, "failed to load user")
 	}
 
-	page, pageSize := normalizePagination(input.Page, input.PageSize)
+	page, pageSize, err := normalizePagination(input.Page, input.PageSize)
+	if err != nil {
+		return nil, err
+	}
 	category := strings.ToLower(strings.TrimSpace(input.Category))
 
 	entries, err := s.store.ListUserActivityLogs(ctx, db.ListUserActivityLogsParams{

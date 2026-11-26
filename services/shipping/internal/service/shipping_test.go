@@ -9,6 +9,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -23,6 +25,7 @@ import (
 	"github.com/nexusmart/core/services/shipping/internal/carrier"
 	"github.com/nexusmart/core/services/shipping/internal/events"
 	"github.com/nexusmart/core/services/shipping/internal/store"
+	"github.com/sony/gobreaker/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -3624,5 +3627,119 @@ func TestCalculateFeeCacheAndCatalogMethods(t *testing.T) {
 	}
 	if processed, _ := repo.IsEventProcessed(context.Background(), "evt-no-ship"); !processed {
 		t.Fatalf("expected evt-no-ship marked processed")
+	}
+}
+
+func TestRequestRedelivery_GHTKSandboxUnsupportedDoesNotMutateState(t *testing.T) {
+	var httpCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		httpCalls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	repo := newMemRepo()
+	ghtkSandbox := carrier.NewGHTKAdapter(carrier.GHTKConfig{
+		Mode:       "sandbox",
+		BaseURL:    srv.URL,
+		Token:      "live-ghtk-token",
+		HTTPClient: srv.Client(),
+	})
+	resGHTK := carrier.NewResilientCarrier(ghtkSandbox, carrier.ResilienceConfig{
+		AttemptTimeout: 200 * time.Millisecond,
+		MaxAttempts:    3,
+		BaseBackoff:    5 * time.Millisecond,
+		MaxBackoff:     10 * time.Millisecond,
+		CBMaxFailures:  1,
+		CBOpenTimeout:  30 * time.Second,
+		Logger:         logger,
+	})
+	svc := NewShippingService(repo, carrier.NewAggregator(logger, resGHTK), nil, nil, logger)
+
+	now := time.Date(2026, 11, 20, 5, 0, 0, 0, time.UTC)
+	shID := uuid.NewString()
+	_, _, err := repo.CreateShipment(context.Background(), &store.Shipment{
+		ID:              shID,
+		OrderID:         "ord-ghtk-sb-redeliv",
+		ShopID:          "shop-1",
+		BuyerID:         "buyer-1",
+		Direction:       store.DirectionForward,
+		CarrierCode:     carrier.CodeGHTK,
+		ServiceCode:     "ROAD",
+		TrackingCode:    "S123456.BO.777777",
+		Status:          carrier.StatusFailed,
+		RedeliveryCount: 0,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}, &store.ShipmentEvent{
+		ID:          uuid.NewString(),
+		ShipmentID:  shID,
+		Status:      carrier.StatusFailed,
+		RawStatus:   "9",
+		Description: "Không giao được hàng",
+		OccurredAt:  now,
+		CreatedAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("seed failed GHTK shipment: %v", err)
+	}
+
+	got, err := svc.RequestRedelivery(context.Background(), "buyer-1", "ord-ghtk-sb-redeliv", "2026-11-28", "gọi trước")
+	if err == nil || got != nil {
+		t.Fatalf("sandbox GHTK RequestRedelivery must fail, got sh=%+v err=%v", got, err)
+	}
+	if !errors.Is(err, ErrRedeliveryUnsupported) {
+		t.Fatalf("expected ErrRedeliveryUnsupported, got %v", err)
+	}
+	if httpCalls.Load() != 0 {
+		t.Fatalf("expected 0 HTTP calls to GHTK, got %d", httpCalls.Load())
+	}
+	if resGHTK.State() != gobreaker.StateClosed {
+		t.Fatalf("expected GHTK circuit breaker Closed, got %s", resGHTK.State())
+	}
+
+	after, evs, err := svc.GetShipment(context.Background(), "ord-ghtk-sb-redeliv", "", store.DirectionForward)
+	if err != nil {
+		t.Fatalf("GetShipment after failed redelivery: %v", err)
+	}
+	if after.Status != carrier.StatusFailed {
+		t.Fatalf("shipment status must remain failed, got %s", after.Status)
+	}
+	if after.RedeliveryCount != 0 {
+		t.Fatalf("redelivery_count must remain 0, got %d", after.RedeliveryCount)
+	}
+	if len(evs) != 1 || evs[0].RawStatus != "9" {
+		t.Fatalf("must not append redelivery_requested event on unsupported carrier, got %+v", evs)
+	}
+
+	// Mock mode GHTK continues to allow buyer RequestRedelivery as before.
+	mockRepo := newMemRepo()
+	mockGHTK := carrier.NewGHTKAdapter(carrier.GHTKConfig{Mode: "mock"})
+	mockSvc := NewShippingService(mockRepo, carrier.NewAggregator(logger, mockGHTK), nil, nil, logger)
+	mockID := uuid.NewString()
+	_, _, _ = mockRepo.CreateShipment(context.Background(), &store.Shipment{
+		ID:           mockID,
+		OrderID:      "ord-ghtk-mock-redeliv",
+		ShopID:       "shop-1",
+		BuyerID:      "buyer-1",
+		Direction:    store.DirectionForward,
+		CarrierCode:  carrier.CodeGHTK,
+		TrackingCode: "GHTK-MOCK-REDELIV",
+		Status:       carrier.StatusFailed,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}, &store.ShipmentEvent{
+		ID:          uuid.NewString(),
+		ShipmentID:  mockID,
+		Status:      carrier.StatusFailed,
+		RawStatus:   "9",
+		Description: "Không giao được hàng",
+		OccurredAt:  now,
+		CreatedAt:   now,
+	})
+	updated, err := mockSvc.RequestRedelivery(context.Background(), "buyer-1", "ord-ghtk-mock-redeliv", "2026-11-28", "gọi trước")
+	if err != nil || updated == nil || updated.RedeliveryCount != 1 {
+		t.Fatalf("mock GHTK RequestRedelivery must still succeed with redelivery_count=1, got sh=%+v err=%v", updated, err)
 	}
 }

@@ -270,10 +270,20 @@ func (c *LiveClient) GetCustomHostname(ctx context.Context, cfHostnameID, hostna
 	}
 	path := fmt.Sprintf("/zones/%s/custom_hostnames/%s", url.PathEscape(c.zoneID), url.PathEscape(id))
 	var res cfCustomHostname
-	if _, err := c.doJSON(ctx, http.MethodGet, path, nil, false, &res); err != nil {
+	found, err := c.doJSON(ctx, http.MethodGet, path, nil, true, &res)
+	if err != nil {
 		return CustomHostnameStatus{}, err
 	}
-	return c.mapCustomHostname(res, strings.ToLower(strings.TrimSpace(hostname))), nil
+	fallbackHost := strings.ToLower(strings.TrimSpace(hostname))
+	if !found {
+		return CustomHostnameStatus{
+			ID:        id,
+			Hostname:  fallbackHost,
+			Status:    StatusFailed,
+			LastError: "custom hostname not found on DNS provider",
+		}, nil
+	}
+	return c.mapCustomHostname(res, fallbackHost), nil
 }
 
 func (c *LiveClient) DeleteCustomHostname(ctx context.Context, cfHostnameID string) error {

@@ -2,17 +2,23 @@ package mailer
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"mime"
 	"net"
+	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+const defaultSMTPTimeout = 10 * time.Second
 
 // Message represents an outbound plain-text email.
 type Message struct {
@@ -21,44 +27,76 @@ type Message struct {
 	Body    string
 }
 
-// Sender transmits email messages (implemented by SMTPMailer for Mailpit).
+// Sender transmits email messages (implemented by SMTPMailer for Mailpit or real SMTP providers).
 type Sender interface {
 	Send(ctx context.Context, msg Message) error
 }
 
-// SMTPMailer sends UTF-8 emails via stdlib net/smtp to Mailpit (or any plain SMTP relay).
+// SMTPMailer sends UTF-8 emails via stdlib net/smtp (plain for Mailpit when username is empty,
+// or mandatory TLS/STARTTLS + AUTH PLAIN when credentials are configured).
 type SMTPMailer struct {
-	host    string
-	port    int
-	from    string
-	timeout time.Duration
+	host        string
+	port        int
+	fromAddr    string
+	fromHeader  string
+	fromDomain  string
+	username    string
+	password    string
+	timeout     time.Duration
+	tlsConfig   *tls.Config
+	implicitTLS bool
 }
 
-// NewSMTPMailer creates an SMTPMailer targeting host:port with sender address from.
-func NewSMTPMailer(host string, port int, from string) *SMTPMailer {
-	if strings.TrimSpace(host) == "" {
+// NewSMTPMailer creates an SMTPMailer targeting host:port with sender address from and optional credentials.
+// When username is empty, plain SMTP is used (Mailpit/e2e). When username is set, password is required
+// and TLS (implicit on ports 465/2465, mandatory STARTTLS otherwise) + AUTH PLAIN are enforced.
+func NewSMTPMailer(host string, port int, from, username, password string) (*SMTPMailer, error) {
+	host = strings.TrimSpace(host)
+	if host == "" {
 		host = "mailpit"
 	}
 	if port <= 0 {
 		port = 1025
 	}
-	if strings.TrimSpace(from) == "" {
-		from = "no-reply@nexusmart.local"
+
+	username = strings.TrimSpace(username)
+	hasUser := username != ""
+	hasPass := strings.TrimSpace(password) != ""
+	if hasUser != hasPass {
+		return nil, errors.New("smtp credentials require both username and password")
 	}
+
+	fromAddr, fromHeader, fromDomain, err := parseFromAddress(from)
+	if err != nil {
+		return nil, err
+	}
+
 	return &SMTPMailer{
-		host:    host,
-		port:    port,
-		from:    sanitizeHeader(from),
-		timeout: 5 * time.Second,
-	}
+		host:       host,
+		port:       port,
+		fromAddr:   fromAddr,
+		fromHeader: fromHeader,
+		fromDomain: fromDomain,
+		username:   username,
+		password:   password,
+		timeout:    defaultSMTPTimeout,
+	}, nil
 }
 
-// FormatMessage builds a clean RFC 5322 UTF-8 message suitable for Mailpit inspection.
+// FormatMessage builds a clean RFC 5322 UTF-8 message suitable for Mailpit or real SMTP relays.
 func FormatMessage(from string, msg Message, now time.Time) []byte {
-	cleanFrom := sanitizeHeader(from)
+	fromHeader, fromDomain := formatFromAndDomain(from)
+	return formatMessage(fromHeader, fromDomain, msg, now)
+}
+
+func formatMessage(fromHeader, fromDomain string, msg Message, now time.Time) []byte {
+	cleanFrom := sanitizeHeader(fromHeader)
 	cleanTo := sanitizeHeader(msg.To)
 	cleanSubject := sanitizeHeader(msg.Subject)
-	msgID := fmt.Sprintf("<%s@nexusmart.local>", uuid.NewString())
+	if fromDomain == "" {
+		fromDomain = "nexusmart.local"
+	}
+	msgID := fmt.Sprintf("<%s@%s>", uuid.NewString(), fromDomain)
 
 	var b strings.Builder
 	b.WriteString("From: ")
@@ -199,20 +237,48 @@ func (m *SMTPMailer) Send(ctx context.Context, msg Message) error {
 	if to == "" {
 		return errors.New("recipient email is required")
 	}
+	rcptAddr := to
+	if parsedTo, err := mail.ParseAddress(to); err == nil {
+		rcptAddr = parsedTo.Address
+	}
+
+	if m.username != "" && isReservedDomain(rcptAddr) {
+		return nil
+	}
+
+	sendCtx, cancel := context.WithTimeout(ctx, m.timeout)
+	defer cancel()
+	deadline, _ := sendCtx.Deadline()
 
 	addr := net.JoinHostPort(m.host, strconv.Itoa(m.port))
 	dialer := &net.Dialer{Timeout: m.timeout}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return fmt.Errorf("dial smtp %s: %w", addr, err)
+
+	var (
+		conn net.Conn
+		err  error
+	)
+	if m.username != "" && m.useImplicitTLS() {
+		tlsDialer := &tls.Dialer{
+			NetDialer: dialer,
+			Config:    m.buildTLSConfig(),
+		}
+		conn, err = tlsDialer.DialContext(sendCtx, "tcp", addr)
+		if err != nil {
+			return fmt.Errorf("dial smtp tls %s: %w", addr, err)
+		}
+	} else {
+		conn, err = dialer.DialContext(sendCtx, "tcp", addr)
+		if err != nil {
+			return fmt.Errorf("dial smtp %s: %w", addr, err)
+		}
 	}
 	defer func() { _ = conn.Close() }()
 
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = conn.SetDeadline(deadline)
-	} else {
-		_ = conn.SetDeadline(time.Now().Add(m.timeout))
-	}
+	_ = conn.SetDeadline(deadline)
+	stopCancel := context.AfterFunc(sendCtx, func() {
+		_ = conn.SetDeadline(time.Now())
+	})
+	defer stopCancel()
 
 	client, err := smtp.NewClient(conn, m.host)
 	if err != nil {
@@ -220,28 +286,168 @@ func (m *SMTPMailer) Send(ctx context.Context, msg Message) error {
 	}
 	defer func() { _ = client.Close() }()
 
-	if err := client.Mail(m.from); err != nil {
-		return fmt.Errorf("smtp MAIL FROM: %w", err)
+	if m.username != "" {
+		if !m.useImplicitTLS() {
+			if ok, _ := client.Extension("STARTTLS"); !ok {
+				return errors.New("smtp server does not advertise STARTTLS")
+			}
+			if err := client.StartTLS(m.buildTLSConfig()); err != nil {
+				return fmt.Errorf("smtp STARTTLS: %w", err)
+			}
+		}
+		if state, ok := client.TLSConnectionState(); !ok || !state.HandshakeComplete {
+			return errors.New("smtp TLS handshake required before AUTH")
+		}
+		auth := smtp.PlainAuth("", m.username, m.password, m.host)
+		if err := client.Auth(auth); err != nil {
+			return sanitizeAuthError(err, m.username, m.password)
+		}
 	}
-	if err := client.Rcpt(to); err != nil {
-		return fmt.Errorf("smtp RCPT TO: %w", err)
+
+	if err := client.Mail(m.fromAddr); err != nil {
+		return sanitizeSendError("smtp MAIL FROM", err, m.password, to, rcptAddr, msg.Subject)
+	}
+	if err := client.Rcpt(rcptAddr); err != nil {
+		return sanitizeSendError("smtp RCPT TO", err, m.password, to, rcptAddr, msg.Subject)
 	}
 	wc, err := client.Data()
 	if err != nil {
-		return fmt.Errorf("smtp DATA: %w", err)
+		return sanitizeSendError("smtp DATA", err, m.password, to, rcptAddr, msg.Subject)
 	}
-	raw := FormatMessage(m.from, msg, time.Now().UTC())
+	raw := formatMessage(m.fromHeader, m.fromDomain, msg, time.Now().UTC())
 	if _, err := wc.Write(raw); err != nil {
 		_ = wc.Close()
-		return fmt.Errorf("smtp write body: %w", err)
+		return sanitizeSendError("smtp write body", err, m.password, to, rcptAddr, msg.Subject)
 	}
 	if err := wc.Close(); err != nil {
-		return fmt.Errorf("smtp finish DATA: %w", err)
+		return sanitizeSendError("smtp finish DATA", err, m.password, to, rcptAddr, msg.Subject)
 	}
-	if err := client.Quit(); err != nil {
-		return fmt.Errorf("smtp QUIT: %w", err)
-	}
+	// DATA already succeeded with 250 OK; ignore best-effort QUIT errors so early peer close or
+	// post-DATA timeouts do not fail Send and trigger duplicate email retries.
+	_ = client.Quit()
 	return nil
+}
+
+func (m *SMTPMailer) useImplicitTLS() bool {
+	return m.implicitTLS || m.port == 465 || m.port == 2465
+}
+
+func (m *SMTPMailer) buildTLSConfig() *tls.Config {
+	var cfg *tls.Config
+	if m.tlsConfig != nil {
+		cfg = m.tlsConfig.Clone()
+	} else {
+		cfg = &tls.Config{}
+	}
+	cfg.ServerName = m.host
+	if cfg.MinVersion < tls.VersionTLS12 {
+		cfg.MinVersion = tls.VersionTLS12
+	}
+	cfg.InsecureSkipVerify = false
+	return cfg
+}
+
+func parseFromAddress(raw string) (addr, header, domain string, err error) {
+	if strings.ContainsAny(raw, "\r\n") {
+		return "", "", "", errors.New("invalid SMTP_FROM address: contains newline")
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", "", "", errors.New("invalid SMTP_FROM address: empty")
+	}
+	parsed, err := mail.ParseAddress(trimmed)
+	if err != nil {
+		return "", "", "", fmt.Errorf("invalid SMTP_FROM address: %w", err)
+	}
+	domain = extractEmailDomain(parsed.Address)
+	if domain == "" {
+		return "", "", "", errors.New("invalid SMTP_FROM address: missing domain")
+	}
+	header = parsed.Address
+	if parsed.Name != "" {
+		header = parsed.String()
+	}
+	return parsed.Address, header, domain, nil
+}
+
+func formatFromAndDomain(from string) (string, string) {
+	cleanFrom := sanitizeHeader(from)
+	addr, err := mail.ParseAddress(cleanFrom)
+	if err != nil {
+		return cleanFrom, "nexusmart.local"
+	}
+	header := addr.Address
+	if addr.Name != "" {
+		header = addr.String()
+	}
+	domain := extractEmailDomain(addr.Address)
+	if domain == "" {
+		domain = "nexusmart.local"
+	}
+	return header, domain
+}
+
+func extractEmailDomain(addr string) string {
+	at := strings.LastIndexByte(addr, '@')
+	if at <= 0 || at >= len(addr)-1 {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(addr[at+1:]), "."))
+}
+
+var reservedDomains = []string{
+	"local",
+	"test",
+	"invalid",
+	"example",
+	"localhost",
+	"example.com",
+	"example.net",
+	"example.org",
+}
+
+func isReservedDomain(recipient string) bool {
+	addr := recipient
+	if parsed, err := mail.ParseAddress(recipient); err == nil {
+		addr = parsed.Address
+	}
+	domain := extractEmailDomain(addr)
+	if domain == "" {
+		return false
+	}
+	for _, reserved := range reservedDomains {
+		if domain == reserved || strings.HasSuffix(domain, "."+reserved) {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizeAuthError(err error, username, password string) error {
+	var tpErr *textproto.Error
+	if errors.As(err, &tpErr) {
+		return fmt.Errorf("smtp AUTH failed (code %d)", tpErr.Code)
+	}
+	encodedPlain := base64.StdEncoding.EncodeToString([]byte("\x00" + username + "\x00" + password))
+	encodedPass := base64.StdEncoding.EncodeToString([]byte(password))
+	return fmt.Errorf("smtp AUTH: %s", scrubValues(err.Error(), password, encodedPlain, encodedPass))
+}
+
+func sanitizeSendError(op string, err error, secrets ...string) error {
+	var tpErr *textproto.Error
+	if errors.As(err, &tpErr) {
+		return fmt.Errorf("%s failed (code %d)", op, tpErr.Code)
+	}
+	return fmt.Errorf("%s: %s", op, scrubValues(err.Error(), secrets...))
+}
+
+func scrubValues(s string, values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			s = strings.ReplaceAll(s, v, "[REDACTED]")
+		}
+	}
+	return s
 }
 
 func sanitizeHeader(v string) string {

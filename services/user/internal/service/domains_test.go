@@ -5,8 +5,11 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +18,7 @@ import (
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/logger"
 	"github.com/nexusmart/core/services/user/internal/cloudflare"
+	"github.com/nexusmart/core/services/user/internal/db"
 	"github.com/nexusmart/core/services/user/internal/password"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -39,7 +43,10 @@ type spyCFClient struct {
 	getCustomErr       error
 	deleteCustomErr    error
 
-	onDeleteCustom func(cfHostnameID string)
+	onEnsureSubdomain func(host string)
+	onCreateCustom    func(hostname string)
+	onGetCustom       func(cfHostnameID, hostname string)
+	onDeleteCustom    func(cfHostnameID string)
 }
 
 func newSpyCFClient(cnameTarget string) *spyCFClient {
@@ -50,7 +57,11 @@ func (s *spyCFClient) EnsureSubdomainRecord(ctx context.Context, host string) (s
 	s.mu.Lock()
 	s.ensureSubdomainCalls = append(s.ensureSubdomainCalls, host)
 	err := s.ensureSubdomainErr
+	cb := s.onEnsureSubdomain
 	s.mu.Unlock()
+	if cb != nil {
+		cb(host)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -72,7 +83,11 @@ func (s *spyCFClient) CreateCustomHostname(ctx context.Context, hostname string)
 	s.mu.Lock()
 	s.createCustomCalls = append(s.createCustomCalls, hostname)
 	err := s.createCustomErr
+	cb := s.onCreateCustom
 	s.mu.Unlock()
+	if cb != nil {
+		cb(hostname)
+	}
 	if err != nil {
 		return cloudflare.CustomHostnameStatus{}, err
 	}
@@ -83,7 +98,11 @@ func (s *spyCFClient) GetCustomHostname(ctx context.Context, cfHostnameID, hostn
 	s.mu.Lock()
 	s.getCustomCalls = append(s.getCustomCalls, hostname)
 	err := s.getCustomErr
+	cb := s.onGetCustom
 	s.mu.Unlock()
+	if cb != nil {
+		cb(cfHostnameID, hostname)
+	}
 	if err != nil {
 		return cloudflare.CustomHostnameStatus{}, err
 	}
@@ -1086,7 +1105,8 @@ func TestDomains_AntiSquattingRules(t *testing.T) {
 			t.Fatalf("old domain row must NOT be deleted when CF DeleteCustomHostname fails")
 		}
 
-		// 3b. Cloudflare CreateCustomHostname error after Delete -> rolls back DB tx so old row is preserved.
+		// 3b. Cloudflare CreateCustomHostname error after Delete -> oldCFID is already deleted on Cloudflare,
+		// so neither oldID (pointing to deleted oldCFID) nor any dangling placeholder may remain.
 		cf.mu.Lock()
 		cf.createCustomErr = errors.New("cloudflare 503 create failure")
 		cf.mu.Unlock()
@@ -1101,9 +1121,26 @@ func TestDomains_AntiSquattingRules(t *testing.T) {
 		store.mu.Lock()
 		_, stillThereAfterCreateErr := store.domains[oldID]
 		store.mu.Unlock()
-		if !stillThereAfterCreateErr {
-			t.Fatalf("old domain row must be preserved via tx rollback when CF CreateCustomHostname fails")
+		if stillThereAfterCreateErr {
+			t.Fatalf("old domain row must NOT remain pointing to already-deleted CF hostname when CF CreateCustomHostname fails")
 		}
+
+		// Re-seed stale domain on Shop A for happy-path reclaim ordering check (3c).
+		setNow(base)
+		addA2, err := client.AddCustomDomain(ctxWithBearer(t, tokA), &userv1.AddCustomDomainRequest{
+			Hostname: "order-check.pending.test",
+		})
+		if err != nil {
+			t.Fatalf("shopA re-add for 3c: %v", err)
+		}
+		oldID = addA2.GetDomain().GetId()
+		store.mu.Lock()
+		d2 := store.domains[oldID]
+		d2.CreatedAt = base
+		oldCFID = *d2.CfCustomHostnameID
+		store.domains[oldID] = d2
+		store.mu.Unlock()
+		setNow(base.Add(49 * time.Hour))
 
 		// 3c. Happy reclaim: verify DeleteCustomHostname(oldCFID) runs while old row still exists and BEFORE CreateCustomHostname.
 		cf.mu.Lock()
@@ -1236,6 +1273,995 @@ func TestDomains_AntiSquattingRules(t *testing.T) {
 			Hostname: "retry.fail.test",
 		}); status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "domain_limit:") {
 			t.Fatalf("same-site re-add while PENDING: want FailedPrecondition(domain_limit:), got %v", err)
+		}
+	})
+}
+
+type txTrackingStore struct {
+	*memStore
+	inTx atomic.Int32
+}
+
+func (s *txTrackingStore) WithTx(ctx context.Context, fn func(q db.Querier) error) error {
+	s.inTx.Add(1)
+	defer s.inTx.Add(-1)
+	return s.memStore.WithTx(ctx, fn)
+}
+
+func TestDomains_AddCustomDomainNeverCallsCloudflareInsideTx(t *testing.T) {
+	base := newMemStore()
+	tracked := &txTrackingStore{memStore: base}
+	cf := newSpyCFClient("shops.nexusmart.localhost")
+
+	var clockMu sync.Mutex
+	curNow := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	getNow := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		return curNow
+	}
+
+	sec := newMemSecurity()
+	pub := &memPublisher{}
+	hasher := password.NewDefaultHasher()
+	authMgr, err := auth.NewManager("tx-track-secret", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("auth.NewManager: %v", err)
+	}
+	log := logger.New("user-tx-track-test", logger.WithWriter(io.Discard))
+	srv := NewServer(tracked, sec, hasher, authMgr, pub, log, Options{
+		Cloudflare: cf,
+		CFMode:     "mock",
+		Now:        getNow,
+	})
+
+	var cfCalledInTx atomic.Bool
+	cf.onCreateCustom = func(_ string) {
+		if tracked.inTx.Load() > 0 {
+			cfCalledInTx.Store(true)
+		}
+	}
+	cf.onDeleteCustom = func(_ string) {
+		if tracked.inTx.Load() > 0 {
+			cfCalledInTx.Store(true)
+		}
+	}
+
+	mkPublished := func(name, sub string) (string, context.Context) {
+		owner := uuid.NewString()
+		sh := seedActiveShop(t, base, owner, name, ShopStatusActive)
+		ctx := ctxWithUser(owner, RoleSeller, sh.ID)
+		if _, err := srv.SaveSiteDraft(ctx, &userv1.SaveSiteDraftRequest{
+			Subdomain:  sub,
+			ConfigJson: sampleSiteConfigJSON(t, name, "Hero"),
+		}); err != nil {
+			t.Fatalf("SaveSiteDraft %s: %v", sub, err)
+		}
+		if _, err := srv.PublishSite(ctx, &userv1.PublishSiteRequest{}); err != nil {
+			t.Fatalf("PublishSite %s: %v", sub, err)
+		}
+		return sh.ID, ctx
+	}
+
+	_, ctxA := mkPublished("Tx Shop A", "tx-shop-a")
+	_, ctxB := mkPublished("Tx Shop B", "tx-shop-b")
+
+	// 1. Fresh AddCustomDomain must call CreateCustomHostname outside WithTx.
+	addA, err := srv.AddCustomDomain(ctxA, &userv1.AddCustomDomainRequest{Hostname: "no-tx.pending.test"})
+	if err != nil {
+		t.Fatalf("fresh AddCustomDomain: %v", err)
+	}
+	if cfCalledInTx.Load() {
+		t.Fatalf("fresh AddCustomDomain called Cloudflare inside a DB transaction")
+	}
+
+	// 2. Reclaim AddCustomDomain must call DeleteCustomHostname and CreateCustomHostname outside WithTx.
+	base.mu.Lock()
+	d := base.domains[addA.GetDomain().GetId()]
+	d.CreatedAt = curNow
+	base.domains[d.ID] = d
+	base.mu.Unlock()
+
+	clockMu.Lock()
+	curNow = curNow.Add(49 * time.Hour)
+	clockMu.Unlock()
+
+	if _, err := srv.AddCustomDomain(ctxB, &userv1.AddCustomDomainRequest{Hostname: "no-tx.pending.test"}); err != nil {
+		t.Fatalf("reclaim AddCustomDomain: %v", err)
+	}
+	if cfCalledInTx.Load() {
+		t.Fatalf("reclaim AddCustomDomain called Cloudflare inside a DB transaction")
+	}
+}
+
+func TestDomains_AddCustomDomainReclaimCreateErrorLeavesNoDanglingRowOrOrphan(t *testing.T) {
+	cf := newSpyCFClient("shops.nexusmart.localhost")
+	var clockMu sync.Mutex
+	curNow := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	getNow := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		return curNow
+	}
+
+	_, client, store, users, _ := startDomainBufconn(t, Options{
+		Cloudflare: cf,
+		CFMode:     "mock",
+		Now:        getNow,
+	})
+
+	mkPublished := func(name, sub string) string {
+		owner := uuid.NewString()
+		sh := seedActiveShop(t, store, owner, name, ShopStatusActive)
+		tok, _, _, _ := users.SignAccessToken(owner, RoleSeller, sh.ID)
+		if _, err := client.SaveSiteDraft(ctxWithBearer(t, tok), &userv1.SaveSiteDraftRequest{
+			Subdomain:  sub,
+			ConfigJson: sampleSiteConfigJSON(t, name, "Hero"),
+		}); err != nil {
+			t.Fatalf("SaveSiteDraft %s: %v", sub, err)
+		}
+		if _, err := client.PublishSite(ctxWithBearer(t, tok), &userv1.PublishSiteRequest{}); err != nil {
+			t.Fatalf("PublishSite %s: %v", sub, err)
+		}
+		return tok
+	}
+
+	tokA := mkPublished("Dangling Shop A", "dangle-a")
+	tokB := mkPublished("Dangling Shop B", "dangle-b")
+
+	addA, err := client.AddCustomDomain(ctxWithBearer(t, tokA), &userv1.AddCustomDomainRequest{
+		Hostname: "no-dangle.pending.test",
+	})
+	if err != nil {
+		t.Fatalf("shopA add: %v", err)
+	}
+	oldID := addA.GetDomain().GetId()
+	store.mu.Lock()
+	d := store.domains[oldID]
+	d.CreatedAt = curNow
+	oldCFID := *d.CfCustomHostnameID
+	store.domains[oldID] = d
+	store.mu.Unlock()
+
+	clockMu.Lock()
+	curNow = curNow.Add(49 * time.Hour)
+	clockMu.Unlock()
+
+	// DeleteCustomHostname succeeds, then CreateCustomHostname fails.
+	cf.mu.Lock()
+	cf.createCustomErr = errors.New("cloudflare 503 create failure")
+	cf.mu.Unlock()
+
+	if _, err := client.AddCustomDomain(ctxWithBearer(t, tokB), &userv1.AddCustomDomainRequest{
+		Hostname: "no-dangle.pending.test",
+	}); status.Code(err) != codes.Unavailable {
+		t.Fatalf("reclaim when CF create fails: want Unavailable, got %v", err)
+	}
+
+	cf.mu.Lock()
+	cf.createCustomErr = nil
+	cf.mu.Unlock()
+
+	// MUST NOT leave any DB row pointing to the already-deleted oldCFID, nor any dangling placeholder for Shop B.
+	store.mu.Lock()
+	for _, dom := range store.domains {
+		if dom.Host == "no-dangle.pending.test" {
+			store.mu.Unlock()
+			t.Fatalf("mid-flight reclaim CreateCustomHostname error left dangling domain row: %+v (deleted oldCFID=%q)", dom, oldCFID)
+		}
+	}
+	store.mu.Unlock()
+
+	// Retry by Shop B succeeds cleanly.
+	retryResp, err := client.AddCustomDomain(ctxWithBearer(t, tokB), &userv1.AddCustomDomainRequest{
+		Hostname: "no-dangle.pending.test",
+	})
+	if err != nil || retryResp.GetDomain().GetStatus() != DomainStatusPending {
+		t.Fatalf("retry after failed reclaim create: resp=%+v err=%v", retryResp, err)
+	}
+}
+
+func TestDomains_AddCustomDomainPhase3ConcurrentRemovalAndSuspensionCleansUpCF(t *testing.T) {
+	t.Run("ConcurrentRemovalDuringPhase2DeletesCreatedCFHostname", func(t *testing.T) {
+		cf := newSpyCFClient("shops.nexusmart.localhost")
+		srv, client, store, users, _ := startDomainBufconn(t, Options{
+			Cloudflare: cf,
+			CFMode:     "mock",
+		})
+		_ = srv
+
+		owner := uuid.NewString()
+		sh := seedActiveShop(t, store, owner, "Conc Remove Shop", ShopStatusActive)
+		tok, _, _, _ := users.SignAccessToken(owner, RoleSeller, sh.ID)
+		if _, err := client.SaveSiteDraft(ctxWithBearer(t, tok), &userv1.SaveSiteDraftRequest{
+			Subdomain:  "conc-rem",
+			ConfigJson: sampleSiteConfigJSON(t, "Conc", "Hero"),
+		}); err != nil {
+			t.Fatalf("SaveSiteDraft: %v", err)
+		}
+
+		cf.onCreateCustom = func(host string) {
+			// Simulate concurrent removal of the reserved row while CreateCustomHostname is in-flight.
+			store.mu.Lock()
+			for id, d := range store.domains {
+				if d.Host == host {
+					delete(store.domains, id)
+				}
+			}
+			store.mu.Unlock()
+		}
+
+		_, err := client.AddCustomDomain(ctxWithBearer(t, tok), &userv1.AddCustomDomainRequest{
+			Hostname: "conc-rem.verified.test",
+		})
+		cf.onCreateCustom = nil
+		if err == nil {
+			t.Fatalf("expected error when reserved domain was removed during Phase 2")
+		}
+
+		// Orphan created CF hostname MUST be deleted!
+		cf.mu.Lock()
+		dels := append([]string(nil), cf.deleteCustomCalls...)
+		cf.mu.Unlock()
+		foundCleanup := false
+		for _, id := range dels {
+			if id == "mock-ch-conc-rem.verified.test" {
+				foundCleanup = true
+				break
+			}
+		}
+		if !foundCleanup {
+			t.Fatalf("expected Phase 3 abort to delete orphan CF hostname, deleteCustomCalls=%v", dels)
+		}
+	})
+
+	t.Run("ShopSuspendedDuringPhase2CleansUpCFAndPlaceholder", func(t *testing.T) {
+		cf := newSpyCFClient("shops.nexusmart.localhost")
+		_, client, store, users, _ := startDomainBufconn(t, Options{
+			Cloudflare: cf,
+			CFMode:     "mock",
+		})
+
+		owner := uuid.NewString()
+		sh := seedActiveShop(t, store, owner, "Conc Suspend Shop", ShopStatusActive)
+		tok, _, _, _ := users.SignAccessToken(owner, RoleSeller, sh.ID)
+		if _, err := client.SaveSiteDraft(ctxWithBearer(t, tok), &userv1.SaveSiteDraftRequest{
+			Subdomain:  "conc-susp",
+			ConfigJson: sampleSiteConfigJSON(t, "ConcS", "Hero"),
+		}); err != nil {
+			t.Fatalf("SaveSiteDraft: %v", err)
+		}
+
+		cf.onCreateCustom = func(_ string) {
+			store.mu.Lock()
+			cur := store.shops[sh.ID]
+			cur.Status = ShopStatusSuspended
+			store.shops[sh.ID] = cur
+			store.mu.Unlock()
+		}
+
+		_, err := client.AddCustomDomain(ctxWithBearer(t, tok), &userv1.AddCustomDomainRequest{
+			Hostname: "conc-susp.verified.test",
+		})
+		cf.onCreateCustom = nil
+		if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "SHOP_SUSPENDED") {
+			t.Fatalf("shop suspended during Phase 2: want FailedPrecondition(SHOP_SUSPENDED), got %v", err)
+		}
+
+		cf.mu.Lock()
+		dels := append([]string(nil), cf.deleteCustomCalls...)
+		cf.mu.Unlock()
+		if len(dels) != 1 || dels[0] != "mock-ch-conc-susp.verified.test" {
+			t.Fatalf("expected orphan CF hostname cleanup, got %v", dels)
+		}
+		store.mu.Lock()
+		for _, dom := range store.domains {
+			if dom.Kind == DomainKindCustom {
+				store.mu.Unlock()
+				t.Fatalf("expected reserved placeholder deleted after Phase 3 suspension abort, found %+v", dom)
+			}
+		}
+		store.mu.Unlock()
+	})
+
+	t.Run("Phase3AbortWithCFDeleteFailureHandsOffToPollerRemoving", func(t *testing.T) {
+		cf := newSpyCFClient("shops.nexusmart.localhost")
+		srv, client, store, users, _ := startDomainBufconn(t, Options{
+			Cloudflare: cf,
+			CFMode:     "mock",
+		})
+
+		owner := uuid.NewString()
+		sh := seedActiveShop(t, store, owner, "Poller Handoff Shop", ShopStatusActive)
+		tok, _, _, _ := users.SignAccessToken(owner, RoleSeller, sh.ID)
+		if _, err := client.SaveSiteDraft(ctxWithBearer(t, tok), &userv1.SaveSiteDraftRequest{
+			Subdomain:  "handoff-shop",
+			ConfigJson: sampleSiteConfigJSON(t, "Handoff", "Hero"),
+		}); err != nil {
+			t.Fatalf("SaveSiteDraft: %v", err)
+		}
+
+		cf.onCreateCustom = func(_ string) {
+			store.mu.Lock()
+			cur := store.shops[sh.ID]
+			cur.Status = ShopStatusSuspended
+			store.shops[sh.ID] = cur
+			store.mu.Unlock()
+			cf.mu.Lock()
+			cf.deleteCustomErr = errors.New("cf delete 503 during cleanup")
+			cf.mu.Unlock()
+		}
+
+		_, err := client.AddCustomDomain(ctxWithBearer(t, tok), &userv1.AddCustomDomainRequest{
+			Hostname: "handoff.verified.test",
+		})
+		cf.onCreateCustom = nil
+		if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "SHOP_SUSPENDED") {
+			t.Fatalf("want FailedPrecondition(SHOP_SUSPENDED), got %v", err)
+		}
+
+		// Row must be REMOVING with cf_custom_hostname_id populated so poller cleans up CF hostname!
+		var customRow *db.Domain
+		store.mu.Lock()
+		for _, d := range store.domains {
+			if d.Kind == DomainKindCustom {
+				cp := d
+				customRow = &cp
+			}
+		}
+		store.mu.Unlock()
+		if customRow == nil || customRow.Status != DomainStatusRemoving || customRow.CfCustomHostnameID == nil || *customRow.CfCustomHostnameID != "mock-ch-handoff.verified.test" {
+			t.Fatalf("expected REMOVING row with cf_custom_hostname_id for poller handoff, got %+v", customRow)
+		}
+
+		// CF recovers -> poller deletes CF hostname and removes DB row.
+		cf.mu.Lock()
+		cf.deleteCustomErr = nil
+		cf.mu.Unlock()
+		srv.PollCustomDomainsOnce(context.Background())
+
+		store.mu.Lock()
+		_, stillThere := store.domains[customRow.ID]
+		store.mu.Unlock()
+		if stillThere {
+			t.Fatalf("poller must clean up handed-off REMOVING row")
+		}
+	})
+
+	t.Run("PollerGracePeriodForUnprovisionedPlaceholderAndCheckRejectsInProgress", func(t *testing.T) {
+		cf := newSpyCFClient("shops.nexusmart.localhost")
+		var clockMu sync.Mutex
+		baseNow := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+		curNow := baseNow
+		getNow := func() time.Time {
+			clockMu.Lock()
+			defer clockMu.Unlock()
+			return curNow
+		}
+
+		srv, client, store, users, _ := startDomainBufconn(t, Options{
+			Cloudflare: cf,
+			CFMode:     "mock",
+			Now:        getNow,
+		})
+
+		owner := uuid.NewString()
+		sh := seedActiveShop(t, store, owner, "Placeholder Shop", ShopStatusActive)
+		tok, _, _, _ := users.SignAccessToken(owner, RoleSeller, sh.ID)
+		saveResp, err := client.SaveSiteDraft(ctxWithBearer(t, tok), &userv1.SaveSiteDraftRequest{
+			Subdomain:  "placeholder-shop",
+			ConfigJson: sampleSiteConfigJSON(t, "Placeholder", "Hero"),
+		})
+		if err != nil {
+			t.Fatalf("SaveSiteDraft: %v", err)
+		}
+
+		// Insert an unprovisioned PENDING reservation (simulating an in-flight or crashed Phase 2).
+		placeholder, err := store.CreateCustomDomain(context.Background(), db.CreateCustomDomainParams{
+			ID:                 uuid.NewString(),
+			SiteID:             saveResp.GetSite().GetId(),
+			Lower:              "inflight.verified.test",
+			IsPrimary:          false,
+			TlsStatus:          "PENDING",
+			Status:             DomainStatusPending,
+			CfCustomHostnameID: nil,
+			Verification:       []byte("[]"),
+		})
+		if err != nil {
+			t.Fatalf("CreateCustomDomain placeholder: %v", err)
+		}
+		store.mu.Lock()
+		d := store.domains[placeholder.ID]
+		d.CreatedAt = baseNow
+		store.domains[placeholder.ID] = d
+		store.mu.Unlock()
+
+		// CheckCustomDomain rejects while provisioning is in progress (0 CF calls).
+		if _, err := client.CheckCustomDomain(ctxWithBearer(t, tok), &userv1.CheckCustomDomainRequest{
+			DomainId: placeholder.ID,
+		}); status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("CheckCustomDomain on unprovisioned placeholder: want FailedPrecondition, got %v", err)
+		}
+
+		// Within grace period (1m): poller skips without calling CF or failing the row.
+		clockMu.Lock()
+		curNow = baseNow.Add(1 * time.Minute)
+		clockMu.Unlock()
+		srv.PollCustomDomainsOnce(context.Background())
+
+		gotWithinGrace, err := store.GetDomainByID(context.Background(), placeholder.ID)
+		if err != nil || gotWithinGrace.Status != DomainStatusPending {
+			t.Fatalf("within grace period placeholder must stay PENDING, got %+v err=%v", gotWithinGrace, err)
+		}
+		if len(cf.getCustomCalls) != 0 {
+			t.Fatalf("poller must not call CF GetCustomHostname for unprovisioned placeholder, got %v", cf.getCustomCalls)
+		}
+
+		// Past grace period (3m): poller marks abandoned placeholder FAILED without calling CF.
+		clockMu.Lock()
+		curNow = baseNow.Add(3 * time.Minute)
+		clockMu.Unlock()
+		srv.PollCustomDomainsOnce(context.Background())
+
+		gotAfterGrace, err := store.GetDomainByID(context.Background(), placeholder.ID)
+		if err != nil || gotAfterGrace.Status != DomainStatusFailed || gotAfterGrace.LastError == nil || *gotAfterGrace.LastError == "" {
+			t.Fatalf("past grace period abandoned placeholder must become FAILED, got %+v err=%v", gotAfterGrace, err)
+		}
+		if len(cf.getCustomCalls) != 0 {
+			t.Fatalf("poller must not call CF GetCustomHostname when failing abandoned placeholder, got %v", cf.getCustomCalls)
+		}
+	})
+}
+
+func TestDomains_PollerAndCheckHandleLive404AsFailedNoLoop(t *testing.T) {
+	var getCalls atomic.Int32
+	cfServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/custom_hostnames"):
+			_, _ = w.Write([]byte(`{
+				"success": true, "errors": [],
+				"result": {
+					"id": "ch-live-404",
+					"hostname": "gone.example.vn",
+					"status": "pending",
+					"ssl": {"status": "pending_validation"}
+				}
+			}`))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/custom_hostnames/ch-live-404"):
+			getCalls.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":1436,"message":"Not found"}]}`))
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/dns_records"):
+			_, _ = w.Write([]byte(`{"success":true,"errors":[],"result":[{"id":"dns-live-1"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer cfServer.Close()
+
+	liveCF, err := cloudflare.NewLive(cloudflare.LiveConfig{
+		APIToken:    "live-test-token",
+		ZoneID:      "zone-1",
+		OriginHost:  "origin.nexusmart.vn",
+		CNAMETarget: "shops.nexusmart.vn",
+		BaseURL:     cfServer.URL,
+		Timeout:     2 * time.Second,
+		MaxRetries:  1,
+		BaseBackoff: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("cloudflare.NewLive: %v", err)
+	}
+
+	srv, client, store, users, _ := startDomainBufconn(t, Options{
+		Cloudflare:     liveCF,
+		CFMode:         "live",
+		SiteRootDomain: "nexusmart.vn",
+	})
+
+	owner := uuid.NewString()
+	sh := seedActiveShop(t, store, owner, "Live 404 Shop", ShopStatusActive)
+	tok, _, _, _ := users.SignAccessToken(owner, RoleSeller, sh.ID)
+	if _, err := client.SaveSiteDraft(ctxWithBearer(t, tok), &userv1.SaveSiteDraftRequest{
+		Subdomain:  "live-404",
+		ConfigJson: sampleSiteConfigJSON(t, "Live404", "Hero"),
+	}); err != nil {
+		t.Fatalf("SaveSiteDraft: %v", err)
+	}
+	if _, err := client.PublishSite(ctxWithBearer(t, tok), &userv1.PublishSiteRequest{}); err != nil {
+		t.Fatalf("PublishSite: %v", err)
+	}
+
+	addResp, err := client.AddCustomDomain(ctxWithBearer(t, tok), &userv1.AddCustomDomainRequest{
+		Hostname: "gone.example.vn",
+	})
+	if err != nil {
+		t.Fatalf("AddCustomDomain live: %v", err)
+	}
+	domID := addResp.GetDomain().GetId()
+
+	// 1st poll: Cloudflare returns 404 -> domain transitions to FAILED with last_error.
+	srv.PollCustomDomainsOnce(context.Background())
+	if getCalls.Load() != 1 {
+		t.Fatalf("expected 1 GET call on first poll, got %d", getCalls.Load())
+	}
+	domAfter1, err := store.GetDomainByID(context.Background(), domID)
+	if err != nil {
+		t.Fatalf("GetDomainByID: %v", err)
+	}
+	if domAfter1.Status != DomainStatusFailed || domAfter1.LastError == nil || *domAfter1.LastError == "" {
+		t.Fatalf("poller must mark 404 custom hostname FAILED with last_error, got %+v", domAfter1)
+	}
+
+	// 2nd poll: row is now FAILED, NOT polled again (no repeated error loop).
+	srv.PollCustomDomainsOnce(context.Background())
+	if getCalls.Load() != 1 {
+		t.Fatalf("second poll must not re-poll FAILED domain (loop!), got %d total GET calls", getCalls.Load())
+	}
+
+	// CheckCustomDomain on a previously ACTIVE primary domain that returns 404 from Cloudflare
+	// transitions it to FAILED and restores the site's subdomain as primary.
+	store.mu.Lock()
+	domActive := store.domains[domID]
+	domActive.Status = DomainStatusActive
+	domActive.IsPrimary = true
+	domActive.LastError = nil
+	store.domains[domID] = domActive
+	for id, d := range store.domains {
+		if d.SiteID == domActive.SiteID && d.Kind == DomainKindSubdomain {
+			d.IsPrimary = false
+			store.domains[id] = d
+		}
+	}
+	store.mu.Unlock()
+
+	chkResp, err := client.CheckCustomDomain(ctxWithBearer(t, tok), &userv1.CheckCustomDomainRequest{DomainId: domID})
+	if err != nil {
+		t.Fatalf("CheckCustomDomain on 404: %v", err)
+	}
+	if chkResp.GetDomain().GetStatus() != DomainStatusFailed || chkResp.GetDomain().GetIsPrimary() || chkResp.GetDomain().GetLastError() == "" {
+		t.Fatalf("CheckCustomDomain 404 must transition to FAILED non-primary, got %+v", chkResp.GetDomain())
+	}
+	subDom, err := store.GetSiteSubdomainDomain(context.Background(), domActive.SiteID)
+	if err != nil || !subDom.IsPrimary {
+		t.Fatalf("CheckCustomDomain 404 must restore subdomain as primary, got %+v err=%v", subDom, err)
+	}
+}
+
+func TestDomains_PollerRemovingGraceAndLockPreventsReclaimRace(t *testing.T) {
+	t.Run("ReclaimPhase1RaceWithPollerPreservesShopADomainOnCFError", func(t *testing.T) {
+		cf := newSpyCFClient("shops.nexusmart.localhost")
+		var clockMu sync.Mutex
+		baseNow := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+		curNow := baseNow
+		getNow := func() time.Time {
+			clockMu.Lock()
+			defer clockMu.Unlock()
+			return curNow
+		}
+
+		srv, client, store, users, _ := startDomainBufconn(t, Options{
+			Cloudflare: cf,
+			CFMode:     "mock",
+			Now:        getNow,
+		})
+
+		mkPublished := func(name, sub string) string {
+			owner := uuid.NewString()
+			sh := seedActiveShop(t, store, owner, name, ShopStatusActive)
+			tok, _, _, _ := users.SignAccessToken(owner, RoleSeller, sh.ID)
+			if _, err := client.SaveSiteDraft(ctxWithBearer(t, tok), &userv1.SaveSiteDraftRequest{
+				Subdomain:  sub,
+				ConfigJson: sampleSiteConfigJSON(t, name, "Hero"),
+			}); err != nil {
+				t.Fatalf("SaveSiteDraft %s: %v", sub, err)
+			}
+			if _, err := client.PublishSite(ctxWithBearer(t, tok), &userv1.PublishSiteRequest{}); err != nil {
+				t.Fatalf("PublishSite %s: %v", sub, err)
+			}
+			return tok
+		}
+
+		tokA := mkPublished("Reclaim Race A", "reclaim-race-a")
+		tokB := mkPublished("Reclaim Race B", "reclaim-race-b")
+
+		addA, err := client.AddCustomDomain(ctxWithBearer(t, tokA), &userv1.AddCustomDomainRequest{
+			Hostname: "race-reclaim.pending.test",
+		})
+		if err != nil {
+			t.Fatalf("shopA add: %v", err)
+		}
+		oldID := addA.GetDomain().GetId()
+
+		// Simulate prior verification error/check on Shop A's stale (>48h) PENDING row.
+		prevErr := "dns txt not found yet"
+		checkedAt := baseNow.Add(1 * time.Hour)
+		store.mu.Lock()
+		d := store.domains[oldID]
+		d.CreatedAt = baseNow
+		d.LastCheckedAt = &checkedAt
+		d.LastError = &prevErr
+		store.domains[oldID] = d
+		store.mu.Unlock()
+
+		clockMu.Lock()
+		curNow = baseNow.Add(49 * time.Hour)
+		clockMu.Unlock()
+
+		// While Shop B's reclaim is in-flight in DeleteCustomHostname (which will fail with 502),
+		// run PollCustomDomainsOnce concurrently: poller MUST skip the freshly-marked REMOVING row
+		// so Shop A's PENDING domain is restored rather than destroyed!
+		var pollerRan atomic.Bool
+		cf.mu.Lock()
+		cf.deleteCustomErr = errors.New("cf 502 transient during reclaim")
+		cf.onDeleteCustom = func(_ string) {
+			if pollerRan.CompareAndSwap(false, true) {
+				// Anchor UpdatedAt to fake clock now (matching Postgres NOW() == s.now()).
+				store.mu.Lock()
+				cur := store.domains[oldID]
+				cur.UpdatedAt = getNow()
+				store.domains[oldID] = cur
+				store.mu.Unlock()
+				srv.PollCustomDomainsOnce(context.Background())
+			}
+		}
+		cf.mu.Unlock()
+
+		_, err = client.AddCustomDomain(ctxWithBearer(t, tokB), &userv1.AddCustomDomainRequest{
+			Hostname: "race-reclaim.pending.test",
+		})
+		cf.mu.Lock()
+		cf.onDeleteCustom = nil
+		cf.deleteCustomErr = nil
+		cf.mu.Unlock()
+
+		if status.Code(err) != codes.Unavailable {
+			t.Fatalf("reclaim with CF delete error: want Unavailable, got %v", err)
+		}
+		if !pollerRan.Load() {
+			t.Fatalf("expected poller callback to have executed during reclaim DeleteCustomHostname")
+		}
+		if len(cf.deleteCustomCalls) != 1 {
+			t.Fatalf("poller must NOT call DeleteCustomHostname for freshly-marked REMOVING row, got %d calls: %v", len(cf.deleteCustomCalls), cf.deleteCustomCalls)
+		}
+		restored, err := store.GetDomainByID(context.Background(), oldID)
+		if err != nil {
+			t.Fatalf("Shop A domain must NOT be destroyed by poller during failed reclaim: %v", err)
+		}
+		if restored.Status != DomainStatusPending {
+			t.Fatalf("Shop A domain must be restored to PENDING, got status=%s", restored.Status)
+		}
+	})
+
+	t.Run("PollerRetriesFailedRemovingWithoutInfinitePostponementAndGuardsDeleteWithLock", func(t *testing.T) {
+		cf := newSpyCFClient("shops.nexusmart.localhost")
+		var clockMu sync.Mutex
+		baseNow := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+		curNow := baseNow
+		getNow := func() time.Time {
+			clockMu.Lock()
+			defer clockMu.Unlock()
+			return curNow
+		}
+
+		srv, client, store, users, _ := startDomainBufconn(t, Options{
+			Cloudflare: cf,
+			CFMode:     "mock",
+			Now:        getNow,
+		})
+
+		owner := uuid.NewString()
+		sh := seedActiveShop(t, store, owner, "Removing Grace Shop", ShopStatusActive)
+		tok, _, _, _ := users.SignAccessToken(owner, RoleSeller, sh.ID)
+		if _, err := client.SaveSiteDraft(ctxWithBearer(t, tok), &userv1.SaveSiteDraftRequest{
+			Subdomain:  "rem-grace",
+			ConfigJson: sampleSiteConfigJSON(t, "RemGrace", "Hero"),
+		}); err != nil {
+			t.Fatalf("SaveSiteDraft: %v", err)
+		}
+		addResp, err := client.AddCustomDomain(ctxWithBearer(t, tok), &userv1.AddCustomDomainRequest{
+			Hostname: "crashed-rem.pending.test",
+		})
+		if err != nil {
+			t.Fatalf("AddCustomDomain: %v", err)
+		}
+		domID := addResp.GetDomain().GetId()
+
+		// Simulate a crashed in-flight REMOVING row (cleared error/check timestamps, UpdatedAt = baseNow).
+		store.mu.Lock()
+		d := store.domains[domID]
+		d.Status = DomainStatusRemoving
+		d.LastCheckedAt = nil
+		d.LastError = nil
+		d.UpdatedAt = baseNow
+		store.domains[domID] = d
+		store.mu.Unlock()
+
+		// 1. Within grace (1m): poller skips.
+		clockMu.Lock()
+		curNow = baseNow.Add(1 * time.Minute)
+		clockMu.Unlock()
+		srv.PollCustomDomainsOnce(context.Background())
+		if len(cf.deleteCustomCalls) != 0 {
+			t.Fatalf("within grace period poller must skip in-flight REMOVING row, got calls=%v", cf.deleteCustomCalls)
+		}
+
+		// 2. Past grace (3m): poller retries; CF fails -> UpdateDomainError refreshes UpdatedAt.
+		clockMu.Lock()
+		curNow = baseNow.Add(3 * time.Minute)
+		clockMu.Unlock()
+		cf.mu.Lock()
+		cf.deleteCustomErr = errors.New("cf 503 during poller retry")
+		cf.mu.Unlock()
+		srv.PollCustomDomainsOnce(context.Background())
+		if len(cf.deleteCustomCalls) != 1 {
+			t.Fatalf("past grace period poller must retry REMOVING row, got calls=%v", cf.deleteCustomCalls)
+		}
+		// Anchor UpdatedAt to fake clock now (simulating Postgres UpdateDomainError setting updated_at = NOW()).
+		store.mu.Lock()
+		d = store.domains[domID]
+		d.UpdatedAt = getNow()
+		store.domains[domID] = d
+		store.mu.Unlock()
+
+		// 3. Only 5 seconds later, CF recovers -> poller MUST retry immediately (NOT postponed again by UpdateDomainError refreshing UpdatedAt!).
+		//    First verify that if row concurrently transitioned back to PENDING during DeleteCustomHostname,
+		//    poller's locked delete does NOT wipe the restored row.
+		clockMu.Lock()
+		curNow = baseNow.Add(3*time.Minute + 5*time.Second)
+		clockMu.Unlock()
+		cf.mu.Lock()
+		cf.deleteCustomErr = nil
+		cf.onDeleteCustom = func(_ string) {
+			store.mu.Lock()
+			cur := store.domains[domID]
+			cur.Status = DomainStatusPending
+			store.domains[domID] = cur
+			store.mu.Unlock()
+		}
+		cf.mu.Unlock()
+		srv.PollCustomDomainsOnce(context.Background())
+		cf.mu.Lock()
+		cf.onDeleteCustom = nil
+		cf.mu.Unlock()
+		if len(cf.deleteCustomCalls) != 2 {
+			t.Fatalf("poller must retry failed REMOVING row immediately on next tick without infinite postponement, got calls=%v", cf.deleteCustomCalls)
+		}
+		restored, err := store.GetDomainByID(context.Background(), domID)
+		if err != nil || restored.Status != DomainStatusPending {
+			t.Fatalf("poller must NOT delete row whose status changed away from REMOVING, got %+v err=%v", restored, err)
+		}
+
+		// 4. Now back to REMOVING with recorded error -> next poll immediately deletes row cleanly.
+		store.mu.Lock()
+		d = store.domains[domID]
+		d.Status = DomainStatusRemoving
+		d.UpdatedAt = getNow()
+		store.domains[domID] = d
+		store.mu.Unlock()
+		clockMu.Lock()
+		curNow = baseNow.Add(3*time.Minute + 10*time.Second)
+		clockMu.Unlock()
+		srv.PollCustomDomainsOnce(context.Background())
+		if _, err := store.GetDomainByID(context.Background(), domID); !isNotFoundErr(err) {
+			t.Fatalf("expected poller to delete REMOVING row on CF recovery, err=%v", err)
+		}
+	})
+}
+
+func TestDomains_RemoveCustomDomainProvisioningGraceAndPhase3OrphanHandoff(t *testing.T) {
+	t.Run("RemoveBlockedWithinGraceAllowedAfterGrace", func(t *testing.T) {
+		cf := newSpyCFClient("shops.nexusmart.localhost")
+		var clockMu sync.Mutex
+		baseNow := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+		curNow := baseNow
+		getNow := func() time.Time {
+			clockMu.Lock()
+			defer clockMu.Unlock()
+			return curNow
+		}
+
+		_, client, store, users, _ := startDomainBufconn(t, Options{
+			Cloudflare: cf,
+			CFMode:     "mock",
+			Now:        getNow,
+		})
+
+		owner := uuid.NewString()
+		sh := seedActiveShop(t, store, owner, "Remove Grace Shop", ShopStatusActive)
+		tok, _, _, _ := users.SignAccessToken(owner, RoleSeller, sh.ID)
+		saveResp, err := client.SaveSiteDraft(ctxWithBearer(t, tok), &userv1.SaveSiteDraftRequest{
+			Subdomain:  "rem-prov-grace",
+			ConfigJson: sampleSiteConfigJSON(t, "RemProv", "Hero"),
+		})
+		if err != nil {
+			t.Fatalf("SaveSiteDraft: %v", err)
+		}
+
+		placeholder, err := store.CreateCustomDomain(context.Background(), db.CreateCustomDomainParams{
+			ID:                 uuid.NewString(),
+			SiteID:             saveResp.GetSite().GetId(),
+			Lower:              "inflight-remove.verified.test",
+			IsPrimary:          false,
+			TlsStatus:          "PENDING",
+			Status:             DomainStatusPending,
+			CfCustomHostnameID: nil,
+			Verification:       []byte("[]"),
+		})
+		if err != nil {
+			t.Fatalf("CreateCustomDomain placeholder: %v", err)
+		}
+		store.mu.Lock()
+		d := store.domains[placeholder.ID]
+		d.CreatedAt = baseNow
+		store.domains[placeholder.ID] = d
+		store.mu.Unlock()
+
+		// Within grace (1m): RemoveCustomDomain MUST reject with same FailedPrecondition message as CheckCustomDomain.
+		clockMu.Lock()
+		curNow = baseNow.Add(1 * time.Minute)
+		clockMu.Unlock()
+		_, err = client.RemoveCustomDomain(ctxWithBearer(t, tok), &userv1.RemoveCustomDomainRequest{
+			DomainId: placeholder.ID,
+		})
+		if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "custom domain provisioning is in progress") {
+			t.Fatalf("RemoveCustomDomain within grace: want FailedPrecondition('custom domain provisioning is in progress'), got %v", err)
+		}
+		if _, getErr := store.GetDomainByID(context.Background(), placeholder.ID); getErr != nil {
+			t.Fatalf("placeholder must remain intact when RemoveCustomDomain is rejected within grace: %v", getErr)
+		}
+
+		// Past grace (3m): RemoveCustomDomain MUST succeed and delete the abandoned placeholder.
+		clockMu.Lock()
+		curNow = baseNow.Add(3 * time.Minute)
+		clockMu.Unlock()
+		if _, err := client.RemoveCustomDomain(ctxWithBearer(t, tok), &userv1.RemoveCustomDomainRequest{
+			DomainId: placeholder.ID,
+		}); err != nil {
+			t.Fatalf("RemoveCustomDomain after grace: want nil, got %v", err)
+		}
+		if _, getErr := store.GetDomainByID(context.Background(), placeholder.ID); !isNotFoundErr(getErr) {
+			t.Fatalf("placeholder must be deleted after post-grace RemoveCustomDomain, err=%v", getErr)
+		}
+	})
+
+	t.Run("Phase3ErrDomainGoneWithCleanupFailureHandsOffToPollerRemoving", func(t *testing.T) {
+		cf := newSpyCFClient("shops.nexusmart.localhost")
+		srv, client, store, users, _ := startDomainBufconn(t, Options{
+			Cloudflare: cf,
+			CFMode:     "mock",
+		})
+
+		owner := uuid.NewString()
+		sh := seedActiveShop(t, store, owner, "Gone Handoff Shop", ShopStatusActive)
+		tok, _, _, _ := users.SignAccessToken(owner, RoleSeller, sh.ID)
+		if _, err := client.SaveSiteDraft(ctxWithBearer(t, tok), &userv1.SaveSiteDraftRequest{
+			Subdomain:  "gone-handoff",
+			ConfigJson: sampleSiteConfigJSON(t, "GoneHandoff", "Hero"),
+		}); err != nil {
+			t.Fatalf("SaveSiteDraft: %v", err)
+		}
+
+		cf.onCreateCustom = func(host string) {
+			// Simulate post-grace RemoveCustomDomain deleting the placeholder during Phase 2,
+			// followed by a transient Cloudflare error during cleanupCF.
+			store.mu.Lock()
+			for id, d := range store.domains {
+				if d.Host == host {
+					delete(store.domains, id)
+				}
+			}
+			store.mu.Unlock()
+			cf.mu.Lock()
+			cf.deleteCustomErr = errors.New("cf 503 cleanup failed")
+			cf.mu.Unlock()
+		}
+
+		_, err := client.AddCustomDomain(ctxWithBearer(t, tok), &userv1.AddCustomDomainRequest{
+			Hostname: "gone-handoff.verified.test",
+		})
+		cf.onCreateCustom = nil
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("Phase 3 errDomainGone: want FailedPrecondition, got %v", err)
+		}
+
+		var handoffRow *db.Domain
+		store.mu.Lock()
+		for _, d := range store.domains {
+			if d.Kind == DomainKindCustom {
+				cp := d
+				handoffRow = &cp
+			}
+		}
+		store.mu.Unlock()
+		if handoffRow == nil || handoffRow.Status != DomainStatusRemoving ||
+			handoffRow.CfCustomHostnameID == nil || *handoffRow.CfCustomHostnameID != "mock-ch-gone-handoff.verified.test" {
+			t.Fatalf("Phase 3 errDomainGone + cleanupCF failure must hand off createdCFID to REMOVING row, got %+v", handoffRow)
+		}
+
+		// CF recovers -> poller cleans up createdCFID and removes the row.
+		cf.mu.Lock()
+		cf.deleteCustomErr = nil
+		cf.mu.Unlock()
+		srv.PollCustomDomainsOnce(context.Background())
+
+		if _, getErr := store.GetDomainByID(context.Background(), handoffRow.ID); !isNotFoundErr(getErr) {
+			t.Fatalf("poller must clean up handed-off REMOVING row, err=%v", getErr)
+		}
+	})
+
+	t.Run("Phase3ErrDomainRemovingWithCleanupFailureHandsOffToNewRemovingRow", func(t *testing.T) {
+		cf := newSpyCFClient("shops.nexusmart.localhost")
+		srv, client, store, users, _ := startDomainBufconn(t, Options{
+			Cloudflare: cf,
+			CFMode:     "mock",
+		})
+
+		owner := uuid.NewString()
+		sh := seedActiveShop(t, store, owner, "Removing Handoff Shop", ShopStatusActive)
+		tok, _, _, _ := users.SignAccessToken(owner, RoleSeller, sh.ID)
+		if _, err := client.SaveSiteDraft(ctxWithBearer(t, tok), &userv1.SaveSiteDraftRequest{
+			Subdomain:  "rem-handoff",
+			ConfigJson: sampleSiteConfigJSON(t, "RemHandoff", "Hero"),
+		}); err != nil {
+			t.Fatalf("SaveSiteDraft: %v", err)
+		}
+
+		var origReservedID string
+		cf.onCreateCustom = func(host string) {
+			// Simulate concurrent RemoveCustomDomain marking reserved row REMOVING (still cfID=nil),
+			// while cleanupCF hits a transient CF 503.
+			store.mu.Lock()
+			for id, d := range store.domains {
+				if d.Host == host {
+					origReservedID = id
+					d.Status = DomainStatusRemoving
+					store.domains[id] = d
+				}
+			}
+			store.mu.Unlock()
+			cf.mu.Lock()
+			cf.deleteCustomErr = errors.New("cf 503 cleanup failed")
+			cf.mu.Unlock()
+		}
+
+		_, err := client.AddCustomDomain(ctxWithBearer(t, tok), &userv1.AddCustomDomainRequest{
+			Hostname: "rem-handoff.verified.test",
+		})
+		cf.onCreateCustom = nil
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("Phase 3 errDomainRemoving: want FailedPrecondition, got %v", err)
+		}
+
+		// Simulate the concurrent RemoveCustomDomain finishing its DeleteDomain(origReservedID):
+		// it MUST NOT wipe the handed-off REMOVING row carrying createdCFID!
+		if err := store.DeleteDomain(context.Background(), origReservedID); err != nil {
+			t.Fatalf("simulated RemoveCustomDomain DeleteDomain(origReservedID): %v", err)
+		}
+
+		var handoffRow *db.Domain
+		store.mu.Lock()
+		for _, d := range store.domains {
+			if d.Kind == DomainKindCustom {
+				cp := d
+				handoffRow = &cp
+			}
+		}
+		store.mu.Unlock()
+		if handoffRow == nil || handoffRow.ID == origReservedID || handoffRow.Status != DomainStatusRemoving ||
+			handoffRow.CfCustomHostnameID == nil || *handoffRow.CfCustomHostnameID != "mock-ch-rem-handoff.verified.test" {
+			t.Fatalf("Phase 3 errDomainRemoving + cleanupCF failure must hand off createdCFID to fresh REMOVING row, got %+v (origReservedID=%q)", handoffRow, origReservedID)
+		}
+
+		// CF recovers -> poller cleans up createdCFID and deletes row.
+		cf.mu.Lock()
+		cf.deleteCustomErr = nil
+		cf.mu.Unlock()
+		srv.PollCustomDomainsOnce(context.Background())
+
+		if _, getErr := store.GetDomainByID(context.Background(), handoffRow.ID); !isNotFoundErr(getErr) {
+			t.Fatalf("poller must clean up handed-off REMOVING row, err=%v", getErr)
 		}
 	})
 }

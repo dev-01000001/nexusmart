@@ -602,6 +602,7 @@ func mapError(err error) error {
 		errors.Is(err, store.ErrLegacyNoBuyer),
 		errors.Is(err, service.ErrRedeliveryNotAllowed),
 		errors.Is(err, store.ErrRedeliveryNotAllowed),
+		errors.Is(err, service.ErrRedeliveryUnsupported),
 		errors.Is(err, service.ErrRedeliveryAlreadyRequested),
 		errors.Is(err, store.ErrRedeliveryAlreadyRequested),
 		errors.Is(err, service.ErrMaxRedeliveryExceeded),

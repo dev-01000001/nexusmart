@@ -52,6 +52,7 @@ var (
 	ErrPermissionDenied           = errors.New("permission denied")
 	ErrLegacyShipmentNoBuyer      = errors.New("legacy shipment has no recorded buyer_id")
 	ErrRedeliveryNotAllowed       = errors.New("shipment is not in failed status for redelivery")
+	ErrRedeliveryUnsupported      = errors.New("hãng vận chuyển không hỗ trợ yêu cầu giao lại qua API")
 	ErrRedeliveryAlreadyRequested = errors.New("đã có yêu cầu giao lại cho lần giao thất bại hiện tại")
 	ErrMaxRedeliveryExceeded      = errors.New("maximum redelivery attempts reached")
 )
@@ -1107,6 +1108,9 @@ func (s *ShippingService) RequestRedelivery(ctx context.Context, buyerID, orderI
 
 	if provider, ok := s.aggregator.Get(sh.CarrierCode); ok {
 		if err := provider.RequestRedelivery(ctx, sh.TrackingCode, preferredDate, note); err != nil {
+			if errors.Is(err, carrier.ErrRedeliveryUnsupported) {
+				return nil, fmt.Errorf("%w (%s)", ErrRedeliveryUnsupported, strings.ToUpper(sh.CarrierCode))
+			}
 			if !errors.Is(err, carrier.ErrInvalidCarrierToken) && carrier.IsNonRetryable(err) {
 				return nil, fmt.Errorf("%w: hãng vận chuyển không cho phép yêu cầu giao lại cho vận đơn này", ErrRedeliveryNotAllowed)
 			}

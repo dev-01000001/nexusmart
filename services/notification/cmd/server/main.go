@@ -42,6 +42,16 @@ func run() error {
 	cfg := config.Load()
 	log := logger.New(cfg.ServiceName, logger.WithLevel(cfg.LogLevel))
 
+	if err := cfg.Validate(); err != nil {
+		log.Error("invalid notification configuration", slog.String("error", err.Error()))
+		return err
+	}
+	smtpMailer, err := mailer.NewSMTPMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPFrom, cfg.SMTPUsername, cfg.SMTPPassword)
+	if err != nil {
+		log.Error("invalid SMTP configuration", slog.String("error", err.Error()))
+		return err
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -104,7 +114,6 @@ func run() error {
 	}
 
 	pgStore := store.NewPGStore(pool)
-	smtpMailer := mailer.NewSMTPMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPFrom)
 	svc := service.NewNotificationService(pgStore, smtpMailer, userResolver, log, svcOpts...)
 	svc.SetWebBaseURL(cfg.WebBaseURL)
 

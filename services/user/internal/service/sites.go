@@ -398,6 +398,16 @@ func (s *Server) SaveSiteDraft(ctx context.Context, req *userv1.SaveSiteDraftReq
 	}, nil
 }
 
+func checkShopActiveForSiteAction(shopStatus, action string) error {
+	if shopStatus == ShopStatusSuspended {
+		return status.Errorf(codes.FailedPrecondition, "SHOP_SUSPENDED: suspended shop cannot %s", action)
+	}
+	if shopStatus != ShopStatusActive {
+		return status.Errorf(codes.FailedPrecondition, "SHOP_NOT_ACTIVE: shop must be ACTIVE to %s", action)
+	}
+	return nil
+}
+
 // PublishSite creates a new immutable site_versions snapshot from the current draft_config,
 // activates it as published_version_id, sets status=PUBLISHED, and writes an audit log.
 func (s *Server) PublishSite(ctx context.Context, req *userv1.PublishSiteRequest) (*userv1.PublishSiteResponse, error) {
@@ -421,8 +431,8 @@ func (s *Server) PublishSite(ctx context.Context, req *userv1.PublishSiteRequest
 		}
 		return nil, status.Error(codes.Internal, "failed to load shop")
 	}
-	if shop.Status != ShopStatusActive {
-		return nil, status.Error(codes.FailedPrecondition, "SHOP_NOT_ACTIVE: shop must be ACTIVE to publish site")
+	if err := checkShopActiveForSiteAction(shop.Status, "publish site"); err != nil {
+		return nil, err
 	}
 
 	preSite, err := s.store.GetSiteByShopID(ctx, shopID)
@@ -483,6 +493,17 @@ func (s *Server) PublishSite(ctx context.Context, req *userv1.PublishSiteRequest
 		version db.SiteVersion
 	)
 	err = s.store.WithTx(ctx, func(q db.Querier) error {
+		lockedShop, txErr := q.GetShopByIDForUpdate(ctx, shopID)
+		if txErr != nil {
+			if isNotFoundErr(txErr) {
+				return status.Error(codes.NotFound, "shop not found")
+			}
+			return txErr
+		}
+		if txErr = checkShopActiveForSiteAction(lockedShop.Status, "publish site"); txErr != nil {
+			return txErr
+		}
+
 		existing, txErr := q.GetSiteByShopIDForUpdate(ctx, shopID)
 		if txErr != nil {
 			if isNotFoundErr(txErr) {
@@ -625,6 +646,17 @@ func (s *Server) RollbackSite(ctx context.Context, req *userv1.RollbackSiteReque
 		version db.SiteVersion
 	)
 	err = s.store.WithTx(ctx, func(q db.Querier) error {
+		lockedShop, txErr := q.GetShopByIDForUpdate(ctx, shopID)
+		if txErr != nil {
+			if isNotFoundErr(txErr) {
+				return status.Error(codes.NotFound, "shop not found")
+			}
+			return txErr
+		}
+		if txErr = checkShopActiveForSiteAction(lockedShop.Status, "rollback site"); txErr != nil {
+			return txErr
+		}
+
 		existing, txErr := q.GetSiteByShopIDForUpdate(ctx, shopID)
 		if txErr != nil {
 			if isNotFoundErr(txErr) {
@@ -711,7 +743,10 @@ func (s *Server) ListSiteVersions(ctx context.Context, req *userv1.ListSiteVersi
 		return nil, status.Error(codes.Internal, "failed to load site")
 	}
 
-	page, pageSize := normalizePagination(req.GetPage(), req.GetPageSize())
+	page, pageSize, err := normalizePagination(req.GetPage(), req.GetPageSize())
+	if err != nil {
+		return nil, err
+	}
 	versions, err := s.store.ListSiteVersions(ctx, db.ListSiteVersionsParams{
 		SiteID:     existing.ID,
 		PageLimit:  pageSize,
@@ -741,7 +776,10 @@ func (s *Server) ListSites(ctx context.Context, req *userv1.ListSitesRequest) (*
 		return nil, err
 	}
 
-	page, pageSize := normalizePagination(req.GetPage(), req.GetPageSize())
+	page, pageSize, err := normalizePagination(req.GetPage(), req.GetPageSize())
+	if err != nil {
+		return nil, err
+	}
 	st := siteStatusFromProto(req.GetStatus())
 	query := strings.TrimSpace(req.GetQuery())
 
@@ -877,24 +915,18 @@ const (
 	publishedSitesMaxPageSize     int32 = 48
 )
 
-func normalizePublishedSitesPagination(page, pageSize int32) (int32, int32) {
-	if page <= 0 {
-		page = 1
-	}
-	if pageSize <= 0 {
-		pageSize = publishedSitesDefaultPageSize
-	}
-	if pageSize > publishedSitesMaxPageSize {
-		pageSize = publishedSitesMaxPageSize
-	}
-	return page, pageSize
+func normalizePublishedSitesPagination(page, pageSize int32) (int32, int32, error) {
+	return normalizePaginationWithBounds(page, pageSize, publishedSitesDefaultPageSize, publishedSitesMaxPageSize)
 }
 
 // ListPublishedSites is PUBLIC (no JWT): the platform site directory. It returns only PUBLISHED
 // sites whose shop is ACTIVE, newest publish first, with card fields taken from the published
 // snapshot (never draft_config) and the public shop profile.
 func (s *Server) ListPublishedSites(ctx context.Context, req *userv1.ListPublishedSitesRequest) (*userv1.ListPublishedSitesResponse, error) {
-	page, pageSize := normalizePublishedSitesPagination(req.GetPage(), req.GetPageSize())
+	page, pageSize, err := normalizePublishedSitesPagination(req.GetPage(), req.GetPageSize())
+	if err != nil {
+		return nil, err
+	}
 
 	rows, err := s.store.ListPublishedSites(ctx, db.ListPublishedSitesParams{
 		PageLimit:  pageSize,

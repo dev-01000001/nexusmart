@@ -5,6 +5,8 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +21,7 @@ import (
 	"github.com/nexusmart/core/services/shipping/internal/carrier"
 	"github.com/nexusmart/core/services/shipping/internal/service"
 	"github.com/nexusmart/core/services/shipping/internal/store"
+	"github.com/sony/gobreaker/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -1425,7 +1428,86 @@ func TestCreateReturnShipmentRBACAndGetShipmentDirection(t *testing.T) {
 	if status.Code(mapError(store.ErrNotFound)) != codes.NotFound ||
 		status.Code(mapError(service.ErrInvalidArgument)) != codes.InvalidArgument ||
 		status.Code(mapError(service.ErrNotCancellable)) != codes.FailedPrecondition ||
+		status.Code(mapError(service.ErrRedeliveryUnsupported)) != codes.FailedPrecondition ||
 		status.Code(mapError(context.DeadlineExceeded)) != codes.Internal {
 		t.Fatalf("unexpected mapError codes")
+	}
+}
+
+func TestRequestRedelivery_GHTKSandboxReturnsFailedPreconditionWithoutMutation(t *testing.T) {
+	srvHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srvHTTP.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	repo := newStubRepo()
+	ghtk := carrier.NewResilientCarrier(carrier.NewGHTKAdapter(carrier.GHTKConfig{
+		Mode:       "sandbox",
+		BaseURL:    srvHTTP.URL,
+		Token:      "live-ghtk-token",
+		HTTPClient: srvHTTP.Client(),
+	}), carrier.ResilienceConfig{
+		AttemptTimeout: 200 * time.Millisecond,
+		MaxAttempts:    3,
+		BaseBackoff:    5 * time.Millisecond,
+		CBMaxFailures:  1,
+		Logger:         logger,
+	})
+	svc := service.NewShippingService(repo, carrier.NewAggregator(logger, ghtk), nil, nil, logger)
+	grpcSrv := New(svc)
+
+	now := time.Now().UTC()
+	shID := uuid.NewString()
+	_, _, err := repo.CreateShipment(context.Background(), &store.Shipment{
+		ID:           shID,
+		OrderID:      "ord-grpc-ghtk-redeliv",
+		ShopID:       "shop-1",
+		BuyerID:      "buyer-1",
+		Direction:    store.DirectionForward,
+		CarrierCode:  carrier.CodeGHTK,
+		TrackingCode: "S123456.BO.555555",
+		Status:       carrier.StatusFailed,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}, &store.ShipmentEvent{
+		ID:          uuid.NewString(),
+		ShipmentID:  shID,
+		Status:      carrier.StatusFailed,
+		RawStatus:   "9",
+		Description: "Giao hàng thất bại",
+		OccurredAt:  now,
+		CreatedAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("seed shipment: %v", err)
+	}
+
+	buyerCtx := auth.WithClaims(context.Background(), &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: "buyer-1"},
+		Role:             auth.RoleBuyer,
+	})
+	_, err = grpcSrv.RequestRedelivery(buyerCtx, &shippingv1.RequestRedeliveryRequest{
+		OrderId:       "ord-grpc-ghtk-redeliv",
+		PreferredDate: "2026-11-28",
+		Note:          "gọi trước khi giao",
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected codes.FailedPrecondition, got code=%s err=%v", status.Code(err), err)
+	}
+	if !strings.Contains(err.Error(), "GHTK") {
+		t.Fatalf("expected clear GHTK unsupported message, got %q", err.Error())
+	}
+	if ghtk.State() != gobreaker.StateClosed {
+		t.Fatalf("expected circuit breaker Closed, got %s", ghtk.State())
+	}
+
+	sh, _ := repo.GetShipmentByOrderID(context.Background(), "ord-grpc-ghtk-redeliv", store.DirectionForward)
+	if sh.Status != carrier.StatusFailed || sh.RedeliveryCount != 0 {
+		t.Fatalf("shipment must stay failed with redelivery_count=0, got status=%s count=%d", sh.Status, sh.RedeliveryCount)
+	}
+	evs, _ := repo.ListShipmentEvents(context.Background(), shID)
+	if len(evs) != 1 {
+		t.Fatalf("expected 1 event (no redelivery_requested appended), got %d", len(evs))
 	}
 }

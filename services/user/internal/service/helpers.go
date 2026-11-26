@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"net"
 	"net/netip"
@@ -224,17 +225,24 @@ func requireAuthClaims(ctx context.Context) (*auth.Claims, error) {
 	return claims, nil
 }
 
-func normalizePagination(page, pageSize int32) (int32, int32) {
+func normalizePaginationWithBounds(page, pageSize, defaultSize, maxSize int32) (int32, int32, error) {
 	if page <= 0 {
 		page = 1
 	}
 	if pageSize <= 0 {
-		pageSize = 20
+		pageSize = defaultSize
 	}
-	if pageSize > 100 {
-		pageSize = 100
+	if pageSize > maxSize {
+		pageSize = maxSize
 	}
-	return page, pageSize
+	if int64(page-1)*int64(pageSize) > math.MaxInt32 {
+		return 0, 0, status.Error(codes.InvalidArgument, "page exceeds maximum pagination offset")
+	}
+	return page, pageSize, nil
+}
+
+func normalizePagination(page, pageSize int32) (int32, int32, error) {
+	return normalizePaginationWithBounds(page, pageSize, 20, 100)
 }
 
 func peerIPFromContext(ctx context.Context) string {

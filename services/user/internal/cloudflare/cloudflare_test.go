@@ -629,3 +629,26 @@ func TestLiveNeverLeaksAPITokenInErrors(t *testing.T) {
 		}
 	})
 }
+
+func TestLiveGetCustomHostname404ReturnsFailed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/zones/zone-abc/custom_hostnames/ch-missing" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":1436,"message":"Not found"}]}`))
+	}))
+	defer srv.Close()
+
+	client := newTestLiveClient(t, srv.URL, "live-404-token")
+	st, err := client.GetCustomHostname(context.Background(), "ch-missing", "Shop.Example.VN")
+	if err != nil {
+		t.Fatalf("GetCustomHostname 404 must not return error, got: %v", err)
+	}
+	if st.ID != "ch-missing" || st.Hostname != "shop.example.vn" || st.Status != StatusFailed || st.LastError == "" {
+		t.Fatalf("GetCustomHostname 404 must return StatusFailed with LastError, got %+v", st)
+	}
+}

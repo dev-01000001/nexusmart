@@ -1084,7 +1084,10 @@ func (s *Server) AdminListUsers(ctx context.Context, req *userv1.AdminListUsersR
 		return nil, err
 	}
 
-	page, pageSize := normalizePagination(req.GetPage(), req.GetPageSize())
+	page, pageSize, err := normalizePagination(req.GetPage(), req.GetPageSize())
+	if err != nil {
+		return nil, err
+	}
 	query := strings.TrimSpace(req.GetQuery())
 	role := roleFromProto(req.GetRole())
 	st := statusFromProto(req.GetStatus())
@@ -1396,7 +1399,10 @@ func (s *Server) GetShop(ctx context.Context, req *userv1.GetShopRequest) (*user
 }
 
 func (s *Server) ListPublicShops(ctx context.Context, req *userv1.ListPublicShopsRequest) (*userv1.ListPublicShopsResponse, error) {
-	page, pageSize := normalizePagination(req.GetPage(), req.GetPageSize())
+	page, pageSize, err := normalizePagination(req.GetPage(), req.GetPageSize())
+	if err != nil {
+		return nil, err
+	}
 
 	shops, err := s.store.ListShops(ctx, db.ListShopsParams{
 		Status:     ShopStatusActive,
@@ -1426,7 +1432,10 @@ func (s *Server) AdminListShops(ctx context.Context, req *userv1.AdminListShopsR
 		return nil, err
 	}
 
-	page, pageSize := normalizePagination(req.GetPage(), req.GetPageSize())
+	page, pageSize, err := normalizePagination(req.GetPage(), req.GetPageSize())
+	if err != nil {
+		return nil, err
+	}
 	st := shopStatusFromProto(req.GetStatus())
 	pendingOnly := req.GetBankReviewPendingOnly()
 
@@ -2100,7 +2109,10 @@ func (s *Server) ListAuditLogs(ctx context.Context, req *userv1.ListAuditLogsReq
 		return nil, err
 	}
 
-	page, pageSize := normalizePagination(req.GetPage(), req.GetPageSize())
+	page, pageSize, err := normalizePagination(req.GetPage(), req.GetPageSize())
+	if err != nil {
+		return nil, err
+	}
 	var fromTime, toTime *time.Time
 	if req.GetFromTime() != nil {
 		t := req.GetFromTime().AsTime()

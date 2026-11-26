@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1376,10 +1377,18 @@ func TestGHTKSandboxHTTPAdapter(t *testing.T) {
 	if err != nil || !st.Changed || st.Status != StatusDelivered || st.RawStatus != "6" || st.Description != "Đã đối soát" {
 		t.Fatalf("unexpected GHTK sandbox status: %+v err=%v", st, err)
 	}
+	wantModifiedUTC := time.Date(2026, 11, 20, 5, 30, 0, 0, time.UTC)
+	if !st.OccurredAt.Equal(wantModifiedUTC) {
+		t.Fatalf("GHTK naive SQL modified '2026-11-20 12:30:00' must parse as %s (UTC+7), got %s", wantModifiedUTC.Format(time.RFC3339), st.OccurredAt.Format(time.RFC3339))
+	}
 
 	stRet, err := adapter.GetStatus(context.Background(), "GHTK-RETURNED")
 	if err != nil || !stRet.Changed || stRet.Status != StatusReturned || stRet.RawStatus != "21" {
 		t.Fatalf("unexpected GHTK returned status: %+v err=%v", stRet, err)
+	}
+	wantRetUTC := time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)
+	if !stRet.OccurredAt.Equal(wantRetUTC) {
+		t.Fatalf("GHTK RFC3339 Z modified must preserve %s, got %s", wantRetUTC.Format(time.RFC3339), stRet.OccurredAt.Format(time.RFC3339))
 	}
 
 	if err := adapter.CancelShipment(context.Background(), "S123456.BO.999888"); err != nil {
@@ -1573,6 +1582,372 @@ func TestAggregatorGHNAndGHTKParallelAndCircuitBreakerFallback(t *testing.T) {
 		}
 		if err := resGHTK.CancelShipment(context.Background(), "GHTK-1234567890"); err != nil {
 			t.Fatalf("unexpected wrapped CancelShipment err: %v", err)
+		}
+	})
+}
+
+type countingRedeliveryCarrier struct {
+	Carrier
+	calls atomic.Int32
+}
+
+func (c *countingRedeliveryCarrier) RequestRedelivery(ctx context.Context, trackingCode, preferredDate, note string) error {
+	c.calls.Add(1)
+	return c.Carrier.RequestRedelivery(ctx, trackingCode, preferredDate, note)
+}
+
+func TestGHTKRequestRedelivery_MockAllowedSandboxUnsupportedNoRetryNoCB(t *testing.T) {
+	t.Run("mock mode preserves existing RequestRedelivery behavior", func(t *testing.T) {
+		mockGHTK := NewGHTKAdapter(GHTKConfig{Mode: "mock"})
+		if err := mockGHTK.RequestRedelivery(context.Background(), "GHTK-MOCK-1", "2026-11-28", "call"); err != nil {
+			t.Fatalf("mock RequestRedelivery with tracking code must succeed, got %v", err)
+		}
+		if err := mockGHTK.RequestRedelivery(context.Background(), "   ", "2026-11-28", "call"); !IsNonRetryable(err) {
+			t.Fatalf("mock RequestRedelivery with blank tracking code must return NonRetryableError, got %v", err)
+		}
+	})
+
+	t.Run("sandbox mode returns non-retryable ErrRedeliveryUnsupported with 0 HTTP calls, 0 retries, CB closed", func(t *testing.T) {
+		var httpCalls atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			httpCalls.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+
+		adapter := NewGHTKAdapter(GHTKConfig{
+			Mode:       "sandbox",
+			BaseURL:    srv.URL,
+			Token:      "live-ghtk-sandbox-token",
+			HTTPClient: srv.Client(),
+		})
+		counter := &countingRedeliveryCarrier{Carrier: adapter}
+		rc := NewResilientCarrier(counter, ResilienceConfig{
+			AttemptTimeout: 200 * time.Millisecond,
+			MaxAttempts:    3,
+			BaseBackoff:    5 * time.Millisecond,
+			MaxBackoff:     10 * time.Millisecond,
+			CBMaxFailures:  1,
+			CBOpenTimeout:  30 * time.Second,
+			Logger:         discardLogger(),
+		})
+
+		for i := 1; i <= 3; i++ {
+			err := rc.RequestRedelivery(context.Background(), "S123456.BO.999888", "2026-11-28", "gọi trước")
+			if err == nil {
+				t.Fatalf("call #%d: sandbox GHTK RequestRedelivery must not falsely succeed", i)
+			}
+			if !errors.Is(err, ErrRedeliveryUnsupported) {
+				t.Fatalf("call #%d: expected ErrRedeliveryUnsupported, got %v", i, err)
+			}
+			if !IsNonRetryable(err) {
+				t.Fatalf("call #%d: expected NonRetryableError, got %v", i, err)
+			}
+			if rc.State() != gobreaker.StateClosed {
+				t.Fatalf("call #%d: unsupported redelivery must NOT open circuit breaker, got state=%s", i, rc.State())
+			}
+		}
+		if got := counter.calls.Load(); got != 3 {
+			t.Fatalf("expected exactly 1 attempt per call (3 total, 0 retries), got %d", got)
+		}
+		if got := httpCalls.Load(); got != 0 {
+			t.Fatalf("sandbox GHTK RequestRedelivery must send 0 HTTP requests, got %d", got)
+		}
+	})
+}
+
+func TestGHTKAdapter_DynamicSandboxModeViaSetTokenAndRace(t *testing.T) {
+	const liveToken = "live-db-ghtk-token"
+	var (
+		httpCalls       atomic.Int32
+		sawBadAuthToken atomic.Bool
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpCalls.Add(1)
+		tok := r.Header.Get("Token")
+		if tok == "" || tok == placeholderGHTKToken {
+			sawBadAuthToken.Store(true)
+		}
+		if tok != liveToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"success":false,"message":"unauthorized"}`))
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/services/shipment/fee":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"message": "ok",
+				"fee": map[string]any{
+					"name":          "area1",
+					"fee":           27000,
+					"insurance_fee": 1500,
+					"delivery":      true,
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/services/shipment/order":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"message": "created",
+				"order": map[string]any{
+					"partner_id": "ord-dyn-1",
+					"label":      "S123456.DYN.0001",
+					"fee":        28500,
+					"status_id":  2,
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/services/shipment/cancel/S123456.DYN.0001":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "cancelled"})
+		case r.Method == http.MethodGet && r.URL.Path == "/services/shipment/v2/S123456.DYN.0001":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"message": "ok",
+				"order": map[string]any{
+					"label_id":    "S123456.DYN.0001",
+					"status":      6,
+					"status_text": "Đã giao hàng",
+					"modified":    "2026-11-20 12:30:00",
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	for _, initialTok := range []string{"", placeholderGHTKToken} {
+		t.Run("initial_token="+initialTok, func(t *testing.T) {
+			httpCalls.Store(0)
+			adapter := NewGHTKAdapter(GHTKConfig{
+				Mode:       "sandbox",
+				BaseURL:    srv.URL,
+				Token:      initialTok,
+				HTTPClient: srv.Client(),
+			})
+
+			// Starts in mock mode when token is empty or placeholder.
+			if !adapter.IsMock() {
+				t.Fatalf("expected IsMock=true initially for token=%q", initialTok)
+			}
+			if adapter.CanPoll() {
+				t.Fatalf("expected CanPoll=false initially for token=%q", initialTok)
+			}
+			if err := adapter.RequestRedelivery(context.Background(), "GHTK-MOCK-1", "2026-11-28", "note"); err != nil {
+				t.Fatalf("mock RequestRedelivery failed before SetToken: %v", err)
+			}
+			if httpCalls.Load() != 0 {
+				t.Fatalf("expected 0 HTTP calls in initial mock mode, got %d", httpCalls.Load())
+			}
+
+			// AdminUpdateCarrier calls TestConnection with candidate token BEFORE SetToken.
+			if err := adapter.TestConnection(context.Background(), "wrong-candidate-token"); !errors.Is(err, ErrInvalidCarrierToken) {
+				t.Fatalf("expected ErrInvalidCarrierToken from sandbox HTTP check on bad candidate token, got %v", err)
+			}
+			if err := adapter.TestConnection(context.Background(), liveToken); err != nil {
+				t.Fatalf("expected nil from sandbox HTTP check on valid candidate token, got %v", err)
+			}
+			if httpCalls.Load() != 2 {
+				t.Fatalf("expected TestConnection to hit sandbox HTTP server twice, got %d", httpCalls.Load())
+			}
+
+			// Loading real token via SetToken exits mock mode dynamically.
+			adapter.SetToken(liveToken)
+			if adapter.IsMock() {
+				t.Fatalf("expected IsMock=false after SetToken(realToken) with GHTK_MODE=sandbox")
+			}
+			if !adapter.CanPoll() {
+				t.Fatalf("expected CanPoll=true after SetToken(realToken) with GHTK_MODE=sandbox")
+			}
+
+			quotes, err := adapter.CalculateFee(context.Background(), FeeRequest{
+				FromProvinceCode: "79", FromWardCode: "25747",
+				ToProvinceCode: "01", ToWardCode: "00070",
+				WeightGrams: 900, CODAmountVND: 200000,
+			})
+			if err != nil || len(quotes) != 1 || quotes[0].FeeVND != 28500 {
+				t.Fatalf("expected sandbox HTTP fee 28500 after SetToken, got quotes=%+v err=%v", quotes, err)
+			}
+			created, err := adapter.CreateShipment(context.Background(), ShipmentRequest{
+				OrderID:     "ord-dyn-1",
+				ServiceCode: "ROAD",
+				WeightGrams: 900,
+				FromAddress: Address{Name: "Shop", Phone: "0901112222", ProvinceCode: "79", WardCode: "25747", StreetAddress: "12 Le Loi"},
+				ToAddress:   Address{Name: "Buyer", Phone: "0903334444", ProvinceCode: "01", WardCode: "00070", StreetAddress: "99 Hang Trong"},
+			})
+			if err != nil || created.TrackingCode != "S123456.DYN.0001" {
+				t.Fatalf("expected sandbox HTTP CreateShipment tracking S123456.DYN.0001, got %+v err=%v", created, err)
+			}
+			st, err := adapter.GetStatus(context.Background(), created.TrackingCode)
+			if err != nil || !st.Changed || st.Status != StatusDelivered {
+				t.Fatalf("expected sandbox HTTP GetStatus delivered, got %+v err=%v", st, err)
+			}
+			if err := adapter.CancelShipment(context.Background(), created.TrackingCode); err != nil {
+				t.Fatalf("expected sandbox HTTP CancelShipment nil, got %v", err)
+			}
+			if err := adapter.RequestRedelivery(context.Background(), created.TrackingCode, "2026-11-28", "note"); !errors.Is(err, ErrRedeliveryUnsupported) || !IsNonRetryable(err) {
+				t.Fatalf("expected non-retryable ErrRedeliveryUnsupported in sandbox mode after SetToken, got %v", err)
+			}
+
+			// Reverting token to empty or placeholder returns to mock mode.
+			for _, mockTok := range []string{"", "   ", placeholderGHTKToken} {
+				adapter.SetToken(mockTok)
+				if !adapter.IsMock() {
+					t.Fatalf("expected IsMock=true after SetToken(%q)", mockTok)
+				}
+				if adapter.CanPoll() {
+					t.Fatalf("expected CanPoll=false after SetToken(%q) with no mockStatuses", mockTok)
+				}
+				before := httpCalls.Load()
+				mq, err := adapter.CalculateFee(context.Background(), FeeRequest{
+					FromProvinceCode: "79", ToProvinceCode: "79", WeightGrams: 500,
+				})
+				if err != nil || len(mq) != 2 || httpCalls.Load() != before {
+					t.Fatalf("expected mock quotes without HTTP call after SetToken(%q), got mq=%+v err=%v deltaCalls=%d", mockTok, mq, err, httpCalls.Load()-before)
+				}
+				if err := adapter.RequestRedelivery(context.Background(), "GHTK-MOCK-2", "2026-11-28", "note"); err != nil {
+					t.Fatalf("expected mock RequestRedelivery to succeed after SetToken(%q), got %v", mockTok, err)
+				}
+			}
+		})
+	}
+
+	t.Run("configured mock mode stays mock even after SetToken(realToken)", func(t *testing.T) {
+		httpCalls.Store(0)
+		adapter := NewGHTKAdapter(GHTKConfig{
+			Mode:       "mock",
+			BaseURL:    srv.URL,
+			Token:      placeholderGHTKToken,
+			HTTPClient: srv.Client(),
+		})
+		adapter.SetToken(liveToken)
+		if !adapter.IsMock() {
+			t.Fatalf("expected IsMock=true when configured mode is mock")
+		}
+		if adapter.CanPoll() {
+			t.Fatalf("expected CanPoll=false when configured mode is mock and no mockStatuses")
+		}
+		if _, err := adapter.CalculateFee(context.Background(), FeeRequest{FromProvinceCode: "79", ToProvinceCode: "79", WeightGrams: 500}); err != nil {
+			t.Fatalf("mock CalculateFee failed: %v", err)
+		}
+		if httpCalls.Load() != 0 {
+			t.Fatalf("configured mock mode must send 0 HTTP calls even after SetToken, got %d", httpCalls.Load())
+		}
+	})
+
+	t.Run("concurrent SetToken with IsMock/CanPoll/CalculateFee/RequestRedelivery is race-free", func(t *testing.T) {
+		sawBadAuthToken.Store(false)
+		adapter := NewGHTKAdapter(GHTKConfig{
+			Mode:       "sandbox",
+			BaseURL:    srv.URL,
+			Token:      placeholderGHTKToken,
+			HTTPClient: srv.Client(),
+		})
+		var wg sync.WaitGroup
+		tokens := []string{liveToken, "", placeholderGHTKToken, liveToken}
+		for i := 0; i < 4; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				for j := 0; j < 25; j++ {
+					adapter.SetToken(tokens[(id+j)%len(tokens)])
+					_ = adapter.IsMock()
+					_ = adapter.CanPoll()
+					adapter.SetMockStatus("GHTK-RACE-1", "6")
+					_, _ = adapter.CalculateFee(context.Background(), FeeRequest{
+						FromProvinceCode: "79", FromWardCode: "25747",
+						ToProvinceCode: "01", ToWardCode: "00070",
+						WeightGrams: 500,
+					})
+					_ = adapter.RequestRedelivery(context.Background(), "GHTK-RACE-1", "2026-11-28", "race")
+					adapter.SetMockStatus("GHTK-RACE-1", "")
+				}
+			}(i)
+		}
+		wg.Wait()
+		if sawBadAuthToken.Load() {
+			t.Fatalf("sandbox HTTP request leaked empty or placeholder token due to TOCTOU race")
+		}
+	})
+}
+
+func TestGHTKAdapter_SandboxTestConnectionRejectsPlaceholderAndEmptyToken(t *testing.T) {
+	const liveToken = "live-ghtk-sandbox-token-real"
+	var httpCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpCalls.Add(1)
+		if r.Header.Get("Token") != liveToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"success":false,"message":"unauthorized"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"message": "ok",
+			"fee":     map[string]any{"fee": 25000, "insurance_fee": 0, "delivery": true},
+		})
+	}))
+	defer srv.Close()
+
+	t.Run("sandbox running real token rejects placeholder candidate without HTTP or mock fallback", func(t *testing.T) {
+		httpCalls.Store(0)
+		adapter := NewGHTKAdapter(GHTKConfig{
+			Mode:       "sandbox",
+			BaseURL:    srv.URL,
+			Token:      liveToken,
+			HTTPClient: srv.Client(),
+		})
+		if adapter.IsMock() {
+			t.Fatalf("expected sandbox adapter with liveToken to have IsMock=false")
+		}
+		err := adapter.TestConnection(context.Background(), placeholderGHTKToken)
+		if !errors.Is(err, ErrInvalidCarrierToken) || !IsNonRetryable(err) {
+			t.Fatalf("sandbox TestConnection(placeholder): want non-retryable ErrInvalidCarrierToken, got %v", err)
+		}
+		if httpCalls.Load() != 0 {
+			t.Fatalf("sandbox TestConnection(placeholder) must fail before HTTP, got %d calls", httpCalls.Load())
+		}
+	})
+
+	t.Run("sandbox with placeholder or empty runtime token rejects empty and placeholder without HTTP", func(t *testing.T) {
+		for _, runtimeTok := range []string{placeholderGHTKToken, "", "   "} {
+			for _, candidateTok := range []string{"", "   ", placeholderGHTKToken} {
+				httpCalls.Store(0)
+				adapter := NewGHTKAdapter(GHTKConfig{
+					Mode:       "sandbox",
+					BaseURL:    srv.URL,
+					Token:      runtimeTok,
+					HTTPClient: srv.Client(),
+				})
+				err := adapter.TestConnection(context.Background(), candidateTok)
+				if !errors.Is(err, ErrInvalidCarrierToken) || !IsNonRetryable(err) {
+					t.Fatalf("sandbox(runtime=%q).TestConnection(%q): want non-retryable ErrInvalidCarrierToken, got %v", runtimeTok, candidateTok, err)
+				}
+				if httpCalls.Load() != 0 {
+					t.Fatalf("sandbox(runtime=%q).TestConnection(%q) must send 0 HTTP calls, got %d", runtimeTok, candidateTok, httpCalls.Load())
+				}
+			}
+		}
+	})
+
+	t.Run("configured mock mode preserves mock TestConnection behavior", func(t *testing.T) {
+		httpCalls.Store(0)
+		adapter := NewGHTKAdapter(GHTKConfig{
+			Mode:       "mock",
+			BaseURL:    srv.URL,
+			Token:      placeholderGHTKToken,
+			HTTPClient: srv.Client(),
+		})
+		if err := adapter.TestConnection(context.Background(), ""); err != nil {
+			t.Fatalf("mock TestConnection with stored placeholder should still pass, got %v", err)
+		}
+		if err := adapter.TestConnection(context.Background(), placeholderGHTKToken); err != nil {
+			t.Fatalf("mock TestConnection with explicit placeholder should still pass, got %v", err)
+		}
+		if err := adapter.TestConnection(context.Background(), "bad-token"); !errors.Is(err, ErrInvalidCarrierToken) || !IsNonRetryable(err) {
+			t.Fatalf("mock TestConnection(bad-token): want non-retryable ErrInvalidCarrierToken, got %v", err)
+		}
+		if httpCalls.Load() != 0 {
+			t.Fatalf("mock TestConnection must send 0 HTTP calls, got %d", httpCalls.Load())
 		}
 	})
 }

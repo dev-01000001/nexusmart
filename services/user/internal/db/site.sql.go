@@ -1122,6 +1122,71 @@ func (q *Queries) SetSiteDomainPrimary(ctx context.Context, arg SetSiteDomainPri
 	return err
 }
 
+const updateCustomDomainProvisioned = `-- name: UpdateCustomDomainProvisioned :one
+UPDATE domains
+SET is_primary = $2,
+    verified_at = $3,
+    tls_status = $4,
+    status = $5,
+    cf_custom_hostname_id = $6,
+    verification = $7,
+    last_checked_at = $8,
+    last_error = $9,
+    updated_at = NOW()
+WHERE id = $1
+  AND site_id = $10
+  AND status = 'PENDING'
+  AND cf_custom_hostname_id IS NULL
+RETURNING id, site_id, host, kind, is_primary, verified_at, tls_status, created_at, updated_at, status, cf_record_id, cf_custom_hostname_id, verification, last_checked_at, last_error
+`
+
+type UpdateCustomDomainProvisionedParams struct {
+	ID                 string     `json:"id"`
+	IsPrimary          bool       `json:"is_primary"`
+	VerifiedAt         *time.Time `json:"verified_at"`
+	TlsStatus          string     `json:"tls_status"`
+	Status             string     `json:"status"`
+	CfCustomHostnameID *string    `json:"cf_custom_hostname_id"`
+	Verification       []byte     `json:"verification"`
+	LastCheckedAt      *time.Time `json:"last_checked_at"`
+	LastError          *string    `json:"last_error"`
+	SiteID             string     `json:"site_id"`
+}
+
+func (q *Queries) UpdateCustomDomainProvisioned(ctx context.Context, arg UpdateCustomDomainProvisionedParams) (Domain, error) {
+	row := q.db.QueryRow(ctx, updateCustomDomainProvisioned,
+		arg.ID,
+		arg.IsPrimary,
+		arg.VerifiedAt,
+		arg.TlsStatus,
+		arg.Status,
+		arg.CfCustomHostnameID,
+		arg.Verification,
+		arg.LastCheckedAt,
+		arg.LastError,
+		arg.SiteID,
+	)
+	var i Domain
+	err := row.Scan(
+		&i.ID,
+		&i.SiteID,
+		&i.Host,
+		&i.Kind,
+		&i.IsPrimary,
+		&i.VerifiedAt,
+		&i.TlsStatus,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Status,
+		&i.CfRecordID,
+		&i.CfCustomHostnameID,
+		&i.Verification,
+		&i.LastCheckedAt,
+		&i.LastError,
+	)
+	return i, err
+}
+
 const updateDomainCFRecordID = `-- name: UpdateDomainCFRecordID :one
 UPDATE domains
 SET cf_record_id = $2,

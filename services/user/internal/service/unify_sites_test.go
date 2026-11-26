@@ -2,17 +2,22 @@ package service
 
 import (
 	"context"
+	"io"
 	"io/fs"
 	"net"
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
+	"github.com/nexusmart/core/pkg/common/logger"
 	"github.com/nexusmart/core/services/user/internal/db"
+	"github.com/nexusmart/core/services/user/internal/password"
 	"github.com/nexusmart/core/services/user/migrations"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -546,5 +551,333 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 	}
 	if gotWithoutSite != strings.ToLower(shopWithoutSite) {
 		t.Fatalf("shopWithoutSite slug = %q, want %q", gotWithoutSite, strings.ToLower(shopWithoutSite))
+	}
+}
+
+type lockOrderSpyStore struct {
+	*memStore
+	mu     sync.Mutex
+	events []string
+}
+
+type lockOrderSpyQuerier struct {
+	db.Querier
+	parent *lockOrderSpyStore
+}
+
+func (q *lockOrderSpyQuerier) GetShopByIDForUpdate(ctx context.Context, id string) (db.Shop, error) {
+	q.parent.mu.Lock()
+	q.parent.events = append(q.parent.events, "shop")
+	q.parent.mu.Unlock()
+	return q.Querier.GetShopByIDForUpdate(ctx, id)
+}
+
+func (q *lockOrderSpyQuerier) GetSiteByShopIDForUpdate(ctx context.Context, shopID string) (db.Site, error) {
+	q.parent.mu.Lock()
+	q.parent.events = append(q.parent.events, "site")
+	q.parent.mu.Unlock()
+	return q.Querier.GetSiteByShopIDForUpdate(ctx, shopID)
+}
+
+func (q *lockOrderSpyQuerier) GetSiteByIDForUpdate(ctx context.Context, id string) (db.Site, error) {
+	q.parent.mu.Lock()
+	q.parent.events = append(q.parent.events, "site")
+	q.parent.mu.Unlock()
+	return q.Querier.GetSiteByIDForUpdate(ctx, id)
+}
+
+func (s *lockOrderSpyStore) WithTx(ctx context.Context, fn func(q db.Querier) error) error {
+	return s.memStore.WithTx(ctx, func(q db.Querier) error {
+		return fn(&lockOrderSpyQuerier{Querier: q, parent: s})
+	})
+}
+
+func (s *lockOrderSpyStore) resetLockEvents() {
+	s.mu.Lock()
+	s.events = nil
+	s.mu.Unlock()
+}
+
+func (s *lockOrderSpyStore) lockEvents() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.events))
+	copy(out, s.events)
+	return out
+}
+
+func newLockOrderTestServer(t *testing.T, cf *spyCFClient) (*Server, *lockOrderSpyStore) {
+	t.Helper()
+	base := newMemStore()
+	spy := &lockOrderSpyStore{memStore: base}
+	sec := newMemSecurity()
+	pub := &memPublisher{}
+	hasher := password.NewDefaultHasher()
+	authMgr, err := auth.NewManager("lock-order-test-secret", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("auth.NewManager: %v", err)
+	}
+	log := logger.New("user-lock-order-test", logger.WithWriter(io.Discard))
+	srv := NewServer(spy, sec, hasher, authMgr, pub, log, Options{
+		Cloudflare: cf,
+		CFMode:     "mock",
+	})
+	return srv, spy
+}
+
+func TestRollbackSite_RejectsSuspendedAndNonActiveShop(t *testing.T) {
+	cf := newSpyCFClient("shops.nexusmart.localhost")
+	srv, spy := newLockOrderTestServer(t, cf)
+
+	ownerID := uuid.NewString()
+	shop := seedActiveShop(t, spy.memStore, ownerID, "Rollback Guard Shop", ShopStatusActive)
+	sellerCtx := ctxWithUser(ownerID, RoleSeller, shop.ID)
+
+	if _, err := srv.SaveSiteDraft(sellerCtx, &userv1.SaveSiteDraftRequest{
+		Subdomain:  "rb-guard",
+		ConfigJson: sampleSiteConfigJSON(t, "RB V1", "Hero V1"),
+	}); err != nil {
+		t.Fatalf("SaveSiteDraft v1: %v", err)
+	}
+	pub1, err := srv.PublishSite(sellerCtx, &userv1.PublishSiteRequest{Note: "v1"})
+	if err != nil {
+		t.Fatalf("PublishSite v1: %v", err)
+	}
+	if _, err := srv.SaveSiteDraft(sellerCtx, &userv1.SaveSiteDraftRequest{
+		Subdomain:  "rb-guard",
+		ConfigJson: sampleSiteConfigJSON(t, "RB V2", "Hero V2"),
+	}); err != nil {
+		t.Fatalf("SaveSiteDraft v2: %v", err)
+	}
+	pub2, err := srv.PublishSite(sellerCtx, &userv1.PublishSiteRequest{Note: "v2"})
+	if err != nil {
+		t.Fatalf("PublishSite v2: %v", err)
+	}
+
+	// Suspend shop while site stays PUBLISHED.
+	spy.mu.Lock()
+	spy.memStore.mu.Lock()
+	sh := spy.memStore.shops[shop.ID]
+	sh.Status = ShopStatusSuspended
+	spy.memStore.shops[shop.ID] = sh
+	spy.memStore.mu.Unlock()
+	spy.mu.Unlock()
+
+	spy.resetLockEvents()
+	_, err = srv.RollbackSite(sellerCtx, &userv1.RollbackSiteRequest{
+		VersionId: pub1.GetVersion().GetId(),
+		Note:      "blocked rollback",
+	})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "SHOP_SUSPENDED") {
+		t.Fatalf("SUSPENDED shop RollbackSite: want FailedPrecondition(SHOP_SUSPENDED), got %v", err)
+	}
+	// Must lock shops BEFORE sites (and stop before touching sites when shop is suspended).
+	locks := spy.lockEvents()
+	if len(locks) == 0 || locks[0] != "shop" {
+		t.Fatalf("RollbackSite must lock shops before sites in WithTx, got lock order=%v", locks)
+	}
+
+	// Verify neither published_version_id nor draft_config mutated.
+	stAfter, err := spy.GetSiteByShopID(context.Background(), shop.ID)
+	if err != nil {
+		t.Fatalf("GetSiteByShopID: %v", err)
+	}
+	if stAfter.PublishedVersionID == nil || *stAfter.PublishedVersionID != pub2.GetVersion().GetId() || !strings.Contains(string(stAfter.DraftConfig), "Hero V2") {
+		t.Fatalf("SUSPENDED shop RollbackSite mutated site: pubVer=%v draft=%s", stAfter.PublishedVersionID, string(stAfter.DraftConfig))
+	}
+
+	// Non-ACTIVE (PENDING) shop must fail with FailedPrecondition(SHOP_NOT_ACTIVE).
+	spy.memStore.mu.Lock()
+	sh = spy.memStore.shops[shop.ID]
+	sh.Status = ShopStatusPending
+	spy.memStore.shops[shop.ID] = sh
+	spy.memStore.mu.Unlock()
+
+	if _, err := srv.RollbackSite(sellerCtx, &userv1.RollbackSiteRequest{
+		VersionId: pub1.GetVersion().GetId(),
+	}); status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "SHOP_NOT_ACTIVE") {
+		t.Fatalf("PENDING shop RollbackSite: want FailedPrecondition(SHOP_NOT_ACTIVE), got %v", err)
+	}
+
+	// Active shop succeeds and locks shops before sites.
+	spy.memStore.mu.Lock()
+	sh = spy.memStore.shops[shop.ID]
+	sh.Status = ShopStatusActive
+	spy.memStore.shops[shop.ID] = sh
+	spy.memStore.mu.Unlock()
+
+	spy.resetLockEvents()
+	if _, err := srv.RollbackSite(sellerCtx, &userv1.RollbackSiteRequest{
+		VersionId: pub1.GetVersion().GetId(),
+		Note:      "ok rollback",
+	}); err != nil {
+		t.Fatalf("ACTIVE shop RollbackSite: %v", err)
+	}
+	locks = spy.lockEvents()
+	if len(locks) < 2 || locks[0] != "shop" || locks[1] != "site" {
+		t.Fatalf("ACTIVE RollbackSite must lock [shop, site], got %v", locks)
+	}
+}
+
+func TestPublishSite_SuspendedShopErrorCodeAndTOCTOULockOrder(t *testing.T) {
+	cf := newSpyCFClient("shops.nexusmart.localhost")
+	srv, spy := newLockOrderTestServer(t, cf)
+
+	ownerID := uuid.NewString()
+	shop := seedActiveShop(t, spy.memStore, ownerID, "Publish TOCTOU Shop", ShopStatusActive)
+	sellerCtx := ctxWithUser(ownerID, RoleSeller, shop.ID)
+
+	if _, err := srv.SaveSiteDraft(sellerCtx, &userv1.SaveSiteDraftRequest{
+		Subdomain:  "pub-toctou",
+		ConfigJson: sampleSiteConfigJSON(t, "Pub V1", "Hero V1"),
+	}); err != nil {
+		t.Fatalf("SaveSiteDraft: %v", err)
+	}
+
+	// 1. Pre-suspended shop must return SHOP_SUSPENDED (same code as SaveSiteDraft/AddCustomDomain/ApplySiteTemplate) with 0 CF calls.
+	spy.memStore.mu.Lock()
+	sh := spy.memStore.shops[shop.ID]
+	sh.Status = ShopStatusSuspended
+	spy.memStore.shops[shop.ID] = sh
+	spy.memStore.mu.Unlock()
+
+	if _, err := srv.PublishSite(sellerCtx, &userv1.PublishSiteRequest{Note: "blocked"}); status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "SHOP_SUSPENDED") {
+		t.Fatalf("SUSPENDED shop PublishSite: want FailedPrecondition(SHOP_SUSPENDED), got %v", err)
+	}
+	if len(cf.ensureSubdomainCalls) != 0 {
+		t.Fatalf("pre-suspended PublishSite must not call Cloudflare DNS")
+	}
+
+	// 2. TOCTOU race: shop is ACTIVE at pre-check, gets SUSPENDED during Cloudflare EnsureSubdomainRecord before WithTx.
+	spy.memStore.mu.Lock()
+	sh = spy.memStore.shops[shop.ID]
+	sh.Status = ShopStatusActive
+	spy.memStore.shops[shop.ID] = sh
+	spy.memStore.mu.Unlock()
+
+	cf.mu.Lock()
+	cf.onEnsureSubdomain = func(_ string) {
+		spy.memStore.mu.Lock()
+		cur := spy.memStore.shops[shop.ID]
+		cur.Status = ShopStatusSuspended
+		spy.memStore.shops[shop.ID] = cur
+		spy.memStore.mu.Unlock()
+	}
+	cf.mu.Unlock()
+
+	spy.resetLockEvents()
+	_, err := srv.PublishSite(sellerCtx, &userv1.PublishSiteRequest{Note: "race"})
+	cf.mu.Lock()
+	cf.onEnsureSubdomain = nil
+	cf.mu.Unlock()
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "SHOP_SUSPENDED") {
+		t.Fatalf("TOCTOU suspended PublishSite: want FailedPrecondition(SHOP_SUSPENDED), got %v", err)
+	}
+	locks := spy.lockEvents()
+	if len(locks) == 0 || locks[0] != "shop" {
+		t.Fatalf("PublishSite must lock shops before sites in WithTx, got %v", locks)
+	}
+	stAfter, err := spy.GetSiteByShopID(context.Background(), shop.ID)
+	if err != nil {
+		t.Fatalf("GetSiteByShopID: %v", err)
+	}
+	if stAfter.Status != SiteStatusDraft || stAfter.PublishedVersionID != nil {
+		t.Fatalf("TOCTOU suspended PublishSite must not publish site, got status=%s pubVer=%v", stAfter.Status, stAfter.PublishedVersionID)
+	}
+
+	// 3. Unsuspend shop -> PublishSite succeeds and locks [shop, site].
+	spy.memStore.mu.Lock()
+	sh = spy.memStore.shops[shop.ID]
+	sh.Status = ShopStatusActive
+	spy.memStore.shops[shop.ID] = sh
+	spy.memStore.mu.Unlock()
+
+	spy.resetLockEvents()
+	if _, err := srv.PublishSite(sellerCtx, &userv1.PublishSiteRequest{Note: "ok"}); err != nil {
+		t.Fatalf("ACTIVE PublishSite: %v", err)
+	}
+	locks = spy.lockEvents()
+	if len(locks) < 2 || locks[0] != "shop" || locks[1] != "site" {
+		t.Fatalf("ACTIVE PublishSite must lock [shop, site], got %v", locks)
+	}
+}
+
+func TestCheckCustomDomain_RejectsSuspendedShopAndTOCTOU(t *testing.T) {
+	cf := newSpyCFClient("shops.nexusmart.localhost")
+	srv, spy := newLockOrderTestServer(t, cf)
+
+	ownerID := uuid.NewString()
+	shop := seedActiveShop(t, spy.memStore, ownerID, "Check Domain Guard Shop", ShopStatusActive)
+	sellerCtx := ctxWithUser(ownerID, RoleSeller, shop.ID)
+
+	if _, err := srv.SaveSiteDraft(sellerCtx, &userv1.SaveSiteDraftRequest{
+		Subdomain:  "chk-guard",
+		ConfigJson: sampleSiteConfigJSON(t, "Chk", "Hero"),
+	}); err != nil {
+		t.Fatalf("SaveSiteDraft: %v", err)
+	}
+	if _, err := srv.PublishSite(sellerCtx, &userv1.PublishSiteRequest{}); err != nil {
+		t.Fatalf("PublishSite: %v", err)
+	}
+	added, err := srv.AddCustomDomain(sellerCtx, &userv1.AddCustomDomainRequest{
+		Hostname: "chk-guard.verified.test",
+	})
+	if err != nil {
+		t.Fatalf("AddCustomDomain: %v", err)
+	}
+	domID := added.GetDomain().GetId()
+
+	// 1. Pre-suspended shop -> FailedPrecondition(SHOP_SUSPENDED) with 0 Cloudflare calls.
+	spy.memStore.mu.Lock()
+	sh := spy.memStore.shops[shop.ID]
+	sh.Status = ShopStatusSuspended
+	spy.memStore.shops[shop.ID] = sh
+	spy.memStore.mu.Unlock()
+
+	getBefore := len(cf.getCustomCalls)
+	if _, err := srv.CheckCustomDomain(sellerCtx, &userv1.CheckCustomDomainRequest{
+		DomainId: domID,
+	}); status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "SHOP_SUSPENDED") {
+		t.Fatalf("SUSPENDED shop CheckCustomDomain: want FailedPrecondition(SHOP_SUSPENDED), got %v", err)
+	}
+	if len(cf.getCustomCalls) != getBefore {
+		t.Fatalf("SUSPENDED shop CheckCustomDomain must not call Cloudflare")
+	}
+
+	// 2. TOCTOU: shop suspended while GetCustomHostname is in-flight -> WithTx locks shop before site and rejects without activating domain.
+	spy.memStore.mu.Lock()
+	sh = spy.memStore.shops[shop.ID]
+	sh.Status = ShopStatusActive
+	spy.memStore.shops[shop.ID] = sh
+	spy.memStore.mu.Unlock()
+
+	cf.mu.Lock()
+	cf.onGetCustom = func(_, _ string) {
+		spy.memStore.mu.Lock()
+		cur := spy.memStore.shops[shop.ID]
+		cur.Status = ShopStatusSuspended
+		spy.memStore.shops[shop.ID] = cur
+		spy.memStore.mu.Unlock()
+	}
+	cf.mu.Unlock()
+
+	spy.resetLockEvents()
+	_, err = srv.CheckCustomDomain(sellerCtx, &userv1.CheckCustomDomainRequest{DomainId: domID})
+	cf.mu.Lock()
+	cf.onGetCustom = nil
+	cf.mu.Unlock()
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "SHOP_SUSPENDED") {
+		t.Fatalf("TOCTOU CheckCustomDomain: want FailedPrecondition(SHOP_SUSPENDED), got %v", err)
+	}
+	locks := spy.lockEvents()
+	if len(locks) == 0 || locks[0] != "shop" {
+		t.Fatalf("CheckCustomDomain must lock shop before site in WithTx, got %v", locks)
+	}
+	domAfter, err := spy.GetDomainByID(context.Background(), domID)
+	if err != nil {
+		t.Fatalf("GetDomainByID: %v", err)
+	}
+	if domAfter.Status != DomainStatusPending || domAfter.IsPrimary {
+		t.Fatalf("TOCTOU suspended CheckCustomDomain must not activate domain, got status=%s primary=%v", domAfter.Status, domAfter.IsPrimary)
 	}
 }

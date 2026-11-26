@@ -812,3 +812,186 @@ func TestGHTKWebhookCanonicalNativeReturnAndErrors(t *testing.T) {
 		t.Fatalf("expected VerifySignature false for empty secret / invalid hex")
 	}
 }
+
+func TestParseWebhookTimeVietnamTimezoneAndRFC3339(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		want    time.Time
+		wantErr bool
+	}{
+		{
+			name: "naive SQL timestamp interpreted as UTC+7",
+			raw:  "2026-11-20 12:00:00",
+			want: time.Date(2026, 11, 20, 5, 0, 0, 0, time.UTC),
+		},
+		{
+			name: "naive SQL timestamp early morning rolls back UTC date",
+			raw:  "2026-11-20 02:30:00",
+			want: time.Date(2026, 11, 19, 19, 30, 0, 0, time.UTC),
+		},
+		{
+			name: "RFC3339 with Z keeps UTC unchanged",
+			raw:  "2026-11-20T12:00:00Z",
+			want: time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC),
+		},
+		{
+			name: "RFC3339 with +07:00 offset converts to UTC",
+			raw:  "2026-11-20T12:00:00+07:00",
+			want: time.Date(2026, 11, 20, 5, 0, 0, 0, time.UTC),
+		},
+		{
+			name: "RFC3339 with negative offset preserves offset",
+			raw:  "2026-11-20T12:00:00-05:00",
+			want: time.Date(2026, 11, 20, 17, 0, 0, 0, time.UTC),
+		},
+		{
+			name:    "invalid timestamp rejected",
+			raw:     "2026-11-20T12:00:00",
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseWebhookTime(tc.raw)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("parseWebhookTime(%q) = %v, want error", tc.raw, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseWebhookTime(%q) unexpected error: %v", tc.raw, err)
+			}
+			if !got.Equal(tc.want) || got.Location() != time.UTC {
+				t.Fatalf("parseWebhookTime(%q) = %s (loc=%s), want %s (UTC)", tc.raw, got.Format(time.RFC3339), got.Location(), tc.want.Format(time.RFC3339))
+			}
+		})
+	}
+}
+
+func TestGHTKWebhookVietnamTimestampOrderingAndReplay(t *testing.T) {
+	const secret = "test-ghtk-tz-secret"
+	repo := newStubRepo()
+	_, _, _ = repo.CreateShipment(context.Background(), &store.Shipment{
+		ID:           uuid.NewString(),
+		OrderID:      "ord-ghtk-tz",
+		ShopID:       "shop-1",
+		CarrierCode:  carrier.CodeGHTK,
+		TrackingCode: "GHTK-TZ-001",
+		Status:       carrier.StatusCreated,
+		Direction:    store.DirectionForward,
+	}, nil)
+	_, _, _ = repo.CreateShipment(context.Background(), &store.Shipment{
+		ID:           uuid.NewString(),
+		OrderID:      "ord-ghn-tz",
+		ShopID:       "shop-1",
+		CarrierCode:  carrier.CodeGHN,
+		TrackingCode: "GHN-TZ-001",
+		Status:       carrier.StatusCreated,
+		Direction:    store.DirectionForward,
+	}, nil)
+
+	agg := carrier.NewAggregator(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc := service.NewShippingService(repo, agg, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h := NewHandler(secret, svc, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	// 12:05:00 ICT == 05:05:00 UTC.
+	now := time.Date(2026, 11, 20, 5, 5, 0, 0, time.UTC)
+	h.nowFn = func() time.Time { return now }
+
+	r := chi.NewRouter()
+	r.Post("/webhooks/shipping/{carrier}", h.ServeHTTP)
+
+	post := func(carrierPath string, body map[string]any, ts time.Time) (*httptest.ResponseRecorder, map[string]any) {
+		raw, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/shipping/"+carrierPath, bytes.NewReader(raw))
+		req.Header.Set("X-Signature", Sign(secret, raw))
+		req.Header.Set("X-Timestamp", strconv.FormatInt(ts.Unix(), 10))
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec, out
+	}
+
+	// 1. Native GHTK webhook at 12:00:00 ICT -> stored as 05:00:00 UTC (NOT 12:00:00 UTC).
+	rec, out := post("ghtk", map[string]any{
+		"hash":        "ghtk-tz-evt-1",
+		"label_id":    "GHTK-TZ-001",
+		"status_id":   12,
+		"action_time": "2026-11-20 12:00:00",
+	}, now)
+	if rec.Code != http.StatusOK || out["outcome"] != string(store.WebhookOutcomeApplied) {
+		t.Fatalf("event 1 failed: code=%d out=%+v", rec.Code, out)
+	}
+	sh, _ := repo.GetShipmentByTrackingCode(context.Background(), "GHTK-TZ-001")
+	wantT1 := time.Date(2026, 11, 20, 5, 0, 0, 0, time.UTC)
+	if sh.LastEventAt == nil || !sh.LastEventAt.Equal(wantT1) {
+		t.Fatalf("event 1 LastEventAt = %v, want %s", sh.LastEventAt, wantT1.Format(time.RFC3339))
+	}
+
+	// 2. Subsequent RFC3339 UTC event 5 minutes later (05:05:00Z == 12:05:00 ICT) must be applied,
+	// NOT falsely dropped as stale against a +7h shifted timestamp.
+	rec, out = post("ghtk", map[string]any{
+		"event_id":      "ghtk-tz-evt-2",
+		"tracking_code": "GHTK-TZ-001",
+		"raw_status":    "5",
+		"occurred_at":   "2026-11-20T05:05:00Z",
+	}, now)
+	if rec.Code != http.StatusOK || out["outcome"] != string(store.WebhookOutcomeApplied) {
+		t.Fatalf("event 2 (RFC3339 UTC after naive ICT) must apply, got code=%d out=%+v", rec.Code, out)
+	}
+	sh, _ = repo.GetShipmentByTrackingCode(context.Background(), "GHTK-TZ-001")
+	if sh.Status != carrier.StatusDelivering {
+		t.Fatalf("expected status delivering after event 2, got %s", sh.Status)
+	}
+
+	// 3. Out-of-order older native GHTK webhook (12:02:00 ICT == 05:02:00 UTC < 05:05:00 UTC) must be stale,
+	// NOT wrongly applied as 12:02:00 UTC.
+	rec, out = post("ghtk", map[string]any{
+		"hash":        "ghtk-tz-evt-3-stale",
+		"label_id":    "GHTK-TZ-001",
+		"status_id":   6,
+		"action_time": "2026-11-20 12:02:00",
+	}, now)
+	if rec.Code != http.StatusOK || out["outcome"] != string(store.WebhookOutcomeStale) {
+		t.Fatalf("older naive ICT event must be stale, got code=%d out=%+v", rec.Code, out)
+	}
+	sh, _ = repo.GetShipmentByTrackingCode(context.Background(), "GHTK-TZ-001")
+	if sh.Status != carrier.StatusDelivering {
+		t.Fatalf("stale event must not transition shipment to delivered, got %s", sh.Status)
+	}
+
+	// 4. Newer native GHTK delivered event (12:10:00 ICT == 05:10:00 UTC) applies cleanly.
+	rec, out = post("ghtk", map[string]any{
+		"hash":        "ghtk-tz-evt-4-delivered",
+		"label_id":    "GHTK-TZ-001",
+		"status_id":   6,
+		"action_time": "2026-11-20 12:10:00",
+	}, now)
+	if rec.Code != http.StatusOK || out["outcome"] != string(store.WebhookOutcomeApplied) {
+		t.Fatalf("newer naive ICT delivered event must apply, got code=%d out=%+v", rec.Code, out)
+	}
+	sh, _ = repo.GetShipmentByTrackingCode(context.Background(), "GHTK-TZ-001")
+	wantT4 := time.Date(2026, 11, 20, 5, 10, 0, 0, time.UTC)
+	if sh.Status != carrier.StatusDelivered || sh.LastEventAt == nil || !sh.LastEventAt.Equal(wantT4) {
+		t.Fatalf("expected delivered at %s, got status=%s last_event_at=%v", wantT4.Format(time.RFC3339), sh.Status, sh.LastEventAt)
+	}
+
+	// 5. Explicit Z on GHN webhook remains exact UTC (never shifted by -7h).
+	rec, out = post("ghn", map[string]any{
+		"event_id":      "ghn-tz-evt-1",
+		"tracking_code": "GHN-TZ-001",
+		"raw_status":    "delivering",
+		"occurred_at":   "2026-11-20T12:00:00Z",
+	}, now)
+	if rec.Code != http.StatusOK || out["outcome"] != string(store.WebhookOutcomeApplied) {
+		t.Fatalf("GHN RFC3339 event failed: code=%d out=%+v", rec.Code, out)
+	}
+	ghnSh, _ := repo.GetShipmentByTrackingCode(context.Background(), "GHN-TZ-001")
+	wantGHN := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	if ghnSh.LastEventAt == nil || !ghnSh.LastEventAt.Equal(wantGHN) {
+		t.Fatalf("GHN LastEventAt = %v, want %s", ghnSh.LastEventAt, wantGHN.Format(time.RFC3339))
+	}
+}

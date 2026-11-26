@@ -1025,7 +1025,7 @@ func TestInAppLinksPointToRealWebRoutesAndUseOrderID(t *testing.T) {
 		t.Errorf("PRM-B6/USR-B9: user.registered link = %q, want /dang-ky", nReg.Link)
 	}
 
-	// 2. user.shop_reviewed APPROVE -> /seller (not /seller/dashboard); REJECT/REQUEST_INFO -> /tai-khoan?tab=gian-hang
+	// 2. user.shop_reviewed APPROVE/REJECT/REQUEST_INFO -> /seller (SellerShopOnboarding handles PENDING/REQUEST_INFO/REJECTED resubmission on /seller).
 	nApprove := mustSend("evt-link-shop-ok", "user.shop_reviewed", map[string]any{
 		"shop_id":       "shop-1",
 		"owner_user_id": "u-link-1",
@@ -1042,8 +1042,8 @@ func TestInAppLinksPointToRealWebRoutesAndUseOrderID(t *testing.T) {
 		"decision":      "REJECT",
 		"reason":        "Thiếu thông tin",
 	})
-	if nReject.Link != "/tai-khoan?tab=gian-hang" {
-		t.Errorf("USR-B9: shop REJECT link = %q, want /tai-khoan?tab=gian-hang", nReject.Link)
+	if nReject.Link != "/seller" {
+		t.Errorf("USR-B9: shop REJECT link = %q, want /seller (must not 404 on /tai-khoan?tab=gian-hang)", nReject.Link)
 	}
 
 	const siteBase = "https://shop-1.nexusmart.vn"
@@ -1173,7 +1173,7 @@ func TestInAppLinksPointToRealWebRoutesAndUseOrderID(t *testing.T) {
 		t.Errorf("ORD-B10: group-level multi-shop payment.refunded link = %q, want %s/don-hang", nGroupRefundMulti.Link, siteBase)
 	}
 
-	// 10. user.shop_reviewed REQUEST_INFO -> /tai-khoan?tab=gian-hang.
+	// 10. user.shop_reviewed REQUEST_INFO -> /seller (real resubmission route via SellerShopOnboarding).
 	nReqInfo := mustSend("evt-link-shop-reqinfo", "user.shop_reviewed", map[string]any{
 		"shop_id":       "shop-1",
 		"owner_user_id": "u-link-1",
@@ -1181,8 +1181,22 @@ func TestInAppLinksPointToRealWebRoutesAndUseOrderID(t *testing.T) {
 		"decision":      "REQUEST_INFO",
 		"reason":        "Bổ sung GPKD",
 	})
-	if nReqInfo.Link != "/tai-khoan?tab=gian-hang" {
-		t.Errorf("USR-B9: shop REQUEST_INFO link = %q, want /tai-khoan?tab=gian-hang", nReqInfo.Link)
+	if nReqInfo.Link != "/seller" {
+		t.Errorf("USR-B9: shop REQUEST_INFO link = %q, want /seller", nReqInfo.Link)
+	}
+
+	// 10b. user.password_reset_requested -> empty in-app link (no /tai-khoan on root host); email still has /dat-lai-mat-khau?token=...
+	nPwdReset := mustSend("evt-link-pwd-reset", "user.password_reset_requested", map[string]any{
+		"user_id":     "u-link-1",
+		"email":       "link@nexusmart.local",
+		"full_name":   "Link Buyer",
+		"reset_token": "tok-reset-verify-123",
+	})
+	if nPwdReset.Link != "" {
+		t.Errorf("user.password_reset_requested in-app link = %q, want empty string (must not 404 on /tai-khoan)", nPwdReset.Link)
+	}
+	if len(mail.sent) == 0 || !strings.Contains(mail.sent[len(mail.sent)-1].Body, "/dat-lai-mat-khau?token=tok-reset-verify-123") {
+		t.Errorf("user.password_reset_requested email must still contain /dat-lai-mat-khau?token=..., got %+v", mail.sent)
 	}
 
 	// 11. order.returned -> <site>/don-hang/<order_id> and preserves checkout_group_id/storefront_shop_id.

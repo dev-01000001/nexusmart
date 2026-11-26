@@ -720,6 +720,21 @@ func (t *memTx) UpdateDomainCFRecordID(ctx context.Context, arg db.UpdateDomainC
 	return d, err
 }
 
+func (t *memTx) UpdateCustomDomainProvisioned(ctx context.Context, arg db.UpdateCustomDomainProvisionedParams) (db.Domain, error) {
+	t.mu.Lock()
+	prev, hadPrev := t.domains[arg.ID]
+	t.mu.Unlock()
+	d, err := t.memStore.UpdateCustomDomainProvisioned(ctx, arg)
+	if err == nil && hadPrev {
+		t.undo = append(t.undo, func() {
+			t.mu.Lock()
+			t.domains[arg.ID] = prev
+			t.mu.Unlock()
+		})
+	}
+	return d, err
+}
+
 func (t *memTx) UpdateDomainVerificationState(ctx context.Context, arg db.UpdateDomainVerificationStateParams) (db.Domain, error) {
 	t.mu.Lock()
 	prev, hadPrev := t.domains[arg.ID]
@@ -2836,6 +2851,33 @@ func (m *memStore) UpdateDomainCFRecordID(_ context.Context, arg db.UpdateDomain
 		return db.Domain{}, pgx.ErrNoRows
 	}
 	d.CfRecordID = arg.CfRecordID
+	d.UpdatedAt = time.Now().UTC()
+	m.domains[d.ID] = d
+	return d, nil
+}
+
+func (m *memStore) UpdateCustomDomainProvisioned(_ context.Context, arg db.UpdateCustomDomainProvisionedParams) (db.Domain, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.domains[arg.ID]
+	if !ok || d.SiteID != arg.SiteID || d.Status != DomainStatusPending || d.CfCustomHostnameID != nil {
+		return db.Domain{}, pgx.ErrNoRows
+	}
+	if arg.IsPrimary {
+		for id, other := range m.domains {
+			if id != d.ID && other.SiteID == d.SiteID && other.IsPrimary {
+				return db.Domain{}, &pgconn.PgError{Code: "23505", ConstraintName: "idx_domains_site_primary"}
+			}
+		}
+	}
+	d.IsPrimary = arg.IsPrimary
+	d.VerifiedAt = arg.VerifiedAt
+	d.TlsStatus = arg.TlsStatus
+	d.Status = arg.Status
+	d.CfCustomHostnameID = arg.CfCustomHostnameID
+	d.Verification = append([]byte(nil), arg.Verification...)
+	d.LastCheckedAt = arg.LastCheckedAt
+	d.LastError = arg.LastError
 	d.UpdatedAt = time.Now().UTC()
 	m.domains[d.ID] = d
 	return d, nil

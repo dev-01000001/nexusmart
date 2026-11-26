@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"log/slog"
 	"strings"
 
@@ -20,6 +21,8 @@ type Config struct {
 	SMTPHost         string
 	SMTPPort         int
 	SMTPFrom         string
+	SMTPUsername     string
+	SMTPPassword     string
 	UserGRPCAddr     string
 	WebBaseURL       string
 	SiteURLScheme    string // scheme of absolute order links to shop sites (https; dev http)
@@ -48,6 +51,8 @@ func Load() Config {
 		SMTPHost:         env.EnvString("SMTP_HOST", "mailpit"),
 		SMTPPort:         env.EnvInt("SMTP_PORT", 1025),
 		SMTPFrom:         env.EnvString("SMTP_FROM", "no-reply@nexusmart.local"),
+		SMTPUsername:     env.EnvString("SMTP_USERNAME", ""),
+		SMTPPassword:     env.EnvString("SMTP_PASSWORD", ""),
 		UserGRPCAddr:     env.EnvString("USER_GRPC_ADDR", "user:50051"),
 		WebBaseURL:       strings.TrimRight(strings.TrimSpace(env.EnvString("WEB_BASE_URL", "http://localhost:3000")), "/"),
 		SiteURLScheme:    env.EnvString("SITE_URL_SCHEME", "https"),
@@ -57,6 +62,14 @@ func Load() Config {
 		OTLPInsecure:     env.EnvBool("OTEL_EXPORTER_OTLP_INSECURE", true),
 		LogLevel:         parseLogLevel(env.EnvString("LOG_LEVEL", "info")),
 	}
+}
+
+// Validate checks startup configuration invariants without exposing secret values.
+func (c Config) Validate() error {
+	if (strings.TrimSpace(c.SMTPUsername) == "") != (strings.TrimSpace(c.SMTPPassword) == "") {
+		return errors.New("SMTP_USERNAME and SMTP_PASSWORD must both be set or both be empty")
+	}
+	return nil
 }
 
 func parseLogLevel(raw string) slog.Level {

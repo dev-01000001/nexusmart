@@ -307,6 +307,23 @@ SET cf_record_id = $2,
 WHERE id = $1
 RETURNING *;
 
+-- name: UpdateCustomDomainProvisioned :one
+UPDATE domains
+SET is_primary = $2,
+    verified_at = $3,
+    tls_status = $4,
+    status = $5,
+    cf_custom_hostname_id = $6,
+    verification = $7,
+    last_checked_at = $8,
+    last_error = $9,
+    updated_at = NOW()
+WHERE id = $1
+  AND site_id = $10
+  AND status = 'PENDING'
+  AND cf_custom_hostname_id IS NULL
+RETURNING *;
+
 -- name: UpdateDomainVerificationState :one
 UPDATE domains
 SET status = $2,

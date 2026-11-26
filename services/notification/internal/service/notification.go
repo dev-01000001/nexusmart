@@ -625,11 +625,11 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 				category:   store.CategorySystem,
 				forceEmail: true, // Security password reset email always sends
 				// Security: reset_token and resetLink are NEVER stored in the notifications table.
+				// In-app Link stays empty because root host has no /tai-khoan route (password reset applies to buyers, sellers, and staff).
 				inApp: &store.Notification{
 					Category:  store.CategorySystem,
 					Title:     "Yêu cầu đặt lại mật khẩu",
 					Body:      "Hệ thống đã nhận được yêu cầu đặt lại mật khẩu cho tài khoản của bạn. Vui lòng kiểm tra email để tiếp tục. Nếu không phải bạn thực hiện, hãy bảo vệ tài khoản ngay.",
-					Link:      "/tai-khoan",
 					CreatedAt: now,
 				},
 				email: &resetMsg,
@@ -650,11 +650,11 @@ func (s *NotificationService) buildNotificationPlan(eventType string, env Envelo
 		decision := strings.ToUpper(strings.TrimSpace(p.Decision))
 		decisionLabel := shopReviewDecisionLabel(decision)
 		title := fmt.Sprintf("Kết quả duyệt gian hàng %s", p.ShopName)
-		link := "/tai-khoan?tab=gian-hang"
+		// /seller serves both active seller dashboard and SellerShopOnboarding resubmission for PENDING (REQUEST_INFO) / REJECTED shops.
+		link := "/seller"
 		var body string
 		switch decision {
 		case "APPROVE", "APPROVED":
-			link = "/seller"
 			body = fmt.Sprintf("Gian hàng %s đã được phê duyệt. Bạn có thể quản lý sản phẩm và đơn hàng trên Kênh Người Bán.", p.ShopName)
 		case "REJECT", "REJECTED":
 			body = fmt.Sprintf("Hồ sơ gian hàng %s chưa được duyệt.", p.ShopName)

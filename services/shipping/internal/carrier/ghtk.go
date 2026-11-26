@@ -47,19 +47,45 @@ type ghtkMockStatus struct {
 
 // GHTKAdapter implements Carrier for Giao Hang Tiet Kiem (sandbox HTTP + deterministic mock mode).
 type GHTKAdapter struct {
-	mode         string
-	baseURL      string
-	token        string
-	labelBaseURL string
-	client       *http.Client
-	mu           sync.RWMutex
-	mockStatuses map[string]ghtkMockStatus
-	faults       mockFaultInjector
+	configuredMode string
+	baseURL        string
+	token          string
+	labelBaseURL   string
+	client         *http.Client
+	mu             sync.RWMutex
+	mockStatuses   map[string]ghtkMockStatus
+	faults         mockFaultInjector
+}
+
+func isUsableGHTKToken(token string) bool {
+	tok := strings.TrimSpace(token)
+	return tok != "" && tok != placeholderGHTKToken
+}
+
+func (g *GHTKAdapter) isSandboxLocked() bool {
+	return g.configuredMode == "sandbox" && isUsableGHTKToken(g.token)
+}
+
+func (g *GHTKAdapter) isSandbox() bool {
+	g.mu.RLock()
+	ok := g.isSandboxLocked()
+	g.mu.RUnlock()
+	return ok
+}
+
+// sandboxToken atomically reads the runtime token and effective sandbox mode under g.mu
+// so concurrent SetToken calls cannot cause a sandbox request to send an empty/placeholder token.
+func (g *GHTKAdapter) sandboxToken() (string, bool) {
+	g.mu.RLock()
+	tok := g.token
+	sandbox := g.configuredMode == "sandbox" && isUsableGHTKToken(tok)
+	g.mu.RUnlock()
+	return tok, sandbox
 }
 
 // SetTestFaultInjectionEnabled toggles test-only fault injection in mock mode (never active in sandbox mode).
 func (g *GHTKAdapter) SetTestFaultInjectionEnabled(enabled bool) {
-	if g.mode == "sandbox" {
+	if g.isSandbox() {
 		g.faults.setEnabled(false)
 		return
 	}
@@ -68,20 +94,21 @@ func (g *GHTKAdapter) SetTestFaultInjectionEnabled(enabled bool) {
 
 // InjectCreateFault schedules count simulated HTTP error responses in mock mode for orderID ("" = any order).
 func (g *GHTKAdapter) InjectCreateFault(orderID string, statusCode, count int) error {
-	if g.mode == "sandbox" {
+	if g.isSandbox() {
 		return errors.New("fault injection unavailable in ghtk sandbox mode")
 	}
 	return g.faults.inject(orderID, statusCode, count)
 }
 
 // NewGHTKAdapter creates a GHTK adapter in mock or sandbox mode.
-// Falls back to mock mode when Mode != "sandbox" or Token is empty/placeholder ("sandbox-ghtk-token").
+// Effective mode is evaluated dynamically from configured Mode and current runtime Token:
+// sandbox HTTP is active only when Mode == "sandbox" and Token is non-empty and not "sandbox-ghtk-token".
 func NewGHTKAdapter(cfg GHTKConfig) *GHTKAdapter {
-	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
-	token := strings.TrimSpace(cfg.Token)
-	if mode != "sandbox" || token == "" || token == placeholderGHTKToken {
-		mode = "mock"
+	configuredMode := strings.ToLower(strings.TrimSpace(cfg.Mode))
+	if configuredMode != "sandbox" {
+		configuredMode = "mock"
 	}
+	token := strings.TrimSpace(cfg.Token)
 	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 	if baseURL == "" {
 		baseURL = defaultGHTKBaseURL
@@ -95,24 +122,28 @@ func NewGHTKAdapter(cfg GHTKConfig) *GHTKAdapter {
 		httpClient = &http.Client{Timeout: 5 * time.Second}
 	}
 	return &GHTKAdapter{
-		mode:         mode,
-		baseURL:      baseURL,
-		token:        token,
-		labelBaseURL: labelBase,
-		client:       httpClient,
-		mockStatuses: make(map[string]ghtkMockStatus),
+		configuredMode: configuredMode,
+		baseURL:        baseURL,
+		token:          token,
+		labelBaseURL:   labelBase,
+		client:         httpClient,
+		mockStatuses:   make(map[string]ghtkMockStatus),
 	}
 }
 
 func (g *GHTKAdapter) Code() string { return CodeGHTK }
 func (g *GHTKAdapter) Name() string { return NameGHTK }
-func (g *GHTKAdapter) IsMock() bool { return g.mode != "sandbox" }
+func (g *GHTKAdapter) IsMock() bool { return !g.isSandbox() }
 
 // SetToken updates the runtime API token used by the GHTK adapter.
 func (g *GHTKAdapter) SetToken(token string) {
 	g.mu.Lock()
 	g.token = strings.TrimSpace(token)
+	sandbox := g.isSandboxLocked()
 	g.mu.Unlock()
+	if sandbox {
+		g.faults.setEnabled(false)
+	}
 }
 
 func (g *GHTKAdapter) getToken() string {
@@ -122,8 +153,12 @@ func (g *GHTKAdapter) getToken() string {
 	return tok
 }
 
-// RequestRedelivery records redelivery intent; GHTK does not expose a separate redelivery switch endpoint.
+// RequestRedelivery succeeds in mock mode for deterministic testing, and fails fast with
+// a non-retryable ErrRedeliveryUnsupported in non-mock modes because GHTK has no redelivery API endpoint.
 func (g *GHTKAdapter) RequestRedelivery(_ context.Context, trackingCode, _, _ string) error {
+	if !g.IsMock() {
+		return &NonRetryableError{Err: fmt.Errorf("%w: GHTK không hỗ trợ API yêu cầu giao lại", ErrRedeliveryUnsupported)}
+	}
 	if strings.TrimSpace(trackingCode) == "" {
 		return &NonRetryableError{Err: errors.New("ghtk redelivery requires tracking code")}
 	}
@@ -136,14 +171,14 @@ func (g *GHTKAdapter) TestConnection(ctx context.Context, token string) error {
 	if tok == "" {
 		tok = g.getToken()
 	}
-	if g.mode != "sandbox" {
+	if g.configuredMode != "sandbox" {
 		if IsMockTokenRejected(tok, true) {
 			return &NonRetryableError{Err: fmt.Errorf("%w: ghtk rejected API token", ErrInvalidCarrierToken)}
 		}
 		return nil
 	}
-	if tok == "" {
-		return &NonRetryableError{Err: fmt.Errorf("%w: ghtk API token is required", ErrInvalidCarrierToken)}
+	if !isUsableGHTKToken(tok) {
+		return &NonRetryableError{Err: fmt.Errorf("%w: ghtk sandbox API token is required", ErrInvalidCarrierToken)}
 	}
 	params := url.Values{}
 	params.Set("pick_province", "Thành phố Hà Nội")
@@ -171,11 +206,11 @@ func (g *GHTKAdapter) TestConnection(ctx context.Context, token string) error {
 
 // CanPoll reports true in sandbox mode or when mock status overrides are staged for polling tests.
 func (g *GHTKAdapter) CanPoll() bool {
-	if g.mode == "sandbox" {
-		return true
-	}
 	g.mu.RLock()
 	defer g.mu.RUnlock()
+	if g.isSandboxLocked() {
+		return true
+	}
 	return len(g.mockStatuses) > 0
 }
 
@@ -200,34 +235,38 @@ func (g *GHTKAdapter) SetMockStatus(trackingCode, status string) {
 }
 
 func (g *GHTKAdapter) CalculateFee(ctx context.Context, req FeeRequest) ([]Quote, error) {
-	if g.mode != "sandbox" {
+	tok, sandbox := g.sandboxToken()
+	if !sandbox {
 		return g.mockQuotes(req), nil
 	}
-	return g.sandboxCalculateFee(ctx, req)
+	return g.sandboxCalculateFee(ctx, req, tok)
 }
 
 func (g *GHTKAdapter) CreateShipment(ctx context.Context, req ShipmentRequest) (*ShipmentResult, error) {
-	if g.mode != "sandbox" {
+	tok, sandbox := g.sandboxToken()
+	if !sandbox {
 		if err := g.faults.consume(CodeGHTK, req.OrderID); err != nil {
 			return nil, err
 		}
 		return g.mockCreateShipment(req), nil
 	}
-	return g.sandboxCreateShipment(ctx, req)
+	return g.sandboxCreateShipment(ctx, req, tok)
 }
 
 func (g *GHTKAdapter) CancelShipment(ctx context.Context, trackingCode string) error {
-	if g.mode != "sandbox" {
+	tok, sandbox := g.sandboxToken()
+	if !sandbox {
 		return nil
 	}
-	return g.sandboxCancelShipment(ctx, trackingCode)
+	return g.sandboxCancelShipment(ctx, trackingCode, tok)
 }
 
 func (g *GHTKAdapter) GetStatus(ctx context.Context, trackingCode string) (*TrackingStatus, error) {
-	if g.mode != "sandbox" {
+	tok, sandbox := g.sandboxToken()
+	if !sandbox {
 		return g.mockGetStatus(trackingCode), nil
 	}
-	return g.sandboxGetStatus(ctx, trackingCode)
+	return g.sandboxGetStatus(ctx, trackingCode, tok)
 }
 
 func (g *GHTKAdapter) mockQuotes(req FeeRequest) []Quote {
@@ -409,7 +448,7 @@ type ghtkFeeResponse struct {
 	} `json:"fee"`
 }
 
-func (g *GHTKAdapter) sandboxCalculateFee(ctx context.Context, req FeeRequest) ([]Quote, error) {
+func (g *GHTKAdapter) sandboxCalculateFee(ctx context.Context, req FeeRequest, token string) ([]Quote, error) {
 	weight := req.WeightGrams
 	if weight <= 0 {
 		weight = 500
@@ -449,7 +488,7 @@ func (g *GHTKAdapter) sandboxCalculateFee(ctx context.Context, req FeeRequest) (
 	params.Set("transport", "road")
 
 	var resp ghtkFeeResponse
-	if err := g.doRequest(ctx, http.MethodGet, "/services/shipment/fee?"+params.Encode(), nil, &resp); err != nil {
+	if err := g.doRequestWithToken(ctx, http.MethodGet, "/services/shipment/fee?"+params.Encode(), nil, &resp, token); err != nil {
 		return nil, err
 	}
 	totalFee := resp.Fee.Fee + resp.Fee.InsuranceFee
@@ -514,7 +553,7 @@ type ghtkCreateResponse struct {
 	} `json:"order"`
 }
 
-func (g *GHTKAdapter) sandboxCreateShipment(ctx context.Context, req ShipmentRequest) (*ShipmentResult, error) {
+func (g *GHTKAdapter) sandboxCreateShipment(ctx context.Context, req ShipmentRequest, token string) (*ShipmentResult, error) {
 	weight := req.WeightGrams
 	if weight <= 0 {
 		weight = 500
@@ -592,7 +631,7 @@ func (g *GHTKAdapter) sandboxCreateShipment(ctx context.Context, req ShipmentReq
 	}
 
 	var resp ghtkCreateResponse
-	if err := g.doRequest(ctx, http.MethodPost, "/services/shipment/order", payload, &resp); err != nil {
+	if err := g.doRequestWithToken(ctx, http.MethodPost, "/services/shipment/order", payload, &resp, token); err != nil {
 		return nil, err
 	}
 	if !resp.Success || strings.TrimSpace(resp.Order.Label) == "" {
@@ -614,10 +653,10 @@ type ghtkBasicResponse struct {
 	Message string `json:"message"`
 }
 
-func (g *GHTKAdapter) sandboxCancelShipment(ctx context.Context, trackingCode string) error {
+func (g *GHTKAdapter) sandboxCancelShipment(ctx context.Context, trackingCode, token string) error {
 	var resp ghtkBasicResponse
 	path := "/services/shipment/cancel/" + url.PathEscape(strings.TrimSpace(trackingCode))
-	if err := g.doRequest(ctx, http.MethodPost, path, nil, &resp); err != nil {
+	if err := g.doRequestWithToken(ctx, http.MethodPost, path, nil, &resp, token); err != nil {
 		if IsAlreadyCancelledMessage(err.Error()) {
 			return nil
 		}
@@ -644,10 +683,10 @@ type ghtkStatusResponse struct {
 	} `json:"order"`
 }
 
-func (g *GHTKAdapter) sandboxGetStatus(ctx context.Context, trackingCode string) (*TrackingStatus, error) {
+func (g *GHTKAdapter) sandboxGetStatus(ctx context.Context, trackingCode, token string) (*TrackingStatus, error) {
 	var resp ghtkStatusResponse
 	path := "/services/shipment/v2/" + url.PathEscape(strings.TrimSpace(trackingCode))
-	if err := g.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+	if err := g.doRequestWithToken(ctx, http.MethodGet, path, nil, &resp, token); err != nil {
 		return nil, err
 	}
 	if !resp.Success {
@@ -695,6 +734,9 @@ func parseGHTKRawStatus(raw json.RawMessage) string {
 	return strings.Trim(trimmed, "\"")
 }
 
+// vietnamLocation is fixed UTC+7 (ICT) so timezone-less GHTK SQL timestamps never depend on host tzdata.
+var vietnamLocation = time.FixedZone("ICT", 7*60*60)
+
 func parseGHTKTimestamp(raw string) time.Time {
 	s := strings.TrimSpace(raw)
 	if s == "" {
@@ -703,14 +745,10 @@ func parseGHTKTimestamp(raw string) time.Time {
 	if ts, err := time.Parse(time.RFC3339, s); err == nil {
 		return ts.UTC()
 	}
-	if ts, err := time.Parse(ghtkTimestampFormatSQL, s); err == nil {
+	if ts, err := time.ParseInLocation(ghtkTimestampFormatSQL, s, vietnamLocation); err == nil {
 		return ts.UTC()
 	}
 	return time.Now().UTC()
-}
-
-func (g *GHTKAdapter) doRequest(ctx context.Context, method, path string, body any, dst any) error {
-	return g.doRequestWithToken(ctx, method, path, body, dst, g.getToken())
 }
 
 func (g *GHTKAdapter) doRequestWithToken(ctx context.Context, method, path string, body any, dst any, token string) error {
