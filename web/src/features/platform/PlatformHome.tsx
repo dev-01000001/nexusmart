@@ -121,7 +121,7 @@ function buildWallTiles(rows: number, cols: number, rowOffset: number) {
     const colorIdx = (gr * 7 + c * 2 + 1) % TEMPLATE_WALL_SWATCHES.length;
     return {
       key: `${gr}-${c}`,
-      Icon: WALL_ICONS[iconIdx],
+      iconIdx,
       bg: TEMPLATE_WALL_SWATCHES[colorIdx],
     };
   });
@@ -727,6 +727,20 @@ export function PlatformHome({ directory, rootDomain }: PlatformHomeProps) {
 
         {/* S8. Tường công cụ (Navy, seamless from S7; top rows start right of copy, bottom rows span full width) */}
         <section className={styles.toolsSection} aria-labelledby="platform-tools-heading">
+          <svg
+            className={styles.toolsSprite}
+            width="0"
+            height="0"
+            aria-hidden="true"
+            focusable="false"
+          >
+            {WALL_ICONS.map((Icon, idx) => (
+              <symbol key={idx} id={`home-wall-icon-${idx}`} viewBox="0 0 22 22">
+                <Icon size={22} />
+              </symbol>
+            ))}
+          </svg>
+
           <div className={styles.toolsTopGrid}>
             <div className={styles.toolsCopyCol} data-reveal="">
               <h2 id="platform-tools-heading" className={styles.sectionHeading}>
@@ -740,9 +754,11 @@ export function PlatformHome({ directory, rootDomain }: PlatformHomeProps) {
 
             <div className={styles.toolsTopWall} aria-hidden="true">
               <div className={styles.toolsTopWallGrid}>
-                {WALL_TOP_TILES.map(({ key, Icon, bg }) => (
+                {WALL_TOP_TILES.map(({ key, iconIdx, bg }) => (
                   <span key={key} className={styles.toolTile} style={{ background: bg }}>
-                    <Icon size={22} />
+                    <svg width={22} height={22}>
+                      <use href={`#home-wall-icon-${iconIdx}`} />
+                    </svg>
                   </span>
                 ))}
               </div>
@@ -751,9 +767,11 @@ export function PlatformHome({ directory, rootDomain }: PlatformHomeProps) {
 
           <div className={styles.toolsBottomWall} aria-hidden="true">
             <div className={styles.toolsBottomWallGrid}>
-              {WALL_BOTTOM_TILES.map(({ key, Icon, bg }) => (
+              {WALL_BOTTOM_TILES.map(({ key, iconIdx, bg }) => (
                 <span key={key} className={styles.toolTile} style={{ background: bg }}>
-                  <Icon size={22} />
+                  <svg width={22} height={22}>
+                    <use href={`#home-wall-icon-${iconIdx}`} />
+                  </svg>
                 </span>
               ))}
             </div>

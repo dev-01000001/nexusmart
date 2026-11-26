@@ -1365,6 +1365,14 @@
   overflow: hidden;
 }
 
+.toolsSprite {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
 .toolsTopGrid {
   width: 100%;
   padding-left: max(var(--home-gutter), calc((100% - var(--home-max)) / 2));
