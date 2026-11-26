@@ -59,3 +59,15 @@ func TestConfigLoad_MeilisearchURLFallbackToLegacyMeiliURL(t *testing.T) {
 		t.Fatalf("primary MEILISEARCH_URL = %q, want http://primary-meili:7700", got)
 	}
 }
+
+func TestConfigLoad_RedisPassword(t *testing.T) {
+	t.Setenv("REDIS_PASSWORD", "")
+	if got := Load().RedisPassword; got != "" {
+		t.Fatalf("default RedisPassword = %q, want empty", got)
+	}
+
+	t.Setenv("REDIS_PASSWORD", "search-redis-secret")
+	if got := Load().RedisPassword; got != "search-redis-secret" {
+		t.Fatalf("RedisPassword = %q, want %q", got, "search-redis-secret")
+	}
+}

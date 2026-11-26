@@ -480,16 +480,21 @@ func (q *Queries) ListCategoriesByIDs(ctx context.Context, dollar_1 []string) ([
 }
 
 const listCategoriesByShop = `-- name: ListCategoriesByShop :many
-SELECT c.category_id, c.name, c.name_folded, c.slug, c.parent_id, c.sort_order, c.source_updated_at, c.updated_at
-FROM search_categories c
-WHERE EXISTS (
-    SELECT 1
+WITH shop_cat_sets AS (
+    SELECT DISTINCT pe.category_id, pe.category_ancestor_ids
     FROM product_embeddings pe
     WHERE pe.shop_id = $1
       AND pe.deleted = FALSE
       AND pe.status IN ('APPROVED', 'OUT_OF_STOCK')
-      AND (pe.category_id = c.category_id OR pe.category_ancestor_ids @> ARRAY[c.category_id])
+),
+shop_cats AS (
+    SELECT DISTINCT u.cat_id
+    FROM shop_cat_sets s
+    CROSS JOIN LATERAL unnest(array_append(s.category_ancestor_ids, s.category_id)) AS u(cat_id)
 )
+SELECT c.category_id, c.name, c.name_folded, c.slug, c.parent_id, c.sort_order, c.source_updated_at, c.updated_at
+FROM search_categories c
+JOIN shop_cats sc ON sc.cat_id = c.category_id
 ORDER BY c.sort_order ASC, c.name ASC
 `
 
@@ -917,17 +922,22 @@ func (q *Queries) SuggestCategories(ctx context.Context, arg SuggestCategoriesPa
 }
 
 const suggestCategoriesByShop = `-- name: SuggestCategoriesByShop :many
-SELECT c.category_id, c.name, c.slug
-FROM search_categories c
-WHERE EXISTS (
-    SELECT 1
+WITH shop_cat_sets AS (
+    SELECT DISTINCT pe.category_id, pe.category_ancestor_ids
     FROM product_embeddings pe
     WHERE pe.shop_id = $1
       AND pe.deleted = FALSE
       AND pe.status IN ('APPROVED', 'OUT_OF_STOCK')
-      AND (pe.category_id = c.category_id OR pe.category_ancestor_ids @> ARRAY[c.category_id])
+),
+shop_cats AS (
+    SELECT DISTINCT u.cat_id
+    FROM shop_cat_sets s
+    CROSS JOIN LATERAL unnest(array_append(s.category_ancestor_ids, s.category_id)) AS u(cat_id)
 )
-  AND ($2::text = '' OR c.name_folded LIKE '%' || $2::text || '%' ESCAPE '\' OR c.slug LIKE '%' || $2::text || '%' ESCAPE '\')
+SELECT c.category_id, c.name, c.slug
+FROM search_categories c
+JOIN shop_cats sc ON sc.cat_id = c.category_id
+WHERE ($2::text = '' OR c.name_folded LIKE '%' || $2::text || '%' ESCAPE '\' OR c.slug LIKE '%' || $2::text || '%' ESCAPE '\')
 ORDER BY
     CASE WHEN $2::text <> '' AND c.name_folded LIKE $2::text || '%' ESCAPE '\' THEN 0 ELSE 1 END,
     c.sort_order ASC,

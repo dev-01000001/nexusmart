@@ -32,7 +32,10 @@ const (
 	maxReindexBatchSize     = 500
 	sweepBatchSize          = 200
 	maxSnippetRunes         = 240
+	shopSyncPageSize        = 100
 )
+
+var maxShopSyncPages int32 = 10000
 
 var (
 	// ErrReindexAlreadyRunning is returned when another ReindexAll job holds the Postgres advisory lock (G11).
@@ -882,8 +885,8 @@ func (idx *Indexer) syncShops(ctx context.Context) error {
 	if idx.userClient == nil {
 		return nil
 	}
-	const pageSize int32 = 200
-	for page := int32(1); ; page++ {
+	seen := make(map[string]struct{})
+	for page := int32(1); page <= maxShopSyncPages; page++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -891,17 +894,25 @@ func (idx *Indexer) syncShops(ctx context.Context) error {
 		// UserService.ListPublicShops is a public RPC (rejects service tokens).
 		resp, err := idx.userClient.ListPublicShops(callCtx, &userv1.ListPublicShopsRequest{
 			Page:     page,
-			PageSize: pageSize,
+			PageSize: shopSyncPageSize,
 		})
 		cancel()
 		if err != nil {
 			return fmt.Errorf("list public shops page %d: %w", page, err)
 		}
 		shops := resp.GetShops()
+		if len(shops) == 0 {
+			return nil
+		}
+		newInPage := 0
 		for _, s := range shops {
 			sid := strings.TrimSpace(s.GetId())
 			if sid == "" {
 				continue
+			}
+			if _, ok := seen[sid]; !ok {
+				seen[sid] = struct{}{}
+				newInPage++
 			}
 			st := NormalizeShopStatus(s.GetStatus().String())
 			if st != "ACTIVE" && st != "SUSPENDED" {
@@ -918,11 +929,14 @@ func (idx *Indexer) syncShops(ctx context.Context) error {
 				return fmt.Errorf("upsert shop %s: %w", sid, err)
 			}
 		}
-		if len(shops) < int(pageSize) || int64(page*pageSize) >= resp.GetTotal() {
-			break
+		if newInPage == 0 {
+			return fmt.Errorf("list public shops page %d made no forward progress", page)
+		}
+		if resp.GetTotal() > 0 && int64(len(seen)) >= resp.GetTotal() {
+			return nil
 		}
 	}
-	return nil
+	return fmt.Errorf("list public shops exceeded max pages (%d)", maxShopSyncPages)
 }
 
 func (idx *Indexer) syncProductsKeyset(

@@ -138,7 +138,7 @@ func run() error {
 	defer pool.Close()
 	log.Info("connected to search-postgres and applied migrations")
 
-	rdb, err := connectRedisWithRetry(ctx, cfg.RedisAddr, log)
+	rdb, err := connectRedisWithRetry(ctx, cfg.RedisAddr, cfg.RedisPassword, log)
 	if err != nil {
 		log.Error("failed to connect redis", slog.String("error", err.Error()))
 		return err
@@ -316,8 +316,11 @@ func connectPostgresWithRetry(ctx context.Context, databaseURL string, log *slog
 	return nil, fmt.Errorf("connect search-postgres after retries: %w", lastErr)
 }
 
-func connectRedisWithRetry(ctx context.Context, addr string, log *slog.Logger) (*redis.Client, error) {
-	rdb := redis.NewClient(&redis.Options{Addr: addr})
+func connectRedisWithRetry(ctx context.Context, addr, password string, log *slog.Logger) (*redis.Client, error) {
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     addr,
+		Password: password,
+	})
 	var lastErr error
 	for attempt := 1; attempt <= 15; attempt++ {
 		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)

@@ -450,7 +450,10 @@ func (c *stubUserIndexClient) ListPublicShops(ctx context.Context, in *userv1.Li
 	}
 	pageSize := int(in.GetPageSize())
 	if pageSize <= 0 {
-		pageSize = 200
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
 	}
 	start := (page - 1) * pageSize
 	if start > len(list) {

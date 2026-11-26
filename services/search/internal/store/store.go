@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,10 @@ const (
 	shopStatusLockPrefix    = "search_shop_status:"
 	defaultUnlockTimeout    = 5 * time.Second
 	probeIterativeScanSQL   = `SELECT ('[0]'::vector IS NOT NULL) AND EXISTS(SELECT 1 FROM pg_settings WHERE name = 'hnsw.iterative_scan')`
+
+	defaultVectorLimit      int32 = 100
+	maxVectorOverfetchLimit int32 = 200
+	hnswMaxScanTuples             = 2000
 )
 
 // VectorSearchParams filters pgvector HNSW cosine similarity queries (S6/S8/S14).
@@ -121,6 +127,13 @@ func New(pool *pgxpool.Pool) *Store {
 	return &Store{
 		pool:    pool,
 		queries: db.New(pool),
+	}
+}
+
+// NewWithDBTX constructs a query-only Store backed by dbtx (useful in unit tests without pgxpool).
+func NewWithDBTX(dbtx db.DBTX) *Store {
+	return &Store{
+		queries: db.New(dbtx),
 	}
 }
 
@@ -269,39 +282,7 @@ func (s *Store) detectIterativeScan(ctx context.Context) bool {
 	return has
 }
 
-// SearchVector runs cosine-distance HNSW search inside a read-only transaction with
-// SET LOCAL hnsw.ef_search = 200 and (when supported by pgvector >= 0.8) hnsw.iterative_scan = 'relaxed_order' (S6/S8/S14),
-// enforcing public status, non-deleted, non-suspended shop visibility, and min similarity.
-func (s *Store) SearchVector(ctx context.Context, p VectorSearchParams) ([]VectorHit, error) {
-	if len(p.Embedding) == 0 {
-		return nil, nil
-	}
-	limit := p.Limit
-	if limit <= 0 {
-		limit = 100
-	}
-
-	useIterative := s.detectIterativeScan(ctx)
-
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, fmt.Errorf("begin vector search tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	// S8: Expand HNSW search beam and enable pgvector >= 0.8 iterative scan when available so
-	// filtered queries (narrow category/shop/price) do not starve behind top-40 unfiltered neighbors,
-	// while remaining compatible with pgvector < 0.8 before ALTER EXTENSION vector UPDATE.
-	if _, err := tx.Exec(ctx, `SET LOCAL hnsw.ef_search = 200`); err != nil {
-		return nil, fmt.Errorf("set hnsw.ef_search: %w", err)
-	}
-	if useIterative {
-		if _, err := tx.Exec(ctx, `SET LOCAL hnsw.iterative_scan = 'relaxed_order'`); err != nil {
-			return nil, fmt.Errorf("set hnsw.iterative_scan: %w", err)
-		}
-	}
-
-	const q = `
+const vectorSearchSQL = `
 SELECT
     pe.product_id, pe.shop_id, COALESCE(s.name, ''), COALESCE(s.slug, ''),
     pe.category_id, COALESCE(c.slug, ''), COALESCE(c.name, ''),
@@ -330,14 +311,72 @@ WHERE pe.deleted = FALSE
   AND ($8::bool = FALSE OR pe.in_stock = TRUE)
   AND ($9::text = '' OR pe.sizes_folded @> ARRAY[$9::text])
   AND ($10::text = '' OR pe.colors_folded @> ARRAY[$10::text] OR pe.color_codes @> ARRAY[$10::text])
-  AND ($11::double precision <= 0 OR (pe.embedding <=> $1::vector) <= (1.0 - $11::double precision))
-  AND ($12::text = '' OR pe.product_id <> $12::text)
-ORDER BY pe.embedding <=> $1::vector ASC, pe.product_id ASC
-LIMIT $13`
+  AND ($11::text = '' OR pe.product_id <> $11::text)
+ORDER BY pe.embedding <=> $1::vector ASC
+LIMIT $12`
 
-	vec := pgvector.NewVector(p.Embedding)
-	rows, err := tx.Query(ctx, q,
-		vec,
+func vectorFetchLimit(limit int32) int32 {
+	if limit <= 0 {
+		limit = defaultVectorLimit
+	}
+	if limit >= maxVectorOverfetchLimit {
+		return limit
+	}
+	fetch := limit * 2
+	if fetch > maxVectorOverfetchLimit {
+		return maxVectorOverfetchLimit
+	}
+	return fetch
+}
+
+func hasSelectiveVectorFilter(p VectorSearchParams) bool {
+	return strings.TrimSpace(p.CategoryID) != "" ||
+		strings.TrimSpace(p.ShopID) != "" ||
+		p.MinPriceVND > 0 ||
+		p.MaxPriceVND > 0 ||
+		p.MinRatingX100 > 0 ||
+		strings.TrimSpace(p.SizeFolded) != "" ||
+		strings.TrimSpace(p.ColorFolded) != ""
+}
+
+func buildVectorSearchTxConfigSQL(useIterative bool) string {
+	// S8 + ponytail: vector(1536) is stored in TOAST, so PostgreSQL underestimates `<=>` cost
+	// and chooses Seq/Bitmap/shop-index + Sort (~200ms warm / ~2s cold on large shops) or falls
+	// into a generic plan after 5 pgx calls, while cost > 100k on filtered HNSW scans triggers
+	// ~115ms of LLVM JIT overhead.
+	// Always probe HNSW first (enable_sort = off, jit = off, seqscan/bitmapscan = off,
+	// force_custom_plan) with iterative_scan='relaxed_order' capped at hnsw.max_scan_tuples=2000:
+	// broad shop/category/size filters fill fetchLimit in ~10–47ms warm without sorting TOASTed
+	// vectors; narrow filters (< fetchLimit rows within 2000 tuples) fall back in the same
+	// read-only tx to exact index+Sort (enable_sort = on, max_scan_tuples = DEFAULT), where few
+	// rows match so exact sort is cheap.
+	// Ceiling: over-fetch is capped at maxVectorOverfetchLimit (200, matching hnsw.ef_search);
+	// if min_similarity or a dense tie band removes > (fetchLimit - limit) top candidates, fewer
+	// than limit rows may be returned; if a narrow selective filter (~5–10% selectivity) falls
+	// back on catalogs >> 100k, the 2000-tuple HNSW probe + exact sort cost grows with matching
+	// row count. Upgrade path: tune max_scan_tuples/ef_search, use halfvec/per-shop partial
+	// indexes, or move to a dedicated ANN engine if catalog grows >> 100k.
+	stmt := `SET LOCAL hnsw.ef_search = 200; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL plan_cache_mode = force_custom_plan; SET LOCAL jit = off; SET LOCAL enable_sort = off`
+	if useIterative {
+		stmt += fmt.Sprintf(`; SET LOCAL hnsw.iterative_scan = 'relaxed_order'; SET LOCAL hnsw.max_scan_tuples = %d`, hnswMaxScanTuples)
+	}
+	return stmt
+}
+
+func buildVectorSearchFallbackConfigSQL(useIterative bool) string {
+	if useIterative {
+		return `SET LOCAL enable_sort = on; SET LOCAL hnsw.max_scan_tuples = DEFAULT`
+	}
+	return `SET LOCAL enable_sort = on`
+}
+
+func shouldFallbackExactVectorSearch(hitCount int, fetchLimit int32, p VectorSearchParams) bool {
+	return hitCount < int(fetchLimit) && hasSelectiveVectorFilter(p)
+}
+
+func vectorSearchArgs(p VectorSearchParams, fetchLimit int32) []any {
+	return []any{
+		pgvector.NewVector(p.Embedding),
 		p.OnlyApprovedInStock,
 		p.CategoryID,
 		p.ShopID,
@@ -347,16 +386,48 @@ LIMIT $13`
 		p.InStockOnly,
 		p.SizeFolded,
 		p.ColorFolded,
-		p.MinSimilarity,
 		strings.TrimSpace(p.ExcludeProductID),
-		limit,
-	)
+		fetchLimit,
+	}
+}
+
+func filterAndSortVectorHits(hits []VectorHit, minSimilarity float64, limit int32) []VectorHit {
+	out := make([]VectorHit, 0, len(hits))
+	for _, h := range hits {
+		if minSimilarity > 0 && !(h.Similarity >= minSimilarity) {
+			continue
+		}
+		out = append(out, h)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ai, aj := out[i], out[j]
+		iNaN, jNaN := math.IsNaN(ai.Similarity), math.IsNaN(aj.Similarity)
+		if iNaN != jNaN {
+			return !iNaN
+		}
+		if !iNaN && ai.Similarity != aj.Similarity {
+			return ai.Similarity > aj.Similarity
+		}
+		return ai.ProductID < aj.ProductID
+	})
+	if limit > 0 && len(out) > int(limit) {
+		out = out[:limit]
+	}
+	return out
+}
+
+func queryVectorHits(ctx context.Context, tx pgx.Tx, args []any, fetchLimit int32) ([]VectorHit, error) {
+	rows, err := tx.Query(ctx, vectorSearchSQL, args...)
 	if err != nil {
-		return nil, fmt.Errorf("vector search query: %w", err)
+		return nil, err
 	}
 	defer rows.Close()
 
-	var hits []VectorHit
+	capHint := fetchLimit
+	if capHint > maxVectorOverfetchLimit {
+		capHint = maxVectorOverfetchLimit
+	}
+	hits := make([]VectorHit, 0, capHint)
 	for rows.Next() {
 		var h VectorHit
 		if scanErr := rows.Scan(
@@ -376,6 +447,55 @@ LIMIT $13`
 		return nil, fmt.Errorf("iterate vector hits: %w", err)
 	}
 	return hits, nil
+}
+
+// SearchVector runs cosine-distance HNSW search inside a read-only transaction with
+// SET LOCAL hnsw.ef_search = 200, planner hints to avoid TOAST-skewed seq/bitmap/sort plans,
+// jit = off, and (when supported by pgvector >= 0.8) hnsw.iterative_scan = 'relaxed_order'
+// capped at hnsw.max_scan_tuples = 2000 (S6/S8/S14). When a selective filter returns fewer
+// than fetchLimit rows within the HNSW cap, it falls back in the same transaction to exact
+// index+Sort (enable_sort = on, max_scan_tuples = DEFAULT).
+// MinSimilarity filtering and deterministic tie-breaking (similarity desc, product_id asc)
+// are applied in Go so SQL ORDER BY stays a single `<=>` key usable by HNSW.
+func (s *Store) SearchVector(ctx context.Context, p VectorSearchParams) ([]VectorHit, error) {
+	if len(p.Embedding) == 0 {
+		return nil, nil
+	}
+	limit := p.Limit
+	if limit <= 0 {
+		limit = defaultVectorLimit
+	}
+	fetchLimit := vectorFetchLimit(limit)
+	args := vectorSearchArgs(p, fetchLimit)
+
+	useIterative := s.detectIterativeScan(ctx)
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("begin vector search tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, buildVectorSearchTxConfigSQL(useIterative)); err != nil {
+		return nil, fmt.Errorf("configure vector search tx: %w", err)
+	}
+
+	hits, err := queryVectorHits(ctx, tx, args, fetchLimit)
+	if err != nil {
+		return nil, fmt.Errorf("vector search query: %w", err)
+	}
+
+	if shouldFallbackExactVectorSearch(len(hits), fetchLimit, p) {
+		if _, err := tx.Exec(ctx, buildVectorSearchFallbackConfigSQL(useIterative)); err != nil {
+			return nil, fmt.Errorf("configure vector search fallback tx: %w", err)
+		}
+		hits, err = queryVectorHits(ctx, tx, args, fetchLimit)
+		if err != nil {
+			return nil, fmt.Errorf("vector search fallback query: %w", err)
+		}
+	}
+
+	return filterAndSortVectorHits(hits, p.MinSimilarity, limit), nil
 }
 
 // SuggestFallbackProducts queries public non-suspended products from Postgres when Meilisearch is unavailable,
