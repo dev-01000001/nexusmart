@@ -50,15 +50,22 @@ export async function buildAdminFlows({ browser, port }) {
         const queueList = page
           .getByRole("list", { name: /Danh sách hồ sơ gian hàng/i })
           .first();
+        const detailBtn = page
+          .getByRole("button", { name: /Xem chi tiết/i })
+          .first();
+        const tableFirstRow = page
+          .getByRole("table", { name: /Danh sách hồ sơ gian hàng/i })
+          .getByRole("row")
+          .nth(1);
         const shopBtn = (await queueList.isVisible().catch(() => false))
           ? queueList.getByRole("button").first()
-          : page
-              .getByRole("table")
-              .getByRole("row")
-              .nth(1)
-              .getByRole("button")
-              .first()
-              .or(page.getByRole("table").getByRole("row").nth(1));
+          : (await detailBtn.isVisible().catch(() => false))
+            ? detailBtn
+            : tableFirstRow
+                .getByRole("button")
+                .first()
+                .or(tableFirstRow)
+                .first();
         await shopBtn.waitFor({ state: "visible", timeout: 8_000 });
         await shopBtn.click();
         await page.waitForTimeout(400);
@@ -218,22 +225,50 @@ export async function buildAdminFlows({ browser, port }) {
         await openBtn.click();
 
         const dialog = page.getByRole("dialog").first();
-        await dialog.waitFor({ state: "visible", timeout: 6_000 });
-        await dialog
-          .getByText(/Mở khung giờ Flash sale|Khung giờ/i)
-          .first()
-          .waitFor({ state: "visible" });
+        const nameInput = page.getByLabel(/Tên khung giờ/i).first();
+        await waitAnyVisible([dialog, nameInput], 8_000);
 
-        const cancelBtn = dialog
-          .getByRole("button", { name: /^Hủy$|^Huỷ$|^Đóng$/i })
-          .first();
-        if (await cancelBtn.isVisible().catch(() => false)) {
-          await cancelBtn.click();
-        } else {
-          await page.keyboard.press("Escape");
+        if (await dialog.isVisible().catch(() => false)) {
+          await dialog
+            .getByText(/Mở khung giờ Flash sale|Khung giờ/i)
+            .first()
+            .waitFor({ state: "visible" });
+
+          const cancelBtn = dialog
+            .getByRole("button", { name: /^Hủy$|^Huỷ$|^Đóng$/i })
+            .first();
+          if (await cancelBtn.isVisible().catch(() => false)) {
+            await cancelBtn.click();
+          } else {
+            await page.keyboard.press("Escape");
+          }
+          await page.waitForTimeout(300);
+          return "mở form khung giờ (dialog) + đóng";
         }
+
+        // Inline A3 form view on page (SaveBar + per-field inputs)
+        await nameInput.waitFor({ state: "visible", timeout: 6_000 });
+        await page
+          .getByRole("heading", { name: /Mở khung giờ Flash sale/i })
+          .first()
+          .waitFor({ state: "visible", timeout: 6_000 });
+        await nameInput.fill("QA-S9 khung giờ kiểm thử");
+        await page
+          .getByText(/chưa lưu/i)
+          .first()
+          .waitFor({ state: "visible", timeout: 5_000 });
+
+        const cancelBtn = page
+          .getByRole("button", { name: /^Hủy$|^Huỷ$|^Quay lại danh sách$/i })
+          .first();
+        await cancelBtn.waitFor({ state: "visible", timeout: 5_000 });
+        await cancelBtn.click();
         await page.waitForTimeout(300);
-        return "mở form khung giờ + đóng";
+        assert(
+          !(await nameInput.isVisible().catch(() => false)),
+          "Form A3 khung giờ chưa đóng sau khi huỷ",
+        );
+        return "mở form khung giờ (A3 + SaveBar) + huỷ";
       },
     },
   ];
