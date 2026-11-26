@@ -4,15 +4,17 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { GatewayMapLegacyAddressResponse } from "@/lib/gateway-types";
 import { ApiError, api, getErrorMessage } from "@/lib/api";
 import { getProvinceByCode } from "@/lib/provinces";
-import { formatVnd } from "@/lib/format";
-import { Button } from "@/components/Button";
+import { Money } from "@/components/app/Money";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
 import { AddressFieldsForm, type AddressFieldValues } from "@/features/commerce/AddressFieldsForm";
 import {
   type MappedLegacyAddressCodes,
   resolveLegacyCodesForPayload,
   resolveLoadedWardSelection,
 } from "@/features/commerce/addressHelpers";
-import styles from "@/features/commerce/commerce.module.css";
 import {
   toStorefrontProvinceCode,
   type AddressView,
@@ -303,18 +305,18 @@ export function AccountAddressForm({
   const buttonText = submitLabel ?? (isEditing ? "Lưu thay đổi" : "Lưu địa chỉ");
 
   const legacySlot = (
-    <div className={`${styles.field} ${styles.formFull}`}>
-      <div className={styles.formActions} style={{ marginTop: 0 }}>
+    <div className="col-span-full space-y-3">
+      <div>
         <Button
           type="button"
-          variant="secondary"
+          variant="outline"
           size="sm"
-          className={styles.wrapBtnSm}
           disabled={submitting}
           onClick={() => {
             setLegacyPanelOpen((v) => !v);
             setLegacyMapError(null);
           }}
+          className="h-auto min-h-10 py-2 text-left whitespace-normal shadow-none sm:min-h-8"
         >
           {legacyPanelOpen
             ? "Ẩn công cụ quy đổi địa chỉ cũ"
@@ -322,72 +324,62 @@ export function AccountAddressForm({
         </Button>
       </div>
       {legacyPanelOpen && (
-        <div className={styles.legacyMapBox}>
-          <p className={styles.fieldHint}>
+        <div className="space-y-3 rounded-lg border border-border bg-background p-4">
+          <FieldDescription className="text-xs">
             Nhập địa chỉ hành chính cũ để hệ thống tự điền Tỉnh/Thành phố và Phường/Xã mới.
-          </p>
-          <div className={styles.legacyMapGrid}>
-            <div className={styles.field}>
-              <label htmlFor="acc-legacy-province" className={styles.fieldLabel}>
-                Tỉnh / Thành phố cũ
-              </label>
-              <input
+          </FieldDescription>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <Field>
+              <FieldLabel htmlFor="acc-legacy-province">Tỉnh / Thành phố cũ</FieldLabel>
+              <Input
                 id="acc-legacy-province"
                 type="text"
-                className={styles.input}
                 value={legacyProvince}
                 onChange={(e) => setLegacyProvince(e.target.value)}
                 placeholder="TP. Hồ Chí Minh, Bình Dương..."
                 disabled={mappingLegacy || submitting}
+                className="h-10 bg-card"
               />
-            </div>
-            <div className={styles.field}>
-              <label htmlFor="acc-legacy-district" className={styles.fieldLabel}>
-                Quận / Huyện cũ
-              </label>
-              <input
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="acc-legacy-district">Quận / Huyện cũ</FieldLabel>
+              <Input
                 id="acc-legacy-district"
                 type="text"
-                className={styles.input}
                 value={legacyDistrict}
                 onChange={(e) => setLegacyDistrict(e.target.value)}
                 placeholder="Quận 1, TP. Thủ Đức..."
                 disabled={mappingLegacy || submitting}
+                className="h-10 bg-card"
               />
-            </div>
-            <div className={styles.field}>
-              <label htmlFor="acc-legacy-ward" className={styles.fieldLabel}>
-                Phường / Xã cũ
-              </label>
-              <input
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="acc-legacy-ward">Phường / Xã cũ</FieldLabel>
+              <Input
                 id="acc-legacy-ward"
                 type="text"
-                className={styles.input}
                 value={legacyWard}
                 onChange={(e) => setLegacyWard(e.target.value)}
                 placeholder="Phường Bến Nghé..."
                 disabled={mappingLegacy || submitting}
+                className="h-10 bg-card"
               />
-            </div>
+            </Field>
           </div>
-          {legacyMapError && (
-            <p className={styles.fieldError} role="alert">
-              {legacyMapError}
-            </p>
-          )}
+          {legacyMapError && <FieldError>{legacyMapError}</FieldError>}
           {legacyMapNotice && (
-            <p className={`${styles.feedbackBox} ${styles.feedbackSuccess}`} role="status">
-              {legacyMapNotice}
-            </p>
+            <Alert className="shadow-none" role="status">
+              <AlertDescription>{legacyMapNotice}</AlertDescription>
+            </Alert>
           )}
-          <div className={styles.formActions} style={{ marginTop: 0 }}>
+          <div>
             <Button
               type="button"
-              variant="ink"
+              variant="secondary"
               size="sm"
-              className={styles.wrapBtnSm}
               disabled={mappingLegacy || submitting}
               onClick={() => void handleMapLegacyAddress()}
+              className="min-h-10 sm:min-h-8"
             >
               {mappingLegacy ? "Đang quy đổi..." : "Quy đổi sang địa chỉ mới"}
             </Button>
@@ -398,14 +390,15 @@ export function AccountAddressForm({
   );
 
   const metaSlot = selectedProvince ? (
-    <div className={styles.formFull}>
-      <div className={styles.addressMetaBar}>
-        <span className={styles.addressMetaPair}>
-          <span>{selectedProvince.name}</span>
-          <span className={styles.addressMetaMuted}>{previewProvince?.etaDays ?? "1–3 ngày"}</span>
+    <div className="col-span-full">
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-background px-3.5 py-2.5 text-xs">
+        <span className="flex flex-wrap items-center gap-2">
+          <span className="font-medium text-foreground">{selectedProvince.name}</span>
+          <span className="text-muted-foreground">{previewProvince?.etaDays ?? "1–3 ngày"}</span>
         </span>
-        <span className="num">
-          Phí tham khảo: <strong>{formatVnd(previewProvince?.shippingFee ?? 28000)}</strong>
+        <span className="inline-flex items-baseline gap-1 text-muted-foreground">
+          <span>Phí tham khảo:</span>
+          <Money vnd={previewProvince?.shippingFee ?? 28000} size="sm" />
         </span>
       </div>
     </div>

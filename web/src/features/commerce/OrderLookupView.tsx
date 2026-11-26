@@ -1,6 +1,8 @@
 "use client";
 
 import React, { Suspense, useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { PackageSearch, Search, Truck } from "lucide-react";
 import type { Product } from "@/data/products";
 import { api } from "@/lib/api";
 import { formatCarrierLabel, formatDateTimeVi, formatVnd } from "@/lib/format";
@@ -13,19 +15,33 @@ import {
   translateOrderLookupError,
 } from "@/lib/a8-types";
 import {
-  type BadgeTone,
   getOrderStatusInfo,
   getPaymentMethodLabel,
   getPaymentStatusInfo,
 } from "@/features/account/orderMeta";
 import type { OrderView } from "@/features/account/orderView";
+import {
+  SITE_PAGE_CONTAINER,
+  orderStatusTone,
+  paymentStatusTone,
+  splitDateTimeVi,
+} from "@/features/account/ui/siteStatus";
 import { useSession } from "@/components/SessionProvider";
-import { Button, StateView } from "@/components";
+import { EmptyState } from "@/components/app/EmptyState";
+import { ErrorState } from "@/components/app/ErrorState";
+import { Money } from "@/components/app/Money";
+import { StatusBadge } from "@/components/app/StatusBadge";
+import { Timeline, type TimelineItem } from "@/components/app/Timeline";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
 import { focusAndShakeInvalid } from "@/features/commerce/formFeedback";
 import { usePageStateParam } from "@/features/commerce/usePageStateParam";
-import shared from "@/features/commerce/commerce.module.css";
-import styles from "./OrderLookupView.module.css";
+import { cn } from "@/lib/utils";
 
 export interface OrderLookupViewProps {
   brandName?: string;
@@ -40,21 +56,23 @@ type LookupResultState =
   | { kind: "rate_limited"; message: string }
   | { kind: "error"; message: string };
 
-function toneClass(tone: BadgeTone): string {
-  if (tone === "pos") return shared.tonePos;
-  if (tone === "warn") return shared.toneWarn;
-  if (tone === "neg") return shared.toneNeg;
-  return shared.toneNeutral;
-}
-
-function renderDateTime(iso: string): React.ReactNode {
-  const parts = formatDateTimeVi(iso).split(", ");
-  if (parts.length !== 2) return iso;
+function LookupLoadingSkeleton() {
   return (
-    <span className={`${styles.dateParts} num`}>
-      <span>{parts[0]}</span>
-      <span>{parts[1]}</span>
-    </span>
+    <Card className="border border-border shadow-none" aria-busy="true">
+      <CardHeader className="space-y-2 border-b border-border pb-4">
+        <Skeleton className="h-5 w-44" />
+        <Skeleton className="h-4 w-64" />
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Skeleton className="h-20 w-full rounded-lg" />
+          <Skeleton className="h-20 w-full rounded-lg" />
+          <Skeleton className="h-20 w-full rounded-lg" />
+          <Skeleton className="h-20 w-full rounded-lg" />
+        </div>
+        <Skeleton className="h-16 w-full rounded-lg" />
+      </CardContent>
+    </Card>
   );
 }
 
@@ -192,33 +210,20 @@ function OrderLookupContent({ brandName, suggestedProducts = [] }: OrderLookupVi
   };
 
   const renderHeroHead = (lead: string) => (
-    <header className={styles.heroCopy}>
-      <h1 className={`${shared.pageTitle} lines`}>
-        <span className="line">
-          <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
-            Tra cứu đơn hàng
-          </span>
-        </span>
+    <header className="space-y-1.5 text-center">
+      <h1 className="text-xl leading-7 font-semibold tracking-tight text-foreground sm:text-2xl sm:leading-8">
+        Tra cứu đơn hàng
       </h1>
-      <p className={shared.pageLead} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
-        {lead}
-      </p>
+      <p className="mx-auto max-w-2xl text-sm leading-5 text-muted-foreground">{lead}</p>
     </header>
   );
 
   if (viewState === "loading") {
     return (
-      <div className={shared.page}>
-        <section className={styles.heroStage}>
+      <div className={cn(SITE_PAGE_CONTAINER, "space-y-6")}>
+        <section className="mx-auto max-w-[820px] space-y-6">
           {renderHeroHead(storeLabel)}
-          <div style={{ width: "100%" }}>
-            <StateView
-              kind="loading"
-              skeletonVariant="detail"
-              title="Đang tra cứu đơn hàng..."
-              rows={3}
-            />
-          </div>
+          <LookupLoadingSkeleton />
         </section>
       </div>
     );
@@ -226,18 +231,20 @@ function OrderLookupContent({ brandName, suggestedProducts = [] }: OrderLookupVi
 
   if (viewState === "empty") {
     return (
-      <div className={shared.page}>
-        <section className={styles.heroStage}>
+      <div className={cn(SITE_PAGE_CONTAINER, "space-y-6")}>
+        <section className="mx-auto max-w-[820px] space-y-6">
           {renderHeroHead("Nhập mã đơn và số điện thoại đặt hàng để kiểm tra không cần đăng nhập.")}
-          <div style={{ width: "100%" }}>
-            <StateView
-              kind="empty"
-              title="Chưa nhập mã đơn cần tra cứu"
-              message="Nhập mã đơn hàng trong email xác nhận kèm số điện thoại người nhận để xem tiến trình giao hàng."
-              actionLabel="Mở tra cứu đơn"
-              actionHref="/tra-cuu-don-hang"
-            />
-          </div>
+          <EmptyState
+            icon={PackageSearch}
+            title="Chưa nhập mã đơn cần tra cứu"
+            description="Nhập mã đơn hàng trong email xác nhận kèm số điện thoại người nhận để xem tiến trình giao hàng."
+            action={
+              <Button asChild className="min-h-10 shadow-none sm:min-h-9">
+                <Link href="/tra-cuu-don-hang">Mở tra cứu đơn</Link>
+              </Button>
+            }
+            className="border border-border shadow-none"
+          />
         </section>
       </div>
     );
@@ -255,238 +262,265 @@ function OrderLookupContent({ brandName, suggestedProducts = [] }: OrderLookupVi
         return tb - ta;
       })
     : [];
+  const timelineItems: TimelineItem[] = sortedTimeline.map((ev, i) => {
+    const evMeta = getOrderStatusInfo(ev.to_status);
+    return {
+      id: `${ev.to_status}-${ev.created_at ?? i}-${i}`,
+      at: ev.created_at ? formatDateTimeVi(ev.created_at) : "—",
+      title: evMeta.label,
+    };
+  });
   const isSubmitting = lookupState.kind === "loading";
+  const createdDt = foundOrder?.created_at ? splitDateTimeVi(foundOrder.created_at) : null;
 
   return (
-    <div className={shared.page}>
-      <section className={styles.heroStage}>
+    <div className={cn(SITE_PAGE_CONTAINER, "space-y-8")}>
+      <section className="mx-auto max-w-[820px] space-y-5" aria-labelledby="lookup-form-heading">
         {renderHeroHead(
           `Nhập mã đơn hàng và số điện thoại người nhận để theo dõi tiến trình giao nhận tại ${storeLabel} mà không cần đăng nhập.`
         )}
 
-        <form
-          ref={lookupFormRef}
-          className={styles.lookupForm}
-          onSubmit={handleLookupSubmit}
-          noValidate
-        >
-          <div className={styles.bigInputsRow}>
-            <div className={shared.field} data-shake-target="">
-              <label htmlFor="lookup-code" className={shared.fieldLabel}>
-                Mã đơn hàng
-              </label>
-              <input
-                id="lookup-code"
-                name="orderCode"
-                type="text"
-                autoComplete="off"
-                className={`${styles.bigInput} ${formError ? styles.bigInputInvalid : ""}`}
-                aria-invalid={Boolean(formError) || undefined}
-                aria-describedby={formError ? "lookup-code-error" : undefined}
-                value={orderCode}
-                onChange={(e) => {
-                  setOrderCode(e.target.value);
-                  if (formError) setFormError(null);
-                }}
-                placeholder="VD: NM-2026..."
-                disabled={isSubmitting}
-              />
-            </div>
-
-            <div className={shared.field} data-shake-target="">
-              <label htmlFor="lookup-phone" className={shared.fieldLabel}>
-                Số điện thoại người nhận
-              </label>
-              <input
-                id="lookup-phone"
-                name="phone"
-                type="tel"
-                autoComplete="tel"
-                className={`${styles.bigInput} ${formError ? styles.bigInputInvalid : ""}`}
-                value={phone}
-                onChange={(e) => {
-                  setPhone(e.target.value);
-                  if (formError) setFormError(null);
-                }}
-                placeholder="0912 486 305"
-                disabled={isSubmitting}
-              />
-            </div>
-          </div>
-
-          {formError && (
-            <p id="lookup-code-error" className={shared.fieldError} role="alert">
-              {formError}
-            </p>
-          )}
-
-          <Button type="submit" variant="primary" size="lg" fullWidth disabled={isSubmitting}>
-            {isSubmitting ? "Đang tra cứu..." : "Tra cứu đơn hàng"}
-          </Button>
-        </form>
-
-        {recentOrders.length > 0 && (
-          <div className={styles.recentWrap}>
-            <span className={styles.recentLabel}>Đơn gần đây của bạn</span>
-            <div className={styles.recentChips}>
-              {recentOrders.map((o) => {
-                const isActive = foundOrder?.order_code === o.orderCode;
-                const meta = getOrderStatusInfo(o.backendStatus);
-                return (
-                  <button
-                    key={o.id}
-                    type="button"
-                    className={`${styles.recentChip} ${isActive ? styles.recentChipActive : ""}`}
-                    onClick={() => {
-                      const nextPhone = o.buyerPhone || phone || user?.phone || "";
-                      setOrderCode(o.orderCode);
-                      if (nextPhone) setPhone(nextPhone);
-                      setFormError(null);
-                      if (nextPhone.replace(/\D/g, "").length >= 8) {
-                        void runLookup(o.orderCode, nextPhone);
-                      }
+        <Card className="border border-border shadow-none">
+          <CardHeader className="sr-only">
+            <CardTitle id="lookup-form-heading">Biểu mẫu tra cứu đơn hàng</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form
+              ref={lookupFormRef}
+              onSubmit={handleLookupSubmit}
+              noValidate
+              className="space-y-4"
+            >
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <Field data-shake-target="" data-invalid={Boolean(formError) || undefined}>
+                  <FieldLabel htmlFor="lookup-code">Mã đơn hàng</FieldLabel>
+                  <Input
+                    id="lookup-code"
+                    name="orderCode"
+                    type="text"
+                    autoComplete="off"
+                    className="h-11 bg-background text-base sm:h-10 sm:text-sm"
+                    aria-invalid={Boolean(formError) || undefined}
+                    aria-describedby={formError ? "lookup-code-error" : undefined}
+                    value={orderCode}
+                    onChange={(e) => {
+                      setOrderCode(e.target.value);
+                      if (formError) setFormError(null);
                     }}
-                  >
-                    <span className="num">{o.orderCode}</span>
-                    <span className={styles.recentChipStatus}>{meta.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
+                    placeholder="VD: NM-2026..."
+                    disabled={isSubmitting}
+                  />
+                </Field>
+
+                <Field data-shake-target="" data-invalid={Boolean(formError) || undefined}>
+                  <FieldLabel htmlFor="lookup-phone">Số điện thoại người nhận</FieldLabel>
+                  <Input
+                    id="lookup-phone"
+                    name="phone"
+                    type="tel"
+                    autoComplete="tel"
+                    className="h-11 bg-background text-base sm:h-10 sm:text-sm"
+                    aria-invalid={Boolean(formError) || undefined}
+                    aria-describedby={formError ? "lookup-code-error" : undefined}
+                    value={phone}
+                    onChange={(e) => {
+                      setPhone(e.target.value);
+                      if (formError) setFormError(null);
+                    }}
+                    placeholder="0912 486 305"
+                    disabled={isSubmitting}
+                  />
+                </Field>
+              </div>
+
+              {formError && <FieldError id="lookup-code-error">{formError}</FieldError>}
+
+              <Button
+                type="submit"
+                size="lg"
+                disabled={isSubmitting}
+                className="min-h-11 w-full shadow-none"
+              >
+                <Search className="size-4" aria-hidden="true" />
+                <span>{isSubmitting ? "Đang tra cứu..." : "Tra cứu đơn hàng"}</span>
+              </Button>
+            </form>
+
+            {recentOrders.length > 0 && (
+              <div className="mt-4 space-y-2 border-t border-border pt-4">
+                <span className="block text-xs font-medium text-muted-foreground">
+                  Đơn gần đây của bạn
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  {recentOrders.map((o) => {
+                    const isActive = foundOrder?.order_code === o.orderCode;
+                    const meta = getOrderStatusInfo(o.backendStatus);
+                    return (
+                      <Button
+                        key={o.id}
+                        type="button"
+                        variant={isActive ? "default" : "outline"}
+                        size="sm"
+                        className="min-h-10 shadow-none sm:min-h-8"
+                        onClick={() => {
+                          const nextPhone = o.buyerPhone || phone || user?.phone || "";
+                          setOrderCode(o.orderCode);
+                          if (nextPhone) setPhone(nextPhone);
+                          setFormError(null);
+                          if (nextPhone.replace(/\D/g, "").length >= 8) {
+                            void runLookup(o.orderCode, nextPhone);
+                          }
+                        }}
+                      >
+                        <span className="font-mono text-xs tabular-nums">{o.orderCode}</span>
+                        <span className="opacity-75">· {meta.label}</span>
+                      </Button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </section>
 
-      <section className={styles.resultWrap}>
+      <section className="mx-auto max-w-[820px]" aria-label="Kết quả tra cứu đơn hàng">
         {lookupState.kind === "idle" && (
-          <StateView
-            kind="empty"
+          <EmptyState
+            icon={Truck}
             title="Nhập mã đơn và số điện thoại để bắt đầu"
-            message="Để bảo vệ quyền riêng tư, trang tra cứu công khai chỉ hiển thị thông tin người nhận đã che và khu vực giao hàng (Phường/Xã, Tỉnh/Thành phố)."
-            actionLabel="Mở đơn hàng của tôi"
-            actionHref="/don-hang"
+            description="Để bảo vệ quyền riêng tư, trang tra cứu công khai chỉ hiển thị thông tin người nhận đã che và khu vực giao hàng (Phường/Xã, Tỉnh/Thành phố)."
+            action={
+              <Button variant="outline" asChild className="min-h-10 shadow-none sm:min-h-9">
+                <Link href="/don-hang">Mở đơn hàng của tôi</Link>
+              </Button>
+            }
+            className="border border-border shadow-none"
           />
         )}
 
-        {lookupState.kind === "loading" && (
-          <StateView
-            kind="loading"
-            skeletonVariant="detail"
-            title="Đang tra cứu thông tin đơn hàng..."
-            rows={4}
-          />
-        )}
+        {lookupState.kind === "loading" && <LookupLoadingSkeleton />}
 
         {lookupState.kind === "not_found" && (
-          <StateView
-            kind="empty"
+          <EmptyState
+            icon={PackageSearch}
             title="Không tìm thấy đơn hàng"
-            message={lookupState.message}
-            actionLabel="Đăng nhập xem đơn của tôi"
-            actionHref="/don-hang"
+            description={lookupState.message}
+            action={
+              <Button variant="outline" asChild className="min-h-10 shadow-none sm:min-h-9">
+                <Link href="/don-hang">Đăng nhập xem đơn của tôi</Link>
+              </Button>
+            }
+            className="border border-border shadow-none"
           />
         )}
 
         {lookupState.kind === "rate_limited" && (
-          <StateView
-            kind="error"
+          <ErrorState
             title="Tạm giới hạn lượt tra cứu"
-            message={lookupState.message}
-            actionLabel="Đăng nhập xem đơn của tôi"
-            actionHref="/don-hang"
+            description={lookupState.message}
+            retryHref="/don-hang"
+            className="border border-border shadow-none"
           />
         )}
 
         {lookupState.kind === "error" && (
-          <StateView
-            kind="error"
+          <ErrorState
             title="Chưa thể tra cứu đơn hàng"
-            message={lookupState.message}
-            actionLabel="Thử lại"
-            onAction={() => {
+            description={lookupState.message}
+            onRetry={() => {
               const cleanCode = orderCode.trim();
               if (cleanCode && phone.replace(/\D/g, "").length >= 8) {
                 void runLookup(cleanCode, phone.trim());
               }
             }}
+            className="border border-border shadow-none"
           />
         )}
 
         {foundOrder && statusMeta && payMeta && (
-          <div className={styles.resultCard}>
-            <div className={styles.resultBanner}>
-              <div className={styles.resultTitleGroup}>
-                <h2 className={`${styles.resultOrderCode} num`}>{foundOrder.order_code}</h2>
-                <p className={styles.resultBannerMeta}>
-                  <span>{storeLabel}</span>
-                  {foundOrder.created_at ? renderDateTime(foundOrder.created_at) : null}
-                </p>
-                <div className={styles.badgeGroup}>
-                  <span className={`${shared.statusTag} ${toneClass(payMeta.tone)}`}>
-                    {payMeta.label}
-                  </span>
-                  <span className={`${shared.statusTag} ${toneClass(statusMeta.tone)}`}>
+          <Card className="border border-border shadow-none">
+            <CardHeader className="flex flex-col gap-4 border-b border-border pb-4 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-lg font-semibold tracking-tight text-foreground tabular-nums">
+                    {foundOrder.order_code}
+                  </h2>
+                  <StatusBadge tone={orderStatusTone(foundOrder.status)}>
                     {statusMeta.label}
-                  </span>
+                  </StatusBadge>
+                  <StatusBadge
+                    tone={paymentStatusTone(
+                      foundOrder.payment_status,
+                      foundOrder.payment_method,
+                      foundOrder.status
+                    )}
+                  >
+                    {payMeta.label}
+                  </StatusBadge>
                 </div>
+                <p className="text-xs text-muted-foreground tabular-nums">
+                  {storeLabel}
+                  {createdDt ? ` · ${createdDt.date}, ${createdDt.time}` : ""}
+                </p>
               </div>
-              <div className={styles.resultTotalCluster}>
-                <span className={styles.resultBannerMeta}>Tổng thanh toán</span>
-                <span className={`${styles.resultTotalVal} num`}>
-                  {formatVnd(foundOrder.total_payable_vnd)}
-                </span>
+              <div className="flex flex-col sm:items-end">
+                <span className="text-xs text-muted-foreground">Tổng thanh toán</span>
+                <Money vnd={foundOrder.total_payable_vnd} size="lg" />
               </div>
-            </div>
+            </CardHeader>
 
-            <div className={styles.sheetBody}>
-              <div className={styles.sheetSectionFirst}>
-                <h3 className={styles.sheetHeading}>Thông tin giao nhận</h3>
-                <dl className={styles.infoGrid}>
-                  <div className={styles.infoTile}>
-                    <dt className={styles.infoKey}>Người nhận &amp; khu vực</dt>
-                    <dd className={styles.infoVal}>
+            <CardContent className="space-y-6">
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold text-foreground">Thông tin giao nhận</h3>
+                <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="rounded-lg border border-border bg-background p-3.5">
+                    <dt className="text-xs font-medium text-muted-foreground">
+                      Người nhận &amp; khu vực
+                    </dt>
+                    <dd className="mt-1 text-sm font-medium text-foreground">
                       {[foundOrder.recipient_name_masked, foundOrder.recipient_phone_masked]
                         .filter(Boolean)
                         .join(" · ") || "Thông tin đã được che"}
                     </dd>
-                    <dd className={styles.infoSub}>
+                    <dd className="mt-0.5 text-xs text-muted-foreground">
                       {formatPublicOrderArea(foundOrder.ward_name, foundOrder.province_name)}
                     </dd>
                   </div>
 
-                  <div className={styles.infoTile}>
-                    <dt className={styles.infoKey}>Đơn vị vận chuyển</dt>
-                    <dd className={`${styles.infoVal} num`}>
+                  <div className="rounded-lg border border-border bg-background p-3.5">
+                    <dt className="text-xs font-medium text-muted-foreground">Đơn vị vận chuyển</dt>
+                    <dd className="mt-1 text-sm font-medium text-foreground tabular-nums">
                       {foundOrder.carrier_code
                         ? formatCarrierLabel(foundOrder.carrier_code)
                         : "Đang sắp xếp vận chuyển"}
                     </dd>
-                    <dd className={`${styles.infoSub} num`}>
+                    <dd className="mt-0.5 text-xs text-muted-foreground tabular-nums">
                       {foundOrder.tracking_code
                         ? `Mã vận đơn: ${foundOrder.tracking_code}`
                         : "Chưa có mã vận đơn"}
                     </dd>
                   </div>
 
-                  <div className={styles.infoTile}>
-                    <dt className={styles.infoKey}>Thanh toán</dt>
-                    <dd className={styles.infoVal}>
+                  <div className="rounded-lg border border-border bg-background p-3.5">
+                    <dt className="text-xs font-medium text-muted-foreground">Thanh toán</dt>
+                    <dd className="mt-1 text-sm font-medium text-foreground">
                       {getPaymentMethodLabel(foundOrder.payment_method)}
                     </dd>
-                    <dd className={`${styles.infoSub} num`}>
+                    <dd className="mt-0.5 text-xs text-muted-foreground tabular-nums">
                       Tiền hàng: {formatVnd(foundOrder.subtotal_vnd)} · Phí giao hàng:{" "}
                       {formatVnd(foundOrder.shipping_fee_vnd)}
                     </dd>
                   </div>
 
-                  <div className={styles.infoTile}>
-                    <dt className={styles.infoKey}>Cập nhật gần nhất</dt>
-                    <dd className={`${styles.infoVal} num`}>
+                  <div className="rounded-lg border border-border bg-background p-3.5">
+                    <dt className="text-xs font-medium text-muted-foreground">Cập nhật gần nhất</dt>
+                    <dd className="mt-1 text-sm font-medium text-foreground tabular-nums">
                       {foundOrder.updated_at
                         ? formatDateTimeVi(foundOrder.updated_at)
                         : statusMeta.label}
                     </dd>
-                    <dd className={styles.infoSub}>
+                    <dd className="mt-0.5 text-xs text-muted-foreground">
                       {foundOrder.delivered_at
                         ? `Giao thành công lúc ${formatDateTimeVi(foundOrder.delivered_at)}`
                         : statusMeta.description}
@@ -496,79 +530,64 @@ function OrderLookupContent({ brandName, suggestedProducts = [] }: OrderLookupVi
               </div>
 
               {Array.isArray(foundOrder.items) && foundOrder.items.length > 0 && (
-                <div className={styles.sheetSection}>
-                  <h3 className={styles.sheetHeading}>Sản phẩm trong đơn</h3>
-                  <div className={styles.itemList}>
-                    {foundOrder.items.map((item, idx) => (
-                      <div
-                        key={`${item.product_name}-${item.sku_name}-${idx}`}
-                        className={styles.itemRow}
-                        style={{ gridTemplateColumns: "minmax(0, 1fr) auto" }}
-                      >
-                        <div className={styles.itemInfo}>
-                          <span className={styles.itemName}>{item.product_name}</span>
-                          <span className={styles.itemMeta}>
-                            {item.sku_name ? <span>{item.sku_name}</span> : null}
-                            <span className="num">SL {item.quantity}</span>
-                          </span>
+                <>
+                  <Separator />
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold text-foreground">Sản phẩm trong đơn</h3>
+                    <div className="divide-y divide-border rounded-lg border border-border">
+                      {foundOrder.items.map((item, idx) => (
+                        <div
+                          key={`${item.product_name}-${item.sku_name}-${idx}`}
+                          className="flex items-center justify-between gap-3 px-3.5 py-2.5"
+                        >
+                          <div className="min-w-0 space-y-0.5">
+                            <p className="truncate text-sm font-medium text-foreground">
+                              {item.product_name}
+                            </p>
+                            <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground tabular-nums">
+                              {item.sku_name ? <span>{item.sku_name}</span> : null}
+                              <span>SL {item.quantity}</span>
+                            </p>
+                          </div>
+                          <Money vnd={item.line_total_vnd} size="sm" className="shrink-0" />
                         </div>
-                        <span className={`${styles.itemPrice} num`}>
-                          {formatVnd(item.line_total_vnd)}
-                        </span>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
-                </div>
+                </>
               )}
 
-              <div className={styles.sheetSection}>
-                <h3 className={styles.sheetHeading}>Hành trình đơn hàng</h3>
-                {sortedTimeline.length > 0 ? (
-                  <ol className={styles.timelineList}>
-                    {sortedTimeline.map((ev, i) => {
-                      const evMeta = getOrderStatusInfo(ev.to_status);
-                      return (
-                        <li
-                          key={`${ev.to_status}-${ev.created_at ?? i}-${i}`}
-                          className={`${styles.timelineRow} ${
-                            i === 0 ? styles.timelineRowLatest : ""
-                          }`}
-                        >
-                          <span className={styles.timelineStem} aria-hidden="true">
-                            <span className={styles.timelineDot} />
-                            <span className={styles.timelineLine} />
-                          </span>
-                          <span className={styles.timelineTime}>
-                            {ev.created_at ? renderDateTime(ev.created_at) : "—"}
-                          </span>
-                          <div>
-                            <p className={styles.infoVal}>{evMeta.label}</p>
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ol>
+              <Separator />
+
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold text-foreground">Hành trình đơn hàng</h3>
+                {timelineItems.length > 0 ? (
+                  <Timeline items={timelineItems} />
                 ) : (
-                  <p className={styles.infoSub}>Chưa có mốc cập nhật hành trình cho đơn này.</p>
+                  <p className="text-sm text-muted-foreground">
+                    Chưa có mốc cập nhật hành trình cho đơn này.
+                  </p>
                 )}
               </div>
 
-              <div className={styles.sheetSection}>
-                <p className={styles.infoSub} style={{ marginBottom: 12 }}>
+              <Separator />
+
+              <div className="space-y-3">
+                <p className="text-xs leading-5 text-muted-foreground">
                   Để sửa địa chỉ nhận hàng, hủy đơn, thanh toán lại hoặc gửi yêu cầu trả hàng, vui
                   lòng đăng nhập tài khoản đặt hàng của bạn.
                 </p>
-                <div className={shared.formActions}>
-                  <Button variant="primary" size="md" href="/don-hang">
-                    Quản lý đơn hàng của tôi
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button asChild className="min-h-10 shadow-none sm:min-h-9">
+                    <Link href="/don-hang">Quản lý đơn hàng của tôi</Link>
                   </Button>
-                  <Button variant="secondary" size="md" href="/chinh-sach">
-                    Chính sách cửa hàng
+                  <Button variant="secondary" asChild className="min-h-10 sm:min-h-9">
+                    <Link href="/chinh-sach">Chính sách cửa hàng</Link>
                   </Button>
                 </div>
               </div>
-            </div>
-          </div>
+            </CardContent>
+          </Card>
         )}
       </section>
 
@@ -583,8 +602,10 @@ export function OrderLookupView(props: OrderLookupViewProps) {
   return (
     <Suspense
       fallback={
-        <div className={shared.page}>
-          <StateView kind="loading" skeletonVariant="detail" title="Đang mở tra cứu..." rows={3} />
+        <div className={cn(SITE_PAGE_CONTAINER, "space-y-6")}>
+          <div className="mx-auto max-w-[820px]">
+            <LookupLoadingSkeleton />
+          </div>
         </div>
       }
     >

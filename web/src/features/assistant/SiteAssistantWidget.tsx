@@ -3,13 +3,25 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { IconBag, IconChat, IconClose, IconSend, IconSpark } from "@/components/Icons";
-import { getFocusableElements, hasOpenModal } from "@/components/modalFocus";
+import {
+  MessageCircle,
+  Send,
+  ShoppingBag,
+  Sparkles,
+  Square,
+  ThumbsDown,
+  ThumbsUp,
+  X,
+} from "lucide-react";
 import { useSession } from "@/components/SessionProvider";
 import { useStore } from "@/context/StoreContext";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { ApiError, api } from "@/lib/api";
 import { formatVnd } from "@/lib/format";
 import { sanitizeSafeUrl } from "@/lib/site/theme";
+import { cn } from "@/lib/utils";
 import {
   extractToolCardData,
   getToolActivityLabel,
@@ -25,7 +37,6 @@ import {
 } from "./assistantTypes";
 import { renderAssistantMarkdown } from "./assistantMarkdown";
 import { createSseParser } from "./sseParser";
-import styles from "./SiteAssistantWidget.module.css";
 
 interface HandoffApiResponse {
   conversation_id: string;
@@ -40,6 +51,18 @@ export interface SiteAssistantWidgetComponentProps extends SiteAssistantWidgetPr
   active?: boolean;
   /** Invoked when user closes the panel in embedded mode. */
   onClose?: () => void;
+}
+
+function hasActiveModalDialog(): boolean {
+  if (typeof document === "undefined") return false;
+  return Boolean(document.querySelector('[role="dialog"][aria-modal="true"]'));
+}
+
+function focusFirstInteractive(container: HTMLElement): void {
+  const first = container.querySelector<HTMLElement>(
+    'button:not([disabled]), a[href], input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  );
+  (first ?? container).focus({ preventScroll: true });
 }
 
 function makeMessageId(prefix: string): string {
@@ -204,7 +227,7 @@ export function SiteAssistantWidget({
   useEffect(() => {
     if (!effectiveOpen || embedded) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !hasOpenModal()) {
+      if (e.key === "Escape" && !hasActiveModalDialog()) {
         e.preventDefault();
         handleClose();
       }
@@ -218,13 +241,11 @@ export function SiteAssistantWidget({
     if (effectiveOpen) {
       wasOpenRef.current = true;
       restoreFocusOnCloseRef.current = true;
-      const input = inputRef.current;
-      if (input && !input.disabled) {
-        input.focus({ preventScroll: true });
+      const inputEl = inputRef.current;
+      if (inputEl && !inputEl.disabled) {
+        inputEl.focus({ preventScroll: true });
       } else if (panelRef.current) {
-        (getFocusableElements(panelRef.current)[0] ?? panelRef.current).focus({
-          preventScroll: true,
-        });
+        focusFirstInteractive(panelRef.current);
       }
       return;
     }
@@ -566,86 +587,107 @@ export function SiteAssistantWidget({
     }
   };
 
-  const rootStyle = embedded
-    ? undefined
-    : ({
-        "--assistant-offset-bottom": `${Math.max(16, Math.trunc(offsetBottomPx))}px`,
-      } as React.CSSProperties);
-
   return (
     <div
-      className={`${styles.root} ${embedded ? styles.rootEmbedded : ""} ${className ?? ""}`}
-      style={rootStyle}
       data-ui="site-assistant"
+      className={cn(
+        embedded
+          ? "static flex w-full flex-col items-stretch"
+          : "fixed right-3 z-50 flex flex-col items-end gap-2.5 sm:right-5",
+        "font-sans text-foreground",
+        className
+      )}
+      style={embedded ? undefined : { bottom: `${Math.max(16, Math.trunc(offsetBottomPx))}px` }}
     >
       {(embedded || effectiveOpen) && (
         <section
           ref={panelRef}
           tabIndex={-1}
           id="site-assistant-panel"
-          className={styles.panel}
           role="dialog"
           aria-label={`Trợ lý mua sắm ${brandName}`}
+          className="flex h-[min(560px,calc(100svh-128px))] w-[min(404px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-overlay outline-none animate-in fade-in-0 slide-in-from-bottom-2 duration-200"
         >
-          <header className={styles.header}>
-            <div className={styles.headerLead}>
-              <span className={styles.headerBadge} aria-hidden="true">
-                <IconSpark size={15} />
+          <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border bg-card px-3.5 py-3">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <span
+                className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground"
+                aria-hidden="true"
+              >
+                <Sparkles className="size-4" />
               </span>
-              <div className={styles.headerText}>
-                <h2 className={styles.headerTitle}>Trợ lý mua sắm</h2>
-                <p className={styles.headerSub}>{brandName}</p>
+              <div className="min-w-0">
+                <h2 className="truncate text-sm leading-5 font-semibold text-foreground">
+                  Trợ lý mua sắm
+                </h2>
+                <p className="truncate text-xs text-muted-foreground">{brandName}</p>
               </div>
             </div>
-            <div className={styles.headerActions}>
-              <button
+            <div className="flex shrink-0 items-center gap-1">
+              <Button
                 type="button"
-                className={styles.handoffHeaderBtn}
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 px-2.5 text-xs shadow-none"
                 onClick={() => void handleHandoff()}
                 disabled={handoffBusy}
               >
-                <IconChat size={14} />
+                <MessageCircle className="size-3.5" aria-hidden="true" />
                 <span>{handoffBusy ? "Đang chuyển..." : "Gặp nhân viên"}</span>
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className={styles.closeBtn}
+                variant="ghost"
+                size="icon-sm"
+                className="size-9 text-muted-foreground hover:text-foreground"
                 onClick={handleClose}
                 aria-label="Đóng khung trợ lý"
               >
-                <IconClose size={16} />
-              </button>
+                <X className="size-4" aria-hidden="true" />
+              </Button>
             </div>
           </header>
 
           {productContext?.name && (
-            <div className={styles.contextStrip}>
-              <span className={styles.contextLabel}>Đang xem:</span>
-              <span className={styles.contextProduct}>{productContext.name}</span>
+            <div className="flex shrink-0 items-center gap-2 border-b border-border bg-background px-3.5 py-2 text-xs">
+              <span className="shrink-0 text-muted-foreground">Đang xem:</span>
+              <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+                {productContext.name}
+              </span>
               {typeof productContext.priceVnd === "number" && productContext.priceVnd > 0 && (
-                <span className={styles.contextPrice}>{formatVnd(productContext.priceVnd)}</span>
+                <span className="shrink-0 font-semibold text-brand tabular-nums">
+                  {formatVnd(productContext.priceVnd)}
+                </span>
               )}
             </div>
           )}
 
-          <div ref={scrollRef} className={styles.transcript} aria-live="polite">
+          <div
+            ref={scrollRef}
+            className="flex-1 space-y-3 overflow-y-auto bg-background px-3.5 py-3.5"
+            aria-live="polite"
+          >
             {messages.length === 0 ? (
-              <div className={styles.welcome}>
-                <p className={styles.welcomeTitle}>Hỏi nhanh tại {brandName}</p>
-                <p className={styles.welcomeDesc}>
-                  Tìm mẫu phù hợp, chọn size, xem chính sách hoặc tra đơn hàng.
-                </p>
-                <div className={styles.starterList}>
+              <div className="space-y-3 rounded-xl border border-border bg-card p-4">
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold text-foreground">Hỏi nhanh tại {brandName}</p>
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    Tìm mẫu phù hợp, chọn size, xem chính sách hoặc tra đơn hàng.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
                   {starterPrompts.map((prompt) => (
-                    <button
+                    <Button
                       key={prompt}
                       type="button"
-                      className={styles.starterChip}
+                      variant="outline"
+                      size="sm"
+                      className="h-auto min-h-9 py-1.5 text-left text-xs whitespace-normal shadow-none"
                       onClick={() => void sendMessage(prompt)}
                       disabled={streaming}
                     >
                       {prompt}
-                    </button>
+                    </Button>
                   ))}
                 </div>
               </div>
@@ -653,41 +695,56 @@ export function SiteAssistantWidget({
               messages.map((msg) => (
                 <div
                   key={msg.id}
-                  className={msg.role === "user" ? styles.rowUser : styles.rowAssistant}
+                  className={cn(
+                    "flex flex-col gap-1.5",
+                    msg.role === "user" ? "items-end" : "items-start"
+                  )}
                 >
-                  <div className={msg.role === "user" ? styles.bubbleUser : styles.bubbleAssistant}>
+                  <div
+                    className={cn(
+                      "max-w-[90%] space-y-2.5 rounded-xl px-3.5 py-2.5 text-[13px] leading-5 break-words",
+                      msg.role === "user"
+                        ? "bg-primary text-primary-foreground"
+                        : "border border-border bg-card text-card-foreground"
+                    )}
+                  >
                     {msg.content &&
                       (msg.role === "assistant" ? (
-                        <div className={styles.msgRich}>
+                        <div className="space-y-1.5">
                           {renderAssistantMarkdown(msg.content, {
                             stripUuids: true,
                             streaming: Boolean(msg.streaming),
                             LinkComponent: Link,
                             classNames: {
-                              paragraph: styles.msgParagraph,
-                              list: styles.msgList,
-                              listItem: styles.msgListItem,
-                              strong: styles.msgStrong,
-                              link: styles.msgLink,
+                              paragraph: "m-0 leading-relaxed",
+                              list: "my-1 list-disc space-y-1 pl-4",
+                              listItem: "leading-relaxed",
+                              strong: "font-semibold text-foreground",
+                              link: "font-medium text-brand underline underline-offset-2 hover:opacity-80",
                             },
                           })}
                         </div>
                       ) : (
-                        <p className={styles.msgText}>{msg.content}</p>
+                        <p className="m-0 whitespace-pre-wrap">{msg.content}</p>
                       ))}
 
                     {msg.streaming && !msg.content && !msg.toolStatus && (
-                      <p className={styles.statusNote}>Đang soạn trả lời...</p>
+                      <p className="m-0 text-xs text-muted-foreground">Đang soạn trả lời...</p>
                     )}
 
-                    {msg.toolStatus && <p className={styles.statusNote}>{msg.toolStatus}</p>}
+                    {msg.toolStatus && (
+                      <p className="m-0 text-xs text-muted-foreground">{msg.toolStatus}</p>
+                    )}
 
                     {msg.error && (
-                      <div className={styles.errorBox} role="alert">
-                        <p>{msg.error}</p>
+                      <div
+                        className="space-y-2 rounded-lg border border-destructive/30 bg-badge-critical-bg p-3 text-xs text-badge-critical-ink"
+                        role="alert"
+                      >
+                        <p className="m-0">{msg.error}</p>
                         <button
                           type="button"
-                          className={styles.inlineLinkBtn}
+                          className="font-semibold underline underline-offset-2 hover:opacity-80"
                           onClick={() => void handleHandoff()}
                           disabled={handoffBusy}
                         >
@@ -697,45 +754,56 @@ export function SiteAssistantWidget({
                     )}
 
                     {msg.requiresAuthPrompt && !isAuthenticated && (
-                      <div className={styles.authNotice}>
-                        <span>Đăng nhập để xem đơn hàng và thao tác giỏ.</span>
-                        <Link href={loginHref} className={styles.authLink}>
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs">
+                        <span className="text-muted-foreground">
+                          Đăng nhập để xem đơn hàng và thao tác giỏ.
+                        </span>
+                        <Link href={loginHref} className="font-semibold text-brand hover:underline">
                           Đăng nhập
                         </Link>
                       </div>
                     )}
 
                     {msg.products && msg.products.length > 0 && (
-                      <div className={styles.cardStack}>
+                      <div className="space-y-2">
                         {msg.products.map((prod) => {
                           const safeImg = sanitizeSafeUrl(prod.image);
                           return (
-                            <Link key={prod.id} href={prod.href} className={styles.productCard}>
+                            <Link
+                              key={prod.id}
+                              href={prod.href}
+                              className="flex items-center gap-2.5 rounded-lg border border-border bg-background p-2 transition-colors hover:bg-accent/50"
+                            >
                               {safeImg ? (
                                 <img
                                   src={safeImg}
                                   alt={prod.name}
-                                  className={styles.productThumb}
+                                  className="h-14 w-11 shrink-0 rounded object-cover"
                                   width={52}
                                   height={68}
                                 />
                               ) : (
-                                <div className={styles.productThumbPlaceholder} aria-hidden="true">
-                                  <IconBag size={16} />
+                                <div
+                                  className="flex h-14 w-11 shrink-0 items-center justify-center rounded bg-muted text-muted-foreground"
+                                  aria-hidden="true"
+                                >
+                                  <ShoppingBag className="size-4" />
                                 </div>
                               )}
-                              <div className={styles.productBody}>
-                                <span className={styles.productName}>{prod.name}</span>
-                                <span className={styles.productMetaRow}>
+                              <div className="min-w-0 flex-1 space-y-0.5">
+                                <p className="line-clamp-2 text-xs font-semibold text-foreground">
+                                  {prod.name}
+                                </p>
+                                <div className="flex flex-wrap items-center gap-2 text-xs tabular-nums">
                                   {prod.priceVnd > 0 && (
-                                    <span className={styles.productPrice}>
+                                    <span className="font-semibold text-brand">
                                       {formatVnd(prod.priceVnd)}
                                     </span>
                                   )}
                                   {prod.stockLabel && (
-                                    <span className={styles.productStock}>{prod.stockLabel}</span>
+                                    <span className="text-muted-foreground">{prod.stockLabel}</span>
                                   )}
-                                </span>
+                                </div>
                               </div>
                             </Link>
                           );
@@ -744,20 +812,30 @@ export function SiteAssistantWidget({
                     )}
 
                     {msg.orders && msg.orders.length > 0 && (
-                      <div className={styles.cardStack}>
+                      <div className="space-y-2">
                         {msg.orders.map((order) => (
-                          <div key={order.orderCode} className={styles.orderCard}>
-                            <div className={styles.orderTop}>
-                              <span className={styles.orderCode}>Đơn #{order.orderCode}</span>
-                              <span className={styles.orderStatus}>{order.statusLabel}</span>
+                          <div
+                            key={order.orderCode}
+                            className="space-y-1.5 rounded-lg border border-border bg-background p-2.5 text-xs"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="font-semibold text-foreground tabular-nums">
+                                Đơn #{order.orderCode}
+                              </span>
+                              <Badge variant="secondary" className="text-[11px]">
+                                {order.statusLabel}
+                              </Badge>
                             </div>
-                            <div className={styles.orderBottom}>
+                            <div className="flex items-center justify-between gap-2">
                               {typeof order.totalVnd === "number" && (
-                                <span className={styles.orderPrice}>
+                                <span className="font-medium text-foreground tabular-nums">
                                   {formatVnd(order.totalVnd)}
                                 </span>
                               )}
-                              <Link href={order.href} className={styles.orderLink}>
+                              <Link
+                                href={order.href}
+                                className="font-medium text-brand hover:underline"
+                              >
                                 Xem chi tiết
                               </Link>
                             </div>
@@ -767,71 +845,83 @@ export function SiteAssistantWidget({
                     )}
 
                     {msg.pendingCartActions && msg.pendingCartActions.length > 0 && (
-                      <div className={styles.cardStack}>
+                      <div className="space-y-2">
                         {msg.pendingCartActions.map((action) => (
-                          <div key={action.id} className={styles.cartConfirmCard}>
-                            <div className={styles.cartConfirmHead}>
-                              <IconBag size={14} />
+                          <div
+                            key={action.id}
+                            className="space-y-2 rounded-lg border border-border bg-background p-3 text-xs"
+                          >
+                            <div className="flex items-center gap-1.5 font-semibold text-foreground">
+                              <ShoppingBag className="size-3.5 text-brand" aria-hidden="true" />
                               <span>
                                 {action.status === "added"
                                   ? "Đã thêm vào giỏ"
                                   : "Xác nhận thêm vào giỏ"}
                               </span>
                             </div>
-                            <div className={styles.cartConfirmDetail}>
-                              <span className={styles.cartConfirmName}>{action.productName}</span>
-                              <span className={styles.cartConfirmMeta}>
+                            <div className="space-y-0.5">
+                              <p className="font-medium text-foreground">{action.productName}</p>
+                              <p className="text-muted-foreground tabular-nums">
                                 {action.variantLabel ? `${action.variantLabel}, ` : ""}
                                 SL: {action.quantity}
                                 {action.priceVnd ? `, ${formatVnd(action.priceVnd)}` : ""}
-                              </span>
+                              </p>
                             </div>
                             {action.status !== "added" && (
-                              <p className={styles.cartConfirmHint}>
+                              <p className="text-[11px] text-muted-foreground">
                                 Kiểm tra phân loại trước khi thêm. Trợ lý không tự đặt đơn.
                               </p>
                             )}
 
                             {action.status === "added" ? (
-                              <div className={styles.cartDoneRow}>
-                                <span className={styles.cartDoneText}>
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span className="font-medium text-badge-success-ink">
                                   {action.statusMessage ?? "Đã thêm vào giỏ."}
                                 </span>
-                                <Link href="/gio-hang" className={styles.authLink}>
+                                <Link
+                                  href="/gio-hang"
+                                  className="font-semibold text-brand hover:underline"
+                                >
                                   Xem giỏ hàng
                                 </Link>
                               </div>
                             ) : action.status === "dismissed" ? (
-                              <p className={styles.cartDismissedText}>Đã bỏ qua đề xuất.</p>
+                              <p className="text-muted-foreground">Đã bỏ qua đề xuất.</p>
                             ) : (
                               <>
                                 {action.statusMessage && (
-                                  <p className={styles.cartStatusError}>
+                                  <p className="text-destructive">
                                     {action.statusMessage}{" "}
                                     {action.requiresAuth && (
-                                      <Link href={loginHref} className={styles.authLink}>
+                                      <Link
+                                        href={loginHref}
+                                        className="font-semibold text-brand underline"
+                                      >
                                         Đăng nhập
                                       </Link>
                                     )}
                                   </p>
                                 )}
-                                <div className={styles.cartConfirmActions}>
-                                  <button
+                                <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                                  <Button
                                     type="button"
-                                    className={styles.cartConfirmPrimary}
+                                    size="sm"
+                                    className="h-8 shadow-none"
                                     disabled={action.status === "adding"}
                                     onClick={() => void handleConfirmCartAction(msg.id, action)}
                                   >
                                     {action.status === "adding" ? "Đang thêm..." : "Thêm vào giỏ"}
-                                  </button>
-                                  <button
+                                  </Button>
+                                  <Button
                                     type="button"
-                                    className={styles.cartConfirmGhost}
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-8"
                                     disabled={action.status === "adding"}
                                     onClick={() => handleDismissCartAction(msg.id, action.id)}
                                   >
                                     Bỏ qua
-                                  </button>
+                                  </Button>
                                 </div>
                               </>
                             )}
@@ -841,20 +931,24 @@ export function SiteAssistantWidget({
                     )}
 
                     {msg.citations && msg.citations.length > 0 && (
-                      <div className={styles.citationList}>
-                        <span className={styles.citationHeading}>Nguồn tham khảo:</span>
-                        <div className={styles.citationLinks}>
+                      <div className="space-y-1 border-t border-border pt-2 text-xs">
+                        <span className="block font-medium text-muted-foreground">
+                          Nguồn tham khảo:
+                        </span>
+                        <div className="flex flex-wrap gap-1.5">
                           {msg.citations.map((cit) => {
                             const safeHref = sanitizeSafeUrl(cit.href);
                             if (!safeHref) return null;
                             const isExternal = safeHref.startsWith("https://");
+                            const cls =
+                              "inline-flex items-center rounded-md border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-brand hover:underline";
                             return isExternal ? (
                               <a
                                 key={`${cit.href}-${cit.title}`}
                                 href={safeHref}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className={styles.citationLink}
+                                className={cls}
                               >
                                 {cit.title}
                                 {cit.section ? ` (${cit.section})` : ""}
@@ -863,7 +957,7 @@ export function SiteAssistantWidget({
                               <Link
                                 key={`${cit.href}-${cit.title}`}
                                 href={safeHref}
-                                className={styles.citationLink}
+                                className={cls}
                               >
                                 {cit.title}
                                 {cit.section ? ` (${cit.section})` : ""}
@@ -876,28 +970,30 @@ export function SiteAssistantWidget({
                   </div>
 
                   {msg.role === "assistant" && !msg.streaming && !msg.error && msg.content && (
-                    <div className={styles.feedbackBar}>
-                      <button
+                    <div className="flex items-center gap-1.5 px-1">
+                      <Button
                         type="button"
-                        className={`${styles.feedbackBtn} ${
-                          msg.feedback === "helpful" ? styles.feedbackBtnActive : ""
-                        }`}
+                        variant={msg.feedback === "helpful" ? "secondary" : "ghost"}
+                        size="xs"
                         aria-pressed={msg.feedback === "helpful"}
                         onClick={() => handleFeedback(msg.id, "helpful")}
                       >
-                        Hữu ích
-                      </button>
-                      <button
+                        <ThumbsUp className="size-3" aria-hidden="true" />
+                        <span>Hữu ích</span>
+                      </Button>
+                      <Button
                         type="button"
-                        className={`${styles.feedbackBtn} ${
-                          msg.feedback === "unhelpful" ? styles.feedbackBtnActive : ""
-                        }`}
+                        variant={msg.feedback === "unhelpful" ? "secondary" : "ghost"}
+                        size="xs"
                         aria-pressed={msg.feedback === "unhelpful"}
                         onClick={() => handleFeedback(msg.id, "unhelpful")}
                       >
-                        Chưa đúng
-                      </button>
-                      {msg.feedback && <span className={styles.feedbackNote}>Đã ghi nhận.</span>}
+                        <ThumbsDown className="size-3" aria-hidden="true" />
+                        <span>Chưa đúng</span>
+                      </Button>
+                      {msg.feedback && (
+                        <span className="text-[11px] text-muted-foreground">Đã ghi nhận.</span>
+                      )}
                     </div>
                   )}
                 </div>
@@ -905,41 +1001,51 @@ export function SiteAssistantWidget({
             )}
 
             {handoffLoginHint && (
-              <div className={styles.handoffBanner} role="status">
+              <div
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs"
+                role="status"
+              >
                 <span>Đăng nhập để nhắn trực tiếp với {brandName}.</span>
-                <Link href={loginHref} className={styles.authLink}>
+                <Link href={loginHref} className="font-semibold text-brand hover:underline">
                   Đăng nhập
                 </Link>
               </div>
             )}
 
             {handoffError && (
-              <div className={styles.handoffBannerError} role="alert">
+              <div
+                className="rounded-lg border border-destructive/30 bg-badge-critical-bg px-3 py-2 text-xs text-badge-critical-ink"
+                role="alert"
+              >
                 {handoffError}
               </div>
             )}
 
             {handoffSummary && (
-              <div className={styles.handoffBanner} role="status">
+              <div
+                className="rounded-lg border border-border bg-card px-3 py-2 text-xs text-foreground"
+                role="status"
+              >
                 <span>{handoffSummary}</span>
               </div>
             )}
           </div>
 
-          <footer className={styles.footer}>
+          <footer className="shrink-0 space-y-2 border-t border-border bg-card px-3 py-2.5">
             {streaming ? (
-              <div className={styles.stopRow}>
-                <span className={styles.streamingHint}>Đang trả lời...</span>
-                <button type="button" className={styles.stopBtn} onClick={stopStreaming}>
-                  Dừng
-                </button>
+              <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span>Đang trả lời...</span>
+                <Button type="button" variant="outline" size="xs" onClick={stopStreaming}>
+                  <Square className="size-3" aria-hidden="true" />
+                  <span>Dừng</span>
+                </Button>
               </div>
             ) : (
-              <div className={styles.handoffStrip}>
-                <span className={styles.disclaimerText}>Gợi ý theo dữ liệu cửa hàng</span>
+              <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                <span>Gợi ý theo dữ liệu cửa hàng</span>
                 <button
                   type="button"
-                  className={styles.handoffInlineBtn}
+                  className="font-medium text-brand hover:underline disabled:opacity-50"
                   onClick={() => void handleHandoff()}
                   disabled={handoffBusy}
                 >
@@ -948,11 +1054,11 @@ export function SiteAssistantWidget({
               </div>
             )}
 
-            <form className={styles.composer} onSubmit={handleSubmit}>
-              <textarea
+            <form className="flex items-end gap-2" onSubmit={handleSubmit}>
+              <Textarea
                 ref={inputRef}
                 rows={1}
-                className={styles.composerInput}
+                className="max-h-24 min-h-10 flex-1 resize-none bg-background py-2 text-sm"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
@@ -961,32 +1067,33 @@ export function SiteAssistantWidget({
                 disabled={streaming}
                 aria-label="Nhập câu hỏi cho trợ lý mua sắm"
               />
-              <button
+              <Button
                 type="submit"
-                className={styles.sendBtn}
+                size="icon"
+                className="size-10 shrink-0 shadow-none"
                 disabled={streaming || !input.trim()}
                 aria-label="Gửi câu hỏi"
               >
-                <IconSend size={15} />
-              </button>
+                <Send className="size-4" aria-hidden="true" />
+              </Button>
             </form>
           </footer>
         </section>
       )}
 
       {!embedded && (
-        <button
+        <Button
           ref={launcherRef}
           type="button"
-          className={styles.launcher}
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
           aria-controls="site-assistant-panel"
           aria-label={open ? "Thu gọn trợ lý mua sắm" : `Mở trợ lý mua sắm ${brandName}`}
+          className="h-11 rounded-full px-4 shadow-overlay"
         >
-          <IconSpark size={16} />
+          <Sparkles className="size-4" aria-hidden="true" />
           <span>{open ? "Đóng trợ lý" : "Trợ lý AI"}</span>
-        </button>
+        </Button>
       )}
     </div>
   );

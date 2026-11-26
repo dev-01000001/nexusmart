@@ -1,17 +1,23 @@
 "use client";
 
-import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { ChevronLeft, ChevronRight, Package, PackageSearch } from "lucide-react";
 import type { Product } from "@/data/products";
-import { formatVnd } from "@/lib/format";
 import { useStore } from "@/context/StoreContext";
-import { Button, StateView } from "@/components";
+import { EmptyState } from "@/components/app/EmptyState";
+import { ErrorState } from "@/components/app/ErrorState";
+import { Money } from "@/components/app/Money";
+import { StatusBadge } from "@/components/app/StatusBadge";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
-import { renderOrderDateTime, statusToneClass } from "@/features/commerce/orderDisplay";
 import { usePageStateParam } from "@/features/commerce/usePageStateParam";
-import shared from "@/features/commerce/commerce.module.css";
-import styles from "./OrdersClientView.module.css";
+import { cn } from "@/lib/utils";
 import {
   ORDER_FILTER_TABS,
   getOrderStatusInfo,
@@ -25,6 +31,14 @@ import {
   type BuyerOrderFilterKey,
   type OrderView,
 } from "./orderView";
+import {
+  SITE_PAGE_CONTAINER,
+  orderStatusTone,
+  paymentStatusTone,
+  splitDateTimeVi,
+} from "./ui/siteStatus";
+
+const ORDERS_PAGE_SIZE = 10;
 
 function isUnpaidOnlineOrder(order: OrderView): boolean {
   return needsVietQrPayment({
@@ -34,6 +48,35 @@ function isUnpaidOnlineOrder(order: OrderView): boolean {
     payment_status: order.paymentStatusRaw,
     payment_expires_at: order.paymentExpiresAt,
   });
+}
+
+function OrdersLoadingSkeleton() {
+  return (
+    <div className="space-y-3" aria-busy="true" aria-label="Đang tải đơn hàng">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <Card key={i} className="border border-border shadow-none">
+          <CardContent className="flex flex-col gap-4 sm:flex-row sm:items-center">
+            <Skeleton className="size-16 shrink-0 rounded-md" />
+            <div className="flex-1 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Skeleton className="h-4 w-32" />
+                <Skeleton className="h-5 w-24 rounded-full" />
+              </div>
+              <Skeleton className="h-4 w-3/4" />
+              <Skeleton className="h-3.5 w-1/2" />
+            </div>
+            <div className="flex flex-col items-start gap-2 sm:items-end">
+              <Skeleton className="h-5 w-24" />
+              <div className="flex gap-2">
+                <Skeleton className="h-9 w-24" />
+                <Skeleton className="h-9 w-20" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
 }
 
 export interface OrdersClientViewProps {
@@ -53,29 +96,8 @@ function OrdersClientInner({
   const viewState = usePageStateParam();
   const { addToCart, showToast } = useStore();
   const [activeTab, setActiveTab] = useState<BuyerOrderFilterKey>("");
+  const [page, setPage] = useState(1);
   const [reorderingId, setReorderingId] = useState<string | null>(null);
-
-  const tabBarRef = useRef<HTMLDivElement | null>(null);
-  const tabRefs = useRef<Partial<Record<BuyerOrderFilterKey, HTMLButtonElement | null>>>({});
-  const [indicator, setIndicator] = useState<{ left: number; width: number }>({
-    left: 0,
-    width: 0,
-  });
-
-  const measureIndicator = useCallback(() => {
-    const activeBtn = tabRefs.current[activeTab];
-    if (!activeBtn) return;
-    setIndicator({ left: activeBtn.offsetLeft, width: activeBtn.offsetWidth });
-  }, [activeTab]);
-
-  useEffect(() => {
-    measureIndicator();
-    const bar = tabBarRef.current;
-    if (!bar || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => measureIndicator());
-    ro.observe(bar);
-    return () => ro.disconnect();
-  }, [measureIndicator]);
 
   const counts = useMemo(() => countOrdersByBackendStatus(initialOrders), [initialOrders]);
 
@@ -83,6 +105,19 @@ function OrdersClientInner({
     () => filterOrdersByBackendStatus(initialOrders, activeTab),
     [initialOrders, activeTab]
   );
+
+  const totalPages = Math.max(1, Math.ceil(filteredOrders.length / ORDERS_PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pagedOrders = useMemo(() => {
+    const start = (currentPage - 1) * ORDERS_PAGE_SIZE;
+    return filteredOrders.slice(start, start + ORDERS_PAGE_SIZE);
+  }, [filteredOrders, currentPage]);
+
+  const handleTabChange = (value: string) => {
+    const next = (value === "ALL" ? "" : value) as BuyerOrderFilterKey;
+    setActiveTab(next);
+    setPage(1);
+  };
 
   const handleReorder = async (order: OrderView) => {
     setReorderingId(order.id);
@@ -115,30 +150,35 @@ function OrdersClientInner({
   };
 
   const renderHeader = () => (
-    <section className={styles.ordersHeader}>
-      <div className={shared.headerLeadGroup}>
-        <h1 className={`${styles.ordersTitle} lines`}>
-          <span className="line">
-            <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
-              Đơn hàng <span className={styles.ordersShopSuffix}>tại {brandName}</span>
-            </span>
-          </span>
+    <header className="flex flex-col gap-3 border-b border-border pb-4 sm:flex-row sm:items-end sm:justify-between">
+      <div className="min-w-0 space-y-1">
+        <h1 className="text-xl leading-7 font-semibold tracking-tight text-foreground sm:text-2xl sm:leading-8">
+          Đơn hàng <span className="font-normal text-muted-foreground">tại {brandName}</span>
         </h1>
+        <p className="text-[13px] leading-[18px] text-muted-foreground">
+          Theo dõi trạng thái thanh toán, vận chuyển và đổi trả cho các đơn đã đặt.
+        </p>
       </div>
-      <div className={shared.headerAside} data-rise="" style={{ "--i": 1 } as React.CSSProperties}>
-        <Button variant="secondary" size="md" href="/tai-khoan">
-          Tài khoản
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <Button variant="outline" size="sm" asChild className="min-h-10 shadow-none sm:min-h-9">
+          <Link href="/tra-cuu-don-hang">Tra cứu đơn</Link>
+        </Button>
+        <Button variant="secondary" size="sm" asChild className="min-h-10 sm:min-h-9">
+          <Link href="/tai-khoan">Tài khoản</Link>
         </Button>
       </div>
-    </section>
+    </header>
   );
 
   if (viewState === "loading") {
     return (
-      <div className={shared.page}>
+      <div className={cn(SITE_PAGE_CONTAINER, "space-y-6")}>
         {renderHeader()}
-        <section className={shared.section}>
-          <StateView kind="loading" skeletonVariant="table" title="Đang tải đơn hàng..." rows={5} />
+        <section aria-labelledby="orders-loading-heading">
+          <h2 id="orders-loading-heading" className="sr-only">
+            Danh sách đơn hàng
+          </h2>
+          <OrdersLoadingSkeleton />
         </section>
       </div>
     );
@@ -146,33 +186,33 @@ function OrdersClientInner({
 
   if (viewState === "error" || initialError) {
     return (
-      <div className={shared.page}>
+      <div className={cn(SITE_PAGE_CONTAINER, "space-y-6")}>
         {renderHeader()}
-        <section className={shared.section}>
-          <StateView
-            kind="error"
-            title="Chưa tải được danh sách đơn hàng."
-            message={initialError ?? "Thử lại sau ít giây."}
-            actionLabel="Tải lại"
-            actionHref="/don-hang"
-          />
-        </section>
+        <ErrorState
+          title="Chưa tải được danh sách đơn hàng."
+          description={initialError ?? "Thử lại sau ít giây."}
+          retryHref="/don-hang"
+          className="border border-border shadow-none"
+        />
       </div>
     );
   }
 
   if (viewState === "empty" || initialOrders.length === 0) {
     return (
-      <div className={shared.page}>
+      <div className={cn(SITE_PAGE_CONTAINER, "space-y-8")}>
         {renderHeader()}
-        <section className={shared.section}>
-          <StateView
-            kind="empty"
-            title="Chưa có đơn hàng nào."
-            actionLabel="Xem sản phẩm"
-            actionHref="/san-pham"
-          />
-        </section>
+        <EmptyState
+          icon={Package}
+          title="Chưa có đơn hàng nào."
+          description={`Các đơn đặt tại ${brandName} sẽ xuất hiện tại đây để bạn theo dõi giao vận và đổi trả.`}
+          action={
+            <Button asChild className="min-h-10 shadow-none sm:min-h-9">
+              <Link href="/san-pham">Xem sản phẩm</Link>
+            </Button>
+          }
+          className="border border-border shadow-none"
+        />
         {suggestedProducts.length > 0 && (
           <ProductAddonStrip title={`Gợi ý từ ${brandName}`} products={suggestedProducts} />
         )}
@@ -181,58 +221,52 @@ function OrdersClientInner({
   }
 
   return (
-    <div className={shared.page}>
+    <div className={cn(SITE_PAGE_CONTAINER, "space-y-6")}>
       {renderHeader()}
 
-      <section className={shared.section}>
-        <div className={styles.tabRailWrap}>
-          <div
-            ref={tabBarRef}
-            className={styles.tabBar}
-            role="tablist"
-            aria-label="Lọc trạng thái đơn hàng"
-          >
-            {ORDER_FILTER_TABS.map((tab) => {
-              const isActive = activeTab === tab.key;
-              return (
-                <button
+      <section aria-label="Danh sách đơn hàng" className="space-y-4">
+        <Tabs value={activeTab || "ALL"} onValueChange={handleTabChange}>
+          <div className="-mx-1 overflow-x-auto px-1 pb-1">
+            <TabsList
+              aria-label="Lọc trạng thái đơn hàng"
+              className="inline-flex h-auto w-max gap-1 bg-transparent p-0"
+            >
+              {ORDER_FILTER_TABS.map((tab) => (
+                <TabsTrigger
                   key={tab.key || "ALL"}
-                  ref={(el) => {
-                    tabRefs.current[tab.key] = el;
-                  }}
-                  type="button"
-                  role="tab"
-                  aria-selected={isActive}
-                  className={`${styles.tabBtn} ${isActive ? styles.tabBtnActive : ""}`}
-                  onClick={() => setActiveTab(tab.key)}
+                  value={tab.key || "ALL"}
+                  className="min-h-10 px-3 py-1.5 text-[13px] sm:min-h-8"
                 >
                   <span>{tab.label}</span>
-                  <span className={`${styles.tabCount} num`}>{counts[tab.key]}</span>
-                </button>
-              );
-            })}
-            {indicator.width > 0 && (
-              <span
-                className={styles.tabIndicator}
-                aria-hidden="true"
-                style={{
-                  transform: `translateX(${indicator.left}px) scaleX(${indicator.width})`,
-                }}
-              />
-            )}
+                  <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 text-[11px] leading-none text-muted-foreground tabular-nums">
+                    {counts[tab.key]}
+                  </span>
+                </TabsTrigger>
+              ))}
+            </TabsList>
           </div>
-        </div>
+        </Tabs>
 
         {filteredOrders.length === 0 ? (
-          <StateView
-            kind="empty"
+          <EmptyState
+            icon={PackageSearch}
             title="Không có đơn hàng ở trạng thái này."
-            actionLabel="Xem tất cả"
-            onAction={() => setActiveTab("")}
+            description="Chọn mục Tất cả để xem toàn bộ lịch sử đơn hàng của bạn."
+            action={
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => handleTabChange("ALL")}
+                className="min-h-10 shadow-none sm:min-h-9"
+              >
+                Xem tất cả
+              </Button>
+            }
+            className="border border-border shadow-none"
           />
         ) : (
-          <div className={styles.orderList} data-reveal="rows">
-            {filteredOrders.map((order) => {
+          <div className="space-y-3">
+            {pagedOrders.map((order) => {
               const meta = getOrderStatusInfo(order.backendStatus);
               const payMeta =
                 order.paymentStatusRaw || order.paymentMethodRaw === "COD"
@@ -245,107 +279,174 @@ function OrdersClientInner({
               const pendingOnline = isUnpaidOnlineOrder(order);
               const visibleThumbs = order.items.slice(0, 3);
               const extraCount = Math.max(0, order.items.length - visibleThumbs.length);
+              const dt = order.createdAt ? splitDateTimeVi(order.createdAt) : null;
 
               return (
-                <article
+                <Card
                   key={order.id}
-                  className={`${styles.orderCard} ${pendingOnline ? styles.orderCardPending : ""}`}
+                  className={cn(
+                    "border bg-card py-4 shadow-none transition-colors",
+                    pendingOnline ? "border-brand" : "border-border"
+                  )}
                 >
-                  <div className={styles.thumbStrip}>
-                    {visibleThumbs.map((item) => (
-                      <Link
-                        key={item.skuCode}
-                        href={`/don-hang/${order.id}`}
-                        className={`${styles.thumbLink} ${
-                          visibleThumbs.length > 1 ? styles.thumbLinkSmall : ""
-                        }`}
-                      >
-                        <img
-                          src={item.image || "/products/ao-thun-cotton-trang.png"}
-                          alt={item.productName}
-                          width={896}
-                          height={1200}
-                          loading="lazy"
-                          className={styles.thumbImg}
-                        />
-                      </Link>
-                    ))}
-                    {extraCount > 0 && (
-                      <span className={`${styles.thumbMore} num`}>+{extraCount}</span>
-                    )}
-                  </div>
-
-                  <div className={styles.orderBody}>
-                    <div className={styles.orderHeadRow}>
-                      <Link href={`/don-hang/${order.id}`} className={`${styles.orderCode} num`}>
-                        {order.orderCode}
-                      </Link>
-                      <span className={`${shared.statusTag} ${statusToneClass(meta.tone)}`}>
-                        {meta.label}
-                      </span>
-                      {payMeta && (
-                        <span className={`${shared.statusTag} ${statusToneClass(payMeta.tone)}`}>
-                          {payMeta.label}
-                        </span>
-                      )}
-                      {order.createdAt && (
-                        <span className={styles.orderDate}>
-                          {renderOrderDateTime(order.createdAt)}
-                        </span>
-                      )}
-                    </div>
-
-                    <div className={styles.itemSummaryList}>
-                      {order.items.map((item) => (
-                        <div key={item.skuCode} className={styles.itemSummaryLine}>
-                          <span className={styles.itemSummaryName}>{item.productName}</span>
-                          <span className={styles.itemSummaryMeta}>
-                            <span>{item.colorName}</span>
-                            {item.size && <span>Size {item.size}</span>}
-                            <span className="num">×{item.quantity}</span>
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className={styles.metaFootLine}>
-                      <span>{getPaymentMethodLabel(order.paymentMethodRaw)}</span>
-                      {order.carrier && <span>{order.carrier}</span>}
-                      {order.trackingCode && <span className="num">{order.trackingCode}</span>}
-                    </div>
-                  </div>
-
-                  <div className={styles.orderAside}>
-                    <span className={`${styles.totalVal} num`}>{formatVnd(order.total)}</span>
-                    <div className={styles.actionRow}>
-                      {pendingOnline && order.paymentId && (
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          href={`/thanh-toan/cho/${encodeURIComponent(order.paymentId)}?order=${encodeURIComponent(order.id)}`}
+                  <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-[auto_minmax(0,1fr)_auto] md:items-center">
+                    <div className="flex items-center gap-2">
+                      {visibleThumbs.map((item) => (
+                        <Link
+                          key={item.skuCode}
+                          href={`/don-hang/${order.id}`}
+                          className={cn(
+                            "block shrink-0 overflow-hidden rounded-md border border-border bg-muted",
+                            visibleThumbs.length > 1 ? "h-16 w-12" : "h-20 w-16"
+                          )}
                         >
-                          {order.paymentMethod === "vi_sandbox"
-                            ? "Thanh toán ZaloPay"
-                            : "Thanh toán VietQR"}
-                        </Button>
+                          <img
+                            src={item.image || "/products/ao-thun-cotton-trang.png"}
+                            alt={item.productName}
+                            width={896}
+                            height={1200}
+                            loading="lazy"
+                            className="size-full object-cover"
+                          />
+                        </Link>
+                      ))}
+                      {extraCount > 0 && (
+                        <Badge variant="secondary" className="tabular-nums">
+                          +{extraCount}
+                        </Badge>
                       )}
-                      <Button variant="ink" size="sm" href={`/don-hang/${order.id}`}>
-                        Xem chi tiết
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        loading={reorderingId === order.id}
-                        loadingLabel="Đang thêm"
-                        onClick={() => void handleReorder(order)}
-                      >
-                        Mua lại
-                      </Button>
                     </div>
-                  </div>
-                </article>
+
+                    <div className="min-w-0 space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Link
+                          href={`/don-hang/${order.id}`}
+                          className="text-sm font-semibold tracking-tight text-foreground tabular-nums hover:text-brand hover:underline"
+                        >
+                          {order.orderCode}
+                        </Link>
+                        <StatusBadge tone={orderStatusTone(order.backendStatus)}>
+                          {meta.label}
+                        </StatusBadge>
+                        {payMeta && (
+                          <StatusBadge
+                            tone={paymentStatusTone(
+                              order.paymentStatusRaw,
+                              order.paymentMethodRaw,
+                              order.backendStatus
+                            )}
+                          >
+                            {payMeta.label}
+                          </StatusBadge>
+                        )}
+                        {dt && (
+                          <span className="text-xs text-muted-foreground tabular-nums">
+                            {dt.date} · {dt.time}
+                          </span>
+                        )}
+                      </div>
+
+                      <ul className="space-y-1">
+                        {order.items.map((item) => (
+                          <li
+                            key={item.skuCode}
+                            className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-sm"
+                          >
+                            <span className="min-w-0 truncate font-medium text-foreground">
+                              {item.productName}
+                            </span>
+                            <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
+                              {item.colorName ? <span>{item.colorName}</span> : null}
+                              {item.size ? <span>Size {item.size}</span> : null}
+                              <span>×{item.quantity}</span>
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                        <span>{getPaymentMethodLabel(order.paymentMethodRaw)}</span>
+                        {order.carrier && <span>{order.carrier}</span>}
+                        {order.trackingCode && (
+                          <span className="font-mono tabular-nums">{order.trackingCode}</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-3 border-t border-border pt-3 md:items-end md:border-t-0 md:pt-0">
+                      <div className="flex items-baseline justify-between gap-2 md:flex-col md:items-end md:gap-0.5">
+                        <span className="text-xs text-muted-foreground">Tổng thanh toán</span>
+                        <Money vnd={order.total} size="lg" />
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {pendingOnline && order.paymentId && (
+                          <Button size="sm" asChild className="min-h-10 shadow-none sm:min-h-8">
+                            <Link
+                              href={`/thanh-toan/cho/${encodeURIComponent(order.paymentId)}?order=${encodeURIComponent(order.id)}`}
+                            >
+                              {order.paymentMethod === "vi_sandbox"
+                                ? "Thanh toán ZaloPay"
+                                : "Thanh toán VietQR"}
+                            </Link>
+                          </Button>
+                        )}
+                        <Button
+                          variant={pendingOnline ? "outline" : "default"}
+                          size="sm"
+                          asChild
+                          className="min-h-10 shadow-none sm:min-h-8"
+                        >
+                          <Link href={`/don-hang/${order.id}`}>Xem chi tiết</Link>
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          disabled={reorderingId === order.id}
+                          onClick={() => void handleReorder(order)}
+                          className="min-h-10 sm:min-h-8"
+                        >
+                          {reorderingId === order.id ? "Đang thêm..." : "Mua lại"}
+                        </Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
               );
             })}
+
+            {totalPages > 1 && (
+              <nav
+                aria-label="Phân trang đơn hàng"
+                className="flex items-center justify-between gap-3 pt-2"
+              >
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={currentPage <= 1}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  className="min-h-10 shadow-none sm:min-h-8"
+                >
+                  <ChevronLeft className="size-4" aria-hidden="true" />
+                  <span>Trước</span>
+                </Button>
+                <span className="text-[13px] text-muted-foreground tabular-nums">
+                  Trang {currentPage} / {totalPages}
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={currentPage >= totalPages}
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  className="min-h-10 shadow-none sm:min-h-8"
+                >
+                  <span>Sau</span>
+                  <ChevronRight className="size-4" aria-hidden="true" />
+                </Button>
+              </nav>
+            )}
           </div>
         )}
       </section>
@@ -361,8 +462,8 @@ export function OrdersClientView(props: OrdersClientViewProps) {
   return (
     <Suspense
       fallback={
-        <div className={shared.page}>
-          <StateView kind="loading" skeletonVariant="table" title="Đang tải đơn hàng..." rows={5} />
+        <div className={cn(SITE_PAGE_CONTAINER, "space-y-6")}>
+          <OrdersLoadingSkeleton />
         </div>
       }
     >

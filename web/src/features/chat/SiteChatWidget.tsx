@@ -3,19 +3,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  IconAlert,
-  IconChat,
-  IconClose,
-  IconPackage,
-  IconRefresh,
-  IconSend,
-} from "@/components/Icons";
-import { getFocusableElements, hasOpenModal } from "@/components/modalFocus";
+import { AlertTriangle, ImagePlus, MessageCircle, Package, RefreshCw, Send, X } from "lucide-react";
 import { useSession } from "@/components/SessionProvider";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTimeVi, formatVnd } from "@/lib/format";
 import { sanitizeSafeUrl } from "@/lib/site/theme";
+import { cn } from "@/lib/utils";
 import { createChatSocketManager, type ChatSocketManager } from "./chatClient";
 import {
   OPEN_SITE_CHAT_EVENT,
@@ -34,7 +29,6 @@ import {
   type SiteChatWidgetProps,
   type WsIncomingEvent,
 } from "./chatTypes";
-import styles from "./SiteChatWidget.module.css";
 
 interface MessagesApiResponse {
   conversation?: unknown;
@@ -57,6 +51,18 @@ export interface SiteChatWidgetComponentProps extends SiteChatWidgetProps {
   active?: boolean;
   /** Invoked when user closes the panel in embedded mode. */
   onClose?: () => void;
+}
+
+function hasActiveModalDialog(): boolean {
+  if (typeof document === "undefined") return false;
+  return Boolean(document.querySelector('[role="dialog"][aria-modal="true"]'));
+}
+
+function focusFirstInteractive(container: HTMLElement): void {
+  const first = container.querySelector<HTMLElement>(
+    'button:not([disabled]), a[href], input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  );
+  (first ?? container).focus({ preventScroll: true });
 }
 
 function createClientMsgId(): string {
@@ -162,7 +168,7 @@ export function SiteChatWidget({
   useEffect(() => {
     if (!effectiveOpen || embedded) return;
     const onKeyDown = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape" && !hasOpenModal()) {
+      if (ev.key === "Escape" && !hasActiveModalDialog()) {
         ev.preventDefault();
         handleClose();
       }
@@ -179,9 +185,7 @@ export function SiteChatWidget({
       if (input && !input.disabled) {
         input.focus({ preventScroll: true });
       } else if (panelRef.current) {
-        (getFocusableElements(panelRef.current)[0] ?? panelRef.current).focus({
-          preventScroll: true,
-        });
+        focusFirstInteractive(panelRef.current);
       }
       return;
     }
@@ -462,146 +466,174 @@ export function SiteChatWidget({
     <div
       data-ui="site-chat"
       data-shop-id={shopId}
-      className={`${styles.root} ${embedded ? styles.rootEmbedded : ""} ${className ?? ""}`}
+      className={cn(
+        embedded ? "static w-full" : "fixed right-3 z-50 sm:right-5",
+        "font-sans text-foreground",
+        className
+      )}
       style={embedded ? undefined : { bottom: `${offsetBottomPx}px` }}
     >
       {!embedded && !effectiveOpen ? (
-        <button
+        <Button
           ref={triggerRef}
           type="button"
-          className={styles.triggerBtn}
           onClick={() => setIsOpen(true)}
           aria-label={`Nhắn tin với ${brandName}`}
           aria-expanded={false}
+          className="h-11 rounded-full px-4 shadow-overlay"
         >
-          <IconChat size={18} />
+          <MessageCircle className="size-4" aria-hidden="true" />
           <span>Nhắn tin</span>
-        </button>
+        </Button>
       ) : (
         <section
           ref={panelRef}
           tabIndex={-1}
-          className={styles.panel}
           role="dialog"
           aria-label={`Trò chuyện cùng ${brandName}`}
+          className="flex h-[min(540px,calc(100svh-128px))] w-[min(380px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-overlay outline-none animate-in fade-in-0 slide-in-from-bottom-2 duration-200"
         >
-          <header className={styles.header}>
-            <div className={styles.headerMeta}>
-              <h2 className={styles.headerTitle}>{brandName}</h2>
+          <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-primary px-4 py-3 text-primary-foreground">
+            <div className="min-w-0 space-y-0.5">
+              <h2 className="truncate text-sm leading-5 font-semibold">{brandName}</h2>
               {isAuthenticated && (
-                <span className={styles.statusLine}>
+                <span className="inline-flex items-center gap-1.5 text-xs opacity-90">
                   <span
-                    className={`${styles.statusDot} ${
+                    className={cn(
+                      "size-2 rounded-full",
                       statusInfo.tone === "online"
-                        ? styles.statusDotOnline
+                        ? "bg-badge-success-ink"
                         : statusInfo.tone === "sync"
-                          ? styles.statusDotSync
-                          : styles.statusDotIdle
-                    }`}
+                          ? "bg-badge-warning-ink"
+                          : "bg-current opacity-60"
+                    )}
                     aria-hidden="true"
                   />
                   <span>{statusInfo.label}</span>
                 </span>
               )}
             </div>
-            <button
+            <Button
               type="button"
-              className={styles.closeBtn}
+              variant="ghost"
+              size="icon-sm"
               onClick={handleClose}
               aria-label="Đóng khung trò chuyện"
+              className="size-9 shrink-0 text-primary-foreground hover:bg-white/15 hover:text-primary-foreground"
             >
-              <IconClose size={16} />
-            </button>
+              <X className="size-4" aria-hidden="true" />
+            </Button>
           </header>
 
           {!isAuthenticated ? (
-            <div className={styles.guestBody}>
-              <div className={styles.guestIcon}>
-                <IconChat size={22} />
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-8 text-center">
+              <div className="flex size-12 items-center justify-center rounded-full bg-muted text-foreground">
+                <MessageCircle className="size-5" aria-hidden="true" />
               </div>
-              <p className={styles.guestTitle}>Nhắn trực tiếp cho {brandName}</p>
-              <p className={styles.guestDesc}>
+              <p className="text-sm font-semibold text-foreground">
+                Nhắn trực tiếp cho {brandName}
+              </p>
+              <p className="max-w-xs text-[13px] leading-5 text-muted-foreground">
                 Đăng nhập để hỏi size, chất liệu hoặc kiểm tra nhanh đơn hàng.
               </p>
-              <Link href={loginHref} className={styles.loginBtn}>
-                Đăng nhập để nhắn tin
-              </Link>
+              <Button asChild size="sm" className="mt-1 min-h-10 shadow-none">
+                <Link href={loginHref}>Đăng nhập để nhắn tin</Link>
+              </Button>
             </div>
           ) : (
             <>
               {(productContext || orderContext) && (
-                <div className={styles.contextBar}>
+                <div className="shrink-0 space-y-2 border-b border-border bg-background px-3.5 py-2.5">
                   {productContext && (
-                    <div className={styles.contextItem}>
-                      <div className={styles.contextMain}>
+                    <div className="flex items-center justify-between gap-2.5">
+                      <div className="flex min-w-0 items-center gap-2.5">
                         {safeContextImage && (
                           <img
                             src={safeContextImage}
                             alt={productContext.name}
-                            className={styles.contextThumb}
+                            className="h-10 w-8 shrink-0 rounded border border-border object-cover"
                             width={34}
                             height={42}
                           />
                         )}
-                        <div className={styles.contextText}>
-                          <span className={styles.contextName}>{productContext.name}</span>
-                          <span className={styles.contextSub}>
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-medium text-foreground">
+                            {productContext.name}
+                          </p>
+                          <p className="text-xs text-muted-foreground tabular-nums">
                             {formatVnd(productContext.priceVnd)}
-                          </span>
+                          </p>
                         </div>
                       </div>
-                      <button
+                      <Button
                         type="button"
-                        className={styles.contextActionBtn}
+                        variant="outline"
+                        size="sm"
+                        className="h-8 shrink-0 shadow-none"
                         onClick={handleSendProductContext}
                         disabled={sending || !conversationId}
                       >
                         Gửi mẫu
-                      </button>
+                      </Button>
                     </div>
                   )}
 
                   {orderContext && (
-                    <div className={styles.contextItem}>
-                      <div className={styles.contextMain}>
-                        <span className={styles.contextOrderIcon}>
-                          <IconPackage size={15} />
+                    <div className="flex items-center justify-between gap-2.5">
+                      <div className="flex min-w-0 items-center gap-2.5">
+                        <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-foreground">
+                          <Package className="size-4" aria-hidden="true" />
                         </span>
-                        <div className={styles.contextText}>
-                          <span className={styles.contextName}>Đơn {orderContext.orderCode}</span>
-                          <span className={styles.contextSub}>Đính kèm vào trò chuyện</span>
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-medium text-foreground tabular-nums">
+                            Đơn {orderContext.orderCode}
+                          </p>
+                          <p className="text-xs text-muted-foreground">Đính kèm vào trò chuyện</p>
                         </div>
                       </div>
-                      <button
+                      <Button
                         type="button"
-                        className={styles.contextActionBtn}
+                        variant="outline"
+                        size="sm"
+                        className="h-8 shrink-0 shadow-none"
                         onClick={handleSendOrderContext}
                         disabled={sending || !conversationId}
                       >
                         Gửi mã đơn
-                      </button>
+                      </Button>
                     </div>
                   )}
                 </div>
               )}
 
-              <div className={styles.messages} role="log" aria-live="polite">
+              <div
+                className="flex-1 space-y-3 overflow-y-auto bg-background px-3.5 py-3.5"
+                role="log"
+                aria-live="polite"
+              >
                 {loading && messages.length === 0 ? (
-                  <p className={styles.emptyNotice}>Đang kết nối với {brandName}...</p>
+                  <p className="py-8 text-center text-xs text-muted-foreground">
+                    Đang kết nối với {brandName}...
+                  </p>
                 ) : loadError && messages.length === 0 ? (
-                  <div className={styles.errorBox} role="alert">
-                    <p className={styles.errorText}>{loadError}</p>
-                    <button
+                  <div
+                    className="space-y-2.5 rounded-lg border border-destructive/30 bg-card p-3.5 text-center"
+                    role="alert"
+                  >
+                    <p className="text-xs text-destructive">{loadError}</p>
+                    <Button
                       type="button"
-                      className={styles.retryBtn}
+                      variant="outline"
+                      size="sm"
+                      className="shadow-none"
                       onClick={() => void bootstrapConversation({ force: true })}
                     >
-                      <IconRefresh size={13} />
+                      <RefreshCw className="size-3.5" aria-hidden="true" />
                       <span>Thử lại</span>
-                    </button>
+                    </Button>
                   </div>
                 ) : messages.length === 0 ? (
-                  <p className={styles.emptyNotice}>
+                  <p className="py-8 text-center text-xs leading-5 text-muted-foreground">
                     Nhắn cho {brandName} khi bạn cần tư vấn mẫu, kích cỡ hoặc đơn hàng.
                   </p>
                 ) : (
@@ -610,17 +642,22 @@ export function SiteChatWidget({
                     return (
                       <div
                         key={msg.id}
-                        className={`${styles.msgRow} ${own ? styles.msgOwn : styles.msgShop}`}
+                        className={cn("flex flex-col gap-1", own ? "items-end" : "items-start")}
                       >
                         <div
-                          className={`${styles.bubble} ${own ? styles.bubbleOwn : styles.bubbleShop}`}
+                          className={cn(
+                            "max-w-[85%] rounded-xl px-3.5 py-2.5 text-[13px] leading-5 break-words",
+                            own
+                              ? "bg-primary text-primary-foreground"
+                              : "border border-border bg-card text-card-foreground"
+                          )}
                         >
                           {msg.kind === "image" ? (
                             (() => {
                               const safeImg = sanitizeSafeUrl(msg.body);
                               if (!safeImg) {
                                 return (
-                                  <span className={styles.mutedInline}>
+                                  <span className="text-xs opacity-75">
                                     Ảnh đính kèm không hiển thị được.
                                   </span>
                                 );
@@ -630,12 +667,12 @@ export function SiteChatWidget({
                                   href={safeImg}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className={styles.imageLink}
+                                  className="block overflow-hidden rounded-lg"
                                 >
                                   <img
                                     src={safeImg}
                                     alt="Ảnh đính kèm trong trò chuyện"
-                                    className={styles.msgImage}
+                                    className="max-h-52 w-full rounded-lg object-cover"
                                   />
                                 </a>
                               );
@@ -645,21 +682,28 @@ export function SiteChatWidget({
                               const card = parseProductRefCard(msg);
                               const productHref = `/san-pham/${encodeURIComponent(card.slug || msg.ref_id)}`;
                               return (
-                                <Link href={productHref} className={styles.refCard}>
+                                <Link
+                                  href={productHref}
+                                  className="flex items-center gap-2.5 rounded-lg border border-border bg-card p-2 text-card-foreground transition-opacity hover:opacity-85"
+                                >
                                   {card.image && (
                                     <img
                                       src={card.image}
                                       alt={card.name}
-                                      className={styles.refThumb}
+                                      className="h-12 w-10 shrink-0 rounded object-cover"
                                       width={40}
                                       height={48}
                                     />
                                   )}
-                                  <span className={styles.refCardBody}>
-                                    <span className={styles.refCardKind}>Sản phẩm</span>
-                                    <span className={styles.refCardTitle}>{card.name}</span>
+                                  <span className="flex min-w-0 flex-col gap-0.5">
+                                    <span className="text-[11px] text-muted-foreground">
+                                      Sản phẩm
+                                    </span>
+                                    <span className="line-clamp-2 text-xs font-semibold text-foreground">
+                                      {card.name}
+                                    </span>
                                     {card.priceVnd !== undefined && (
-                                      <span className={styles.refCardPrice}>
+                                      <span className="text-xs font-medium text-brand tabular-nums">
                                         {formatVnd(card.priceVnd)}
                                       </span>
                                     )}
@@ -672,23 +716,32 @@ export function SiteChatWidget({
                               const card = parseOrderRefCard(msg);
                               const orderHref = `/don-hang/${encodeURIComponent(msg.ref_id)}`;
                               return (
-                                <Link href={orderHref} className={styles.refCard}>
-                                  <span className={styles.refOrderIcon}>
-                                    <IconPackage size={16} />
+                                <Link
+                                  href={orderHref}
+                                  className="flex items-center gap-2.5 rounded-lg border border-border bg-card p-2 text-card-foreground transition-opacity hover:opacity-85"
+                                >
+                                  <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-foreground">
+                                    <Package className="size-4" aria-hidden="true" />
                                   </span>
-                                  <span className={styles.refCardBody}>
-                                    <span className={styles.refCardKind}>Đơn hàng</span>
-                                    <span className={styles.refCardTitle}>{card.label}</span>
-                                    <span className={styles.refCardMeta}>Xem chi tiết đơn</span>
+                                  <span className="flex min-w-0 flex-col gap-0.5">
+                                    <span className="text-[11px] text-muted-foreground">
+                                      Đơn hàng
+                                    </span>
+                                    <span className="truncate text-xs font-semibold text-foreground tabular-nums">
+                                      {card.label}
+                                    </span>
+                                    <span className="text-[11px] font-medium text-brand">
+                                      Xem chi tiết đơn
+                                    </span>
                                   </span>
                                 </Link>
                               );
                             })()
                           ) : (
-                            <p className={styles.msgText}>{msg.body}</p>
+                            <p className="m-0 whitespace-pre-wrap">{msg.body}</p>
                           )}
                         </div>
-                        <span className={styles.msgTime}>
+                        <span className="px-1 text-[11px] text-muted-foreground tabular-nums">
                           {msg.is_auto_reply ? "Tự động, " : ""}
                           {formatDateTimeVi(msg.created_at)}
                         </span>
@@ -700,8 +753,11 @@ export function SiteChatWidget({
               </div>
 
               {offPlatformCheck.flagged && (
-                <div className={styles.safetyBanner} role="note">
-                  <IconAlert size={15} className={styles.safetyIcon} />
+                <div
+                  className="flex shrink-0 items-start gap-2 border-t border-border bg-badge-warning-bg px-3.5 py-2 text-xs text-badge-warning-ink"
+                  role="note"
+                >
+                  <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
                   <span>
                     Không chia sẻ số điện thoại hoặc giao dịch ngoài NexusMart để giữ quyền đổi trả
                     và hoàn tiền.
@@ -710,31 +766,40 @@ export function SiteChatWidget({
               )}
 
               {sendError && (
-                <div className={styles.sendError} role="alert">
+                <div
+                  className="shrink-0 border-t border-border bg-badge-critical-bg px-3.5 py-2 text-xs text-badge-critical-ink"
+                  role="alert"
+                >
                   {sendError}
                 </div>
               )}
 
               {imagePanelOpen && (
-                <form className={styles.imageForm} onSubmit={handleSendImage}>
-                  <input
+                <form
+                  className="flex shrink-0 items-center gap-1.5 border-t border-border bg-card px-3 py-2"
+                  onSubmit={handleSendImage}
+                >
+                  <Input
                     type="text"
-                    className={styles.imageInput}
+                    className="h-9 flex-1 bg-background text-xs"
                     value={imageUrl}
                     onChange={(e) => setImageUrl(e.target.value)}
                     placeholder="Dán liên kết ảnh (/... hoặc https://...)"
                     aria-label="Liên kết ảnh cần gửi"
                   />
-                  <button
+                  <Button
                     type="submit"
-                    className={styles.imageSubmitBtn}
+                    size="sm"
                     disabled={sending || !imageUrl.trim()}
+                    className="h-9 shrink-0 shadow-none"
                   >
                     Gửi
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     type="button"
-                    className={styles.imageCancelBtn}
+                    variant="ghost"
+                    size="sm"
+                    className="h-9 shrink-0"
                     onClick={() => {
                       setImagePanelOpen(false);
                       setImageUrl("");
@@ -742,25 +807,31 @@ export function SiteChatWidget({
                     }}
                   >
                     Hủy
-                  </button>
+                  </Button>
                 </form>
               )}
 
-              <form className={styles.composer} onSubmit={handleSubmitText}>
-                <button
+              <form
+                className="flex shrink-0 items-center gap-2 border-t border-border bg-card px-3 py-2.5"
+                onSubmit={handleSubmitText}
+              >
+                <Button
                   type="button"
-                  className={styles.attachBtn}
+                  variant="outline"
+                  size="sm"
+                  className="h-10 shrink-0 px-2.5 shadow-none"
                   onClick={() => setImagePanelOpen((v) => !v)}
                   aria-label="Đính kèm ảnh"
                   aria-expanded={imagePanelOpen}
                   disabled={!conversationId}
                 >
-                  Ảnh
-                </button>
-                <input
+                  <ImagePlus className="size-4" aria-hidden="true" />
+                  <span className="text-xs">Ảnh</span>
+                </Button>
+                <Input
                   ref={inputRef}
                   type="text"
-                  className={styles.input}
+                  className="h-10 flex-1 bg-background text-sm"
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
                   placeholder={`Nhắn cho ${brandName}...`}
@@ -768,14 +839,15 @@ export function SiteChatWidget({
                   maxLength={2000}
                   disabled={!conversationId || loading}
                 />
-                <button
+                <Button
                   type="submit"
-                  className={styles.sendBtn}
+                  size="icon"
+                  className="size-10 shrink-0 shadow-none"
                   disabled={!draft.trim() || sending || !conversationId}
                   aria-label="Gửi tin nhắn"
                 >
-                  <IconSend size={15} />
-                </button>
+                  <Send className="size-4" aria-hidden="true" />
+                </Button>
               </form>
             </>
           )}

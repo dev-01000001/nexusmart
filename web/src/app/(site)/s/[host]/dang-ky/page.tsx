@@ -5,7 +5,7 @@ import { loadPublicSitePageBundle } from "@/lib/server/sites";
 import { buildSiteMetadata } from "@/lib/site/seo";
 import { sanitizeSafeUrl } from "@/lib/site/theme";
 import { RegisterForm } from "@/features/account/AuthForms";
-import styles from "@/features/account/AuthForms.module.css";
+import { SiteAuthFrame } from "@/features/account/ui/SiteAuthFrame";
 import { loadSiteContext } from "@/features/site/siteContext.server";
 
 export const dynamic = "force-dynamic";
@@ -38,45 +38,25 @@ export default async function SiteRegisterPage({ params }: PageProps) {
   const bundle = await loadPublicSitePageBundle(decodedHost);
   if (!bundle) notFound();
 
-  const brandName = bundle.payload.config.theme.brand_name?.trim() || bundle.payload.shop.name;
+  const theme = bundle.payload.config.theme;
+  const brandName = theme.brand_name?.trim() || bundle.payload.shop.name;
   const featured = bundle.products[1] ?? bundle.products[0];
-  const heroImg =
+  const fallbackImg =
     sanitizeSafeUrl(featured?.onModelImage) ||
     sanitizeSafeUrl(featured?.image) ||
     "/banners/fabric-closeup.jpg";
 
   return (
-    <section className={styles.siteAuthSection}>
-      <div className={`${styles.siteAuthGrid} ${styles.siteAuthGridReverse}`}>
-        <aside className={styles.siteAuthVisual} aria-hidden="true">
-          <figure className={styles.siteAuthPhotoFrame} data-reveal="clip">
-            <img src={heroImg} alt="" width={896} height={1120} className={styles.siteAuthPhoto} />
-          </figure>
-        </aside>
-
-        <div className={styles.siteAuthFormCol}>
-          <header className={styles.siteAuthHead}>
-            <h1 className={`${styles.siteAuthTitle} lines`}>
-              <span className="line">
-                <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
-                  Tạo tài khoản
-                </span>
-              </span>
-            </h1>
-            <p
-              className={styles.siteAuthLead}
-              data-rise=""
-              style={{ "--i": 1 } as React.CSSProperties}
-            >
-              Xác thực email một lần tại {brandName}.
-            </p>
-          </header>
-
-          <div data-rise="" style={{ "--i": 2 } as React.CSSProperties}>
-            <RegisterForm variant="site" loginHref="/dang-nhap" />
-          </div>
-        </div>
-      </div>
-    </section>
+    <SiteAuthFrame
+      brandName={brandName}
+      logoUrl={theme.logo_url}
+      bannerUrl={theme.banner_url}
+      fallbackBannerUrl={fallbackImg}
+      tagline={theme.tagline}
+      title="Tạo tài khoản"
+      subtitle={`Xác thực email một lần tại ${brandName}.`}
+    >
+      <RegisterForm variant="site" loginHref="/dang-nhap" />
+    </SiteAuthFrame>
   );
 }

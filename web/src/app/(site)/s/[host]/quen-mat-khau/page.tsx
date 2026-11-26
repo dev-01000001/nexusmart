@@ -5,7 +5,7 @@ import { loadPublicSitePageBundle } from "@/lib/server/sites";
 import { buildSiteMetadata } from "@/lib/site/seo";
 import { sanitizeSafeUrl } from "@/lib/site/theme";
 import { ForgotPasswordForm } from "@/features/account/AuthForms";
-import styles from "@/features/account/AuthForms.module.css";
+import { SiteAuthFrame } from "@/features/account/ui/SiteAuthFrame";
 import { loadSiteContext } from "@/features/site/siteContext.server";
 
 export const dynamic = "force-dynamic";
@@ -38,45 +38,25 @@ export default async function SiteForgotPasswordPage({ params }: PageProps) {
   const bundle = await loadPublicSitePageBundle(decodedHost);
   if (!bundle) notFound();
 
-  const brandName = bundle.payload.config.theme.brand_name?.trim() || bundle.payload.shop.name;
+  const theme = bundle.payload.config.theme;
+  const brandName = theme.brand_name?.trim() || bundle.payload.shop.name;
   const featured = bundle.products[0];
-  const heroImg =
+  const fallbackImg =
     sanitizeSafeUrl(featured?.onModelImage) ||
     sanitizeSafeUrl(featured?.image) ||
     "/banners/vietnam-workshop.jpg";
 
   return (
-    <section className={styles.siteAuthSection}>
-      <div className={styles.siteAuthGrid}>
-        <div className={styles.siteAuthFormCol}>
-          <header className={styles.siteAuthHead}>
-            <h1 className={`${styles.siteAuthTitle} lines`}>
-              <span className="line">
-                <span data-line="" style={{ "--i": 0 } as React.CSSProperties}>
-                  Quên mật khẩu
-                </span>
-              </span>
-            </h1>
-            <p
-              className={styles.siteAuthLead}
-              data-rise=""
-              style={{ "--i": 1 } as React.CSSProperties}
-            >
-              {brandName}
-            </p>
-          </header>
-
-          <div data-rise="" style={{ "--i": 2 } as React.CSSProperties}>
-            <ForgotPasswordForm loginHref="/dang-nhap" registerHref="/dang-ky" />
-          </div>
-        </div>
-
-        <aside className={styles.siteAuthVisual} aria-hidden="true">
-          <figure className={styles.siteAuthPhotoFrame} data-reveal="clip">
-            <img src={heroImg} alt="" width={896} height={1120} className={styles.siteAuthPhoto} />
-          </figure>
-        </aside>
-      </div>
-    </section>
+    <SiteAuthFrame
+      brandName={brandName}
+      logoUrl={theme.logo_url}
+      bannerUrl={theme.banner_url}
+      fallbackBannerUrl={fallbackImg}
+      tagline={theme.tagline}
+      title="Quên mật khẩu"
+      subtitle={`Nhập email đã đăng ký tại ${brandName} để nhận liên kết đặt lại mật khẩu.`}
+    >
+      <ForgotPasswordForm loginHref="/dang-nhap" registerHref="/dang-ky" />
+    </SiteAuthFrame>
   );
 }
