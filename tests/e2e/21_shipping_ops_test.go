@@ -152,6 +152,40 @@ func shpW2CreateSeller(t *testing.T, env *testEnv, label string) *sellerFixture 
 	}
 }
 
+func labelURLUsesLocalDomain(rawURL string) (bool, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false, err
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	return strings.HasSuffix(host, ".local"), nil
+}
+
+func TestLabelURLUsesLocalDomain(t *testing.T) {
+	cases := []struct {
+		rawURL    string
+		wantLocal bool
+		wantErr   bool
+	}{
+		{"http://nexusmart.localhost/labels/TRK1", false, false},
+		{"https://shop.nexusmart.localhost:8080/labels/TRK1", false, false},
+		{"https://example.com/path/.local/label.html", false, false},
+		{"http://shipping.local/labels/TRK1", true, false},
+		{"http://sandbox.nexusmart.local:8080/labels/TRK1", true, false},
+		{"https://SHIPPING.LOCAL./labels/TRK1", true, false},
+		{"://invalid-url", false, true},
+	}
+	for _, tc := range cases {
+		got, err := labelURLUsesLocalDomain(tc.rawURL)
+		if (err != nil) != tc.wantErr {
+			t.Fatalf("labelURLUsesLocalDomain(%q) err=%v, wantErr=%v", tc.rawURL, err, tc.wantErr)
+		}
+		if got != tc.wantLocal {
+			t.Fatalf("labelURLUsesLocalDomain(%q) = %v, want %v", tc.rawURL, got, tc.wantLocal)
+		}
+	}
+}
+
 func shpW2CreateAndShipOrder(t *testing.T, env *testEnv, buyer *userFixture, buyerAddrID string, seller *sellerFixture, skuID string) (OrderDTO, SellerShipResponse) {
 	t.Helper()
 	checkoutResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
@@ -190,7 +224,11 @@ func shpW2CreateAndShipOrder(t *testing.T, env *testEnv, buyer *userFixture, buy
 	if shipOut.TrackingCode == "" {
 		t.Fatalf("expected non-empty tracking_code")
 	}
-	if strings.Contains(shipOut.LabelURL, ".local") {
+	isLocal, err := labelURLUsesLocalDomain(shipOut.LabelURL)
+	if err != nil {
+		t.Fatalf("SHP-B8: invalid label_url %q: %v", shipOut.LabelURL, err)
+	}
+	if isLocal {
 		t.Fatalf("SHP-B8: label_url must not use .local domain, got %q", shipOut.LabelURL)
 	}
 	return ord, shipOut

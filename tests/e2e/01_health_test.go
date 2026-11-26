@@ -51,7 +51,7 @@ func TestE2E_HealthAndObservability(t *testing.T) {
 		// Lightweight probes touching each backend service via Gateway:
 		env.mustDoJSON(t, http.MethodGet, "/api/v1/shipping/provinces", "", nil, nil, http.StatusOK)
 		env.mustDoJSON(t, http.MethodGet, "/api/v1/categories", "", nil, nil, http.StatusOK)
-		env.mustDoJSON(t, http.MethodGet, "/api/v1/vouchers", "", nil, nil, http.StatusOK)
+		env.mustDoJSON(t, http.MethodGet, "/api/v1/vouchers?sales_channel=MARKETPLACE", "", nil, nil, http.StatusOK)
 		env.mustDoJSON(t, http.MethodGet, "/api/v1/cart", adminTok, nil, nil, http.StatusOK)
 		env.mustDoJSON(t, http.MethodGet, "/api/v1/orders", adminTok, nil, nil, http.StatusOK)
 		env.mustDoJSON(t, http.MethodGet, "/api/v1/admin/ledger/summary", adminTok, nil, nil, http.StatusOK)

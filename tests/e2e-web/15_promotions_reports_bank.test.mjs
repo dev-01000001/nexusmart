@@ -330,9 +330,10 @@ describe("15. Shop discount programs, flash sale rules, reports/CSV, seller bank
   });
 
   it("7d: Seller & Admin reports + CSV export headers + >366 day validation", async () => {
-    const today = new Date().toISOString().slice(0, 10);
-    const weekAgo = new Date(Date.now() - 7 * 86400_000).toISOString().slice(0, 10);
-    const twoYearsAgo = new Date(Date.now() - 400 * 86400_000).toISOString().slice(0, 10);
+    const vnNowMs = Date.now() + 7 * 3600e3;
+    const today = new Date(vnNowMs).toISOString().slice(0, 10);
+    const weekAgo = new Date(vnNowMs - 7 * 86400_000).toISOString().slice(0, 10);
+    const twoYearsAgo = new Date(vnNowMs - 400 * 86400_000).toISOString().slice(0, 10);
 
     expectStatus(
       await sellerRoot.get(`/api/seller/reports?from_date=${weekAgo}&to_date=${today}`),

@@ -144,7 +144,7 @@ function runReadRequest(data, buyer, xffIp) {
     url = `${CFG.gatewayUrl}/api/v1/sites`;
     endpoint = 'list_sites';
   } else if (r < 0.85) {
-    url = `${CFG.gatewayUrl}/api/v1/vouchers`;
+    url = `${CFG.gatewayUrl}/api/v1/vouchers?sales_channel=STOREFRONT&storefront_shop_id=${encodeURIComponent(data.shopId)}`;
     endpoint = 'list_vouchers';
   } else {
     url = `${CFG.gatewayUrl}/api/v1/orders?page=1&page_size=10`;

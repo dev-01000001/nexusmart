@@ -150,7 +150,7 @@ func TestE2E_GatewayW2SecurityAndRoutes(t *testing.T) {
 		}, http.StatusOK)
 
 		// Old token must immediately be rejected with 401 on protected and optional-auth routes.
-		for _, path := range []string{"/api/v1/users/me", "/api/v1/vouchers"} {
+		for _, path := range []string{"/api/v1/users/me", "/api/v1/vouchers?sales_channel=MARKETPLACE"} {
 			resp := env.mustDoJSON(t, http.MethodGet, path, victim.AccessToken, nil, nil, http.StatusUnauthorized)
 			var envErr gwW2ErrorEnvelope
 			if err := DecodeJSON(resp, &envErr); err != nil || envErr.Error.Code != "UNAUTHENTICATED" {

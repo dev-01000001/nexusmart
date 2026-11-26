@@ -205,6 +205,7 @@ func TestE2E_GatewayW2B(t *testing.T) {
 		// Cross-shop SKU spoof and unknown SKU in preview must both return identical 400 INVALID_ARGUMENT
 		// code and message (P2-3: prevent SKU existence / shop-ownership oracle).
 		crossShopResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/promotions/preview", buyer.AccessToken, nil, map[string]any{
+			"sales_channel": "MARKETPLACE",
 			"shop_items": []map[string]any{
 				{
 					"shop_id":          seller2.ShopID,
@@ -220,6 +221,7 @@ func TestE2E_GatewayW2B(t *testing.T) {
 
 		// Unknown SKU in preview must return 400 INVALID_ARGUMENT with the exact same code and message as cross-shop SKU.
 		unknownSKUResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/promotions/preview", buyer.AccessToken, nil, map[string]any{
+			"sales_channel": "MARKETPLACE",
 			"shop_items": []map[string]any{
 				{
 					"shop_id":          seller1.ShopID,
@@ -240,6 +242,7 @@ func TestE2E_GatewayW2B(t *testing.T) {
 
 		// Tampered client price (1 VND) and tampered freeship (999999 VND) must be overridden by server values.
 		prevResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/promotions/preview", buyer.AccessToken, nil, map[string]any{
+			"sales_channel": "MARKETPLACE",
 			"shop_items": []map[string]any{
 				{
 					"shop_id":                 seller1.ShopID,

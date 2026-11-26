@@ -877,12 +877,13 @@ func TestE2E_W3B_BannedKeywordsProhibitedCategoriesAndRescan(t *testing.T) {
 			t.Helper()
 			var totalBlocked, totalFlagged int32
 			cursor := ""
-			for page := 0; page < 50; page++ {
+			hasMore := false
+			for page := 0; page < 200; page++ {
 				resp := env.mustDoJSON(t, http.MethodPost, "/api/v1/admin/banned-keywords/rescan", adminTok, nil, map[string]any{
 					"keyword_ids": []string{kwRescanID},
 					"dry_run":     dryRun,
 					"cursor":      cursor,
-					"limit":       100,
+					"limit":       500,
 				}, http.StatusOK)
 				var out struct {
 					BlockedCount int32  `json:"blocked_count"`
@@ -895,10 +896,14 @@ func TestE2E_W3B_BannedKeywordsProhibitedCategoriesAndRescan(t *testing.T) {
 				}
 				totalBlocked += out.BlockedCount
 				totalFlagged += out.FlaggedCount
+				hasMore = out.HasMore
 				if !out.HasMore || out.NextCursor == "" {
 					break
 				}
 				cursor = out.NextCursor
+			}
+			if hasMore {
+				t.Fatalf("E11 rescan (dryRun=%v) exceeded 200 pages (limit=500) with has_more=true (cursor=%q)", dryRun, cursor)
 			}
 			return totalBlocked, totalFlagged
 		}

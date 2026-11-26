@@ -19,9 +19,9 @@ import (
 
 func prmFixGetVoucherUsedCount(t *testing.T, env *testEnv, token, scope, voucherID string) int32 {
 	t.Helper()
-	path := "/api/v1/vouchers"
+	path := "/api/v1/vouchers?sales_channel=MARKETPLACE"
 	if scope != "" {
-		path += "?scope=" + url.QueryEscape(scope)
+		path += "&scope=" + url.QueryEscape(scope)
 	}
 	resp := env.mustDoJSON(t, http.MethodGet, path, token, nil, nil, http.StatusOK)
 	var out VouchersListResponse
@@ -395,7 +395,7 @@ func TestE2E_PromotionService_DirectGRPC_PartialRelease_Auth_And_ListFilter(t *t
 		}
 
 		buyer2 := env.registerVerifyAndLogin(t, "buyer-b8-2")
-		resp := env.mustDoJSON(t, http.MethodGet, "/api/v1/vouchers?scope=PLATFORM&order_amount_vnd=200000", buyer2.AccessToken, nil, nil, http.StatusOK)
+		resp := env.mustDoJSON(t, http.MethodGet, "/api/v1/vouchers?scope=PLATFORM&order_amount_vnd=200000&sales_channel=MARKETPLACE", buyer2.AccessToken, nil, nil, http.StatusOK)
 		var list VouchersListResponse
 		if err := DecodeJSON(resp, &list); err != nil {
 			t.Fatalf("decode list vouchers: %v", err)
@@ -453,7 +453,7 @@ func TestE2E_PromotionService_DirectGRPC_PartialRelease_Auth_And_ListFilter(t *t
 		}
 
 		// Public buyer list still excludes them
-		pubShopResp := env.mustDoJSON(t, http.MethodGet, "/api/v1/vouchers?scope=SHOP&shop_id="+url.QueryEscape(seller1.ShopID), "", nil, nil, http.StatusOK)
+		pubShopResp := env.mustDoJSON(t, http.MethodGet, "/api/v1/vouchers?scope=SHOP&shop_id="+url.QueryEscape(seller1.ShopID)+"&sales_channel=MARKETPLACE", "", nil, nil, http.StatusOK)
 		var pubShopList VouchersListResponse
 		if err := DecodeJSON(pubShopResp, &pubShopList); err != nil {
 			t.Fatalf("decode public shop vouchers: %v", err)
@@ -513,7 +513,7 @@ func TestE2E_PromotionService_DirectGRPC_PartialRelease_Auth_And_ListFilter(t *t
 			t.Fatalf("consume freeship budget: %v", err)
 		}
 		b2 := env.registerVerifyAndLogin(t, "buyer-p211-2")
-		fsListResp := env.mustDoJSON(t, http.MethodGet, "/api/v1/vouchers?scope=FREESHIP&order_amount_vnd=200000", b2.AccessToken, nil, nil, http.StatusOK)
+		fsListResp := env.mustDoJSON(t, http.MethodGet, "/api/v1/vouchers?scope=FREESHIP&order_amount_vnd=200000&sales_channel=MARKETPLACE", b2.AccessToken, nil, nil, http.StatusOK)
 		var fsList VouchersListResponse
 		if err := DecodeJSON(fsListResp, &fsList); err != nil {
 			t.Fatalf("decode freeship list: %v", err)

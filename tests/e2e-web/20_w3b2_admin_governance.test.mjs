@@ -144,7 +144,7 @@ describe("20. Wave 3b-2 Admin Governance (RBAC 6 roles, passwordless staff onboa
       suspended = true;
 
       // Audit logs filter by date returns recorded actions.
-      const today = new Date().toISOString().slice(0, 10);
+      const today = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
       const logs = expectStatus(
         await adminRoot.get(`/api/admin/audit-logs?from=${today}&to=${today}&page=1&page_size=20`),
         200,

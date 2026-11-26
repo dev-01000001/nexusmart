@@ -1,6 +1,11 @@
 /**
  * NexusMart B1 Search Load Test (k6) — >= 20,000 products, p95 < 200ms, error rate < 0.5%.
  *
+ * Traffic mix: 40% keyword, 30% multi-filter, 15% hybrid RRF (mode=auto), 15% suggest.
+ * The hybrid branch rotates evenly across realistic storefront shapes WITH shop_id
+ * (unfiltered baseline, shop, shop+matching category, shop+size, shop+max_price_vnd=150000),
+ * records per-shape duration Trends (p(95)<200), and distinguishes product_fallback vs keyword_only.
+ *
  * Prerequisites & Runbook (run from repository root):
  *   1. Start stack + baseline seed:
  *        make up && make seed
@@ -19,6 +24,7 @@
  *        GATEWAY_URL=http://localhost:8080
  *        MIN_PRODUCTS=20000
  *        AUTO_REINDEX=1               (set 0 to skip automatic reindex when total < MIN_PRODUCTS)
+ *        SEARCH_SHOP_ID=              (shop_id for hybrid storefront shapes; default: largest shop from shop_facets)
  *        ADMIN_EMAIL=admin@nexusmart.local
  *        ADMIN_PASSWORD=AdminDevPassword123!
  *        VUS=20
@@ -35,6 +41,7 @@ import { Trend } from "k6/metrics";
 const GATEWAY_URL = (__ENV.GATEWAY_URL || "http://localhost:8080").replace(/\/+$/, "");
 const MIN_PRODUCTS = Number(__ENV.MIN_PRODUCTS || "20000");
 const AUTO_REINDEX = (__ENV.AUTO_REINDEX || "1") !== "0";
+const SEARCH_SHOP_ID = (__ENV.SEARCH_SHOP_ID || "").trim();
 const ADMIN_EMAIL = __ENV.ADMIN_EMAIL || __ENV.ADMIN_BOOTSTRAP_EMAIL || "admin@nexusmart.local";
 const ADMIN_PASSWORD = __ENV.ADMIN_PASSWORD || __ENV.ADMIN_BOOTSTRAP_PASSWORD || "AdminDevPassword123!";
 const VUS = Number(__ENV.VUS || "20");
@@ -43,6 +50,13 @@ const DURATION = __ENV.DURATION || "60s";
 const keywordDuration = new Trend("search_keyword_duration", true);
 const filterDuration = new Trend("search_filter_duration", true);
 const hybridDuration = new Trend("search_hybrid_duration", true);
+const hybridShapeTrends = {
+  unfiltered: new Trend("search_hybrid_unfiltered_duration", true),
+  shop: new Trend("search_hybrid_shop_duration", true),
+  shop_category: new Trend("search_hybrid_shop_category_duration", true),
+  shop_size: new Trend("search_hybrid_shop_size_duration", true),
+  shop_price: new Trend("search_hybrid_shop_price_duration", true),
+};
 const suggestDuration = new Trend("search_suggest_duration", true);
 
 export const options = {
@@ -58,6 +72,12 @@ export const options = {
     http_req_failed: ["rate<0.005"],
     checks: ["rate>0.995"],
     search_suggest_duration: ["p(95)<80"],
+    search_hybrid_duration: ["p(95)<200"],
+    search_hybrid_unfiltered_duration: ["p(95)<200"],
+    search_hybrid_shop_duration: ["p(95)<200"],
+    search_hybrid_shop_category_duration: ["p(95)<200"],
+    search_hybrid_shop_size_duration: ["p(95)<200"],
+    search_hybrid_shop_price_duration: ["p(95)<200"],
   },
   setupTimeout: "10m",
 };
@@ -76,12 +96,13 @@ const KEYWORD_QUERIES = [
 ];
 
 const HYBRID_QUERIES = [
-  "ao thun cotton thoang khi mac mua he",
-  "quan short the thao co gian chay bo",
-  "ao polo pique cong so toi gian",
-  "do lot nam soi modal mem min",
-  "quan jogger ni chan cua mac o nha",
+  { q: "ao thun cotton thoang khi mac mua he", categorySlug: "ao-thun" },
+  { q: "quan short the thao co gian chay bo", categorySlug: "quan-short" },
+  { q: "ao polo pique cong so toi gian", categorySlug: "ao-polo" },
+  { q: "do lot nam soi modal mem min", categorySlug: "do-lot" },
+  { q: "quan jogger ni chan cua mac o nha", categorySlug: "quan-jogger" },
 ];
+const HYBRID_MAX_PRICE_VND = 150000;
 
 const SUGGEST_PREFIXES = ["ao", "quan", "cot", "box", "po", "the"];
 const COLORS = ["den", "trang", "xamda", "xanhthan", "reu", "be"];
@@ -105,7 +126,7 @@ function encodeParams(params) {
   return parts.join("&");
 }
 
-function queryIndexedTotal() {
+function queryIndexSummary() {
   const res = http.get(`${GATEWAY_URL}/api/v1/search?page=1&page_size=1`);
   if (res.status !== 200) {
     throw new Error(`setup GET /api/v1/search returned HTTP ${res.status}: ${res.body}`);
@@ -117,7 +138,46 @@ function queryIndexedTotal() {
   if (data.degraded_mode && data.degraded_mode !== "") {
     throw new Error(`setup GET /api/v1/search is degraded (${data.degraded_mode}); ensure search & meilisearch are healthy`);
   }
-  return data.total;
+  return {
+    total: data.total,
+    shopFacets: Array.isArray(data.shop_facets) ? data.shop_facets : [],
+  };
+}
+
+function pickLargestShopFacet(shopFacets) {
+  if (!Array.isArray(shopFacets)) return null;
+  let best = null;
+  for (const facet of shopFacets) {
+    if (!facet || !facet.id) continue;
+    const count = Number(facet.count) || 0;
+    if (!best || count > best.count) {
+      best = {
+        id: String(facet.id),
+        slug: facet.slug ? String(facet.slug) : "",
+        count,
+      };
+    }
+  }
+  return best;
+}
+
+function resolveHybridShopId(initialShopFacets) {
+  if (SEARCH_SHOP_ID) {
+    console.log(`[setup] hybrid shop_id=${SEARCH_SHOP_ID} (from SEARCH_SHOP_ID)`);
+    return SEARCH_SHOP_ID;
+  }
+  let best = pickLargestShopFacet(initialShopFacets);
+  if (!best) {
+    const res = http.get(`${GATEWAY_URL}/api/v1/search?q=ao&page=1&page_size=1`);
+    const data = parseJSON(res);
+    best = pickLargestShopFacet(data && data.shop_facets);
+  }
+  if (!best) {
+    throw new Error("setup could not resolve shop_id from search shop_facets; set SEARCH_SHOP_ID");
+  }
+  const detail = best.slug ? `slug=${best.slug}, count=${best.count}` : `count=${best.count}`;
+  console.log(`[setup] auto-selected hybrid shop_id=${best.id} (${detail})`);
+  return best.id;
 }
 
 function triggerAndWaitReindex() {
@@ -159,7 +219,7 @@ function triggerAndWaitReindex() {
     // Another reindex is already running; poll total until it reaches MIN_PRODUCTS.
     for (let i = 0; i < 180; i++) {
       sleep(2);
-      if (queryIndexedTotal() >= MIN_PRODUCTS) {
+      if (queryIndexSummary().total >= MIN_PRODUCTS) {
         return;
       }
     }
@@ -188,33 +248,103 @@ function triggerAndWaitReindex() {
   throw new Error(`setup reindex job ${jobId} did not finish within timeout`);
 }
 
-export function setup() {
-  let total = queryIndexedTotal();
-  if (total < MIN_PRODUCTS && AUTO_REINDEX) {
-    triggerAndWaitReindex();
-    total = queryIndexedTotal();
+function buildHybridCategoryPairs(categories) {
+  const idBySlug = {};
+  for (const c of categories) {
+    if (c && c.slug && c.id) {
+      idBySlug[String(c.slug)] = String(c.id);
+    }
   }
-  if (total < MIN_PRODUCTS) {
+  const pairs = [];
+  const missing = [];
+  for (const item of HYBRID_QUERIES) {
+    const categoryId = idBySlug[item.categorySlug];
+    if (categoryId) {
+      pairs.push({ q: item.q, categorySlug: item.categorySlug, categoryId });
+    } else {
+      missing.push(item.categorySlug);
+    }
+  }
+  return { pairs, missing };
+}
+
+function buildHybridShapes(hasCategoryPairs) {
+  const shapes = ["unfiltered", "shop"];
+  if (hasCategoryPairs) {
+    shapes.push("shop_category");
+  }
+  shapes.push("shop_size", "shop_price");
+  return shapes;
+}
+
+export function setup() {
+  let summary = queryIndexSummary();
+  if (summary.total < MIN_PRODUCTS && AUTO_REINDEX) {
+    triggerAndWaitReindex();
+    summary = queryIndexSummary();
+  }
+  if (summary.total < MIN_PRODUCTS) {
     throw new Error(
-      `Indexed product count is ${total}, below required MIN_PRODUCTS=${MIN_PRODUCTS}. ` +
+      `Indexed product count is ${summary.total}, below required MIN_PRODUCTS=${MIN_PRODUCTS}. ` +
         `Populate products first with: node tools/loadgen/generate-products.mjs --count ${MIN_PRODUCTS}`
     );
   }
 
+  const shopId = resolveHybridShopId(summary.shopFacets);
+
   const catRes = http.get(`${GATEWAY_URL}/api/v1/categories`);
   const catData = parseJSON(catRes);
-  const categoryIds = (catData && Array.isArray(catData.categories) ? catData.categories : [])
-    .map((c) => c.id)
-    .filter(Boolean);
+  const categories = catData && Array.isArray(catData.categories) ? catData.categories : [];
+  const categoryIds = categories.map((c) => c.id).filter(Boolean);
+  const { pairs: hybridCategoryPairs, missing: missingSlugs } = buildHybridCategoryPairs(categories);
+  if (missingSlugs.length > 0) {
+    console.warn(`[setup] skipping missing hybrid category slugs: ${missingSlugs.join(", ")}`);
+  }
+  const hybridShapes = buildHybridShapes(hybridCategoryPairs.length > 0);
+  console.log(
+    `[setup] hybrid shapes=${hybridShapes.join(",")} category_pairs=${hybridCategoryPairs.length}/${HYBRID_QUERIES.length}`
+  );
 
   return {
-    indexedTotal: total,
+    indexedTotal: summary.total,
     categoryIds,
+    shopId,
+    hybridCategoryPairs,
+    hybridShapes,
   };
 }
 
+let hybridSeq = 0;
+
 function pick(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function buildHybridParams(shape, data) {
+  const params = {
+    mode: "auto",
+    sort_by: "relevance",
+    page: 1,
+    page_size: 20,
+  };
+  if (shape === "shop_category") {
+    const pair = pick(data.hybridCategoryPairs);
+    params.q = pair.q;
+    params.shop_id = data.shopId;
+    params.category_id = pair.categoryId;
+    return params;
+  }
+  params.q = pick(HYBRID_QUERIES).q;
+  if (shape === "shop") {
+    params.shop_id = data.shopId;
+  } else if (shape === "shop_size") {
+    params.shop_id = data.shopId;
+    params.size = pick(SIZES);
+  } else if (shape === "shop_price") {
+    params.shop_id = data.shopId;
+    params.max_price_vnd = HYBRID_MAX_PRICE_VND;
+  }
+  return params;
 }
 
 export default function (data) {
@@ -262,24 +392,30 @@ export default function (data) {
       "filter has items array": () => Boolean(body && Array.isArray(body.items)),
     });
   } else if (r < 0.85) {
-    // 15% >=3-word hybrid RRF search
-    const qs = encodeParams({
-      q: pick(HYBRID_QUERIES),
-      mode: "auto",
-      sort_by: "relevance",
-      page: 1,
-      page_size: 20,
-    });
+    // 15% >=3-word hybrid RRF search, rotating evenly across storefront shapes
+    const shapes = data.hybridShapes;
+    const shape = shapes[((typeof __VU === "number" ? __VU : 0) + hybridSeq++) % shapes.length];
+    const qs = encodeParams(buildHybridParams(shape, data));
     const res = http.get(`${GATEWAY_URL}/api/v1/search?${qs}`, {
-      tags: { endpoint: "search_hybrid" },
+      tags: { endpoint: "search_hybrid", shape },
     });
-    hybridDuration.add(res.timings.duration);
+    hybridDuration.add(res.timings.duration, { shape });
+    if (hybridShapeTrends[shape]) {
+      hybridShapeTrends[shape].add(res.timings.duration);
+    }
     const body = parseJSON(res);
-    check(res, {
-      "hybrid status 200": (x) => x.status === 200,
-      "hybrid not degraded": () => Boolean(body && body.degraded_mode === ""),
-      "hybrid used_vector true": () => Boolean(body && body.used_vector === true),
-    });
+    const degradedMode = body && typeof body.degraded_mode === "string" ? body.degraded_mode : null;
+    check(
+      res,
+      {
+        "hybrid status 200": (x) => x.status === 200,
+        "hybrid not degraded": () => degradedMode === "",
+        "hybrid not product_fallback": () => degradedMode !== "product_fallback",
+        "hybrid not keyword_only": () => degradedMode !== "keyword_only",
+        "hybrid used_vector true": () => Boolean(body && body.used_vector === true),
+      },
+      { endpoint: "search_hybrid", shape }
+    );
   } else {
     // 15% autocomplete suggest
     const qs = encodeParams({ q: pick(SUGGEST_PREFIXES), limit: 8 });

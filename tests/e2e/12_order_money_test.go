@@ -49,7 +49,7 @@ func ordFixGetPaymentDetail(t *testing.T, env *testEnv, token, paymentID string)
 
 func ordFixGetShopVoucherRemainingQuota(t *testing.T, env *testEnv, token, shopID, voucherID string) int32 {
 	t.Helper()
-	path := fmt.Sprintf("/api/v1/vouchers?scope=SHOP&shop_id=%s", url.QueryEscape(shopID))
+	path := fmt.Sprintf("/api/v1/vouchers?scope=SHOP&shop_id=%s&sales_channel=MARKETPLACE", url.QueryEscape(shopID))
 	resp := env.mustDoJSON(t, http.MethodGet, path, token, nil, nil, http.StatusOK)
 	var out VouchersListResponse
 	if err := DecodeJSON(resp, &out); err != nil {

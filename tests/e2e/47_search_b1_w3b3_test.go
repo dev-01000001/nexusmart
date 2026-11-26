@@ -946,9 +946,14 @@ func TestE2E_W3B3_B1_ReindexAndRBAC(t *testing.T) {
 		}
 	}
 
-	// Trigger reindex as ops (retrying briefly if a prior reindex job is still releasing the advisory lock).
+	const (
+		reindexWaitTimeout  = 5 * time.Minute
+		reindexPollInterval = 2 * time.Second
+	)
+
+	// Trigger reindex as ops (retrying if a prior reindex job is still releasing the advisory lock).
 	var jobID string
-	env.pollUntil(t, 60*time.Second, 500*time.Millisecond, "trigger search reindex job (202)", func() (bool, string) {
+	env.pollUntil(t, reindexWaitTimeout, reindexPollInterval, "trigger search reindex job (202)", func() (bool, string) {
 		payload, _ := json.Marshal(map[string]any{
 			"reindex_products":   true,
 			"reindex_embeddings": true,
@@ -982,7 +987,7 @@ func TestE2E_W3B3_B1_ReindexAndRBAC(t *testing.T) {
 
 	// Poll until COMPLETED using admin staff token.
 	var finalJob w3b47ReindexResponse
-	env.pollUntil(t, 90*time.Second, 400*time.Millisecond, "reindex job COMPLETED", func() (bool, string) {
+	env.pollUntil(t, reindexWaitTimeout, reindexPollInterval, "reindex job COMPLETED", func() (bool, string) {
 		resp := env.mustDoJSON(t, http.MethodGet, statusPath, adminStaff.AccessToken, nil, nil, http.StatusOK)
 		if err := DecodeJSON(resp, &finalJob); err != nil {
 			return false, err.Error()

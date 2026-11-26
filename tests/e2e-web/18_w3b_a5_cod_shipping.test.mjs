@@ -147,7 +147,7 @@ describe("18. Wave 3b A5 (34 provinces, legacy map, public shipping quote, E19 C
     );
     assertNoInternalErrorLeak(reconPage.text, "GET /admin/doi-soat");
 
-    const runDate = new Date().toISOString().slice(0, 10);
+    const runDate = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
     const tracking = `GHN-W3B-MISS-${uid().toUpperCase()}`;
     const csv = [
       "tracking_code,cod_amount_vnd,delivered_at",

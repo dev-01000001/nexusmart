@@ -78,6 +78,7 @@ func TestE2E_MultiShopCheckout_COD(t *testing.T) {
 
 	// 8. Preview discounts (shop voucher -> platform voucher -> freeship -> coins).
 	previewResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/promotions/preview", buyer.AccessToken, nil, PreviewDiscountsRequest{
+		SalesChannel: "MARKETPLACE",
 		ShopItems: []ShopDiscountInputDTO{
 			{
 				ShopID:         seller1.ShopID,

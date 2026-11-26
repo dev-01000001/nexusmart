@@ -316,7 +316,10 @@ export async function pickSku(
 
 /** An active SHOP voucher of `shopId` with quota left; prefers `preferredCode`. */
 export async function pickShopVoucher(shopId, preferredCode) {
-  const res = await gw("GET", `/api/v1/vouchers?shop_id=${encodeURIComponent(shopId)}`);
+  const res = await gw(
+    "GET",
+    `/api/v1/vouchers?shop_id=${encodeURIComponent(shopId)}&sales_channel=STOREFRONT&storefront_shop_id=${encodeURIComponent(shopId)}`
+  );
   assert.equal(res.status, 200, `GET /api/v1/vouchers?shop_id=${shopId}: ${res.text}`);
   const usable = (res.data?.vouchers ?? []).filter(
     (v) =>
@@ -502,8 +505,8 @@ export function cartSkuIds(cart) {
 
 /** An active PLATFORM voucher from the backend (for verifying sites reject platform vouchers). */
 export async function pickPlatformVoucher(preferredCode = "NEXUS30") {
-  const res = await gw("GET", "/api/v1/vouchers?scope=PLATFORM");
-  assert.equal(res.status, 200, `GET /api/v1/vouchers?scope=PLATFORM: ${res.text}`);
+  const res = await gw("GET", "/api/v1/vouchers?scope=PLATFORM&sales_channel=MARKETPLACE");
+  assert.equal(res.status, 200, `GET /api/v1/vouchers?scope=PLATFORM&sales_channel=MARKETPLACE: ${res.text}`);
   const usable = (res.data?.vouchers ?? []).filter(
     (v) =>
       String(v.scope).toUpperCase() === "PLATFORM" &&

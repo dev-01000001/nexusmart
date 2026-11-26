@@ -221,6 +221,7 @@ func TestE2E_GatewayW3A(t *testing.T) {
 	// --- 2. D2 & P2-3: hidden SKU returns 409 SKU_INACTIVE for matching shop; unknown/cross-shop/missing-shop return uniform 400 ---
 	t.Run("D2_HiddenSKUHandling", func(t *testing.T) {
 		prevResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/promotions/preview", buyer.AccessToken, nil, map[string]any{
+			"sales_channel": "MARKETPLACE",
 			"shop_items": []map[string]any{
 				{
 					"shop_id":          seller1.ShopID,
@@ -245,6 +246,7 @@ func TestE2E_GatewayW3A(t *testing.T) {
 		var basePreviewErrMsg string
 		for _, tc := range oracleReqs {
 			r := env.mustDoJSON(t, http.MethodPost, "/api/v1/promotions/preview", buyer.AccessToken, nil, map[string]any{
+				"sales_channel": "MARKETPLACE",
 				"shop_items": []map[string]any{
 					{
 						"shop_id":          tc.shopID,

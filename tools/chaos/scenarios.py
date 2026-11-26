@@ -399,7 +399,12 @@ class PromotionDbErrorScenario(ChaosScenario):
             TrafficTarget(url=f"{promo_base}/readyz", interval_secs=0.5, workers=2, timeout_secs=4.0),
             # Public gateway routes hitting promotion gRPC (paced safely under 60/min flash-sale rate limit).
             TrafficTarget(url=f"{gw_base}/api/v1/flash-sales", interval_secs=2.0, workers=1, timeout_secs=4.0),
-            TrafficTarget(url=f"{gw_base}/api/v1/vouchers", interval_secs=1.5, workers=1, timeout_secs=4.0),
+            TrafficTarget(
+                url=f"{gw_base}/api/v1/vouchers?sales_channel=MARKETPLACE",
+                interval_secs=1.5,
+                workers=1,
+                timeout_secs=4.0,
+            ),
         ]
 
     def recovery_probe_urls(self) -> list[str]:

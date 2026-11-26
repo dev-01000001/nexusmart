@@ -206,7 +206,7 @@ func w3b45AuthCtx(ctx context.Context, token string) context.Context {
 
 func w3b45HasShopVoucher(t *testing.T, env *testEnv, shopID, voucherID string) bool {
 	t.Helper()
-	path := fmt.Sprintf("/api/v1/vouchers?scope=SHOP&shop_id=%s", url.QueryEscape(shopID))
+	path := fmt.Sprintf("/api/v1/vouchers?scope=SHOP&shop_id=%s&sales_channel=MARKETPLACE", url.QueryEscape(shopID))
 	resp := env.mustDoJSON(t, http.MethodGet, path, "", nil, nil, http.StatusOK)
 	var out VouchersListResponse
 	if err := DecodeJSON(resp, &out); err != nil {

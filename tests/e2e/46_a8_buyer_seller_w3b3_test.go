@@ -2173,7 +2173,7 @@ func TestE2E_W3B3_A8_S03_S04_B15_StockHistoryPaginationAndVouchers(t *testing.T)
 			path  string
 			token string
 		}{
-			{"public_vouchers", "/api/v1/vouchers", ""},
+			{"public_vouchers", "/api/v1/vouchers?sales_channel=MARKETPLACE", ""},
 			{"admin_vouchers_all", "/api/v1/admin/vouchers?include_inactive=true", adminTok},
 		} {
 			resp := env.mustDoJSON(t, http.MethodGet, tc.path, tc.token, nil, nil, http.StatusOK)

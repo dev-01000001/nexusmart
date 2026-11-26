@@ -75,23 +75,36 @@ func TestE2E_LedgerAndReconciliation_ChannelFilter(t *testing.T) {
 		if len(sf.Items) == 0 {
 			t.Fatalf("expected >= 1 STOREFRONT reconciliation item for %s", today)
 		}
-		if len(mkt.Items)+len(sf.Items) != len(total.Items) {
-			t.Fatalf("RECONCILIATION ITEM COUNT MISMATCH: MARKETPLACE(%d) + STOREFRONT(%d) != ALL(%d)",
-				len(mkt.Items), len(sf.Items), len(total.Items))
+		var totalLocal, mktLocal, sfLocal int64
+		var localItems int
+		var localMatched, localMissingLocal int32
+		for _, it := range total.Items {
+			if it.PaymentID == "" {
+				if it.LocalAmountVND != 0 {
+					t.Fatalf("provider-only reconciliation item has non-zero local_amount_vnd: %+v", it)
+				}
+				continue
+			}
+			localItems++
+			if StatusEquals(it.Status, "MATCHED") {
+				localMatched++
+			} else if StatusEquals(it.Status, "MISSING_LOCAL") {
+				localMissingLocal++
+			}
+			totalLocal += it.LocalAmountVND
 		}
-		if mkt.MatchedCount+sf.MatchedCount != total.MatchedCount {
-			t.Fatalf("RECONCILIATION MATCHED COUNT MISMATCH: MARKETPLACE(%d) + STOREFRONT(%d) != ALL(%d)",
-				mkt.MatchedCount, sf.MatchedCount, total.MatchedCount)
+		if len(mkt.Items)+len(sf.Items) != localItems {
+			t.Fatalf("RECONCILIATION ITEM COUNT MISMATCH: MARKETPLACE(%d) + STOREFRONT(%d) != ALL_LOCAL(%d) (all=%d)",
+				len(mkt.Items), len(sf.Items), localItems, len(total.Items))
 		}
-		if mkt.MissingLocalCount+sf.MissingLocalCount != total.MissingLocalCount ||
+		if mkt.MatchedCount+sf.MatchedCount != localMatched {
+			t.Fatalf("RECONCILIATION MATCHED COUNT MISMATCH: MARKETPLACE(%d) + STOREFRONT(%d) != ALL_LOCAL(%d) (all=%d)",
+				mkt.MatchedCount, sf.MatchedCount, localMatched, total.MatchedCount)
+		}
+		if mkt.MissingLocalCount+sf.MissingLocalCount != localMissingLocal ||
 			mkt.MissingProviderCount+sf.MissingProviderCount != total.MissingProviderCount ||
 			mkt.AmountMismatchCount+sf.AmountMismatchCount != total.AmountMismatchCount {
 			t.Fatalf("RECONCILIATION ANOMALY COUNT MISMATCH: mkt=%+v sf=%+v total=%+v", mkt, sf, total)
-		}
-
-		var totalLocal, mktLocal, sfLocal int64
-		for _, it := range total.Items {
-			totalLocal += it.LocalAmountVND
 		}
 		for _, it := range mkt.Items {
 			if it.SalesChannel != "MARKETPLACE" {

@@ -214,10 +214,16 @@ export async function fillAndSaveCheckoutAddress(page: Page, buyer: BuyerAccount
 
   await page.getByRole("button", { name: "Lưu và giao tới địa chỉ này" }).click();
 
-  const addressGroup = page.getByRole("radiogroup", { name: "Chọn địa chỉ nhận hàng" });
-  await expect(addressGroup).toBeVisible({ timeout: 15_000 });
-  const selectedAddressRadio = addressGroup.locator('[role="radio"][aria-checked="true"]').first();
-  await expect(selectedAddressRadio).toContainText(buyer.streetAddress);
+  const addressStage = page.getByRole("region", { name: "Địa chỉ nhận hàng" });
+  await expect(addressStage).toBeVisible({ timeout: 15_000 });
+  const addressSummaryBtn = addressStage
+    .locator('button[aria-expanded="false"][aria-controls="stage-address-body"]')
+    .filter({ hasText: buyer.streetAddress })
+    .first();
+  await expect(addressSummaryBtn).toBeVisible({ timeout: 15_000 });
+  await expect(addressSummaryBtn).toContainText(buyer.fullName);
+  await expect(addressSummaryBtn).toContainText(buyer.streetAddress);
+  await expect(addressStage.getByRole("radiogroup")).toHaveCount(0);
 }
 
 async function gwJson<T>(

@@ -732,9 +732,9 @@ func (e *testEnv) saveVoucher(t *testing.T, buyerToken string, v VoucherDTO) {
 
 func (e *testEnv) getVoucherRemainingQuota(t *testing.T, token, scope, voucherID string) int32 {
 	t.Helper()
-	path := "/api/v1/vouchers"
+	path := "/api/v1/vouchers?sales_channel=MARKETPLACE"
 	if scope != "" {
-		path += "?scope=" + url.QueryEscape(scope)
+		path += "&scope=" + url.QueryEscape(scope)
 	}
 	resp := e.mustDoJSON(t, http.MethodGet, path, token, nil, nil, http.StatusOK)
 	var out VouchersListResponse

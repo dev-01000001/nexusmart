@@ -469,8 +469,8 @@ func TestE2E_SalesChannel(t *testing.T) {
 			SalesChannel:  "STOREFRONT",
 		}, http.StatusBadRequest)
 
-		// 5b. Non-existent storefront_shop_id.
-		env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
+		// 5b. Non-existent storefront_shop_id -> 409 with SHOP_NOT_ACTIVE prefix (docs/contracts.md).
+		missingShopResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "sf-missing-shop-" + uuid.NewString(),
 		}, CheckoutRequest{
 			AddressID:        addr.ID,
@@ -479,9 +479,10 @@ func TestE2E_SalesChannel(t *testing.T) {
 			PaymentMethod:    "COD",
 			SalesChannel:     "STOREFRONT",
 			StorefrontShopID: uuid.NewString(),
-		}, http.StatusBadRequest, http.StatusNotFound)
+		}, http.StatusConflict)
+		assertShopNotActiveError(t, "5b non-existent storefront shop checkout", missingShopResp)
 
-		// 5c. Inactive (PENDING, unapproved) shop cannot be used as storefront_shop_id.
+		// 5c. Inactive (PENDING, unapproved) shop cannot be used as storefront_shop_id -> 409 SHOP_NOT_ACTIVE.
 		pendingUser := env.registerVerifyAndLogin(t, "pending-shop-owner")
 		pendingAddr := env.addAddress(t, pendingUser)
 		pendingShopResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/shops/register", pendingUser.AccessToken, nil, RegisterShopRequest{
@@ -499,7 +500,7 @@ func TestE2E_SalesChannel(t *testing.T) {
 			t.Fatalf("expected newly registered shop to be non-ACTIVE, got %q", pendingShop.Shop.Status)
 		}
 
-		env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
+		pendingCheckoutResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
 			"Idempotency-Key": "sf-pending-shop-" + uuid.NewString(),
 		}, CheckoutRequest{
 			AddressID:        addr.ID,
@@ -508,7 +509,8 @@ func TestE2E_SalesChannel(t *testing.T) {
 			PaymentMethod:    "COD",
 			SalesChannel:     "STOREFRONT",
 			StorefrontShopID: pendingShop.Shop.ID,
-		}, http.StatusBadRequest, http.StatusConflict)
+		}, http.StatusConflict)
+		assertShopNotActiveError(t, "5c pending storefront shop checkout", pendingCheckoutResp)
 
 		// 5d. Unknown sales_channel rejected.
 		env.mustDoJSON(t, http.MethodPost, "/api/v1/checkout", buyer.AccessToken, map[string]string{
@@ -705,6 +707,23 @@ func assertSKUStockUnchanged(t *testing.T, label string, before, after SKUDTO) {
 		t.Fatalf("%s stock changed unexpectedly: before=(stock=%d reserved=%d avail=%d) after=(stock=%d reserved=%d avail=%d)",
 			label, before.Stock, before.ReservedStock, before.AvailableStock,
 			after.Stock, after.ReservedStock, after.AvailableStock)
+	}
+}
+
+func assertShopNotActiveError(t *testing.T, label string, resp *RawResponse) {
+	t.Helper()
+	var errEnv struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := DecodeJSON(resp, &errEnv); err != nil {
+		t.Fatalf("%s: decode error envelope (HTTP %d): %v (body=%s)", label, resp.StatusCode, err, string(resp.Body))
+	}
+	if !strings.HasPrefix(strings.TrimSpace(errEnv.Error.Message), "SHOP_NOT_ACTIVE") {
+		t.Fatalf("%s: expected error.message starting with SHOP_NOT_ACTIVE, got code=%q message=%q (body=%s)",
+			label, errEnv.Error.Code, errEnv.Error.Message, string(resp.Body))
 	}
 }
 

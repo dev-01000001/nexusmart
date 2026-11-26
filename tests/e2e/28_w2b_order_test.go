@@ -1407,6 +1407,7 @@ func TestE2E_W2B_Order(t *testing.T) {
 		q2 := env.calculateShippingQuote(t, buyer2.AccessToken, seller.ShopID, 400, 0)
 		// Buyer2 previews with sold-out flash_sale_item_id -> falls back to shop program (250k) with warning!
 		prevResp := env.mustDoJSON(t, http.MethodPost, "/api/v1/promotions/preview", buyer2.AccessToken, nil, map[string]any{
+			"sales_channel": "MARKETPLACE",
 			"shop_items": []map[string]any{
 				{
 					"shop_id":          seller.ShopID,

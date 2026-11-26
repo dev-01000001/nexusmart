@@ -122,11 +122,15 @@ test.describe("Storefront Buyer E2E Journey", () => {
       await expect(codRadio).toHaveAttribute("aria-checked", "true");
       await codQuotePromise;
 
-      const carrierGroup = page.getByRole("radiogroup", { name: /Chọn đơn vị vận chuyển/i });
-      await expect(carrierGroup).toBeVisible();
-      const activeCarrier = carrierGroup.locator('[role="radio"][aria-checked="true"]').first();
-      await expect(activeCarrier).toBeVisible();
-      await expect(activeCarrier).toContainText(/₫/);
+      const shippingStage = page.getByRole("region", { name: "Giao hàng" });
+      await expect(shippingStage).toBeVisible();
+      const activeCarrierBtn = shippingStage
+        .locator('button[aria-expanded="false"][aria-controls="stage-shipping-body"]')
+        .filter({ hasText: /₫/ })
+        .first();
+      await expect(activeCarrierBtn).toBeVisible();
+      await expect(activeCarrierBtn).toContainText(/₫/);
+      await expect(shippingStage.getByRole("radiogroup")).toHaveCount(0);
 
       const reviewAside = page.locator('aside[aria-label="Chi tiết thanh toán"]');
       await expect(reviewAside).toContainText(/Phí vận chuyển/);
