@@ -166,36 +166,51 @@ func (m *salesChannelPaymentMock) RunReconciliation(_ context.Context, in *payme
 	if ch == "" {
 		ch = "STOREFRONT"
 	}
+	items := []*paymentv1.ReconciliationItem{
+		{
+			PaymentId:         "pay-sf-1",
+			ProviderTxId:      "tx-1",
+			LocalAmountVnd:    150000,
+			ProviderAmountVnd: 150000,
+			Status:            paymentv1.ReconciliationStatus_RECONCILIATION_STATUS_MATCHED,
+			SalesChannel:      ch,
+			StorefrontShopId:  "shop-a",
+		},
+	}
+	if in.GetSalesChannel() == "" {
+		items = append(items, &paymentv1.ReconciliationItem{
+			PaymentId:         "",
+			ProviderTxId:      "tx-orphan-1",
+			LocalAmountVnd:    0,
+			ProviderAmountVnd: 99000,
+			Status:            paymentv1.ReconciliationStatus_RECONCILIATION_STATUS_MISSING_LOCAL,
+			SalesChannel:      "",
+		})
+	}
 	return &paymentv1.RunReconciliationResponse{
 		RunId:        "rec-1",
 		MatchedCount: 1,
 		SalesChannel: in.GetSalesChannel(),
-		Items: []*paymentv1.ReconciliationItem{
-			{
-				PaymentId:         "pay-sf-1",
-				ProviderTxId:      "tx-1",
-				LocalAmountVnd:    150000,
-				ProviderAmountVnd: 150000,
-				Status:            paymentv1.ReconciliationStatus_RECONCILIATION_STATUS_MATCHED,
-				SalesChannel:      ch,
-				StorefrontShopId:  "shop-a",
-			},
-		},
+		Items:        items,
 	}, nil
 }
 
 type salesChannelPromoMock struct {
 	promotionv1.PromotionServiceClient
-	lastList    *promotionv1.ListAvailableVouchersRequest
-	lastPreview *promotionv1.PreviewDiscountsRequest
+	listCalls    int
+	previewCalls int
+	lastList     *promotionv1.ListAvailableVouchersRequest
+	lastPreview  *promotionv1.PreviewDiscountsRequest
 }
 
 func (m *salesChannelPromoMock) ListAvailableVouchers(_ context.Context, in *promotionv1.ListAvailableVouchersRequest, _ ...grpc.CallOption) (*promotionv1.ListAvailableVouchersResponse, error) {
+	m.listCalls++
 	m.lastList = in
 	return &promotionv1.ListAvailableVouchersResponse{}, nil
 }
 
 func (m *salesChannelPromoMock) PreviewDiscounts(_ context.Context, in *promotionv1.PreviewDiscountsRequest, _ ...grpc.CallOption) (*promotionv1.PreviewDiscountsResponse, error) {
+	m.previewCalls++
 	m.lastPreview = in
 	return &promotionv1.PreviewDiscountsResponse{Breakdown: &promotionv1.DiscountBreakdown{}}, nil
 }
@@ -530,6 +545,23 @@ func TestSalesChannelGatewayContractAndValidation(t *testing.T) {
 	if rec.Code != http.StatusOK || paymentMock.lastReconcile.GetSalesChannel() != "MARKETPLACE" {
 		t.Fatalf("reconcile query filter failed: code=%d req=%+v", rec.Code, paymentMock.lastReconcile)
 	}
+	// Unfiltered reconciliation must preserve empty sales_channel on provider-only items (never default to MARKETPLACE).
+	rec = call(http.MethodPost, "/api/v1/admin/payments/reconcile", `{"date":"2026-11-20"}`, adminTok, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unfiltered reconcile failed: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var reconBody struct {
+		Items []struct {
+			ProviderTxID string `json:"provider_tx_id"`
+			SalesChannel string `json:"sales_channel"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &reconBody); err != nil || len(reconBody.Items) != 2 {
+		t.Fatalf("decode unfiltered reconcile failed: err=%v body=%s", err, rec.Body.String())
+	}
+	if reconBody.Items[0].SalesChannel != "STOREFRONT" || reconBody.Items[1].ProviderTxID != "tx-orphan-1" || reconBody.Items[1].SalesChannel != "" {
+		t.Fatalf("provider-only item must preserve empty sales_channel, got %+v", reconBody.Items)
+	}
 	if rec = call(http.MethodPost, "/api/v1/admin/payments/reconcile", `{"sales_channel":"BOGUS"}`, adminTok, nil); rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 on invalid reconcile sales_channel, got %d", rec.Code)
 	}
@@ -544,24 +576,217 @@ func TestSalesChannelGatewayContractAndValidation(t *testing.T) {
 		t.Fatalf("retry payment response missing sales_channel/storefront_shop_id: %s", rec.Body.String())
 	}
 
-	// Promotion preview & vouchers forward and validate sales_channel.
+	// Empty sales_channel filter on order lists stays unfiltered (all channels).
+	for _, tc := range []struct {
+		path string
+		tok  string
+	}{
+		{"/api/v1/orders", buyerTok},
+		{"/api/v1/seller/orders", sellerTok},
+		{"/api/v1/admin/orders", adminTok},
+	} {
+		orderMock.lastList = nil
+		rec = call(http.MethodGet, tc.path, "", tc.tok, nil)
+		if rec.Code != http.StatusOK || orderMock.lastList == nil || orderMock.lastList.GetSalesChannel() != "" {
+			t.Fatalf("GET %s without sales_channel must stay unfiltered: code=%d req=%+v", tc.path, rec.Code, orderMock.lastList)
+		}
+	}
+
+	// Promotion preview & buyer voucher list follow the same sales_channel rules as checkout:
+	// omitting sales_channel defaults to STOREFRONT (requiring storefront_shop_id, same 400 message);
+	// explicit MARKETPLACE is accepted only when storefront_shop_id is empty.
+	decodeErrMsg := func(rec *httptest.ResponseRecorder) (code, msg string) {
+		t.Helper()
+		var env struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+			t.Fatalf("decode error body %q: %v", rec.Body.String(), err)
+		}
+		return env.Error.Code, env.Error.Message
+	}
+
+	checkoutMissingRec := call(http.MethodPost, "/api/v1/checkout", `{"address_id":"a1","payment_method":"COD"}`, buyerTok, map[string]string{"Idempotency-Key": "idem-msg-parity"})
+	checkoutErrCode, checkoutErrMsg := decodeErrMsg(checkoutMissingRec)
+	if checkoutMissingRec.Code != http.StatusBadRequest || checkoutErrCode != "INVALID_ARGUMENT" || checkoutErrMsg == "" {
+		t.Fatalf("checkout missing channel baseline failed: code=%d body=%s", checkoutMissingRec.Code, checkoutMissingRec.Body.String())
+	}
+
+	// Preview: omitting both sales_channel and storefront_shop_id -> 400 with exact same message as checkout, 0 RPC calls.
+	prevPreviewCalls := promoMock.previewCalls
+	rec = call(http.MethodPost, "/api/v1/promotions/preview", `{"shop_items":[{"shop_id":"shop-a","items":[{"sku_id":"sku-a","quantity":1}]}]}`, buyerTok, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("preview missing sales_channel and storefront_shop_id: want 400, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if errCode, errMsg := decodeErrMsg(rec); errCode != checkoutErrCode || errMsg != checkoutErrMsg {
+		t.Fatalf("preview missing channel error (%q: %q) must match checkout (%q: %q)", errCode, errMsg, checkoutErrCode, checkoutErrMsg)
+	}
+	if promoMock.previewCalls != prevPreviewCalls {
+		t.Fatalf("preview missing channel must not call Promotion.PreviewDiscounts")
+	}
+
+	// Preview: omitting sales_channel with storefront_shop_id -> defaults to STOREFRONT.
+	rec = call(http.MethodPost, "/api/v1/promotions/preview", `{"storefront_shop_id":"shop-a","shop_items":[{"shop_id":"shop-a","items":[{"sku_id":"sku-a","quantity":1}]}]}`, buyerTok, nil)
+	if rec.Code != http.StatusOK || promoMock.lastPreview.GetSalesChannel() != "STOREFRONT" || promoMock.lastPreview.GetStorefrontShopId() != "shop-a" {
+		t.Fatalf("preview omitted sales_channel + storefront_shop_id: code=%d req=%+v body=%s", rec.Code, promoMock.lastPreview, rec.Body.String())
+	}
+
+	// Preview: explicit MARKETPLACE without storefront_shop_id -> 200 MARKETPLACE.
+	rec = call(http.MethodPost, "/api/v1/promotions/preview", `{"sales_channel":"MARKETPLACE","shop_items":[{"shop_id":"shop-a","items":[{"sku_id":"sku-a","quantity":1}]}]}`, buyerTok, nil)
+	if rec.Code != http.StatusOK || promoMock.lastPreview.GetSalesChannel() != "MARKETPLACE" || promoMock.lastPreview.GetStorefrontShopId() != "" {
+		t.Fatalf("preview explicit MARKETPLACE: code=%d req=%+v body=%s", rec.Code, promoMock.lastPreview, rec.Body.String())
+	}
+
+	// Preview: explicit STOREFRONT with storefront_shop_id -> 200 STOREFRONT.
 	rec = call(http.MethodPost, "/api/v1/promotions/preview", `{"sales_channel":"STOREFRONT","storefront_shop_id":"shop-a","shop_items":[{"shop_id":"shop-a","items":[{"sku_id":"sku-a","quantity":1}]}]}`, buyerTok, nil)
 	if rec.Code != http.StatusOK || promoMock.lastPreview.GetSalesChannel() != "STOREFRONT" || promoMock.lastPreview.GetStorefrontShopId() != "shop-a" {
 		t.Fatalf("promotions preview forward failed: code=%d req=%+v body=%s", rec.Code, promoMock.lastPreview, rec.Body.String())
 	}
-	if rec = call(http.MethodPost, "/api/v1/promotions/preview", `{"sales_channel":"STOREFRONT","shop_items":[{"shop_id":"shop-a","items":[{"sku_id":"sku-a","quantity":1}]}]}`, buyerTok, nil); rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 on preview STOREFRONT without shop id, got %d (%s)", rec.Code, rec.Body.String())
+
+	// Preview: invalid channel combinations -> 400 INVALID_ARGUMENT, 0 RPC calls.
+	prevPreviewCalls = promoMock.previewCalls
+	for _, payload := range []string{
+		`{"sales_channel":"STOREFRONT","shop_items":[{"shop_id":"shop-a","items":[{"sku_id":"sku-a","quantity":1}]}]}`,
+		`{"sales_channel":"MARKETPLACE","storefront_shop_id":"shop-a","shop_items":[{"shop_id":"shop-a","items":[{"sku_id":"sku-a","quantity":1}]}]}`,
+		`{"sales_channel":"WHOLESALE","shop_items":[{"shop_id":"shop-a","items":[{"sku_id":"sku-a","quantity":1}]}]}`,
+	} {
+		rec = call(http.MethodPost, "/api/v1/promotions/preview", payload, buyerTok, nil)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"INVALID_ARGUMENT"`) {
+			t.Fatalf("expected 400 INVALID_ARGUMENT for preview %s, got %d (%s)", payload, rec.Code, rec.Body.String())
+		}
 	}
+	if promoMock.previewCalls != prevPreviewCalls {
+		t.Fatalf("invalid preview payloads must not call Promotion.PreviewDiscounts")
+	}
+
+	// Buyer voucher list: omitting sales_channel and storefront_shop_id (even if shop_id is set) -> 400 same message as checkout, 0 RPC calls.
+	prevListCalls := promoMock.listCalls
+	for _, path := range []string{
+		"/api/v1/vouchers",
+		"/api/v1/vouchers?shop_id=shop-a",
+	} {
+		rec = call(http.MethodGet, path, "", "", nil)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("GET %s missing channel: want 400, got %d (%s)", path, rec.Code, rec.Body.String())
+		}
+		if errCode, errMsg := decodeErrMsg(rec); errCode != checkoutErrCode || errMsg != checkoutErrMsg {
+			t.Fatalf("GET %s error (%q: %q) must match checkout (%q: %q)", path, errCode, errMsg, checkoutErrCode, checkoutErrMsg)
+		}
+	}
+	if promoMock.listCalls != prevListCalls {
+		t.Fatalf("GET /vouchers missing channel must not call Promotion.ListAvailableVouchers")
+	}
+
+	// Buyer voucher list: omitting sales_channel with storefront_shop_id -> defaults to STOREFRONT.
+	rec = call(http.MethodGet, "/api/v1/vouchers?storefront_shop_id=shop-a", "", "", nil)
+	if rec.Code != http.StatusOK || promoMock.lastList.GetSalesChannel() != "STOREFRONT" || promoMock.lastList.GetStorefrontShopId() != "shop-a" {
+		t.Fatalf("vouchers omitted sales_channel + storefront_shop_id: code=%d req=%+v body=%s", rec.Code, promoMock.lastList, rec.Body.String())
+	}
+
+	// Buyer voucher list: explicit MARKETPLACE without storefront_shop_id -> 200 MARKETPLACE.
+	rec = call(http.MethodGet, "/api/v1/vouchers?sales_channel=MARKETPLACE", "", "", nil)
+	if rec.Code != http.StatusOK || promoMock.lastList.GetSalesChannel() != "MARKETPLACE" || promoMock.lastList.GetStorefrontShopId() != "" {
+		t.Fatalf("vouchers explicit MARKETPLACE: code=%d req=%+v body=%s", rec.Code, promoMock.lastList, rec.Body.String())
+	}
+
+	// Buyer voucher list: explicit STOREFRONT with storefront_shop_id -> 200 STOREFRONT.
 	rec = call(http.MethodGet, "/api/v1/vouchers?sales_channel=STOREFRONT&storefront_shop_id=shop-a", "", "", nil)
 	if rec.Code != http.StatusOK || promoMock.lastList.GetSalesChannel() != "STOREFRONT" || promoMock.lastList.GetStorefrontShopId() != "shop-a" {
 		t.Fatalf("vouchers forward failed: code=%d req=%+v", rec.Code, promoMock.lastList)
 	}
 
+	// Buyer voucher list: invalid channel combinations -> 400 INVALID_ARGUMENT, 0 RPC calls.
+	prevListCalls = promoMock.listCalls
+	for _, path := range []string{
+		"/api/v1/vouchers?sales_channel=STOREFRONT",
+		"/api/v1/vouchers?sales_channel=MARKETPLACE&storefront_shop_id=shop-a",
+		"/api/v1/vouchers?sales_channel=WHOLESALE",
+	} {
+		rec = call(http.MethodGet, path, "", "", nil)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"INVALID_ARGUMENT"`) {
+			t.Fatalf("expected 400 INVALID_ARGUMENT for GET %s, got %d (%s)", path, rec.Code, rec.Body.String())
+		}
+	}
+	if promoMock.listCalls != prevListCalls {
+		t.Fatalf("invalid GET /vouchers payloads must not call Promotion.ListAvailableVouchers")
+	}
+
 	// Zero CORS headers invariant.
-	rec = call(http.MethodGet, "/api/v1/vouchers", "", "", map[string]string{"Origin": "https://evil.example"})
+	rec = call(http.MethodGet, "/api/v1/vouchers?sales_channel=MARKETPLACE", "", "", map[string]string{"Origin": "https://evil.example"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /vouchers CORS check: want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
 	for hdr := range rec.Header() {
 		if strings.HasPrefix(strings.ToLower(hdr), "access-control-") {
 			t.Fatalf("gateway must emit 0 CORS headers, found %s", hdr)
 		}
+	}
+}
+
+func TestValidateSalesChannelInputMatchesCheckout(t *testing.T) {
+	cases := []struct {
+		name        string
+		rawChannel  string
+		rawShopID   string
+		wantChannel string
+		wantShopID  string
+		wantErr     string
+	}{
+		{
+			name:    "empty_both_requires_storefront_shop_id",
+			wantErr: "storefront_shop_id is required when sales_channel is STOREFRONT",
+		},
+		{
+			name:        "empty_channel_with_shop_defaults_storefront",
+			rawShopID:   " shop-a ",
+			wantChannel: "STOREFRONT",
+			wantShopID:  "shop-a",
+		},
+		{
+			name:        "explicit_storefront_lowercase_trimmed",
+			rawChannel:  " storefront ",
+			rawShopID:   " shop-b ",
+			wantChannel: "STOREFRONT",
+			wantShopID:  "shop-b",
+		},
+		{
+			name:       "explicit_storefront_missing_shop",
+			rawChannel: "STOREFRONT",
+			wantErr:    "storefront_shop_id is required when sales_channel is STOREFRONT",
+		},
+		{
+			name:        "explicit_marketplace_empty_shop",
+			rawChannel:  " marketplace ",
+			wantChannel: "MARKETPLACE",
+		},
+		{
+			name:       "explicit_marketplace_with_shop_rejected",
+			rawChannel: "MARKETPLACE",
+			rawShopID:  "shop-a",
+			wantErr:    "storefront_shop_id must be empty when sales_channel is MARKETPLACE",
+		},
+		{
+			name:       "unknown_channel_rejected",
+			rawChannel: "B2B",
+			wantErr:    "sales_channel must be MARKETPLACE or STOREFRONT",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotCh, gotShop, gotErr := validateSalesChannelInput(tc.rawChannel, tc.rawShopID)
+			chkCh, chkShop, chkErr := validateCheckoutSalesChannelInput(tc.rawChannel, tc.rawShopID)
+			if gotCh != tc.wantChannel || gotShop != tc.wantShopID || gotErr != tc.wantErr {
+				t.Fatalf("validateSalesChannelInput(%q, %q) = (%q, %q, %q), want (%q, %q, %q)",
+					tc.rawChannel, tc.rawShopID, gotCh, gotShop, gotErr, tc.wantChannel, tc.wantShopID, tc.wantErr)
+			}
+			if gotCh != chkCh || gotShop != chkShop || gotErr != chkErr {
+				t.Fatalf("validateSalesChannelInput (%q, %q, %q) diverged from validateCheckoutSalesChannelInput (%q, %q, %q)",
+					gotCh, gotShop, gotErr, chkCh, chkShop, chkErr)
+			}
+		})
 	}
 }

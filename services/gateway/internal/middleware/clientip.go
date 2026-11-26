@@ -287,6 +287,19 @@ func (tp *TrustedProxies) ClientIP(r *http.Request) string {
 	return peerStr
 }
 
+// TrustedPeerIP returns the normalized direct TCP peer IP and true when r.RemoteAddr
+// belongs to tp. It never inspects forwarded headers.
+func (tp *TrustedProxies) TrustedPeerIP(r *http.Request) (string, bool) {
+	if tp == nil || r == nil {
+		return "", false
+	}
+	peerAddr, ok := parseIP(r.RemoteAddr)
+	if !ok || !tp.IsTrusted(peerAddr) {
+		return "", false
+	}
+	return peerAddr.String(), true
+}
+
 // ClientIP extracts the direct peer IP from RemoteAddr without trusting any forwarded headers.
 // Use (*TrustedProxies).ClientIP when running behind configured reverse proxies.
 func ClientIP(r *http.Request) string {

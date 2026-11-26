@@ -20,7 +20,9 @@ import (
 	"github.com/nexusmart/core/services/gateway/internal/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -32,6 +34,8 @@ type fakeAssistantClient struct {
 	lastDescribeReq  *assistantv1.DescribeProductRequest
 	lastSuggestReq   *assistantv1.SuggestReplyRequest
 	lastReviewProdID string
+	reviewCalls      int
+	reviewResp       *assistantv1.GetReviewSummaryResponse
 }
 
 func (f *fakeAssistantClient) Handoff(ctx context.Context, in *assistantv1.HandoffRequest, _ ...grpc.CallOption) (*assistantv1.HandoffResponse, error) {
@@ -98,7 +102,11 @@ func (f *fakeAssistantClient) SuggestReply(ctx context.Context, in *assistantv1.
 }
 
 func (f *fakeAssistantClient) GetReviewSummary(_ context.Context, in *assistantv1.GetReviewSummaryRequest, _ ...grpc.CallOption) (*assistantv1.GetReviewSummaryResponse, error) {
+	f.reviewCalls++
 	f.lastReviewProdID = in.GetProductId()
+	if f.reviewResp != nil {
+		return f.reviewResp, nil
+	}
 	return &assistantv1.GetReviewSummaryResponse{
 		ProductId:          in.GetProductId(),
 		Available:          true,
@@ -120,9 +128,17 @@ func (f *fakeAssistantClient) SubmitFeedback(ctx context.Context, _ *assistantv1
 
 type fakeAssistantProductClient struct {
 	productv1.ProductServiceClient
+	calls  int
+	lastMD metadata.MD
+	fn     func(ctx context.Context, in *productv1.GetProductRequest) (*productv1.GetProductResponse, error)
 }
 
-func (f *fakeAssistantProductClient) GetProduct(_ context.Context, in *productv1.GetProductRequest, _ ...grpc.CallOption) (*productv1.GetProductResponse, error) {
+func (f *fakeAssistantProductClient) GetProduct(ctx context.Context, in *productv1.GetProductRequest, _ ...grpc.CallOption) (*productv1.GetProductResponse, error) {
+	f.calls++
+	f.lastMD, _ = metadata.FromOutgoingContext(ctx)
+	if f.fn != nil {
+		return f.fn(ctx, in)
+	}
 	return &productv1.GetProductResponse{
 		Product: &productv1.Product{
 			Id:     in.GetId(),
@@ -284,15 +300,16 @@ func TestGatewayAssistantRoutesSSEAuthRBACAndNoShadowing(t *testing.T) {
 		t.Fatalf("expected 200 on suggest-reply, got %d (%s)", rec.Code, rec.Body.String())
 	}
 
-	// 6. Public review-summary works and does NOT shadow existing GET /api/v1/products/{id}.
+	// 6. Public review-summary works for a valid UUID product and does NOT shadow existing GET /api/v1/products/{id}.
+	const validProdUUID = "11111111-1111-4111-8111-111111111111"
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/products/prod-99/review-summary", nil))
-	if rec.Code != http.StatusOK || mockClient.lastReviewProdID != "prod-99" {
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/products/"+validProdUUID+"/review-summary", nil))
+	if rec.Code != http.StatusOK || mockClient.lastReviewProdID != validProdUUID {
 		t.Fatalf("expected 200 on review-summary, got code=%d prod=%q body=%s", rec.Code, mockClient.lastReviewProdID, rec.Body.String())
 	}
 
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/products/prod-99", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/products/"+validProdUUID, nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Áo thun Cotton") {
 		t.Fatalf("existing GET /api/v1/products/{id} must not be shadowed: code=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -384,5 +401,228 @@ func TestGatewayAssistantSSETrustedProxyClientIP(t *testing.T) {
 	_, xffUntrusted, xriUntrusted := call("198.51.100.77:55555", "203.0.113.99", "203.0.113.88")
 	if xffUntrusted != "198.51.100.77" || xriUntrusted != "" {
 		t.Fatalf("expected untrusted peer IP 198.51.100.77 with spoofed headers ignored, got xff=%q xri=%q", xffUntrusted, xriUntrusted)
+	}
+}
+
+func TestGatewayReviewSummaryProductValidation(t *testing.T) {
+	authMgr, err := auth.NewManager("review-summary-validation-secret", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("auth.NewManager: %v", err)
+	}
+	adminTok, _, _, _ := authMgr.SignAccessToken("admin-1", auth.RoleAdmin, "")
+
+	const validID = "22222222-2222-4222-8222-222222222222"
+
+	prodMock := &fakeAssistantProductClient{}
+	assistMock := &fakeAssistantClient{}
+	restore := setAssistantTestUpstream(assistMock, "")
+	defer restore()
+
+	h := New(Dependencies{
+		ServiceName: "gateway-review-summary-test",
+		Clients: &clients.Clients{
+			Product: prodMock,
+			Timeout: 5 * time.Second,
+		},
+		AuthManager: authMgr,
+		Logger:      logger.New("gateway-review-summary-test", logger.WithWriter(io.Discard)),
+	})
+
+	// 1. Non-UUID id -> 400 INVALID_ARGUMENT without calling Product or Assistant.
+	for _, badID := range []string{"not-a-uuid", "prod-99", "12345"} {
+		prodMock.calls = 0
+		assistMock.reviewCalls = 0
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/products/"+badID+"/review-summary", nil))
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"INVALID_ARGUMENT"`) {
+			t.Fatalf("bad id %q: want 400 INVALID_ARGUMENT, got %d (%s)", badID, rec.Code, rec.Body.String())
+		}
+		if prodMock.calls != 0 || assistMock.reviewCalls != 0 {
+			t.Fatalf("bad id %q: must not call Product(%d) or Assistant(%d)", badID, prodMock.calls, assistMock.reviewCalls)
+		}
+	}
+
+	// 2. Non-existent product (ProductService returns NotFound) -> 404 NOT_FOUND, Assistant not called.
+	prodMock.fn = func(context.Context, *productv1.GetProductRequest) (*productv1.GetProductResponse, error) {
+		return nil, status.Error(codes.NotFound, "product not found")
+	}
+	prodMock.calls = 0
+	assistMock.reviewCalls = 0
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/products/"+validID+"/review-summary", nil))
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), `"NOT_FOUND"`) {
+		t.Fatalf("missing product: want 404 NOT_FOUND, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if prodMock.calls != 1 || assistMock.reviewCalls != 0 {
+		t.Fatalf("missing product: want Product=1 Assistant=0, got Product=%d Assistant=%d", prodMock.calls, assistMock.reviewCalls)
+	}
+
+	// 3. Non-public products (PENDING/REJECTED/HIDDEN/shop_suspended/nil) -> 404 NOT_FOUND even with admin JWT;
+	//    and PublicOutgoingContext must strip Authorization before calling ProductService.GetProduct.
+	nonPublicCases := []struct {
+		name string
+		resp *productv1.GetProductResponse
+	}{
+		{"nil_product", &productv1.GetProductResponse{}},
+		{"pending", &productv1.GetProductResponse{Product: &productv1.Product{Id: validID, Status: productv1.ProductStatus_PRODUCT_STATUS_PENDING}}},
+		{"rejected", &productv1.GetProductResponse{Product: &productv1.Product{Id: validID, Status: productv1.ProductStatus_PRODUCT_STATUS_REJECTED}}},
+		{"hidden", &productv1.GetProductResponse{Product: &productv1.Product{Id: validID, Status: productv1.ProductStatus_PRODUCT_STATUS_HIDDEN}}},
+		{"shop_suspended", &productv1.GetProductResponse{Product: &productv1.Product{Id: validID, Status: productv1.ProductStatus_PRODUCT_STATUS_APPROVED, ShopSuspended: true}}},
+	}
+	for _, tc := range nonPublicCases {
+		prodMock.fn = func(ctx context.Context, _ *productv1.GetProductRequest) (*productv1.GetProductResponse, error) {
+			if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+				t.Errorf("%s: expected deadline on ProductService.GetProduct context", tc.name)
+			}
+			return tc.resp, nil
+		}
+		assistMock.reviewCalls = 0
+		rec = httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/products/"+validID+"/review-summary", nil)
+		req.Header.Set("Authorization", "Bearer "+adminTok)
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), `"NOT_FOUND"`) {
+			t.Fatalf("%s: want 404 NOT_FOUND, got %d (%s)", tc.name, rec.Code, rec.Body.String())
+		}
+		if vals := prodMock.lastMD.Get(auth.MDAuthorization); len(vals) != 0 {
+			t.Fatalf("%s: ProductService.GetProduct must use PublicOutgoingContext (no auth), got %v", tc.name, vals)
+		}
+		if assistMock.reviewCalls != 0 {
+			t.Fatalf("%s: must not call AssistantService.GetReviewSummary", tc.name)
+		}
+	}
+
+	// 4. Transient ProductService errors MUST NOT become 404.
+	for _, tc := range []struct {
+		code       codes.Code
+		wantStatus int
+	}{
+		{codes.Unavailable, http.StatusServiceUnavailable},
+		{codes.DeadlineExceeded, http.StatusGatewayTimeout},
+		{codes.Internal, http.StatusInternalServerError},
+	} {
+		prodMock.fn = func(context.Context, *productv1.GetProductRequest) (*productv1.GetProductResponse, error) {
+			return nil, status.Error(tc.code, "transient product error")
+		}
+		assistMock.reviewCalls = 0
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/products/"+validID+"/review-summary", nil))
+		if rec.Code != tc.wantStatus || rec.Code == http.StatusNotFound {
+			t.Fatalf("product %v: want HTTP %d (never 404), got %d (%s)", tc.code, tc.wantStatus, rec.Code, rec.Body.String())
+		}
+		if assistMock.reviewCalls != 0 {
+			t.Fatalf("product %v: must not call AssistantService.GetReviewSummary", tc.code)
+		}
+	}
+
+	// 5. Real public product (APPROVED or OUT_OF_STOCK) with insufficient reviews -> 200 with available=false.
+	assistMock.reviewResp = &assistantv1.GetReviewSummaryResponse{
+		ProductId:          validID,
+		Available:          false,
+		ReviewCount:        3,
+		MinReviewsRequired: 10,
+		AverageRating:      4.5,
+		AiGenerated:        false,
+	}
+	for _, st := range []productv1.ProductStatus{
+		productv1.ProductStatus_PRODUCT_STATUS_APPROVED,
+		productv1.ProductStatus_PRODUCT_STATUS_OUT_OF_STOCK,
+	} {
+		prodMock.fn = func(context.Context, *productv1.GetProductRequest) (*productv1.GetProductResponse, error) {
+			return &productv1.GetProductResponse{
+				Product: &productv1.Product{Id: validID, Name: "Áo khoác", Status: st},
+			}, nil
+		}
+		assistMock.reviewCalls = 0
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/products/"+validID+"/review-summary", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("public status %v: want 200, got %d (%s)", st, rec.Code, rec.Body.String())
+		}
+		var out map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode json: %v", err)
+		}
+		if out["available"] != false || out["review_count"] != float64(3) || assistMock.reviewCalls != 1 {
+			t.Fatalf("public status %v: want available=false review_count=3 calls=1, got out=%+v calls=%d", st, out, assistMock.reviewCalls)
+		}
+	}
+}
+
+func TestGatewayReviewSummaryShopIDIsolation(t *testing.T) {
+	authMgr, err := auth.NewManager("review-summary-shop-secret", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("auth.NewManager: %v", err)
+	}
+	sellerATok, _, _, _ := authMgr.SignAccessToken("seller-a", auth.RoleSeller, "shop-a")
+
+	const validID = "33333333-3333-4333-8333-333333333333"
+
+	prodMock := &fakeAssistantProductClient{}
+	assistMock := &fakeAssistantClient{}
+	restore := setAssistantTestUpstream(assistMock, "")
+	defer restore()
+
+	h := New(Dependencies{
+		ServiceName: "gateway-review-summary-shop-test",
+		Clients: &clients.Clients{
+			Product: prodMock,
+			Timeout: 5 * time.Second,
+		},
+		AuthManager: authMgr,
+		Logger:      logger.New("gateway-review-summary-shop-test", logger.WithWriter(io.Discard)),
+	})
+
+	prodMock.fn = func(context.Context, *productv1.GetProductRequest) (*productv1.GetProductResponse, error) {
+		return &productv1.GetProductResponse{
+			Product: &productv1.Product{
+				Id:     validID,
+				ShopId: "shop-a",
+				Name:   "Áo khoác Shop A",
+				Status: productv1.ProductStatus_PRODUCT_STATUS_APPROVED,
+			},
+		}, nil
+	}
+
+	// 1. Matching shop_id -> 200 and AssistantService.GetReviewSummary called once.
+	assistMock.reviewCalls = 0
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/products/"+validID+"/review-summary?shop_id=shop-a", nil))
+	if rec.Code != http.StatusOK || assistMock.reviewCalls != 1 {
+		t.Fatalf("matching shop_id: want 200 calls=1, got code=%d calls=%d body=%s", rec.Code, assistMock.reviewCalls, rec.Body.String())
+	}
+
+	// 2. Mismatched shop_id -> 404 NOT_FOUND and AssistantService.GetReviewSummary MUST NOT be called.
+	assistMock.reviewCalls = 0
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/products/"+validID+"/review-summary?shop_id=shop-b", nil))
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), `"NOT_FOUND"`) {
+		t.Fatalf("mismatched shop_id: want 404 NOT_FOUND, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if assistMock.reviewCalls != 0 {
+		t.Fatalf("mismatched shop_id: must not call AssistantService.GetReviewSummary, got %d calls", assistMock.reviewCalls)
+	}
+
+	// 3. Matching shop_id on a non-public product (PENDING) still returns 404 even with owning seller JWT.
+	prodMock.fn = func(context.Context, *productv1.GetProductRequest) (*productv1.GetProductResponse, error) {
+		return &productv1.GetProductResponse{
+			Product: &productv1.Product{
+				Id:     validID,
+				ShopId: "shop-a",
+				Name:   "Áo chưa duyệt",
+				Status: productv1.ProductStatus_PRODUCT_STATUS_PENDING,
+			},
+		}, nil
+	}
+	assistMock.reviewCalls = 0
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/products/"+validID+"/review-summary?shop_id=shop-a", nil)
+	req.Header.Set("Authorization", "Bearer "+sellerATok)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), `"NOT_FOUND"`) {
+		t.Fatalf("non-public product with matching shop_id: want 404 NOT_FOUND, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if assistMock.reviewCalls != 0 {
+		t.Fatalf("non-public product with matching shop_id: must not call AssistantService, got %d", assistMock.reviewCalls)
 	}
 }

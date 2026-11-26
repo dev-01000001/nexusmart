@@ -439,7 +439,7 @@ func TestW2AOptionalAuthAndSSERevokedBeforeAndRedisError(t *testing.T) {
 
 	// 1. Optional auth without token -> 200.
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/vouchers", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/vouchers?sales_channel=MARKETPLACE", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /vouchers anonymous: want 200, got %d", rec.Code)
 	}
@@ -449,7 +449,7 @@ func TestW2AOptionalAuthAndSSERevokedBeforeAndRedisError(t *testing.T) {
 	revoker.revokedBefore["buyer-rev"] = time.Now().UTC().Unix() + 10
 	revoker.mu.Unlock()
 
-	for _, path := range []string{"/api/v1/vouchers", "/api/v1/payments/pay-1/events"} {
+	for _, path := range []string{"/api/v1/vouchers?sales_channel=MARKETPLACE", "/api/v1/payments/pay-1/events"} {
 		rec = httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Authorization", "Bearer "+buyerTok)
@@ -464,7 +464,7 @@ func TestW2AOptionalAuthAndSSERevokedBeforeAndRedisError(t *testing.T) {
 	revoker.err = errors.New("redis down")
 	revoker.mu.Unlock()
 
-	for _, path := range []string{"/api/v1/vouchers", "/api/v1/payments/pay-1/events"} {
+	for _, path := range []string{"/api/v1/vouchers?sales_channel=MARKETPLACE", "/api/v1/payments/pay-1/events"} {
 		rec = httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Authorization", "Bearer "+buyerTok)

@@ -25,6 +25,7 @@ type Dependencies struct {
 	RevocationChecker                middleware.TokenRevocationChecker
 	RateLimiter                      middleware.RateLimiter
 	RateLimitIPPerMin                int
+	RateLimitBFFPerMin               int
 	RateLimitUserPerMin              int
 	RateLimitFlashPerMin             int
 	RateLimitAuthPerMin              int
@@ -107,7 +108,7 @@ func New(deps Dependencies) http.Handler {
 		}
 		sse.Use(middleware.RequestLogger(deps.Logger, deps.TrustedProxies))
 		sse.Use(middleware.MaxBodyBytes(httpx.MaxBodyBytes))
-		sse.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies))
+		sse.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies, deps.RateLimitBFFPerMin))
 		sse.Use(middleware.Auth(deps.AuthManager, deps.RevocationChecker, deps.Logger, true))
 		sse.Use(middleware.RateLimitByUser(deps.RateLimiter, deps.RateLimitUserPerMin, deps.Logger))
 
@@ -165,7 +166,7 @@ func New(deps Dependencies) http.Handler {
 
 		// Public & authenticated REST API v1 routes with per-IP rate limiting.
 		main.Route("/api/v1", func(api chi.Router) {
-			api.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies))
+			api.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies, deps.RateLimitBFFPerMin))
 
 			// --- Public routes ---
 			api.Post("/auth/register", h.handleRegister)
@@ -235,7 +236,7 @@ func New(deps Dependencies) http.Handler {
 			// Public flash-sales list with flash-sale rate limit if configured.
 			api.Group(func(fl chi.Router) {
 				fl.Use(middleware.Auth(deps.AuthManager, deps.RevocationChecker, deps.Logger, false))
-				fl.Use(middleware.RateLimitFlashSale(deps.RateLimiter, deps.RateLimitFlashPerMin, deps.Logger, deps.TrustedProxies))
+				fl.Use(middleware.RateLimitFlashSale(deps.RateLimiter, deps.RateLimitFlashPerMin, deps.Logger, deps.TrustedProxies, deps.RateLimitBFFPerMin))
 				fl.Get("/flash-sales", h.handleListFlashSales)
 			})
 			api.Get("/shop-discounts/active", h.handleListActiveShopDiscounts)

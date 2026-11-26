@@ -65,8 +65,8 @@ func TestPublicSiteDirectory(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("anonymous directory: want 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if mock.calls != 1 || mock.last.GetPage() != 2 || mock.last.GetPageSize() != 500 {
-		t.Fatalf("query params must be forwarded for upstream clamping, got %+v", mock.last)
+	if mock.calls != 1 || mock.last.GetPage() != 2 || mock.last.GetPageSize() != 48 {
+		t.Fatalf("query params must be clamped at gateway (max 48), got %+v", mock.last)
 	}
 	if len(mock.lastMD.Get("authorization")) != 0 {
 		t.Fatalf("anonymous request must not carry authorization upstream: %v", mock.lastMD)
@@ -110,5 +110,56 @@ func TestPublicSiteDirectory(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &empty)
 	if string(empty["sites"]) != "[]" {
 		t.Fatalf("empty directory must be [], got %s", empty["sites"])
+	}
+}
+
+func TestPublicSiteDirectory_RejectsPaginationOverflow(t *testing.T) {
+	mock := &directoryUserMock{resp: &userv1.ListPublishedSitesResponse{
+		Sites:    nil,
+		Total:    0,
+		Page:     44739243,
+		PageSize: 48,
+	}}
+	h := New(Dependencies{
+		ServiceName: "directory-overflow-test",
+		Clients:     &clients.Clients{User: mock, Timeout: 5 * time.Second},
+		Logger:      logger.New("directory-overflow-test", logger.WithWriter(io.Discard)),
+	})
+
+	overflowURLs := []string{
+		"/api/v1/sites?page=50000000&page_size=48",
+		"/api/v1/sites?page=44739244&page_size=48",
+		"/api/v1/sites?page=50000000&page_size=500",
+		"/api/v1/sites?page=89478487",
+		"/api/v1/sites?page=2147483648&page_size=1",
+		"/api/v1/sites?page=99999999999999999999&page_size=24",
+	}
+	for _, u := range overflowURLs {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, u, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("GET %s: want 400, got %d body=%s", u, rec.Code, rec.Body.String())
+		}
+		var errEnv struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &errEnv); err != nil || errEnv.Error.Code != "INVALID_ARGUMENT" {
+			t.Fatalf("GET %s: want error.code=INVALID_ARGUMENT, got %s", u, rec.Body.String())
+		}
+	}
+	if mock.calls != 0 {
+		t.Fatalf("overflow pagination must be rejected at gateway with 0 upstream calls, got %d", mock.calls)
+	}
+
+	// Valid boundary: (44739243 - 1) * 48 = 2147483616 <= MaxInt32.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/sites?page=44739243&page_size=48", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("boundary valid page: want 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if mock.calls != 1 || mock.last.GetPage() != 44739243 || mock.last.GetPageSize() != 48 {
+		t.Fatalf("boundary valid request forwarded incorrectly: calls=%d req=%+v", mock.calls, mock.last)
 	}
 }

@@ -134,3 +134,21 @@ func TestLoadTrustedProxiesFallbackToCIDRs(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadRateLimitBFFPerMin(t *testing.T) {
+	t.Run("DefaultIs6000", func(t *testing.T) {
+		t.Setenv("RATE_LIMIT_BFF_PER_MIN", "")
+		cfg := Load()
+		if cfg.RateLimitBFFPerMin != 6000 {
+			t.Fatalf("RateLimitBFFPerMin default = %d, want 6000", cfg.RateLimitBFFPerMin)
+		}
+	})
+
+	t.Run("EnvOverride", func(t *testing.T) {
+		t.Setenv("RATE_LIMIT_BFF_PER_MIN", "9000")
+		cfg := Load()
+		if cfg.RateLimitBFFPerMin != 9000 {
+			t.Fatalf("RateLimitBFFPerMin override = %d, want 9000", cfg.RateLimitBFFPerMin)
+		}
+	})
+}

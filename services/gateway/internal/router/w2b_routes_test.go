@@ -1454,7 +1454,8 @@ func TestW2BPreviewDiscountsServerAuthoritativeIgnoresClientTampering(t *testing
 		"shop_voucher_ids": {"shop-a": "v-shop-1"},
 		"platform_voucher_id": "v-plat-1",
 		"freeship_voucher_id": "v-fs-1",
-		"coins_to_use": 1000
+		"coins_to_use": 1000,
+		"sales_channel": "MARKETPLACE"
 	}`
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/promotions/preview", strings.NewReader(tamperedBody))
@@ -1521,6 +1522,7 @@ func TestW2BPreviewDiscountsServerAuthoritativeIgnoresClientTampering(t *testing
 	// Shipping.GetShopShippingSettings NotFound (shop-b has no settings) -> treated as freeship disabled without error,
 	// and nil applied_shop_program_item_ids + nil warnings serialize as [] (never null).
 	noSettingsReq := httptest.NewRequest(http.MethodPost, "/api/v1/promotions/preview", strings.NewReader(`{
+		"sales_channel": "MARKETPLACE",
 		"shop_items": [{"shop_id":"shop-b","shipping_fee_vnd":20000,"free_ship_enabled":true,"free_ship_max_vnd":20000,"items":[{"sku_id":"sku-b1","quantity":1}]}]
 	}`))
 	noSettingsReq.Header.Set("Authorization", "Bearer "+buyerTok)
@@ -1539,6 +1541,7 @@ func TestW2BPreviewDiscountsServerAuthoritativeIgnoresClientTampering(t *testing
 
 	// Cross-shop SKU spoofing (sku-b1 claimed under shop-a) -> 400.
 	spoofShopReq := httptest.NewRequest(http.MethodPost, "/api/v1/promotions/preview", strings.NewReader(`{
+		"sales_channel": "MARKETPLACE",
 		"shop_items": [{"shop_id":"shop-a","shipping_fee_vnd":20000,"items":[{"sku_id":"sku-b1","quantity":1}]}]
 	}`))
 	spoofShopReq.Header.Set("Authorization", "Bearer "+buyerTok)
@@ -1550,6 +1553,7 @@ func TestW2BPreviewDiscountsServerAuthoritativeIgnoresClientTampering(t *testing
 
 	// Unknown SKU -> uniform 400 INVALID_ARGUMENT (indistinguishable from cross-shop SKU; P2-3).
 	missingSKUReq := httptest.NewRequest(http.MethodPost, "/api/v1/promotions/preview", strings.NewReader(`{
+		"sales_channel": "MARKETPLACE",
 		"shop_items": [{"shop_id":"shop-a","shipping_fee_vnd":20000,"items":[{"sku_id":"sku-nonexistent","quantity":1}]}]
 	}`))
 	missingSKUReq.Header.Set("Authorization", "Bearer "+buyerTok)
@@ -1989,14 +1993,14 @@ func TestW2BRound4ReviewFixes(t *testing.T) {
 			items201[i] = fmt.Sprintf(`{"sku_id":"sku-%d","quantity":1}`, i+1)
 		}
 		recCap := do(http.MethodPost, "/api/v1/promotions/preview", buyerTok,
-			`{"shop_items":[{"shop_id":"shop-a","shipping_fee_vnd":0,"items":[`+strings.Join(items201, ",")+`]}]}`, nil)
+			`{"sales_channel":"MARKETPLACE","shop_items":[{"shop_id":"shop-a","shipping_fee_vnd":0,"items":[`+strings.Join(items201, ",")+`]}]}`, nil)
 		if recCap.Code != http.StatusBadRequest {
 			t.Fatalf("preview with 201 items: want 400, got %d (%s)", recCap.Code, recCap.Body.String())
 		}
 
 		// int64 overflow when merging shipping_fee_vnd across duplicate shop entries -> 400 (never silently wrap!).
 		recOvf := do(http.MethodPost, "/api/v1/promotions/preview", buyerTok,
-			`{"shop_items":[{"shop_id":"shop-a","shipping_fee_vnd":9223372036854775800,"items":[{"sku_id":"sku-a1","quantity":1}]},{"shop_id":"shop-a","shipping_fee_vnd":100,"items":[{"sku_id":"sku-a1","quantity":1}]}]}`, nil)
+			`{"sales_channel":"MARKETPLACE","shop_items":[{"shop_id":"shop-a","shipping_fee_vnd":9223372036854775800,"items":[{"sku_id":"sku-a1","quantity":1}]},{"shop_id":"shop-a","shipping_fee_vnd":100,"items":[{"sku_id":"sku-a1","quantity":1}]}]}`, nil)
 		if recOvf.Code != http.StatusBadRequest {
 			t.Fatalf("preview int64 shipping_fee_vnd overflow: want 400, got %d (%s)", recOvf.Code, recOvf.Body.String())
 		}
@@ -2006,7 +2010,7 @@ func TestW2BRound4ReviewFixes(t *testing.T) {
 		shippingMock.getErr = status.Error(codes.NotFound, "unexpected not found")
 		shippingMock.mu.Unlock()
 		recNotFound := do(http.MethodPost, "/api/v1/promotions/preview", buyerTok,
-			`{"shop_items":[{"shop_id":"shop-a","shipping_fee_vnd":20000,"items":[{"sku_id":"sku-a1","quantity":1}]}]}`, nil)
+			`{"sales_channel":"MARKETPLACE","shop_items":[{"shop_id":"shop-a","shipping_fee_vnd":20000,"items":[{"sku_id":"sku-a1","quantity":1}]}]}`, nil)
 		shippingMock.mu.Lock()
 		shippingMock.getErr = nil
 		shippingMock.mu.Unlock()
@@ -2106,6 +2110,7 @@ func TestW2BRound5ReviewFixes(t *testing.T) {
 		promoMock.mu.Unlock()
 
 		rec := do(http.MethodPost, "/api/v1/promotions/preview", buyerTok, `{
+			"sales_channel": "MARKETPLACE",
 			"shop_items": [{
 				"shop_id": "shop-a",
 				"shipping_fee_vnd": 25000,

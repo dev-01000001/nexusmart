@@ -14,9 +14,16 @@ const (
 )
 
 // validateCheckoutSalesChannelInput validates sales_channel & storefront_shop_id for POST /checkout.
+// It shares the exact same rules and error messages as validateSalesChannelInput.
+func validateCheckoutSalesChannelInput(rawChannel, rawShopID string) (channel, storefrontShopID, errMsg string) {
+	return validateSalesChannelInput(rawChannel, rawShopID)
+}
+
+// validateSalesChannelInput validates sales_channel & storefront_shop_id for checkout, promotion
+// preview, and buyer voucher listing requests.
 // Per DECISIONS.md (20:25): omitting sales_channel defaults to STOREFRONT (requiring a non-empty
 // storefront_shop_id); explicit MARKETPLACE is accepted only when storefront_shop_id is empty.
-func validateCheckoutSalesChannelInput(rawChannel, rawShopID string) (channel, storefrontShopID, errMsg string) {
+func validateSalesChannelInput(rawChannel, rawShopID string) (channel, storefrontShopID, errMsg string) {
 	ch := strings.ToUpper(strings.TrimSpace(rawChannel))
 	sid := strings.TrimSpace(rawShopID)
 	if ch == "" {
@@ -33,31 +40,6 @@ func validateCheckoutSalesChannelInput(rawChannel, rawShopID string) (channel, s
 			return "", "", "storefront_shop_id must be empty when sales_channel is MARKETPLACE"
 		}
 		return salesChannelMarketplace, "", ""
-	default:
-		return "", "", "sales_channel must be MARKETPLACE or STOREFRONT"
-	}
-}
-
-// validateSalesChannelInput validates sales_channel & storefront_shop_id for read/preview requests.
-// Empty sales_channel defaults to MARKETPLACE; STOREFRONT requires a non-empty storefront_shop_id;
-// MARKETPLACE requires an empty storefront_shop_id.
-func validateSalesChannelInput(rawChannel, rawShopID string) (channel, storefrontShopID, errMsg string) {
-	ch := strings.ToUpper(strings.TrimSpace(rawChannel))
-	sid := strings.TrimSpace(rawShopID)
-	if ch == "" {
-		ch = salesChannelMarketplace
-	}
-	switch ch {
-	case salesChannelMarketplace:
-		if sid != "" {
-			return "", "", "storefront_shop_id must be empty when sales_channel is MARKETPLACE"
-		}
-		return salesChannelMarketplace, "", ""
-	case salesChannelStorefront:
-		if sid == "" {
-			return "", "", "storefront_shop_id is required when sales_channel is STOREFRONT"
-		}
-		return salesChannelStorefront, sid, ""
 	default:
 		return "", "", "sales_channel must be MARKETPLACE or STOREFRONT"
 	}

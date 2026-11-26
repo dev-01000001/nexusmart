@@ -382,3 +382,421 @@ func TestRateLimitCannotBeBypassedBySpoofedXFF(t *testing.T) {
 		}
 	}
 }
+
+func TestRateLimitByIP_BFFBucketAndSecurityBoundaries(t *testing.T) {
+	log := logger.New("gw-test", logger.WithWriter(io.Discard))
+	trusted, err := ParseTrustedProxies("172.31.250.0/28")
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies: %v", err)
+	}
+	okHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	lim := newMemRateLimiter()
+	h := RateLimitByIP(lim, 2, log, trusted, 5)(okHandler)
+
+	// 1. Trusted peer WITHOUT X-Forwarded-For or X-Real-IP -> dedicated rl:bff:<peer> bucket with bffLimit=5.
+	for i := 1; i <= 6; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sites/by-host?host=a.nexusmart.localhost", nil)
+		req.RemoteAddr = "172.31.250.3:50000"
+		h.ServeHTTP(rec, req)
+		want := http.StatusOK
+		if i == 6 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Fatalf("trusted BFF req %d: got %d, want %d", i, rec.Code, want)
+		}
+		if gotLimit := rec.Header().Get("X-RateLimit-Limit"); gotLimit != "5" {
+			t.Fatalf("trusted BFF req %d: X-RateLimit-Limit = %q, want 5", i, gotLimit)
+		}
+	}
+	if lim.counts["rl:bff:172.31.250.3"] != 5 {
+		t.Fatalf("expected rl:bff:172.31.250.3 count=5, got %d (all=%v)", lim.counts["rl:bff:172.31.250.3"], lim.counts)
+	}
+
+	// 2. Trusted IPv4-mapped IPv6 peer without forwarded headers -> normalized rl:bff:<ipv4> for GET/HEAD.
+	recV6 := httptest.NewRecorder()
+	reqV6 := httptest.NewRequest(http.MethodGet, "/api/v1/products", nil)
+	reqV6.RemoteAddr = "[::ffff:172.31.250.4]:50001"
+	h.ServeHTTP(recV6, reqV6)
+	recHead := httptest.NewRecorder()
+	reqHead := httptest.NewRequest(http.MethodHead, "/api/v1/products", nil)
+	reqHead.RemoteAddr = "172.31.250.4:50001"
+	h.ServeHTTP(recHead, reqHead)
+	if recV6.Code != http.StatusOK || recHead.Code != http.StatusOK || lim.counts["rl:bff:172.31.250.4"] != 2 {
+		t.Fatalf("trusted BFF GET/HEAD: codeV6=%d codeHead=%d counts=%v", recV6.Code, recHead.Code, lim.counts)
+	}
+	if gotLimit := recHead.Header().Get("X-RateLimit-Limit"); gotLimit != "5" {
+		t.Fatalf("trusted BFF HEAD: X-RateLimit-Limit = %q, want 5", gotLimit)
+	}
+
+	// 2b. Trusted peer WITHOUT XFF/X-Real-IP on non-GET/HEAD methods (POST, PUT, PATCH, DELETE)
+	//     MUST stay on rl:ip:<peer> with ipLimit=2 (fail-closed; never elevated to rl:bff).
+	for _, tc := range []struct {
+		method string
+		path   string
+		peer   string
+		want   string
+	}{
+		{http.MethodPost, "/api/v1/auth/login", "172.31.250.8:50010", "172.31.250.8"},
+		{http.MethodPut, "/api/v1/users/me/addresses/1", "172.31.250.9:50011", "172.31.250.9"},
+		{http.MethodPatch, "/api/v1/users/me", "172.31.250.10:50012", "172.31.250.10"},
+		{http.MethodDelete, "/api/v1/cart/items/sku-1", "172.31.250.11:50013", "172.31.250.11"},
+	} {
+		for i := 1; i <= 3; i++ {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req.RemoteAddr = tc.peer
+			h.ServeHTTP(rec, req)
+			wantCode := http.StatusOK
+			if i == 3 {
+				wantCode = http.StatusTooManyRequests
+			}
+			if rec.Code != wantCode {
+				t.Fatalf("trusted peer %s without XFF req %d: got %d, want %d", tc.method, i, rec.Code, wantCode)
+			}
+			if gotLimit := rec.Header().Get("X-RateLimit-Limit"); gotLimit != "2" {
+				t.Fatalf("trusted peer %s without XFF req %d: X-RateLimit-Limit = %q, want 2", tc.method, i, gotLimit)
+			}
+		}
+		if lim.counts["rl:ip:"+tc.want] != 2 || lim.counts["rl:bff:"+tc.want] != 0 {
+			t.Fatalf("trusted peer %s without XFF must use rl:ip:%s, got counts=%v", tc.method, tc.want, lim.counts)
+		}
+	}
+
+	// 3. Trusted peer WITH X-Forwarded-For -> still counted per visitor IP with ipLimit=2, never BFF bucket.
+	for i := 1; i <= 3; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/products", nil)
+		req.RemoteAddr = "172.31.250.3:50002"
+		req.Header.Set("X-Forwarded-For", "203.0.113.10")
+		h.ServeHTTP(rec, req)
+		want := http.StatusOK
+		if i == 3 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Fatalf("trusted peer with XFF req %d: got %d, want %d", i, rec.Code, want)
+		}
+		if gotLimit := rec.Header().Get("X-RateLimit-Limit"); gotLimit != "2" {
+			t.Fatalf("trusted peer with XFF req %d: X-RateLimit-Limit = %q, want 2", i, gotLimit)
+		}
+	}
+	if lim.counts["rl:ip:203.0.113.10"] != 2 {
+		t.Fatalf("expected rl:ip:203.0.113.10 count=2, got %d", lim.counts["rl:ip:203.0.113.10"])
+	}
+
+	// 4. Trusted peer WITH X-Real-IP only -> counted per visitor IP with ipLimit=2, never BFF bucket.
+	for i := 1; i <= 3; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/products", nil)
+		req.RemoteAddr = "172.31.250.3:50003"
+		req.Header.Set("X-Real-IP", "203.0.113.11")
+		h.ServeHTTP(rec, req)
+		want := http.StatusOK
+		if i == 3 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Fatalf("trusted peer with X-Real-IP req %d: got %d, want %d", i, rec.Code, want)
+		}
+	}
+	if lim.counts["rl:ip:203.0.113.11"] != 2 {
+		t.Fatalf("expected rl:ip:203.0.113.11 count=2, got %d", lim.counts["rl:ip:203.0.113.11"])
+	}
+
+	// 5. Trusted peer WITH malformed X-Forwarded-For -> MUST NOT enter BFF bucket (fail closed to ipLimit=2).
+	for i := 1; i <= 3; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/products", nil)
+		req.RemoteAddr = "172.31.250.5:50004"
+		req.Header.Set("X-Forwarded-For", "not-an-ip")
+		h.ServeHTTP(rec, req)
+		want := http.StatusOK
+		if i == 3 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Fatalf("trusted peer with malformed XFF req %d: got %d, want %d", i, rec.Code, want)
+		}
+	}
+	if lim.counts["rl:bff:172.31.250.5"] != 0 || lim.counts["rl:ip:172.31.250.5"] != 2 {
+		t.Fatalf("malformed XFF must stay on rl:ip bucket, got counts=%v", lim.counts)
+	}
+
+	// 6. Untrusted peer WITHOUT headers -> regular rl:ip bucket with ipLimit=2 (never BFF bucket).
+	for i := 1; i <= 3; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/products", nil)
+		req.RemoteAddr = "198.51.100.5:40000"
+		h.ServeHTTP(rec, req)
+		want := http.StatusOK
+		if i == 3 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Fatalf("untrusted peer no headers req %d: got %d, want %d", i, rec.Code, want)
+		}
+	}
+	if lim.counts["rl:bff:198.51.100.5"] != 0 || lim.counts["rl:ip:198.51.100.5"] != 2 {
+		t.Fatalf("untrusted peer must never enter BFF bucket, got counts=%v", lim.counts)
+	}
+
+	// 7. Untrusted client spoofing X-Forwarded-For (even with a trusted proxy IP) -> stays on rl:ip:<remoteAddr> with ipLimit=2.
+	for i := 1; i <= 3; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/products", nil)
+		req.RemoteAddr = "198.51.100.6:40001"
+		req.Header.Set("X-Forwarded-For", "172.31.250.3")
+		h.ServeHTTP(rec, req)
+		want := http.StatusOK
+		if i == 3 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Fatalf("untrusted spoofed XFF req %d: got %d, want %d", i, rec.Code, want)
+		}
+	}
+	if lim.counts["rl:ip:198.51.100.6"] != 2 {
+		t.Fatalf("untrusted spoofed XFF must stay on rl:ip:198.51.100.6, got counts=%v", lim.counts)
+	}
+
+	// 8. Dedicated strict limiters (auth, order-lookup, shipping-fee, flash-sale, webhook)
+	//    MUST NOT use the BFF bucket even for trusted peers without XFF/X-Real-IP.
+	for _, tc := range []struct {
+		name    string
+		wantKey string
+	}{
+		{"auth", "rl:auth:ip:172.31.250.7"},
+		{"order_lookup", "rl:order_lookup:ip:172.31.250.7"},
+		{"shipping_fee", "rl:shipping_fee:ip:172.31.250.7"},
+		{"flash_sale", "rl:flash:ip:172.31.250.7"},
+		{"webhook", "rl:webhook:ip:172.31.250.7"},
+	} {
+		t.Run("strict_"+tc.name, func(t *testing.T) {
+			strictLim := newMemRateLimiter()
+			var wrapped http.Handler
+			switch tc.name {
+			case "auth":
+				wrapped = RateLimitAuth(strictLim, 2, log, trusted)(okHandler)
+			case "order_lookup":
+				wrapped = RateLimitOrderLookupIP(strictLim, 2, log, trusted)(okHandler)
+			case "shipping_fee":
+				wrapped = RateLimitShippingFee(strictLim, 2, log, trusted)(okHandler)
+			case "flash_sale":
+				wrapped = RateLimitFlashSale(strictLim, 2, log, trusted)(okHandler)
+			case "webhook":
+				wrapped = RateLimitWebhook(strictLim, 2, log, trusted)(okHandler)
+			}
+			for i := 1; i <= 3; i++ {
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodPost, "/strict", nil)
+				req.RemoteAddr = "172.31.250.7:55555"
+				wrapped.ServeHTTP(rec, req)
+				want := http.StatusOK
+				if i == 3 {
+					want = http.StatusTooManyRequests
+				}
+				if rec.Code != want {
+					t.Fatalf("%s req %d: got %d, want %d", tc.name, i, rec.Code, want)
+				}
+			}
+			if strictLim.counts[tc.wantKey] != 2 || strictLim.counts["rl:bff:172.31.250.7"] != 0 {
+				t.Fatalf("%s unexpected keys: %v", tc.name, strictLim.counts)
+			}
+		})
+	}
+}
+
+func TestRateLimitFlashSale_BFFBucketAndSecurityBoundaries(t *testing.T) {
+	log := logger.New("gw-test", logger.WithWriter(io.Discard))
+	trusted, err := ParseTrustedProxies("172.31.250.0/28")
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies: %v", err)
+	}
+	authMgr, err := auth.NewManager("gw-flash-rl-test-secret", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("auth.NewManager: %v", err)
+	}
+	buyerTok, _, _, err := authMgr.SignAccessToken("buyer-flash-1", auth.RoleBuyer, "")
+	if err != nil {
+		t.Fatalf("SignAccessToken: %v", err)
+	}
+	okHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	lim := newMemRateLimiter()
+	h := Auth(authMgr, nil, log, false)(RateLimitFlashSale(lim, 2, log, trusted, 5)(okHandler))
+
+	// 1. Trusted peer, anonymous, WITHOUT XFF or X-Real-IP -> dedicated rl:flash:bff:<peer> bucket with bffLimit=5.
+	for i := 1; i <= 6; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/flash-sales?include_upcoming=false", nil)
+		req.RemoteAddr = "172.31.250.3:50000"
+		h.ServeHTTP(rec, req)
+		want := http.StatusOK
+		if i == 6 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Fatalf("trusted BFF flash req %d: got %d, want %d", i, rec.Code, want)
+		}
+		if gotLimit := rec.Header().Get("X-RateLimit-Limit"); gotLimit != "5" {
+			t.Fatalf("trusted BFF flash req %d: X-RateLimit-Limit = %q, want 5", i, gotLimit)
+		}
+	}
+	if lim.counts["rl:flash:bff:172.31.250.3"] != 5 {
+		t.Fatalf("expected rl:flash:bff:172.31.250.3 count=5, got %d (all=%v)", lim.counts["rl:flash:bff:172.31.250.3"], lim.counts)
+	}
+
+	// 2. Trusted IPv4-mapped IPv6 peer, anonymous, no forwarded headers -> normalized rl:flash:bff:<ipv4> for GET/HEAD.
+	recV6 := httptest.NewRecorder()
+	reqV6 := httptest.NewRequest(http.MethodGet, "/api/v1/flash-sales", nil)
+	reqV6.RemoteAddr = "[::ffff:172.31.250.4]:50001"
+	h.ServeHTTP(recV6, reqV6)
+	recHead := httptest.NewRecorder()
+	reqHead := httptest.NewRequest(http.MethodHead, "/api/v1/flash-sales", nil)
+	reqHead.RemoteAddr = "172.31.250.4:50001"
+	h.ServeHTTP(recHead, reqHead)
+	if recV6.Code != http.StatusOK || recHead.Code != http.StatusOK || lim.counts["rl:flash:bff:172.31.250.4"] != 2 {
+		t.Fatalf("trusted BFF flash GET/HEAD: codeV6=%d codeHead=%d counts=%v", recV6.Code, recHead.Code, lim.counts)
+	}
+
+	// 2b. Trusted peer, anonymous, WITHOUT XFF/X-Real-IP on POST -> stays on rl:flash:ip:<peer> with limit=2 (fail-closed).
+	for i := 1; i <= 3; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/flash-sales", nil)
+		req.RemoteAddr = "172.31.250.8:50010"
+		h.ServeHTTP(rec, req)
+		want := http.StatusOK
+		if i == 3 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Fatalf("trusted peer POST flash without XFF req %d: got %d, want %d", i, rec.Code, want)
+		}
+		if gotLimit := rec.Header().Get("X-RateLimit-Limit"); gotLimit != "2" {
+			t.Fatalf("trusted peer POST flash without XFF req %d: X-RateLimit-Limit = %q, want 2", i, gotLimit)
+		}
+	}
+	if lim.counts["rl:flash:ip:172.31.250.8"] != 2 || lim.counts["rl:flash:bff:172.31.250.8"] != 0 {
+		t.Fatalf("trusted peer POST flash without XFF must stay on rl:flash:ip, got counts=%v", lim.counts)
+	}
+
+	// 3. Trusted peer, anonymous, WITH X-Forwarded-For -> stays on rl:flash:ip:<client> with limit=2.
+	for i := 1; i <= 3; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/flash-sales", nil)
+		req.RemoteAddr = "172.31.250.3:50002"
+		req.Header.Set("X-Forwarded-For", "203.0.113.10")
+		h.ServeHTTP(rec, req)
+		want := http.StatusOK
+		if i == 3 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Fatalf("trusted peer with XFF flash req %d: got %d, want %d", i, rec.Code, want)
+		}
+		if gotLimit := rec.Header().Get("X-RateLimit-Limit"); gotLimit != "2" {
+			t.Fatalf("trusted peer with XFF flash req %d: X-RateLimit-Limit = %q, want 2", i, gotLimit)
+		}
+	}
+	if lim.counts["rl:flash:ip:203.0.113.10"] != 2 {
+		t.Fatalf("expected rl:flash:ip:203.0.113.10 count=2, got %d", lim.counts["rl:flash:ip:203.0.113.10"])
+	}
+
+	// 4. Trusted peer, anonymous, WITH X-Real-IP -> stays on rl:flash:ip:<client> with limit=2.
+	for i := 1; i <= 3; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/flash-sales", nil)
+		req.RemoteAddr = "172.31.250.3:50003"
+		req.Header.Set("X-Real-IP", "203.0.113.11")
+		h.ServeHTTP(rec, req)
+		want := http.StatusOK
+		if i == 3 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Fatalf("trusted peer with X-Real-IP flash req %d: got %d, want %d", i, rec.Code, want)
+		}
+	}
+	if lim.counts["rl:flash:ip:203.0.113.11"] != 2 {
+		t.Fatalf("expected rl:flash:ip:203.0.113.11 count=2, got %d", lim.counts["rl:flash:ip:203.0.113.11"])
+	}
+
+	// 5. Trusted peer, anonymous, WITH malformed XFF -> MUST NOT enter BFF bucket (fail closed to limit=2).
+	for i := 1; i <= 3; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/flash-sales", nil)
+		req.RemoteAddr = "172.31.250.5:50004"
+		req.Header.Set("X-Forwarded-For", "not-an-ip")
+		h.ServeHTTP(rec, req)
+		want := http.StatusOK
+		if i == 3 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Fatalf("trusted peer malformed XFF flash req %d: got %d, want %d", i, rec.Code, want)
+		}
+	}
+	if lim.counts["rl:flash:bff:172.31.250.5"] != 0 || lim.counts["rl:flash:ip:172.31.250.5"] != 2 {
+		t.Fatalf("malformed XFF must stay on rl:flash:ip bucket, got counts=%v", lim.counts)
+	}
+
+	// 6. Authenticated user from trusted peer WITHOUT XFF -> stays on rl:flash:user:<uid> with limit=2 (never BFF bucket).
+	for i := 1; i <= 3; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/flash-sales", nil)
+		req.RemoteAddr = "172.31.250.6:50005"
+		req.Header.Set("Authorization", "Bearer "+buyerTok)
+		h.ServeHTTP(rec, req)
+		want := http.StatusOK
+		if i == 3 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Fatalf("authenticated flash req %d: got %d, want %d", i, rec.Code, want)
+		}
+		if gotLimit := rec.Header().Get("X-RateLimit-Limit"); gotLimit != "2" {
+			t.Fatalf("authenticated flash req %d: X-RateLimit-Limit = %q, want 2", i, gotLimit)
+		}
+	}
+	if lim.counts["rl:flash:user:buyer-flash-1"] != 2 || lim.counts["rl:flash:bff:172.31.250.6"] != 0 {
+		t.Fatalf("authenticated request must use rl:flash:user bucket, got counts=%v", lim.counts)
+	}
+
+	// 7. Untrusted peer without headers or spoofing XFF with trusted peer IP -> stays on rl:flash:ip:<remoteAddr> with limit=2.
+	for _, tc := range []struct {
+		name string
+		peer string
+		xff  string
+		want string
+	}{
+		{"untrusted_no_headers", "198.51.100.5:40000", "", "rl:flash:ip:198.51.100.5"},
+		{"untrusted_spoofed_xff", "198.51.100.6:40001", "172.31.250.3", "rl:flash:ip:198.51.100.6"},
+	} {
+		for i := 1; i <= 3; i++ {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/flash-sales", nil)
+			req.RemoteAddr = tc.peer
+			if tc.xff != "" {
+				req.Header.Set("X-Forwarded-For", tc.xff)
+			}
+			h.ServeHTTP(rec, req)
+			wantCode := http.StatusOK
+			if i == 3 {
+				wantCode = http.StatusTooManyRequests
+			}
+			if rec.Code != wantCode {
+				t.Fatalf("%s req %d: got %d, want %d", tc.name, i, rec.Code, wantCode)
+			}
+		}
+		if lim.counts[tc.want] != 2 {
+			t.Fatalf("%s expected %s count=2, got %v", tc.name, tc.want, lim.counts)
+		}
+	}
+}

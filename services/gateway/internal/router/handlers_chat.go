@@ -181,7 +181,7 @@ func mountChatRoutes(r chi.Router, deps Dependencies) {
 		}
 		ws.Use(middleware.RequestLogger(deps.Logger, deps.TrustedProxies))
 		ws.Use(middleware.MaxBodyBytes(httpx.MaxBodyBytes))
-		ws.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies))
+		ws.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies, deps.RateLimitBFFPerMin))
 		ws.Use(ch.chatWSAuthMiddleware(deps))
 		ws.Use(middleware.RateLimitByUser(deps.RateLimiter, deps.RateLimitUserPerMin, deps.Logger))
 
@@ -197,7 +197,7 @@ func mountChatRoutes(r chi.Router, deps Dependencies) {
 		}
 		rest.Use(middleware.RequestLogger(deps.Logger, deps.TrustedProxies))
 		rest.Use(middleware.MaxBodyBytes(httpx.MaxBodyBytes))
-		rest.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies))
+		rest.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies, deps.RateLimitBFFPerMin))
 		rest.Use(middleware.Auth(deps.AuthManager, deps.RevocationChecker, deps.Logger, true))
 		rest.Use(middleware.RateLimitByUser(deps.RateLimiter, deps.RateLimitUserPerMin, deps.Logger))
 

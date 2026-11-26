@@ -15,6 +15,7 @@ type Config struct {
 	RedisPassword                    string
 	JWTSecret                        string
 	RateLimitIPPerMin                int
+	RateLimitBFFPerMin               int
 	RateLimitUserPerMin              int
 	RateLimitFlashPerMin             int
 	RateLimitAuthPerMin              int
@@ -70,6 +71,7 @@ func Load() Config {
 		RedisPassword:                    env.EnvString("REDIS_PASSWORD", ""),
 		JWTSecret:                        env.EnvString("JWT_SECRET", "dev-only-nexusmart-hs256-secret-change-me"),
 		RateLimitIPPerMin:                env.EnvInt("RATE_LIMIT_IP_PER_MIN", 300),
+		RateLimitBFFPerMin:               env.EnvInt("RATE_LIMIT_BFF_PER_MIN", 6000),
 		RateLimitUserPerMin:              env.EnvInt("RATE_LIMIT_USER_PER_MIN", 180),
 		RateLimitFlashPerMin:             env.EnvInt("RATE_LIMIT_FLASH_SALE_PER_MIN", 60),
 		RateLimitAuthPerMin:              env.EnvInt("RATE_LIMIT_AUTH_PER_MIN", 10),

@@ -631,7 +631,7 @@ func TestW3A_D1_CommissionStrippedPublicAndKeptAdminSeller(t *testing.T) {
 	if rec := w3aDoRequest(h, http.MethodGet, "/api/v1/cart", buyerTok, ""); rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "commission_rate_bps") {
 		t.Fatalf("GET /cart: code=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if rec := w3aDoRequest(h, http.MethodPost, "/api/v1/promotions/preview", buyerTok, `{"shop_items":[{"shop_id":"shop-a","shipping_fee_vnd":20000,"items":[{"sku_id":"sku-a-active","quantity":1}]}]}`); rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "commission_rate_bps") {
+	if rec := w3aDoRequest(h, http.MethodPost, "/api/v1/promotions/preview", buyerTok, `{"sales_channel":"MARKETPLACE","shop_items":[{"shop_id":"shop-a","shipping_fee_vnd":20000,"items":[{"sku_id":"sku-a-active","quantity":1}]}]}`); rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "commission_rate_bps") {
 		t.Fatalf("POST /promotions/preview: code=%d body=%s", rec.Code, rec.Body.String())
 	}
 
@@ -784,6 +784,7 @@ func TestW3A_D2_HiddenSKUHandling(t *testing.T) {
 		shipMock.mu.Unlock()
 
 		rec := w3aDoRequest(h, http.MethodPost, "/api/v1/promotions/preview", buyerTok, `{
+			"sales_channel": "MARKETPLACE",
 			"shop_items": [{
 				"shop_id": "shop-a",
 				"shipping_fee_vnd": 25000,
@@ -804,11 +805,11 @@ func TestW3A_D2_HiddenSKUHandling(t *testing.T) {
 		// P2-3: Unknown SKU, cross-shop active SKU, cross-shop hidden SKU, and missing shop_id + hidden SKU
 		// MUST return the exact same 400 INVALID_ARGUMENT code AND message (no existence/ownership oracle).
 		oraclePayloads := map[string]string{
-			"unknown_sku":              `{"shop_items":[{"shop_id":"shop-a","shipping_fee_vnd":25000,"items":[{"sku_id":"sku-does-not-exist","quantity":1}]}]}`,
-			"cross_shop_active_sku":    `{"shop_items":[{"shop_id":"shop-a","shipping_fee_vnd":25000,"items":[{"sku_id":"sku-b-active","quantity":1}]}]}`,
-			"cross_shop_hidden_sku":    `{"shop_items":[{"shop_id":"shop-a","shipping_fee_vnd":25000,"items":[{"sku_id":"sku-b-hidden","quantity":1}]}]}`,
-			"missing_shop_hidden_sku":  `{"shop_items":[{"shop_id":"","shipping_fee_vnd":25000,"items":[{"sku_id":"sku-a-hidden","quantity":1}]}]}`,
-			"missing_shop_unknown_sku": `{"shop_items":[{"shop_id":"","shipping_fee_vnd":25000,"items":[{"sku_id":"sku-does-not-exist","quantity":1}]}]}`,
+			"unknown_sku":              `{"sales_channel":"MARKETPLACE","shop_items":[{"shop_id":"shop-a","shipping_fee_vnd":25000,"items":[{"sku_id":"sku-does-not-exist","quantity":1}]}]}`,
+			"cross_shop_active_sku":    `{"sales_channel":"MARKETPLACE","shop_items":[{"shop_id":"shop-a","shipping_fee_vnd":25000,"items":[{"sku_id":"sku-b-active","quantity":1}]}]}`,
+			"cross_shop_hidden_sku":    `{"sales_channel":"MARKETPLACE","shop_items":[{"shop_id":"shop-a","shipping_fee_vnd":25000,"items":[{"sku_id":"sku-b-hidden","quantity":1}]}]}`,
+			"missing_shop_hidden_sku":  `{"sales_channel":"MARKETPLACE","shop_items":[{"shop_id":"","shipping_fee_vnd":25000,"items":[{"sku_id":"sku-a-hidden","quantity":1}]}]}`,
+			"missing_shop_unknown_sku": `{"sales_channel":"MARKETPLACE","shop_items":[{"shop_id":"","shipping_fee_vnd":25000,"items":[{"sku_id":"sku-does-not-exist","quantity":1}]}]}`,
 		}
 		var baselineMsg string
 		for name, payload := range oraclePayloads {
@@ -833,6 +834,7 @@ func TestW3A_D2_HiddenSKUHandling(t *testing.T) {
 		// Active SKU with empty shop_id (backward-compatible) still resolves shop_id and succeeds;
 		// under D4, gateway omits redundant subtotal_vnd/unit_price_vnd/category_id (promotion resolves them).
 		recEmptyShopActive := w3aDoRequest(h, http.MethodPost, "/api/v1/promotions/preview", buyerTok, `{
+			"sales_channel": "MARKETPLACE",
 			"shop_items": [{
 				"shop_id": "",
 				"shipping_fee_vnd": 20000,
@@ -864,6 +866,7 @@ func TestW3A_D2_HiddenSKUHandling(t *testing.T) {
 			promoMock.mu.Unlock()
 		}()
 		recRace := w3aDoRequest(h, http.MethodPost, "/api/v1/promotions/preview", buyerTok, `{
+			"sales_channel": "MARKETPLACE",
 			"shop_items": [{
 				"shop_id": "shop-a",
 				"shipping_fee_vnd": 25000,

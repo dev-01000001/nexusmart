@@ -3,7 +3,10 @@ package router
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -445,15 +448,71 @@ type publishedSiteDTO struct {
 	Tagline     string `json:"tagline"`
 }
 
+const (
+	publishedSitesDefaultPageSize int32 = 24
+	publishedSitesMaxPageSize     int32 = 48
+)
+
+// parsePublishedSitesPagination mirrors httpx.ParsePagination with the public directory bounds
+// (default 24, max 48) and rejects page values whose 0-based SQL offset exceeds math.MaxInt32.
+func parsePublishedSitesPagination(r *http.Request) (page int32, pageSize int32, err error) {
+	pageSize = parseBoundedPageSize(r, publishedSitesDefaultPageSize, publishedSitesMaxPageSize)
+
+	rawPage := strings.TrimSpace(r.URL.Query().Get("page"))
+	if rawPage == "" {
+		return 1, pageSize, nil
+	}
+	page64, parseErr := strconv.ParseInt(rawPage, 10, 64)
+	if parseErr != nil {
+		if errors.Is(parseErr, strconv.ErrRange) && !strings.HasPrefix(rawPage, "-") {
+			return 0, 0, errors.New("page exceeds maximum pagination offset")
+		}
+		return 1, pageSize, nil
+	}
+	if page64 <= 0 {
+		return 1, pageSize, nil
+	}
+	if page64 > math.MaxInt32 || (page64-1)*int64(pageSize) > math.MaxInt32 {
+		return 0, 0, errors.New("page exceeds maximum pagination offset")
+	}
+	return int32(page64), pageSize, nil
+}
+
+func parseBoundedPageSize(r *http.Request, def, maxVal int32) int32 {
+	raw := strings.TrimSpace(r.URL.Query().Get("page_size"))
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		if errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(raw, "-") {
+			return maxVal
+		}
+		return def
+	}
+	if n <= 0 {
+		return def
+	}
+	if n > int64(maxVal) {
+		return maxVal
+	}
+	return int32(n)
+}
+
 // handleListPublishedSites serves the public platform site directory (no JWT): PUBLISHED sites of
-// ACTIVE shops only, newest publish first. page_size defaults to 24 and is capped at 48 upstream.
+// ACTIVE shops only, newest publish first. page_size defaults to 24 and is capped at 48.
 func (h *handler) handleListPublishedSites(w http.ResponseWriter, r *http.Request) {
+	page, pageSize, err := parsePublishedSitesPagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
 	resp, err := h.clients.User.ListPublishedSites(ctx, &userv1.ListPublishedSitesRequest{
-		Page:     httpx.ParseInt32Query(r, "page", 1),
-		PageSize: httpx.ParseInt32Query(r, "page_size", 24),
+		Page:     page,
+		PageSize: pageSize,
 	})
 	if err != nil {
 		httpx.WriteGRPCError(w, r, err)

@@ -99,10 +99,46 @@ func (l *RedisRateLimiter) Allow(ctx context.Context, key string, limit int, win
 }
 
 // RateLimitByIP enforces per-IP rate limiting (disabled when limitPerMin <= 0).
-func RateLimitByIP(limiter RateLimiter, limitPerMin int, log *slog.Logger, tp *TrustedProxies) func(http.Handler) http.Handler {
-	return rateLimitMiddleware(limiter, limitPerMin, time.Minute, log, func(r *http.Request) string {
-		return "rl:ip:" + tp.ClientIP(r)
+// On GET/HEAD requests, when the direct TCP peer belongs to tp, the request carries neither
+// X-Forwarded-For nor X-Real-IP (server-side BFF calls not tied to a single visitor), and
+// bffLimitPerMin > 0, a dedicated "rl:bff:<peer>" bucket is enforced with that limit instead of
+// "rl:ip:<ip>". Non-GET/HEAD methods always stay on "rl:ip:<ip>" with limitPerMin (fail-closed).
+func RateLimitByIP(
+	limiter RateLimiter,
+	limitPerMin int,
+	log *slog.Logger,
+	tp *TrustedProxies,
+	bffLimitPerMin ...int,
+) func(http.Handler) http.Handler {
+	bffLimit := 0
+	if len(bffLimitPerMin) > 0 {
+		bffLimit = bffLimitPerMin[0]
+	}
+	return rateLimitMiddlewareWithLimit(limiter, limitPerMin, time.Minute, log, func(r *http.Request) (string, int) {
+		if bffLimit > 0 {
+			if peer, ok := bffServerSidePeer(r, tp); ok {
+				return "rl:bff:" + peer, bffLimit
+			}
+		}
+		return "rl:ip:" + tp.ClientIP(r), limitPerMin
 	})
+}
+
+func bffServerSidePeer(r *http.Request, tp *TrustedProxies) (string, bool) {
+	if r == nil || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+		return "", false
+	}
+	if hasForwardedIPHeaders(r) {
+		return "", false
+	}
+	return tp.TrustedPeerIP(r)
+}
+
+func hasForwardedIPHeaders(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return len(r.Header.Values("X-Forwarded-For")) > 0 || len(r.Header.Values("X-Real-IP")) > 0
 }
 
 // RateLimitByUser enforces per-authenticated-user rate limiting (disabled when limitPerMin <= 0).
@@ -116,12 +152,31 @@ func RateLimitByUser(limiter RateLimiter, limitPerMin int, log *slog.Logger) fun
 }
 
 // RateLimitFlashSale enforces stricter rate limits on flash-sale routes (disabled when limitPerMin <= 0).
-func RateLimitFlashSale(limiter RateLimiter, limitPerMin int, log *slog.Logger, tp *TrustedProxies) func(http.Handler) http.Handler {
-	return rateLimitMiddleware(limiter, limitPerMin, time.Minute, log, func(r *http.Request) string {
+// On anonymous GET/HEAD requests, when the direct TCP peer belongs to tp, the request carries neither
+// X-Forwarded-For nor X-Real-IP (BFF server-side calls), and bffLimitPerMin > 0, it uses a
+// dedicated "rl:flash:bff:<peer>" bucket with that limit; authenticated callers, non-GET/HEAD
+// methods, and requests with forwarded IP headers keep the standard user/IP bucket and limitPerMin.
+func RateLimitFlashSale(
+	limiter RateLimiter,
+	limitPerMin int,
+	log *slog.Logger,
+	tp *TrustedProxies,
+	bffLimitPerMin ...int,
+) func(http.Handler) http.Handler {
+	bffLimit := 0
+	if len(bffLimitPerMin) > 0 {
+		bffLimit = bffLimitPerMin[0]
+	}
+	return rateLimitMiddlewareWithLimit(limiter, limitPerMin, time.Minute, log, func(r *http.Request) (string, int) {
 		if uid := auth.UserIDFromContext(r.Context()); uid != "" {
-			return "rl:flash:user:" + uid
+			return "rl:flash:user:" + uid, limitPerMin
 		}
-		return "rl:flash:ip:" + tp.ClientIP(r)
+		if bffLimit > 0 {
+			if peer, ok := bffServerSidePeer(r, tp); ok {
+				return "rl:flash:bff:" + peer, bffLimit
+			}
+		}
+		return "rl:flash:ip:" + tp.ClientIP(r), limitPerMin
 	})
 }
 
@@ -268,13 +323,25 @@ func rateLimitMiddleware(
 	log *slog.Logger,
 	keyFn func(*http.Request) string,
 ) func(http.Handler) http.Handler {
+	return rateLimitMiddlewareWithLimit(limiter, limit, window, log, func(r *http.Request) (string, int) {
+		return keyFn(r), limit
+	})
+}
+
+func rateLimitMiddlewareWithLimit(
+	limiter RateLimiter,
+	defaultLimit int,
+	window time.Duration,
+	log *slog.Logger,
+	targetFn func(*http.Request) (string, int),
+) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		if limiter == nil || limit <= 0 {
+		if limiter == nil || defaultLimit <= 0 {
 			return next
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			key := keyFn(r)
-			if key == "" {
+			key, limit := targetFn(r)
+			if key == "" || limit <= 0 {
 				next.ServeHTTP(w, r)
 				return
 			}

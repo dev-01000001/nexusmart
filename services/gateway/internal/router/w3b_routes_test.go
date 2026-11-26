@@ -733,9 +733,11 @@ func newW3BHarness(t *testing.T) *w3bHarness {
 				Discontinued:           true,
 				DiscontinuedCategoryId: "cat-ok",
 				DiscontinuedName:       "Áo Đã Ẩn",
+				DiscontinuedShopId:     "shop-a",
 				// Deliberately attach product to ensure gateway never leaks it on discontinued stub.
 				Product: &productv1.Product{
 					Id:              "prod-hid",
+					ShopId:          "LEAK_SHOP",
 					Name:            "LEAK_NAME",
 					Description:     "LEAK_DESC",
 					FlaggedKeywords: []string{"LEAK_KW"},
@@ -746,6 +748,17 @@ func newW3BHarness(t *testing.T) *w3bHarness {
 				Discontinued:           true,
 				DiscontinuedCategoryId: "cat-ok",
 				DiscontinuedName:       "",
+				DiscontinuedShopId:     "shop-b",
+			},
+			"ao-empty-shop": {
+				Discontinued:           true,
+				DiscontinuedCategoryId: "cat-ok",
+				DiscontinuedName:       "",
+				DiscontinuedShopId:     "",
+				Product: &productv1.Product{
+					Id:     "prod-empty-shop",
+					ShopId: "LEAK_EMPTY_SHOP",
+				},
 			},
 		},
 		skus: map[string]*productv1.SKU{
@@ -853,7 +866,7 @@ func TestW3B_A4_ReviewsModerationDiscontinuedAndCart(t *testing.T) {
 		t.Fatalf("PUT /admin/categories explicit is_prohibited failed: code=%d req=%+v", recCatUpdSet.Code, hw.product.lastUpdateCatReq)
 	}
 
-	// 3. Discontinued slug stub (E13): HIDDEN has name, REJECTED omits name, neither leaks skus/description/flagged_keywords.
+	// 3. Discontinued slug stub (E13): HIDDEN has name + shop_id, REJECTED omits name + has shop_id, neither leaks skus/description/flagged_keywords.
 	recHid := hw.do(http.MethodGet, "/api/v1/products/slug/ao-hidden", "", "", "")
 	if recHid.Code != http.StatusOK {
 		t.Fatalf("GET /products/slug/ao-hidden: want 200, got %d (%s)", recHid.Code, recHid.Body.String())
@@ -862,7 +875,7 @@ func TestW3B_A4_ReviewsModerationDiscontinuedAndCart(t *testing.T) {
 	if err := json.Unmarshal(recHid.Body.Bytes(), &hidMap); err != nil {
 		t.Fatalf("decode discontinued hidden: %v", err)
 	}
-	if hidMap["discontinued"] != true || hidMap["category_id"] != "cat-ok" || hidMap["name"] != "Áo Đã Ẩn" {
+	if hidMap["discontinued"] != true || hidMap["category_id"] != "cat-ok" || hidMap["shop_id"] != "shop-a" || hidMap["name"] != "Áo Đã Ẩn" {
 		t.Fatalf("unexpected discontinued hidden payload: %+v", hidMap)
 	}
 	if _, hasProd := hidMap["product"]; hasProd || strings.Contains(recHid.Body.String(), "LEAK_") {
@@ -875,11 +888,33 @@ func TestW3B_A4_ReviewsModerationDiscontinuedAndCart(t *testing.T) {
 	}
 	var rejMap map[string]any
 	_ = json.Unmarshal(recRej.Body.Bytes(), &rejMap)
-	if rejMap["discontinued"] != true || rejMap["category_id"] != "cat-ok" {
+	if rejMap["discontinued"] != true || rejMap["category_id"] != "cat-ok" || rejMap["shop_id"] != "shop-b" {
 		t.Fatalf("unexpected discontinued rejected payload: %+v", rejMap)
 	}
 	if _, hasName := rejMap["name"]; hasName {
 		t.Fatalf("discontinued rejected MUST omit name: %s", recRej.Body.String())
+	}
+
+	// Empty discontinued_shop_id must omit shop_id and never fall back to Product.ShopId.
+	recEmptyShop := hw.do(http.MethodGet, "/api/v1/products/slug/ao-empty-shop", "", "", "")
+	if recEmptyShop.Code != http.StatusOK {
+		t.Fatalf("GET /products/slug/ao-empty-shop: want 200, got %d (%s)", recEmptyShop.Code, recEmptyShop.Body.String())
+	}
+	var emptyShopMap map[string]any
+	if err := json.Unmarshal(recEmptyShop.Body.Bytes(), &emptyShopMap); err != nil {
+		t.Fatalf("decode discontinued empty shop: %v", err)
+	}
+	if _, hasShop := emptyShopMap["shop_id"]; hasShop || strings.Contains(recEmptyShop.Body.String(), "LEAK_") {
+		t.Fatalf("discontinued stub with empty discontinued_shop_id must omit shop_id and not leak product: %s", recEmptyShop.Body.String())
+	}
+
+	// GET /products/{id} must NOT request a discontinued stub and returns 404 for unknown/discontinued IDs.
+	recByID := hw.do(http.MethodGet, "/api/v1/products/prod-hid", "", "", "")
+	if recByID.Code != http.StatusNotFound {
+		t.Fatalf("GET /products/prod-hid: want 404, got %d (%s)", recByID.Code, recByID.Body.String())
+	}
+	if hw.product.lastGetProductReq.GetIncludeDiscontinuedStub() {
+		t.Fatalf("GET /products/{id} must not set IncludeDiscontinuedStub=true")
 	}
 
 	// Unknown slug still returns 404.

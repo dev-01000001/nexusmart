@@ -13,6 +13,7 @@ import (
 
 	chatv1 "github.com/nexusmart/core/gen/go/nexusmart/chat/v1"
 	paymentv1 "github.com/nexusmart/core/gen/go/nexusmart/payment/v1"
+	promotionv1 "github.com/nexusmart/core/gen/go/nexusmart/promotion/v1"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/logger"
@@ -344,4 +345,98 @@ func (m *reconRunsMock) ListReconciliationRuns(_ context.Context, in *paymentv1.
 		},
 		Total: 1,
 	}, nil
+}
+
+type flashRLPromoMock struct {
+	promotionv1.PromotionServiceClient
+}
+
+func (m *flashRLPromoMock) ListActiveFlashSales(_ context.Context, _ *promotionv1.ListActiveFlashSalesRequest, _ ...grpc.CallOption) (*promotionv1.ListActiveFlashSalesResponse, error) {
+	return &promotionv1.ListActiveFlashSalesResponse{}, nil
+}
+
+func TestRouterFlashSaleRateLimit_PublicBFFVsSellerStrict(t *testing.T) {
+	log := logger.New("gateway-flash-rl-test", logger.WithWriter(io.Discard))
+	authMgr, err := auth.NewManager("gateway-flash-rl-secret", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("auth.NewManager: %v", err)
+	}
+	sellerTok, _, _, err := authMgr.SignAccessToken("seller-flash-1", auth.RoleSeller, "shop-flash-1")
+	if err != nil {
+		t.Fatalf("SignAccessToken: %v", err)
+	}
+	tp, err := middleware.NewTrustedProxiesValidated("172.31.250.0/28", log)
+	if err != nil {
+		t.Fatalf("NewTrustedProxiesValidated: %v", err)
+	}
+	rl := newW2ARateLimiter()
+
+	h := New(Dependencies{
+		ServiceName:          "gateway-flash-rl-test",
+		Clients:              &clients.Clients{Promotion: &flashRLPromoMock{}, Timeout: 5 * time.Second},
+		AuthManager:          authMgr,
+		RateLimiter:          rl,
+		RateLimitIPPerMin:    100,
+		RateLimitBFFPerMin:   5,
+		RateLimitUserPerMin:  100,
+		RateLimitFlashPerMin: 2,
+		TrustedProxies:       tp,
+		Logger:               log,
+	})
+
+	// 1. Public GET /api/v1/flash-sales from trusted peer without XFF/X-Real-IP -> uses rl:flash:bff:<peer> (limit=5).
+	for i := 1; i <= 6; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/flash-sales?include_upcoming=false", nil)
+		req.RemoteAddr = "172.31.250.3:50000"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		want := http.StatusOK
+		if i == 6 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Fatalf("public BFF GET /flash-sales req %d: got %d, want %d", i, rec.Code, want)
+		}
+	}
+	if rl.counts["rl:flash:bff:172.31.250.3"] != 5 {
+		t.Fatalf("expected rl:flash:bff:172.31.250.3 count=5, got %v", rl.counts)
+	}
+
+	// 2. Public GET /api/v1/flash-sales from trusted peer WITH XFF -> uses rl:flash:ip:<client> (limit=2).
+	for i := 1; i <= 3; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/flash-sales", nil)
+		req.RemoteAddr = "172.31.250.3:50001"
+		req.Header.Set("X-Forwarded-For", "203.0.113.20")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		want := http.StatusOK
+		if i == 3 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Fatalf("public XFF GET /flash-sales req %d: got %d, want %d", i, rec.Code, want)
+		}
+	}
+	if rl.counts["rl:flash:ip:203.0.113.20"] != 2 {
+		t.Fatalf("expected rl:flash:ip:203.0.113.20 count=2, got %v", rl.counts)
+	}
+
+	// 3. Seller POST /api/v1/seller/flash-sales/{id}/items from trusted peer without XFF -> still rl:flash:user:<uid> (limit=2).
+	for i := 1; i <= 3; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/seller/flash-sales/fs-1/items", strings.NewReader(`{}`))
+		req.RemoteAddr = "172.31.250.4:50002"
+		req.Header.Set("Authorization", "Bearer "+sellerTok)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if i < 3 && rec.Code == http.StatusTooManyRequests {
+			t.Fatalf("seller POST flash-sale item req %d unexpectedly hit 429", i)
+		}
+		if i == 3 && rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("seller POST flash-sale item req 3: got %d, want 429", rec.Code)
+		}
+	}
+	if rl.counts["rl:flash:user:seller-flash-1"] != 2 || rl.counts["rl:flash:bff:172.31.250.4"] != 0 {
+		t.Fatalf("seller POST flash-sale item must stay on rl:flash:user bucket, got %v", rl.counts)
+	}
 }

@@ -709,6 +709,9 @@ func (h *handler) handleGetProductBySlug(w http.ResponseWriter, r *http.Request)
 			"discontinued": true,
 			"category_id":  resp.GetDiscontinuedCategoryId(),
 		}
+		if shopID := strings.TrimSpace(resp.GetDiscontinuedShopId()); shopID != "" {
+			stub["shop_id"] = shopID
+		}
 		if name := strings.TrimSpace(resp.GetDiscontinuedName()); name != "" {
 			stub["name"] = name
 		}

@@ -1,11 +1,13 @@
 package router
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	cartv1 "github.com/nexusmart/core/gen/go/nexusmart/cart/v1"
+	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/gateway/internal/httpx"
 )
@@ -102,19 +104,48 @@ func (h *handler) handleGetCart(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) handleAddCartItem(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		SKUID    string `json:"sku_id"`
-		Quantity int32  `json:"quantity"`
+		SKUID            string `json:"sku_id"`
+		Quantity         int32  `json:"quantity"`
+		StorefrontShopID string `json:"storefront_shop_id"`
 	}
 	if err := httpx.DecodeJSON(r, &body); err != nil {
 		httpx.WriteDecodeError(w, r, err)
 		return
 	}
+	skuID := strings.TrimSpace(body.SKUID)
+	storefrontShopID := strings.TrimSpace(body.StorefrontShopID)
+
 	ctx, cancel := h.clients.OutgoingContext(r.Context())
 	defer cancel()
 
+	if storefrontShopID != "" && skuID != "" {
+		if h.clients.Product == nil {
+			httpx.WriteError(w, r, http.StatusServiceUnavailable, "UNAVAILABLE", "product service unavailable")
+			return
+		}
+		skuResp, err := h.clients.Product.GetSKUsBatch(ctx, &productv1.GetSKUsBatchRequest{
+			SkuIds: []string{skuID},
+		})
+		if err != nil {
+			httpx.WriteGRPCError(w, r, err)
+			return
+		}
+		var matched *productv1.SKU
+		for _, sk := range skuResp.GetSkus() {
+			if sk.GetId() == skuID {
+				matched = sk
+				break
+			}
+		}
+		if matched == nil || strings.TrimSpace(matched.GetShopId()) != storefrontShopID {
+			httpx.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("sku %s not found", skuID))
+			return
+		}
+	}
+
 	resp, err := h.clients.Cart.AddItem(ctx, &cartv1.AddItemRequest{
 		UserId:   auth.UserIDFromContext(r.Context()),
-		SkuId:    body.SKUID,
+		SkuId:    skuID,
 		Quantity: body.Quantity,
 	})
 	if err != nil {

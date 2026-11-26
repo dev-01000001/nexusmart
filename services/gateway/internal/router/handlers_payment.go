@@ -432,7 +432,7 @@ func mapReconciliationItem(it *paymentv1.ReconciliationItem) *reconciliationItem
 		TrackingCode:      it.GetTrackingCode(),
 		OrderID:           it.GetOrderId(),
 		LineNumber:        it.GetLineNumber(),
-		SalesChannel:      normalizeSalesChannelOutput(it.GetSalesChannel()),
+		SalesChannel:      strings.TrimSpace(it.GetSalesChannel()),
 		StorefrontShopID:  it.GetStorefrontShopId(),
 	}
 }

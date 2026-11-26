@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	assistantv1 "github.com/nexusmart/core/gen/go/nexusmart/assistant/v1"
+	productv1 "github.com/nexusmart/core/gen/go/nexusmart/product/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/env"
 	"github.com/nexusmart/core/pkg/common/telemetry"
@@ -63,6 +65,7 @@ func setAssistantTestUpstream(client assistantv1.AssistantServiceClient, sseURL 
 type assistantHandler struct {
 	serviceName    string
 	timeout        time.Duration
+	clients        *clients.Clients
 	trustedProxies *middleware.TrustedProxies
 	log            *slog.Logger
 
@@ -102,6 +105,7 @@ func mountAssistantRoutes(r chi.Router, deps Dependencies) {
 	ah := &assistantHandler{
 		serviceName:    serviceName,
 		timeout:        timeout,
+		clients:        deps.Clients,
 		trustedProxies: deps.TrustedProxies,
 		log:            deps.Logger,
 	}
@@ -122,7 +126,7 @@ func mountAssistantRoutes(r chi.Router, deps Dependencies) {
 		}
 		sse.Use(middleware.RequestLogger(deps.Logger, deps.TrustedProxies))
 		sse.Use(middleware.MaxBodyBytes(httpx.MaxBodyBytes))
-		sse.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies))
+		sse.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies, deps.RateLimitBFFPerMin))
 		sse.Use(middleware.Auth(deps.AuthManager, deps.RevocationChecker, deps.Logger, false))
 		sse.Use(middleware.RateLimitByUser(deps.RateLimiter, deps.RateLimitUserPerMin, deps.Logger))
 
@@ -138,7 +142,7 @@ func mountAssistantRoutes(r chi.Router, deps Dependencies) {
 		}
 		pub.Use(middleware.RequestLogger(deps.Logger, deps.TrustedProxies))
 		pub.Use(middleware.MaxBodyBytes(httpx.MaxBodyBytes))
-		pub.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies))
+		pub.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies, deps.RateLimitBFFPerMin))
 		pub.Use(middleware.Auth(deps.AuthManager, deps.RevocationChecker, deps.Logger, false))
 
 		pub.Get("/api/v1/products/{id}/review-summary", ah.handleGetReviewSummary)
@@ -153,7 +157,7 @@ func mountAssistantRoutes(r chi.Router, deps Dependencies) {
 		}
 		authed.Use(middleware.RequestLogger(deps.Logger, deps.TrustedProxies))
 		authed.Use(middleware.MaxBodyBytes(httpx.MaxBodyBytes))
-		authed.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies))
+		authed.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies, deps.RateLimitBFFPerMin))
 		authed.Use(middleware.Auth(deps.AuthManager, deps.RevocationChecker, deps.Logger, true))
 		authed.Use(middleware.RateLimitByUser(deps.RateLimiter, deps.RateLimitUserPerMin, deps.Logger))
 
@@ -570,8 +574,34 @@ func (h *assistantHandler) handleSellerSuggestReply(w http.ResponseWriter, r *ht
 
 func (h *assistantHandler) handleGetReviewSummary(w http.ResponseWriter, r *http.Request) {
 	productID := strings.TrimSpace(chi.URLParam(r, "id"))
-	if productID == "" {
-		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "product id is required")
+	if productID == "" || uuid.Validate(productID) != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "product id must be a valid UUID")
+		return
+	}
+
+	if h.clients == nil || h.clients.Product == nil {
+		httpx.WriteError(w, r, http.StatusServiceUnavailable, "UNAVAILABLE", "product service unavailable")
+		return
+	}
+
+	shopID := strings.TrimSpace(r.URL.Query().Get("shop_id"))
+
+	// Verify the product exists and is publicly visible before querying review summaries.
+	// Use PublicOutgoingContext so even seller/admin tokens cannot bypass public visibility,
+	// and propagate transient product errors verbatim rather than turning them into 404.
+	prodCtx, prodCancel := h.clients.PublicOutgoingContext(r.Context())
+	prodResp, err := h.clients.Product.GetProduct(prodCtx, &productv1.GetProductRequest{
+		Id: productID,
+	})
+	prodCancel()
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	prod := prodResp.GetProduct()
+	if prod == nil || !isPublicProductStatus(prod.GetStatus()) || prod.GetShopSuspended() ||
+		(shopID != "" && prod.GetShopId() != shopID) {
+		httpx.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "product not found")
 		return
 	}
 

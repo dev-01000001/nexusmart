@@ -119,6 +119,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 		RevocationChecker:                revocationChecker,
 		RateLimiter:                      rateLimiter,
 		RateLimitIPPerMin:                cfg.RateLimitIPPerMin,
+		RateLimitBFFPerMin:               cfg.RateLimitBFFPerMin,
 		RateLimitUserPerMin:              cfg.RateLimitUserPerMin,
 		RateLimitFlashPerMin:             cfg.RateLimitFlashPerMin,
 		RateLimitAuthPerMin:              cfg.RateLimitAuthPerMin,
