@@ -35,7 +35,7 @@ Lý do phía sau (suy ra từ yêu cầu, chủ dự án sửa nếu sai):
 - Không thêm tính năng mà nền tảng chưa có, dù Figma có: gói trả phí/bảng giá, Point of Sale, App store,
   bình luận nội bộ trên dòng thời gian đơn, trung tâm thông báo, hCaptcha, "Markets".
 - Không làm chế độ tối cho người bán và quản trị (Figma chỉ có nền sáng).
-- Không thiết kế lại trang chủ nền tảng (vừa làm xong ở `a9a4b1f`). Chỉ chuyển nó sang Tailwind/shadcn và giữ nguyên bố cục.
+- Không thiết kế lại trang chủ nền tảng: nó đang được làm lại riêng (vòng 2, 26/11, brief `.agents/briefs/home-shopify-v2.md`). Khi tới phase 3 chỉ chuyển bản trang chủ mới nhất trên `main` sang Tailwind/shadcn và giữ nguyên bố cục.
 
 **Phản mục tiêu** (chạy được nhưng vẫn tính là hỏng)
 - Dùng tên, logo, icon, ảnh, câu chữ hay số liệu của Shopify; để lại chữ tiếng Anh mẫu.
@@ -364,8 +364,8 @@ trong bảng thì dùng neutral, và agy liệt kê chúng trong báo cáo.
 - Không có bộ chọn quốc gia và captcha như Figma.
 
 ### 8.4 Trang nền tảng (host gốc)
-- `PlatformHeader`/`PlatformFooter` và trang chủ: chuyển sang Tailwind/shadcn, **giữ nguyên bố cục và màu tối** của bản
-  `a9a4b1f`. Font chuyển sang Inter.
+- `PlatformHeader`/`PlatformFooter` và trang chủ: chuyển sang Tailwind/shadcn, **giữ nguyên bố cục, màu và gradient** của bản
+  trang chủ mới nhất trên `main` (vòng 2 theo `.agents/briefs/home-shopify-v2.md`, thay bản `a9a4b1f`). Font Inter (vòng 2 đã dùng).
 - `/ve-nexusmart`: giữ bố cục 4 màn ảnh toàn chiều rộng hiện có, chỉ chuyển công nghệ và font.
 - `/tro-giup`: trang nội dung khổ 720px, tiêu đề theo §6.2. Câu hỏi thường gặp dùng `accordion`.
 
@@ -508,7 +508,7 @@ Tổng quan                                                        [Xuất CSV]
 
 | Tuyến | Kiểu | Ghi chú |
 |---|---|---|
-| `/` | nền tảng (§8.4) | chuyển công nghệ, giữ bố cục `a9a4b1f` |
+| `/` | nền tảng (§8.4) | chuyển công nghệ, giữ bố cục bản mới nhất trên `main` (vòng 2) |
 | `/ve-nexusmart` | nội dung (§8.4) | giữ bố cục 4 màn ảnh lớn |
 | `/tro-giup` | nội dung (§8.4) | `accordion` cho hỏi đáp |
 | `/dang-nhap`, `/dang-ky`, `/quen-mat-khau`, `/dat-lai-mat-khau` | AuthSplit đứng riêng | route group mới, URL không đổi |
@@ -634,11 +634,11 @@ Chính sách:
 
 | Phase | Nội dung | Chủ sở hữu thư mục | Điểm duyệt |
 |---|---|---|---|
-| 0. Nền | Đổi luật + ADR + mốc đo. Cài phụ thuộc, `ui.css`, `--ui-*` (cả bộ màu tối của site), Inter, 5 font site + `SITE_FONT_LABELS`. Component `ui/*` và pattern `app/*` (§5.5), `AppShell`, `AuthSplit`, ánh xạ theme site (§11.1). Trang duyệt `/design` (xem dưới) | `web/src/components/**`, `web/src/styles/**`, `web/src/lib/utils.ts`, `web/src/lib/site/{theme,types}.ts` + `site.test.mjs`, `web/src/app/(design)/**`, `web/src/app/layout.tsx`, cấu hình, `package.json` | **Chủ dự án duyệt `/design` trên trình duyệt** trước khi làm tiếp |
+| 0. Nền | Đổi luật + ADR (agy). Mốc đo (Claude tự đo trước khi agy chạy). Cài phụ thuộc, `ui.css`, `--ui-*` (cả bộ màu tối của site), Inter, nạp 5 font site + `resolveSiteUiFontStack` → `--ui-font` (font site cũ `--site-font`/`SITE_FONT_LABELS` giữ Archivo tới phase 4, để site cũ không đổi hình). Component `ui/*` và pattern `app/*` (§5.5), `AppShell`, `AuthSplit`, ánh xạ theme site (§11.1). Trang duyệt `/design` (xem dưới) | `web/src/components/**`, `web/src/styles/**`, `web/src/lib/utils.ts`, `web/src/lib/site/theme.ts` (chỉ thêm) + `siteUi.test.mjs`, `web/src/lib/site/host.ts` (thêm `/design` vào tiền tố bảo vệ), `web/src/app/(design)/**`, `web/src/app/layout.tsx`, cấu hình, `package.json` | **Chủ dự án duyệt `/design` trên trình duyệt** trước khi làm tiếp |
 | 1. Người bán | 16 trang + onboarding + `SellerShell` → `AppShell` | `src/app/(seller)/**`, `src/features/seller/**` | Playwright + so Figma `02`–`06` |
 | 2. Quản trị | 9 trang + `AdminShell` → `AppShell` | `src/app/(admin)/**`, `src/features/admin/**` | |
 | 3. Nền tảng + đăng nhập | `(shop)` + `features/platform` + `AuthForms` | `src/app/(shop)/**`, `src/features/platform/**`, `src/features/account/AuthForms.tsx` + `AuthForms.module.css` | |
-| 4. Site gian hàng | 21 trang, 8 mẫu, widget | `src/app/(site)/**`, `src/features/{site,commerce,account,search,assistant,chat,product,checkout}/**` (trừ `AuthForms.*`), `src/context/**` | Playwright 8 mẫu × 3 khổ |
+| 4. Site gian hàng | 21 trang, 8 mẫu, widget; đổi `SITE_FONT_LABELS` + `resolveSiteFontStack` sang 5 font thật và sửa test font trong `site.test.mjs` | `src/app/(site)/**`, `src/features/{site,commerce,account,search,assistant,chat,product,checkout}/**` (trừ `AuthForms.*`), `src/context/**` | Playwright 8 mẫu × 3 khổ |
 | 5. Dọn dẹp | Bật preflight, xoá token cũ, `globals.css` cũ, CSS Module, component cũ, Archivo. Cập nhật `web/CLAUDE.md`, `DESIGN_REPORT.md`, `FEATURE_MATRIX.md` | toàn `web/` | lint/test/build + `make e2e-web` |
 
 - **Đóng băng `src/components/ui/` và `src/components/app/` sau phase 0.** Phase 0 thêm đủ mọi component ở §7 và mọi
