@@ -354,7 +354,7 @@ func TestW3B2_F12_ShopStatusVerification(t *testing.T) {
 		// Prove shop-1 and shop-2 are fetched in parallel via errgroup using a 2-goroutine barrier.
 		var entered atomic.Int32
 		bothEntered := make(chan struct{})
-		h.user.onGetShop = func(ctx context.Context, req *userv1.GetShopRequest) (*userv1.GetShopResponse, error) {
+		h.user.onGetShop = func(ctx context.Context, req *userv1.GetShopInternalRequest) (*userv1.GetShopInternalResponse, error) {
 			if entered.Add(1) == 2 {
 				close(bothEntered)
 			}
@@ -366,7 +366,7 @@ func TestW3B2_F12_ShopStatusVerification(t *testing.T) {
 			h.user.mu.Lock()
 			s := h.user.shops[req.GetShopId()]
 			h.user.mu.Unlock()
-			return &userv1.GetShopResponse{Shop: s}, nil
+			return &userv1.GetShopInternalResponse{Shop: s}, nil
 		}
 
 		resp, err := h.svc.CreateCheckout(buyerCtx, &orderv1.CreateCheckoutRequest{
@@ -433,7 +433,7 @@ func TestW3B2_F12_ShopStatusVerification(t *testing.T) {
 		h.svc.SetUserShopBreaker(resilience.NewCircuitBreaker(2, time.Minute))
 
 		var shopCalls atomic.Int32
-		h.user.onGetShop = func(ctx context.Context, _ *userv1.GetShopRequest) (*userv1.GetShopResponse, error) {
+		h.user.onGetShop = func(ctx context.Context, _ *userv1.GetShopInternalRequest) (*userv1.GetShopInternalResponse, error) {
 			shopCalls.Add(1)
 			<-ctx.Done()
 			return nil, ctx.Err()

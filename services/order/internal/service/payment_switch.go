@@ -12,6 +12,7 @@ import (
 	paymentv1 "github.com/nexusmart/core/gen/go/nexusmart/payment/v1"
 	shippingv1 "github.com/nexusmart/core/gen/go/nexusmart/shipping/v1"
 	userv1 "github.com/nexusmart/core/gen/go/nexusmart/user/v1"
+	"github.com/nexusmart/core/services/order/internal/clients"
 	"github.com/nexusmart/core/services/order/internal/db"
 	"github.com/nexusmart/core/services/order/internal/resilience"
 	"github.com/nexusmart/core/services/order/internal/statemachine"
@@ -28,7 +29,7 @@ const (
 	shopCheckRetryBackoff   = 50 * time.Millisecond
 )
 
-// SetUserShopBreaker overrides the UserService.GetShop circuit breaker (useful in tests).
+// SetUserShopBreaker overrides the UserService.GetShopInternal circuit breaker (useful in tests).
 func (s *OrderService) SetUserShopBreaker(cb *resilience.CircuitBreaker) {
 	s.userShopBreaker = cb
 }
@@ -41,7 +42,7 @@ func (s *OrderService) userShopAttemptTimeout() time.Duration {
 	return t
 }
 
-// verifyShopsActive synchronously checks UserService.GetShop in parallel (bounded errgroup + per-attempt
+// verifyShopsActive synchronously checks UserService.GetShopInternal in parallel (bounded errgroup + per-attempt
 // timeout + circuit breaker) for every distinct shopID and accepts ONLY SHOP_STATUS_ACTIVE (F12).
 // Suspended shops fail with FailedPrecondition SHOP_SUSPENDED; User unavailability/timeout/open-circuit fails closed
 // with Unavailable (never bypassed).
@@ -92,8 +93,8 @@ func (s *OrderService) verifyShopsActive(ctx context.Context, shopIDs []string) 
 				shopCheckRetryAttempts,
 				shopCheckRetryBackoff,
 				attemptTimeout,
-				func(attemptCtx context.Context) (*userv1.GetShopResponse, error) {
-					return s.clients.User.GetShop(stripServiceAuth(attemptCtx), &userv1.GetShopRequest{ShopId: shopID})
+				func(attemptCtx context.Context) (*userv1.GetShopInternalResponse, error) {
+					return s.clients.User.GetShopInternal(clients.WithInternalAdminContext(attemptCtx), &userv1.GetShopInternalRequest{ShopId: shopID})
 				},
 			)
 			if err != nil {

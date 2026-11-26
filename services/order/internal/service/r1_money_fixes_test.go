@@ -767,11 +767,11 @@ func TestR1Money4_StorefrontVerifyShopsActive_BreakerRetryNoDuplicate(t *testing
 	t.Run("StorefrontUsesCircuitBreakerAndRetry", func(t *testing.T) {
 		h := newTestHarness()
 		var attempts atomic.Int32
-		h.user.onGetShop = func(_ context.Context, req *userv1.GetShopRequest) (*userv1.GetShopResponse, error) {
+		h.user.onGetShop = func(_ context.Context, req *userv1.GetShopInternalRequest) (*userv1.GetShopInternalResponse, error) {
 			if attempts.Add(1) == 1 {
 				return nil, status.Error(codes.Unavailable, "transient user outage")
 			}
-			return &userv1.GetShopResponse{Shop: h.user.shops[req.GetShopId()]}, nil
+			return &userv1.GetShopInternalResponse{Shop: h.user.shops[req.GetShopId()]}, nil
 		}
 		if _, err := h.svc.CreateCheckout(buyerCtx, &orderv1.CreateCheckoutRequest{
 			IdempotencyKey:   "r1-m4-retry-sf",

@@ -25,7 +25,7 @@ import (
 type UserClient interface {
 	ValidateUser(ctx context.Context, req *userv1.ValidateUserRequest, opts ...grpc.CallOption) (*userv1.ValidateUserResponse, error)
 	GetAddress(ctx context.Context, req *userv1.GetAddressRequest, opts ...grpc.CallOption) (*userv1.GetAddressResponse, error)
-	GetShop(ctx context.Context, req *userv1.GetShopRequest, opts ...grpc.CallOption) (*userv1.GetShopResponse, error)
+	GetShopInternal(ctx context.Context, req *userv1.GetShopInternalRequest, opts ...grpc.CallOption) (*userv1.GetShopInternalResponse, error)
 	RecordCODRejection(ctx context.Context, req *userv1.RecordCODRejectionRequest, opts ...grpc.CallOption) (*userv1.RecordCODRejectionResponse, error)
 }
 

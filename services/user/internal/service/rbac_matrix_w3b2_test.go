@@ -487,11 +487,21 @@ func TestW3B2_GRPC_HandlersRoleMappingAndDBDemotionAttack(t *testing.T) {
 		t.Fatalf("unexpected decide response: approval=%+v shop=%+v", decResp.GetApproval(), decResp.GetShop())
 	}
 
-	gotShop, err := srv.GetShop(ctx, &userv1.GetShopRequest{ShopId: shopID})
+	// Anonymous GetShop MUST hide suspended shop (NotFound); staff with shops.read and internal service callers see suspension fields.
+	if _, err := srv.GetShop(ctx, &userv1.GetShopRequest{ShopId: shopID}); status.Code(err) != codes.NotFound {
+		t.Fatalf("anonymous GetShop on suspended shop: want NotFound, got %v", err)
+	}
+	gotShop, err := srv.GetShop(opsCtx, &userv1.GetShopRequest{ShopId: shopID})
 	if err != nil || gotShop.GetShop().GetSuspendedReason() != "vi pham ban hang" ||
 		gotShop.GetShop().GetSuspendedAt() == nil ||
 		gotShop.GetShop().GetStatusVersion() != decResp.GetShop().GetStatusVersion() {
-		t.Fatalf("GetShop missing suspension fields: err=%v shop=%+v", err, gotShop.GetShop())
+		t.Fatalf("admin GetShop missing suspension fields: err=%v shop=%+v", err, gotShop.GetShop())
+	}
+	gotInternalShop, err := srv.GetShopInternal(ctxWithService("order-service"), &userv1.GetShopInternalRequest{ShopId: shopID})
+	if err != nil || gotInternalShop.GetShop().GetSuspendedReason() != "vi pham ban hang" ||
+		gotInternalShop.GetShop().GetSuspendedAt() == nil ||
+		gotInternalShop.GetShop().GetStatusVersion() != decResp.GetShop().GetStatusVersion() {
+		t.Fatalf("GetShopInternal missing suspension fields: err=%v shop=%+v", err, gotInternalShop.GetShop())
 	}
 
 	// AdminListShopApprovals populates shop_name.

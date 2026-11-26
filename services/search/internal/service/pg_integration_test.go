@@ -414,21 +414,32 @@ func (c *stubProductIndexClient) ListProductsForIndex(ctx context.Context, in *p
 }
 
 type stubUserIndexClient struct {
-	mu    sync.Mutex
-	shops map[string]*userv1.Shop
+	mu                   sync.Mutex
+	svcMgr               *auth.Manager
+	shops                map[string]*userv1.Shop
+	getShopInternalCalls int
 }
 
-func (c *stubUserIndexClient) GetShop(ctx context.Context, in *userv1.GetShopRequest, _ ...grpc.CallOption) (*userv1.GetShopResponse, error) {
-	if md, ok := metadata.FromOutgoingContext(ctx); ok && len(md.Get(auth.MDAuthorization)) > 0 {
-		return nil, status.Error(codes.PermissionDenied, "public GetShop must not send service token")
+func (c *stubUserIndexClient) GetShopInternal(ctx context.Context, in *userv1.GetShopInternalRequest, _ ...grpc.CallOption) (*userv1.GetShopInternalResponse, error) {
+	md, _ := metadata.FromOutgoingContext(ctx)
+	vals := md.Get(auth.MDAuthorization)
+	if len(vals) == 0 {
+		return nil, status.Error(codes.Unauthenticated, "GetShopInternal requires service token")
+	}
+	if c.svcMgr != nil {
+		claims, err := c.svcMgr.VerifyServiceToken(vals[0])
+		if err != nil || claims.Service != "search-service" {
+			return nil, status.Error(codes.PermissionDenied, "invalid service token for GetShopInternal")
+		}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.getShopInternalCalls++
 	sh, ok := c.shops[in.GetShopId()]
 	if !ok {
 		return nil, status.Error(codes.NotFound, "shop not found")
 	}
-	return &userv1.GetShopResponse{Shop: sh}, nil
+	return &userv1.GetShopInternalResponse{Shop: sh}, nil
 }
 
 func (c *stubUserIndexClient) ListPublicShops(ctx context.Context, in *userv1.ListPublicShopsRequest, _ ...grpc.CallOption) (*userv1.ListPublicShopsResponse, error) {
@@ -536,7 +547,7 @@ func setupIntegrationHarness(t *testing.T) *testHarness {
 	emb := &toggleFailEmbedder{inner: baseEmb}
 
 	prodClient := &stubProductIndexClient{svcMgr: svcMgr}
-	userClient := &stubUserIndexClient{shops: make(map[string]*userv1.Shop)}
+	userClient := &stubUserIndexClient{svcMgr: svcMgr, shops: make(map[string]*userv1.Shop)}
 
 	idx := indexer.New(ctx, st, fm, emb, prodClient, userClient, svcMgr, log)
 	t.Cleanup(idx.Stop)
@@ -1707,5 +1718,43 @@ func TestPG_MigrationUpgradeSchema_DeadLetterTextAndProductDocuments(t *testing.
 	}
 	if !hasProductDocs {
 		t.Fatalf("expected phase-0b product_documents table to remain present after 000002")
+	}
+}
+
+func TestPG_HandleShopReviewed_GetShopInternalServiceTokenAndSuspendedVersion(t *testing.T) {
+	h := setupIntegrationHarness(t)
+	ctx := context.Background()
+
+	h.userClient.mu.Lock()
+	h.userClient.shops["shop-susp-7"] = &userv1.Shop{
+		Id:            "shop-susp-7",
+		Name:          "Xưởng Bị Tạm Ngưng",
+		Slug:          "xuong-bi-tam-ngung",
+		Status:        userv1.ShopStatus_SHOP_STATUS_SUSPENDED,
+		StatusVersion: 7,
+	}
+	h.userClient.mu.Unlock()
+
+	if err := h.idx.HandleShopReviewed(ctx, "evt-approve-susp-7", indexer.ShopReviewedInput{
+		ShopID:   "shop-susp-7",
+		ShopName: "Fallback Name",
+		Decision: "APPROVE",
+	}); err != nil {
+		t.Fatalf("HandleShopReviewed(APPROVE suspended shop): %v", err)
+	}
+
+	h.userClient.mu.Lock()
+	calls := h.userClient.getShopInternalCalls
+	h.userClient.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected 1 authenticated GetShopInternal call by search-service, got %d", calls)
+	}
+
+	got, err := h.st.Queries().GetShopByID(ctx, "shop-susp-7")
+	if err != nil {
+		t.Fatalf("GetShopByID(shop-susp-7): %v", err)
+	}
+	if got.Status != "SUSPENDED" || got.StatusVersion != 7 || got.Name != "Xưởng Bị Tạm Ngưng" || got.Slug != "xuong-bi-tam-ngung" {
+		t.Fatalf("unexpected search_shops row: %+v", got)
 	}
 }

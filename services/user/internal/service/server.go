@@ -1362,12 +1362,9 @@ func (s *Server) RegisterShop(ctx context.Context, req *userv1.RegisterShopReque
 	return &userv1.RegisterShopResponse{Shop: toProtoShop(saved)}, nil
 }
 
-func (s *Server) GetShop(ctx context.Context, req *userv1.GetShopRequest) (*userv1.GetShopResponse, error) {
-	shopID := strings.TrimSpace(req.GetShopId())
-	slug := strings.ToLower(strings.TrimSpace(req.GetSlug()))
-	ownerID := strings.TrimSpace(req.GetOwnerUserId())
+func (s *Server) loadShopByRequest(ctx context.Context, shopID, slug, ownerID string) (db.Shop, error) {
 	if shopID == "" && slug == "" && ownerID == "" {
-		return nil, status.Error(codes.InvalidArgument, "shop_id, slug, or owner_user_id is required")
+		return db.Shop{}, status.Error(codes.InvalidArgument, "shop_id, slug, or owner_user_id is required")
 	}
 
 	var (
@@ -1377,25 +1374,93 @@ func (s *Server) GetShop(ctx context.Context, req *userv1.GetShopRequest) (*user
 	switch {
 	case shopID != "":
 		if !isValidUUID(shopID) {
-			return nil, status.Error(codes.NotFound, "shop not found")
+			return db.Shop{}, status.Error(codes.NotFound, "shop not found")
 		}
 		shop, err = s.store.GetShopByID(ctx, shopID)
 	case slug != "":
 		shop, err = s.store.GetShopBySlug(ctx, slug)
 	default:
 		if !isValidUUID(ownerID) {
-			return nil, status.Error(codes.NotFound, "shop not found")
+			return db.Shop{}, status.Error(codes.NotFound, "shop not found")
 		}
 		shop, err = s.store.GetShopByOwnerID(ctx, ownerID)
 	}
 	if err != nil {
 		if isNotFoundErr(err) {
-			return nil, status.Error(codes.NotFound, "shop not found")
+			return db.Shop{}, status.Error(codes.NotFound, "shop not found")
 		}
-		return nil, status.Error(codes.Internal, "failed to load shop")
+		return db.Shop{}, status.Error(codes.Internal, "failed to load shop")
+	}
+	return shop, nil
+}
+
+func (s *Server) GetShop(ctx context.Context, req *userv1.GetShopRequest) (*userv1.GetShopResponse, error) {
+	shopID := strings.TrimSpace(req.GetShopId())
+	slug := strings.ToLower(strings.TrimSpace(req.GetSlug()))
+	ownerID := strings.TrimSpace(req.GetOwnerUserId())
+	if shopID == "" && slug == "" && ownerID == "" {
+		return nil, status.Error(codes.InvalidArgument, "shop_id, slug, or owner_user_id is required")
 	}
 
-	return &userv1.GetShopResponse{Shop: toProtoShop(shop)}, nil
+	var claims *auth.Claims
+	if rawClaims, ok := auth.ClaimsFromContext(ctx); ok && rawClaims != nil {
+		if rawClaims.Service != "" {
+			return nil, status.Error(codes.PermissionDenied, "service identity not allowed for this RPC")
+		}
+		verified, err := s.requireAuthClaims(ctx)
+		if err != nil {
+			return nil, err
+		}
+		claims = verified
+	}
+
+	isAdmin := auth.HasCapability(claims, auth.CapShopsRead)
+
+	// Lookup by owner_user_id is restricted to the shop owner themselves or staff with shops.read.
+	if shopID == "" && slug == "" && ownerID != "" {
+		if claims == nil {
+			return nil, status.Error(codes.Unauthenticated, "authentication required")
+		}
+		if claims.UserID() != ownerID && !isAdmin {
+			return nil, status.Error(codes.PermissionDenied, "cannot look up another user's shop by owner_user_id")
+		}
+	}
+
+	shop, err := s.loadShopByRequest(ctx, shopID, slug, ownerID)
+	if err != nil {
+		return nil, err
+	}
+
+	isOwner := claims != nil && claims.UserID() != "" && claims.UserID() == shop.OwnerUserID
+	if isOwner || isAdmin {
+		return &userv1.GetShopResponse{Shop: toProtoShop(shop)}, nil
+	}
+
+	if shop.Status != ShopStatusActive {
+		return nil, status.Error(codes.NotFound, "shop not found")
+	}
+	return &userv1.GetShopResponse{Shop: toPublicProtoShop(shop)}, nil
+}
+
+func (s *Server) GetShopInternal(ctx context.Context, req *userv1.GetShopInternalRequest) (*userv1.GetShopInternalResponse, error) {
+	claims, err := requireAuthClaims(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if claims.Service == "" {
+		return nil, status.Error(codes.PermissionDenied, "service token required")
+	}
+
+	shop, err := s.loadShopByRequest(
+		ctx,
+		strings.TrimSpace(req.GetShopId()),
+		strings.ToLower(strings.TrimSpace(req.GetSlug())),
+		strings.TrimSpace(req.GetOwnerUserId()),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &userv1.GetShopInternalResponse{Shop: toProtoShop(shop)}, nil
 }
 
 func (s *Server) ListPublicShops(ctx context.Context, req *userv1.ListPublicShopsRequest) (*userv1.ListPublicShopsResponse, error) {

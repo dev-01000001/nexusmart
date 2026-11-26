@@ -17,18 +17,24 @@ import (
 
 type fakeUserServer struct {
 	userv1.UnimplementedUserServiceServer
-	shopErr error
-	shop    *userv1.Shop
-	user    *userv1.User
-	site    *userv1.Site
+	shopErr              error
+	shop                 *userv1.Shop
+	user                 *userv1.User
+	site                 *userv1.Site
+	getShopInternalCalls int
 }
 
-func (f *fakeUserServer) GetShop(_ context.Context, req *userv1.GetShopRequest) (*userv1.GetShopResponse, error) {
+func (f *fakeUserServer) GetShopInternal(ctx context.Context, req *userv1.GetShopInternalRequest) (*userv1.GetShopInternalResponse, error) {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok || claims.Service != serviceTokenName || claims.Role != auth.ServiceRole {
+		return nil, status.Error(codes.PermissionDenied, "expected notification-service internal token")
+	}
+	f.getShopInternalCalls++
 	if f.shopErr != nil {
 		return nil, f.shopErr
 	}
 	if f.shop != nil && f.shop.GetId() == req.GetShopId() {
-		return &userv1.GetShopResponse{Shop: f.shop}, nil
+		return &userv1.GetShopInternalResponse{Shop: f.shop}, nil
 	}
 	return nil, status.Error(codes.NotFound, "shop not found")
 }
@@ -93,13 +99,16 @@ func TestClientGetShopOwnerAndGetUserContactWithAuthInterceptor(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	// 1. GetShopOwner must call GetShop WITHOUT a service token so auth.GRPCUnaryServerInterceptor allows it.
+	// 1. GetShopOwner must call GetShopInternal WITH a service token through auth.GRPCUnaryServerInterceptor.
 	ownerID, shopName, err := client.GetShopOwner(context.Background(), "shop-42")
 	if err != nil {
 		t.Fatalf("GetShopOwner failed: %v", err)
 	}
 	if ownerID != "seller-42" || shopName != "Xưởng Dệt Bạch Đằng" {
 		t.Fatalf("unexpected shop owner result: owner=%q name=%q", ownerID, shopName)
+	}
+	if fake.getShopInternalCalls != 1 {
+		t.Fatalf("expected 1 GetShopInternal call with service token, got %d", fake.getShopInternalCalls)
 	}
 
 	// 2. GetUserContact must call GetProfile WITH a service token.
@@ -117,10 +126,20 @@ func TestClientGetShopOwnerAndGetUserContactWithAuthInterceptor(t *testing.T) {
 		t.Fatalf("GetSitePrimaryHost with auth interceptor: host=%q err=%v", host, err)
 	}
 
-	// 4. Transient error from UserService.GetShop must propagate.
+	// 4. Transient error from UserService.GetShopInternal must propagate.
 	fake.shopErr = status.Error(codes.Unavailable, "user service temporarily unavailable")
 	if _, _, err := client.GetShopOwner(context.Background(), "shop-42"); status.Code(err) != codes.Unavailable {
 		t.Fatalf("expected Unavailable error from GetShopOwner, got %v", err)
+	}
+
+	// 5. Client without service token manager fails closed instead of calling GetShopInternal anonymously.
+	noSvcClient, err := New(lis.Addr().String(), "notification-test", nil)
+	if err != nil {
+		t.Fatalf("New client(nil svc): %v", err)
+	}
+	defer func() { _ = noSvcClient.Close() }()
+	if _, _, err := noSvcClient.GetShopOwner(context.Background(), "shop-42"); err == nil {
+		t.Fatalf("expected error when service token manager is nil")
 	}
 }
 

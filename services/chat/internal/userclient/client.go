@@ -95,7 +95,7 @@ func (c *Client) VerifyActiveShop(ctx context.Context, shopID string) error {
 			c.recordSuccess()
 			shop := resp.GetShop()
 			if shop == nil {
-				return ErrShopNotFound
+				return fmt.Errorf("%w: empty shop response", ErrShopInactive)
 			}
 			if shop.GetStatus() != userv1.ShopStatus_SHOP_STATUS_ACTIVE {
 				return fmt.Errorf("%w: status=%s", ErrShopInactive, shop.GetStatus().String())
@@ -105,8 +105,10 @@ func (c *Client) VerifyActiveShop(ctx context.Context, shopID string) error {
 
 		switch status.Code(err) {
 		case codes.NotFound:
+			// Public UserService.GetShop returns NotFound for non-ACTIVE shops (PENDING/REJECTED/SUSPENDED)
+			// as well as missing shops; map to ErrShopInactive so callers receive FailedPrecondition.
 			c.recordSuccess()
-			return ErrShopNotFound
+			return fmt.Errorf("%w: shop not found or not active", ErrShopInactive)
 		case codes.InvalidArgument:
 			c.recordSuccess()
 			return ErrShopNotFound

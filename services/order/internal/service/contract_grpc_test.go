@@ -451,8 +451,8 @@ func (s *wireUserServer) ValidateUser(ctx context.Context, req *userv1.ValidateU
 func (s *wireUserServer) GetAddress(ctx context.Context, req *userv1.GetAddressRequest) (*userv1.GetAddressResponse, error) {
 	return s.mock.GetAddress(ctx, req)
 }
-func (s *wireUserServer) GetShop(ctx context.Context, req *userv1.GetShopRequest) (*userv1.GetShopResponse, error) {
-	return s.mock.GetShop(ctx, req)
+func (s *wireUserServer) GetShopInternal(ctx context.Context, req *userv1.GetShopInternalRequest) (*userv1.GetShopInternalResponse, error) {
+	return s.mock.GetShopInternal(ctx, req)
 }
 
 type wireProductServer struct {

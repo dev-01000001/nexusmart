@@ -26,7 +26,7 @@ type Client struct {
 }
 
 // New creates a lazy-connecting gRPC client to UserService.
-// svc signs internal service tokens for GetAddress calls.
+// svc signs internal service tokens for GetShopInternal and GetAddress calls.
 func New(addr, serviceName string, svc *auth.Manager) (*Client, error) {
 	if strings.TrimSpace(addr) == "" {
 		return nil, fmt.Errorf("user grpc address is empty")
@@ -68,11 +68,19 @@ func (c *Client) GetShopPickupCodes(ctx context.Context, shopID string) (string,
 		return "", "", nil
 	}
 
-	// GetShop is not in internalRPCs (service tokens are rejected by auth interceptor).
-	shopCtx, cancelShop := context.WithTimeout(ctx, c.timeout)
+	if c.svc == nil {
+		return "", "", fmt.Errorf("service token manager not initialized")
+	}
+
+	tok, err := c.svc.SignServiceToken(serviceTokenName)
+	if err != nil {
+		return "", "", fmt.Errorf("sign service token: %w", err)
+	}
+
+	shopCtx, cancelShop := context.WithTimeout(auth.InjectOutgoingGRPC(ctx, tok), c.timeout)
 	defer cancelShop()
 
-	shopResp, err := c.client.GetShop(shopCtx, &userv1.GetShopRequest{ShopId: shopID})
+	shopResp, err := c.client.GetShopInternal(shopCtx, &userv1.GetShopInternalRequest{ShopId: shopID})
 	if err != nil {
 		return "", "", err
 	}
@@ -85,14 +93,7 @@ func (c *Client) GetShopPickupCodes(ctx context.Context, shopID string) (string,
 	if pickupAddrID == "" || ownerUserID == "" {
 		return "", "", nil
 	}
-	if c.svc == nil {
-		return "", "", fmt.Errorf("service token manager not initialized")
-	}
 
-	tok, err := c.svc.SignServiceToken(serviceTokenName)
-	if err != nil {
-		return "", "", fmt.Errorf("sign service token: %w", err)
-	}
 	addrCtx, cancelAddr := context.WithTimeout(auth.InjectOutgoingGRPC(ctx, tok), c.timeout)
 	defer cancelAddr()
 

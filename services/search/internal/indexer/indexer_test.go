@@ -45,20 +45,24 @@ func (r *recordingShopDBTX) QueryRow(_ context.Context, _ string, _ ...interface
 }
 
 type pagedUserClient struct {
-	mu            sync.Mutex
-	shops         []*userv1.Shop
-	scriptedPages [][]*userv1.Shop
-	scriptedTotal int64
-	peerCap       int32
-	omitTotal     bool
-	repeatPage1   bool
-	infiniteMode  bool
-	calls         int32
-	maxCalls      int32
+	mu                   sync.Mutex
+	shops                []*userv1.Shop
+	scriptedPages        [][]*userv1.Shop
+	scriptedTotal        int64
+	peerCap              int32
+	omitTotal            bool
+	repeatPage1          bool
+	infiniteMode         bool
+	calls                int32
+	maxCalls             int32
+	getShopInternalCalls int32
 }
 
-func (c *pagedUserClient) GetShop(_ context.Context, _ *userv1.GetShopRequest, _ ...grpc.CallOption) (*userv1.GetShopResponse, error) {
-	return &userv1.GetShopResponse{}, nil
+func (c *pagedUserClient) GetShopInternal(_ context.Context, _ *userv1.GetShopInternalRequest, _ ...grpc.CallOption) (*userv1.GetShopInternalResponse, error) {
+	c.mu.Lock()
+	c.getShopInternalCalls++
+	c.mu.Unlock()
+	return &userv1.GetShopInternalResponse{}, nil
 }
 
 func (c *pagedUserClient) ListPublicShops(_ context.Context, in *userv1.ListPublicShopsRequest, _ ...grpc.CallOption) (*userv1.ListPublicShopsResponse, error) {
@@ -286,4 +290,25 @@ func TestSyncShops_IndependentOfPeerPageSizeCeiling(t *testing.T) {
 			t.Fatalf("ListPublicShops calls = %d, want 4", client.calls)
 		}
 	})
+}
+
+func TestHandleShopReviewed_RequiresServiceTokenManager(t *testing.T) {
+	client := &pagedUserClient{}
+	idx := New(context.Background(), nil, nil, nil, nil, client, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer idx.Stop()
+
+	if err := idx.HandleShopReviewed(context.Background(), "evt-approve-no-svc-auth", ShopReviewedInput{
+		ShopID:   "shop-susp-7",
+		ShopName: "Fallback Name",
+		Decision: "APPROVE",
+	}); err == nil {
+		t.Fatalf("expected fail-closed error when svcAuth is nil")
+	}
+
+	client.mu.Lock()
+	calls := client.getShopInternalCalls
+	client.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("must not call GetShopInternal when svcAuth is nil, got %d calls", calls)
+	}
 }

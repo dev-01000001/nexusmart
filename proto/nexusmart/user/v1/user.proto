@@ -285,6 +285,16 @@ message GetShopResponse {
   Shop shop = 1;
 }
 
+message GetShopInternalRequest {
+  string shop_id = 1;
+  string owner_user_id = 2;
+  string slug = 3;
+}
+
+message GetShopInternalResponse {
+  Shop shop = 1;
+}
+
 message ListPublicShopsRequest {
   int32 page = 1;
   int32 page_size = 2;
@@ -916,6 +926,7 @@ service UserService {
   rpc AdminUpdateUserRole(AdminUpdateUserRoleRequest) returns (AdminUpdateUserRoleResponse);
   rpc RegisterShop(RegisterShopRequest) returns (RegisterShopResponse);
   rpc GetShop(GetShopRequest) returns (GetShopResponse);
+  rpc GetShopInternal(GetShopInternalRequest) returns (GetShopInternalResponse);
   rpc ListPublicShops(ListPublicShopsRequest) returns (ListPublicShopsResponse);
   rpc AdminListShops(AdminListShopsRequest) returns (AdminListShopsResponse);
   rpc AdminReviewShop(AdminReviewShopRequest) returns (AdminReviewShopResponse);

@@ -50,8 +50,9 @@ type mockUserClient struct {
 	addresses         map[string]*userv1.Address
 	shops             map[string]*userv1.Shop
 	getShopCalls      []string
+	getShopAuth       []authCallSnapshot
 	getShopErr        error
-	onGetShop         func(ctx context.Context, req *userv1.GetShopRequest) (*userv1.GetShopResponse, error)
+	onGetShop         func(ctx context.Context, req *userv1.GetShopInternalRequest) (*userv1.GetShopInternalResponse, error)
 	getAddressAuth    map[string]authCallSnapshot
 	codRejectionErr   error
 	codRejectionCalls []*userv1.RecordCODRejectionRequest
@@ -160,13 +161,30 @@ func (m *mockUserClient) GetAddress(ctx context.Context, req *userv1.GetAddressR
 	return &userv1.GetAddressResponse{Address: a}, nil
 }
 
-func (m *mockUserClient) GetShop(ctx context.Context, req *userv1.GetShopRequest, _ ...grpc.CallOption) (*userv1.GetShopResponse, error) {
+func (m *mockUserClient) GetShopInternal(ctx context.Context, req *userv1.GetShopInternalRequest, _ ...grpc.CallOption) (*userv1.GetShopInternalResponse, error) {
+	claims, hasClaims := auth.ClaimsFromContext(ctx)
+	rawToken := auth.RawTokenFromContext(ctx)
+	var svcName string
+	if hasClaims {
+		svcName = claims.Service
+	}
 	m.mu.Lock()
 	m.getShopCalls = append(m.getShopCalls, req.GetShopId())
+	m.getShopAuth = append(m.getShopAuth, authCallSnapshot{
+		role:     auth.RoleFromContext(ctx),
+		service:  svcName,
+		rawToken: rawToken,
+	})
 	hook := m.onGetShop
 	err := m.getShopErr
 	s, ok := m.shops[req.GetShopId()]
 	m.mu.Unlock()
+	if !hasClaims || svcName == "" {
+		return nil, status.Error(codes.PermissionDenied, "GetShopInternal requires internal service token")
+	}
+	if rawToken != "" {
+		return nil, status.Error(codes.PermissionDenied, "raw end-user token leaked onto GetShopInternal")
+	}
 	if hook != nil {
 		return hook(ctx, req)
 	}
@@ -177,7 +195,7 @@ func (m *mockUserClient) GetShop(ctx context.Context, req *userv1.GetShopRequest
 		return nil, status.Error(codes.NotFound, "shop not found")
 	}
 	cp, _ := proto.Clone(s).(*userv1.Shop)
-	return &userv1.GetShopResponse{Shop: cp}, nil
+	return &userv1.GetShopInternalResponse{Shop: cp}, nil
 }
 
 func (m *mockUserClient) RecordCODRejection(ctx context.Context, req *userv1.RecordCODRejectionRequest, _ ...grpc.CallOption) (*userv1.RecordCODRejectionResponse, error) {

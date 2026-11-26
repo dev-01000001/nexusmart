@@ -36,7 +36,6 @@ type trustDownstreamStub struct {
 
 	mu                 sync.Mutex
 	seenServiceMethods map[string]int
-	seenAnonymousShop  int
 	seenUserMethods    map[string]int
 
 	cancelShipErr      error
@@ -263,14 +262,11 @@ func (s *trustDownstreamStub) ValidateUser(ctx context.Context, _ *userv1.Valida
 	return &userv1.ValidateUserResponse{Valid: true, Status: userv1.UserStatus_USER_STATUS_ACTIVE, PhoneVerified: true}, nil
 }
 
-func (s *trustDownstreamStub) GetShop(ctx context.Context, req *userv1.GetShopRequest) (*userv1.GetShopResponse, error) {
-	// Public RPC: real interceptor rejects service tokens; anonymous from job/watchdog MUST succeed.
-	if _, ok := auth.ClaimsFromContext(ctx); !ok {
-		s.mu.Lock()
-		s.seenAnonymousShop++
-		s.mu.Unlock()
+func (s *trustDownstreamStub) GetShopInternal(ctx context.Context, req *userv1.GetShopInternalRequest) (*userv1.GetShopInternalResponse, error) {
+	if err := s.requireServiceClaims(ctx, "User.GetShopInternal"); err != nil {
+		return nil, err
 	}
-	return &userv1.GetShopResponse{
+	return &userv1.GetShopInternalResponse{
 		Shop: &userv1.Shop{
 			Id:              req.GetShopId(),
 			Name:            "Trust Shop",
@@ -472,6 +468,10 @@ func TestGRPCTrust_OrderJobsAndConsumersRealAuthInterceptor(t *testing.T) {
 				_, e := rawPromo.ReleasePromotionShop(c, &promotionv1.ReleasePromotionShopRequest{OrderId: "g1", ShopId: "shop-1"})
 				return e
 			},
+			"User.GetShopInternal": func(c context.Context) error {
+				_, e := rawUser.GetShopInternal(c, &userv1.GetShopInternalRequest{ShopId: "shop-1"})
+				return e
+			},
 			"User.RecordCODRejection": func(c context.Context) error {
 				_, e := rawUser.RecordCODRejection(c, &userv1.RecordCODRejectionRequest{UserId: "buyer-1", OrderId: "o1"})
 				return e
@@ -517,9 +517,21 @@ func TestGRPCTrust_OrderJobsAndConsumersRealAuthInterceptor(t *testing.T) {
 		if _, e := rawPromo.ReservePromotion(goodSvcCtx, &promotionv1.ReservePromotionRequest{OrderId: "g1", UserId: "buyer-1"}); e != nil {
 			t.Fatalf("Promotion.ReservePromotion with order-service token: got %v, want nil", e)
 		}
+		// User.GetShopInternal MUST reject end-user JWTs and accept service tokens.
+		for label, uCtx := range map[string]context.Context{
+			"buyer JWT": auth.InjectOutgoingGRPC(context.Background(), buyerTok),
+			"admin JWT": auth.InjectOutgoingGRPC(context.Background(), adminTok),
+		} {
+			if _, e := rawUser.GetShopInternal(uCtx, &userv1.GetShopInternalRequest{ShopId: "shop-1"}); status.Code(e) != codes.PermissionDenied {
+				t.Fatalf("User.GetShopInternal with %s: got %v, want PermissionDenied", label, e)
+			}
+		}
+		if _, e := rawUser.GetShopInternal(goodSvcCtx, &userv1.GetShopInternalRequest{ShopId: "shop-1"}); e != nil {
+			t.Fatalf("User.GetShopInternal with order-service token: got %v, want nil", e)
+		}
 	})
 
-	// 2. Watchdog GetShipment + CancelShipment(RETURN) + CreateReturnShipment (+ User.GetShop anonymous & User.GetAddress service token).
+	// 2. Watchdog GetShipment + CancelShipment(RETURN) + CreateReturnShipment (+ User.GetShopInternal & User.GetAddress service tokens).
 	t.Run("Watchdog_GetShipment_CancelShipment_CreateReturnShipment", func(t *testing.T) {
 		co, err := svc.CreateCheckout(buyerCtx, &orderv1.CreateCheckoutRequest{
 			IdempotencyKey: "trust-ret-1",
@@ -547,8 +559,12 @@ func TestGRPCTrust_OrderJobsAndConsumersRealAuthInterceptor(t *testing.T) {
 		}
 		retID := retResp.ReturnRequestId
 
-		// Auto-accept PENDING via watchdog (context.Background() — NO user JWT!) -> calls User.GetShop (anonymous),
+		// Auto-accept PENDING via watchdog (context.Background() — NO user JWT!) -> calls User.GetShopInternal (service token),
 		// User.GetAddress (service token), Shipping.CreateReturnShipment (service token)!
+		beforeWatchdogShops := stub.countService("User.GetShopInternal")
+		if beforeWatchdogShops < 2 {
+			t.Fatalf("expected CreateCheckout + SellerShipOrder to call User.GetShopInternal with service token, got %d", beforeWatchdogShops)
+		}
 		now = now.Add(49 * time.Hour)
 		if n, err := svc.ScanReturnDeadlines(context.Background()); err != nil || n != 1 {
 			t.Fatalf("ScanReturnDeadlines(PENDING auto-accept) = %d, %v; want 1, nil", n, err)
@@ -560,11 +576,8 @@ func TestGRPCTrust_OrderJobsAndConsumersRealAuthInterceptor(t *testing.T) {
 		if stub.countService("Shipping.CreateReturnShipment") < 1 || stub.countService("User.GetAddress") < 1 {
 			t.Fatalf("expected service-token CreateReturnShipment & GetAddress, got %+v", stub.seenServiceMethods)
 		}
-		stub.mu.Lock()
-		anonShops := stub.seenAnonymousShop
-		stub.mu.Unlock()
-		if anonShops < 1 {
-			t.Fatalf("expected User.GetShop to be called anonymously (service auth stripped) from watchdog, got %d", anonShops)
+		if stub.countService("User.GetShopInternal") <= beforeWatchdogShops {
+			t.Fatalf("expected watchdog to call User.GetShopInternal with service token (%d -> %d)", beforeWatchdogShops, stub.countService("User.GetShopInternal"))
 		}
 
 		// Now expire AWAITING_SHIPMENT with CancelShipment -> FailedPrecondition so watchdog calls GetShipment(RETURN)

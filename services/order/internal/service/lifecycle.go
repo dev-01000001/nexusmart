@@ -955,7 +955,7 @@ func orderAddressToShipmentAddress(raw []byte) *shippingv1.ShipmentAddress {
 	}
 }
 
-// stripServiceAuth clears internal service claims before calling public RPCs not listed in internalRPCs (e.g. UserService.GetShop).
+// stripServiceAuth clears internal service claims before calling public RPCs not listed in internalRPCs (e.g. PromotionService.ListActiveFlashSales).
 func stripServiceAuth(ctx context.Context) context.Context {
 	if c, ok := auth.ClaimsFromContext(ctx); ok && c.Service != "" {
 		return auth.WithRawToken(auth.WithClaims(ctx, nil), "")
@@ -970,7 +970,7 @@ func (s *OrderService) resolveShopPickupAddress(ctx context.Context, shopID stri
 	if s.clients.User == nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "SHOP_PICKUP_ADDRESS_REQUIRED: user service unavailable for shop %s", shopID)
 	}
-	shopResp, err := s.clients.User.GetShop(stripServiceAuth(ctx), &userv1.GetShopRequest{ShopId: shopID})
+	shopResp, err := s.clients.User.GetShopInternal(clients.WithInternalAdminContext(ctx), &userv1.GetShopInternalRequest{ShopId: shopID})
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
 			return nil, status.Errorf(codes.FailedPrecondition, "SHOP_PICKUP_ADDRESS_REQUIRED: shop %s not found", shopID)

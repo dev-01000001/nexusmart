@@ -86,17 +86,24 @@ func (c *Client) GetUserContact(ctx context.Context, userID string) (string, str
 	return strings.TrimSpace(resp.GetUser().GetEmail()), strings.TrimSpace(resp.GetUser().GetFullName()), nil
 }
 
-// GetShopOwner calls UserService.GetShop to resolve a shop's owner user ID and display name.
-// GetShop is not in internalRPCs (service tokens are rejected by auth.GRPCUnaryServerInterceptor).
+// GetShopOwner calls UserService.GetShopInternal with an internal service token
+// to resolve a shop's owner user ID and display name (regardless of shop status).
 func (c *Client) GetShopOwner(ctx context.Context, shopID string) (string, string, error) {
 	shopID = strings.TrimSpace(shopID)
 	if c == nil || c.client == nil || shopID == "" {
 		return "", "", nil
 	}
-	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	if c.svc == nil {
+		return "", "", fmt.Errorf("service token manager not initialized")
+	}
+	tok, err := c.svc.SignServiceToken(serviceTokenName)
+	if err != nil {
+		return "", "", err
+	}
+	callCtx, cancel := context.WithTimeout(auth.InjectOutgoingGRPC(ctx, tok), c.timeout)
 	defer cancel()
 
-	resp, err := c.client.GetShop(callCtx, &userv1.GetShopRequest{ShopId: shopID})
+	resp, err := c.client.GetShopInternal(callCtx, &userv1.GetShopInternalRequest{ShopId: shopID})
 	if err != nil {
 		return "", "", err
 	}

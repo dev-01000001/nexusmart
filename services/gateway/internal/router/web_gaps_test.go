@@ -433,6 +433,10 @@ func TestWebGapEndpointsRBACIsolationAndPrivacy(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"total":0`) {
 		t.Fatalf("GET /products pending shop_slug: code=%d body=%s", rec.Code, rec.Body.String())
 	}
+	rec = doReq(http.MethodGet, "/api/v1/products?shop_slug=khong-ton-tai", "", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"total":0`) {
+		t.Fatalf("GET /products unknown/not-found shop_slug: code=%d body=%s", rec.Code, rec.Body.String())
+	}
 
 	// --- 4. Seller endpoints: 401 no token, 403 wrong role, strict shop_id isolation (seller A != shop B) ---
 	sellerRoutes := []string{

@@ -14,16 +14,22 @@ import (
 
 type fakeUserServer struct {
 	userv1.UnimplementedUserServiceServer
-	shops     map[string]*userv1.Shop
-	addresses map[string]*userv1.Address
+	shops                map[string]*userv1.Shop
+	addresses            map[string]*userv1.Address
+	getShopInternalCalls int
 }
 
-func (f *fakeUserServer) GetShop(_ context.Context, req *userv1.GetShopRequest) (*userv1.GetShopResponse, error) {
+func (f *fakeUserServer) GetShopInternal(ctx context.Context, req *userv1.GetShopInternalRequest) (*userv1.GetShopInternalResponse, error) {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok || claims.Service != serviceTokenName || claims.Role != auth.ServiceRole {
+		return nil, status.Error(codes.PermissionDenied, "expected shipping-service internal token")
+	}
+	f.getShopInternalCalls++
 	sh, ok := f.shops[req.GetShopId()]
 	if !ok {
 		return nil, status.Error(codes.NotFound, "shop not found")
 	}
-	return &userv1.GetShopResponse{Shop: sh}, nil
+	return &userv1.GetShopInternalResponse{Shop: sh}, nil
 }
 
 func (f *fakeUserServer) GetAddress(ctx context.Context, req *userv1.GetAddressRequest) (*userv1.GetAddressResponse, error) {
@@ -85,13 +91,16 @@ func TestClient_GetShopPickupCodesWithRealAuthInterceptor(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	// 1. Valid shop resolves real pickup province/ward via GetShop (no svc token) + GetAddress (svc token).
+	// 1. Valid shop resolves real pickup province/ward via GetShopInternal (svc token) + GetAddress (svc token).
 	prov, ward, err := client.GetShopPickupCodes(context.Background(), "shop-sg")
 	if err != nil {
 		t.Fatalf("GetShopPickupCodes(shop-sg) failed: %v", err)
 	}
 	if prov != "79" || ward != "79001" {
 		t.Fatalf("got (%q, %q), want (79, 79001)", prov, ward)
+	}
+	if fakeSrv.getShopInternalCalls != 1 {
+		t.Fatalf("expected 1 GetShopInternal call with service token, got %d", fakeSrv.getShopInternalCalls)
 	}
 
 	// 2. Missing shop returns gRPC NotFound.
@@ -103,5 +112,15 @@ func TestClient_GetShopPickupCodesWithRealAuthInterceptor(t *testing.T) {
 	prov, ward, err = client.GetShopPickupCodes(context.Background(), "shop-no-pickup")
 	if err != nil || prov != "" || ward != "" {
 		t.Fatalf("expected empty pickup for shop-no-pickup, got prov=%q ward=%q err=%v", prov, ward, err)
+	}
+
+	// 4. Client without service token manager fails closed instead of calling GetShopInternal anonymously.
+	noSvcClient, err := New(lis.Addr().String(), "shipping", nil)
+	if err != nil {
+		t.Fatalf("New userclient(nil svc): %v", err)
+	}
+	defer func() { _ = noSvcClient.Close() }()
+	if _, _, err := noSvcClient.GetShopPickupCodes(context.Background(), "shop-sg"); err == nil {
+		t.Fatalf("expected error when service token manager is nil")
 	}
 }

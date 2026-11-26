@@ -33,6 +33,7 @@ const (
 	UserService_AdminUpdateUserRole_FullMethodName         = "/nexusmart.user.v1.UserService/AdminUpdateUserRole"
 	UserService_RegisterShop_FullMethodName                = "/nexusmart.user.v1.UserService/RegisterShop"
 	UserService_GetShop_FullMethodName                     = "/nexusmart.user.v1.UserService/GetShop"
+	UserService_GetShopInternal_FullMethodName             = "/nexusmart.user.v1.UserService/GetShopInternal"
 	UserService_ListPublicShops_FullMethodName             = "/nexusmart.user.v1.UserService/ListPublicShops"
 	UserService_AdminListShops_FullMethodName              = "/nexusmart.user.v1.UserService/AdminListShops"
 	UserService_AdminReviewShop_FullMethodName             = "/nexusmart.user.v1.UserService/AdminReviewShop"
@@ -97,6 +98,7 @@ type UserServiceClient interface {
 	AdminUpdateUserRole(ctx context.Context, in *AdminUpdateUserRoleRequest, opts ...grpc.CallOption) (*AdminUpdateUserRoleResponse, error)
 	RegisterShop(ctx context.Context, in *RegisterShopRequest, opts ...grpc.CallOption) (*RegisterShopResponse, error)
 	GetShop(ctx context.Context, in *GetShopRequest, opts ...grpc.CallOption) (*GetShopResponse, error)
+	GetShopInternal(ctx context.Context, in *GetShopInternalRequest, opts ...grpc.CallOption) (*GetShopInternalResponse, error)
 	ListPublicShops(ctx context.Context, in *ListPublicShopsRequest, opts ...grpc.CallOption) (*ListPublicShopsResponse, error)
 	AdminListShops(ctx context.Context, in *AdminListShopsRequest, opts ...grpc.CallOption) (*AdminListShopsResponse, error)
 	AdminReviewShop(ctx context.Context, in *AdminReviewShopRequest, opts ...grpc.CallOption) (*AdminReviewShopResponse, error)
@@ -285,6 +287,16 @@ func (c *userServiceClient) GetShop(ctx context.Context, in *GetShopRequest, opt
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetShopResponse)
 	err := c.cc.Invoke(ctx, UserService_GetShop_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *userServiceClient) GetShopInternal(ctx context.Context, in *GetShopInternalRequest, opts ...grpc.CallOption) (*GetShopInternalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetShopInternalResponse)
+	err := c.cc.Invoke(ctx, UserService_GetShopInternal_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -749,6 +761,7 @@ type UserServiceServer interface {
 	AdminUpdateUserRole(context.Context, *AdminUpdateUserRoleRequest) (*AdminUpdateUserRoleResponse, error)
 	RegisterShop(context.Context, *RegisterShopRequest) (*RegisterShopResponse, error)
 	GetShop(context.Context, *GetShopRequest) (*GetShopResponse, error)
+	GetShopInternal(context.Context, *GetShopInternalRequest) (*GetShopInternalResponse, error)
 	ListPublicShops(context.Context, *ListPublicShopsRequest) (*ListPublicShopsResponse, error)
 	AdminListShops(context.Context, *AdminListShopsRequest) (*AdminListShopsResponse, error)
 	AdminReviewShop(context.Context, *AdminReviewShopRequest) (*AdminReviewShopResponse, error)
@@ -844,6 +857,9 @@ func (UnimplementedUserServiceServer) RegisterShop(context.Context, *RegisterSho
 }
 func (UnimplementedUserServiceServer) GetShop(context.Context, *GetShopRequest) (*GetShopResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetShop not implemented")
+}
+func (UnimplementedUserServiceServer) GetShopInternal(context.Context, *GetShopInternalRequest) (*GetShopInternalResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetShopInternal not implemented")
 }
 func (UnimplementedUserServiceServer) ListPublicShops(context.Context, *ListPublicShopsRequest) (*ListPublicShopsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListPublicShops not implemented")
@@ -1246,6 +1262,24 @@ func _UserService_GetShop_Handler(srv interface{}, ctx context.Context, dec func
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(UserServiceServer).GetShop(ctx, req.(*GetShopRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _UserService_GetShopInternal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetShopInternalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UserServiceServer).GetShopInternal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UserService_GetShopInternal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UserServiceServer).GetShopInternal(ctx, req.(*GetShopInternalRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2104,6 +2138,10 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetShop",
 			Handler:    _UserService_GetShop_Handler,
+		},
+		{
+			MethodName: "GetShopInternal",
+			Handler:    _UserService_GetShopInternal_Handler,
 		},
 		{
 			MethodName: "ListPublicShops",

@@ -42,6 +42,7 @@ var internalRPCs = map[string]bool{
 	"/nexusmart.user.v1.UserService/RecordCODRejection":          true,
 	"/nexusmart.user.v1.UserService/WriteAuditLog":               true,
 	"/nexusmart.user.v1.UserService/GetShopBankAccountForPayout": true,
+	"/nexusmart.user.v1.UserService/GetShopInternal":             true,
 	"/nexusmart.user.v1.UserService/Logout":                      false,
 	"/nexusmart.user.v1.UserService/UpdateProfile":               false,
 	"/nexusmart.user.v1.UserService/ValidateUser":                false,

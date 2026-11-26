@@ -124,6 +124,7 @@ func TestGRPCInterceptorContractAllowlist(t *testing.T) {
 		"/nexusmart.user.v1.UserService/RecordCODRejection",
 		"/nexusmart.user.v1.UserService/WriteAuditLog",
 		"/nexusmart.user.v1.UserService/GetShopBankAccountForPayout",
+		"/nexusmart.user.v1.UserService/GetShopInternal",
 		"/nexusmart.product.v1.ProductService/ReleaseStock",
 		"/nexusmart.product.v1.ProductService/ConfirmStock",
 		"/nexusmart.product.v1.ProductService/RestockOrderItems",

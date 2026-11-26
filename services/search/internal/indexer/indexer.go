@@ -52,7 +52,7 @@ type ProductIndexClient interface {
 
 // UserIndexClient is the minimal subset of UserServiceClient needed for shop sync & ReindexAll.
 type UserIndexClient interface {
-	GetShop(ctx context.Context, in *userv1.GetShopRequest, opts ...grpc.CallOption) (*userv1.GetShopResponse, error)
+	GetShopInternal(ctx context.Context, in *userv1.GetShopInternalRequest, opts ...grpc.CallOption) (*userv1.GetShopInternalResponse, error)
 	ListPublicShops(ctx context.Context, in *userv1.ListPublicShopsRequest, opts ...grpc.CallOption) (*userv1.ListPublicShopsResponse, error)
 }
 
@@ -624,7 +624,7 @@ func (idx *Indexer) reindexCategoryBranchTx(ctx context.Context, q *db.Queries, 
 	return nil
 }
 
-// HandleShopReviewed processes user.shop_reviewed: APPROVE fetches User.GetShop and upserts search_shops; REJECT deletes.
+// HandleShopReviewed processes user.shop_reviewed: APPROVE fetches User.GetShopInternal (with service token) and upserts search_shops; REJECT deletes.
 func (idx *Indexer) HandleShopReviewed(ctx context.Context, eventID string, in ShopReviewedInput) error {
 	shopID := strings.TrimSpace(in.ShopID)
 	if shopID == "" {
@@ -640,8 +640,15 @@ func (idx *Indexer) HandleShopReviewed(ctx context.Context, eventID string, in S
 		statusVersion int64
 	)
 	if decision == "APPROVE" && idx.userClient != nil {
-		callCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		resp, err := idx.userClient.GetShop(callCtx, &userv1.GetShopRequest{ShopId: shopID})
+		if idx.svcAuth == nil {
+			return fmt.Errorf("fetch shop %s from user service: service token manager not configured", shopID)
+		}
+		token, err := idx.svcAuth.SignServiceToken("search-service")
+		if err != nil {
+			return fmt.Errorf("sign service token for GetShopInternal: %w", err)
+		}
+		callCtx, cancel := context.WithTimeout(auth.InjectOutgoingGRPC(ctx, token), 3*time.Second)
+		resp, err := idx.userClient.GetShopInternal(callCtx, &userv1.GetShopInternalRequest{ShopId: shopID})
 		cancel()
 		if err != nil {
 			return fmt.Errorf("fetch shop %s from user service: %w", shopID, err)
