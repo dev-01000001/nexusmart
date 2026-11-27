@@ -30,11 +30,11 @@ for P in 43102 43110; do
   flock /tmp/nm-web-browser.lock node .agents/tools/ui-shots.mjs --port $P --login seller \
     --routes-file tests/ui-flows/routes/seller.txt --widths 390,1440 --out $D/seller-$P
 done
-MASK="0:828:72:72;0:ih-72:72:72" .agents/tools/ui-diff.sh $D/seller-43102 $D/seller-43110 $D/seller-diff
+MASK="0:828:84:72;0:ih-72:84:72" .agents/tools/ui-diff.sh $D/seller-43102 $D/seller-43110 $D/seller-diff
 ```
 - Làm cho đủ: `platform.txt` (`--login none`), `admin.txt` (`--login admin`), `seller.txt` (`--login seller`), `site.txt` với
   `--site bach-dang` và `--site sai-gon` (`--login buyer`), `site-ha-noi.txt` qua `tests/ui-flows/extra-shots.mjs --mode site-custom`.
-- `MASK` che huy hiệu dev của Next (72×72 góc dưới trái của **khung nhìn đầu tiên**: ảnh full-page ở `y=828`, ảnh viewport ở đáy) ở cả hai ảnh.
+- `MASK` che huy hiệu dev của Next (84×72 góc dưới trái của **khung nhìn đầu tiên**, rộng 84 vì bóng huy hiệu tràn 2px: ảnh full-page ở `y=828`, ảnh viewport ở đáy) ở cả hai ảnh.
 - `ui-shots.mjs` tự chờ 60 giây khi gặp 429; vẫn còn `still rate-limited` thì chạy lại riêng route đó.
 - Đọc `report.txt` của `ui-diff.sh`: `SAME` là đạt. Mỗi dòng `DIFF`/`SIZE` phải **mở ảnh diff ra xem** và xếp loại:
   - (a) dữ liệu live đổi giữa hai lần chụp (giờ, số đếm): ghi lại, không sửa;
