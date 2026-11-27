@@ -123,16 +123,28 @@ test("PRM-D1: computeFlashSaleRegistration selects highest available_stock activ
   assert.ok(Number.isInteger(regLow.flash_price_vnd) && regLow.flash_price_vnd > 0);
 });
 
-test("CAT-D3: buildCategorySeedPlan aligns root commission_rate_bps with shops and includes all 15 child categories", async () => {
-  const { buildCategorySeedPlan } = await import(`./seed.mjs?cat=${Date.now()}`);
+test("CAT-D3 + F2: buildCategorySeedPlan aligns apparel commission_rate_bps and includes general Vietnam marketplace taxonomy", async () => {
+  const { buildCategorySeedPlan, GENERAL_MARKETPLACE_CATEGORIES } = await import(
+    `./seed.mjs?cat=${Date.now()}`
+  );
   assert.equal(typeof buildCategorySeedPlan, "function");
+  assert.ok(Array.isArray(GENERAL_MARKETPLACE_CATEGORIES));
+  assert.equal(GENERAL_MARKETPLACE_CATEGORIES.length, 7);
 
   const { CATEGORIES, PRODUCTS } = await import("../../web/src/data/products.ts");
   const { SHOPS } = await import("../../web/src/data/shops.ts");
 
   const plan = buildCategorySeedPlan(CATEGORIES, PRODUCTS, SHOPS);
-  assert.equal(plan.roots.length, 6);
-  assert.equal(plan.children.length, 15);
+  const expectedGeneralChildren = GENERAL_MARKETPLACE_CATEGORIES.reduce(
+    (sum, c) => sum + c.subCategories.length,
+    0
+  );
+  assert.equal(plan.roots.length, 6 + GENERAL_MARKETPLACE_CATEGORIES.length);
+  assert.equal(plan.children.length, 15 + expectedGeneralChildren);
+
+  // All root + child slugs must be globally unique.
+  const allSlugs = [...plan.roots.map((r) => r.slug), ...plan.children.map((c) => c.slug)];
+  assert.equal(new Set(allSlugs).size, allSlugs.length, "category slugs must be globally unique");
 
   const rootBySlug = new Map(plan.roots.map((r) => [r.slug, r]));
   assert.equal(rootBySlug.get("ao-thun")?.commission_rate_bps, 500);
@@ -141,6 +153,23 @@ test("CAT-D3: buildCategorySeedPlan aligns root commission_rate_bps with shops a
   assert.equal(rootBySlug.get("do-lot")?.commission_rate_bps, 550);
   assert.equal(rootBySlug.get("quan-jogger")?.commission_rate_bps, 500);
   assert.equal(rootBySlug.get("tat-phu-kien")?.commission_rate_bps, 500);
+
+  // General marketplace roots present with default 500 bps and ascending sort_order after legacy roots.
+  for (const expectedSlug of [
+    "nha-cua-doi-song",
+    "thu-cong-my-nghe",
+    "suc-khoe-lam-dep",
+    "thuc-pham-do-uong",
+    "dien-tu-phu-kien",
+    "me-va-be",
+    "van-phong-pham-sach",
+  ]) {
+    const root = rootBySlug.get(expectedSlug);
+    assert.ok(root, `missing general marketplace root category ${expectedSlug}`);
+    assert.equal(root.commission_rate_bps, 500);
+    assert.equal(root.parentSlug, "");
+    assert.ok(root.sort_order > 6);
+  }
 
   const childBySlug = new Map(plan.children.map((c) => [c.slug, c]));
   assert.equal(childBySlug.get("polo-pique")?.parentSlug, "ao-polo");
@@ -151,6 +180,18 @@ test("CAT-D3: buildCategorySeedPlan aligns root commission_rate_bps with shops a
   assert.equal(childBySlug.get("brief-tre")?.parentSlug, "do-lot");
   assert.equal(childBySlug.get("brief-tre")?.commission_rate_bps, 550);
   assert.equal(childBySlug.get("boxer-modal")?.commission_rate_bps, 500);
+
+  // General child categories inherit root commission_rate_bps (500) and link to their general root.
+  assert.equal(childBySlug.get("gom-su-do-bep")?.parentSlug, "nha-cua-doi-song");
+  assert.equal(childBySlug.get("gom-su-do-bep")?.commission_rate_bps, 500);
+  assert.equal(childBySlug.get("gom-su-my-nghe")?.parentSlug, "thu-cong-my-nghe");
+  assert.equal(childBySlug.get("gom-su-my-nghe")?.commission_rate_bps, 500);
+  assert.equal(childBySlug.get("dac-san-kho")?.parentSlug, "thuc-pham-do-uong");
+  assert.equal(childBySlug.get("tra-ca-phe")?.parentSlug, "thuc-pham-do-uong");
+  assert.equal(childBySlug.get("cham-soc-da")?.parentSlug, "suc-khoe-lam-dep");
+  assert.equal(childBySlug.get("thiet-bi-am-thanh")?.parentSlug, "dien-tu-phu-kien");
+  assert.equal(childBySlug.get("do-dung-cho-be")?.parentSlug, "me-va-be");
+  assert.equal(childBySlug.get("sach-an-pham")?.parentSlug, "van-phong-pham-sach");
 });
 
 test("W2b seed helpers: shop discount programs and fee schedules are valid and idempotent", async () => {
@@ -757,12 +798,12 @@ test("W3A Round2 P1-1: buildCategorySeedPlan rejects unknown shops without 0.05 
     shops: SHOPS,
     apiFn: mockApi,
   });
-  assert.equal(run1.categories.created, 6);
-  assert.equal(run1.childCategories.created, 15);
+  assert.equal(run1.categories.created, 13);
+  assert.equal(run1.childCategories.created, 36);
   assert.equal(run1.categories.updated, 0);
   assert.equal(run1.childCategories.updated, 0);
   assert.equal(putCalls, 0);
-  assert.equal(postCalls, 21);
+  assert.equal(postCalls, 49);
 
   const bySlug = new Map(stored.map((c) => [c.slug, c]));
   assert.equal(bySlug.get("ao-polo")?.commission_rate_bps, 550);
@@ -772,6 +813,9 @@ test("W3A Round2 P1-1: buildCategorySeedPlan rejects unknown shops without 0.05 
   assert.equal(bySlug.get("short-linen")?.commission_rate_bps, 550);
   assert.equal(bySlug.get("brief-tre")?.commission_rate_bps, 550);
   assert.equal(bySlug.get("ao-thun")?.commission_rate_bps, 500);
+  assert.equal(bySlug.get("nha-cua-doi-song")?.commission_rate_bps, 500);
+  assert.equal(bySlug.get("gom-su-do-bep")?.parent_id, bySlug.get("nha-cua-doi-song")?.id);
+  assert.equal(bySlug.get("gom-su-my-nghe")?.parent_id, bySlug.get("thu-cong-my-nghe")?.id);
 
   // Run 2 on already-seeded DB: ZERO POSTs, ZERO PUTs.
   postCalls = 0;
@@ -785,13 +829,78 @@ test("W3A Round2 P1-1: buildCategorySeedPlan rejects unknown shops without 0.05 
   });
   assert.ok(getAdminCalls >= 2);
   assert.equal(run2.categories.created, 0);
-  assert.equal(run2.categories.existing, 6);
+  assert.equal(run2.categories.existing, 13);
   assert.equal(run2.categories.updated, 0);
   assert.equal(run2.childCategories.created, 0);
-  assert.equal(run2.childCategories.existing, 15);
+  assert.equal(run2.childCategories.existing, 36);
   assert.equal(run2.childCategories.updated, 0);
   assert.equal(postCalls, 0, "re-running seed on seeded DB must issue zero POSTs");
   assert.equal(putCalls, 0, "re-running seed on seeded DB must issue zero PUTs");
+
+  // Upgrade path: DB seeded previously with ONLY the 6 legacy apparel roots + 15 children
+  // must preserve all 21 legacy rows with ZERO PUTs and add ONLY the 7 general roots + 21 children.
+  const legacyOnly = [];
+  let legacyPosts = 0;
+  let legacyPuts = 0;
+  const legacyApi = async (method, path, { token, body } = {}) => {
+    assert.equal(token, "admin-jwt-legacy");
+    if (method === "GET" && path === "/api/v1/admin/categories") {
+      return { status: 200, ok: true, data: { categories: legacyOnly.map((c) => ({ ...c })) } };
+    }
+    if (method === "POST" && path === "/api/v1/admin/categories") {
+      legacyPosts += 1;
+      const created = {
+        id: `leg-${legacyOnly.length + 1}`,
+        name: body.name,
+        slug: body.slug,
+        parent_id: body.parent_id || "",
+        commission_rate_bps: body.commission_rate_bps,
+        sort_order: body.sort_order,
+      };
+      legacyOnly.push(created);
+      return { status: 201, ok: true, data: { category: { ...created } } };
+    }
+    if (method === "PUT" && path.startsWith("/api/v1/admin/categories/")) {
+      legacyPuts += 1;
+      const id = path.split("/").pop();
+      const target = legacyOnly.find((c) => c.id === id);
+      Object.assign(target, body);
+      return { status: 200, ok: true, data: { category: { ...target } } };
+    }
+    throw new Error(`unexpected legacy API call: ${method} ${path}`);
+  };
+  await seedCategories({
+    adminToken: "admin-jwt-legacy",
+    categories: CATEGORIES,
+    products: PRODUCTS,
+    shops: SHOPS,
+    includeGeneralTaxonomy: false,
+    apiFn: legacyApi,
+  });
+  const legacyIdsBefore = new Map(legacyOnly.map((c) => [c.slug, c.id]));
+  assert.equal(legacyOnly.length, 21);
+  legacyPosts = 0;
+  legacyPuts = 0;
+
+  const upgradeRes = await seedCategories({
+    adminToken: "admin-jwt-legacy",
+    categories: CATEGORIES,
+    products: PRODUCTS,
+    shops: SHOPS,
+    apiFn: legacyApi,
+  });
+  assert.equal(upgradeRes.categories.existing, 6);
+  assert.equal(upgradeRes.categories.created, 7);
+  assert.equal(upgradeRes.categories.updated, 0);
+  assert.equal(upgradeRes.childCategories.existing, 15);
+  assert.equal(upgradeRes.childCategories.created, 21);
+  assert.equal(upgradeRes.childCategories.updated, 0);
+  assert.equal(legacyPosts, 28);
+  assert.equal(legacyPuts, 0, "adding general taxonomy must not mutate legacy apparel categories");
+  for (const [slug, prevId] of legacyIdsBefore) {
+    const after = legacyOnly.find((c) => c.slug === slug);
+    assert.equal(after?.id, prevId, `legacy category ${slug} must preserve its id`);
+  }
 
   // Round 4 [P3]: non-number commissionRate ("" / false) on unknown shop must throw, not coerce to 0 bps.
   for (const badVal of ["", false]) {
@@ -837,6 +946,7 @@ test("W3A Round2 P1-1: buildCategorySeedPlan rejects unknown shops without 0.05 
     categories: [{ slug: "ao-polo", name: "Áo polo", subCategories: [{ slug: "polo-pique", name: "Polo Pique" }] }],
     products: [{ id: "p1", categorySlug: "ao-polo", shopId: "shop-da-nang", material: "pique-cotton" }],
     shops: SHOPS,
+    includeGeneralTaxonomy: false,
     apiFn: raceApi,
   });
   assert.equal(raceRes.categories.updated, 1);

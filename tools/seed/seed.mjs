@@ -200,6 +200,75 @@ const SUBCATEGORY_PRODUCT_MATCHERS = {
   "ao-khoac-gio": (p) => p.material === "nylon-ripstop",
 };
 
+// General Vietnam e-commerce marketplace taxonomy seeded alongside the legacy sample apparel
+// categories so sellers from any industry (ceramics, crafts, cosmetics, food, electronics, etc.)
+// can pick an appropriate category when creating products.
+export const GENERAL_MARKETPLACE_CATEGORIES = [
+  {
+    slug: "nha-cua-doi-song",
+    name: "Nhà cửa & Đời sống",
+    subCategories: [
+      { slug: "gom-su-do-bep", name: "Gốm sứ & Đồ bếp" },
+      { slug: "trang-tri-nha-cua", name: "Trang trí nhà cửa" },
+      { slug: "do-go-noi-that-nho", name: "Đồ gỗ & Nội thất nhỏ" },
+    ],
+  },
+  {
+    slug: "thu-cong-my-nghe",
+    name: "Thủ công mỹ nghệ",
+    subCategories: [
+      { slug: "gom-su-my-nghe", name: "Gốm sứ mỹ nghệ" },
+      { slug: "may-tre-dan", name: "Mây tre đan" },
+      { slug: "qua-tang-thu-cong", name: "Quà tặng thủ công" },
+    ],
+  },
+  {
+    slug: "suc-khoe-lam-dep",
+    name: "Sức khỏe & Làm đẹp",
+    subCategories: [
+      { slug: "cham-soc-da", name: "Chăm sóc da" },
+      { slug: "cham-soc-co-the-toc", name: "Chăm sóc cơ thể & Tóc" },
+      { slug: "thuc-pham-bo-sung", name: "Thực phẩm bổ sung" },
+    ],
+  },
+  {
+    slug: "thuc-pham-do-uong",
+    name: "Thực phẩm & Đồ uống",
+    subCategories: [
+      { slug: "dac-san-kho", name: "Đặc sản khô" },
+      { slug: "tra-ca-phe", name: "Trà & Cà phê" },
+      { slug: "banh-keo-do-an-vat", name: "Bánh kẹo & Đồ ăn vặt" },
+    ],
+  },
+  {
+    slug: "dien-tu-phu-kien",
+    name: "Điện tử & Phụ kiện",
+    subCategories: [
+      { slug: "phu-kien-dien-thoai-may-tinh", name: "Phụ kiện điện thoại & Máy tính" },
+      { slug: "thiet-bi-am-thanh", name: "Thiết bị âm thanh" },
+      { slug: "gia-dung-dien-nho", name: "Gia dụng điện nhỏ" },
+    ],
+  },
+  {
+    slug: "me-va-be",
+    name: "Mẹ & Bé",
+    subCategories: [
+      { slug: "do-dung-cho-be", name: "Đồ dùng cho bé" },
+      { slug: "do-choi-giao-duc", name: "Đồ chơi giáo dục" },
+      { slug: "cham-soc-me-bau-sau-sinh", name: "Chăm sóc mẹ bầu & Sau sinh" },
+    ],
+  },
+  {
+    slug: "van-phong-pham-sach",
+    name: "Văn phòng phẩm & Sách",
+    subCategories: [
+      { slug: "sach-an-pham", name: "Sách & Ấn phẩm" },
+      { slug: "so-tay-but-viet", name: "Sổ tay & Bút viết" },
+      { slug: "dung-cu-hoc-tap-van-phong", name: "Dụng cụ học tập & Văn phòng" },
+    ],
+  },
+];
+
 const SHOP_DISCOUNT_PROGRAM_SPECS = [
   {
     shopStaticId: "shop-bach-dang",
@@ -470,10 +539,16 @@ export function computeFlashSaleRegistration(product, item) {
 }
 
 /**
- * CAT-D3: Derive root + 15 child category plan with commission_rate_bps aligned to SEED_SHOP_COMMISSION_RATE.
+ * CAT-D3 + F2: Derive root + child category plan combining sample apparel categories (with
+ * shop-aligned commission_rate_bps) and GENERAL_MARKETPLACE_CATEGORIES (default 500 bps).
  * Throws explicitly if any shop is missing from SEED_SHOP_COMMISSION_RATE (never falls back to 0.05).
  */
-export function buildCategorySeedPlan(categories, products, shops) {
+export function buildCategorySeedPlan(
+  categories,
+  products,
+  shops,
+  { includeGeneralTaxonomy = true } = {}
+) {
   const shopBpsById = new Map();
   for (const s of shops || []) {
     const rawRate =
@@ -501,11 +576,24 @@ export function buildCategorySeedPlan(categories, products, shops) {
     return best >= 0 ? best : fallback;
   };
 
+  const mergedCategories = [];
+  const seenRootSlugs = new Set();
+  const seenChildSlugs = new Set();
+  const appendCategory = (cat) => {
+    if (!cat?.slug || seenRootSlugs.has(cat.slug)) return;
+    seenRootSlugs.add(cat.slug);
+    mergedCategories.push(cat);
+  };
+  for (const cat of categories || []) appendCategory(cat);
+  if (includeGeneralTaxonomy) {
+    for (const cat of GENERAL_MARKETPLACE_CATEGORIES) appendCategory(cat);
+  }
+
   const roots = [];
   const children = [];
 
-  for (let i = 0; i < (categories || []).length; i += 1) {
-    const cat = categories[i];
+  for (let i = 0; i < mergedCategories.length; i += 1) {
+    const cat = mergedCategories[i];
     const catProducts = (products || []).filter((p) => p.categorySlug === cat.slug);
     const rootBps = maxBpsForProducts(catProducts, 500);
     const rootOrder = i + 1;
@@ -521,6 +609,8 @@ export function buildCategorySeedPlan(categories, products, shops) {
     const subs = Array.isArray(cat.subCategories) ? cat.subCategories : [];
     for (let j = 0; j < subs.length; j += 1) {
       const sub = subs[j];
+      if (!sub?.slug || seenRootSlugs.has(sub.slug) || seenChildSlugs.has(sub.slug)) continue;
+      seenChildSlugs.add(sub.slug);
       const matcher = SUBCATEGORY_PRODUCT_MATCHERS[sub.slug];
       const matched = matcher ? catProducts.filter(matcher) : [];
       const childBps = maxBpsForProducts(matched, rootBps);
@@ -887,11 +977,14 @@ export async function seedCategories({
   categories,
   products,
   shops,
+  includeGeneralTaxonomy = true,
   apiFn = apiRequest,
 }) {
   const existingCategories = await listAllAdminCategories(adminToken, apiFn);
   const categoryBySlug = new Map(existingCategories.map((c) => [c.slug, c]));
-  const categoryPlan = buildCategorySeedPlan(categories, products, shops);
+  const categoryPlan = buildCategorySeedPlan(categories, products, shops, {
+    includeGeneralTaxonomy,
+  });
   const rootStats = { created: 0, existing: 0, updated: 0 };
   const childStats = { created: 0, existing: 0, updated: 0 };
 
@@ -2780,7 +2873,7 @@ async function main() {
     catalogSellerSession = await login(CATALOG_SELLER.email, CATALOG_SELLER.password);
   }
 
-  // 3. Categories (CAT-D3: 6 roots with shop-aligned commission_rate_bps + 15 child categories).
+  // 3. Categories (CAT-D3 + F2: 6 sample apparel roots + 7 general VN marketplace roots + child categories).
   const categorySeedResult = await seedCategories({
     adminToken,
     categories: CATEGORIES,

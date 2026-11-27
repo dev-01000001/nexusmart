@@ -782,3 +782,142 @@ func TestApplyTemplateToConfigPreservesBrandIdentity(t *testing.T) {
 		t.Fatalf("expected shop metadata applied, got brand=%q tagline=%q", v2New.Theme.BrandName, v2New.Theme.Tagline)
 	}
 }
+
+func TestBuiltInTemplatesIndustryNeutralCopy(t *testing.T) {
+	templates := BuiltInTemplates()
+	if len(templates) != 8 {
+		t.Fatalf("expected 8 built-in templates, got %d", len(templates))
+	}
+
+	// Substring terms specific to apparel/textile that must never appear in default template copy.
+	forbiddenSubstrings := []string{
+		"cotton",
+		"linen",
+		"modal",
+		"gsm",
+		"dry-fit",
+		"dryfit",
+		"flatlock",
+		"oeko-tex",
+		"co rút",
+		"đường may",
+		"đường chỉ",
+		"mũi kim",
+		"mẻ vải",
+		"chất vải",
+		"mặt vải",
+		"định lượng vải",
+		"form áo",
+		"phom dáng",
+		"phom áo",
+		"bộ sưu tập thời trang",
+		"thời trang",
+		"xưởng may",
+		"xưởng dệt",
+		"may đo",
+		"cắt rập",
+		"lên rập",
+		"tủ đồ",
+		"trang phục",
+		"đồ tập",
+		"ao-thun",
+		"polo",
+		"short",
+		"jogger",
+		"mồ hôi",
+		"phơi gió",
+		"số đo",
+		"nguyên tem",
+		"tem mác",
+		"co giãn",
+		"đổi cỡ",
+		"chọn cỡ",
+		"tư vấn cỡ",
+	}
+
+	// Short Vietnamese/English garment words checked with Unicode letter boundaries so they are
+	// matched case-insensitively without false positives on unrelated syllables.
+	forbiddenWordRe := regexp.MustCompile(`(?i)(?:^|[^\p{L}])(dệt|vải|size|cỡ|mặc|giặt|áo|quần|phom|sợi)(?:$|[^\p{L}])`)
+
+	// Keys inside ConfigV2 JSON that carry structural enums, IDs, hex colors, or asset URLs
+	// rather than user-facing default copy.
+	skipConfigKeys := map[string]bool{
+		"id":                true,
+		"template_id":       true,
+		"archetype":         true,
+		"header_style":      true,
+		"footer_style":      true,
+		"container_width":   true,
+		"card_style":        true,
+		"font_family":       true,
+		"radius":            true,
+		"density":           true,
+		"layout":            true,
+		"gallery_style":     true,
+		"variant":           true,
+		"surface":           true,
+		"padding":           true,
+		"align":             true,
+		"type":              true,
+		"tone":              true,
+		"style":             true,
+		"aspect":            true,
+		"bg_color":          true,
+		"surface_color":     true,
+		"text_color":        true,
+		"accent_color":      true,
+		"accent_text_color": true,
+		"logo_url":          true,
+		"banner_url":        true,
+		"image_url":         true,
+		"cta_href":          true,
+		"href":              true,
+	}
+
+	checkCopy := func(tmplID, fieldPath, val string) {
+		lower := strings.ToLower(val)
+		for _, bad := range forbiddenSubstrings {
+			if strings.Contains(lower, bad) {
+				t.Errorf("template %q %s contains apparel-specific term %q: %q", tmplID, fieldPath, bad, val)
+			}
+		}
+		if match := forbiddenWordRe.FindStringSubmatch(val); len(match) > 1 {
+			t.Errorf("template %q %s contains apparel-specific word %q: %q", tmplID, fieldPath, match[1], val)
+		}
+	}
+
+	var walkJSON func(tmplID, path string, node any)
+	walkJSON = func(tmplID, path string, node any) {
+		switch v := node.(type) {
+		case map[string]any:
+			for k, child := range v {
+				if skipConfigKeys[k] {
+					continue
+				}
+				walkJSON(tmplID, path+"."+k, child)
+			}
+		case []any:
+			for i, child := range v {
+				walkJSON(tmplID, path+"["+string(rune('0'+i%10))+"]", child)
+			}
+		case string:
+			checkCopy(tmplID, path, v)
+		}
+	}
+
+	for _, tmpl := range templates {
+		checkCopy(tmpl.ID, "description", tmpl.Description)
+		for _, tag := range tmpl.Tags {
+			checkCopy(tmpl.ID, "tags", tag)
+		}
+		raw, err := tmpl.ConfigJSON()
+		if err != nil {
+			t.Fatalf("template %q ConfigJSON: %v", tmpl.ID, err)
+		}
+		var doc any
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("template %q unmarshal: %v", tmpl.ID, err)
+		}
+		walkJSON(tmpl.ID, "config", doc)
+	}
+}
