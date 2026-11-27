@@ -291,7 +291,7 @@ export function AdminCarriersPanel() {
               </div>
 
               <Card>
-                <form onSubmit={(e) => void handleSaveCarrier(e, carrier)} noValidate>
+                <form method="post" onSubmit={(e) => void handleSaveCarrier(e, carrier)} noValidate>
                   <CardContent className="space-y-4 pt-4">
                     <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/35 px-3.5 py-2.5">
                       <span className="text-sm font-medium text-foreground">Bật {displayName}</span>

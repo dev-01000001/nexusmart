@@ -776,7 +776,12 @@ function AccountClientInner({
                       nhận hàng (COD).
                     </p>
                   ) : (
-                    <form onSubmit={handleVerifyPhoneOtp} noValidate className="space-y-4">
+                    <form
+                      method="post"
+                      onSubmit={handleVerifyPhoneOtp}
+                      noValidate
+                      className="space-y-4"
+                    >
                       <p className="text-sm leading-5 text-muted-foreground">
                         Xác minh số điện thoại qua mã OTP 6 chữ số để bật thanh toán khi nhận hàng
                         (COD) và nhận thông báo giao vận (SMS mô phỏng, xem trong email tài khoản).

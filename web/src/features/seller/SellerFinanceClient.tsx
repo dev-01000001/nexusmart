@@ -937,6 +937,7 @@ export function SellerFinanceClient({
                         <>
                           <Separator />
                           <form
+                            method="post"
                             className="space-y-3"
                             onSubmit={(e) => void handleVerifyBankOtp(e)}
                             aria-label="Xác thực OTP tài khoản ngân hàng"

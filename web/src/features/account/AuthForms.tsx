@@ -213,7 +213,7 @@ function LoginFormInner({ variant, buyerHref = "/", registerHref = "/dang-ky" }:
   };
 
   return (
-    <form ref={formRef} className="space-y-4" onSubmit={handleSubmit} noValidate>
+    <form ref={formRef} method="post" className="space-y-4" onSubmit={handleSubmit} noValidate>
       {verifiedNotice && (
         <Alert role="status" className="border-border bg-badge-success-bg/40 shadow-none">
           <CheckCircle2 className="size-4 text-badge-success-ink" aria-hidden="true" />
@@ -634,7 +634,13 @@ function RegisterFormInner({
       otp.length < 6 ? Math.min(otpCursor, otp.length) : otpCursor
     );
     return (
-      <form ref={formRef} className="space-y-4" onSubmit={handleVerifyOtpSubmit} noValidate>
+      <form
+        ref={formRef}
+        method="post"
+        className="space-y-4"
+        onSubmit={handleVerifyOtpSubmit}
+        noValidate
+      >
         <Alert role="status" className="border-border bg-muted/60 shadow-none">
           <Info className="size-4 text-brand" aria-hidden="true" />
           <AlertDescription className="text-foreground">
@@ -777,7 +783,13 @@ function RegisterFormInner({
   }
 
   return (
-    <form ref={formRef} className="space-y-4" onSubmit={handleRegisterSubmit} noValidate>
+    <form
+      ref={formRef}
+      method="post"
+      className="space-y-4"
+      onSubmit={handleRegisterSubmit}
+      noValidate
+    >
       <FieldGroup className="gap-3.5">
         <Field data-shake-target="" data-invalid={Boolean(fieldErrors.fullName) || undefined}>
           <FieldLabel htmlFor="reg-name">Họ và tên</FieldLabel>
@@ -1077,7 +1089,7 @@ function ForgotPasswordFormInner({
   }
 
   return (
-    <form ref={formRef} className="space-y-4" onSubmit={handleSubmit} noValidate>
+    <form ref={formRef} method="post" className="space-y-4" onSubmit={handleSubmit} noValidate>
       <Alert role="status" className="border-border bg-muted/60 shadow-none">
         <Info className="size-4 text-brand" aria-hidden="true" />
         <AlertDescription className="text-foreground">
@@ -1274,7 +1286,7 @@ function ResetPasswordFormInner({
   }
 
   return (
-    <form ref={formRef} className="space-y-4" onSubmit={handleSubmit} noValidate>
+    <form ref={formRef} method="post" className="space-y-4" onSubmit={handleSubmit} noValidate>
       <Alert role="status" className="border-border bg-muted/60 shadow-none">
         <Info className="size-4 text-brand" aria-hidden="true" />
         <AlertDescription className="text-foreground">
