@@ -19,11 +19,14 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	orderv1 "github.com/nexusmart/core/gen/go/nexusmart/order/v1"
 	paymentv1 "github.com/nexusmart/core/gen/go/nexusmart/payment/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/services/gateway/internal/httpx"
 	"github.com/nexusmart/core/services/gateway/internal/middleware"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type shopAllocationDTO struct {
@@ -1953,5 +1956,43 @@ func (h *handler) handleAdminDecideRefundApproval(w http.ResponseWriter, r *http
 
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"refund": mapRefund(resp.GetRefund(), true),
+	})
+}
+
+func (h *handler) handleAdminReleaseEscrow(w http.ResponseWriter, r *http.Request) {
+	orderID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if _, err := uuid.Parse(orderID); err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "order id must be a valid UUID")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Payment.ReleaseEscrow(ctx, &paymentv1.ReleaseEscrowRequest{
+		OrderId: orderID,
+	})
+	if err != nil {
+		// services/payment ReleaseEscrow maps PaymentError::Conflict (order not yet completed / pending-approval refund)
+		// to gRPC codes.AlreadyExists; normalize to 409 FAILED_PRECONDITION per REST contract.
+		if st, ok := status.FromError(err); ok && st.Code() == codes.AlreadyExists {
+			httpx.WriteError(w, r, http.StatusConflict, "FAILED_PRECONDITION", st.Message())
+			return
+		}
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+
+	middleware.SetAuditSummary(r.Context(), orderID, map[string]any{
+		"order_id":            orderID,
+		"released":            resp.GetReleased(),
+		"released_amount_vnd": resp.GetReleasedAmountVnd(),
+		"already_released":    resp.GetAlreadyReleased(),
+	})
+
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"released":            resp.GetReleased(),
+		"released_amount_vnd": resp.GetReleasedAmountVnd(),
+		"already_released":    resp.GetAlreadyReleased(),
 	})
 }

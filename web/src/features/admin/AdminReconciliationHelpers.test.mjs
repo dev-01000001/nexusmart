@@ -6,13 +6,18 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildAdminMoneyFingerprint,
+  computePendingPayoutTotalVnd,
+  formatEscrowReleaseToastMessage,
   isDefinitiveAdminMoneyError,
+  mapEscrowReleaseErrorMessage,
   nextAdminMoneyIdempotencyCacheAfterError,
   resolveAdminMoneyIdempotencyKey,
+  validateEscrowReleaseOrderId,
   validateIdempotencyKeyHeader,
   validateManualRefundInput,
   validateReconciliationQueueResolveInput,
   validateRefundApprovalDecisionInput,
+  validateSellerPayoutDecisionInput,
   validateSettleRefundInput,
 } from "./AdminReconciliationHelpers.ts";
 import {
@@ -282,4 +287,79 @@ test("getOptionalSalesChannelMeta keeps empty channel unattributed for provider-
   );
   assert.ok(clientSrc.includes("getOptionalSalesChannelMeta("));
   assert.equal(clientSrc.includes("getSalesChannelMeta("), false);
+});
+
+test("validateSellerPayoutDecisionInput and computePendingPayoutTotalVnd", () => {
+  assert.deepEqual(validateSellerPayoutDecisionInput({ decision: "APPROVE", reason: "" }), {
+    ok: true,
+    value: { decision: "APPROVE", reason: "" },
+  });
+  assert.deepEqual(
+    validateSellerPayoutDecisionInput({ decision: "reject", reason: "  Sai thông tin TK  " }),
+    {
+      ok: true,
+      value: { decision: "REJECT", reason: "Sai thông tin TK" },
+    }
+  );
+  assert.equal(validateSellerPayoutDecisionInput({ decision: "REJECT", reason: "   " }).ok, false);
+  assert.equal(validateSellerPayoutDecisionInput({ decision: "UNKNOWN", reason: "x" }).ok, false);
+
+  assert.equal(
+    computePendingPayoutTotalVnd([
+      { status: "PENDING", amount_vnd: 120000 },
+      { status: "COMPLETED", amount_vnd: 500000 },
+      { status: "PENDING", amount_vnd: 80000 },
+      { status: "REJECTED", amount_vnd: 30000 },
+    ]),
+    200000
+  );
+});
+
+test("validateEscrowReleaseOrderId, formatEscrowReleaseToastMessage, mapEscrowReleaseErrorMessage, and UI wiring", () => {
+  const validId = "11111111-2222-4333-8444-555555555555";
+  assert.deepEqual(validateEscrowReleaseOrderId(`  ${validId}  `), {
+    ok: true,
+    value: validId,
+  });
+  for (const bad of ["", "not-a-uuid", "ord-123", "../etc/passwd"]) {
+    const res = validateEscrowReleaseOrderId(bad);
+    assert.equal(res.ok, false, `expected invalid for ${bad}`);
+  }
+
+  const fmt = (vnd) => `${vnd.toLocaleString("vi-VN")}₫`;
+  assert.equal(
+    formatEscrowReleaseToastMessage(
+      { released: true, released_amount_vnd: 250000, already_released: false },
+      fmt
+    ),
+    "Đã giải ngân 250.000₫"
+  );
+  assert.equal(
+    formatEscrowReleaseToastMessage(
+      { released: true, released_amount_vnd: 0, already_released: true },
+      fmt
+    ),
+    "Đơn này đã được giải ngân trước đó"
+  );
+  assert.equal(
+    mapEscrowReleaseErrorMessage({ status: 409, code: "FAILED_PRECONDITION" }, "fallback"),
+    "Đơn chưa hoàn tất nên chưa thể giải ngân"
+  );
+  assert.equal(
+    mapEscrowReleaseErrorMessage({ status: 503, code: "UNAVAILABLE" }, "Lỗi hệ thống"),
+    "Lỗi hệ thống"
+  );
+
+  const clientSrc = readFileSync(
+    resolve(WEB_SRC, "features/admin/AdminReconciliationClient.tsx"),
+    "utf8"
+  );
+  assert.ok(
+    clientSrc.includes('roleHasCapability(user.role, "escrow.release")'),
+    "AdminReconciliationClient must gate early escrow release card on escrow.release capability"
+  );
+  assert.ok(clientSrc.includes("Giải ngân sớm"), "must render heading 'Giải ngân sớm'");
+  assert.ok(clientSrc.includes("Mã đơn hàng"), "must render label 'Mã đơn hàng'");
+  assert.ok(clientSrc.includes("Xác nhận giải ngân sớm"), "must render AlertDialog confirmation");
+  assert.ok(clientSrc.includes("/escrow-release"), "must call BFF /escrow-release route");
 });

@@ -866,14 +866,21 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 		if !isAdmin && existing.ShopID != shopID {
 			return status.Error(codes.PermissionDenied, "cannot update product belonging to another shop")
 		}
-		if len(req.GetImages()) > 0 {
-			if imgErr := validateProductImages(existing.ShopID, req.GetImages()); imgErr != nil {
-				return imgErr
-			}
+		allSKUs, listErr := q.ListAllSKUsByProductID(ctx, id)
+		if listErr != nil {
+			return status.Errorf(codes.Internal, "list product skus: %v", listErr)
 		}
-		if len(skuInputs) > 0 {
-			if skuImgErr := validateSKUImageURLs(existing.ShopID, skuInputs); skuImgErr != nil {
-				return skuImgErr
+		if len(req.GetImages()) > 0 || len(skuInputs) > 0 {
+			existingImages := collectExistingProductImageURLs(existing, allSKUs)
+			if len(req.GetImages()) > 0 {
+				if imgErr := validateProductImagesWithExisting(existing.ShopID, req.GetImages(), existingImages); imgErr != nil {
+					return imgErr
+				}
+			}
+			if len(skuInputs) > 0 {
+				if skuImgErr := validateSKUImageURLsWithExisting(existing.ShopID, skuInputs, existingImages); skuImgErr != nil {
+					return skuImgErr
+				}
 			}
 		}
 
@@ -922,37 +929,32 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 		}
 
 		var (
-			allSKUs         []store.SKU
 			activeByID      map[string]store.SKU
 			inactiveByCode  map[string]store.SKU
 			existingModSKUs []moderationSKU
 			incomingModSKUs []moderationSKU
 		)
+		activeSKUs := make([]store.SKU, 0, len(allSKUs))
 		if len(skuInputs) > 0 {
-			var listErr error
-			allSKUs, listErr = q.ListAllSKUsByProductID(ctx, id)
-			if listErr != nil {
-				return listErr
-			}
 			activeByID = make(map[string]store.SKU, len(allSKUs))
 			inactiveByCode = make(map[string]store.SKU)
-			activeSKUs := make([]store.SKU, 0, len(allSKUs))
-			for _, sk := range allSKUs {
-				if sk.Status == store.SKUStatusInactive {
+		}
+		for _, sk := range allSKUs {
+			if sk.Status == store.SKUStatusInactive {
+				if inactiveByCode != nil {
 					inactiveByCode[sk.SKUCode] = sk
-				} else {
-					activeByID[sk.ID] = sk
-					activeSKUs = append(activeSKUs, sk)
 				}
+			} else {
+				if activeByID != nil {
+					activeByID[sk.ID] = sk
+				}
+				activeSKUs = append(activeSKUs, sk)
 			}
-			existingModSKUs = toModerationSKUsFromStore(activeSKUs)
+		}
+		existingModSKUs = toModerationSKUsFromStore(activeSKUs)
+		if len(skuInputs) > 0 {
 			incomingModSKUs = toModerationSKUsFromInputs(skuInputs)
 		} else {
-			curSKUs, listErr := q.ListSKUsByProductIDs(ctx, []string{id})
-			if listErr != nil {
-				return status.Errorf(codes.Internal, "list product skus: %v", listErr)
-			}
-			existingModSKUs = toModerationSKUsFromStore(curSKUs)
 			incomingModSKUs = existingModSKUs
 		}
 
@@ -2649,9 +2651,16 @@ func validateProductText(name, description string, images []string) error {
 
 var productMediaFilenamePattern = regexp.MustCompile(`^[0-9a-f]{64}\.(jpg|png|webp)$`)
 
+var allowedStaticProductImagePrefixes = []string{"/products/", "/models/"}
+
 // validateProductImageURL restricts product/SKU image URLs strictly to the owning shop's uploaded media
-// (/media/shops/<shop_id>/<sha256>.<jpg|png|webp>) or safe static sample paths (/products/<file>.<ext>).
+// (/media/shops/<shop_id>/<sha256>.<jpg|png|webp>) or single-segment bundled static paths
+// (/products/<file>.<ext>, /models/<file>.<ext>).
 func validateProductImageURL(shopID, field, raw string, allowEmpty bool) error {
+	return validateProductImageURLWithExisting(shopID, field, raw, allowEmpty, nil)
+}
+
+func validateProductImageURLWithExisting(shopID, field, raw string, allowEmpty bool, existing map[string]bool) error {
 	if err := checkText(field, raw, maxProductImageURLRunes); err != nil {
 		return err
 	}
@@ -2663,6 +2672,9 @@ func validateProductImageURL(shopID, field, raw string, allowEmpty bool) error {
 	}
 	if hasControlOrWhitespace(raw) {
 		return status.Errorf(codes.InvalidArgument, "%s must not contain whitespace or control characters", field)
+	}
+	if existing[raw] {
+		return nil
 	}
 	if strings.Contains(raw, "..") || strings.Contains(raw, "\\") || strings.Contains(raw, "//") || strings.ContainsAny(raw, "?#") {
 		return status.Errorf(codes.InvalidArgument, "%s contains invalid path characters", field)
@@ -2685,11 +2697,13 @@ func validateProductImageURL(shopID, field, raw string, allowEmpty bool) error {
 		return nil
 	}
 
-	const samplePrefix = "/products/"
-	if strings.HasPrefix(raw, samplePrefix) {
-		rest := strings.TrimPrefix(raw, samplePrefix)
-		if rest == "" || strings.HasSuffix(rest, "/") {
-			return status.Errorf(codes.InvalidArgument, "%s is not a valid /products/ image path", field)
+	for _, prefix := range allowedStaticProductImagePrefixes {
+		if !strings.HasPrefix(raw, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(raw, prefix)
+		if rest == "" || strings.Contains(rest, "/") || strings.HasPrefix(rest, ".") {
+			return status.Errorf(codes.InvalidArgument, "%s is not a valid %s image path", field, prefix)
 		}
 		lower := strings.ToLower(rest)
 		if !strings.HasSuffix(lower, ".jpg") && !strings.HasSuffix(lower, ".jpeg") &&
@@ -2699,12 +2713,31 @@ func validateProductImageURL(shopID, field, raw string, allowEmpty bool) error {
 		return nil
 	}
 
-	return status.Errorf(codes.InvalidArgument, "%s must be a /media/shops/<shop_id>/... or /products/... image path", field)
+	return status.Errorf(codes.InvalidArgument, "%s must be a /media/shops/<shop_id>/..., /products/..., or /models/... image path", field)
+}
+
+func collectExistingProductImageURLs(prod store.Product, skus []store.SKU) map[string]bool {
+	urls := make(map[string]bool, len(prod.Images)+len(skus))
+	for _, u := range prod.Images {
+		if u = strings.TrimSpace(u); u != "" {
+			urls[u] = true
+		}
+	}
+	for _, sk := range skus {
+		if u := strings.TrimSpace(sk.ImageURL); u != "" {
+			urls[u] = true
+		}
+	}
+	return urls
 }
 
 func validateProductImages(shopID string, images []string) error {
+	return validateProductImagesWithExisting(shopID, images, nil)
+}
+
+func validateProductImagesWithExisting(shopID string, images []string, existing map[string]bool) error {
 	for i, u := range images {
-		if err := validateProductImageURL(shopID, fmt.Sprintf("images[%d]", i), u, false); err != nil {
+		if err := validateProductImageURLWithExisting(shopID, fmt.Sprintf("images[%d]", i), u, false, existing); err != nil {
 			return err
 		}
 	}
@@ -2712,8 +2745,12 @@ func validateProductImages(shopID string, images []string) error {
 }
 
 func validateSKUImageURLs(shopID string, skus []normalizedSKUInput) error {
+	return validateSKUImageURLsWithExisting(shopID, skus, nil)
+}
+
+func validateSKUImageURLsWithExisting(shopID string, skus []normalizedSKUInput, existing map[string]bool) error {
 	for i, s := range skus {
-		if err := validateProductImageURL(shopID, fmt.Sprintf("skus[%d].image_url", i), s.ImageURL, true); err != nil {
+		if err := validateProductImageURLWithExisting(shopID, fmt.Sprintf("skus[%d].image_url", i), s.ImageURL, true, existing); err != nil {
 			return err
 		}
 	}

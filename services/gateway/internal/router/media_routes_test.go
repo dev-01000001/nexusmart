@@ -491,3 +491,116 @@ func TestSellerMediaUploadEnforcesUserRateLimit(t *testing.T) {
 		t.Fatalf("rate-limited upload status=%d want 429 body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+type hangingMediaStore struct {
+	hangHead bool
+	hangPut  bool
+	hangGet  bool
+}
+
+func (s *hangingMediaStore) EnsureBucket(context.Context) error { return nil }
+
+func (s *hangingMediaStore) Head(ctx context.Context, _ string) (storage.ObjectMeta, error) {
+	if s.hangHead {
+		<-ctx.Done()
+		return storage.ObjectMeta{}, ctx.Err()
+	}
+	return storage.ObjectMeta{}, storage.ErrNotFound
+}
+
+func (s *hangingMediaStore) Put(ctx context.Context, _ string, _ io.Reader, _ int64, _ string) (storage.ObjectMeta, error) {
+	if s.hangPut {
+		<-ctx.Done()
+		return storage.ObjectMeta{}, ctx.Err()
+	}
+	return storage.ObjectMeta{}, nil
+}
+
+func (s *hangingMediaStore) Get(ctx context.Context, _ string) (*storage.Object, error) {
+	if s.hangGet {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return nil, storage.ErrNotFound
+}
+
+func TestMediaHandlersReturn503JSONBeforeDeadlineWhenStorageHangs(t *testing.T) {
+	const opTimeout = 80 * time.Millisecond
+	const maxAllowedElapsed = 2 * time.Second
+	const shopID = "11111111-2222-4333-8444-555555555555"
+	validMediaPath := "/media/shops/" + shopID + "/" + strings.Repeat("b", 64) + ".png"
+
+	authMgr, err := auth.NewManager("media-timeout-jwt-secret-0123456789", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	sellerTok := signMediaToken(t, authMgr, "seller-hang", auth.RoleSeller, shopID)
+	pngBytes := makeTestPNG(t, 4, 4)
+
+	buildRouter := func(st storage.Store) http.Handler {
+		return New(Dependencies{
+			ServiceName:         "gateway",
+			AuthManager:         authMgr,
+			MediaStore:          st,
+			MediaStorageTimeout: opTimeout,
+			Logger:              logger.New("gateway-test", logger.WithWriter(io.Discard)),
+		})
+	}
+
+	assert503JSON := func(t *testing.T, label string, elapsed time.Duration, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if elapsed >= maxAllowedElapsed {
+			t.Fatalf("%s took too long (%v >= %v)", label, elapsed, maxAllowedElapsed)
+		}
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s status=%d want 503 body=%s", label, rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+			t.Fatalf("%s Content-Type=%q want application/json", label, ct)
+		}
+		if !strings.Contains(rec.Body.String(), `"code":"UNAVAILABLE"`) {
+			t.Fatalf("%s expected UNAVAILABLE JSON error, got %s", label, rec.Body.String())
+		}
+	}
+
+	t.Run("upload_head_hangs", func(t *testing.T) {
+		r := buildRouter(&hangingMediaStore{hangHead: true})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/seller/media", bytes.NewReader(pngBytes))
+		req.Header.Set("Authorization", "Bearer "+sellerTok)
+		req.Header.Set("Content-Type", "image/png")
+		rec := httptest.NewRecorder()
+		start := time.Now()
+		r.ServeHTTP(rec, req)
+		assert503JSON(t, "upload Head hang", time.Since(start), rec)
+	})
+
+	t.Run("upload_put_hangs", func(t *testing.T) {
+		r := buildRouter(&hangingMediaStore{hangPut: true})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/seller/media", bytes.NewReader(pngBytes))
+		req.Header.Set("Authorization", "Bearer "+sellerTok)
+		req.Header.Set("Content-Type", "image/png")
+		rec := httptest.NewRecorder()
+		start := time.Now()
+		r.ServeHTTP(rec, req)
+		assert503JSON(t, "upload Put hang", time.Since(start), rec)
+	})
+
+	t.Run("get_if_none_match_head_hangs", func(t *testing.T) {
+		r := buildRouter(&hangingMediaStore{hangHead: true})
+		req := httptest.NewRequest(http.MethodGet, validMediaPath, nil)
+		req.Header.Set("If-None-Match", `"etag-1"`)
+		rec := httptest.NewRecorder()
+		start := time.Now()
+		r.ServeHTTP(rec, req)
+		assert503JSON(t, "GET If-None-Match Head hang", time.Since(start), rec)
+	})
+
+	t.Run("get_body_hangs", func(t *testing.T) {
+		r := buildRouter(&hangingMediaStore{hangGet: true})
+		req := httptest.NewRequest(http.MethodGet, validMediaPath, nil)
+		rec := httptest.NewRecorder()
+		start := time.Now()
+		r.ServeHTTP(rec, req)
+		assert503JSON(t, "GET hang", time.Since(start), rec)
+	})
+}

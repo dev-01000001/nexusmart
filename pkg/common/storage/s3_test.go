@@ -307,3 +307,71 @@ func TestEnsureBucketHandlesAlreadyOwnedRace(t *testing.T) {
 		t.Fatalf("EnsureBucket should ignore BucketAlreadyOwnedByYou race, got %v", err)
 	}
 }
+
+func TestClientObeysContextDeadlineOnHungS3Server(t *testing.T) {
+	release := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer func() {
+		close(release)
+		ts.Close()
+	}()
+
+	client, err := New(Config{
+		Endpoint:   ts.URL,
+		Bucket:     "hung-bucket",
+		AccessKey:  "dev-ak",
+		SecretKey:  "dev-sk",
+		HTTPClient: ts.Client(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	const deadline = 150 * time.Millisecond
+	const maxElapsed = 2 * time.Second
+
+	t.Run("Head", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), deadline)
+		defer cancel()
+		start := time.Now()
+		_, err := client.Head(ctx, "shops/test/obj.png")
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Head hung: want DeadlineExceeded, got %v", err)
+		}
+		if elapsed := time.Since(start); elapsed >= maxElapsed {
+			t.Fatalf("Head hung too long: %v", elapsed)
+		}
+	})
+
+	t.Run("Put", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), deadline)
+		defer cancel()
+		start := time.Now()
+		payload := []byte("img")
+		_, err := client.Put(ctx, "shops/test/obj.png", bytes.NewReader(payload), int64(len(payload)), "image/png")
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Put hung: want DeadlineExceeded, got %v", err)
+		}
+		if elapsed := time.Since(start); elapsed >= maxElapsed {
+			t.Fatalf("Put hung too long: %v", elapsed)
+		}
+	})
+
+	t.Run("Get", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), deadline)
+		defer cancel()
+		start := time.Now()
+		_, err := client.Get(ctx, "shops/test/obj.png")
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Get hung: want DeadlineExceeded, got %v", err)
+		}
+		if elapsed := time.Since(start); elapsed >= maxElapsed {
+			t.Fatalf("Get hung too long: %v", elapsed)
+		}
+	})
+}

@@ -292,3 +292,104 @@ export function validateResolveOrderReviewInput(
   }
   return { ok: true, value: { note } };
 }
+
+export interface ValidatedSellerPayoutDecisionInput {
+  decision: "APPROVE" | "REJECT";
+  reason: string;
+}
+
+export function validateSellerPayoutDecisionInput(
+  input: unknown
+): ValidationResult<ValidatedSellerPayoutDecisionInput> {
+  const rec = asRecord(input);
+  const decision = asString(rec.decision).toUpperCase();
+  if (decision !== "APPROVE" && decision !== "REJECT") {
+    return {
+      ok: false,
+      code: "INVALID_ARGUMENT",
+      message: "Quyết định chi trả chỉ chấp nhận APPROVE hoặc REJECT.",
+    };
+  }
+  const reason = asString(rec.reason);
+  if (decision === "REJECT" && reason.length === 0) {
+    return {
+      ok: false,
+      code: "INVALID_ARGUMENT",
+      message: "Vui lòng nhập lý do từ chối yêu cầu rút tiền.",
+    };
+  }
+  if (reason.length > 500) {
+    return {
+      ok: false,
+      code: "INVALID_ARGUMENT",
+      message: "Lý do không được vượt quá 500 ký tự.",
+    };
+  }
+  return {
+    ok: true,
+    value: {
+      decision,
+      reason,
+    },
+  };
+}
+
+export function computePendingPayoutTotalVnd(
+  items: ReadonlyArray<{ status: string; amount_vnd: number }>
+): number {
+  let sum = 0;
+  for (const item of items) {
+    if (
+      item.status.toUpperCase() === "PENDING" &&
+      Number.isFinite(item.amount_vnd) &&
+      item.amount_vnd > 0
+    ) {
+      sum += Math.trunc(item.amount_vnd);
+    }
+  }
+  return sum;
+}
+
+const CANONICAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export interface AdminEscrowReleaseResponse {
+  released: boolean;
+  released_amount_vnd: number;
+  already_released: boolean;
+}
+
+export function validateEscrowReleaseOrderId(input: unknown): ValidationResult<string> {
+  const clean = asString(input);
+  if (!CANONICAL_UUID_RE.test(clean)) {
+    return {
+      ok: false,
+      code: "INVALID_ORDER_ID",
+      message: "Mã đơn hàng phải đúng định dạng UUID.",
+    };
+  }
+  return { ok: true, value: clean };
+}
+
+export function formatEscrowReleaseToastMessage(
+  result: AdminEscrowReleaseResponse,
+  formatVndFn: (amountVnd: number) => string
+): string {
+  if (result.already_released) {
+    return "Đơn này đã được giải ngân trước đó";
+  }
+  if (result.released) {
+    return `Đã giải ngân ${formatVndFn(result.released_amount_vnd)}`;
+  }
+  return "Không tìm thấy khoản chờ giải ngân cho mã đơn hàng này.";
+}
+
+export function mapEscrowReleaseErrorMessage(err: unknown, fallback: string): string {
+  if (err && typeof err === "object") {
+    const rec = err as { status?: unknown; code?: unknown };
+    const code = typeof rec.code === "string" ? rec.code.trim().toUpperCase() : "";
+    if (rec.status === 409 || code === "FAILED_PRECONDITION" || code === "ALREADY_EXISTS") {
+      return "Đơn chưa hoàn tất nên chưa thể giải ngân";
+    }
+  }
+  return fallback;
+}

@@ -47,6 +47,7 @@ type Dependencies struct {
 	ShippingLabelProxy               http.Handler
 	PaymentSSEProxy                  http.Handler
 	MediaStore                       storage.Store
+	MediaStorageTimeout              time.Duration
 	Logger                           *slog.Logger
 }
 
@@ -59,6 +60,7 @@ type handler struct {
 	productImportMaxBytes            int64
 	searchFallbackTimeout            time.Duration
 	mediaStore                       storage.Store
+	mediaStorageTimeout              time.Duration
 }
 
 // New constructs the complete API Gateway HTTP router matching docs/contracts.md Section 4.
@@ -80,6 +82,10 @@ func New(deps Dependencies) http.Handler {
 	if searchTimeout <= 0 {
 		searchTimeout = 1500 * time.Millisecond
 	}
+	mediaTimeout := deps.MediaStorageTimeout
+	if mediaTimeout <= 0 {
+		mediaTimeout = defaultMediaStorageTimeout
+	}
 
 	h := &handler{
 		clients:                          deps.Clients,
@@ -90,6 +96,7 @@ func New(deps Dependencies) http.Handler {
 		productImportMaxBytes:            importMaxBytes,
 		searchFallbackTimeout:            searchTimeout,
 		mediaStore:                       deps.MediaStore,
+		mediaStorageTimeout:              mediaTimeout,
 	}
 
 	r := chi.NewRouter()
@@ -515,6 +522,7 @@ func New(deps Dependencies) http.Handler {
 					admin.With(middleware.RequireCapability(auth.CapRefundsSettle)).Post("/refunds/{id}/settle", h.handleAdminSettleRefund)
 					admin.With(middleware.RequireCapability(auth.CapPayoutsRead)).Get("/payouts", h.handleAdminListPayouts)
 					admin.With(middleware.RequireCapability(auth.CapPayoutsDecide)).Post("/payouts/{id}/decision", h.handleAdminDecidePayout)
+					admin.With(middleware.RequireCapability(auth.CapEscrowRelease)).Post("/orders/{id}/escrow/release", h.handleAdminReleaseEscrow)
 					admin.With(middleware.RequireCapability(auth.CapReconciliationWrite)).Post("/payments/reconcile", h.handleAdminReconcilePayments)
 					admin.With(middleware.RequireCapability(auth.CapReconciliationWrite)).Post("/reconciliation/cod/import", h.handleAdminImportCodReconciliation)
 					admin.With(middleware.RequireCapability(auth.CapLedgerRead)).Get("/reconciliation/runs", h.handleAdminListReconciliationRuns)

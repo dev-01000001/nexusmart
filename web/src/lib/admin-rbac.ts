@@ -118,6 +118,8 @@ export const CAPABILITY_MATRIX = {
   "refunds.create": ["super_admin", "admin", "cskh", "accountant"],
   "refunds.approve": ["super_admin", "admin", "accountant"],
   "refunds.settle": ["super_admin", "admin", "accountant"],
+  "payouts.read": ["super_admin", "admin", "accountant", "ops"],
+  "payouts.decide": ["super_admin", "admin", "accountant"],
   "carriers.read": ["super_admin", "admin", "ops"],
   "carriers.write": ["super_admin", "admin", "ops"],
   "payment_methods.read": ["super_admin", "admin", "accountant", "ops"],
@@ -206,7 +208,12 @@ export function canAccessAdminPath(
     return roleHasCapability(normRole, "returns.read");
   }
   if (clean === "/admin/doi-soat" || clean.startsWith("/admin/doi-soat/")) {
-    return roleHasAnyCapability(normRole, ["ledger.read", "orders.read", "refunds.read"]);
+    return roleHasAnyCapability(normRole, [
+      "ledger.read",
+      "orders.read",
+      "refunds.read",
+      "payouts.read",
+    ]);
   }
   if (clean === "/admin/cau-hinh" || clean.startsWith("/admin/cau-hinh/")) {
     return roleHasAnyCapability(normRole, [

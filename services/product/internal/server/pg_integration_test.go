@@ -2358,6 +2358,102 @@ func TestPGStore_W2BIntegration(t *testing.T) {
 			}
 			assertAdminReviewSKUActiveLifecycle(t, pgSrv, "pg-shop-1", cat.GetCategory().GetId(), "PG-"+runPrefix)
 		})
+
+		t.Run("M3_UpdateProduct_LegacyImages_RealPG", func(t *testing.T) {
+			pgSrv := New(pgStore, nil)
+			cat, err := pgSrv.CreateCategory(adminCtx, &productv1.CreateCategoryRequest{
+				Name: "PG M3 Cat " + runPrefix, Slug: runPrefix + "-m3-cat", CommissionRateBps: 500,
+			})
+			if err != nil {
+				t.Fatalf("CreateCategory: %v", err)
+			}
+			catID := cat.GetCategory().GetId()
+
+			legacyProdURL := "https://sandbox.nexusmart.local/legacy/" + runPrefix + "-prod.jpg"
+			legacySKUURL := "https://sandbox.nexusmart.local/legacy/" + runPrefix + "-sku.jpg"
+			legacyProdID := uuid.NewString()
+			legacySKUID := uuid.NewString()
+			skuCode := runPrefix + "-M3-LEG"
+
+			if err := pgStore.WithTx(ctx, func(q store.Queries) error {
+				if _, err := q.CreateProduct(ctx, store.Product{
+					ID:          legacyProdID,
+					ShopID:      "pg-shop-1",
+					CategoryID:  catID,
+					Name:        "PG Legacy Images " + runPrefix,
+					Slug:        runPrefix + "-m3-legacy",
+					Description: "Seeded legacy product",
+					Images:      []string{legacyProdURL, "/models/model-ao-thun-oversize.jpg"},
+					Status:      store.ProductStatusApproved,
+					MinPriceVND: 250000,
+					MaxPriceVND: 250000,
+				}); err != nil {
+					return err
+				}
+				if _, err := q.CreateSKU(ctx, store.SKU{
+					ID:                legacySKUID,
+					ProductID:         legacyProdID,
+					ShopID:            "pg-shop-1",
+					ProductName:       "PG Legacy Images " + runPrefix,
+					SKUCode:           skuCode,
+					Name:              "Default",
+					PriceVND:          250000,
+					MinPrice30dVND:    250000,
+					Stock:             12,
+					ImageURL:          legacySKUURL,
+					CategoryID:        catID,
+					CommissionRateBps: 500,
+					Status:            store.SKUStatusActive,
+					ProductStatus:     store.ProductStatusApproved,
+				}); err != nil {
+					return err
+				}
+				return q.InsertSKUPriceHistory(ctx, store.SKUPriceHistoryEntry{
+					ID:         uuid.NewString(),
+					SKUID:      legacySKUID,
+					PriceVND:   250000,
+					ActorID:    "pg-seller-1",
+					Reason:     "seed legacy sku",
+					RecordedAt: time.Now().UTC(),
+				})
+			}); err != nil {
+				t.Fatalf("seed legacy product in PG: %v", err)
+			}
+
+			// Updating price/stock while echoing existing legacy URLs + /models/ succeeds.
+			upd, err := pgSrv.UpdateProduct(sellerCtx, &productv1.UpdateProductRequest{
+				Id:     legacyProdID,
+				Images: []string{legacyProdURL, "/models/model-ao-thun-oversize.jpg"},
+				Skus: []*productv1.SKUInput{
+					{Id: legacySKUID, SkuCode: skuCode, Name: "Default", PriceVnd: 275000, Stock: 20, ImageUrl: legacySKUURL},
+				},
+			})
+			if err != nil {
+				t.Fatalf("UpdateProduct with existing legacy images in PG failed: %v", err)
+			}
+			if got := upd.GetProduct().GetImages(); len(got) != 2 || got[0] != legacyProdURL || got[1] != "/models/model-ao-thun-oversize.jpg" {
+				t.Fatalf("unexpected persisted images: %v", got)
+			}
+			if gotSKU := upd.GetProduct().GetSkus()[0]; gotSKU.GetPriceVnd() != 275000 || gotSKU.GetImageUrl() != legacySKUURL {
+				t.Fatalf("unexpected persisted SKU: %+v", gotSKU)
+			}
+
+			// Adding a brand-new external URL on product or SKU is rejected with InvalidArgument.
+			if _, err := pgSrv.UpdateProduct(sellerCtx, &productv1.UpdateProductRequest{
+				Id:     legacyProdID,
+				Images: []string{legacyProdURL, "https://evil.example/new.jpg"},
+			}); status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("UpdateProduct new external images[] in PG: want InvalidArgument, got %v", err)
+			}
+			if _, err := pgSrv.UpdateProduct(sellerCtx, &productv1.UpdateProductRequest{
+				Id: legacyProdID,
+				Skus: []*productv1.SKUInput{
+					{Id: legacySKUID, SkuCode: skuCode, Name: "Default", PriceVnd: 275000, Stock: 20, ImageUrl: "https://evil.example/new-sku.jpg"},
+				},
+			}); status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("UpdateProduct new external sku.image_url in PG: want InvalidArgument, got %v", err)
+			}
+		})
 	})
 }
 

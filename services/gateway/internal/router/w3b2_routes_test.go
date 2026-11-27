@@ -728,6 +728,14 @@ func (p *w3b2PaymentClient) DecideSellerPayout(_ context.Context, in *paymentv1.
 	}, nil
 }
 
+func (p *w3b2PaymentClient) ReleaseEscrow(_ context.Context, _ *paymentv1.ReleaseEscrowRequest, _ ...grpc.CallOption) (*paymentv1.ReleaseEscrowResponse, error) {
+	return &paymentv1.ReleaseEscrowResponse{
+		Released:          true,
+		ReleasedAmountVnd: 250000,
+		AlreadyReleased:   false,
+	}, nil
+}
+
 func (p *w3b2PaymentClient) RunReconciliation(_ context.Context, _ *paymentv1.RunReconciliationRequest, _ ...grpc.CallOption) (*paymentv1.RunReconciliationResponse, error) {
 	return &paymentv1.RunReconciliationResponse{RunId: "run-1"}, nil
 }
@@ -1093,6 +1101,7 @@ func TestW3B2_AdminRBACMatrixExhaustiveAllRoutesAndRoles(t *testing.T) {
 		{http.MethodPost, "/api/v1/admin/refunds/{id}/settle", "/api/v1/admin/refunds/ref-1/settle", auth.CapRefundsSettle, "", `{"provider_refund_id":"pr-1"}`, idemHdr},
 		{http.MethodGet, "/api/v1/admin/payouts", "/api/v1/admin/payouts", auth.CapPayoutsRead, "", "", nil},
 		{http.MethodPost, "/api/v1/admin/payouts/{id}/decision", "/api/v1/admin/payouts/po-1/decision", auth.CapPayoutsDecide, "", `{"decision":"APPROVE","reason":""}`, nil},
+		{http.MethodPost, "/api/v1/admin/orders/{id}/escrow/release", "/api/v1/admin/orders/11111111-2222-4333-8444-555555555555/escrow/release", auth.CapEscrowRelease, "", "", nil},
 		{http.MethodPost, "/api/v1/admin/payments/reconcile", "/api/v1/admin/payments/reconcile", auth.CapReconciliationWrite, "", `{"date":"2026-11-24"}`, nil},
 		{http.MethodPost, "/api/v1/admin/reconciliation/cod/import", "/api/v1/admin/reconciliation/cod/import?carrier_code=ghn", auth.CapReconciliationWrite, "text/csv", validCODCSV, nil},
 		{http.MethodGet, "/api/v1/admin/reconciliation/runs", "/api/v1/admin/reconciliation/runs", auth.CapLedgerRead, "", "", nil},

@@ -4,6 +4,7 @@ import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } fr
 import { useRouter } from "next/navigation";
 import {
   AlertCircle,
+  Banknote,
   ClipboardCheck,
   FileSpreadsheet,
   Info,
@@ -26,9 +27,19 @@ import {
   orderStatusTone,
 } from "@/components/app";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
@@ -74,6 +85,10 @@ import type {
   GatewayRefund,
   GatewayRefundResponse,
   GatewayResolveReconciliationResponse,
+  GatewaySellerPayout,
+  GatewaySellerPayoutDecision,
+  GatewaySellerPayoutListResponse,
+  GatewaySellerPayoutResponse,
   GatewaySettleRefundResponse,
   PaginatedResponse,
 } from "@/lib/gateway-types";
@@ -113,12 +128,18 @@ import {
 } from "./types";
 import {
   buildAdminMoneyFingerprint,
+  computePendingPayoutTotalVnd,
+  formatEscrowReleaseToastMessage,
+  mapEscrowReleaseErrorMessage,
   nextAdminMoneyIdempotencyCacheAfterError,
   resolveAdminMoneyIdempotencyKey,
+  type AdminEscrowReleaseResponse,
   type StableReferenceCache,
+  validateEscrowReleaseOrderId,
   validateManualRefundInput,
   validateReconciliationQueueResolveInput,
   validateRefundApprovalDecisionInput,
+  validateSellerPayoutDecisionInput,
   validateSettleRefundInput,
 } from "./AdminReconciliationHelpers";
 import {
@@ -131,8 +152,10 @@ import {
   refundStatusTone,
 } from "./config/adminUiHelpers";
 import { CodCsvImportDialog } from "./finance/CodCsvImportDialog";
+import { getSellerPayoutStatusMeta } from "@/features/seller/SellerFinancePayoutHelpers";
 
-export type ReconciliationMainTab = "ledger" | "cod" | "queue" | "refunds" | "needs-review";
+export type ReconciliationMainTab =
+  "ledger" | "cod" | "queue" | "refunds" | "payouts" | "needs-review";
 
 const CHANNEL_TABS: Array<{ id: SalesChannelFilter; label: string; dataChannelTab: string }> = [
   { id: "", label: "Tất cả kênh", dataChannelTab: "ALL" },
@@ -142,6 +165,7 @@ const CHANNEL_TABS: Array<{ id: SalesChannelFilter; label: string; dataChannelTa
 
 const PAGE_SIZE = 20;
 const ALL_REFUND_SENTINEL = "__all_refund__";
+const ALL_PAYOUT_SENTINEL = "__all_payout__";
 
 function channelScopeLabel(channel: SalesChannelFilter): string {
   if (channel === "MARKETPLACE") return "Sàn NexusMart";
@@ -170,6 +194,8 @@ export interface AdminReconciliationClientProps {
   initialQueueTotal?: number;
   initialRefunds?: GatewayRefund[];
   initialRefundsTotal?: number;
+  initialPayouts?: GatewaySellerPayout[];
+  initialPayoutsTotal?: number;
   initialNeedsReviewOrders?: GatewayOrder[];
   initialNeedsReviewTotal?: number;
   carriers?: GatewayCarrierConfig[];
@@ -184,6 +210,8 @@ function ReconciliationContent({
   initialQueueTotal = 0,
   initialRefunds = [],
   initialRefundsTotal = 0,
+  initialPayouts = [],
+  initialPayoutsTotal = 0,
   initialNeedsReviewOrders = [],
   initialNeedsReviewTotal = 0,
   carriers = [],
@@ -199,6 +227,9 @@ function ReconciliationContent({
   const canReadRefunds = roleHasCapability(user.role, "refunds.read");
   const canCreateRefund = roleHasCapability(user.role, "refunds.create");
   const canSettleRefund = roleHasCapability(user.role, "refunds.settle");
+  const canReadPayouts = roleHasCapability(user.role, "payouts.read");
+  const canDecidePayouts = roleHasCapability(user.role, "payouts.decide");
+  const canReleaseEscrow = roleHasCapability(user.role, "escrow.release");
   const canReadOrders = roleHasCapability(user.role, "orders.read");
   const canResolveOrderReview = roleHasCapability(user.role, "orders.review.resolve");
 
@@ -212,6 +243,9 @@ function ReconciliationContent({
     if (canReadRefunds) {
       list.push({ id: "refunds", label: "Hoàn tiền", count: initialRefundsTotal });
     }
+    if (canReadPayouts) {
+      list.push({ id: "payouts", label: "Chi trả người bán", count: initialPayoutsTotal });
+    }
     if (canReadOrders) {
       list.push({ id: "needs-review", label: "Đơn cần rà soát", count: initialNeedsReviewTotal });
     }
@@ -219,9 +253,11 @@ function ReconciliationContent({
   }, [
     canReadLedger,
     canReadRefunds,
+    canReadPayouts,
     canReadOrders,
     initialQueueTotal,
     initialRefundsTotal,
+    initialPayoutsTotal,
     initialNeedsReviewTotal,
   ]);
 
@@ -306,6 +342,31 @@ function ReconciliationContent({
   const [newRefundReason, setNewRefundReason] = useState("");
   const [createRefundError, setCreateRefundError] = useState<string | null>(null);
   const [creatingRefund, setCreatingRefund] = useState(false);
+
+  // --- Seller payouts queue (UC-PAY05) ---
+  const [payouts, setPayouts] = useState<GatewaySellerPayout[]>(initialPayouts);
+  const [payoutsTotal, setPayoutsTotal] = useState(initialPayoutsTotal);
+  const [payoutsPendingCount, setPayoutsPendingCount] = useState(initialPayoutsTotal);
+  const [payoutsPendingTotalVnd, setPayoutsPendingTotalVnd] = useState(() =>
+    computePendingPayoutTotalVnd(initialPayouts)
+  );
+  const [payoutStatus, setPayoutStatus] = useState<string>("PENDING");
+  const [payoutShopFilter, setPayoutShopFilter] = useState<string>("");
+  const [payoutsPage, setPayoutsPage] = useState(1);
+  const [payoutsLoading, setPayoutsLoading] = useState(false);
+  const [payoutDecisionTarget, setPayoutDecisionTarget] = useState<{
+    payout: GatewaySellerPayout;
+    decision: GatewaySellerPayoutDecision;
+  } | null>(null);
+  const [payoutRejectReason, setPayoutRejectReason] = useState("");
+  const [payoutDecisionError, setPayoutDecisionError] = useState<string | null>(null);
+  const [payoutDecisionBusy, setPayoutDecisionBusy] = useState(false);
+
+  // --- Early escrow release (escrow.release) ---
+  const [escrowOrderId, setEscrowOrderId] = useState("");
+  const [escrowFormError, setEscrowFormError] = useState<string | null>(null);
+  const [escrowConfirmOrderId, setEscrowConfirmOrderId] = useState<string | null>(null);
+  const [escrowReleasing, setEscrowReleasing] = useState(false);
 
   // --- Orders needing manual review ---
   const [needsReviewOrders, setNeedsReviewOrders] =
@@ -395,6 +456,90 @@ function ReconciliationContent({
     },
     [canReadRefunds, showToast]
   );
+
+  const loadPayouts = useCallback(
+    async (nextStatus: string, nextShopId: string, nextPage: number) => {
+      if (!canReadPayouts) return;
+      setPayoutsLoading(true);
+      try {
+        const qs = new URLSearchParams({
+          page: String(nextPage),
+          page_size: String(PAGE_SIZE),
+        });
+        if (nextStatus) qs.set("status", nextStatus);
+        if (nextShopId.trim()) qs.set("shop_id", nextShopId.trim());
+        const res = await api<GatewaySellerPayoutListResponse>(
+          `/api/admin/payouts?${qs.toString()}`
+        );
+        const items = res.items ?? [];
+        setPayouts(items);
+        setPayoutsTotal(res.total ?? items.length);
+        if (nextStatus === "PENDING" && !nextShopId.trim()) {
+          setPayoutsPendingCount(res.total ?? items.length);
+          setPayoutsPendingTotalVnd(computePendingPayoutTotalVnd(items));
+        }
+      } catch (err) {
+        showToast(getErrorMessage(err, "Không thể tải danh sách chi trả người bán."));
+      } finally {
+        setPayoutsLoading(false);
+      }
+    },
+    [canReadPayouts, showToast]
+  );
+
+  const handleConfirmPayoutDecision = async () => {
+    if (!payoutDecisionTarget || payoutDecisionBusy) return;
+    const { payout, decision } = payoutDecisionTarget;
+    const validated = validateSellerPayoutDecisionInput({
+      decision,
+      reason: decision === "REJECT" ? payoutRejectReason : "",
+    });
+    if (!validated.ok) {
+      setPayoutDecisionError(validated.message);
+      return;
+    }
+
+    setPayoutDecisionError(null);
+    setPayoutDecisionBusy(true);
+    try {
+      await api<GatewaySellerPayoutResponse>(
+        `/api/admin/payouts/${encodeURIComponent(payout.id)}/decision`,
+        {
+          method: "POST",
+          body: validated.value,
+        }
+      );
+      setPayoutDecisionTarget(null);
+      setPayoutRejectReason("");
+      showToast(
+        decision === "APPROVE"
+          ? "Đã duyệt chi trả cho người bán."
+          : "Đã từ chối yêu cầu rút tiền và hoàn lại số dư khả dụng."
+      );
+      await loadPayouts(payoutStatus, payoutShopFilter, payoutsPage);
+      if (payoutStatus !== "PENDING" || payoutShopFilter.trim()) {
+        const pendingRes = await api<GatewaySellerPayoutListResponse>(
+          "/api/admin/payouts?status=PENDING&page=1&page_size=100"
+        ).catch(() => null);
+        if (pendingRes) {
+          setPayoutsPendingCount(pendingRes.total ?? pendingRes.items.length);
+          setPayoutsPendingTotalVnd(computePendingPayoutTotalVnd(pendingRes.items ?? []));
+        }
+      }
+      if (canReadLedger) {
+        const freshLedger = await api<GwLedgerSummary>(ledgerUrlFor(channelFilter)).catch(
+          () => null
+        );
+        if (freshLedger) setLedger(freshLedger);
+      }
+    } catch (err) {
+      setPayoutDecisionError(
+        getErrorMessage(err, "Không thể cập nhật quyết định chi trả lúc này.")
+      );
+    } finally {
+      setPayoutDecisionBusy(false);
+    }
+  };
 
   const loadNeedsReview = useCallback(
     async (nextPage: number) => {
@@ -793,6 +938,54 @@ function ReconciliationContent({
     }
   };
 
+  const handleRequestEscrowRelease = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (escrowReleasing || !canReleaseEscrow) return;
+    const validated = validateEscrowReleaseOrderId(escrowOrderId);
+    if (!validated.ok) {
+      setEscrowFormError(validated.message);
+      return;
+    }
+    setEscrowFormError(null);
+    setEscrowConfirmOrderId(validated.value);
+  };
+
+  const handleConfirmEscrowRelease = async () => {
+    if (!escrowConfirmOrderId || escrowReleasing || !canReleaseEscrow) return;
+    setEscrowReleasing(true);
+    setEscrowFormError(null);
+    try {
+      const res = await api<AdminEscrowReleaseResponse>(
+        `/api/admin/orders/${encodeURIComponent(escrowConfirmOrderId)}/escrow-release`,
+        {
+          method: "POST",
+        }
+      );
+      showToast(formatEscrowReleaseToastMessage(res, formatVnd));
+      setEscrowConfirmOrderId(null);
+      if (res.released || res.already_released) {
+        setEscrowOrderId("");
+      }
+      if (canReadLedger && res.released && !res.already_released) {
+        const freshLedger = await api<GwLedgerSummary>(ledgerUrlFor(channelFilter)).catch(
+          () => null
+        );
+        if (freshLedger) setLedger(freshLedger);
+      }
+      router.refresh();
+    } catch (err) {
+      const msg = mapEscrowReleaseErrorMessage(
+        err,
+        getErrorMessage(err, "Không thể giải ngân sớm cho đơn hàng lúc này.")
+      );
+      setEscrowFormError(msg);
+      setEscrowConfirmOrderId(null);
+      showToast(msg);
+    } finally {
+      setEscrowReleasing(false);
+    }
+  };
+
   const filteredAccounts = useMemo(() => {
     const accounts = ledger?.accounts ?? [];
     const q = query.trim().toLowerCase();
@@ -817,10 +1010,11 @@ function ReconciliationContent({
       availableTabs.map((t) => {
         if (t.id === "queue") return { ...t, count: queueTotal };
         if (t.id === "refunds") return { ...t, count: refundsTotal };
+        if (t.id === "payouts") return { ...t, count: payoutsPendingCount };
         if (t.id === "needs-review") return { ...t, count: needsReviewTotal };
         return t;
       }),
-    [availableTabs, queueTotal, refundsTotal, needsReviewTotal]
+    [availableTabs, queueTotal, refundsTotal, payoutsPendingCount, needsReviewTotal]
   );
 
   if (loadError && mainTab === "ledger") {
@@ -2006,6 +2200,301 @@ function ReconciliationContent({
           </TabsContent>
         ) : null}
 
+        {/* TAB 4B: SELLER PAYOUTS QUEUE (UC-PAY05) */}
+        {canReadPayouts ? (
+          <TabsContent value="payouts" className="space-y-4">
+            <MetricStrip
+              items={[
+                {
+                  label: "Tổng tiền chờ chi",
+                  value: <Money vnd={payoutsPendingTotalVnd} size="lg" />,
+                  hint: `${formatInt(payoutsPendingCount)} yêu cầu đang chờ duyệt`,
+                },
+                {
+                  label: "Bản ghi theo bộ lọc",
+                  value: <span className="tabular-nums">{formatInt(payoutsTotal)}</span>,
+                  hint:
+                    payoutStatus === "PENDING"
+                      ? "Đang lọc trạng thái chờ duyệt"
+                      : payoutStatus === "COMPLETED"
+                        ? "Đang lọc trạng thái đã chi trả"
+                        : payoutStatus === "REJECTED"
+                          ? "Đang lọc trạng thái đã từ chối"
+                          : "Hiển thị tất cả trạng thái",
+                },
+              ]}
+            />
+
+            <IndexTable
+              toolbar={
+                <div className="flex w-full flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <FilterSelect
+                      ariaLabel="Lọc trạng thái chi trả người bán"
+                      value={payoutStatus || ALL_PAYOUT_SENTINEL}
+                      onValueChange={(nextVal) => {
+                        const next = nextVal === ALL_PAYOUT_SENTINEL ? "" : nextVal;
+                        setPayoutStatus(next);
+                        setPayoutsPage(1);
+                        void loadPayouts(next, payoutShopFilter, 1);
+                      }}
+                      options={[
+                        { value: "PENDING", label: "Chờ duyệt" },
+                        { value: "COMPLETED", label: "Đã chi trả" },
+                        { value: "REJECTED", label: "Đã từ chối" },
+                        { value: ALL_PAYOUT_SENTINEL, label: "Tất cả trạng thái" },
+                      ]}
+                    />
+                    <form
+                      className="flex items-center gap-1.5"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        setPayoutsPage(1);
+                        void loadPayouts(payoutStatus, payoutShopFilter, 1);
+                      }}
+                    >
+                      <Input
+                        type="search"
+                        value={payoutShopFilter}
+                        onChange={(e) => setPayoutShopFilter(e.target.value)}
+                        placeholder="Lọc theo mã gian hàng..."
+                        aria-label="Lọc chi trả theo mã gian hàng"
+                        className="h-8 w-52 bg-card"
+                      />
+                      <Button type="submit" variant="outline" size="xs" disabled={payoutsLoading}>
+                        <Search className="size-3.5" aria-hidden="true" />
+                        <span>Lọc</span>
+                      </Button>
+                    </form>
+                  </div>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    disabled={payoutsLoading}
+                    onClick={() => void loadPayouts(payoutStatus, payoutShopFilter, payoutsPage)}
+                  >
+                    <RefreshCw
+                      className={cn("size-3.5", payoutsLoading && "animate-spin")}
+                      aria-hidden="true"
+                    />
+                    <span>Làm mới</span>
+                  </Button>
+                </div>
+              }
+              footer={
+                Math.ceil(payoutsTotal / PAGE_SIZE) > 1 ? (
+                  <TablePagination
+                    page={payoutsPage}
+                    totalPages={Math.max(1, Math.ceil(payoutsTotal / PAGE_SIZE))}
+                    summary={`Trang ${formatInt(payoutsPage)} / ${formatInt(Math.max(1, Math.ceil(payoutsTotal / PAGE_SIZE)))}`}
+                    disabled={payoutsLoading}
+                    onPageChange={(nextPage) => {
+                      setPayoutsPage(nextPage);
+                      void loadPayouts(payoutStatus, payoutShopFilter, nextPage);
+                    }}
+                  />
+                ) : undefined
+              }
+            >
+              {payoutsLoading ? (
+                <div className="p-4">
+                  <TableLoadingSkeleton rows={4} label="Đang tải danh sách chi trả người bán..." />
+                </div>
+              ) : payouts.length === 0 ? (
+                <div className="p-4">
+                  <EmptyState
+                    icon={Banknote}
+                    title="Không có yêu cầu chi trả nào trong bộ lọc này"
+                    description="Chuyển trạng thái lọc hoặc chờ người bán gửi yêu cầu rút tiền mới."
+                    className="shadow-none"
+                  />
+                </div>
+              ) : (
+                <>
+                  <div className="hidden md:block">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Thời gian</TableHead>
+                          <TableHead>Gian hàng</TableHead>
+                          <TableHead className="text-right">Số tiền</TableHead>
+                          <TableHead>Tài khoản nhận</TableHead>
+                          <TableHead>Trạng thái</TableHead>
+                          <TableHead>Mã chuyển / Lý do</TableHead>
+                          <TableHead className="text-right">Thao tác</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {payouts.map((po) => {
+                          const stMeta = getSellerPayoutStatusMeta(po.status);
+                          const isPending = po.status.toUpperCase() === "PENDING";
+                          const isRejected = po.status.toUpperCase() === "REJECTED";
+                          return (
+                            <TableRow key={po.id}>
+                              <TableCell className="text-muted-foreground tabular-nums">
+                                <div>
+                                  {po.created_at
+                                    ? formatShortTimeDateVi(po.created_at)
+                                    : EMPTY_DASH}
+                                </div>
+                                {po.decided_at ? (
+                                  <div className="text-xs text-muted-foreground">
+                                    Duyệt: {formatShortTimeDateVi(po.decided_at)}
+                                  </div>
+                                ) : null}
+                              </TableCell>
+                              <TableCell>
+                                <div className="font-medium text-foreground tabular-nums">
+                                  {po.shop_id}
+                                </div>
+                              </TableCell>
+                              <TableCell className="text-right font-semibold tabular-nums">
+                                <Money vnd={po.amount_vnd} size="sm" />
+                              </TableCell>
+                              <TableCell className="whitespace-normal">
+                                <div className="font-medium text-foreground">
+                                  {po.bank_name || EMPTY_DASH} ·{" "}
+                                  <span className="tabular-nums">
+                                    {po.bank_account_masked || EMPTY_DASH}
+                                  </span>
+                                </div>
+                                {po.account_holder_name ? (
+                                  <div className="text-xs text-muted-foreground">
+                                    {po.account_holder_name}
+                                  </div>
+                                ) : null}
+                              </TableCell>
+                              <TableCell>
+                                <StatusBadge tone={stMeta.tone}>{stMeta.label}</StatusBadge>
+                              </TableCell>
+                              <TableCell className="max-w-[240px] whitespace-normal">
+                                {isRejected ? (
+                                  <span className="text-destructive">
+                                    {po.reject_reason || EMPTY_DASH}
+                                  </span>
+                                ) : po.transfer_ref ? (
+                                  <span className="text-xs text-muted-foreground tabular-nums">
+                                    {po.transfer_ref}
+                                  </span>
+                                ) : (
+                                  <span className="text-muted-foreground">{EMPTY_DASH}</span>
+                                )}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {isPending && canDecidePayouts ? (
+                                  <div className="flex justify-end gap-1.5">
+                                    <Button
+                                      type="button"
+                                      size="xs"
+                                      onClick={() => {
+                                        setPayoutRejectReason("");
+                                        setPayoutDecisionError(null);
+                                        setPayoutDecisionTarget({
+                                          payout: po,
+                                          decision: "APPROVE",
+                                        });
+                                      }}
+                                    >
+                                      Duyệt
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="xs"
+                                      onClick={() => {
+                                        setPayoutRejectReason("");
+                                        setPayoutDecisionError(null);
+                                        setPayoutDecisionTarget({
+                                          payout: po,
+                                          decision: "REJECT",
+                                        });
+                                      }}
+                                    >
+                                      Từ chối
+                                    </Button>
+                                  </div>
+                                ) : (
+                                  <span className="text-xs text-muted-foreground">
+                                    {EMPTY_DASH}
+                                  </span>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+
+                  <div className="md:hidden">
+                    {payouts.map((po) => {
+                      const stMeta = getSellerPayoutStatusMeta(po.status);
+                      const isPending = po.status.toUpperCase() === "PENDING";
+                      return (
+                        <div key={po.id} className="border-b border-border last:border-b-0">
+                          <IndexRowCard
+                            title={formatVnd(po.amount_vnd)}
+                            badge={<StatusBadge tone={stMeta.tone}>{stMeta.label}</StatusBadge>}
+                            meta={
+                              <>
+                                <span>{po.shop_id}</span>
+                                <span>·</span>
+                                <span>
+                                  {po.bank_name || EMPTY_DASH} {po.bank_account_masked}
+                                </span>
+                                {po.reject_reason ? (
+                                  <>
+                                    <span>·</span>
+                                    <span className="text-destructive">{po.reject_reason}</span>
+                                  </>
+                                ) : po.transfer_ref ? (
+                                  <>
+                                    <span>·</span>
+                                    <span className="tabular-nums">{po.transfer_ref}</span>
+                                  </>
+                                ) : null}
+                              </>
+                            }
+                          />
+                          {isPending && canDecidePayouts ? (
+                            <div className="flex gap-2 px-4 pb-3">
+                              <Button
+                                type="button"
+                                size="xs"
+                                onClick={() => {
+                                  setPayoutRejectReason("");
+                                  setPayoutDecisionError(null);
+                                  setPayoutDecisionTarget({ payout: po, decision: "APPROVE" });
+                                }}
+                              >
+                                Duyệt
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="xs"
+                                onClick={() => {
+                                  setPayoutRejectReason("");
+                                  setPayoutDecisionError(null);
+                                  setPayoutDecisionTarget({ payout: po, decision: "REJECT" });
+                                }}
+                              >
+                                Từ chối
+                              </Button>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </IndexTable>
+          </TabsContent>
+        ) : null}
+
         {/* TAB 5: ORDERS NEEDING MANUAL REVIEW */}
         {canReadOrders ? (
           <TabsContent value="needs-review" className="space-y-4">
@@ -2167,6 +2656,96 @@ function ReconciliationContent({
         ) : null}
       </Tabs>
 
+      {/* EARLY ESCROW RELEASE CARD (escrow.release) */}
+      {canReleaseEscrow ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>
+              <h2 className="text-sm leading-5 font-semibold">Giải ngân sớm</h2>
+            </CardTitle>
+            <CardDescription>
+              Chuyển ngay tiền ký quỹ của đơn hàng đã hoàn tất vào số dư khả dụng của người bán mà
+              không chờ hết thời gian giữ tiền.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form
+              className="flex flex-col gap-3 sm:flex-row sm:items-end"
+              onSubmit={handleRequestEscrowRelease}
+              noValidate
+            >
+              <Field
+                className="flex-1 gap-1.5"
+                data-invalid={Boolean(escrowFormError) || undefined}
+              >
+                <FieldLabel htmlFor="admin-escrow-order-id">Mã đơn hàng</FieldLabel>
+                <Input
+                  id="admin-escrow-order-id"
+                  type="text"
+                  value={escrowOrderId}
+                  disabled={escrowReleasing}
+                  onChange={(e) => {
+                    setEscrowOrderId(e.target.value);
+                    if (escrowFormError) setEscrowFormError(null);
+                  }}
+                  placeholder="Nhập mã đơn hàng (UUID)..."
+                  className="bg-card tabular-nums"
+                />
+              </Field>
+              <Button
+                type="submit"
+                size="sm"
+                disabled={escrowReleasing}
+                className="min-h-10 shrink-0 sm:min-h-9"
+              >
+                {escrowReleasing ? "Đang giải ngân..." : "Giải ngân"}
+              </Button>
+            </form>
+            {escrowFormError ? <FieldError className="mt-2">{escrowFormError}</FieldError> : null}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {/* EARLY ESCROW RELEASE CONFIRMATION ALERT DIALOG */}
+      <AlertDialog
+        open={Boolean(escrowConfirmOrderId)}
+        onOpenChange={(open) => {
+          if (!open && !escrowReleasing) {
+            setEscrowConfirmOrderId(null);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          {escrowConfirmOrderId ? (
+            <>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Xác nhận giải ngân sớm</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Tiền đơn hàng{" "}
+                  <span className="font-medium text-foreground tabular-nums">
+                    {escrowConfirmOrderId}
+                  </span>{" "}
+                  sẽ chuyển ngay vào số dư khả dụng của người bán, không chờ hết thời gian giữ tiền.
+                  Thao tác này không thể hoàn tác.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={escrowReleasing}>Hủy</AlertDialogCancel>
+                <AlertDialogAction
+                  disabled={escrowReleasing}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void handleConfirmEscrowRelease();
+                  }}
+                >
+                  {escrowReleasing ? "Đang giải ngân..." : "Xác nhận giải ngân"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </>
+          ) : null}
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* COD CSV IMPORT DIALOG */}
       <CodCsvImportDialog
         open={codDialogOpen}
@@ -2185,6 +2764,77 @@ function ReconciliationContent({
         codError={codError}
         onSubmit={(e) => void handleCodImport(e)}
       />
+
+      {/* SELLER PAYOUT DECISION CONFIRMATION ALERT DIALOG */}
+      <AlertDialog
+        open={Boolean(payoutDecisionTarget)}
+        onOpenChange={(open) => {
+          if (!open && !payoutDecisionBusy) {
+            setPayoutDecisionTarget(null);
+            setPayoutDecisionError(null);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          {payoutDecisionTarget ? (
+            <>
+              <AlertDialogHeader>
+                <AlertDialogTitle>
+                  {payoutDecisionTarget.decision === "APPROVE"
+                    ? "Xác nhận duyệt chi trả người bán"
+                    : "Xác nhận từ chối yêu cầu rút tiền"}
+                </AlertDialogTitle>
+                <AlertDialogDescription>
+                  {payoutDecisionTarget.decision === "APPROVE"
+                    ? `Xác nhận chi trả ${formatVnd(payoutDecisionTarget.payout.amount_vnd)} tới tài khoản ${payoutDecisionTarget.payout.bank_name} (${payoutDecisionTarget.payout.bank_account_masked} — ${payoutDecisionTarget.payout.account_holder_name}) của gian hàng ${payoutDecisionTarget.payout.shop_id}.`
+                    : `Từ chối yêu cầu rút ${formatVnd(payoutDecisionTarget.payout.amount_vnd)} của gian hàng ${payoutDecisionTarget.payout.shop_id}. Số tiền tạm giữ sẽ được hoàn lại vào số dư khả dụng của người bán.`}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+
+              {payoutDecisionTarget.decision === "REJECT" ? (
+                <FieldGroup className="gap-2">
+                  <Field data-invalid={Boolean(payoutDecisionError) || undefined}>
+                    <FieldLabel htmlFor="admin-payout-reject-reason">Lý do từ chối</FieldLabel>
+                    <Textarea
+                      id="admin-payout-reject-reason"
+                      rows={3}
+                      value={payoutRejectReason}
+                      disabled={payoutDecisionBusy}
+                      onChange={(e) => {
+                        setPayoutRejectReason(e.target.value);
+                        setPayoutDecisionError(null);
+                      }}
+                      placeholder="Nhập lý do từ chối để hiển thị cho người bán..."
+                      className="bg-card"
+                    />
+                    {payoutDecisionError ? <FieldError>{payoutDecisionError}</FieldError> : null}
+                  </Field>
+                </FieldGroup>
+              ) : payoutDecisionError ? (
+                <FieldError>{payoutDecisionError}</FieldError>
+              ) : null}
+
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={payoutDecisionBusy}>Hủy</AlertDialogCancel>
+                <AlertDialogAction
+                  variant={payoutDecisionTarget.decision === "REJECT" ? "destructive" : "default"}
+                  disabled={payoutDecisionBusy}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void handleConfirmPayoutDecision();
+                  }}
+                >
+                  {payoutDecisionBusy
+                    ? "Đang xử lý..."
+                    : payoutDecisionTarget.decision === "APPROVE"
+                      ? "Xác nhận duyệt"
+                      : "Xác nhận từ chối"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </>
+          ) : null}
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* UNIFIED RIGHT SHEET */}
       <Sheet open={Boolean(drawerTarget)} onOpenChange={(open) => !open && setDrawerTarget(null)}>

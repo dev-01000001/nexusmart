@@ -2,6 +2,7 @@ package router
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/nexusmart/core/pkg/common/auth"
@@ -25,11 +27,19 @@ import (
 )
 
 const (
-	mediaMaxUploadBytes int64 = 5 << 20 // 5 MiB
-	mediaMaxDimension         = 6000
-	mediaCacheControl         = "public, max-age=31536000, immutable"
-	mediaCSPHeader            = "default-src 'none'"
+	mediaMaxUploadBytes        int64 = 5 << 20 // 5 MiB
+	mediaMaxDimension                = 6000
+	mediaCacheControl                = "public, max-age=31536000, immutable"
+	mediaCSPHeader                   = "default-src 'none'"
+	defaultMediaStorageTimeout       = 15 * time.Second
 )
+
+func (h *handler) mediaOpTimeout() time.Duration {
+	if h != nil && h.mediaStorageTimeout > 0 {
+		return h.mediaStorageTimeout
+	}
+	return defaultMediaStorageTimeout
+}
 
 var (
 	mediaKeyPattern    = regexp.MustCompile(`^shops/[0-9a-f-]{36}/[0-9a-f]{64}\.(jpg|png|webp)$`)
@@ -121,14 +131,17 @@ func (h *handler) handleSellerUploadMedia(w http.ResponseWriter, req *http.Reque
 	hashHex := hex.EncodeToString(sum[:])
 	key := fmt.Sprintf("shops/%s/%s.%s", shopID, hashHex, extForImageMIME(detectedMIME))
 
-	_, headErr := h.mediaStore.Head(req.Context(), key)
+	storeCtx, cancel := context.WithTimeout(req.Context(), h.mediaOpTimeout())
+	defer cancel()
+
+	_, headErr := h.mediaStore.Head(storeCtx, key)
 	if headErr != nil {
 		if !errors.Is(headErr, storage.ErrNotFound) {
 			h.logMediaError(req, "head media object failed", key, headErr)
 			httpx.WriteError(w, req, http.StatusServiceUnavailable, "UNAVAILABLE", "media storage temporarily unavailable")
 			return
 		}
-		if _, putErr := h.mediaStore.Put(req.Context(), key, bytes.NewReader(data), int64(len(data)), detectedMIME); putErr != nil {
+		if _, putErr := h.mediaStore.Put(storeCtx, key, bytes.NewReader(data), int64(len(data)), detectedMIME); putErr != nil {
 			h.logMediaError(req, "put media object failed", key, putErr)
 			httpx.WriteError(w, req, http.StatusServiceUnavailable, "UNAVAILABLE", "media storage temporarily unavailable")
 			return
@@ -159,8 +172,11 @@ func (h *handler) handleGetMedia(w http.ResponseWriter, req *http.Request) {
 
 	fallbackETag := mediaFallbackETag(key)
 
+	storeCtx, cancel := context.WithTimeout(req.Context(), h.mediaOpTimeout())
+	defer cancel()
+
 	if inm := strings.TrimSpace(req.Header.Get("If-None-Match")); inm != "" {
-		meta, err := h.mediaStore.Head(req.Context(), key)
+		meta, err := h.mediaStore.Head(storeCtx, key)
 		if err != nil {
 			if errors.Is(err, storage.ErrNotFound) {
 				httpx.WriteError(w, req, http.StatusNotFound, "NOT_FOUND", "media not found")
@@ -178,7 +194,7 @@ func (h *handler) handleGetMedia(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	obj, err := h.mediaStore.Get(req.Context(), key)
+	obj, err := h.mediaStore.Get(storeCtx, key)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			httpx.WriteError(w, req, http.StatusNotFound, "NOT_FOUND", "media not found")
