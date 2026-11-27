@@ -352,7 +352,7 @@ func TestPGStore_W3B3_A8_And_B1_RealPG(t *testing.T) {
 		pResp, err := srv.CreateProduct(sellerACtx, &productv1.CreateProductRequest{
 			CategoryId: leafCatID,
 			Name:       "PG Indexable " + runPrefix,
-			Images:     []string{"https://cdn.example/" + runPrefix + ".jpg"},
+			Images:     []string{"/products/" + runPrefix + ".jpg"},
 			Skus: []*productv1.SKUInput{
 				{SkuCode: runPrefix + "-IX-1", Name: "Đen/M", Attributes: map[string]string{"color": "Đen", "size": "M"}, PriceVnd: 220000, Stock: 8},
 			},

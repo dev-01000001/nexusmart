@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
@@ -25,24 +26,28 @@ use crate::domain::{
     validate_adjust_cod_shipping_fee_input, validate_allocations_sum,
     validate_cod_fee_adjustment_replay, validate_cod_reconciliation_rows,
     validate_group_can_create_payment, validate_payment_idempotency_match,
-    validate_payment_method_eligibility, validate_reconciliation_provider_tx_accountable,
-    validate_refund_bank_account, validate_refund_eligibility, validate_refund_idempotency_match,
+    validate_payment_method_eligibility, validate_payout_decision_input,
+    validate_payout_idempotency_match, validate_payout_request_input,
+    validate_reconciliation_provider_tx_accountable, validate_refund_bank_account,
+    validate_refund_eligibility, validate_refund_idempotency_match,
     validate_resolve_reconciliation_idempotency_match, validate_set_fee_config,
     validate_settle_refund_idempotency_match, validate_suborder_refund_cap,
     validate_supersede_previous_payments, validate_update_payment_method_config, vn_day_utc_bounds,
     vn_today, zalopay_late_sweep_backoff, AdjustCodShippingFeeInput, AdjustCodShippingFeeOutput,
     AssignAmountSplit, ChannelAttribution, CodAllocationMatchDecision, CodFeeAdjustmentRecord,
     CodReconciliationRowInput, CreatePaymentInput, CreateRefundInput, CreateRefundOutput,
-    DecideRefundApprovalInput, GetFeeConfigFilter, GetFeeConfigResult, GroupPaymentSelection,
-    ImportCodReconciliationInput, ListReconciliationQueueResult, ListReconciliationRunsFilter,
-    ListReconciliationRunsResult, ListRefundsFilter, ListRefundsResult, ListSellerLedgerFilter,
-    ListSellerLedgerResult, PaymentFeeConfigRecord, PaymentMethod, PaymentMethodConfigRecord,
-    PaymentRecord, PaymentSseEvent, PaymentWithAllocations, ProviderTxAccountingState,
-    ReconciliationActionKind, ReconciliationDecision, ReconciliationItemRecord,
-    ReconciliationQueueItem, ReconciliationReport, ReconciliationRunRecord, RefundRecord,
-    ResolveReconciliationInput, ResolveReconciliationOutput, ReturnAllocationAction, SalesChannel,
-    SellerLedgerAccountFilter, SellerLedgerEntryRecord, SellerPayoutRecord, SetFeeConfigInput,
-    SettleRefundInput, SettleRefundOutput, ShopAllocationRecord, SubmitRefundBankAccountInput,
+    DecideRefundApprovalInput, DecideSellerPayoutInput, GetFeeConfigFilter, GetFeeConfigResult,
+    GroupPaymentSelection, ImportCodReconciliationInput, ListReconciliationQueueResult,
+    ListReconciliationRunsFilter, ListReconciliationRunsResult, ListRefundsFilter,
+    ListRefundsResult, ListSellerLedgerFilter, ListSellerLedgerResult, ListSellerPayoutsFilter,
+    ListSellerPayoutsResult, PaymentFeeConfigRecord, PaymentMethod, PaymentMethodConfigRecord,
+    PaymentRecord, PaymentSseEvent, PaymentWithAllocations, PayoutDecision,
+    ProviderTxAccountingState, ReconciliationActionKind, ReconciliationDecision,
+    ReconciliationItemRecord, ReconciliationQueueItem, ReconciliationReport,
+    ReconciliationRunRecord, RefundRecord, RequestSellerPayoutInput, ResolveReconciliationInput,
+    ResolveReconciliationOutput, ReturnAllocationAction, SalesChannel, SellerLedgerAccountFilter,
+    SellerLedgerEntryRecord, SellerPayoutRecord, SetFeeConfigInput, SettleRefundInput,
+    SettleRefundOutput, ShopAllocationRecord, SubmitRefundBankAccountInput,
     UpdatePaymentMethodConfigInput, ZaloPayWindowExhaustedDecision, ERR_COD_ALREADY_COLLECTED,
     PROVIDER_FINAL_STATUS_AMOUNT_MISMATCH, PROVIDER_FINAL_STATUS_LATE_REFUND_QUEUED,
     PROVIDER_FINAL_STATUS_MANUAL_REVIEW, PROVIDER_FINAL_STATUS_NOT_PAID,
@@ -55,11 +60,12 @@ use crate::ledger::{
     self, build_cod_collect_tx, build_cod_reconcile_tx, build_escrow_release_tx,
     build_escrow_settle_tx, build_late_payment_refund_tx, build_post_settlement_refund_tx,
     build_reconciliation_refund_tx, build_refund_settle_tx, build_refund_tx,
-    build_seller_payout_tx, build_vietqr_confirm_tx, build_zalopay_confirm_tx, LedgerSummary,
-    SellerBalance,
+    build_seller_payout_approve_tx, build_seller_payout_hold_tx, build_seller_payout_reject_tx,
+    build_vietqr_confirm_tx, build_zalopay_confirm_tx, LedgerSummary, SellerBalance,
 };
 use crate::metrics::Metrics;
 use crate::telemetry::{mask_bank_account, mask_secret};
+use crate::user_bank::{GrpcUserBankProvider, PayoutBankAccountProvider};
 use crate::vietqr::{
     extract_occurred_at_from_json, parse_provider_timestamp, ProviderTransaction, VietQrAdapter,
 };
@@ -206,6 +212,7 @@ pub struct PaymentService {
     config: Config,
     vietqr: VietQrAdapter,
     zalopay: ZaloPayAdapter,
+    bank_provider: Arc<dyn PayoutBankAccountProvider>,
     metrics: Metrics,
     sse_tx: broadcast::Sender<PaymentSseEvent>,
 }
@@ -215,12 +222,18 @@ impl PaymentService {
         let vietqr = VietQrAdapter::from_config(&config);
         let zalopay = ZaloPayAdapter::from_config(&config)
             .expect("valid ZaloPayConfig when constructing PaymentService");
+        let bank_provider: Arc<dyn PayoutBankAccountProvider> =
+            Arc::new(GrpcUserBankProvider::new(
+                config.user_grpc_addr.clone(),
+                config.service_jwt_secret.clone(),
+            ));
         let (sse_tx, _) = broadcast::channel(512);
         Self {
             pool,
             config,
             vietqr,
             zalopay,
+            bank_provider,
             metrics,
             sse_tx,
         }
@@ -229,6 +242,12 @@ impl PaymentService {
     /// Replaces the ZaloPay adapter (used by tests to inject controllable `MockZaloPay` outcomes).
     pub fn with_zalopay(mut self, zalopay: ZaloPayAdapter) -> Self {
         self.zalopay = zalopay;
+        self
+    }
+
+    /// Replaces the user bank-account provider (used by tests to inject deterministic bank states).
+    pub fn with_bank_provider(mut self, provider: Arc<dyn PayoutBankAccountProvider>) -> Self {
+        self.bank_provider = provider;
         self
     }
 
@@ -4872,28 +4891,43 @@ impl PaymentService {
         Ok(true)
     }
 
-    /// Creates a seller payout from `seller_available:<shop_id>` (UC-PAY05).
-    /// Rejects if requested amount exceeds available ledger balance.
+    /// Creates a PENDING seller payout request (UC-PAY05), immediately holding funds via
+    /// Debit `seller_available:<shop>` / Credit `seller_payout_hold:<shop>` in one transaction.
+    /// Fetches verified bank metadata from `user.GetShopBankAccountForPayout` (service token),
+    /// enforces at most one PENDING payout per shop, and is idempotent by `idempotency_key`.
     pub async fn request_seller_payout(
         &self,
-        shop_id: &str,
-        amount_vnd: i64,
-        bank_account: &str,
-        idempotency_key: &str,
+        input: RequestSellerPayoutInput,
     ) -> Result<SellerPayoutRecord> {
-        if shop_id.trim().is_empty() || idempotency_key.trim().is_empty() {
-            return Err(PaymentError::Validation(
-                "shop_id and idempotency_key are required".to_string(),
-            ));
+        validate_payout_request_input(&input)?;
+        let shop_id = input.shop_id.trim();
+        let idempotency_key = input.idempotency_key.trim();
+        let requested_by = input.requested_by_user_id.trim();
+
+        // Fast idempotent replay check before calling user service.
+        if let Some(existing) = sqlx::query_as::<_, SellerPayoutRecord>(
+            "SELECT * FROM seller_payouts WHERE idempotency_key = $1",
+        )
+        .bind(idempotency_key)
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            validate_payout_idempotency_match(&existing, shop_id, input.amount_vnd)?;
+            return Ok(existing);
         }
-        if amount_vnd <= 0 {
-            return Err(PaymentError::Validation(
-                "payout amount_vnd must be positive".to_string(),
-            ));
-        }
+
+        // Fetch verified bank account from user service BEFORE holding DB locks.
+        let bank = self
+            .bank_provider
+            .get_verified_bank_account(shop_id)
+            .await?;
 
         let mut tx = self.pool.begin().await?;
 
+        // Lock seller_available:<shop> to serialize concurrent withdrawal requests for this shop.
+        let available_vnd = ledger::get_seller_available_balance_tx(&mut tx, shop_id).await?;
+
+        // Re-check idempotency_key inside the lock to handle concurrent identical replays cleanly.
         if let Some(existing) = sqlx::query_as::<_, SellerPayoutRecord>(
             "SELECT * FROM seller_payouts WHERE idempotency_key = $1",
         )
@@ -4901,45 +4935,265 @@ impl PaymentService {
         .fetch_optional(&mut *tx)
         .await?
         {
+            validate_payout_idempotency_match(&existing, shop_id, input.amount_vnd)?;
             tx.commit().await?;
             return Ok(existing);
         }
 
-        let available_vnd = ledger::get_seller_available_balance_tx(&mut tx, shop_id).await?;
-        if amount_vnd > available_vnd {
+        // Enforce at most one open PENDING payout per shop.
+        let has_pending: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM seller_payouts WHERE shop_id = $1 AND status = 'PENDING' LIMIT 1",
+        )
+        .bind(shop_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if has_pending.is_some() {
+            return Err(PaymentError::PayoutPendingExists(
+                "shop already has a pending payout request".to_string(),
+            ));
+        }
+
+        if input.amount_vnd > available_vnd {
             return Err(PaymentError::InsufficientBalance {
                 available_vnd,
-                requested_vnd: amount_vnd,
+                requested_vnd: input.amount_vnd,
             });
         }
 
-        let masked = mask_bank_account(bank_account);
-        let payout = sqlx::query_as::<_, SellerPayoutRecord>(
+        let insert_res = sqlx::query_as::<_, SellerPayoutRecord>(
             r#"
-            INSERT INTO seller_payouts (shop_id, amount_vnd, bank_account_masked, status, idempotency_key, completed_at)
-            VALUES ($1, $2, $3, 'completed', $4, NOW())
+            INSERT INTO seller_payouts (
+                shop_id,
+                amount_vnd,
+                bank_name,
+                bank_account_masked,
+                account_holder_name,
+                status,
+                idempotency_key,
+                requested_by
+            )
+            VALUES ($1, $2, $3, $4, $5, 'PENDING', $6, $7)
             RETURNING *
             "#,
         )
         .bind(shop_id)
-        .bind(amount_vnd)
-        .bind(&masked)
+        .bind(input.amount_vnd)
+        .bind(&bank.bank_name)
+        .bind(&bank.bank_account_masked)
+        .bind(&bank.account_holder_name)
         .bind(idempotency_key)
+        .bind(requested_by)
         .fetch_one(&mut *tx)
-        .await?;
+        .await;
 
-        let draft = build_seller_payout_tx(
-            payout.id,
-            shop_id,
-            amount_vnd,
-            ChannelAttribution::marketplace(),
-        )?;
+        let payout = match insert_res {
+            Ok(p) => p,
+            Err(sqlx::Error::Database(db_err)) if db_err.code().as_deref() == Some("23505") => {
+                let constraint = db_err.constraint().unwrap_or("");
+                if constraint == "uq_seller_payouts_one_pending_per_shop" {
+                    return Err(PaymentError::PayoutPendingExists(
+                        "shop already has a pending payout request".to_string(),
+                    ));
+                }
+                return Err(PaymentError::Conflict(
+                    "duplicate seller payout idempotency_key".to_string(),
+                ));
+            }
+            Err(err) => return Err(PaymentError::Database(err)),
+        };
+
+        let channel = ChannelAttribution::storefront(shop_id)?;
+        let draft = build_seller_payout_hold_tx(payout.id, shop_id, input.amount_vnd, channel)?;
         if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
-            self.metrics.record_ledger_tx("payout");
+            self.metrics.record_ledger_tx("payout_hold");
         }
 
         tx.commit().await?;
+        info!(
+            payout_id = %payout.id,
+            shop_id = %payout.shop_id,
+            amount_vnd = payout.amount_vnd,
+            bank_account_masked = %payout.bank_account_masked,
+            "seller payout requested and held"
+        );
         Ok(payout)
+    }
+
+    /// Lists paginated seller payout requests, optionally filtered by `shop_id` and `status`.
+    pub async fn list_seller_payouts(
+        &self,
+        filter: ListSellerPayoutsFilter,
+    ) -> Result<ListSellerPayoutsResult> {
+        let page = filter.page.max(1);
+        let page_size = if filter.page_size <= 0 {
+            20
+        } else {
+            filter.page_size.min(100)
+        };
+        let offset = i64::from(page - 1) * i64::from(page_size);
+
+        let shop_filter = filter
+            .shop_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let status_filter = filter
+            .status
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_ascii_uppercase);
+
+        let total: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)::BIGINT
+            FROM seller_payouts
+            WHERE ($1::TEXT IS NULL OR shop_id = $1)
+              AND ($2::TEXT IS NULL OR UPPER(status) = $2)
+            "#,
+        )
+        .bind(shop_filter)
+        .bind(status_filter.as_deref())
+        .fetch_one(&self.pool)
+        .await?;
+
+        let items = sqlx::query_as::<_, SellerPayoutRecord>(
+            r#"
+            SELECT *
+            FROM seller_payouts
+            WHERE ($1::TEXT IS NULL OR shop_id = $1)
+              AND ($2::TEXT IS NULL OR UPPER(status) = $2)
+            ORDER BY created_at DESC, id DESC
+            LIMIT $3 OFFSET $4
+            "#,
+        )
+        .bind(shop_filter)
+        .bind(status_filter.as_deref())
+        .bind(i64::from(page_size))
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(ListSellerPayoutsResult {
+            items,
+            page,
+            page_size,
+            total,
+        })
+    }
+
+    /// Approves or rejects a `PENDING` seller payout inside a single transaction (`FOR UPDATE`).
+    /// - `APPROVE`: Debit `seller_payout_hold:<shop>` / Credit `gateway_clearing`, status `COMPLETED`,
+    ///   `transfer_ref = "MOCKBANK-<uuid>"`.
+    /// - `REJECT`: Debit `seller_payout_hold:<shop>` / Credit `seller_available:<shop>`,
+    ///   status `REJECTED`, stores `reject_reason`.
+    pub async fn decide_seller_payout(
+        &self,
+        input: DecideSellerPayoutInput,
+    ) -> Result<SellerPayoutRecord> {
+        let reason = validate_payout_decision_input(&input)?;
+        let decided_by = input.decided_by_user_id.trim();
+
+        let mut tx = self.pool.begin().await?;
+
+        let locked = sqlx::query_as::<_, SellerPayoutRecord>(
+            "SELECT * FROM seller_payouts WHERE id = $1 FOR UPDATE",
+        )
+        .bind(input.payout_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let Some(payout) = locked else {
+            return Err(PaymentError::NotFound(
+                "seller payout not found".to_string(),
+            ));
+        };
+
+        let current_status = payout.status.trim().to_ascii_uppercase();
+        if current_status != "PENDING" {
+            return Err(PaymentError::FailedPrecondition(format!(
+                "payout {} is already {}",
+                payout.id, current_status
+            )));
+        }
+
+        ledger::lock_seller_payout_accounts_tx(&mut tx, &payout.shop_id).await?;
+        let channel = ChannelAttribution::storefront(&payout.shop_id)?;
+
+        let updated = match input.decision {
+            PayoutDecision::Approve => {
+                let transfer_ref = format!("MOCKBANK-{}", Uuid::new_v4());
+                let rec = sqlx::query_as::<_, SellerPayoutRecord>(
+                    r#"
+                    UPDATE seller_payouts
+                    SET status = 'COMPLETED',
+                        decided_by = $2,
+                        transfer_ref = $3,
+                        decided_at = NOW(),
+                        completed_at = NOW()
+                    WHERE id = $1
+                    RETURNING *
+                    "#,
+                )
+                .bind(payout.id)
+                .bind(decided_by)
+                .bind(&transfer_ref)
+                .fetch_one(&mut *tx)
+                .await?;
+
+                let draft = build_seller_payout_approve_tx(
+                    payout.id,
+                    &payout.shop_id,
+                    payout.amount_vnd,
+                    channel,
+                )?;
+                if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
+                    self.metrics.record_ledger_tx("payout");
+                }
+                rec
+            }
+            PayoutDecision::Reject => {
+                let rec = sqlx::query_as::<_, SellerPayoutRecord>(
+                    r#"
+                    UPDATE seller_payouts
+                    SET status = 'REJECTED',
+                        decided_by = $2,
+                        reject_reason = $3,
+                        decided_at = NOW()
+                    WHERE id = $1
+                    RETURNING *
+                    "#,
+                )
+                .bind(payout.id)
+                .bind(decided_by)
+                .bind(&reason)
+                .fetch_one(&mut *tx)
+                .await?;
+
+                let draft = build_seller_payout_reject_tx(
+                    payout.id,
+                    &payout.shop_id,
+                    payout.amount_vnd,
+                    channel,
+                )?;
+                if ledger::post_transaction(&mut tx, &draft).await?.is_some() {
+                    self.metrics.record_ledger_tx("payout_reject");
+                }
+                rec
+            }
+        };
+
+        tx.commit().await?;
+        info!(
+            payout_id = %updated.id,
+            shop_id = %updated.shop_id,
+            amount_vnd = updated.amount_vnd,
+            status = %updated.status,
+            decided_by = %updated.decided_by,
+            transfer_ref = %updated.transfer_ref,
+            "seller payout decision applied"
+        );
+        Ok(updated)
     }
 
     pub async fn get_ledger_summary(

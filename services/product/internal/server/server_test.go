@@ -45,7 +45,7 @@ func setupApprovedProduct(t *testing.T, srv *Server, shopID string, skus []*prod
 		CategoryId:  catResp.Category.Id,
 		Name:        "Smartphone Pro",
 		Description: "Flagship OLED smartphone",
-		Images:      []string{"https://cdn.local/phone.jpg"},
+		Images:      []string{"/products/phone.jpg"},
 		Skus:        skus,
 	})
 	if err != nil {

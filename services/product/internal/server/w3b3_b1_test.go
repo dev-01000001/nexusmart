@@ -78,7 +78,7 @@ func TestW3B3_B1_ListProductsForIndex_PaginationFieldsAndRBAC(t *testing.T) {
 		CategoryId:  leafID,
 		Name:        "Áo Thun Compact xách tay",
 		Description: "Chất cotton mềm mịn",
-		Images:      []string{"https://cdn.example/p1-thumb.jpg", "https://cdn.example/p1-2.jpg"},
+		Images:      []string{"/products/p1-thumb.jpg", "/products/p1-2.jpg"},
 		Skus: []*productv1.SKUInput{
 			{SkuCode: "IDX-P1-S", Name: "Đen / S", Attributes: map[string]string{"color": "Đen", "size": "S"}, PriceVnd: 2500000000, Stock: 0, WeightGrams: 200},
 			{SkuCode: "IDX-P1-L", Name: "Trắng / L", Attributes: map[string]string{"Màu sắc": "Trắng", "Kích cỡ": "L"}, PriceVnd: 3000000000, Stock: 15, WeightGrams: 220},
@@ -112,7 +112,7 @@ func TestW3B3_B1_ListProductsForIndex_PaginationFieldsAndRBAC(t *testing.T) {
 
 	p2Resp, err := srv.CreateProduct(sellerCtx, &productv1.CreateProductRequest{
 		CategoryId: leafID, Name: "Áo Hết Hàng",
-		Skus: []*productv1.SKUInput{{SkuCode: "IDX-P2", PriceVnd: 180000, Stock: 0, ImageUrl: "https://cdn.example/p2-sku.jpg"}},
+		Skus: []*productv1.SKUInput{{SkuCode: "IDX-P2", PriceVnd: 180000, Stock: 0, ImageUrl: "/products/p2-sku.jpg"}},
 	})
 	if err != nil {
 		t.Fatalf("CreateProduct p2: %v", err)
@@ -224,7 +224,7 @@ func TestW3B3_B1_ListProductsForIndex_PaginationFieldsAndRBAC(t *testing.T) {
 	if idx1.GetDefaultSkuId() != p1Resp.GetProduct().GetSkus()[1].GetId() {
 		t.Fatalf("expected in-stock SKU as default_sku_id, got %q", idx1.GetDefaultSkuId())
 	}
-	if idx1.GetThumbnailUrl() != "https://cdn.example/p1-thumb.jpg" || idx1.GetTotalStock() != 15 || idx1.GetSkuCount() != 2 {
+	if idx1.GetThumbnailUrl() != "/products/p1-thumb.jpg" || idx1.GetTotalStock() != 15 || idx1.GetSkuCount() != 2 {
 		t.Fatalf("unexpected p1 summary fields: %+v", idx1)
 	}
 	if len(idx1.GetCategoryAncestorIds()) != 3 ||
@@ -242,7 +242,7 @@ func TestW3B3_B1_ListProductsForIndex_PaginationFieldsAndRBAC(t *testing.T) {
 
 	idx2 := byID[p2ID]
 	if idx2 == nil || idx2.GetStatus() != productv1.ProductStatus_PRODUCT_STATUS_OUT_OF_STOCK ||
-		idx2.GetThumbnailUrl() != "https://cdn.example/p2-sku.jpg" || idx2.GetTotalStock() != 0 {
+		idx2.GetThumbnailUrl() != "/products/p2-sku.jpg" || idx2.GetTotalStock() != 0 {
 		t.Fatalf("unexpected p2 indexable product: %+v", idx2)
 	}
 

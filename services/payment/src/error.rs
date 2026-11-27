@@ -33,6 +33,12 @@ pub enum PaymentError {
         requested_vnd: i64,
     },
 
+    #[error("payout pending exists: {0}")]
+    PayoutPendingExists(String),
+
+    #[error("bank account not ready: {0}")]
+    BankAccountNotReady(String),
+
     #[error("refund exceeds paid amount: remaining={remaining_vnd} requested={requested_vnd}")]
     RefundExceedsPaid {
         remaining_vnd: i64,
@@ -66,8 +72,10 @@ impl PaymentError {
             Self::Conflict(_)
             | Self::FailedPrecondition(_)
             | Self::InsufficientBalance { .. }
+            | Self::PayoutPendingExists(_)
             | Self::RefundExceedsPaid { .. }
             | Self::ProviderUnsupported(_) => StatusCode::CONFLICT,
+            Self::BankAccountNotReady(_) => StatusCode::PRECONDITION_FAILED,
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::Provider(_) | Self::CircuitOpen => StatusCode::BAD_GATEWAY,
@@ -88,6 +96,8 @@ impl PaymentError {
             Self::Forbidden(_) => "FORBIDDEN",
             Self::LedgerInvariant(_) => "LEDGER_INVARIANT_ERROR",
             Self::InsufficientBalance { .. } => "INSUFFICIENT_BALANCE",
+            Self::PayoutPendingExists(_) => "PAYOUT_PENDING_EXISTS",
+            Self::BankAccountNotReady(_) => "BANK_ACCOUNT_NOT_READY",
             Self::RefundExceedsPaid { .. } => "REFUND_EXCEEDS_PAID",
             Self::Provider(_) => "PROVIDER_ERROR",
             Self::ProviderUnsupported(_) => "PROVIDER_UNSUPPORTED",
@@ -106,9 +116,19 @@ impl PaymentError {
             Self::FailedPrecondition(m) => tonic::Status::failed_precondition(m.clone()),
             Self::Unauthorized(m) => tonic::Status::unauthenticated(m.clone()),
             Self::Forbidden(m) => tonic::Status::permission_denied(m.clone()),
-            Self::InsufficientBalance { .. } | Self::RefundExceedsPaid { .. } => {
-                tonic::Status::failed_precondition(self.to_string())
+            Self::InsufficientBalance {
+                available_vnd,
+                requested_vnd,
+            } => tonic::Status::failed_precondition(format!(
+                "INSUFFICIENT_BALANCE: available_vnd={available_vnd} requested_vnd={requested_vnd}"
+            )),
+            Self::PayoutPendingExists(m) => {
+                tonic::Status::failed_precondition(format!("PAYOUT_PENDING_EXISTS: {m}"))
             }
+            Self::BankAccountNotReady(m) => {
+                tonic::Status::failed_precondition(format!("BANK_ACCOUNT_NOT_READY: {m}"))
+            }
+            Self::RefundExceedsPaid { .. } => tonic::Status::failed_precondition(self.to_string()),
             Self::Provider(m) => tonic::Status::unavailable(m.clone()),
             Self::ProviderUnsupported(m) => tonic::Status::failed_precondition(m.clone()),
             Self::CircuitOpen => tonic::Status::unavailable("payment provider circuit open"),
@@ -202,6 +222,18 @@ mod tests {
                 },
                 StatusCode::CONFLICT,
                 "INSUFFICIENT_BALANCE",
+                tonic::Code::FailedPrecondition,
+            ),
+            (
+                PaymentError::PayoutPendingExists("one pending per shop".into()),
+                StatusCode::CONFLICT,
+                "PAYOUT_PENDING_EXISTS",
+                tonic::Code::FailedPrecondition,
+            ),
+            (
+                PaymentError::BankAccountNotReady("no verified account".into()),
+                StatusCode::PRECONDITION_FAILED,
+                "BANK_ACCOUNT_NOT_READY",
                 tonic::Code::FailedPrecondition,
             ),
             (

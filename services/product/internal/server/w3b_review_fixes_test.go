@@ -89,11 +89,11 @@ func TestW3B_ReviewFix_2_AttributesAndSlugModeration(t *testing.T) {
 		CategoryId: catID,
 		Name:       "Áo thun trơn sạch",
 		Slug:       "ao-thun-tron-sach",
-		Images:     []string{"https://cdn.example.com/ma-tuy-not-scanned.jpg"},
+		Images:     []string{"/products/ma-tuy-not-scanned.jpg"},
 		Skus: []*productv1.SKUInput{{
 			SkuCode:  "MA-TUY-CODE-1",
 			Name:     "M",
-			ImageUrl: "https://cdn.example.com/ma-tuy-sku.jpg",
+			ImageUrl: "/products/ma-tuy-sku.jpg",
 			PriceVnd: 100000,
 			Stock:    5,
 		}},
@@ -799,7 +799,7 @@ func TestW3B_ReviewFix_B_HideFromFullSellerFormWithSKUs(t *testing.T) {
 		Name:        "Hộp thuốc cấm vi phạm",
 		Description: "Mô tả cũ",
 		Slug:        "hop-thuoc-cam-b",
-		Images:      []string{"https://cdn.example.com/old.jpg"},
+		Images:      []string{"/products/old.jpg"},
 		Skus: []*productv1.SKUInput{
 			{SkuCode: "B-1", Name: "Nhỏ", Attributes: map[string]string{"màu": "đỏ", "cỡ": "S"}, PriceVnd: 100000, Stock: 10, WeightGrams: 200},
 			{SkuCode: "B-2", Name: "Lớn", Attributes: map[string]string{"màu": "xanh", "cỡ": "L"}, PriceVnd: 150000, Stock: 5, WeightGrams: 400},
@@ -843,7 +843,7 @@ func TestW3B_ReviewFix_B_HideFromFullSellerFormWithSKUs(t *testing.T) {
 		Name:        "Hộp thuốc cấm vi phạm",
 		Description: "Mô tả cũ",
 		Slug:        "hop-thuoc-cam-b",
-		Images:      []string{"https://cdn.example.com/new.jpg"},
+		Images:      []string{"/products/new.jpg"},
 		Status:      productv1.ProductStatus_PRODUCT_STATUS_HIDDEN,
 		Skus: []*productv1.SKUInput{
 			{Id: sku2.GetId(), SkuCode: "B-2", Name: "Lớn", Attributes: map[string]string{"cỡ": "L", "màu": "xanh"}, PriceVnd: 160000, Stock: 8, WeightGrams: 450},

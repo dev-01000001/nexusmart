@@ -42,6 +42,9 @@ const (
 	PaymentService_UpdatePaymentMethodConfig_FullMethodName = "/nexusmart.payment.v1.PaymentService/UpdatePaymentMethodConfig"
 	PaymentService_DecideRefundApproval_FullMethodName      = "/nexusmart.payment.v1.PaymentService/DecideRefundApproval"
 	PaymentService_AdjustCODShippingFee_FullMethodName      = "/nexusmart.payment.v1.PaymentService/AdjustCODShippingFee"
+	PaymentService_RequestSellerPayout_FullMethodName       = "/nexusmart.payment.v1.PaymentService/RequestSellerPayout"
+	PaymentService_ListSellerPayouts_FullMethodName         = "/nexusmart.payment.v1.PaymentService/ListSellerPayouts"
+	PaymentService_DecideSellerPayout_FullMethodName        = "/nexusmart.payment.v1.PaymentService/DecideSellerPayout"
 )
 
 // PaymentServiceClient is the client API for PaymentService service.
@@ -71,6 +74,9 @@ type PaymentServiceClient interface {
 	UpdatePaymentMethodConfig(ctx context.Context, in *UpdatePaymentMethodConfigRequest, opts ...grpc.CallOption) (*UpdatePaymentMethodConfigResponse, error)
 	DecideRefundApproval(ctx context.Context, in *DecideRefundApprovalRequest, opts ...grpc.CallOption) (*DecideRefundApprovalResponse, error)
 	AdjustCODShippingFee(ctx context.Context, in *AdjustCODShippingFeeRequest, opts ...grpc.CallOption) (*AdjustCODShippingFeeResponse, error)
+	RequestSellerPayout(ctx context.Context, in *RequestSellerPayoutRequest, opts ...grpc.CallOption) (*RequestSellerPayoutResponse, error)
+	ListSellerPayouts(ctx context.Context, in *ListSellerPayoutsRequest, opts ...grpc.CallOption) (*ListSellerPayoutsResponse, error)
+	DecideSellerPayout(ctx context.Context, in *DecideSellerPayoutRequest, opts ...grpc.CallOption) (*DecideSellerPayoutResponse, error)
 }
 
 type paymentServiceClient struct {
@@ -311,6 +317,36 @@ func (c *paymentServiceClient) AdjustCODShippingFee(ctx context.Context, in *Adj
 	return out, nil
 }
 
+func (c *paymentServiceClient) RequestSellerPayout(ctx context.Context, in *RequestSellerPayoutRequest, opts ...grpc.CallOption) (*RequestSellerPayoutResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequestSellerPayoutResponse)
+	err := c.cc.Invoke(ctx, PaymentService_RequestSellerPayout_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) ListSellerPayouts(ctx context.Context, in *ListSellerPayoutsRequest, opts ...grpc.CallOption) (*ListSellerPayoutsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSellerPayoutsResponse)
+	err := c.cc.Invoke(ctx, PaymentService_ListSellerPayouts_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *paymentServiceClient) DecideSellerPayout(ctx context.Context, in *DecideSellerPayoutRequest, opts ...grpc.CallOption) (*DecideSellerPayoutResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DecideSellerPayoutResponse)
+	err := c.cc.Invoke(ctx, PaymentService_DecideSellerPayout_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PaymentServiceServer is the server API for PaymentService service.
 // All implementations must embed UnimplementedPaymentServiceServer
 // for forward compatibility.
@@ -338,6 +374,9 @@ type PaymentServiceServer interface {
 	UpdatePaymentMethodConfig(context.Context, *UpdatePaymentMethodConfigRequest) (*UpdatePaymentMethodConfigResponse, error)
 	DecideRefundApproval(context.Context, *DecideRefundApprovalRequest) (*DecideRefundApprovalResponse, error)
 	AdjustCODShippingFee(context.Context, *AdjustCODShippingFeeRequest) (*AdjustCODShippingFeeResponse, error)
+	RequestSellerPayout(context.Context, *RequestSellerPayoutRequest) (*RequestSellerPayoutResponse, error)
+	ListSellerPayouts(context.Context, *ListSellerPayoutsRequest) (*ListSellerPayoutsResponse, error)
+	DecideSellerPayout(context.Context, *DecideSellerPayoutRequest) (*DecideSellerPayoutResponse, error)
 	mustEmbedUnimplementedPaymentServiceServer()
 }
 
@@ -416,6 +455,15 @@ func (UnimplementedPaymentServiceServer) DecideRefundApproval(context.Context, *
 }
 func (UnimplementedPaymentServiceServer) AdjustCODShippingFee(context.Context, *AdjustCODShippingFeeRequest) (*AdjustCODShippingFeeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AdjustCODShippingFee not implemented")
+}
+func (UnimplementedPaymentServiceServer) RequestSellerPayout(context.Context, *RequestSellerPayoutRequest) (*RequestSellerPayoutResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RequestSellerPayout not implemented")
+}
+func (UnimplementedPaymentServiceServer) ListSellerPayouts(context.Context, *ListSellerPayoutsRequest) (*ListSellerPayoutsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListSellerPayouts not implemented")
+}
+func (UnimplementedPaymentServiceServer) DecideSellerPayout(context.Context, *DecideSellerPayoutRequest) (*DecideSellerPayoutResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DecideSellerPayout not implemented")
 }
 func (UnimplementedPaymentServiceServer) mustEmbedUnimplementedPaymentServiceServer() {}
 func (UnimplementedPaymentServiceServer) testEmbeddedByValue()                        {}
@@ -852,6 +900,60 @@ func _PaymentService_AdjustCODShippingFee_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PaymentService_RequestSellerPayout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestSellerPayoutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).RequestSellerPayout(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_RequestSellerPayout_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).RequestSellerPayout(ctx, req.(*RequestSellerPayoutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_ListSellerPayouts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSellerPayoutsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).ListSellerPayouts(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_ListSellerPayouts_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).ListSellerPayouts(ctx, req.(*ListSellerPayoutsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PaymentService_DecideSellerPayout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DecideSellerPayoutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PaymentServiceServer).DecideSellerPayout(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PaymentService_DecideSellerPayout_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PaymentServiceServer).DecideSellerPayout(ctx, req.(*DecideSellerPayoutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PaymentService_ServiceDesc is the grpc.ServiceDesc for PaymentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -950,6 +1052,18 @@ var PaymentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AdjustCODShippingFee",
 			Handler:    _PaymentService_AdjustCODShippingFee_Handler,
+		},
+		{
+			MethodName: "RequestSellerPayout",
+			Handler:    _PaymentService_RequestSellerPayout_Handler,
+		},
+		{
+			MethodName: "ListSellerPayouts",
+			Handler:    _PaymentService_ListSellerPayouts_Handler,
+		},
+		{
+			MethodName: "DecideSellerPayout",
+			Handler:    _PaymentService_DecideSellerPayout_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

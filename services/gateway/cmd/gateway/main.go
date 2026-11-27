@@ -15,6 +15,7 @@ import (
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/logger"
 	"github.com/nexusmart/core/pkg/common/metrics"
+	"github.com/nexusmart/core/pkg/common/storage"
 	"github.com/nexusmart/core/pkg/common/telemetry"
 	"github.com/nexusmart/core/services/gateway/internal/clients"
 	"github.com/nexusmart/core/services/gateway/internal/config"
@@ -92,6 +93,19 @@ func run(cfg config.Config, log *slog.Logger) error {
 		return fmt.Errorf("init payment SSE proxy: %w", err)
 	}
 
+	var mediaStore storage.Store
+	if cfg.S3.Enabled() {
+		s3Client, s3Err := storage.New(cfg.S3)
+		if s3Err != nil {
+			return fmt.Errorf("init media storage: %w", s3Err)
+		}
+		if ensureErr := ensureMediaBucketWithRetry(ctx, s3Client, log); ensureErr != nil {
+			return fmt.Errorf("ensure media bucket: %w", ensureErr)
+		}
+		mediaStore = s3Client
+		log.Info("media object storage ready", slog.String("bucket", s3Client.Bucket()))
+	}
+
 	reg := newMetricsRegistry()
 	red := metrics.NewRED(cfg.ServiceName, reg)
 	readyFn := func(rctx context.Context) error {
@@ -139,6 +153,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 		ShippingWebhookProxy:             shippingWebhookProxy,
 		ShippingLabelProxy:               shippingLabelProxy,
 		PaymentSSEProxy:                  paymentSSEProxy,
+		MediaStore:                       mediaStore,
 		Logger:                           log,
 	})
 
@@ -191,4 +206,30 @@ func parseLogLevel(lvl string) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+func ensureMediaBucketWithRetry(ctx context.Context, store storage.Store, log *slog.Logger) error {
+	const maxAttempts = 5
+	backoff := 250 * time.Millisecond
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := store.EnsureBucket(attemptCtx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if attempt == maxAttempts || ctx.Err() != nil {
+			break
+		}
+		log.Warn("retrying media bucket ensure", slog.Int("attempt", attempt), slog.String("error", err.Error()))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+	}
+	return lastErr
 }

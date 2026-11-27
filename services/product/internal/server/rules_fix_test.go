@@ -355,7 +355,7 @@ func TestUpdateProductReactivatesInactiveSKUCode(t *testing.T) {
 				PriceVnd:    260000,
 				Stock:       3,
 				WeightGrams: 245,
-				ImageUrl:    "https://cdn.local/wht-l.jpg",
+				ImageUrl:    "/products/wht-l.jpg",
 			},
 		},
 	})

@@ -64,6 +64,8 @@ const (
 	CapRefundsCreate         = "refunds.create"
 	CapRefundsApprove        = "refunds.approve"
 	CapRefundsSettle         = "refunds.settle"
+	CapPayoutsRead           = "payouts.read"
+	CapPayoutsDecide         = "payouts.decide"
 	CapCarriersRead          = "carriers.read"
 	CapCarriersWrite         = "carriers.write"
 	CapPaymentMethodsRead    = "payment_methods.read"

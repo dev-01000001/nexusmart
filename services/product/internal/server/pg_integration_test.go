@@ -651,8 +651,8 @@ func TestPGStore_W2BIntegration(t *testing.T) {
 			CategoryId: catID,
 			Name:       "PG D2 Active " + runPrefix,
 			Skus: []*productv1.SKUInput{
-				{SkuCode: runPrefix + "-D2-ACT", Name: "Active", Attributes: map[string]string{"k": "v"}, PriceVnd: 199000, Stock: 10, WeightGrams: 250, ImageUrl: "https://cdn.local/act.jpg"},
-				{SkuCode: runPrefix + "-D2-OFF", Name: "Off", Attributes: map[string]string{"k": "v"}, PriceVnd: 210000, Stock: 5, WeightGrams: 260, ImageUrl: "https://cdn.local/off.jpg"},
+				{SkuCode: runPrefix + "-D2-ACT", Name: "Active", Attributes: map[string]string{"k": "v"}, PriceVnd: 199000, Stock: 10, WeightGrams: 250, ImageUrl: "/products/act.jpg"},
+				{SkuCode: runPrefix + "-D2-OFF", Name: "Off", Attributes: map[string]string{"k": "v"}, PriceVnd: 210000, Stock: 5, WeightGrams: 260, ImageUrl: "/products/off.jpg"},
 			},
 		})
 		if err != nil {
@@ -668,7 +668,7 @@ func TestPGStore_W2BIntegration(t *testing.T) {
 		skuOff := findSKUByCode(t, approvedProd.GetProduct().GetSkus(), runPrefix+"-D2-OFF")
 		if _, err := srv.UpdateProduct(sellerCtx, &productv1.UpdateProductRequest{
 			Id:   approvedProd.GetProduct().GetId(),
-			Skus: []*productv1.SKUInput{{Id: skuAct.GetId(), SkuCode: runPrefix + "-D2-ACT", Name: "Active", Attributes: map[string]string{"k": "v"}, PriceVnd: 199000, Stock: 10, WeightGrams: 250, ImageUrl: "https://cdn.local/act.jpg"}},
+			Skus: []*productv1.SKUInput{{Id: skuAct.GetId(), SkuCode: runPrefix + "-D2-ACT", Name: "Active", Attributes: map[string]string{"k": "v"}, PriceVnd: 199000, Stock: 10, WeightGrams: 250, ImageUrl: "/products/act.jpg"}},
 		}); err != nil {
 			t.Fatalf("deactivate skuOff: %v", err)
 		}
@@ -676,7 +676,7 @@ func TestPGStore_W2BIntegration(t *testing.T) {
 		pendingProd, err := srv.CreateProduct(sellerCtx, &productv1.CreateProductRequest{
 			CategoryId: catID,
 			Name:       "PG D2 Pending " + runPrefix,
-			Skus:       []*productv1.SKUInput{{SkuCode: runPrefix + "-D2-PEND", Name: "Pend", PriceVnd: 220000, Stock: 4, WeightGrams: 200, ImageUrl: "https://cdn.local/pend.jpg"}},
+			Skus:       []*productv1.SKUInput{{SkuCode: runPrefix + "-D2-PEND", Name: "Pend", PriceVnd: 220000, Stock: 4, WeightGrams: 200, ImageUrl: "/products/pend.jpg"}},
 		})
 		if err != nil {
 			t.Fatalf("CreateProduct pending: %v", err)

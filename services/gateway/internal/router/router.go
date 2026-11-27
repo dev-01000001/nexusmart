@@ -11,6 +11,7 @@ import (
 	paymentv1 "github.com/nexusmart/core/gen/go/nexusmart/payment/v1"
 	"github.com/nexusmart/core/pkg/common/auth"
 	"github.com/nexusmart/core/pkg/common/metrics"
+	"github.com/nexusmart/core/pkg/common/storage"
 	"github.com/nexusmart/core/pkg/common/telemetry"
 	"github.com/nexusmart/core/services/gateway/internal/clients"
 	"github.com/nexusmart/core/services/gateway/internal/httpx"
@@ -45,6 +46,7 @@ type Dependencies struct {
 	ShippingWebhookProxy             http.Handler
 	ShippingLabelProxy               http.Handler
 	PaymentSSEProxy                  http.Handler
+	MediaStore                       storage.Store
 	Logger                           *slog.Logger
 }
 
@@ -56,6 +58,7 @@ type handler struct {
 	productImportMaxRows             int
 	productImportMaxBytes            int64
 	searchFallbackTimeout            time.Duration
+	mediaStore                       storage.Store
 }
 
 // New constructs the complete API Gateway HTTP router matching docs/contracts.md Section 4.
@@ -86,6 +89,7 @@ func New(deps Dependencies) http.Handler {
 		productImportMaxRows:             importMaxRows,
 		productImportMaxBytes:            importMaxBytes,
 		searchFallbackTimeout:            searchTimeout,
+		mediaStore:                       deps.MediaStore,
 	}
 
 	r := chi.NewRouter()
@@ -162,6 +166,12 @@ func New(deps Dependencies) http.Handler {
 			if deps.ShippingWebhookProxy != nil {
 				wh.Post("/webhooks/shipping/{carrier}", deps.ShippingWebhookProxy.ServeHTTP)
 			}
+		})
+
+		// Public media serving (ADR-0005): strict key regex, streamed from S3 with immutable cache headers.
+		main.Group(func(media chi.Router) {
+			media.Use(middleware.RateLimitByIP(deps.RateLimiter, deps.RateLimitIPPerMin, deps.Logger, deps.TrustedProxies, deps.RateLimitBFFPerMin))
+			media.Get("/media/*", h.handleGetMedia)
 		})
 
 		// Public & authenticated REST API v1 routes with per-IP rate limiting.
@@ -363,6 +373,7 @@ func New(deps Dependencies) http.Handler {
 					h.mountSiteTemplateSellerRoutes(seller)
 
 					// Section 4.2 Seller Categories, Products & Stock
+					seller.Post("/media", h.handleSellerUploadMedia)
 					seller.Get("/categories", h.handleListCategoriesWithCommission)
 					seller.Get("/products", h.handleSellerListProducts)
 					seller.Get("/products/{id}", h.handleSellerGetProduct)
@@ -409,9 +420,11 @@ func New(deps Dependencies) http.Handler {
 					seller.Get("/reports", h.handleSellerReports)
 					seller.Get("/reports/export", h.handleSellerReportsExport)
 
-					// Section 4.6 Seller Balance & Ledger
+					// Section 4.6 Seller Balance, Ledger & Payouts
 					seller.Get("/balance", h.handleSellerBalance)
 					seller.Get("/ledger", h.handleSellerLedger)
+					seller.Get("/payouts", h.handleSellerListPayouts)
+					seller.Post("/payouts", h.handleSellerRequestPayout)
 
 					// Section 4.7 Seller Shipping Settings
 					seller.Get("/shipping-settings", h.handleSellerGetShippingSettings)
@@ -500,6 +513,8 @@ func New(deps Dependencies) http.Handler {
 					admin.With(middleware.RequireCapability(auth.CapRefundsCreate)).Post("/payments/{id}/refund", h.handleAdminRefundPayment)
 					admin.With(middleware.RequireCapability(auth.CapRefundsRead)).Get("/refunds", h.handleAdminListRefunds)
 					admin.With(middleware.RequireCapability(auth.CapRefundsSettle)).Post("/refunds/{id}/settle", h.handleAdminSettleRefund)
+					admin.With(middleware.RequireCapability(auth.CapPayoutsRead)).Get("/payouts", h.handleAdminListPayouts)
+					admin.With(middleware.RequireCapability(auth.CapPayoutsDecide)).Post("/payouts/{id}/decision", h.handleAdminDecidePayout)
 					admin.With(middleware.RequireCapability(auth.CapReconciliationWrite)).Post("/payments/reconcile", h.handleAdminReconcilePayments)
 					admin.With(middleware.RequireCapability(auth.CapReconciliationWrite)).Post("/reconciliation/cod/import", h.handleAdminImportCodReconciliation)
 					admin.With(middleware.RequireCapability(auth.CapLedgerRead)).Get("/reconciliation/runs", h.handleAdminListReconciliationRuns)
@@ -532,6 +547,7 @@ func New(deps Dependencies) http.Handler {
 const (
 	codImportRoutePath              = "/api/v1/admin/reconciliation/cod/import"
 	productImportRoutePath          = "/api/v1/seller/products/import"
+	sellerMediaRoutePath            = "/api/v1/seller/media"
 	codImportMultipartOverheadBytes = 64 << 10 // 64 KiB multipart framing overhead for CSV uploads
 )
 
@@ -546,6 +562,8 @@ func (h *handler) requestBodyLimit(r *http.Request) int64 {
 		}
 	}
 	switch r.URL.Path {
+	case sellerMediaRoutePath:
+		return mediaMaxUploadBytes
 	case codImportRoutePath:
 		if isMultipart {
 			return httpx.MaxBodyBytes + codImportMultipartOverheadBytes

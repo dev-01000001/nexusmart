@@ -52,10 +52,12 @@ type AddressFeeQuote struct {
 	NewTotalPayableVND int64 `json:"new_total_payable_vnd"`
 }
 
-// ErrorEnvelope matches docs/contracts.md Section 3 error schema (with optional quote for ADDRESS_FEE_CHANGED).
+// ErrorEnvelope matches docs/contracts.md Section 3 error schema (with optional quote for ADDRESS_FEE_CHANGED
+// and available_vnd for INSUFFICIENT_BALANCE).
 type ErrorEnvelope struct {
-	Error ErrorBody        `json:"error"`
-	Quote *AddressFeeQuote `json:"quote,omitempty"`
+	Error        ErrorBody        `json:"error"`
+	Quote        *AddressFeeQuote `json:"quote,omitempty"`
+	AvailableVND *int64           `json:"available_vnd,omitempty"`
 }
 
 // WriteJSON encodes payload as JSON with statusCode.
@@ -135,6 +137,9 @@ func MapGRPCError(err error) (int, string, string) {
 	case codes.Aborted:
 		return http.StatusConflict, "ABORTED", msg
 	case codes.FailedPrecondition:
+		if code := extractDomainCode(msg, "BANK_ACCOUNT_NOT_READY"); code != "" {
+			return http.StatusPreconditionFailed, code, msg
+		}
 		if code := extractDomainCode(msg,
 			"SKU_INACTIVE",
 			"COD_PHONE_NOT_VERIFIED",
@@ -155,6 +160,8 @@ func MapGRPCError(err error) (int, string, string) {
 			"IMPORT_JOB_NOT_READY",
 			"IMPORT_JOB_IN_PROGRESS",
 			"REINDEX_ALREADY_RUNNING",
+			"INSUFFICIENT_BALANCE",
+			"PAYOUT_PENDING_EXISTS",
 		); code != "" {
 			return http.StatusConflict, code, msg
 		}
@@ -219,10 +226,54 @@ func extractAddressFeeQuote(msg string) *AddressFeeQuote {
 	return q
 }
 
+// extractInsufficientBalanceAvailable parses `available_vnd=<int>` (or `available=<int>`)
+// from a payment service INSUFFICIENT_BALANCE error message.
+func extractInsufficientBalanceAvailable(msg string) (int64, bool) {
+	for _, token := range []string{"available_vnd=", "available="} {
+		idx := strings.Index(msg, token)
+		if idx < 0 {
+			continue
+		}
+		rest := msg[idx+len(token):]
+		end := 0
+		if end < len(rest) && rest[end] == '-' {
+			end++
+		}
+		for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+			end++
+		}
+		if end == 0 || (end == 1 && rest[0] == '-') {
+			continue
+		}
+		v, err := strconv.ParseInt(rest[:end], 10, 64)
+		if err == nil {
+			return v, true
+		}
+	}
+	return 0, false
+}
+
 // WriteGRPCError maps a gRPC error to the standard REST error envelope.
 // Internal/Unknown/DataLoss/Unavailable/DeadlineExceeded details are logged server-side with trace_id and never leaked to clients.
 func WriteGRPCError(w http.ResponseWriter, r *http.Request, err error) {
 	httpStatus, code, msg := MapGRPCError(err)
+	if httpStatus == http.StatusConflict && code == "INSUFFICIENT_BALANCE" {
+		if avail, ok := extractInsufficientBalanceAvailable(msg); ok {
+			traceID := ""
+			if r != nil {
+				traceID = telemetry.TraceIDFromContext(r.Context())
+			}
+			WriteJSON(w, httpStatus, ErrorEnvelope{
+				Error: ErrorBody{
+					Code:    code,
+					Message: msg,
+					TraceID: traceID,
+				},
+				AvailableVND: &avail,
+			})
+			return
+		}
+	}
 	if httpStatus == http.StatusConflict && code == "ADDRESS_FEE_CHANGED" {
 		if quote := extractAddressFeeQuote(msg); quote != nil {
 			traceID := ""

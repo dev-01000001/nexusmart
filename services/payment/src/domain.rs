@@ -968,15 +968,178 @@ pub fn find_cod_carrier_mismatch(
     None
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PayoutDecision {
+    Approve,
+    Reject,
+}
+
+impl PayoutDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approve => "APPROVE",
+            Self::Reject => "REJECT",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_uppercase().as_str() {
+            "APPROVE" => Ok(Self::Approve),
+            "REJECT" => Ok(Self::Reject),
+            other => Err(PaymentError::Validation(format!(
+                "invalid decision '{other}'; must be APPROVE or REJECT"
+            ))),
+        }
+    }
+}
+
+pub fn normalize_payout_status(raw: &str) -> String {
+    match raw.trim().to_ascii_uppercase().as_str() {
+        "PENDING" => "PENDING".to_string(),
+        "COMPLETED" => "COMPLETED".to_string(),
+        "REJECTED" => "REJECTED".to_string(),
+        other => other.to_string(),
+    }
+}
+
+pub fn parse_payout_status_filter(raw: &str) -> Result<Option<String>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match trimmed.to_ascii_uppercase().as_str() {
+        "PENDING" => Ok(Some("PENDING".to_string())),
+        "COMPLETED" => Ok(Some("COMPLETED".to_string())),
+        "REJECTED" => Ok(Some("REJECTED".to_string())),
+        other => Err(PaymentError::Validation(format!(
+            "invalid payout status '{other}'; expected PENDING, COMPLETED, or REJECTED"
+        ))),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RequestSellerPayoutInput {
+    pub shop_id: String,
+    pub amount_vnd: i64,
+    pub idempotency_key: String,
+    pub requested_by_user_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ListSellerPayoutsFilter {
+    pub shop_id: Option<String>,
+    pub status: Option<String>,
+    pub page: i32,
+    pub page_size: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ListSellerPayoutsResult {
+    pub items: Vec<SellerPayoutRecord>,
+    pub page: i32,
+    pub page_size: i32,
+    pub total: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DecideSellerPayoutInput {
+    pub payout_id: Uuid,
+    pub decision: PayoutDecision,
+    pub reason: String,
+    pub decided_by_user_id: String,
+}
+
+pub fn validate_payout_request_input(input: &RequestSellerPayoutInput) -> Result<()> {
+    if input.shop_id.trim().is_empty() {
+        return Err(PaymentError::Validation("shop_id is required".to_string()));
+    }
+    let key = input.idempotency_key.trim();
+    if key.is_empty() {
+        return Err(PaymentError::Validation(
+            "idempotency_key is required".to_string(),
+        ));
+    }
+    if key.chars().count() > 128 {
+        return Err(PaymentError::Validation(
+            "idempotency_key must not exceed 128 characters".to_string(),
+        ));
+    }
+    if input.amount_vnd <= 0 {
+        return Err(PaymentError::Validation(
+            "payout amount_vnd must be positive".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_payout_decision_input(input: &DecideSellerPayoutInput) -> Result<String> {
+    if input.decided_by_user_id.trim().is_empty() {
+        return Err(PaymentError::Validation(
+            "decided_by_user_id is required".to_string(),
+        ));
+    }
+    let reason = input.reason.trim().to_string();
+    if reason.chars().count() > 500 {
+        return Err(PaymentError::Validation(
+            "reason must not exceed 500 characters".to_string(),
+        ));
+    }
+    if input.decision == PayoutDecision::Reject && reason.is_empty() {
+        return Err(PaymentError::Validation(
+            "reason is required when rejecting a payout".to_string(),
+        ));
+    }
+    Ok(reason)
+}
+
+pub fn validate_payout_idempotency_match(
+    existing: &SellerPayoutRecord,
+    shop_id: &str,
+    amount_vnd: i64,
+) -> Result<()> {
+    if existing.shop_id != shop_id {
+        return Err(PaymentError::Forbidden(
+            "idempotency_key belongs to another shop".to_string(),
+        ));
+    }
+    if existing.amount_vnd != amount_vnd {
+        return Err(PaymentError::Conflict(
+            "idempotency_key already used with a different payout amount".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct SellerPayoutRecord {
     pub id: Uuid,
     pub shop_id: String,
     pub amount_vnd: i64,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub bank_name: String,
     pub bank_account_masked: String,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub account_holder_name: String,
     pub status: String,
     pub idempotency_key: String,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub requested_by: String,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub decided_by: String,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub reject_reason: String,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub transfer_ref: String,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub decided_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
 }
 
@@ -1182,6 +1345,8 @@ pub fn format_seller_ledger_description(
             }
         }
         "refund" => format!("Hoàn tiền cho giao dịch {ref_id}"),
+        "payout_hold" => format!("Tạm giữ tiền chờ duyệt rút tiền ({ref_id})"),
+        "payout_reject" => format!("Hoàn số dư khả dụng do từ chối rút tiền ({ref_id})"),
         "payout" => format!("Rút tiền về tài khoản ngân hàng ({ref_id})"),
         other => format!("Giao dịch {other} ({ref_id})"),
     }

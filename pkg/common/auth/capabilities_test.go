@@ -53,6 +53,8 @@ func TestCapabilityMatrixExhaustive(t *testing.T) {
 		CapRefundsCreate:         {RoleSuperAdmin, RoleAdmin, RoleCSKH, RoleAccountant},
 		CapRefundsApprove:        {RoleSuperAdmin, RoleAdmin, RoleAccountant},
 		CapRefundsSettle:         {RoleSuperAdmin, RoleAdmin, RoleAccountant},
+		CapPayoutsRead:           {RoleSuperAdmin, RoleAdmin, RoleAccountant, RoleOps},
+		CapPayoutsDecide:         {RoleSuperAdmin, RoleAdmin, RoleAccountant},
 		CapCarriersRead:          {RoleSuperAdmin, RoleAdmin, RoleOps},
 		CapCarriersWrite:         {RoleSuperAdmin, RoleAdmin, RoleOps},
 		CapPaymentMethodsRead:    {RoleSuperAdmin, RoleAdmin, RoleAccountant, RoleOps},

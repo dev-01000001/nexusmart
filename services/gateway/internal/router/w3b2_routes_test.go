@@ -692,6 +692,42 @@ func (p *w3b2PaymentClient) SettleRefund(_ context.Context, in *paymentv1.Settle
 	return &paymentv1.SettleRefundResponse{Refund: &paymentv1.Refund{RefundId: in.GetRefundId(), Status: paymentv1.RefundStatus_REFUND_STATUS_DONE}}, nil
 }
 
+func (p *w3b2PaymentClient) ListSellerPayouts(_ context.Context, in *paymentv1.ListSellerPayoutsRequest, _ ...grpc.CallOption) (*paymentv1.ListSellerPayoutsResponse, error) {
+	return &paymentv1.ListSellerPayoutsResponse{
+		Items:    []*paymentv1.SellerPayout{},
+		Page:     in.GetPage(),
+		PageSize: in.GetPageSize(),
+		Total:    0,
+	}, nil
+}
+
+func (p *w3b2PaymentClient) DecideSellerPayout(_ context.Context, in *paymentv1.DecideSellerPayoutRequest, _ ...grpc.CallOption) (*paymentv1.DecideSellerPayoutResponse, error) {
+	now := timestamppb.Now()
+	st := "COMPLETED"
+	ref := "MOCKBANK-test"
+	if strings.EqualFold(in.GetDecision(), "REJECT") {
+		st = "REJECTED"
+		ref = ""
+	}
+	return &paymentv1.DecideSellerPayoutResponse{
+		Payout: &paymentv1.SellerPayout{
+			Id:                in.GetPayoutId(),
+			ShopId:            "shop-1",
+			AmountVnd:         100000,
+			Status:            st,
+			BankName:          "Vietcombank",
+			BankAccountMasked: "****0123",
+			AccountHolderName: "NGUYEN VAN A",
+			RejectReason:      in.GetReason(),
+			TransferRef:       ref,
+			RequestedBy:       "seller-1",
+			DecidedBy:         in.GetDecidedByUserId(),
+			CreatedAt:         now,
+			DecidedAt:         now,
+		},
+	}, nil
+}
+
 func (p *w3b2PaymentClient) RunReconciliation(_ context.Context, _ *paymentv1.RunReconciliationRequest, _ ...grpc.CallOption) (*paymentv1.RunReconciliationResponse, error) {
 	return &paymentv1.RunReconciliationResponse{RunId: "run-1"}, nil
 }
@@ -1055,6 +1091,8 @@ func TestW3B2_AdminRBACMatrixExhaustiveAllRoutesAndRoles(t *testing.T) {
 		{http.MethodPost, "/api/v1/admin/payments/{id}/refund", "/api/v1/admin/payments/pay-1/refund", auth.CapRefundsCreate, "", `{"order_id":"ord-1","amount_vnd":100000,"reason":"refund"}`, idemHdr},
 		{http.MethodGet, "/api/v1/admin/refunds", "/api/v1/admin/refunds", auth.CapRefundsRead, "", "", nil},
 		{http.MethodPost, "/api/v1/admin/refunds/{id}/settle", "/api/v1/admin/refunds/ref-1/settle", auth.CapRefundsSettle, "", `{"provider_refund_id":"pr-1"}`, idemHdr},
+		{http.MethodGet, "/api/v1/admin/payouts", "/api/v1/admin/payouts", auth.CapPayoutsRead, "", "", nil},
+		{http.MethodPost, "/api/v1/admin/payouts/{id}/decision", "/api/v1/admin/payouts/po-1/decision", auth.CapPayoutsDecide, "", `{"decision":"APPROVE","reason":""}`, nil},
 		{http.MethodPost, "/api/v1/admin/payments/reconcile", "/api/v1/admin/payments/reconcile", auth.CapReconciliationWrite, "", `{"date":"2026-11-24"}`, nil},
 		{http.MethodPost, "/api/v1/admin/reconciliation/cod/import", "/api/v1/admin/reconciliation/cod/import?carrier_code=ghn", auth.CapReconciliationWrite, "text/csv", validCODCSV, nil},
 		{http.MethodGet, "/api/v1/admin/reconciliation/runs", "/api/v1/admin/reconciliation/runs", auth.CapLedgerRead, "", "", nil},

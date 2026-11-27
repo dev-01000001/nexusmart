@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -662,6 +663,12 @@ func (s *Server) CreateProduct(ctx context.Context, req *productv1.CreateProduct
 	if err := validateProductText(name, desc, req.GetImages()); err != nil {
 		return nil, err
 	}
+	if err := validateProductImages(shopID, req.GetImages()); err != nil {
+		return nil, err
+	}
+	if err := validateSKUImageURLs(shopID, skuInputs); err != nil {
+		return nil, err
+	}
 	modRes, err := s.checkProductModeration(ctx, s.store, categoryID, name, desc, productModerationSlug{
 		Name:    name,
 		Slug:    explicitSlug,
@@ -858,6 +865,16 @@ func (s *Server) UpdateProduct(ctx context.Context, req *productv1.UpdateProduct
 		}
 		if !isAdmin && existing.ShopID != shopID {
 			return status.Error(codes.PermissionDenied, "cannot update product belonging to another shop")
+		}
+		if len(req.GetImages()) > 0 {
+			if imgErr := validateProductImages(existing.ShopID, req.GetImages()); imgErr != nil {
+				return imgErr
+			}
+		}
+		if len(skuInputs) > 0 {
+			if skuImgErr := validateSKUImageURLs(existing.ShopID, skuInputs); skuImgErr != nil {
+				return skuImgErr
+			}
 		}
 
 		categoryID := strings.TrimSpace(req.GetCategoryId())
@@ -2624,6 +2641,79 @@ func validateProductText(name, description string, images []string) error {
 	}
 	for _, u := range images {
 		if err := checkText("image url", u, maxProductImageURLRunes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var productMediaFilenamePattern = regexp.MustCompile(`^[0-9a-f]{64}\.(jpg|png|webp)$`)
+
+// validateProductImageURL restricts product/SKU image URLs strictly to the owning shop's uploaded media
+// (/media/shops/<shop_id>/<sha256>.<jpg|png|webp>) or safe static sample paths (/products/<file>.<ext>).
+func validateProductImageURL(shopID, field, raw string, allowEmpty bool) error {
+	if err := checkText(field, raw, maxProductImageURLRunes); err != nil {
+		return err
+	}
+	if raw == "" {
+		if allowEmpty {
+			return nil
+		}
+		return status.Errorf(codes.InvalidArgument, "%s must not be empty", field)
+	}
+	if hasControlOrWhitespace(raw) {
+		return status.Errorf(codes.InvalidArgument, "%s must not contain whitespace or control characters", field)
+	}
+	if strings.Contains(raw, "..") || strings.Contains(raw, "\\") || strings.Contains(raw, "//") || strings.ContainsAny(raw, "?#") {
+		return status.Errorf(codes.InvalidArgument, "%s contains invalid path characters", field)
+	}
+
+	const mediaPrefix = "/media/shops/"
+	if strings.HasPrefix(raw, mediaPrefix) {
+		rest := strings.TrimPrefix(raw, mediaPrefix)
+		mediaShopID, filename, ok := strings.Cut(rest, "/")
+		if !ok || mediaShopID == "" || strings.Contains(filename, "/") {
+			return status.Errorf(codes.InvalidArgument, "%s is not a valid shop media path", field)
+		}
+		ownerShopID := strings.ToLower(strings.TrimSpace(shopID))
+		if ownerShopID == "" || mediaShopID != ownerShopID {
+			return status.Errorf(codes.InvalidArgument, "%s must belong to your shop", field)
+		}
+		if !productMediaFilenamePattern.MatchString(filename) {
+			return status.Errorf(codes.InvalidArgument, "%s is not a valid shop media path", field)
+		}
+		return nil
+	}
+
+	const samplePrefix = "/products/"
+	if strings.HasPrefix(raw, samplePrefix) {
+		rest := strings.TrimPrefix(raw, samplePrefix)
+		if rest == "" || strings.HasSuffix(rest, "/") {
+			return status.Errorf(codes.InvalidArgument, "%s is not a valid /products/ image path", field)
+		}
+		lower := strings.ToLower(rest)
+		if !strings.HasSuffix(lower, ".jpg") && !strings.HasSuffix(lower, ".jpeg") &&
+			!strings.HasSuffix(lower, ".png") && !strings.HasSuffix(lower, ".webp") {
+			return status.Errorf(codes.InvalidArgument, "%s must end with .jpg, .jpeg, .png, or .webp", field)
+		}
+		return nil
+	}
+
+	return status.Errorf(codes.InvalidArgument, "%s must be a /media/shops/<shop_id>/... or /products/... image path", field)
+}
+
+func validateProductImages(shopID string, images []string) error {
+	for i, u := range images {
+		if err := validateProductImageURL(shopID, fmt.Sprintf("images[%d]", i), u, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSKUImageURLs(shopID string, skus []normalizedSKUInput) error {
+	for i, s := range skus {
+		if err := validateProductImageURL(shopID, fmt.Sprintf("skus[%d].image_url", i), s.ImageURL, true); err != nil {
 			return err
 		}
 	}

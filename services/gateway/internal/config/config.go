@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/nexusmart/core/pkg/common/env"
+	"github.com/nexusmart/core/pkg/common/storage"
 )
 
 // Config holds runtime configuration for the API gateway.
@@ -41,6 +42,7 @@ type Config struct {
 	SearchGRPCAddr                   string
 	SearchFallbackTimeout            time.Duration
 	GRPCCallTimeout                  time.Duration
+	S3                               storage.Config
 	OTLPEndpoint                     string
 	OTLPInsecure                     bool
 	LogLevel                         string
@@ -97,6 +99,7 @@ func Load() Config {
 		SearchGRPCAddr:                   env.EnvString("SEARCH_GRPC_ADDR", "search:50059"),
 		SearchFallbackTimeout:            time.Duration(searchFallbackMS) * time.Millisecond,
 		GRPCCallTimeout:                  env.EnvDuration("GRPC_CALL_TIMEOUT", 10*time.Second),
+		S3:                               storage.LoadConfigFromEnv(),
 		OTLPEndpoint:                     env.EnvString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		OTLPInsecure:                     env.EnvBool("OTEL_EXPORTER_OTLP_INSECURE", true),
 		LogLevel:                         env.EnvString("LOG_LEVEL", "info"),

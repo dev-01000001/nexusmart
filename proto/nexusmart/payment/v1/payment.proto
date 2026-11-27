@@ -242,6 +242,7 @@ message GetSellerBalanceResponse {
   int64 pending_vnd = 2;
   int64 available_vnd = 3;
   int64 total_earned_vnd = 4;
+  int64 payout_pending_vnd = 5;
 }
 
 message ReleaseEscrowRequest {
@@ -550,6 +551,62 @@ message AdjustCODShippingFeeResponse {
   bool already_applied = 5;
 }
 
+message SellerPayout {
+  string id = 1;
+  string shop_id = 2;
+  int64 amount_vnd = 3;
+  // "PENDING" | "COMPLETED" | "REJECTED"
+  string status = 4;
+  string bank_name = 5;
+  string bank_account_masked = 6;
+  string account_holder_name = 7;
+  string reject_reason = 8;
+  string transfer_ref = 9;
+  string requested_by = 10;
+  string decided_by = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp decided_at = 13;
+}
+
+message RequestSellerPayoutRequest {
+  string shop_id = 1;
+  int64 amount_vnd = 2;
+  string idempotency_key = 3;
+  string requested_by_user_id = 4;
+}
+
+message RequestSellerPayoutResponse {
+  SellerPayout payout = 1;
+}
+
+message ListSellerPayoutsRequest {
+  // Optional for admin (empty lists all shops); for seller must equal JWT shop_id.
+  string shop_id = 1;
+  // Optional filter: "" | "PENDING" | "COMPLETED" | "REJECTED".
+  string status = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+message ListSellerPayoutsResponse {
+  repeated SellerPayout items = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+  int64 total = 4;
+}
+
+message DecideSellerPayoutRequest {
+  string payout_id = 1;
+  // "APPROVE" | "REJECT"
+  string decision = 2;
+  string reason = 3;
+  string decided_by_user_id = 4;
+}
+
+message DecideSellerPayoutResponse {
+  SellerPayout payout = 1;
+}
+
 service PaymentService {
   rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentResponse);
   rpc GetPayment(GetPaymentRequest) returns (GetPaymentResponse);
@@ -574,4 +631,7 @@ service PaymentService {
   rpc UpdatePaymentMethodConfig(UpdatePaymentMethodConfigRequest) returns (UpdatePaymentMethodConfigResponse);
   rpc DecideRefundApproval(DecideRefundApprovalRequest) returns (DecideRefundApprovalResponse);
   rpc AdjustCODShippingFee(AdjustCODShippingFeeRequest) returns (AdjustCODShippingFeeResponse);
+  rpc RequestSellerPayout(RequestSellerPayoutRequest) returns (RequestSellerPayoutResponse);
+  rpc ListSellerPayouts(ListSellerPayoutsRequest) returns (ListSellerPayoutsResponse);
+  rpc DecideSellerPayout(DecideSellerPayoutRequest) returns (DecideSellerPayoutResponse);
 }

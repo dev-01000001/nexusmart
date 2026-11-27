@@ -16,10 +16,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let proto_file = PathBuf::from("../../proto/nexusmart/payment/v1/payment.proto");
+    let payment_proto = PathBuf::from("../../proto/nexusmart/payment/v1/payment.proto");
+    let user_proto = PathBuf::from("../../proto/nexusmart/user/v1/user.proto");
     let proto_root = PathBuf::from("../../proto");
 
-    println!("cargo:rerun-if-changed={}", proto_file.display());
+    println!("cargo:rerun-if-changed={}", payment_proto.display());
+    println!("cargo:rerun-if-changed={}", user_proto.display());
     println!("cargo:rerun-if-changed=migrations");
 
     let mut includes = vec![proto_root];
@@ -37,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_build::configure()
         .build_server(true)
         .build_client(true)
-        .compile_protos(&[proto_file], &includes)?;
+        .compile_protos(&[payment_proto, user_proto], &includes)?;
 
     Ok(())
 }

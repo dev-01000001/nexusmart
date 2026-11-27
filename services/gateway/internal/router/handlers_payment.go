@@ -673,10 +673,228 @@ func (h *handler) handleSellerBalance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"shop_id":          resp.GetShopId(),
-		"pending_vnd":      resp.GetPendingVnd(),
-		"available_vnd":    resp.GetAvailableVnd(),
-		"total_earned_vnd": resp.GetTotalEarnedVnd(),
+		"shop_id":            resp.GetShopId(),
+		"pending_vnd":        resp.GetPendingVnd(),
+		"available_vnd":      resp.GetAvailableVnd(),
+		"total_earned_vnd":   resp.GetTotalEarnedVnd(),
+		"payout_pending_vnd": resp.GetPayoutPendingVnd(),
+	})
+}
+
+type sellerPayoutDTO struct {
+	ID                string `json:"id"`
+	ShopID            string `json:"shop_id"`
+	AmountVND         int64  `json:"amount_vnd"`
+	Status            string `json:"status"`
+	BankName          string `json:"bank_name"`
+	BankAccountMasked string `json:"bank_account_masked"`
+	AccountHolderName string `json:"account_holder_name"`
+	RejectReason      string `json:"reject_reason"`
+	TransferRef       string `json:"transfer_ref"`
+	RequestedBy       string `json:"requested_by"`
+	DecidedBy         string `json:"decided_by"`
+	CreatedAt         string `json:"created_at,omitempty"`
+	DecidedAt         string `json:"decided_at,omitempty"`
+}
+
+func mapSellerPayout(p *paymentv1.SellerPayout) *sellerPayoutDTO {
+	if p == nil {
+		return nil
+	}
+	return &sellerPayoutDTO{
+		ID:                p.GetId(),
+		ShopID:            p.GetShopId(),
+		AmountVND:         p.GetAmountVnd(),
+		Status:            strings.ToUpper(strings.TrimSpace(p.GetStatus())),
+		BankName:          p.GetBankName(),
+		BankAccountMasked: p.GetBankAccountMasked(),
+		AccountHolderName: p.GetAccountHolderName(),
+		RejectReason:      p.GetRejectReason(),
+		TransferRef:       p.GetTransferRef(),
+		RequestedBy:       p.GetRequestedBy(),
+		DecidedBy:         p.GetDecidedBy(),
+		CreatedAt:         httpx.FormatTimestamp(p.GetCreatedAt()),
+		DecidedAt:         httpx.FormatTimestamp(p.GetDecidedAt()),
+	}
+}
+
+func (h *handler) handleSellerListPayouts(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
+	statusFilter := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("status")))
+	if statusFilter != "" && statusFilter != "PENDING" && statusFilter != "COMPLETED" && statusFilter != "REJECTED" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "status must be PENDING, COMPLETED, or REJECTED")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Payment.ListSellerPayouts(ctx, &paymentv1.ListSellerPayoutsRequest{
+		ShopId:   shopID,
+		Status:   statusFilter,
+		Page:     page,
+		PageSize: pageSize,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	items := make([]*sellerPayoutDTO, 0, len(resp.GetItems()))
+	for _, p := range resp.GetItems() {
+		items = append(items, mapSellerPayout(p))
+	}
+	respPage := resp.GetPage()
+	if respPage <= 0 {
+		respPage = page
+	}
+	respPageSize := resp.GetPageSize()
+	if respPageSize <= 0 {
+		respPageSize = pageSize
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items":     items,
+		"page":      respPage,
+		"page_size": respPageSize,
+		"total":     resp.GetTotal(),
+	})
+}
+
+func (h *handler) handleSellerRequestPayout(w http.ResponseWriter, r *http.Request) {
+	shopID, ok := requireSellerShopID(w, r)
+	if !ok {
+		return
+	}
+	idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idemKey == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "Idempotency-Key header is required")
+		return
+	}
+
+	var body struct {
+		AmountVND *int64 `json:"amount_vnd"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	if body.AmountVND == nil || *body.AmountVND <= 0 {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "amount_vnd is required and must be > 0")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context(), "idempotency-key", idemKey)
+	defer cancel()
+
+	resp, err := h.clients.Payment.RequestSellerPayout(ctx, &paymentv1.RequestSellerPayoutRequest{
+		ShopId:            shopID,
+		AmountVnd:         *body.AmountVND,
+		IdempotencyKey:    idemKey,
+		RequestedByUserId: auth.UserIDFromContext(r.Context()),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
+		"payout": mapSellerPayout(resp.GetPayout()),
+	})
+}
+
+func (h *handler) handleAdminListPayouts(w http.ResponseWriter, r *http.Request) {
+	page, pageSize, err := httpx.ParsePagination(r)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
+		return
+	}
+	q := r.URL.Query()
+	statusFilter := strings.ToUpper(strings.TrimSpace(q.Get("status")))
+	if statusFilter != "" && statusFilter != "PENDING" && statusFilter != "COMPLETED" && statusFilter != "REJECTED" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "status must be PENDING, COMPLETED, or REJECTED")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Payment.ListSellerPayouts(ctx, &paymentv1.ListSellerPayoutsRequest{
+		ShopId:   strings.TrimSpace(q.Get("shop_id")),
+		Status:   statusFilter,
+		Page:     page,
+		PageSize: pageSize,
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	items := make([]*sellerPayoutDTO, 0, len(resp.GetItems()))
+	for _, p := range resp.GetItems() {
+		items = append(items, mapSellerPayout(p))
+	}
+	respPage := resp.GetPage()
+	if respPage <= 0 {
+		respPage = page
+	}
+	respPageSize := resp.GetPageSize()
+	if respPageSize <= 0 {
+		respPageSize = pageSize
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items":     items,
+		"page":      respPage,
+		"page_size": respPageSize,
+		"total":     resp.GetTotal(),
+	})
+}
+
+func (h *handler) handleAdminDecidePayout(w http.ResponseWriter, r *http.Request) {
+	payoutID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if payoutID == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "payout id is required")
+		return
+	}
+
+	var body struct {
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.WriteDecodeError(w, r, err)
+		return
+	}
+	decision := strings.ToUpper(strings.TrimSpace(body.Decision))
+	if decision != "APPROVE" && decision != "REJECT" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "decision must be APPROVE or REJECT")
+		return
+	}
+	reason := strings.TrimSpace(body.Reason)
+	if decision == "REJECT" && reason == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "INVALID_ARGUMENT", "reason is required when rejecting a payout")
+		return
+	}
+
+	ctx, cancel := h.clients.OutgoingContext(r.Context())
+	defer cancel()
+
+	resp, err := h.clients.Payment.DecideSellerPayout(ctx, &paymentv1.DecideSellerPayoutRequest{
+		PayoutId:        payoutID,
+		Decision:        decision,
+		Reason:          reason,
+		DecidedByUserId: auth.UserIDFromContext(r.Context()),
+	})
+	if err != nil {
+		httpx.WriteGRPCError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"payout": mapSellerPayout(resp.GetPayout()),
 	})
 }
 

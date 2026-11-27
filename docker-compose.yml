@@ -127,6 +127,37 @@ services:
       timeout: 5s
       retries: 5
 
+  # SeaweedFS S3-compatible object storage pinned per ADR-0005 (2026-11-27 GHSA audit); internal compose network only (no host ports).
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.55
+    mem_limit: 384m
+    command:
+      - "server"
+      - "-volume.max=10"
+      - "-master.volumeSizeLimitMB=256"
+      - "-filer"
+      - "-filer.exposeDirectoryData=false"
+      - "-s3"
+      - "-s3.port=8333"
+      - "-s3.port.iceberg=0"
+      - "-s3.port.lance=0"
+      - "-s3.iam=false"
+      - "-s3.iam.readOnly=true"
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-dev-only-nexusmart-s3-access-key}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-dev-only-nexusmart-s3-secret-key}
+      WEED_JWT_FILER_SIGNING_KEY: ${SEAWEEDFS_FILER_SIGNING_KEY:-dev-only-seaweedfs-filer-signing-key-change-me}
+      WEED_JWT_FILER_SIGNING_READ_KEY: ${SEAWEEDFS_FILER_SIGNING_READ_KEY:-dev-only-seaweedfs-filer-read-key-change-me}
+      WEED_JWT_SIGNING_KEY: ${SEAWEEDFS_JWT_SIGNING_KEY:-dev-only-seaweedfs-jwt-signing-key-change-me}
+      WEED_JWT_SIGNING_READ_KEY: ${SEAWEEDFS_JWT_SIGNING_READ_KEY:-dev-only-seaweedfs-jwt-read-key-change-me}
+    volumes:
+      - seaweedfs_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8333/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   user:
     build:
       context: .
@@ -299,6 +330,7 @@ services:
       GRPC_PORT: "50056"
       HTTP_PORT: "8086"
       DATABASE_URL: postgres://${POSTGRES_USER:-nexusmart}:${POSTGRES_PASSWORD:-nexusmart_dev_password}@postgres:5432/payment_db?sslmode=disable
+      USER_GRPC_ADDR: user:50051
       NATS_URL: ${NATS_URL:-nats://nats:4222}
       NATS_STREAM: ${NATS_STREAM:-NEXUSMART}
       VIETQR_MODE: ${VIETQR_MODE:-mock}
@@ -331,6 +363,8 @@ services:
       postgres:
         condition: service_healthy
       nats:
+        condition: service_healthy
+      user:
         condition: service_healthy
       otel-collector:
         condition: service_started
@@ -691,6 +725,11 @@ services:
       CHAT_HTTP_URL: http://chat:8090
       ASSISTANT_GRPC_ADDR: assistant:50061
       ASSISTANT_HTTP_URL: http://assistant:8091
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://seaweedfs:8333}
+      S3_BUCKET: ${S3_BUCKET:-nexusmart-media-public}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-dev-only-nexusmart-s3-access-key}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-dev-only-nexusmart-s3-secret-key}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
       OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -725,6 +764,8 @@ services:
       chat:
         condition: service_healthy
       assistant:
+        condition: service_healthy
+      seaweedfs:
         condition: service_healthy
       otel-collector:
         condition: service_started
@@ -1053,6 +1094,7 @@ volumes:
   meilisearch_v1_58_data:
   redis_data:
   nats_data:
+  seaweedfs_data:
   prometheus_data:
   loki_data:
   tempo_data:

@@ -385,6 +385,8 @@ func auditTargetType(routePattern string) string {
 		return "payment"
 	case "refunds":
 		return "refund"
+	case "payouts":
+		return "seller_payout"
 	case "reconciliation":
 		return "reconciliation_item"
 	case "returns":
@@ -441,7 +443,7 @@ func extractTargetIDFromJSON(raw []byte) string {
 			return strings.TrimSpace(s)
 		}
 	}
-	for _, nestedKey := range []string{"category", "voucher", "flash_sale", "product", "item", "refund", "return_request", "carrier", "bank_account", "schedule", "config", "order", "keyword", "run"} {
+	for _, nestedKey := range []string{"category", "voucher", "flash_sale", "product", "item", "refund", "payout", "return_request", "carrier", "bank_account", "schedule", "config", "order", "keyword", "run"} {
 		if nested, ok := obj[nestedKey].(map[string]any); ok {
 			for _, idKey := range []string{"id", "run_id", "refund_id", "carrier_code"} {
 				if s, ok := nested[idKey].(string); ok && strings.TrimSpace(s) != "" {

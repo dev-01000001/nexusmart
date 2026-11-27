@@ -140,7 +140,15 @@ impl TestDb {
         cfg.service_jwt_secret = TEST_SERVICE_SECRET.to_string();
         cfg.vietqr_mode = VietQrMode::Mock;
         cfg.seller_hold_hours = 72;
-        PaymentService::new(self.pool.clone(), cfg, Metrics::new())
+        PaymentService::new(self.pool.clone(), cfg, Metrics::new()).with_bank_provider(
+            std::sync::Arc::new(
+                nexusmart_payment::user_bank::StaticPayoutBankProvider::ready(
+                    "Vietcombank",
+                    "****0123",
+                    "NGUYEN VAN SELLER",
+                ),
+            ),
+        )
     }
 
     fn auth(&self) -> GrpcAuth {
@@ -2404,28 +2412,106 @@ async fn test_pg_full_money_cod_reconciliation_and_hold_protection_sql() {
     assert_eq!(bal_hold.pending_vnd, 100_000);
     assert_eq!(bal_hold.total_earned_vnd, 160_000);
 
-    // Seller payout: over-withdraw rejected, valid 50k payout succeeds & idempotent replay works
+    // Seller payout: over-withdraw rejected, valid 50k payout succeeds (PENDING) & idempotent replay works,
+    // reject restores available balance, then re-request and approve completes disbursement.
     assert!(matches!(
-        svc.request_seller_payout(&shop_hold, 60_001, "19034567890123", "po-over")
-            .await,
+        svc.request_seller_payout(nexusmart_payment::domain::RequestSellerPayoutInput {
+            shop_id: shop_hold.clone(),
+            amount_vnd: 60_001,
+            idempotency_key: "po-over".into(),
+            requested_by_user_id: "seller-hold".into(),
+        })
+        .await,
         Err(PaymentError::InsufficientBalance { .. })
     ));
     let po_key = format!("po-{}", Uuid::new_v4());
     let po = svc
-        .request_seller_payout(&shop_hold, 50_000, "19034567890123", &po_key)
+        .request_seller_payout(nexusmart_payment::domain::RequestSellerPayoutInput {
+            shop_id: shop_hold.clone(),
+            amount_vnd: 50_000,
+            idempotency_key: po_key.clone(),
+            requested_by_user_id: "seller-hold".into(),
+        })
         .await
         .unwrap();
+    assert_eq!(po.status, "PENDING");
     assert_eq!(po.bank_account_masked, "****0123");
     let po_replay = svc
-        .request_seller_payout(&shop_hold, 50_000, "19034567890123", &po_key)
+        .request_seller_payout(nexusmart_payment::domain::RequestSellerPayoutInput {
+            shop_id: shop_hold.clone(),
+            amount_vnd: 50_000,
+            idempotency_key: po_key.clone(),
+            requested_by_user_id: "seller-hold".into(),
+        })
         .await
         .unwrap();
     assert_eq!(po_replay.id, po.id);
+
+    // Second PENDING for same shop rejected.
+    assert!(matches!(
+        svc.request_seller_payout(nexusmart_payment::domain::RequestSellerPayoutInput {
+            shop_id: shop_hold.clone(),
+            amount_vnd: 5_000,
+            idempotency_key: format!("po-dup-{}", Uuid::new_v4()),
+            requested_by_user_id: "seller-hold".into(),
+        })
+        .await,
+        Err(PaymentError::PayoutPendingExists(_))
+    ));
+
+    // Rejecting restores available balance from 10k -> 60k and zeroes payout_pending_vnd.
+    let po_rejected = svc
+        .decide_seller_payout(nexusmart_payment::domain::DecideSellerPayoutInput {
+            payout_id: po.id,
+            decision: nexusmart_payment::domain::PayoutDecision::Reject,
+            reason: "Kiểm tra lại thông tin".into(),
+            decided_by_user_id: "admin-hold".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(po_rejected.status, "REJECTED");
+    assert_eq!(
+        svc.get_seller_balance(&shop_hold)
+            .await
+            .unwrap()
+            .available_vnd,
+        60_000
+    );
+    assert_eq!(
+        svc.get_seller_balance(&shop_hold)
+            .await
+            .unwrap()
+            .payout_pending_vnd,
+        0
+    );
+
+    // Re-request 50k and approve so downstream ledger assertions see available=10k, pending=100k.
+    let po2 = svc
+        .request_seller_payout(nexusmart_payment::domain::RequestSellerPayoutInput {
+            shop_id: shop_hold.clone(),
+            amount_vnd: 50_000,
+            idempotency_key: format!("po-approve-{}", Uuid::new_v4()),
+            requested_by_user_id: "seller-hold".into(),
+        })
+        .await
+        .unwrap();
+    let po2_approved = svc
+        .decide_seller_payout(nexusmart_payment::domain::DecideSellerPayoutInput {
+            payout_id: po2.id,
+            decision: nexusmart_payment::domain::PayoutDecision::Approve,
+            reason: String::new(),
+            decided_by_user_id: "admin-hold".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(po2_approved.status, "COMPLETED");
+    assert!(po2_approved.transfer_ref.starts_with("MOCKBANK-"));
 
     // ListSellerLedger real SQL matches GetSellerBalance for pending, available, and combined!
     let bal_after_po = svc.get_seller_balance(&shop_hold).await.unwrap();
     assert_eq!(bal_after_po.available_vnd, 10_000);
     assert_eq!(bal_after_po.pending_vnd, 100_000);
+    assert_eq!(bal_after_po.payout_pending_vnd, 0);
     let led_all = svc
         .list_seller_ledger(ListSellerLedgerFilter {
             shop_id: Some(shop_hold.clone()),

@@ -37,6 +37,8 @@ pub const CAP_REFUNDS_READ: &str = "refunds.read";
 pub const CAP_REFUNDS_CREATE: &str = "refunds.create";
 pub const CAP_REFUNDS_APPROVE: &str = "refunds.approve";
 pub const CAP_REFUNDS_SETTLE: &str = "refunds.settle";
+pub const CAP_PAYOUTS_READ: &str = "payouts.read";
+pub const CAP_PAYOUTS_DECIDE: &str = "payouts.decide";
 pub const CAP_PAYMENT_METHODS_READ: &str = "payment_methods.read";
 pub const CAP_PAYMENT_METHODS_WRITE: &str = "payment_methods.write";
 
@@ -416,6 +418,37 @@ fn verify_hs256(token: &str, key: &[u8]) -> Option<Claims> {
     Some(claims)
 }
 
+/// Signs a short-lived HS256 internal service token compatible with Go `pkg/common/auth`.
+pub fn sign_service_token(
+    service_secret: &str,
+    service_name: &str,
+) -> crate::error::Result<String> {
+    let secret = service_secret.trim();
+    let svc = service_name.trim();
+    if secret.is_empty() || svc.is_empty() {
+        return Err(PaymentError::Internal(
+            "service_jwt_secret and service_name must be non-empty".to_string(),
+        ));
+    }
+    let now = chrono::Utc::now().timestamp();
+    let claims = serde_json::json!({
+        "sub": svc,
+        "role": "admin",
+        "service": svc,
+        "iss": "nexusmart",
+        "jti": uuid::Uuid::new_v4().to_string(),
+        "iat": now,
+        "exp": now + 60,
+    });
+    let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
+    let payload = URL_SAFE_NO_PAD.encode(claims.to_string());
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+        .map_err(|_| PaymentError::Internal("invalid service jwt secret".to_string()))?;
+    mac.update(format!("{header}.{payload}").as_bytes());
+    let sig = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+    Ok(format!("{header}.{payload}.{sig}"))
+}
+
 /// Test helper: signs `claims` as an HS256 JWT.
 #[cfg(test)]
 pub(crate) fn sign_hs256(key: &str, claims: serde_json::Value) -> String {
@@ -475,6 +508,9 @@ mod tests {
             "UpdatePaymentMethodConfig",
             "DecideRefundApproval",
             "AdjustCODShippingFee",
+            "RequestSellerPayout",
+            "ListSellerPayouts",
+            "DecideSellerPayout",
         ] {
             let err = auth().authenticate(&m, method).unwrap_err();
             assert_eq!(err.code(), tonic::Code::Unauthenticated, "{method}");
@@ -555,6 +591,9 @@ mod tests {
             "ListReconciliationReports",
             "UpdatePaymentMethodConfig",
             "DecideRefundApproval",
+            "RequestSellerPayout",
+            "ListSellerPayouts",
+            "DecideSellerPayout",
         ] {
             let denied = a
                 .authenticate(&md(&[bearer(svc(SVC_KEY, exp_in(60)))]), method)
@@ -666,6 +705,11 @@ mod tests {
             ),
             (CAP_REFUNDS_APPROVE, &["super_admin", "admin", "accountant"]),
             (CAP_REFUNDS_SETTLE, &["super_admin", "admin", "accountant"]),
+            (
+                CAP_PAYOUTS_READ,
+                &["super_admin", "admin", "accountant", "ops"],
+            ),
+            (CAP_PAYOUTS_DECIDE, &["super_admin", "admin", "accountant"]),
             (
                 CAP_PAYMENT_METHODS_READ,
                 &["super_admin", "admin", "accountant", "ops"],

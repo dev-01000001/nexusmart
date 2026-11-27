@@ -352,6 +352,7 @@ pub struct Config {
     pub http_port: u16,
     pub grpc_port: u16,
     pub database_url: String,
+    pub user_grpc_addr: String,
     pub nats_url: String,
     pub nats_stream: String,
     pub otel_endpoint: Option<String>,
@@ -396,6 +397,7 @@ impl fmt::Debug for Config {
             .field("http_port", &self.http_port)
             .field("grpc_port", &self.grpc_port)
             .field("database_url", &"[REDACTED]")
+            .field("user_grpc_addr", &self.user_grpc_addr)
             .field(
                 "nats_url",
                 &crate::telemetry::redact_url_credentials(&self.nats_url),
@@ -457,6 +459,10 @@ impl Config {
                 "DATABASE_URL",
                 "postgres://nexusmart:nexusmart@localhost:5432/payment_db",
             ),
+            user_grpc_addr: normalize_grpc_endpoint(&env_string(
+                "USER_GRPC_ADDR",
+                "http://user:50051",
+            )),
             nats_url: env_string("NATS_URL", "nats://localhost:4222"),
             nats_stream: env_string("NATS_STREAM", "NEXUSMART"),
             otel_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -611,6 +617,18 @@ impl Config {
         }
 
         Ok(())
+    }
+}
+
+fn normalize_grpc_endpoint(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "http://user:50051".to_string();
+    }
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{trimmed}")
     }
 }
 

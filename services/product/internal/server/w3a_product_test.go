@@ -52,7 +52,7 @@ func TestW3A_D2_GetSKUsBatch_RedactionMatrix(t *testing.T) {
 				PriceVnd:    price,
 				Stock:       stock,
 				WeightGrams: 350,
-				ImageUrl:    "https://cdn.local/" + skuCode + ".jpg",
+				ImageUrl:    "/products/" + skuCode + ".jpg",
 			}},
 		})
 		if cErr != nil {
@@ -73,7 +73,7 @@ func TestW3A_D2_GetSKUsBatch_RedactionMatrix(t *testing.T) {
 				PriceVnd:    250000,
 				Stock:       12,
 				WeightGrams: 300,
-				ImageUrl:    "https://cdn.local/d2-act.jpg",
+				ImageUrl:    "/products/d2-act.jpg",
 			},
 			{
 				SkuCode:     "D2-INACT",
@@ -82,7 +82,7 @@ func TestW3A_D2_GetSKUsBatch_RedactionMatrix(t *testing.T) {
 				PriceVnd:    280000,
 				Stock:       8,
 				WeightGrams: 320,
-				ImageUrl:    "https://cdn.local/d2-inact.jpg",
+				ImageUrl:    "/products/d2-inact.jpg",
 			},
 		},
 	})
@@ -117,7 +117,7 @@ func TestW3A_D2_GetSKUsBatch_RedactionMatrix(t *testing.T) {
 			PriceVnd:    250000,
 			Stock:       12,
 			WeightGrams: 300,
-			ImageUrl:    "https://cdn.local/d2-act.jpg",
+			ImageUrl:    "/products/d2-act.jpg",
 		}},
 	}); err != nil {
 		t.Fatalf("UpdateProduct deactivate D2-INACT: %v", err)
@@ -193,43 +193,43 @@ func TestW3A_D2_GetSKUsBatch_RedactionMatrix(t *testing.T) {
 	skuCases := []skuCase{
 		{
 			name: "deactivated_sku", skuID: skuDeactivated.GetId(), productID: activeAndInactiveResp.GetProduct().GetId(),
-			productName: "Active And Inactive Prod", skuName: "Deactivated Variant", imageURL: "https://cdn.local/d2-inact.jpg",
+			productName: "Active And Inactive Prod", skuName: "Deactivated Variant", imageURL: "/products/d2-inact.jpg",
 			wantActive: false, wantPrice: 280000, wantMinPrice: 280000, wantStock: 8, wantReserved: 0, wantAvail: 8,
 			wantWeight: 320, wantSKUCode: "D2-INACT", wantCommission: 750,
 		},
 		{
 			name: "pending_product", skuID: skuPending.GetId(), productID: skuPending.GetProductId(),
-			productName: "Pending Prod", skuName: "Variant D2-PEND", imageURL: "https://cdn.local/D2-PEND.jpg",
+			productName: "Pending Prod", skuName: "Variant D2-PEND", imageURL: "/products/D2-PEND.jpg",
 			wantActive: false, wantPrice: 310000, wantMinPrice: 310000, wantStock: 7, wantReserved: 0, wantAvail: 7,
 			wantWeight: 350, wantSKUCode: "D2-PEND", wantCommission: 750,
 		},
 		{
 			name: "rejected_product", skuID: skuRejected.GetId(), productID: prodRej.GetId(),
-			productName: "Rejected Prod", skuName: "Variant D2-REJ", imageURL: "https://cdn.local/D2-REJ.jpg",
+			productName: "Rejected Prod", skuName: "Variant D2-REJ", imageURL: "/products/D2-REJ.jpg",
 			wantActive: false, wantPrice: 320000, wantMinPrice: 320000, wantStock: 6, wantReserved: 0, wantAvail: 6,
 			wantWeight: 350, wantSKUCode: "D2-REJ", wantCommission: 750,
 		},
 		{
 			name: "hidden_product", skuID: skuHidden.GetId(), productID: prodHid.GetId(),
-			productName: "Hidden Prod", skuName: "Variant D2-HID", imageURL: "https://cdn.local/D2-HID.jpg",
+			productName: "Hidden Prod", skuName: "Variant D2-HID", imageURL: "/products/D2-HID.jpg",
 			wantActive: false, wantPrice: 330000, wantMinPrice: 330000, wantStock: 9, wantReserved: 0, wantAvail: 9,
 			wantWeight: 350, wantSKUCode: "D2-HID", wantCommission: 750,
 		},
 		{
 			name: "deleted_product", skuID: skuDeleted.GetId(), productID: prodDel.GetId(),
-			productName: "Deleted Prod", skuName: "Variant D2-DEL", imageURL: "https://cdn.local/D2-DEL.jpg",
+			productName: "Deleted Prod", skuName: "Variant D2-DEL", imageURL: "/products/D2-DEL.jpg",
 			wantActive: false, wantPrice: 340000, wantMinPrice: 340000, wantStock: 5, wantReserved: 0, wantAvail: 5,
 			wantWeight: 350, wantSKUCode: "D2-DEL", wantCommission: 750,
 		},
 		{
 			name: "active_approved", skuID: skuActive.GetId(), productID: activeAndInactiveResp.GetProduct().GetId(),
-			productName: "Active And Inactive Prod", skuName: "Active Variant", imageURL: "https://cdn.local/d2-act.jpg",
+			productName: "Active And Inactive Prod", skuName: "Active Variant", imageURL: "/products/d2-act.jpg",
 			wantActive: true, wantPrice: 250000, wantMinPrice: 250000, wantStock: 12, wantReserved: 2, wantAvail: 10,
 			wantWeight: 300, wantSKUCode: "D2-ACT", wantCommission: 750,
 		},
 		{
 			name: "active_out_of_stock", skuID: skuOOS.GetId(), productID: prodOOS.GetId(),
-			productName: "OOS Public Prod", skuName: "Variant D2-OOS", imageURL: "https://cdn.local/D2-OOS.jpg",
+			productName: "OOS Public Prod", skuName: "Variant D2-OOS", imageURL: "/products/D2-OOS.jpg",
 			wantActive: true, wantPrice: 350000, wantMinPrice: 350000, wantStock: 0, wantReserved: 0, wantAvail: 0,
 			wantWeight: 350, wantSKUCode: "D2-OOS", wantCommission: 750,
 		},

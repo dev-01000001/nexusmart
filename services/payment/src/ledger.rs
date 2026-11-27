@@ -24,6 +24,10 @@ pub fn account_seller_available(shop_id: &str) -> String {
     format!("seller_available:{shop_id}")
 }
 
+pub fn account_seller_payout_hold(shop_id: &str) -> String {
+    format!("seller_payout_hold:{shop_id}")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum AccountType {
@@ -609,7 +613,104 @@ pub fn build_escrow_release_tx(
     Ok(draft)
 }
 
-/// Seller payout (UC-PAY05): Debit seller_available:<shop_id>, Credit gateway_clearing.
+/// Seller payout request hold (UC-PAY05): Debit seller_available:<shop_id>, Credit seller_payout_hold:<shop_id>.
+pub fn build_seller_payout_hold_tx(
+    payout_id: Uuid,
+    shop_id: &str,
+    amount_vnd: i64,
+    channel: ChannelAttribution,
+) -> Result<LedgerTransactionDraft> {
+    let draft = LedgerTransactionDraft {
+        idempotency_key: format!("seller-payout-hold:{payout_id}"),
+        reference_type: "payout_hold".to_string(),
+        reference_id: payout_id.to_string(),
+        description: format!("Hold payout {payout_id} for shop {shop_id}"),
+        channel,
+        lines: vec![
+            LedgerLine::debit(
+                account_seller_available(shop_id),
+                AccountType::Liability,
+                Some(shop_id.to_string()),
+                amount_vnd,
+            ),
+            LedgerLine::credit(
+                account_seller_payout_hold(shop_id),
+                AccountType::Liability,
+                Some(shop_id.to_string()),
+                amount_vnd,
+            ),
+        ],
+    };
+    draft.validate()?;
+    Ok(draft)
+}
+
+/// Seller payout approved/disbursed (UC-PAY05): Debit seller_payout_hold:<shop_id>, Credit gateway_clearing.
+pub fn build_seller_payout_approve_tx(
+    payout_id: Uuid,
+    shop_id: &str,
+    amount_vnd: i64,
+    channel: ChannelAttribution,
+) -> Result<LedgerTransactionDraft> {
+    let draft = LedgerTransactionDraft {
+        idempotency_key: format!("seller-payout-approve:{payout_id}"),
+        reference_type: "payout".to_string(),
+        reference_id: payout_id.to_string(),
+        description: format!("Approve payout {payout_id} to shop {shop_id}"),
+        channel,
+        lines: vec![
+            LedgerLine::debit(
+                account_seller_payout_hold(shop_id),
+                AccountType::Liability,
+                Some(shop_id.to_string()),
+                amount_vnd,
+            ),
+            LedgerLine::credit(
+                ACCOUNT_GATEWAY_CLEARING,
+                AccountType::Asset,
+                None,
+                amount_vnd,
+            ),
+        ],
+    };
+    draft.validate()?;
+    Ok(draft)
+}
+
+/// Seller payout rejected (UC-PAY05): Debit seller_payout_hold:<shop_id>, Credit seller_available:<shop_id>.
+pub fn build_seller_payout_reject_tx(
+    payout_id: Uuid,
+    shop_id: &str,
+    amount_vnd: i64,
+    channel: ChannelAttribution,
+) -> Result<LedgerTransactionDraft> {
+    let draft = LedgerTransactionDraft {
+        idempotency_key: format!("seller-payout-reject:{payout_id}"),
+        reference_type: "payout_reject".to_string(),
+        reference_id: payout_id.to_string(),
+        description: format!("Reject payout {payout_id} and release hold for shop {shop_id}"),
+        channel,
+        lines: vec![
+            LedgerLine::debit(
+                account_seller_payout_hold(shop_id),
+                AccountType::Liability,
+                Some(shop_id.to_string()),
+                amount_vnd,
+            ),
+            LedgerLine::credit(
+                account_seller_available(shop_id),
+                AccountType::Liability,
+                Some(shop_id.to_string()),
+                amount_vnd,
+            ),
+        ],
+    };
+    draft.validate()?;
+    Ok(draft)
+}
+
+/// Legacy single-step seller payout helper retained for reference ledger tests:
+/// Debit seller_available:<shop_id>, Credit gateway_clearing.
 pub fn build_seller_payout_tx(
     payout_id: Uuid,
     shop_id: &str,
@@ -671,6 +772,7 @@ pub struct SellerBalance {
     pub pending_vnd: i64,
     pub available_vnd: i64,
     pub total_earned_vnd: i64,
+    pub payout_pending_vnd: i64,
 }
 
 // =============================================================================
@@ -858,28 +960,32 @@ pub async fn get_ledger_summary(
 pub async fn get_seller_balance(pool: &PgPool, shop_id: &str) -> Result<SellerBalance> {
     let pending_acct = account_seller_pending(shop_id);
     let available_acct = account_seller_available(shop_id);
+    let payout_hold_acct = account_seller_payout_hold(shop_id);
 
     let row = sqlx::query(
         r#"
         SELECT
             COALESCE(SUM(CASE WHEN e.account_id = $1 THEN e.credit_vnd - e.debit_vnd ELSE 0 END), 0)::BIGINT AS pending_vnd,
             COALESCE(SUM(CASE WHEN e.account_id = $2 THEN e.credit_vnd - e.debit_vnd ELSE 0 END), 0)::BIGINT AS available_vnd,
+            COALESCE(SUM(CASE WHEN e.account_id = $3 THEN e.credit_vnd - e.debit_vnd ELSE 0 END), 0)::BIGINT AS payout_pending_vnd,
             (
                 COALESCE(SUM(CASE WHEN e.account_id = $1 THEN e.credit_vnd ELSE 0 END), 0)
-                - COALESCE(SUM(CASE WHEN lt.reference_type = 'refund' THEN e.debit_vnd ELSE 0 END), 0)
+                - COALESCE(SUM(CASE WHEN lt.reference_type = 'refund' AND e.account_id IN ($1, $2) THEN e.debit_vnd ELSE 0 END), 0)
             )::BIGINT AS total_earned_vnd
         FROM ledger_entries e
         JOIN ledger_transactions lt ON lt.id = e.transaction_id
-        WHERE e.account_id IN ($1, $2)
+        WHERE e.account_id IN ($1, $2, $3)
         "#,
     )
     .bind(&pending_acct)
     .bind(&available_acct)
+    .bind(&payout_hold_acct)
     .fetch_one(pool)
     .await?;
 
     let pending_vnd: i64 = row.try_get("pending_vnd")?;
     let available_vnd: i64 = row.try_get("available_vnd")?;
+    let payout_pending_vnd: i64 = row.try_get("payout_pending_vnd")?;
     let total_earned_vnd: i64 = row.try_get("total_earned_vnd")?;
 
     Ok(SellerBalance {
@@ -887,7 +993,47 @@ pub async fn get_seller_balance(pool: &PgPool, shop_id: &str) -> Result<SellerBa
         pending_vnd,
         available_vnd,
         total_earned_vnd,
+        payout_pending_vnd,
     })
+}
+
+/// Locks `seller_available:<shop_id>` and `seller_payout_hold:<shop_id>` in deterministic
+/// alphabetical order inside an active DB transaction to serialize payout mutations.
+pub async fn lock_seller_payout_accounts_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    shop_id: &str,
+) -> Result<()> {
+    let available_acct = account_seller_available(shop_id);
+    let payout_hold_acct = account_seller_payout_hold(shop_id);
+
+    for acct in [&available_acct, &payout_hold_acct] {
+        sqlx::query(
+            r#"
+            INSERT INTO ledger_accounts (id, account_type, shop_id)
+            VALUES ($1, 'LIABILITY', $2)
+            ON CONFLICT (id) DO NOTHING
+            "#,
+        )
+        .bind(acct)
+        .bind(shop_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    sqlx::query(
+        r#"
+        SELECT id FROM ledger_accounts
+        WHERE id IN ($1, $2)
+        ORDER BY id ASC
+        FOR UPDATE
+        "#,
+    )
+    .bind(&available_acct)
+    .bind(&payout_hold_acct)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    Ok(())
 }
 
 /// Queries available balance inside an active DB transaction (locking the account row to prevent
@@ -1042,8 +1188,10 @@ impl InMemoryLedger {
     pub fn seller_balance(&self, shop_id: &str) -> SellerBalance {
         let pending_acct = account_seller_pending(shop_id);
         let available_acct = account_seller_available(shop_id);
+        let payout_hold_acct = account_seller_payout_hold(shop_id);
         let pending_vnd = self.balance_of(&pending_acct);
         let available_vnd = self.balance_of(&available_acct);
+        let payout_pending_vnd = self.balance_of(&payout_hold_acct);
         let mut settled_credits = 0_i64;
         let mut refund_clawbacks = 0_i64;
         for tx in &self.transactions {
@@ -1063,6 +1211,7 @@ impl InMemoryLedger {
             pending_vnd,
             available_vnd,
             total_earned_vnd: settled_credits - refund_clawbacks,
+            payout_pending_vnd,
         }
     }
 
@@ -2104,5 +2253,357 @@ mod tests {
         assert_eq!(AccountType::Equity.as_str(), "EQUITY");
         assert_eq!(AccountType::Expense.signed_balance(500, 100), 400);
         assert_eq!(AccountType::Equity.signed_balance(100, 500), 400);
+    }
+
+    #[test]
+    fn test_seller_payout_two_step_workflow_invariants_approve_reject_and_guards() {
+        use crate::domain::{
+            validate_payout_decision_input, validate_payout_idempotency_match,
+            validate_payout_request_input, DecideSellerPayoutInput, PayoutDecision,
+            RequestSellerPayoutInput, SellerPayoutRecord,
+        };
+        use chrono::Utc;
+
+        /// In-memory reference harness exercising the exact UC-PAY05 state machine & double-entry
+        /// ledger rules (sufficient balance, idempotency replay, 1 PENDING/shop, approve, reject,
+        /// double-decide rejection, bank readiness).
+        #[derive(Default)]
+        struct InMemoryPayoutEngine {
+            ledger: InMemoryLedger,
+            payouts: Vec<SellerPayoutRecord>,
+        }
+
+        impl InMemoryPayoutEngine {
+            fn request(
+                &mut self,
+                input: RequestSellerPayoutInput,
+                bank_ready: bool,
+            ) -> Result<SellerPayoutRecord> {
+                validate_payout_request_input(&input)?;
+                let shop = input.shop_id.trim();
+                let key = input.idempotency_key.trim();
+
+                if let Some(existing) = self.payouts.iter().find(|p| p.idempotency_key == key) {
+                    validate_payout_idempotency_match(existing, shop, input.amount_vnd)?;
+                    return Ok(existing.clone());
+                }
+                if !bank_ready {
+                    return Err(PaymentError::BankAccountNotReady(
+                        "bank account not verified or locked".into(),
+                    ));
+                }
+                if self
+                    .payouts
+                    .iter()
+                    .any(|p| p.shop_id == shop && p.status == "PENDING")
+                {
+                    return Err(PaymentError::PayoutPendingExists(
+                        "shop already has a pending payout".into(),
+                    ));
+                }
+                let avail = self.ledger.seller_balance(shop).available_vnd;
+                if input.amount_vnd > avail {
+                    return Err(PaymentError::InsufficientBalance {
+                        available_vnd: avail,
+                        requested_vnd: input.amount_vnd,
+                    });
+                }
+
+                let payout = SellerPayoutRecord {
+                    id: Uuid::new_v4(),
+                    shop_id: shop.to_string(),
+                    amount_vnd: input.amount_vnd,
+                    bank_name: "Vietcombank".into(),
+                    bank_account_masked: "****0123".into(),
+                    account_holder_name: "NGUYEN VAN SELLER".into(),
+                    status: "PENDING".into(),
+                    idempotency_key: key.to_string(),
+                    requested_by: input.requested_by_user_id,
+                    decided_by: String::new(),
+                    reject_reason: String::new(),
+                    transfer_ref: String::new(),
+                    created_at: Utc::now(),
+                    decided_at: None,
+                    completed_at: None,
+                };
+                let draft = build_seller_payout_hold_tx(
+                    payout.id,
+                    shop,
+                    input.amount_vnd,
+                    ChannelAttribution::storefront(shop)?,
+                )?;
+                self.ledger.post(&draft)?;
+                self.payouts.push(payout.clone());
+                Ok(payout)
+            }
+
+            fn decide(&mut self, input: DecideSellerPayoutInput) -> Result<SellerPayoutRecord> {
+                let reason = validate_payout_decision_input(&input)?;
+                let payout = self
+                    .payouts
+                    .iter_mut()
+                    .find(|p| p.id == input.payout_id)
+                    .ok_or_else(|| PaymentError::NotFound("payout not found".into()))?;
+                if payout.status != "PENDING" {
+                    return Err(PaymentError::FailedPrecondition(format!(
+                        "payout {} is already {}",
+                        payout.id, payout.status
+                    )));
+                }
+                let ch = ChannelAttribution::storefront(&payout.shop_id)?;
+                let now = Utc::now();
+                match input.decision {
+                    PayoutDecision::Approve => {
+                        let draft = build_seller_payout_approve_tx(
+                            payout.id,
+                            &payout.shop_id,
+                            payout.amount_vnd,
+                            ch,
+                        )?;
+                        self.ledger.post(&draft)?;
+                        payout.status = "COMPLETED".into();
+                        payout.decided_by = input.decided_by_user_id;
+                        payout.transfer_ref = format!("MOCKBANK-{}", Uuid::new_v4());
+                        payout.decided_at = Some(now);
+                        payout.completed_at = Some(now);
+                    }
+                    PayoutDecision::Reject => {
+                        let draft = build_seller_payout_reject_tx(
+                            payout.id,
+                            &payout.shop_id,
+                            payout.amount_vnd,
+                            ch,
+                        )?;
+                        self.ledger.post(&draft)?;
+                        payout.status = "REJECTED".into();
+                        payout.decided_by = input.decided_by_user_id;
+                        payout.reject_reason = reason;
+                        payout.decided_at = Some(now);
+                    }
+                }
+                Ok(payout.clone())
+            }
+        }
+
+        let mut engine = InMemoryPayoutEngine::default();
+        let shop = "shop-payout-test";
+        let sf = ChannelAttribution::storefront(shop).unwrap();
+
+        // Seed 500,000 VND VietQR -> settle 450,000 seller net -> release to seller_available.
+        let pay_id = Uuid::new_v4();
+        engine
+            .ledger
+            .post(&build_vietqr_confirm_tx(pay_id, 500_000, sf.clone()))
+            .unwrap();
+        engine
+            .ledger
+            .post(
+                &build_escrow_settle_tx(
+                    "ord-p1",
+                    shop,
+                    500_000,
+                    0,
+                    450_000,
+                    20_000,
+                    30_000,
+                    sf.clone(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        engine
+            .ledger
+            .post(&build_escrow_release_tx("ord-p1", shop, 450_000, sf).unwrap())
+            .unwrap();
+
+        let bal0 = engine.ledger.seller_balance(shop);
+        assert_eq!(bal0.available_vnd, 450_000);
+        assert_eq!(bal0.payout_pending_vnd, 0);
+        assert_eq!(bal0.total_earned_vnd, 450_000);
+
+        // 1. Unverified / locked bank account -> BankAccountNotReady.
+        let bank_err = engine
+            .request(
+                RequestSellerPayoutInput {
+                    shop_id: shop.into(),
+                    amount_vnd: 100_000,
+                    idempotency_key: "key-bank-unready".into(),
+                    requested_by_user_id: "seller-u1".into(),
+                },
+                false,
+            )
+            .unwrap_err();
+        assert!(matches!(bank_err, PaymentError::BankAccountNotReady(_)));
+
+        // 2. Over-withdrawal -> InsufficientBalance with exact available_vnd.
+        let over_err = engine
+            .request(
+                RequestSellerPayoutInput {
+                    shop_id: shop.into(),
+                    amount_vnd: 450_001,
+                    idempotency_key: "key-over".into(),
+                    requested_by_user_id: "seller-u1".into(),
+                },
+                true,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            over_err,
+            PaymentError::InsufficientBalance {
+                available_vnd: 450_000,
+                requested_vnd: 450_001
+            }
+        ));
+
+        // 3. Valid payout request #1 (200,000 VND) -> PENDING, moves available -> payout_hold.
+        let p1 = engine
+            .request(
+                RequestSellerPayoutInput {
+                    shop_id: shop.into(),
+                    amount_vnd: 200_000,
+                    idempotency_key: "key-p1".into(),
+                    requested_by_user_id: "seller-u1".into(),
+                },
+                true,
+            )
+            .unwrap();
+        assert_eq!(p1.status, "PENDING");
+        let bal_after_req1 = engine.ledger.seller_balance(shop);
+        assert_eq!(bal_after_req1.available_vnd, 250_000);
+        assert_eq!(bal_after_req1.payout_pending_vnd, 200_000);
+        assert_eq!(bal_after_req1.total_earned_vnd, 450_000);
+        let sum1 = engine.ledger.summary();
+        assert!(sum1.is_balanced);
+        assert_eq!(sum1.total_debits_vnd, sum1.total_credits_vnd);
+
+        // 4. Duplicate idempotency key -> returns same payout, zero extra ledger entries.
+        let p1_replay = engine
+            .request(
+                RequestSellerPayoutInput {
+                    shop_id: shop.into(),
+                    amount_vnd: 200_000,
+                    idempotency_key: "key-p1".into(),
+                    requested_by_user_id: "seller-u1".into(),
+                },
+                true,
+            )
+            .unwrap();
+        assert_eq!(p1_replay.id, p1.id);
+        assert_eq!(engine.ledger.seller_balance(shop).available_vnd, 250_000);
+        assert_eq!(
+            engine.ledger.seller_balance(shop).payout_pending_vnd,
+            200_000
+        );
+
+        // 5. Second PENDING payout with new key while p1 is still PENDING -> PayoutPendingExists.
+        let pending_err = engine
+            .request(
+                RequestSellerPayoutInput {
+                    shop_id: shop.into(),
+                    amount_vnd: 50_000,
+                    idempotency_key: "key-p1-second".into(),
+                    requested_by_user_id: "seller-u1".into(),
+                },
+                true,
+            )
+            .unwrap_err();
+        assert!(matches!(pending_err, PaymentError::PayoutPendingExists(_)));
+
+        // 6. Reject without reason -> Validation error.
+        let no_reason_err = engine
+            .decide(DecideSellerPayoutInput {
+                payout_id: p1.id,
+                decision: PayoutDecision::Reject,
+                reason: "   ".into(),
+                decided_by_user_id: "admin-1".into(),
+            })
+            .unwrap_err();
+        assert!(matches!(no_reason_err, PaymentError::Validation(_)));
+
+        // 7. Reject p1 -> REJECTED, restores available_vnd to 450,000 and clears payout_pending_vnd to 0.
+        let p1_rejected = engine
+            .decide(DecideSellerPayoutInput {
+                payout_id: p1.id,
+                decision: PayoutDecision::Reject,
+                reason: "Thông tin tài khoản cần rà soát lại".into(),
+                decided_by_user_id: "admin-1".into(),
+            })
+            .unwrap();
+        assert_eq!(p1_rejected.status, "REJECTED");
+        assert_eq!(
+            p1_rejected.reject_reason,
+            "Thông tin tài khoản cần rà soát lại"
+        );
+        assert!(p1_rejected.decided_at.is_some());
+        let bal_after_reject = engine.ledger.seller_balance(shop);
+        assert_eq!(bal_after_reject.available_vnd, 450_000);
+        assert_eq!(bal_after_reject.payout_pending_vnd, 0);
+        assert_eq!(bal_after_reject.total_earned_vnd, 450_000);
+        assert_eq!(engine.ledger.balance_of(ACCOUNT_GATEWAY_CLEARING), 500_000);
+        assert!(engine.ledger.summary().is_balanced);
+
+        // 8. Deciding an already-REJECTED payout a second time -> FailedPrecondition.
+        let double_reject = engine
+            .decide(DecideSellerPayoutInput {
+                payout_id: p1.id,
+                decision: PayoutDecision::Approve,
+                reason: String::new(),
+                decided_by_user_id: "admin-1".into(),
+            })
+            .unwrap_err();
+        assert!(matches!(double_reject, PaymentError::FailedPrecondition(_)));
+
+        // 9. New payout request #2 (300,000 VND) succeeds now that p1 is no longer PENDING -> Approve.
+        let p2 = engine
+            .request(
+                RequestSellerPayoutInput {
+                    shop_id: shop.into(),
+                    amount_vnd: 300_000,
+                    idempotency_key: "key-p2".into(),
+                    requested_by_user_id: "seller-u1".into(),
+                },
+                true,
+            )
+            .unwrap();
+        assert_eq!(engine.ledger.seller_balance(shop).available_vnd, 150_000);
+        assert_eq!(
+            engine.ledger.seller_balance(shop).payout_pending_vnd,
+            300_000
+        );
+
+        let p2_approved = engine
+            .decide(DecideSellerPayoutInput {
+                payout_id: p2.id,
+                decision: PayoutDecision::Approve,
+                reason: String::new(),
+                decided_by_user_id: "accountant-1".into(),
+            })
+            .unwrap();
+        assert_eq!(p2_approved.status, "COMPLETED");
+        assert!(p2_approved.transfer_ref.starts_with("MOCKBANK-"));
+        assert!(p2_approved.decided_at.is_some());
+        let bal_after_approve = engine.ledger.seller_balance(shop);
+        assert_eq!(bal_after_approve.available_vnd, 150_000);
+        assert_eq!(bal_after_approve.payout_pending_vnd, 0);
+        assert_eq!(bal_after_approve.total_earned_vnd, 450_000);
+        // gateway_clearing started at 500,000 and paid out 300,000 -> 200,000 remaining.
+        assert_eq!(engine.ledger.balance_of(ACCOUNT_GATEWAY_CLEARING), 200_000);
+        let final_sum = engine.ledger.summary();
+        assert!(final_sum.is_balanced);
+        assert_eq!(final_sum.total_debits_vnd, final_sum.total_credits_vnd);
+
+        // 10. Deciding an already-COMPLETED payout a second time -> FailedPrecondition.
+        let double_approve = engine
+            .decide(DecideSellerPayoutInput {
+                payout_id: p2.id,
+                decision: PayoutDecision::Reject,
+                reason: "too late".into(),
+                decided_by_user_id: "accountant-1".into(),
+            })
+            .unwrap_err();
+        assert!(matches!(
+            double_approve,
+            PaymentError::FailedPrecondition(_)
+        ));
     }
 }

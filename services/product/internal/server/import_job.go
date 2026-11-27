@@ -560,7 +560,7 @@ func (s *Server) processValidatingImportJob(ctx context.Context, job store.Produ
 	var validCount, invalidCount int32
 
 	for _, csvRow := range parsed.rows {
-		rowModel := validateImportCSVRow(job.ID, csvRow, catByID, prohibitedSet, rules, seenSKUsInFile, existingShopSKUs)
+		rowModel := validateImportCSVRow(job.ID, job.ShopID, csvRow, catByID, prohibitedSet, rules, seenSKUsInFile, existingShopSKUs)
 		if rowModel.Status == store.ImportRowStatusValid {
 			validCount++
 		} else {
@@ -701,6 +701,12 @@ func (s *Server) confirmSingleImportRow(
 			return newImportRowFailure("INVALID_SLUG", status.Convert(slugErr).Message())
 		}
 		extras.explicitSlug = validatedExplicitSlug
+		if imgErr := validateProductImages(job.ShopID, extras.images); imgErr != nil {
+			return newImportRowFailure("INVALID_PRODUCT_TEXT", status.Convert(imgErr).Message())
+		}
+		if skuImgErr := validateProductImageURL(job.ShopID, "sku image url", extras.imageURL, true); skuImgErr != nil {
+			return newImportRowFailure("INVALID_SKU_TEXT", status.Convert(skuImgErr).Message())
+		}
 
 		modRes, modErr := s.checkProductModeration(ctx, q, curRow.CategoryID, curRow.ProductName, extras.description, productModerationSlug{
 			Name:    curRow.ProductName,
@@ -982,6 +988,7 @@ func isBlankCSVRecord(rec []string) bool {
 
 func validateImportCSVRow(
 	jobID string,
+	shopID string,
 	csvRow parsedCSVRow,
 	catByID map[string]store.Category,
 	prohibitedSet map[string]bool,
@@ -1081,7 +1088,11 @@ func validateImportCSVRow(
 		addErr("INVALID_ATTRIBUTES", extraErr.Error())
 	} else if err := validateProductText(productName, desc, extras.images); err != nil {
 		addErr("INVALID_PRODUCT_TEXT", status.Convert(err).Message())
+	} else if err := validateProductImages(shopID, extras.images); err != nil {
+		addErr("INVALID_PRODUCT_TEXT", status.Convert(err).Message())
 	} else if err := validateSKUText(skuCode, extras.skuName, extras.imageURL, extras.attributes); err != nil {
+		addErr("INVALID_SKU_TEXT", status.Convert(err).Message())
+	} else if err := validateProductImageURL(shopID, "sku image url", extras.imageURL, true); err != nil {
 		addErr("INVALID_SKU_TEXT", status.Convert(err).Message())
 	} else if len(rules) > 0 {
 		modRes := moderation.MatchCompiled(rules, collectProductModerationFields(productName, desc, productModerationSlug{

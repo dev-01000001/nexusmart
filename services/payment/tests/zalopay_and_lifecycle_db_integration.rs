@@ -182,7 +182,15 @@ async fn test_pg_zalopay_full_lifecycle_refunds_seller_balance_and_reconciliatio
     cfg.zalopay.key1 = "it-zalopay-key1".to_string();
     cfg.zalopay.key2 = "it-zalopay-key2".to_string();
 
-    let svc = PaymentService::new(pool.clone(), cfg.clone(), Metrics::new());
+    let svc = PaymentService::new(pool.clone(), cfg.clone(), Metrics::new()).with_bank_provider(
+        std::sync::Arc::new(
+            nexusmart_payment::user_bank::StaticPayoutBankProvider::ready(
+                "Vietcombank",
+                "****0123",
+                "NGUYEN VAN SHOP",
+            ),
+        ),
+    );
     let auth = GrpcAuth::new(TEST_USER_JWT_SECRET, TEST_SVC_JWT_SECRET).unwrap();
     let app = build_router(svc.clone(), auth.clone());
     let grpc = PaymentGrpcServer::new(svc.clone(), auth);
@@ -407,26 +415,85 @@ async fn test_pg_zalopay_full_lifecycle_refunds_seller_balance_and_reconciliatio
     assert_eq!(bal_avail.pending_vnd, 0);
     assert_eq!(bal_avail.available_vnd, 285_000);
 
-    // Seller payout: over-withdrawal rejected, valid partial payout succeeds & idempotent
+    // Seller payout: over-withdrawal rejected, valid partial payout succeeds (PENDING) & idempotent,
+    // second PENDING rejected, approve moves payout_hold -> gateway_clearing, double decide rejected.
     let over_err = svc
-        .request_seller_payout("shop-zp-1", 285_001, "19034567890123", "payout-over")
+        .request_seller_payout(nexusmart_payment::domain::RequestSellerPayoutInput {
+            shop_id: "shop-zp-1".into(),
+            amount_vnd: 285_001,
+            idempotency_key: "payout-over".into(),
+            requested_by_user_id: "seller-zp-1".into(),
+        })
         .await
         .unwrap_err();
     assert!(matches!(over_err, PaymentError::InsufficientBalance { .. }));
 
     let payout1 = svc
-        .request_seller_payout("shop-zp-1", 100_000, "19034567890123", "payout-zp-1")
+        .request_seller_payout(nexusmart_payment::domain::RequestSellerPayoutInput {
+            shop_id: "shop-zp-1".into(),
+            amount_vnd: 100_000,
+            idempotency_key: "payout-zp-1".into(),
+            requested_by_user_id: "seller-zp-1".into(),
+        })
         .await
         .unwrap();
+    assert_eq!(payout1.status, "PENDING");
     assert_eq!(payout1.bank_account_masked, "****0123");
     let payout1_dup = svc
-        .request_seller_payout("shop-zp-1", 100_000, "19034567890123", "payout-zp-1")
+        .request_seller_payout(nexusmart_payment::domain::RequestSellerPayoutInput {
+            shop_id: "shop-zp-1".into(),
+            amount_vnd: 100_000,
+            idempotency_key: "payout-zp-1".into(),
+            requested_by_user_id: "seller-zp-1".into(),
+        })
         .await
         .unwrap();
     assert_eq!(payout1_dup.id, payout1.id);
 
+    let second_pending_err = svc
+        .request_seller_payout(nexusmart_payment::domain::RequestSellerPayoutInput {
+            shop_id: "shop-zp-1".into(),
+            amount_vnd: 50_000,
+            idempotency_key: "payout-zp-2".into(),
+            requested_by_user_id: "seller-zp-1".into(),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        second_pending_err,
+        PaymentError::PayoutPendingExists(_)
+    ));
+
+    let bal_pending_payout = svc.get_seller_balance("shop-zp-1").await.unwrap();
+    assert_eq!(bal_pending_payout.available_vnd, 185_000);
+    assert_eq!(bal_pending_payout.payout_pending_vnd, 100_000);
+
+    let approved = svc
+        .decide_seller_payout(nexusmart_payment::domain::DecideSellerPayoutInput {
+            payout_id: payout1.id,
+            decision: nexusmart_payment::domain::PayoutDecision::Approve,
+            reason: String::new(),
+            decided_by_user_id: "admin-zp-1".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(approved.status, "COMPLETED");
+    assert!(approved.transfer_ref.starts_with("MOCKBANK-"));
+
+    let double_decide = svc
+        .decide_seller_payout(nexusmart_payment::domain::DecideSellerPayoutInput {
+            payout_id: payout1.id,
+            decision: nexusmart_payment::domain::PayoutDecision::Reject,
+            reason: "cannot decide twice".into(),
+            decided_by_user_id: "admin-zp-1".into(),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(double_decide, PaymentError::FailedPrecondition(_)));
+
     let bal_after_payout = svc.get_seller_balance("shop-zp-1").await.unwrap();
     assert_eq!(bal_after_payout.available_vnd, 185_000);
+    assert_eq!(bal_after_payout.payout_pending_vnd, 0);
 
     // -------------------------------------------------------------------------
     // 4. Post-settlement Return Refund on ZaloPay (main clawback model:

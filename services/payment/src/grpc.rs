@@ -10,22 +10,23 @@ use crate::auth::{
     require_payment_read_access, resolve_payment_read_scope, seller_scoped_amount_vnd,
     seller_scoped_order_id, Caller, GrpcAuth, PaymentViewScope, CAP_ESCROW_RELEASE,
     CAP_FEES_PAYMENT_READ, CAP_FEES_PAYMENT_WRITE, CAP_LEDGER_READ, CAP_PAYMENT_METHODS_READ,
-    CAP_PAYMENT_METHODS_WRITE, CAP_RECONCILIATION_WRITE, CAP_REFUNDS_APPROVE, CAP_REFUNDS_CREATE,
-    CAP_REFUNDS_READ, CAP_REFUNDS_SETTLE,
+    CAP_PAYMENT_METHODS_WRITE, CAP_PAYOUTS_DECIDE, CAP_PAYOUTS_READ, CAP_RECONCILIATION_WRITE,
+    CAP_REFUNDS_APPROVE, CAP_REFUNDS_CREATE, CAP_REFUNDS_READ, CAP_REFUNDS_SETTLE,
 };
 use crate::domain::{
-    normalize_cod_carrier_code, parse_and_validate_reconciliation_date,
-    parse_reconciliation_run_type_filter, parse_seller_ledger_account_filter,
-    validate_cod_reconciliation_rows, validate_user_refund_idempotency_key,
-    AdjustCodShippingFeeInput, CodReconciliationRowInput, CreatePaymentInput, CreateRefundInput,
-    DecideRefundApprovalInput, GetFeeConfigFilter, ImportCodReconciliationInput,
-    ListReconciliationRunsFilter, ListRefundsFilter, ListSellerLedgerFilter,
-    PaymentFeeConfigRecord, PaymentMethod as DomainMethod, PaymentMethodConfigRecord,
-    PaymentWithAllocations, ReconciliationActionKind, ReconciliationItemRecord,
+    normalize_cod_carrier_code, normalize_payout_status, parse_and_validate_reconciliation_date,
+    parse_payout_status_filter, parse_reconciliation_run_type_filter,
+    parse_seller_ledger_account_filter, validate_cod_reconciliation_rows,
+    validate_user_refund_idempotency_key, AdjustCodShippingFeeInput, CodReconciliationRowInput,
+    CreatePaymentInput, CreateRefundInput, DecideRefundApprovalInput, DecideSellerPayoutInput,
+    GetFeeConfigFilter, ImportCodReconciliationInput, ListReconciliationRunsFilter,
+    ListRefundsFilter, ListSellerLedgerFilter, ListSellerPayoutsFilter, PaymentFeeConfigRecord,
+    PaymentMethod as DomainMethod, PaymentMethodConfigRecord, PaymentWithAllocations,
+    PayoutDecision, ReconciliationActionKind, ReconciliationItemRecord,
     ReconciliationQueueItem as DomainQueueItem, ReconciliationRunRecord, RefundRecord,
-    ResolveReconciliationInput, SalesChannel, SellerLedgerEntryRecord, SetFeeConfigInput,
-    SettleRefundInput, ShopAllocationInput, SubmitRefundBankAccountInput,
-    UpdatePaymentMethodConfigInput,
+    RequestSellerPayoutInput, ResolveReconciliationInput, SalesChannel, SellerLedgerEntryRecord,
+    SellerPayoutRecord, SetFeeConfigInput, SettleRefundInput, ShopAllocationInput,
+    SubmitRefundBankAccountInput, UpdatePaymentMethodConfigInput,
 };
 use crate::service::PaymentService;
 use crate::telemetry::{attach_parent_context, extract_context_from_grpc};
@@ -40,20 +41,22 @@ use pb::{
     AccountBalance, AdjustCodShippingFeeRequest, AdjustCodShippingFeeResponse,
     CancelPaymentRequest, CancelPaymentResponse, CreatePaymentRequest, CreatePaymentResponse,
     CreateRefundRequest, CreateRefundResponse, DecideRefundApprovalRequest,
-    DecideRefundApprovalResponse, GetFeeConfigRequest, GetFeeConfigResponse,
-    GetLedgerSummaryRequest, GetLedgerSummaryResponse, GetPaymentMethodConfigsRequest,
-    GetPaymentMethodConfigsResponse, GetPaymentRequest, GetPaymentResponse,
-    GetSellerBalanceRequest, GetSellerBalanceResponse, ImportCodReconciliationRequest,
-    ImportCodReconciliationResponse, ListReconciliationQueueRequest,
-    ListReconciliationQueueResponse, ListReconciliationReportsRequest,
-    ListReconciliationReportsResponse, ListReconciliationRunsRequest,
-    ListReconciliationRunsResponse, ListRefundsRequest, ListRefundsResponse,
-    ListSellerLedgerRequest, ListSellerLedgerResponse, Payment, PaymentFeeConfigItem,
+    DecideRefundApprovalResponse, DecideSellerPayoutRequest, DecideSellerPayoutResponse,
+    GetFeeConfigRequest, GetFeeConfigResponse, GetLedgerSummaryRequest, GetLedgerSummaryResponse,
+    GetPaymentMethodConfigsRequest, GetPaymentMethodConfigsResponse, GetPaymentRequest,
+    GetPaymentResponse, GetSellerBalanceRequest, GetSellerBalanceResponse,
+    ImportCodReconciliationRequest, ImportCodReconciliationResponse,
+    ListReconciliationQueueRequest, ListReconciliationQueueResponse,
+    ListReconciliationReportsRequest, ListReconciliationReportsResponse,
+    ListReconciliationRunsRequest, ListReconciliationRunsResponse, ListRefundsRequest,
+    ListRefundsResponse, ListSellerLedgerRequest, ListSellerLedgerResponse,
+    ListSellerPayoutsRequest, ListSellerPayoutsResponse, Payment, PaymentFeeConfigItem,
     PaymentMethod, PaymentMethodConfig, PaymentStatus, ReconciliationAction, ReconciliationItem,
     ReconciliationQueueItem, ReconciliationReportSummary, ReconciliationRunSummary,
     ReconciliationStatus, Refund, RefundStatus, ReleaseEscrowRequest, ReleaseEscrowResponse,
-    ResolveReconciliationItemRequest, ResolveReconciliationItemResponse, RunReconciliationRequest,
-    RunReconciliationResponse, SellerLedgerEntry, SetFeeConfigRequest, SetFeeConfigResponse,
+    RequestSellerPayoutRequest, RequestSellerPayoutResponse, ResolveReconciliationItemRequest,
+    ResolveReconciliationItemResponse, RunReconciliationRequest, RunReconciliationResponse,
+    SellerLedgerEntry, SellerPayout, SetFeeConfigRequest, SetFeeConfigResponse,
     SettleRefundRequest, SettleRefundResponse, ShopAllocation, SubmitRefundBankAccountRequest,
     SubmitRefundBankAccountResponse, UpdatePaymentMethodConfigRequest,
     UpdatePaymentMethodConfigResponse,
@@ -524,6 +527,7 @@ impl PaymentServiceTrait for PaymentGrpcServer {
                 pending_vnd: bal.pending_vnd,
                 available_vnd: bal.available_vnd,
                 total_earned_vnd: bal.total_earned_vnd,
+                payout_pending_vnd: bal.payout_pending_vnd,
             }))
         }
         .instrument(span.clone())
@@ -1357,6 +1361,150 @@ impl PaymentServiceTrait for PaymentGrpcServer {
         );
         result
     }
+
+    async fn request_seller_payout(
+        &self,
+        request: Request<RequestSellerPayoutRequest>,
+    ) -> Result<Response<RequestSellerPayoutResponse>, Status> {
+        let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("RequestSellerPayout", &request);
+        let caller = CallerAuth::from_request(&self.auth, &request, "RequestSellerPayout");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            if caller.caller.is_service
+                || caller.caller.role != "seller"
+                || caller.caller.shop_id.is_empty()
+            {
+                return Err(Status::permission_denied(
+                    "forbidden: RequestSellerPayout requires seller role with shop_id",
+                ));
+            }
+            let req_shop = req.shop_id.trim();
+            if req_shop != caller.caller.shop_id {
+                return Err(Status::permission_denied(
+                    "forbidden: seller can only request payout for own shop",
+                ));
+            }
+
+            let payout = self
+                .service
+                .request_seller_payout(RequestSellerPayoutInput {
+                    shop_id: caller.caller.shop_id.clone(),
+                    amount_vnd: req.amount_vnd,
+                    idempotency_key: req.idempotency_key,
+                    requested_by_user_id: caller.caller.user_id.clone(),
+                })
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            Ok(Response::new(RequestSellerPayoutResponse {
+                payout: Some(to_proto_seller_payout(payout)),
+            }))
+        }
+        .instrument(span.clone())
+        .await;
+
+        self.finish_rpc(&span, "RequestSellerPayout", start, &trace_id, &result);
+        result
+    }
+
+    async fn list_seller_payouts(
+        &self,
+        request: Request<ListSellerPayoutsRequest>,
+    ) -> Result<Response<ListSellerPayoutsResponse>, Status> {
+        let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("ListSellerPayouts", &request);
+        let caller = CallerAuth::from_request(&self.auth, &request, "ListSellerPayouts");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            let target_shop_id = if caller.has_capability(CAP_PAYOUTS_READ) {
+                non_empty(&req.shop_id).map(ToString::to_string)
+            } else if !caller.caller.is_service
+                && caller.caller.role == "seller"
+                && !caller.caller.shop_id.is_empty()
+            {
+                let req_shop = req.shop_id.trim();
+                if req_shop != caller.caller.shop_id {
+                    return Err(Status::permission_denied(
+                        "forbidden: seller can only list own shop payouts",
+                    ));
+                }
+                Some(caller.caller.shop_id.clone())
+            } else {
+                return Err(Status::permission_denied(
+                    "forbidden: ListSellerPayouts requires seller or payouts.read capability",
+                ));
+            };
+
+            let status =
+                parse_payout_status_filter(&req.status).map_err(|e| e.to_tonic_status())?;
+            let out = self
+                .service
+                .list_seller_payouts(ListSellerPayoutsFilter {
+                    shop_id: target_shop_id,
+                    status,
+                    page: req.page,
+                    page_size: req.page_size,
+                })
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            Ok(Response::new(ListSellerPayoutsResponse {
+                items: out.items.into_iter().map(to_proto_seller_payout).collect(),
+                page: out.page,
+                page_size: out.page_size,
+                total: out.total,
+            }))
+        }
+        .instrument(span.clone())
+        .await;
+
+        self.finish_rpc(&span, "ListSellerPayouts", start, &trace_id, &result);
+        result
+    }
+
+    async fn decide_seller_payout(
+        &self,
+        request: Request<DecideSellerPayoutRequest>,
+    ) -> Result<Response<DecideSellerPayoutResponse>, Status> {
+        let start = Instant::now();
+        let (span, trace_id) = start_rpc_span("DecideSellerPayout", &request);
+        let caller = CallerAuth::from_request(&self.auth, &request, "DecideSellerPayout");
+        let req = request.into_inner();
+
+        let result = async {
+            let caller = caller?;
+            caller.require_capability(CAP_PAYOUTS_DECIDE, "DecideSellerPayout")?;
+
+            let payout_id = parse_required_uuid(&req.payout_id, "payout_id")
+                .map_err(|e| e.to_tonic_status())?;
+            let decision = PayoutDecision::parse(&req.decision).map_err(|e| e.to_tonic_status())?;
+
+            let updated = self
+                .service
+                .decide_seller_payout(DecideSellerPayoutInput {
+                    payout_id,
+                    decision,
+                    reason: req.reason,
+                    decided_by_user_id: caller.caller.user_id.clone(),
+                })
+                .await
+                .map_err(|e| e.to_tonic_status())?;
+
+            Ok(Response::new(DecideSellerPayoutResponse {
+                payout: Some(to_proto_seller_payout(updated)),
+            }))
+        }
+        .instrument(span.clone())
+        .await;
+
+        self.finish_rpc(&span, "DecideSellerPayout", start, &trace_id, &result);
+        result
+    }
 }
 
 // =============================================================================
@@ -1756,6 +1904,24 @@ fn to_proto_refund(r: RefundRecord, include_bank_account_number: bool) -> Refund
         approval_note: r.approval_note.unwrap_or_default(),
         provider_m_refund_id: r.provider_m_refund_id.unwrap_or_default(),
         provider_status: r.provider_status.unwrap_or_default(),
+    }
+}
+
+fn to_proto_seller_payout(p: SellerPayoutRecord) -> SellerPayout {
+    SellerPayout {
+        id: p.id.to_string(),
+        shop_id: p.shop_id,
+        amount_vnd: p.amount_vnd,
+        status: normalize_payout_status(&p.status),
+        bank_name: p.bank_name,
+        bank_account_masked: p.bank_account_masked,
+        account_holder_name: p.account_holder_name,
+        reject_reason: p.reject_reason,
+        transfer_ref: p.transfer_ref,
+        requested_by: p.requested_by,
+        decided_by: p.decided_by,
+        created_at: Some(chrono_to_proto(p.created_at)),
+        decided_at: p.decided_at.or(p.completed_at).map(chrono_to_proto),
     }
 }
 
@@ -4824,6 +4990,231 @@ mod tests {
         let prom = metrics.render_prometheus();
         assert!(
             prom.contains("method=\"/nexusmart.payment.v1.PaymentService/AdjustCODShippingFee\"")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_seller_payout_rpcs_auth_rbac_and_validation() {
+        let (server, _metrics) = test_grpc_server();
+
+        let with_role = |sub: &str, role: &str, shop_id: &str| {
+            let tok = crate::auth::sign_hs256(
+                "grpc-test-user-key",
+                serde_json::json!({
+                    "sub": sub,
+                    "role": role,
+                    "shop_id": shop_id,
+                    "exp": Utc::now().timestamp() + 60,
+                }),
+            );
+            move |mut req: Request<RequestSellerPayoutRequest>| {
+                req.metadata_mut().insert(
+                    "authorization",
+                    MetadataValue::try_from(format!("Bearer {tok}")).unwrap(),
+                );
+                req
+            }
+        };
+
+        // 1. RequestSellerPayout: buyer & admin & other-shop seller & empty-shop seller -> PermissionDenied.
+        let buyer_req = with_role("b1", "buyer", "")(Request::new(RequestSellerPayoutRequest {
+            shop_id: "shop-a".into(),
+            amount_vnd: 100_000,
+            idempotency_key: "k-1".into(),
+            requested_by_user_id: "b1".into(),
+        }));
+        assert_eq!(
+            server
+                .request_seller_payout(buyer_req)
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+
+        let other_shop_req =
+            with_role("s1", "seller", "shop-a")(Request::new(RequestSellerPayoutRequest {
+                shop_id: "shop-b".into(),
+                amount_vnd: 100_000,
+                idempotency_key: "k-2".into(),
+                requested_by_user_id: "s1".into(),
+            }));
+        assert_eq!(
+            server
+                .request_seller_payout(other_shop_req)
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+
+        let empty_shop_req =
+            with_role("s1", "seller", "shop-a")(Request::new(RequestSellerPayoutRequest {
+                shop_id: "".into(),
+                amount_vnd: 100_000,
+                idempotency_key: "k-3".into(),
+                requested_by_user_id: "s1".into(),
+            }));
+        assert_eq!(
+            server
+                .request_seller_payout(empty_shop_req)
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+
+        // Seller own shop with invalid amount / empty key -> InvalidArgument before touching DB.
+        let zero_amt_req =
+            with_role("s1", "seller", "shop-a")(Request::new(RequestSellerPayoutRequest {
+                shop_id: "shop-a".into(),
+                amount_vnd: 0,
+                idempotency_key: "k-4".into(),
+                requested_by_user_id: "s1".into(),
+            }));
+        assert_eq!(
+            server
+                .request_seller_payout(zero_amt_req)
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::InvalidArgument
+        );
+
+        let empty_key_req =
+            with_role("s1", "seller", "shop-a")(Request::new(RequestSellerPayoutRequest {
+                shop_id: "shop-a".into(),
+                amount_vnd: 100_000,
+                idempotency_key: "   ".into(),
+                requested_by_user_id: "s1".into(),
+            }));
+        assert_eq!(
+            server
+                .request_seller_payout(empty_key_req)
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::InvalidArgument
+        );
+
+        // 2. ListSellerPayouts: seller with empty shop_id or another shop_id -> PermissionDenied;
+        //    buyer / moderator / cskh -> PermissionDenied; ops/accountant/admin/super_admin allowed.
+        let make_list_req = |role: &str, shop_claim: &str, req_shop: &str, status: &str| {
+            let tok = crate::auth::sign_hs256(
+                "grpc-test-user-key",
+                serde_json::json!({
+                    "sub": format!("u-{role}"),
+                    "role": role,
+                    "shop_id": shop_claim,
+                    "exp": Utc::now().timestamp() + 60,
+                }),
+            );
+            let mut req = Request::new(ListSellerPayoutsRequest {
+                shop_id: req_shop.into(),
+                status: status.into(),
+                page: 1,
+                page_size: 20,
+            });
+            req.metadata_mut().insert(
+                "authorization",
+                MetadataValue::try_from(format!("Bearer {tok}")).unwrap(),
+            );
+            req
+        };
+
+        assert_eq!(
+            server
+                .list_seller_payouts(make_list_req("seller", "shop-a", "", ""))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            server
+                .list_seller_payouts(make_list_req("seller", "shop-a", "shop-b", ""))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        for denied_role in ["buyer", "moderator", "cskh"] {
+            assert_eq!(
+                server
+                    .list_seller_payouts(make_list_req(denied_role, "", "", ""))
+                    .await
+                    .unwrap_err()
+                    .code(),
+                tonic::Code::PermissionDenied,
+                "role={denied_role} must be denied ListSellerPayouts"
+            );
+        }
+        // Admin with invalid status -> InvalidArgument (proving auth passed for empty shop_id).
+        for allowed_role in ["super_admin", "admin", "accountant", "ops"] {
+            assert_eq!(
+                server
+                    .list_seller_payouts(make_list_req(allowed_role, "", "", "BAD_STATUS"))
+                    .await
+                    .unwrap_err()
+                    .code(),
+                tonic::Code::InvalidArgument,
+                "role={allowed_role} should pass auth on ListSellerPayouts"
+            );
+        }
+
+        // 3. DecideSellerPayout: only super_admin, admin, accountant; ops/cskh/moderator/seller/buyer denied.
+        let make_decide_req = |role: &str, payout_id: &str, decision: &str, reason: &str| {
+            let tok = crate::auth::sign_hs256(
+                "grpc-test-user-key",
+                serde_json::json!({
+                    "sub": format!("u-{role}"),
+                    "role": role,
+                    "shop_id": "",
+                    "exp": Utc::now().timestamp() + 60,
+                }),
+            );
+            let mut req = Request::new(DecideSellerPayoutRequest {
+                payout_id: payout_id.into(),
+                decision: decision.into(),
+                reason: reason.into(),
+                decided_by_user_id: String::new(),
+            });
+            req.metadata_mut().insert(
+                "authorization",
+                MetadataValue::try_from(format!("Bearer {tok}")).unwrap(),
+            );
+            req
+        };
+
+        let sample_id = Uuid::new_v4().to_string();
+        for denied_role in ["ops", "cskh", "moderator", "seller", "buyer"] {
+            assert_eq!(
+                server
+                    .decide_seller_payout(make_decide_req(denied_role, &sample_id, "APPROVE", ""))
+                    .await
+                    .unwrap_err()
+                    .code(),
+                tonic::Code::PermissionDenied,
+                "role={denied_role} must be denied DecideSellerPayout"
+            );
+        }
+        // Accountant with REJECT and empty reason -> InvalidArgument.
+        assert_eq!(
+            server
+                .decide_seller_payout(make_decide_req("accountant", &sample_id, "REJECT", "   "))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::InvalidArgument
+        );
+        // Admin with invalid decision -> InvalidArgument.
+        assert_eq!(
+            server
+                .decide_seller_payout(make_decide_req("admin", &sample_id, "MAYBE", ""))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::InvalidArgument
         );
     }
 }

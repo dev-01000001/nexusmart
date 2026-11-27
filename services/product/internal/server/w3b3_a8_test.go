@@ -647,7 +647,7 @@ func TestW3B3_A8_CSVImport_RowTextLimitsAndOneActiveJob(t *testing.T) {
 	row := func(name, sku, attrs, images string) string {
 		return fmt.Sprintf("%s,%s,%s,100000,5,\"%s\",%s\n", name, sku, catID, strings.ReplaceAll(attrs, `"`, `""`), images)
 	}
-	manyImages := strings.TrimSuffix(strings.Repeat("https://cdn.example/a.jpg|", maxProductImages+1), "|")
+	manyImages := strings.TrimSuffix(strings.Repeat("/products/a.jpg|", maxProductImages+1), "|")
 	csvBody := "product_name,sku_code,category_id,price_vnd,stock,attributes,images\n" +
 		row("SP tốt", "LIM-1", `{"color":"Đen"}`, "") +
 		row("SP NUL", "LIM-2", `{"color":"a\u0000b"}`, "") +

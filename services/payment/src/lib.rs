@@ -8,6 +8,7 @@ pub mod ledger;
 pub mod metrics;
 pub mod service;
 pub mod telemetry;
+pub mod user_bank;
 pub mod vietqr;
 pub mod webhook_security;
 pub mod workers;
