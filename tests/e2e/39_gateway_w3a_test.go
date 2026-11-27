@@ -428,7 +428,7 @@ func TestE2E_GatewayW3A(t *testing.T) {
 			CategoryID:  catID,
 			Name:        "GW W3A Pending Item " + env.runID,
 			Description: "Unapproved product for D8 PENDING filter check",
-			Images:      []string{"https://sandbox.nexusmart.local/img/pending.png"},
+			Images:      []string{"/products/ao-thun-cotton-trang.png"},
 			SKUs: []SKUInputDTO{
 				{
 					SKUCode:     env.uniqueCode("PEND"),

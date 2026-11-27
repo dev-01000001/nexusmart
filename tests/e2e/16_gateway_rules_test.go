@@ -71,7 +71,7 @@ func TestE2E_GatewayRules(t *testing.T) {
 			CategoryID:  catOut.Category.ID,
 			Name:        "E2E GW Mask Product " + env.runID,
 			Description: "temp product for internal error masking check",
-			Images:      []string{"https://sandbox.nexusmart.local/img/p1.png"},
+			Images:      []string{"/products/ao-thun-cotton-trang.png"},
 			SKUs: []SKUInputDTO{
 				{
 					SKUCode:     env.uniqueCode("GWMSK"),
@@ -126,7 +126,7 @@ func TestE2E_GatewayRules(t *testing.T) {
 		CategoryID:  cat.ID,
 		Name:        "E2E GW Pending Visibility " + env.runID,
 		Description: "product used for CAT-B2 and admin audit verification",
-		Images:      []string{"https://sandbox.nexusmart.local/img/p1.png"},
+		Images:      []string{"/products/ao-thun-cotton-trang.png"},
 		SKUs: []SKUInputDTO{
 			{
 				SKUCode:     env.uniqueCode("GWPND"),

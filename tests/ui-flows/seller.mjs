@@ -262,21 +262,29 @@ export async function buildSellerFlows({ browser, port }) {
           .fill(
             "Sản phẩm kiểm thử tự động QA-S9 cho bộ kiểm chức năng giao diện.",
           );
-        const firstImgBtn = page
-          .getByRole("radio", { name: /Chọn ảnh/i })
-          .or(page.getByRole("button", { name: /Chọn ảnh/i }))
+        const galleryBtn = page
+          .getByRole("button", { name: /Thư viện ảnh mẫu/i })
           .first();
-        if (await firstImgBtn.isVisible().catch(() => false)) {
-          await firstImgBtn.click();
+        if (await galleryBtn.isVisible().catch(() => false)) {
+          await galleryBtn.click();
+          const sampleBtn = page
+            .getByRole("button", { name: /Thêm Mẫu minh họa 1/i })
+            .first();
+          await sampleBtn.waitFor({ state: "visible", timeout: 5_000 });
+          await sampleBtn.click();
         }
-        const priceInput = page.getByLabel(/Đơn giá/i).first();
-        await priceInput.fill("199000");
-        const stockInput = page.getByLabel(/Tồn kho/i).first();
-        await stockInput.fill("10");
-        const weightInput = page.getByLabel(/Khối lượng/i).first();
-        if (await weightInput.isVisible().catch(() => false)) {
-          await weightInput.fill("250");
-        }
+        const skuRow = page
+          .getByRole("row")
+          .filter({ has: page.getByRole("textbox", { name: /^Mã SKU/i }) })
+          .first();
+        await skuRow.waitFor({ state: "visible", timeout: 8_000 });
+        await skuRow
+          .getByRole("spinbutton", { name: /^Đơn giá/i })
+          .fill("199000");
+        await skuRow.getByRole("spinbutton", { name: /^Tồn kho/i }).fill("10");
+        await skuRow
+          .getByRole("spinbutton", { name: /^Khối lượng/i })
+          .fill("250");
 
         const submitBtn = page
           .getByRole("button", {

@@ -51,10 +51,10 @@ type payoutListResp struct {
 
 type payoutErrorEnvelope struct {
 	Error struct {
-		Code         string `json:"code"`
-		Message      string `json:"message"`
-		AvailableVND *int64 `json:"available_vnd"`
+		Code    string `json:"code"`
+		Message string `json:"message"`
 	} `json:"error"`
+	AvailableVND *int64 `json:"available_vnd"`
 }
 
 func payoutGetSellerBalance(t *testing.T, env *testEnv, seller *sellerFixture) payoutSellerBalanceResp {
@@ -189,9 +189,9 @@ func TestE2E_SellerPayouts_TwoStepFlow_BankChecks_And_RBAC(t *testing.T) {
 	if err := DecodeJSON(insuffResp, &insuffErr); err != nil {
 		t.Fatalf("decode insufficient balance error: %v", err)
 	}
-	if insuffErr.Error.Code != "INSUFFICIENT_BALANCE" || insuffErr.Error.AvailableVND == nil || *insuffErr.Error.AvailableVND != wantSellerNet {
+	if insuffErr.Error.Code != "INSUFFICIENT_BALANCE" || insuffErr.AvailableVND == nil || *insuffErr.AvailableVND != wantSellerNet {
 		t.Fatalf("expected INSUFFICIENT_BALANCE with available_vnd=%d, got code=%q avail=%v body=%s",
-			wantSellerNet, insuffErr.Error.Code, insuffErr.Error.AvailableVND, string(insuffResp.Body))
+			wantSellerNet, insuffErr.Error.Code, insuffErr.AvailableVND, string(insuffResp.Body))
 	}
 
 	// 5. RBAC checks (REST & direct gRPC).

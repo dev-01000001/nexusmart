@@ -498,7 +498,7 @@ func TestNotificationW2B(t *testing.T) {
 			CategoryID:  cat.ID,
 			Name:        "Sản phẩm kiểm duyệt W2B " + env.runID,
 			Description: "Cross-service product.reviewed test",
-			Images:      []string{"https://sandbox.nexusmart.local/img/w2b.png"},
+			Images:      []string{"/products/ao-thun-cotton-trang.png"},
 			SKUs: []SKUInputDTO{{
 				SKUCode:     skuCode,
 				Name:        "Mặc định",

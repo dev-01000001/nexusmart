@@ -64,7 +64,7 @@ func prodW3ACreateProductREST(t *testing.T, env *testEnv, seller *sellerFixture,
 		CategoryID:  catID,
 		Name:        name,
 		Description: "W3A E2E " + name,
-		Images:      []string{"https://sandbox.nexusmart.local/img/w3a.png"},
+		Images:      []string{"/products/ao-thun-cotton-trang.png"},
 		SKUs:        skus,
 	}, http.StatusCreated, http.StatusOK)
 	var out ProductResponse
@@ -99,8 +99,8 @@ func TestE2E_ProductW3A_HiddenSKURedactionAndListProductsBySKUIDs(t *testing.T) 
 
 		// Active product with 1 active SKU and 1 deactivated SKU.
 		actProd := prodW3ACreateProductREST(t, env, seller1, cat.ID, "W3A Active "+tag, []SKUInputDTO{
-			{SKUCode: tag + "-ACT", Name: "Active", Attributes: map[string]string{"color": "blue"}, PriceVND: 210000, Stock: 10, WeightGrams: 250, ImageURL: "https://sandbox.nexusmart.local/img/act.png"},
-			{SKUCode: tag + "-OFF", Name: "Deactivated", Attributes: map[string]string{"color": "red"}, PriceVND: 220000, Stock: 8, WeightGrams: 260, ImageURL: "https://sandbox.nexusmart.local/img/off.png"},
+			{SKUCode: tag + "-ACT", Name: "Active", Attributes: map[string]string{"color": "blue"}, PriceVND: 210000, Stock: 10, WeightGrams: 250, ImageURL: "/products/ao-thun-cotton-xanh-than.png"},
+			{SKUCode: tag + "-OFF", Name: "Deactivated", Attributes: map[string]string{"color": "red"}, PriceVND: 220000, Stock: 8, WeightGrams: 260, ImageURL: "/products/ao-thun-cotton-xam-da.png"},
 		})
 		prodW3AReviewProductREST(t, env, adminTok, actProd.ID, "APPROVE", "")
 
@@ -120,26 +120,26 @@ func TestE2E_ProductW3A_HiddenSKURedactionAndListProductsBySKUIDs(t *testing.T) 
 			seller1.AccessToken, nil, prodW3AUpdateProductReq{
 				SKUs: []prodW3AUpdateSKUInput{{
 					ID: skuAct.ID, SKUCode: skuAct.SKUCode, Name: skuAct.Name, Attributes: map[string]string{"color": "blue"},
-					PriceVND: 210000, Stock: 10, WeightGrams: 250, ImageURL: "https://sandbox.nexusmart.local/img/act.png",
+					PriceVND: 210000, Stock: 10, WeightGrams: 250, ImageURL: "/products/ao-thun-cotton-xanh-than.png",
 				}},
 			}, http.StatusOK)
 
 		// PENDING product.
 		pendProd := prodW3ACreateProductREST(t, env, seller1, cat.ID, "W3A Pending "+tag, []SKUInputDTO{
-			{SKUCode: tag + "-PEND", Name: "Pend", PriceVND: 230000, Stock: 6, WeightGrams: 200, ImageURL: "https://sandbox.nexusmart.local/img/pend.png"},
+			{SKUCode: tag + "-PEND", Name: "Pend", PriceVND: 230000, Stock: 6, WeightGrams: 200, ImageURL: "/products/ao-polo-pique-kem.png"},
 		})
 		skuPend := pendProd.SKUs[0]
 
 		// REJECTED product.
 		rejProd := prodW3ACreateProductREST(t, env, seller1, cat.ID, "W3A Rejected "+tag, []SKUInputDTO{
-			{SKUCode: tag + "-REJ", Name: "Rej", PriceVND: 240000, Stock: 6, WeightGrams: 200, ImageURL: "https://sandbox.nexusmart.local/img/rej.png"},
+			{SKUCode: tag + "-REJ", Name: "Rej", PriceVND: 240000, Stock: 6, WeightGrams: 200, ImageURL: "/products/ao-polo-det-kim-den.png"},
 		})
 		prodW3AReviewProductREST(t, env, adminTok, rejProd.ID, "REJECT", "E2E D2 reject")
 		skuRej := rejProd.SKUs[0]
 
 		// HIDDEN product.
 		hidProd := prodW3ACreateProductREST(t, env, seller1, cat.ID, "W3A Hidden "+tag, []SKUInputDTO{
-			{SKUCode: tag + "-HID", Name: "Hid", PriceVND: 250000, Stock: 6, WeightGrams: 200, ImageURL: "https://sandbox.nexusmart.local/img/hid.png"},
+			{SKUCode: tag + "-HID", Name: "Hid", PriceVND: 250000, Stock: 6, WeightGrams: 200, ImageURL: "/products/quan-short-daily-be.png"},
 		})
 		prodW3AReviewProductREST(t, env, adminTok, hidProd.ID, "APPROVE", "")
 		env.mustDoJSON(t, http.MethodPut, fmt.Sprintf("/api/v1/seller/products/%s", url.PathEscape(hidProd.ID)),
@@ -148,7 +148,7 @@ func TestE2E_ProductW3A_HiddenSKURedactionAndListProductsBySKUIDs(t *testing.T) 
 
 		// Soft-deleted product.
 		delProd := prodW3ACreateProductREST(t, env, seller1, cat.ID, "W3A Deleted "+tag, []SKUInputDTO{
-			{SKUCode: tag + "-DEL", Name: "Del", PriceVND: 260000, Stock: 6, WeightGrams: 200, ImageURL: "https://sandbox.nexusmart.local/img/del.png"},
+			{SKUCode: tag + "-DEL", Name: "Del", PriceVND: 260000, Stock: 6, WeightGrams: 200, ImageURL: "/products/ao-khoac-gio-xam-tro.png"},
 		})
 		prodW3AReviewProductREST(t, env, adminTok, delProd.ID, "APPROVE", "")
 		env.mustDoJSON(t, http.MethodDelete, fmt.Sprintf("/api/v1/seller/products/%s", url.PathEscape(delProd.ID)),

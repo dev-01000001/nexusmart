@@ -90,7 +90,7 @@ func w3b41HideProduct(t *testing.T, env *testEnv, seller *sellerFixture, prod Pr
 		"category_id": prod.CategoryID,
 		"name":        prod.Name,
 		"description": prod.Description,
-		"images":      []string{"https://sandbox.nexusmart.local/img/p1.png"},
+		"images":      []string{"/products/ao-thun-cotton-trang.png"},
 		"status":      "HIDDEN",
 		"skus":        skus,
 	}, http.StatusOK)
@@ -681,7 +681,7 @@ func TestE2E_W3B_BannedKeywordsProhibitedCategoriesAndRescan(t *testing.T) {
 			CategoryID:  childOut.Category.ID,
 			Name:        "Product In Prohibited Subtree",
 			Description: "Clean text",
-			Images:      []string{"https://sandbox.nexusmart.local/img/p1.png"},
+			Images:      []string{"/products/ao-thun-cotton-trang.png"},
 			SKUs:        []SKUInputDTO{{SKUCode: env.uniqueCode("PRB"), Name: "S", PriceVND: 100000, Stock: 5, WeightGrams: 200}},
 		}, http.StatusBadRequest)
 		w3b41AssertErrorCode(t, "create product in prohibited subtree", badCreate, "PROHIBITED_CATEGORY")
@@ -692,7 +692,7 @@ func TestE2E_W3B_BannedKeywordsProhibitedCategoriesAndRescan(t *testing.T) {
 			"category_id": childOut.Category.ID,
 			"name":        cleanProd.Name,
 			"description": cleanProd.Description,
-			"images":      []string{"https://sandbox.nexusmart.local/img/p1.png"},
+			"images":      []string{"/products/ao-thun-cotton-trang.png"},
 			"skus": []map[string]any{{
 				"id": cleanSKU.ID, "sku_code": cleanSKU.SKUCode, "name": cleanSKU.Name,
 				"price_vnd": cleanSKU.PriceVND, "stock": cleanSKU.Stock, "weight_grams": cleanSKU.WeightGrams,
@@ -754,7 +754,7 @@ func TestE2E_W3B_BannedKeywordsProhibitedCategoriesAndRescan(t *testing.T) {
 			CategoryID:  cat.ID,
 			Name:        "Hàng th.u.0.c c.a.m " + tag,
 			Description: "Mô tả thử nghiệm",
-			Images:      []string{"https://sandbox.nexusmart.local/img/p1.png"},
+			Images:      []string{"/products/ao-thun-cotton-trang.png"},
 			SKUs:        []SKUInputDTO{{SKUCode: env.uniqueCode("EVD"), Name: "M", PriceVND: 100000, Stock: 5, WeightGrams: 200}},
 		}, http.StatusBadRequest)
 		w3b41AssertErrorCode(t, "obfuscated BLOCK keyword", evadeResp, "BANNED_CONTENT")
@@ -770,7 +770,7 @@ func TestE2E_W3B_BannedKeywordsProhibitedCategoriesAndRescan(t *testing.T) {
 			"category_id": cat.ID,
 			"name":        cleanProd.Name,
 			"description": "Quảng cáo " + reviewTerm + " đặc biệt",
-			"images":      []string{"https://sandbox.nexusmart.local/img/p1.png"},
+			"images":      []string{"/products/ao-thun-cotton-trang.png"},
 			"skus": []map[string]any{{
 				"id": cleanSKU.ID, "sku_code": cleanSKU.SKUCode, "name": cleanSKU.Name,
 				"price_vnd": cleanSKU.PriceVND, "stock": cleanSKU.Stock, "weight_grams": cleanSKU.WeightGrams,
@@ -807,7 +807,7 @@ func TestE2E_W3B_BannedKeywordsProhibitedCategoriesAndRescan(t *testing.T) {
 			CategoryID:  cat.ID,
 			Name:        "Sản phẩm chờ duyệt " + pendingTerm,
 			Description: "Tạo trước khi thêm từ cấm",
-			Images:      []string{"https://sandbox.nexusmart.local/img/p1.png"},
+			Images:      []string{"/products/ao-thun-cotton-trang.png"},
 			SKUs:        []SKUInputDTO{{SKUCode: env.uniqueCode("PND"), Name: "S", PriceVND: 110000, Stock: 5, WeightGrams: 200}},
 		}, http.StatusCreated, http.StatusOK)
 		var pendOut ProductResponse
@@ -991,7 +991,7 @@ func TestE2E_W3B_DiscontinuedProductStub(t *testing.T) {
 		CategoryID:  cat.ID,
 		Name:        "W3B Never Approved " + env.uniqueCode("NA"),
 		Description: "Never approved",
-		Images:      []string{"https://sandbox.nexusmart.local/img/p1.png"},
+		Images:      []string{"/products/ao-thun-cotton-trang.png"},
 		SKUs:        []SKUInputDTO{{SKUCode: env.uniqueCode("NA"), Name: "S", PriceVND: 100000, Stock: 5, WeightGrams: 200}},
 	}, http.StatusCreated, http.StatusOK)
 	var pendOut ProductResponse

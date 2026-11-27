@@ -61,7 +61,7 @@ func prodFixCreateMultiSKUApprovedProduct(
 		CategoryID:  categoryID,
 		Name:        name,
 		Description: description,
-		Images:      []string{"https://sandbox.nexusmart.local/img/p18.png"},
+		Images:      []string{"/products/ao-thun-cotton-trang.png"},
 		SKUs:        skus,
 	}, http.StatusCreated, http.StatusOK)
 
@@ -296,7 +296,7 @@ func TestE2E_ProductRules_AccentSearchStockSyncReactivateAndGuards(t *testing.T)
 		CategoryID:  cat.ID,
 		Name:        "Sản phẩm kiểm từ chối " + tag,
 		Description: "Test CAT-B10",
-		Images:      []string{"https://sandbox.nexusmart.local/img/p18.png"},
+		Images:      []string{"/products/ao-thun-cotton-trang.png"},
 		SKUs:        []SKUInputDTO{{SKUCode: env.uniqueCode("B10"), Name: "Std", PriceVND: 120000, Stock: 5, WeightGrams: 200}},
 	}, http.StatusCreated, http.StatusOK)
 	var pendingOut ProductResponse

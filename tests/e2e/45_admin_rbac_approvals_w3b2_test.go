@@ -339,7 +339,7 @@ func w3b45CreatePendingProduct(
 		CategoryID:  categoryID,
 		Name:        name,
 		Description: "W3B2 A7 test product " + name,
-		Images:      []string{"https://sandbox.nexusmart.local/img/a7.png"},
+		Images:      []string{"/products/ao-thun-cotton-trang.png"},
 		SKUs: []SKUInputDTO{
 			{
 				SKUCode:     env.uniqueCode("A7SKU"),
@@ -348,7 +348,7 @@ func w3b45CreatePendingProduct(
 				PriceVND:    priceVND,
 				Stock:       stock,
 				WeightGrams: 500,
-				ImageURL:    "https://sandbox.nexusmart.local/img/a7sku.png",
+				ImageURL:    "/products/ao-thun-cotton-xam-da.png",
 			},
 		},
 	}, http.StatusCreated)
@@ -378,7 +378,7 @@ func w3b45HideProduct(t *testing.T, env *testEnv, sellerTok string, prod Product
 		"category_id": prod.CategoryID,
 		"name":        prod.Name,
 		"description": prod.Description,
-		"images":      []string{"https://sandbox.nexusmart.local/img/a7.png"},
+		"images":      []string{"/products/ao-thun-cotton-trang.png"},
 		"status":      "HIDDEN",
 		"skus":        skus,
 	}, http.StatusOK)
@@ -1035,7 +1035,7 @@ func TestE2E_W3B2_A7_AdminRBACApprovalsAndAudit(t *testing.T) {
 			CategoryID:  cat.ID,
 			Name:        "W3B2 Blocked While Suspended",
 			Description: "Should be blocked while shop is suspended",
-			Images:      []string{"https://sandbox.nexusmart.local/img/a7.png"},
+			Images:      []string{"/products/ao-thun-cotton-trang.png"},
 			SKUs: []SKUInputDTO{{
 				SKUCode: env.uniqueCode("SUSBLK"), Name: "Default", PriceVND: 100000, Stock: 5, WeightGrams: 300,
 			}},

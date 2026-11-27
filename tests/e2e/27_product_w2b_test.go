@@ -281,7 +281,7 @@ func TestE2E_ProductW2B_OutboxCategoriesPriceHistoryAndFeeSchedule(t *testing.T)
 			CategoryID:  cat.ID,
 			Name:        prodName,
 			Description: "Test product.reviewed outbox relay",
-			Images:      []string{"https://sandbox.nexusmart.local/img/w2b.png"},
+			Images:      []string{"/products/ao-thun-cotton-trang.png"},
 			SKUs:        []SKUInputDTO{{SKUCode: env.uniqueCode("OBSKU"), Name: "Default", PriceVND: 150000, Stock: 10, WeightGrams: 200}},
 		}, http.StatusCreated, http.StatusOK)
 		var created ProductResponse

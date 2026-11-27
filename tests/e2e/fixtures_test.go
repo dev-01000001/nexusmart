@@ -599,7 +599,7 @@ func (e *testEnv) createApprovedProduct(
 		CategoryID:  categoryID,
 		Name:        name,
 		Description: "E2E test product " + name,
-		Images:      []string{"https://sandbox.nexusmart.local/img/p1.png"},
+		Images:      []string{"/products/ao-thun-cotton-trang.png"},
 		SKUs: []SKUInputDTO{
 			{
 				SKUCode:     skuCode,
@@ -608,7 +608,7 @@ func (e *testEnv) createApprovedProduct(
 				PriceVND:    priceVND,
 				Stock:       stock,
 				WeightGrams: weightGrams,
-				ImageURL:    "https://sandbox.nexusmart.local/img/sku1.png",
+				ImageURL:    "/products/ao-thun-cotton-xam-da.png",
 			},
 		},
 	}, http.StatusCreated, http.StatusOK)

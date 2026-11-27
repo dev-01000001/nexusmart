@@ -10,6 +10,7 @@ import { buildAdminFlows } from "./admin.mjs";
 import { buildPlatformFlows } from "./platform.mjs";
 import { buildSiteFlows } from "./site.mjs";
 import { buildTemplatesFlows } from "./templates.mjs";
+import { buildJourneyFlows } from "./journey.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (name, def = "") => {
@@ -21,6 +22,7 @@ const port = opt("port");
 const area = opt("area");
 const only = opt("only");
 const sitesArg = opt("site");
+const videoDir = opt("video");
 
 const VALID_AREAS = new Set([
   "seller",
@@ -28,10 +30,11 @@ const VALID_AREAS = new Set([
   "platform",
   "site",
   "templates",
+  "journey",
 ]);
 if (!port || !VALID_AREAS.has(area)) {
   console.error(
-    "Usage: node tests/ui-flows/run.mjs --port <n> --area seller|admin|platform|site|templates [--only <pattern>] [--site s1,s2]",
+    "Usage: node tests/ui-flows/run.mjs --port <n> --area seller|admin|platform|site|templates|journey [--only <pattern>] [--site s1,s2] [--video <dir>]",
   );
   process.exit(2);
 }
@@ -64,6 +67,12 @@ try {
     ({ flows: results, cleanup } = await buildTemplatesFlows({
       browser,
       port,
+    }));
+  } else if (area === "journey") {
+    ({ flows: results, cleanup } = await buildJourneyFlows({
+      browser,
+      port,
+      videoDir,
     }));
   }
 

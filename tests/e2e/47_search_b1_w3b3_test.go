@@ -169,7 +169,7 @@ func w3b47CreateProductWithSKUs(
 		CategoryID:  categoryID,
 		Name:        name,
 		Description: description,
-		Images:      []string{"https://sandbox.nexusmart.local/img/search.png"},
+		Images:      []string{"/products/ao-khoac-gio-xam-tro.png"},
 		SKUs:        skus,
 	}, http.StatusCreated)
 	var out ProductResponse
@@ -213,7 +213,7 @@ func w3b47SetProductStatus(t *testing.T, env *testEnv, seller *sellerFixture, pr
 		"category_id": prod.CategoryID,
 		"name":        prod.Name,
 		"description": prod.Description,
-		"images":      []string{"https://sandbox.nexusmart.local/img/search.png"},
+		"images":      []string{"/products/ao-khoac-gio-xam-tro.png"},
 		"status":      newStatus,
 		"skus":        skus,
 	}, http.StatusOK)
@@ -321,7 +321,7 @@ func TestE2E_W3B3_B1_ProductSyncRatingCategoryAndNotificationSafety(t *testing.T
 			PriceVND:    199000,
 			Stock:       25,
 			WeightGrams: 350,
-			ImageURL:    "https://sandbox.nexusmart.local/img/search-1.png",
+			ImageURL:    "/products/ao-polo-det-kim-den.png",
 		},
 		{
 			SKUCode:     skuCode2,
@@ -330,7 +330,7 @@ func TestE2E_W3B3_B1_ProductSyncRatingCategoryAndNotificationSafety(t *testing.T
 			PriceVND:    349000,
 			Stock:       15,
 			WeightGrams: 350,
-			ImageURL:    "https://sandbox.nexusmart.local/img/search-2.png",
+			ImageURL:    "/products/ao-thun-dryfit-co-vit.png",
 		},
 	}, false)
 
