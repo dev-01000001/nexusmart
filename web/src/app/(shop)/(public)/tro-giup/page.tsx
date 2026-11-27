@@ -3,16 +3,20 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Mail, Search, SearchX, X } from "lucide-react";
-import { EmptyState } from "@/components/app/EmptyState";
 import {
   Accordion,
   AccordionContent,
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { UiScope } from "@/components/ui/ui-scope";
+import {
+  PLATFORM_BTN_PRIMARY,
+  PLATFORM_CONTAINER,
+  PLATFORM_LEAD,
+  PLATFORM_OVERLAP_BAND,
+  PLATFORM_PAGE_H1,
+} from "@/features/platform/platformStyles";
+import { cn } from "@/lib/utils";
 
 type HelpTopic = "all" | "mo-gian-hang" | "giao-dien" | "thanh-toan" | "mua-hang" | "bao-mat";
 
@@ -151,137 +155,167 @@ export default function PlatformHelpPage() {
   }, [query, activeTab]);
 
   return (
-    <UiScope className="w-full bg-background text-foreground">
-      <div className="mx-auto flex w-full max-w-[720px] flex-col gap-6 px-4 pt-24 pb-16 sm:px-6 md:pt-28 md:pb-24">
-        <section className="space-y-5" aria-labelledby="help-heading">
-          <div className="space-y-1.5">
-            <h1
-              id="help-heading"
-              className="text-2xl leading-8 font-semibold tracking-tight text-foreground sm:text-3xl sm:leading-9"
-            >
-              Trợ giúp
-            </h1>
-            <p className="text-sm leading-5 text-muted-foreground">
-              Câu hỏi thường gặp về mở gian hàng, giao diện, thanh toán COD / VietQR và bảo mật.
-            </p>
-          </div>
+    <div className="w-full overflow-x-clip bg-[var(--home-bg)] text-[var(--home-ink)]">
+      {/* Main FAQ band modeled on Homepage S11 Pine FAQ section */}
+      <section
+        className="relative pt-[calc(var(--home-header-h)+clamp(44px,5.5vw,84px))] pb-[calc(var(--home-space-section)+var(--home-radius-band))] [background:radial-gradient(ellipse_52%_42%_at_85%_14%,var(--home-glow-soft),transparent_64%),radial-gradient(ellipse_46%_36%_at_12%_76%,rgba(102,204,215,0.12),transparent_66%),var(--home-pine)] [@media(max-width:960px)]:pb-[calc(var(--home-space-section)+var(--home-radius-band-sm))]"
+        aria-labelledby="help-heading"
+      >
+        <div className={PLATFORM_CONTAINER}>
+          <div className="grid grid-cols-1 items-start gap-10 min-[961px]:grid-cols-[minmax(0,4.3fr)_minmax(0,7.7fr)] min-[961px]:gap-[clamp(36px,5vw,76px)]">
+            {/* Sticky Left Column: Title, lead, pill search & topic filter chips */}
+            <div className="flex min-w-0 flex-col gap-6 min-[961px]:sticky min-[961px]:top-[calc(var(--home-header-h)+32px)]">
+              <div className="flex flex-col gap-3">
+                <h1 id="help-heading" className={PLATFORM_PAGE_H1}>
+                  Trợ giúp
+                </h1>
+                <p className={`${PLATFORM_LEAD} max-w-[34ch]`}>
+                  Câu hỏi thường gặp về mở gian hàng, giao diện, thanh toán COD / VietQR và bảo mật.
+                </p>
+              </div>
 
-          <div className="relative">
-            <Search
-              className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground"
-              aria-hidden="true"
-            />
-            <label htmlFor="help-search-input" className="sr-only">
-              Tìm câu hỏi trợ giúp
-            </label>
-            <Input
-              id="help-search-input"
-              type="search"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Tìm câu hỏi: tên miền phụ, VietQR, xuất bản, tách đơn..."
-              className="h-11 bg-card pr-11 pl-10 text-sm shadow-card [&::-webkit-search-cancel-button]:appearance-none"
-            />
-            {query ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() => setQuery("")}
-                aria-label="Xóa từ khóa tìm kiếm"
-                className="absolute top-1/2 right-0.5 size-10 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
-                <X className="size-4" aria-hidden="true" />
-              </Button>
-            ) : null}
-          </div>
-
-          <div className="flex flex-wrap gap-2" role="group" aria-label="Nhóm câu hỏi">
-            {TABS.map((tab) => {
-              const selected = activeTab === tab.id;
-              return (
-                <Button
-                  key={tab.id}
-                  type="button"
-                  variant={selected ? "default" : "secondary"}
-                  size="sm"
-                  aria-pressed={selected}
-                  className="min-h-10 rounded-full px-4"
-                  onClick={() => setActiveTab(tab.id)}
-                >
-                  {tab.label}
-                </Button>
-              );
-            })}
-          </div>
-        </section>
-
-        <section aria-label="Danh sách câu hỏi">
-          {filtered.length === 0 ? (
-            <EmptyState
-              icon={SearchX}
-              title="Không tìm thấy câu hỏi khớp từ khóa."
-              description="Thử tìm với từ khóa khác hoặc xem lại toàn bộ danh sách câu hỏi."
-              action={
-                <Button
-                  type="button"
-                  onClick={() => {
-                    setQuery("");
-                    setActiveTab("all");
-                  }}
-                >
-                  Xem tất cả
-                </Button>
-              }
-            />
-          ) : (
-            <div className="rounded-xl bg-card px-5 py-1 shadow-card sm:px-6">
-              <Accordion
-                type="single"
-                collapsible
-                value={openId}
-                onValueChange={setOpenId}
-                className="w-full"
-              >
-                {filtered.map((item) => (
-                  <AccordionItem
-                    key={item.id}
-                    value={item.id}
-                    id={item.anchor}
-                    className="scroll-mt-24 border-border"
+              <div className="relative flex min-h-[var(--home-btn-mid-h)] items-center rounded-full border border-[var(--home-border-strong)] bg-[var(--home-glass)] transition-[border-color,background-color] duration-200 focus-within:border-[var(--home-accent)] focus-within:bg-[var(--home-glass-strong)] motion-reduce:transition-none">
+                <Search
+                  className="pointer-events-none absolute top-1/2 left-4 size-4 -translate-y-1/2 text-[var(--home-ink-2)]"
+                  aria-hidden="true"
+                />
+                <label htmlFor="help-search-input" className="sr-only">
+                  Tìm câu hỏi trợ giúp
+                </label>
+                <input
+                  id="help-search-input"
+                  type="search"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Tìm câu hỏi: tên miền phụ, VietQR, xuất bản, tách đơn..."
+                  className="h-[var(--home-btn-mid-h)] w-full min-w-0 rounded-full border-0 bg-transparent pr-11 pl-11 font-[family-name:var(--home-font)] text-[length:var(--home-fs-body)] text-[var(--home-ink)] placeholder:text-[var(--home-input-placeholder)] [&::-webkit-search-cancel-button]:appearance-none"
+                />
+                {query ? (
+                  <button
+                    type="button"
+                    onClick={() => setQuery("")}
+                    aria-label="Xóa từ khóa tìm kiếm"
+                    className="absolute top-1/2 right-1 inline-flex size-10 -translate-y-1/2 items-center justify-center rounded-full text-[var(--home-ink-2)] transition-colors hover:bg-[var(--home-glass-strong)] hover:text-[var(--home-ink)] motion-reduce:transition-none"
                   >
-                    <AccordionTrigger className="min-h-12 py-4 text-left text-[15px] leading-6 font-semibold text-foreground hover:text-brand hover:no-underline">
-                      {item.question}
-                    </AccordionTrigger>
-                    <AccordionContent className="pb-4 text-sm leading-6 text-muted-foreground">
-                      {item.answer}
-                    </AccordionContent>
-                  </AccordionItem>
-                ))}
-              </Accordion>
-            </div>
-          )}
-        </section>
+                    <X className="size-4" aria-hidden="true" />
+                  </button>
+                ) : null}
+              </div>
 
-        <section
-          className="flex flex-wrap items-center justify-between gap-4 rounded-xl bg-card p-5 shadow-card sm:p-6"
-          aria-label="Liên hệ hỗ trợ"
-        >
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-            <a
-              href="mailto:hotro@nexusmart.vn"
-              className="inline-flex min-h-10 items-center gap-2 text-sm font-semibold text-foreground transition-colors hover:text-brand hover:underline"
-            >
-              <Mail className="size-4 text-brand" aria-hidden="true" />
-              hotro@nexusmart.vn
-            </a>
-            <span className="text-xs text-muted-foreground">8:30 đến 22:00 hằng ngày</span>
+              <div className="flex flex-wrap gap-2" role="group" aria-label="Nhóm câu hỏi">
+                {TABS.map((tab) => {
+                  const selected = activeTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => setActiveTab(tab.id)}
+                      className={cn(
+                        "inline-flex min-h-10 items-center justify-center rounded-full px-4 text-[length:var(--home-fs-small)] transition-colors duration-200 motion-reduce:transition-none",
+                        selected
+                          ? "bg-[var(--home-ink)] font-[550] text-[var(--home-bg)]"
+                          : "border border-[var(--home-border)] bg-[var(--home-glass)] font-[450] text-[var(--home-ink-2)] hover:border-[var(--home-border-strong)] hover:text-[var(--home-ink)]"
+                      )}
+                    >
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Right Column: Hairline Accordion matching Homepage S11 FAQ */}
+            <section aria-label="Danh sách câu hỏi" className="min-w-0">
+              {filtered.length === 0 ? (
+                <div className="flex flex-col items-center gap-4 rounded-[var(--home-radius-tile)] border border-[var(--home-border)] bg-[var(--home-card-dark)] px-6 py-12 text-center">
+                  <span className="inline-flex size-12 items-center justify-center rounded-full border border-[var(--home-border)] bg-[var(--home-glass)] text-[var(--home-accent)]">
+                    <SearchX className="size-5" aria-hidden="true" />
+                  </span>
+                  <div className="space-y-1.5">
+                    <p className="text-[length:var(--home-fs-h3)] font-[450] text-[var(--home-ink)]">
+                      Không tìm thấy câu hỏi khớp từ khóa.
+                    </p>
+                    <p className="max-w-[42ch] text-[length:var(--home-fs-small)] leading-[1.55] text-[var(--home-ink-2)]">
+                      Thử tìm với từ khóa khác hoặc xem lại toàn bộ danh sách câu hỏi.
+                    </p>
+                  </div>
+                  <div className="pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setQuery("");
+                        setActiveTab("all");
+                      }}
+                      className={PLATFORM_BTN_PRIMARY}
+                    >
+                      Xem tất cả
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <Accordion
+                  type="single"
+                  collapsible
+                  value={openId}
+                  onValueChange={setOpenId}
+                  className="w-full border-t border-[var(--home-border)]"
+                >
+                  {filtered.map((item) => (
+                    <AccordionItem
+                      key={item.id}
+                      value={item.id}
+                      id={item.anchor}
+                      className="scroll-mt-24 border-b border-[var(--home-border)] last:border-b"
+                    >
+                      <AccordionTrigger className="group/faq flex min-h-[72px] w-full items-center justify-between gap-5 rounded-none py-5 text-left text-[length:var(--home-fs-h3)] leading-[1.35] font-[450] text-[var(--home-ink)] transition-colors hover:text-[var(--home-accent)] hover:no-underline focus-visible:ring-0 motion-reduce:transition-none [&>svg:last-child]:hidden">
+                        <span>{item.question}</span>
+                        <span
+                          className="relative h-4 w-4 flex-none text-[var(--home-accent)] before:absolute before:top-1/2 before:left-0 before:h-[1.5px] before:w-4 before:-translate-y-1/2 before:bg-current before:transition-transform before:duration-[280ms] before:ease-[cubic-bezier(0.16,1,0.3,1)] before:content-[''] after:absolute after:top-1/2 after:left-0 after:h-[1.5px] after:w-4 after:-translate-y-1/2 after:rotate-90 after:bg-current after:transition-transform after:duration-[280ms] after:ease-[cubic-bezier(0.16,1,0.3,1)] after:content-[''] group-data-[state=open]/faq:after:rotate-0 motion-reduce:before:transition-none motion-reduce:after:transition-none"
+                          aria-hidden="true"
+                        />
+                      </AccordionTrigger>
+                      <AccordionContent className="max-w-[60ch] pr-8 pb-6 text-[length:var(--home-fs-body)] leading-[1.6] text-[var(--home-ink-2)] [@media(max-width:640px)]:pr-0">
+                        {item.answer}
+                      </AccordionContent>
+                    </AccordionItem>
+                  ))}
+                </Accordion>
+              )}
+            </section>
           </div>
-          <Button size="lg" asChild>
-            <Link href="/dang-ky?role=seller">Mở gian hàng</Link>
-          </Button>
-        </section>
-      </div>
-    </UiScope>
+        </div>
+      </section>
+
+      {/* Closing support band overlapping pine FAQ section */}
+      <section
+        className={`${PLATFORM_OVERLAP_BAND} z-[2] py-[clamp(48px,6.5vw,84px)] [background:linear-gradient(180deg,rgba(2,8,8,0.45)_0%,transparent_24%,rgba(2,8,8,0.72)_100%),radial-gradient(ellipse_50%_70%_at_86%_80%,rgba(102,204,215,0.18),transparent_64%),var(--home-steps-bg)]`}
+        aria-label="Liên hệ hỗ trợ"
+      >
+        <div className={PLATFORM_CONTAINER}>
+          <div className="flex flex-wrap items-center justify-between gap-6 rounded-[var(--home-radius-tile)] border border-[var(--home-border)] bg-[var(--home-card-dark)] p-6 shadow-[var(--home-shadow-card)] sm:p-8">
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+              <a
+                href="mailto:hotro@nexusmart.vn"
+                className="inline-flex min-h-10 items-center gap-2.5 text-[length:var(--home-fs-lead)] font-medium text-[var(--home-ink)] transition-colors hover:text-[var(--home-accent)] hover:underline motion-reduce:transition-none"
+              >
+                <Mail className="size-4 shrink-0 text-[var(--home-accent)]" aria-hidden="true" />
+                hotro@nexusmart.vn
+              </a>
+              <span className="text-[length:var(--home-fs-small)] text-[var(--home-ink-2)]">
+                8:30 đến 22:00 hằng ngày
+              </span>
+            </div>
+
+            <Link
+              href="/dang-ky?role=seller"
+              className={`${PLATFORM_BTN_PRIMARY} [@media(max-width:640px)]:w-full`}
+            >
+              Mở gian hàng
+            </Link>
+          </div>
+        </div>
+      </section>
+    </div>
   );
 }

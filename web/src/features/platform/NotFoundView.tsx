@@ -1,41 +1,47 @@
 import React from "react";
 import Link from "next/link";
-import { NexusMark } from "@/components/Icons";
-import { Button } from "@/components/ui/button";
-import { UiScope } from "@/components/ui/ui-scope";
+import "@/features/platform/home/home-tokens.css";
+import { PlatformFooter } from "./PlatformFooter";
+import { PlatformHeader } from "./PlatformHeader";
+import { platformInter } from "./platformFont";
+import { PLATFORM_BTN_PRIMARY, PLATFORM_SHELL_ROOT, PLATFORM_SUB_H2 } from "./platformStyles";
 
 export function NotFoundView() {
   return (
-    <UiScope className="flex min-h-svh flex-col bg-background px-4 pt-5 pb-12 text-foreground sm:px-6 lg:px-8">
-      <header className="flex min-h-11 items-center">
-        <Link
-          href="/"
-          className="inline-flex min-h-10 items-center gap-2.5 text-foreground transition-opacity hover:opacity-80"
-          aria-label="NexusMart trang chủ"
-        >
-          <NexusMark size={20} accentColor="var(--ui-brand)" />
-          <span className="text-base font-semibold tracking-tight">NexusMart</span>
-        </Link>
-      </header>
+    <div data-platform-public="true" className={`${platformInter.variable} ${PLATFORM_SHELL_ROOT}`}>
+      <PlatformHeader />
 
-      <main className="flex flex-1 flex-col items-center justify-center gap-5 py-12 text-center">
-        <p
-          className="text-[clamp(6.5rem,22vw,16rem)] leading-[0.94] font-bold tracking-[-0.04em] text-foreground tabular-nums"
+      <main
+        id="main-content"
+        tabIndex={-1}
+        className="relative flex w-full min-w-0 flex-1 flex-col items-center justify-center overflow-hidden bg-[var(--home-band)] px-[var(--home-gutter)] pt-[calc(var(--home-header-h)+56px)] pb-24 text-center focus:outline-none"
+      >
+        <div
+          className="pointer-events-none absolute inset-0 [background:radial-gradient(circle_at_50%_46%,var(--home-glow-soft)_0%,transparent_54%),repeating-radial-gradient(circle_at_50%_46%,transparent_0,transparent_86px,rgba(102,204,215,0.09)_86px,rgba(102,204,215,0.09)_87px)]"
           aria-hidden="true"
-        >
-          404
-        </p>
+        />
 
-        <h1 className="text-xl leading-7 font-semibold tracking-tight text-muted-foreground sm:text-2xl">
-          Trang này không tồn tại.
-        </h1>
+        <div className="relative z-[1] flex max-w-[560px] flex-col items-center gap-6">
+          <p
+            className="font-[family-name:var(--home-font)] text-[clamp(6.5rem,20vw,15rem)] leading-[0.9] font-extralight tracking-[-0.05em] text-[var(--home-ink)] tabular-nums"
+            aria-hidden="true"
+          >
+            404
+          </p>
 
-        <div className="pt-2">
-          <Button size="lg" className="min-h-11 px-6" asChild>
-            <Link href="/">Về trang chủ</Link>
-          </Button>
+          <h1 className={`${PLATFORM_SUB_H2} text-[var(--home-ink-2)]`}>
+            Trang này không tồn tại.
+          </h1>
+
+          <div className="pt-2">
+            <Link href="/" className={PLATFORM_BTN_PRIMARY}>
+              Về trang chủ
+            </Link>
+          </div>
         </div>
       </main>
-    </UiScope>
+
+      <PlatformFooter />
+    </div>
   );
 }

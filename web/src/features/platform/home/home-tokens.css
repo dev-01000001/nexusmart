@@ -84,4 +84,19 @@
   --home-fs-body: 1rem;
   --home-fs-small: 0.875rem;
   --home-fs-caption: 0.75rem;
+
+  /* Additional dark surfaces & semantic inks shared across root-host public/auth/404 pages */
+  --home-input-bg: rgb(6 18 20 / 0.88);
+  --home-input-border: rgb(255 255 255 / 0.24);
+  --home-input-placeholder: rgb(138 156 158);
+  --home-surface-elevated: rgb(12 28 30);
+  --home-danger: #f07a7a;
+  --home-danger-bg: rgb(61 26 26 / 0.65);
+  --home-danger-border: rgb(240 122 122 / 0.36);
+  --home-success: #8ee0b5;
+  --home-success-bg: rgb(22 53 42 / 0.65);
+  --home-warning: #f5b97a;
+  --home-warning-bg: rgb(61 42 18 / 0.65);
+  --home-info: #8cc4f5;
+  --home-info-bg: rgb(19 44 68 / 0.65);
 }
