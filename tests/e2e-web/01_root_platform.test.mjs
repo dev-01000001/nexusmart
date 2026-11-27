@@ -19,6 +19,27 @@ const LOCALHOST_HOST = withPort("localhost");
 const FAKE_ID = "00000000-0000-4000-8000-000000000000";
 // "189.000₫", "189.000 đ", "189,000 VND": any rendered price.
 const PRICE_RE = /\d{1,3}(?:[.,]\d{3})+\s?(?:₫|đ(?![a-zà-ỹ])|VND)/i;
+// Leaf HTML elements (and their serialized Next.js RSC flight nodes) explicitly marked as illustrative demo prices.
+const DEMO_PRICE_HTML_RE =
+  /<(\w+)[^>]*\sdata-demo-price(?:=(?:"[^"]*"|'[^']*'))?(?=[\s>])[^>]*>(?:[^<]|<!--[\s\S]*?-->)*<\/\1>/g;
+const NEXT_FLIGHT_SCRIPT_RE =
+  /<script\b[^>]*>self\.__next_f\.push\(\[1,("(?:[^"\\]|\\.)*")\]\);?<\/script>/g;
+const DEMO_PRICE_RSC_LEAF_RE = /\{[^{}]*"data-demo-price"\s*:\s*(?:""|true)[^{}]*\}/g;
+
+function stripDemoPrices(html) {
+  let flight = "";
+  const withoutFlight = html.replace(NEXT_FLIGHT_SCRIPT_RE, (full, encoded) => {
+    try {
+      flight += JSON.parse(encoded);
+      return "";
+    } catch {
+      return full;
+    }
+  });
+  const strippedHtml = withoutFlight.replace(DEMO_PRICE_HTML_RE, "");
+  const strippedFlight = flight.replace(DEMO_PRICE_RSC_LEAF_RE, "");
+  return strippedFlight ? `${strippedHtml}\n${strippedFlight}` : strippedHtml;
+}
 
 const bare = (host) => host.replace(/:\d+$/, "");
 
@@ -96,7 +117,12 @@ describe("01. Root host = NexusMart platform only (intro, site directory, redire
       assert.ok(res.text.includes("NexusMart"), `${host}/ must mention NexusMart`);
       assert.ok(res.text.includes("Mở gian hàng"), `${host}/ must show primary CTA 'Mở gian hàng'`);
 
-      assert.doesNotMatch(res.text, PRICE_RE, `${host}/ must not render prices: ${res.text.match(PRICE_RE)?.[0]}`);
+      const strippedText = stripDemoPrices(res.text);
+      assert.doesNotMatch(
+        strippedText,
+        PRICE_RE,
+        `${host}/ must not render prices: ${strippedText.match(PRICE_RE)?.[0]}`
+      );
       assert.equal(/href="\/san-pham\//.test(res.text), false, `${host}/ must not link product pages`);
       assert.equal(
         /href="\/(gio-hang|thanh-toan|tim-kiem|danh-muc|flash-sale|voucher)/.test(res.text),

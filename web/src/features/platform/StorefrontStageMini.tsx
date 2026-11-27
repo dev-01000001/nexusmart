@@ -102,7 +102,10 @@ export function StorefrontStageMini({
             <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[length:var(--home-fs-caption)] font-medium text-[var(--stage-text)]">
               {template.sampleProduct}
             </span>
-            <span className="tabular-nums text-[length:var(--home-fs-caption)] font-semibold text-[var(--stage-accent)]">
+            <span
+              className="tabular-nums text-[length:var(--home-fs-caption)] font-semibold text-[var(--stage-accent)]"
+              data-demo-price=""
+            >
               {formatVnd(template.samplePriceVnd)}
             </span>
           </div>
@@ -233,7 +236,10 @@ export function StorefrontStageMini({
         ))}
         <span className={STRIP_TILE_CLS}>
           <span className="overflow-hidden text-ellipsis">{template.sampleProduct}</span>
-          <span className="tabular-nums font-semibold text-[var(--stage-accent)]">
+          <span
+            className="tabular-nums font-semibold text-[var(--stage-accent)]"
+            data-demo-price=""
+          >
             {formatVnd(template.samplePriceVnd)}
           </span>
         </span>

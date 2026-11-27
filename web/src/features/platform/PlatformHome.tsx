@@ -575,7 +575,10 @@ export function PlatformHome({ directory, rootDomain }: PlatformHomeProps) {
                         <p className="text-[length:var(--home-fs-caption)] font-medium leading-[1.3] text-[var(--home-ink-dark)]">
                           Áo Polo Pique Xanh Đá · Size L
                         </p>
-                        <p className="tabular-nums text-[length:var(--home-fs-caption)] font-semibold text-[var(--home-accent-solid)]">
+                        <p
+                          className="tabular-nums text-[length:var(--home-fs-caption)] font-semibold text-[var(--home-accent-solid)]"
+                          data-demo-price=""
+                        >
                           {formatVnd(299000)}
                         </p>
                       </div>
@@ -712,7 +715,9 @@ export function PlatformHome({ directory, rootDomain }: PlatformHomeProps) {
 
                   <div className="absolute bottom-[72px] right-[max(0px,calc(50%_-_216px))] z-[3] inline-flex items-center gap-2 whitespace-nowrap rounded-full bg-[var(--home-ink)] px-4 py-2 text-[length:var(--home-fs-small)] font-semibold text-[var(--home-ink-dark)] [box-shadow:var(--home-shadow-pill)] [@media(max-width:640px)]:bottom-[68px] [@media(max-width:640px)]:right-0 [@media(max-width:640px)]:text-[length:var(--home-fs-caption)]">
                     <span className="h-2 w-2 flex-none rounded-full bg-[var(--home-accent-solid)]" />
-                    <span className="tabular-nums">Đơn hàng {formatVnd(349000)} · Đà Nẵng</span>
+                    <span className="tabular-nums" data-demo-price="">
+                      Đơn hàng {formatVnd(349000)} · Đà Nẵng
+                    </span>
                   </div>
                 </div>
 
@@ -739,7 +744,10 @@ export function PlatformHome({ directory, rootDomain }: PlatformHomeProps) {
                         <span className="overflow-hidden text-ellipsis whitespace-nowrap">
                           {row.place}
                         </span>
-                        <span className="tabular-nums flex-none font-semibold text-[var(--home-ink-dark)]">
+                        <span
+                          className="tabular-nums flex-none font-semibold text-[var(--home-ink-dark)]"
+                          data-demo-price=""
+                        >
                           {formatVnd(row.feeVnd)}
                         </span>
                       </li>
@@ -1215,21 +1223,30 @@ export function PlatformHome({ directory, rootDomain }: PlatformHomeProps) {
                   <ul className="flex flex-col gap-2">
                     <li className="flex items-baseline justify-between gap-3 text-[length:var(--home-fs-small)] leading-[1.4] text-[var(--home-ink-dark)]">
                       <span>Áo Polo Pique Xanh Đá · Size L</span>
-                      <span className="tabular-nums">{formatVnd(299000)}</span>
+                      <span className="tabular-nums" data-demo-price="">
+                        {formatVnd(299000)}
+                      </span>
                     </li>
                     <li className="flex items-baseline justify-between gap-3 text-[length:var(--home-fs-small)] leading-[1.4] text-[var(--home-ink-dark)]">
                       <span>Quần Short Daily Be · Size 31</span>
-                      <span className="tabular-nums">{formatVnd(249000)}</span>
+                      <span className="tabular-nums" data-demo-price="">
+                        {formatVnd(249000)}
+                      </span>
                     </li>
                     <li className="flex items-baseline justify-between gap-3 text-[length:var(--home-fs-small)] leading-[1.4] text-[var(--home-ink-dark-2)]">
                       <span>Phí vận chuyển (Hà Nội)</span>
-                      <span className="tabular-nums">{formatVnd(22000)}</span>
+                      <span className="tabular-nums" data-demo-price="">
+                        {formatVnd(22000)}
+                      </span>
                     </li>
                   </ul>
 
                   <div className="flex items-baseline justify-between gap-3 rounded-[var(--home-radius-media)] bg-[#eff3f5] px-4 py-3 text-[length:var(--home-fs-small)] font-semibold text-[var(--home-ink-dark)]">
                     <span>Tổng thanh toán</span>
-                    <span className="tabular-nums text-[length:var(--home-fs-body)] font-bold text-[var(--home-ink-dark)]">
+                    <span
+                      className="tabular-nums text-[length:var(--home-fs-body)] font-bold text-[var(--home-ink-dark)]"
+                      data-demo-price=""
+                    >
                       {formatVnd(570000)}
                     </span>
                   </div>
@@ -1256,7 +1273,10 @@ export function PlatformHome({ directory, rootDomain }: PlatformHomeProps) {
                       </span>
                       <p className="text-[length:var(--home-fs-small)] leading-[1.45] text-[var(--home-ink-dark-2)]">
                         Quét mã bằng ứng dụng ngân hàng để hoàn tất đơn{" "}
-                        <span className="tabular-nums">{formatVnd(570000)}</span>.
+                        <span className="tabular-nums" data-demo-price="">
+                          {formatVnd(570000)}
+                        </span>
+                        .
                       </p>
                     </div>
                   </div>
