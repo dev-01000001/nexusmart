@@ -40,9 +40,9 @@ export interface SiteThemeRootProps {
 }
 
 /**
- * Client-side `UiScope` host that derives scoped `--site-*`, `--ui-*`, and legacy token
- * custom properties from compact theme primitives so SSR HTML includes full theme styles
- * without inflating the RSC Flight payload of `SiteShell` across chunk boundaries.
+ * Client-side `UiScope` host that derives scoped `--site-*` and `--ui-*` custom properties
+ * from compact theme primitives so SSR HTML includes full theme styles without inflating
+ * the RSC Flight payload of `SiteShell` across chunk boundaries.
  */
 export function SiteThemeRoot({
   theme,

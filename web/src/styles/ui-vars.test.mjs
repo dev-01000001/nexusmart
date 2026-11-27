@@ -2,8 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-const HANDLED = new Set(["--font-sans", "--ease-out", "--ease-in-out"]);
-
 function readCss(relPath) {
   return fs.readFileSync(new URL(relPath, import.meta.url), "utf8");
 }
@@ -46,221 +44,258 @@ function extractBlock(css, headerRegex) {
   return depth === 0 ? clean.slice(start, idx - 1) : "";
 }
 
-function readLegacyFiles() {
-  return [
-    readCss("./tokens.css"),
-    readCss("./globals.css"),
-    readCss("../features/site/site.module.css"),
-    readCss("../features/site/siteTemplates.module.css"),
-  ].join("\n");
-}
+test("ui.css pins @layer order and imports preflight inside layer(base)", () => {
+  const uiCss = stripComments(readCss("./ui.css")).trimStart();
+  assert.match(
+    uiCss,
+    /^@layer\s+theme,\s*base,\s*components,\s*utilities;/,
+    "ui.css must declare @layer theme, base, components, utilities; as its first statement"
+  );
+  assert.match(
+    uiCss,
+    /@import\s+["']tailwindcss\/theme\.css["']\s+layer\(theme\);/,
+    "ui.css must import tailwindcss/theme.css into layer(theme)"
+  );
+  assert.match(
+    uiCss,
+    /@import\s+["']tailwindcss\/preflight\.css["']\s+layer\(base\);/,
+    "ui.css must import tailwindcss/preflight.css into layer(base)"
+  );
+  assert.match(
+    uiCss,
+    /@import\s+["']tailwindcss\/utilities\.css["']\s+layer\(utilities\)/,
+    "ui.css must import tailwindcss/utilities.css into layer(utilities)"
+  );
 
-test("ui.css never redefines legacy tokens", () => {
-  const legacyVars = extractDeclaredVars(readLegacyFiles());
-  const uiVars = extractDeclaredVars(readCss("./ui.css"));
-  const collisions = [...uiVars].filter((v) => legacyVars.has(v) && !HANDLED.has(v));
-  assert.deepEqual(
-    collisions,
-    [],
-    `ui.css must not redefine legacy tokens outside HANDLED: ${collisions.join(", ")}`
+  const rootLayout = readCss("../app/layout.tsx");
+  assert.equal(
+    rootLayout.includes("@/styles/ui.css"),
+    true,
+    "src/app/layout.tsx must import @/styles/ui.css globally"
+  );
+  assert.equal(
+    rootLayout.includes("globals.css"),
+    false,
+    "src/app/layout.tsx must not import removed globals.css"
+  );
+  assert.equal(
+    rootLayout.includes("tokens.css"),
+    false,
+    "src/app/layout.tsx must not import removed tokens.css"
+  );
+  assert.equal(
+    /\bArchivo\b|--font-archivo/.test(rootLayout),
+    false,
+    "src/app/layout.tsx must not load removed Archivo font"
+  );
+  assert.equal(
+    fs.existsSync(new URL("./globals.css", import.meta.url)),
+    false,
+    "web/src/styles/globals.css must be deleted"
+  );
+  assert.equal(
+    fs.existsSync(new URL("./tokens.css", import.meta.url)),
+    false,
+    "web/src/styles/tokens.css must be deleted"
   );
 });
 
-test("legacy/tailwind collisions are all handled in @theme inline", () => {
-  const legacyVars = extractDeclaredVars(readLegacyFiles());
+test("ui.css @theme inline keeps --font-sans dynamic and drops redundant --ease-* overrides", () => {
+  const uiCss = readCss("./ui.css");
+  const themeInline = extractBlock(uiCss, /@theme\s+inline\s*\{/);
+  assert.ok(themeInline.length > 0, "ui.css must declare @theme inline");
+  assert.match(
+    themeInline,
+    /--font-sans\s*:\s*var\(--ui-font\)/,
+    "@theme inline must keep --font-sans wired to var(--ui-font) for per-site font overrides"
+  );
+  assert.equal(
+    /--ease-(?:out|in-out)\s*:/.test(themeInline),
+    false,
+    "@theme inline must not redefine Tailwind built-in --ease-out / --ease-in-out"
+  );
+});
+
+test("home-tokens.css scopes --home-* to [data-platform-public] without legacy token references", () => {
+  const homeTokens = stripComments(readCss("../features/platform/home/home-tokens.css"));
+  assert.equal(
+    /:root\s*\{/.test(homeTokens),
+    false,
+    "home-tokens.css must scope --home-* to [data-platform-public], not :root"
+  );
+  const block = extractBlock(homeTokens, /\[data-platform-public="true"\]\s*\{/);
+  assert.ok(block.length > 0, 'home-tokens.css must declare [data-platform-public="true"] block');
+  const declared = [...extractDeclaredVars(block)];
+  assert.ok(declared.length > 40, "home-tokens.css must declare all --home-* tokens");
+  const nonHome = declared.filter((v) => !v.startsWith("--home-"));
+  assert.deepEqual(
+    nonHome,
+    [],
+    `home-tokens.css must only declare --home-* variables, found: ${nonHome.join(", ")}`
+  );
+  assert.equal(
+    /var\(--(?:band-dark-accent|accent)\)/.test(block),
+    false,
+    "home-tokens.css must not reference deleted legacy tokens"
+  );
+});
+
+test("ui.css has no data-ui reset or revert-layer overrides", () => {
+  const clean = stripComments(readCss("./ui.css"));
+  assert.equal(
+    /revert-layer/i.test(clean),
+    false,
+    "ui.css must not contain legacy revert-layer overrides"
+  );
+  assert.equal(
+    /\[data-ui\s*=\s*["']true["']\]/i.test(clean),
+    false,
+    'ui.css must not scope resets to [data-ui="true"]'
+  );
+});
+
+test("ui.css :root and dark blocks only declare --ui-* custom properties (no Tailwind/shadcn name collisions)", () => {
+  const uiCss = readCss("./ui.css");
+  const rootBlock = extractBlock(uiCss, /:root\s*\{/);
+  const darkBlock = extractBlock(uiCss, /\[data-site-theme-mode="dark"\]\s*\{/);
+  assert.ok(rootBlock.length > 0, "ui.css must define a :root block");
+  assert.ok(darkBlock.length > 0, 'ui.css must define a [data-site-theme-mode="dark"] block');
+
   const tailwindThemeVars = extractDeclaredVars(
     readCss("../../node_modules/tailwindcss/theme.css")
   );
-  const uiCss = readCss("./ui.css");
-  const themeInlineBlock = extractBlock(uiCss, /@theme\s+inline\s*\{/);
-  const themeInlineVars = extractDeclaredVars(themeInlineBlock);
+  const rawVars = new Set([...extractDeclaredVars(rootBlock), ...extractDeclaredVars(darkBlock)]);
 
-  const collisions = [...legacyVars].filter((v) => tailwindThemeVars.has(v));
-  const unhandled = collisions.filter((v) => !HANDLED.has(v));
+  const nonUiVars = [...rawVars].filter((v) => !v.startsWith("--ui-"));
   assert.deepEqual(
-    unhandled,
+    nonUiVars,
     [],
-    `Unexpected legacy/tailwind custom property collisions: ${unhandled.join(", ")}`
+    `All raw custom properties in ui.css :root/dark must use --ui-* prefix, found: ${nonUiVars.join(", ")}`
   );
 
-  for (const name of HANDLED) {
-    assert.equal(
-      themeInlineVars.has(name),
-      true,
-      `Expected ${name} to be declared inside @theme inline { ... } in ui.css`
-    );
-  }
-});
-
-test("ui.css has no preflight and no global base rules", () => {
-  const uiCss = readCss("./ui.css");
-  const clean = stripComments(uiCss);
-  assert.equal(
-    /@import\s+["']tailwindcss["']/.test(clean),
-    false,
-    'ui.css must not contain full @import "tailwindcss"'
-  );
-  assert.equal(
-    /preflight/i.test(clean),
-    false,
-    "ui.css must not import or reference tailwindcss preflight"
-  );
-  assert.equal(
-    /^\s*(\*|html|body)\s*[,{]/m.test(clean),
-    false,
-    "ui.css must not contain global *, html, or body base rules outside [data-ui]"
-  );
-});
-
-test("keyframes names do not collide", () => {
-  const legacyKeyframes = extractKeyframes(readLegacyFiles());
-  const otherKeyframes = new Set([
-    ...extractKeyframes(readCss("../../node_modules/tailwindcss/theme.css")),
-    ...extractKeyframes(readCss("../../node_modules/tw-animate-css/dist/tw-animate.css")),
-    ...extractKeyframes(readCss("./ui.css")),
-  ]);
-  const collisions = [...legacyKeyframes].filter((k) => otherKeyframes.has(k));
+  const tailwindCollisions = [...rawVars].filter((v) => tailwindThemeVars.has(v));
   assert.deepEqual(
-    collisions,
+    tailwindCollisions,
     [],
-    `Unexpected @keyframes name collisions: ${collisions.join(", ")}`
+    `Raw ui.css custom properties must not collide with Tailwind theme vars: ${tailwindCollisions.join(", ")}`
   );
 });
 
-test("app palette matches spec", () => {
+test("app palette and dark mode tokens match spec §6.1 completely", () => {
   const uiCss = readCss("./ui.css");
   const rootBlock = extractBlock(uiCss, /:root\s*\{/);
-  assert.ok(rootBlock.length > 0, "ui.css must define a :root block");
+  const darkBlock = extractBlock(uiCss, /\[data-site-theme-mode="dark"\]\s*\{/);
 
-  const expected = [
+  const parseVars = (block) => {
+    const map = new Map();
+    for (const match of block.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)) {
+      map.set(match[1].toLowerCase(), match[2].trim().toLowerCase());
+    }
+    return map;
+  };
+
+  const rootVars = parseVars(rootBlock);
+  const expectedRoot = [
     ["--ui-background", "#eff3f5"],
+    ["--ui-foreground", "#1f3038"],
+    ["--ui-card", "#ffffff"],
+    ["--ui-card-foreground", "#1f3038"],
+    ["--ui-popover", "#ffffff"],
+    ["--ui-popover-foreground", "#1f3038"],
     ["--ui-primary", "#1f3038"],
+    ["--ui-primary-foreground", "#ffffff"],
+    ["--ui-secondary", "#e4eaee"],
+    ["--ui-secondary-foreground", "#1f3038"],
+    ["--ui-muted", "#eff3f5"],
+    ["--ui-muted-foreground", "#52626a"],
+    ["--ui-accent", "#e4eaee"],
+    ["--ui-accent-foreground", "#152229"],
     ["--ui-brand", "#0d7480"],
+    ["--ui-brand-foreground", "#ffffff"],
+    ["--ui-destructive", "#b33a3a"],
+    ["--ui-destructive-foreground", "#ffffff"],
+    ["--ui-border", "#dde4e8"],
     ["--ui-input", "#7d8e97"],
+    ["--ui-ring", "#0d7480"],
     ["--ui-topbar", "#152229"],
+    ["--ui-topbar-foreground", "#d3dde2"],
+    ["--ui-topbar-input", "#293e48"],
+    ["--ui-topbar-placeholder", "#9fb0b8"],
     ["--ui-sidebar", "#e6ecef"],
+    ["--ui-sidebar-foreground", "#1f3038"],
+    ["--ui-sidebar-muted", "#52626a"],
+    ["--ui-sidebar-accent", "#ffffff"],
+    ["--ui-sidebar-accent-foreground", "#152229"],
+    ["--ui-sidebar-border", "#dde4e8"],
+    ["--ui-sidebar-ring", "#0d7480"],
+    ["--ui-sidebar-primary", "#0d7480"],
+    ["--ui-sidebar-primary-foreground", "#ffffff"],
+    ["--ui-badge-success-bg", "#ddf3e6"],
+    ["--ui-badge-success-ink", "#145338"],
+    ["--ui-badge-attention-bg", "#fbefb5"],
+    ["--ui-badge-attention-ink", "#5c4a00"],
+    ["--ui-badge-warning-bg", "#fcddb8"],
+    ["--ui-badge-warning-ink", "#6b3d00"],
+    ["--ui-badge-info-bg", "#dcebfa"],
+    ["--ui-badge-info-ink", "#0b4a7a"],
+    ["--ui-badge-critical-bg", "#f8e2e2"],
+    ["--ui-badge-critical-ink", "#8c2626"],
+    ["--ui-badge-neutral-bg", "#e6ecef"],
+    ["--ui-badge-neutral-ink", "#2c3e47"],
     ["--ui-radius", "0.75rem"],
     ["--ui-font", "var(--font-inter)"],
   ];
 
-  const declared = new Map();
-  for (const match of rootBlock.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)) {
-    declared.set(match[1].toLowerCase(), match[2].trim().toLowerCase());
-  }
-
-  for (const [prop, value] of expected) {
+  for (const [prop, value] of expectedRoot) {
     assert.equal(
-      declared.get(prop),
+      rootVars.get(prop),
       value,
-      `Expected ${prop} in :root to equal ${value}, got ${declared.get(prop)}`
+      `Expected ${prop} in :root to equal ${value}, got ${rootVars.get(prop)}`
+    );
+  }
+  assert.ok(rootVars.has("--ui-shadow-card"), "ui.css :root must define --ui-shadow-card");
+  assert.ok(rootVars.has("--ui-shadow-button"), "ui.css :root must define --ui-shadow-button");
+  assert.ok(rootVars.has("--ui-shadow-overlay"), "ui.css :root must define --ui-shadow-overlay");
+
+  const darkVars = parseVars(darkBlock);
+  const expectedDark = [
+    ["--ui-destructive", "#f07a7a"],
+    ["--ui-badge-success-bg", "#16352a"],
+    ["--ui-badge-success-ink", "#8ee0b5"],
+    ["--ui-badge-attention-bg", "#3a3210"],
+    ["--ui-badge-attention-ink", "#f2de7a"],
+    ["--ui-badge-warning-bg", "#3d2a12"],
+    ["--ui-badge-warning-ink", "#f5b97a"],
+    ["--ui-badge-info-bg", "#132c44"],
+    ["--ui-badge-info-ink", "#8cc4f5"],
+    ["--ui-badge-critical-bg", "#3d1a1a"],
+    ["--ui-badge-critical-ink", "#f5a3a3"],
+    ["--ui-badge-neutral-bg", "#262c33"],
+    ["--ui-badge-neutral-ink", "#d3dde2"],
+  ];
+
+  for (const [prop, value] of expectedDark) {
+    assert.equal(
+      darkVars.get(prop),
+      value,
+      `Expected ${prop} in dark theme to equal ${value}, got ${darkVars.get(prop)}`
     );
   }
 });
 
-function extractAllBlocks(css, headerRegex) {
-  const clean = stripComments(css);
-  const blocks = [];
-  const globalRe = new RegExp(headerRegex.source, "g");
-  let match;
-  while ((match = globalRe.exec(clean)) !== null) {
-    let idx = match.index + match[0].length;
-    let depth = 1;
-    const start = idx;
-    while (idx < clean.length && depth > 0) {
-      const ch = clean[idx];
-      if (ch === "{") depth++;
-      else if (ch === "}") depth--;
-      idx++;
-    }
-    if (depth === 0) {
-      blocks.push({ start: match.index, end: idx, body: clean.slice(start, idx - 1) });
-      globalRe.lastIndex = idx;
-    }
-  }
-  return blocks;
-}
-
-function stripAtLayerBlocks(css) {
-  const clean = stripComments(css);
-  const blocks = extractAllBlocks(clean, /@layer\s+[a-z0-9_-]+\s*\{/i);
-  let out = "";
-  let cursor = 0;
-  for (const b of blocks) {
-    out += clean.slice(cursor, b.start);
-    cursor = b.end;
-  }
-  out += clean.slice(cursor);
-  return out;
-}
-
-test("globals @layer base only holds element-level selectors", () => {
-  const globalsCss = readCss("./globals.css");
-  const baseBlocks = extractAllBlocks(globalsCss, /@layer\s+base\s*\{/);
-  assert.ok(baseBlocks.length > 0, "globals.css must contain @layer base blocks");
-
-  const forbidden = [];
-  for (const block of baseBlocks) {
-    for (const match of block.body.matchAll(/([^{}]+)\{/g)) {
-      const rawSelectorList = match[1].trim();
-      if (!rawSelectorList) continue;
-      for (const sel of rawSelectorList.split(",")) {
-        const s = sel.trim();
-        if (!s) continue;
-        // Disallow class (.), attribute ([), or single-colon pseudo-class (: not part of ::)
-        const withoutDoubleColon = s.replace(/::/g, "");
-        if (s.includes(".") || s.includes("[") || withoutDoubleColon.includes(":")) {
-          forbidden.push(s);
-        }
-      }
-    }
-  }
-
+test("keyframes names do not collide across ui.css, home-keyframes.css, Tailwind, and tw-animate-css", () => {
+  const customKeyframes = new Set([
+    ...extractKeyframes(readCss("./ui.css")),
+    ...extractKeyframes(readCss("../features/platform/home/home-keyframes.css")),
+  ]);
+  const vendorKeyframes = new Set([
+    ...extractKeyframes(readCss("../../node_modules/tailwindcss/theme.css")),
+    ...extractKeyframes(readCss("../../node_modules/tw-animate-css/dist/tw-animate.css")),
+  ]);
+  const collisions = [...customKeyframes].filter((k) => vendorKeyframes.has(k));
   assert.deepEqual(
-    forbidden,
+    collisions,
     [],
-    `globals.css @layer base must only contain element/universal/::pseudo-element selectors (<= (0,0,1)), found: ${forbidden.join(", ")}`
-  );
-});
-
-test("ui.css has unlayered revert-layer overrides for legacy unlayered rules", () => {
-  const unlayered = stripAtLayerBlocks(readCss("./ui.css"));
-  const normalized = unlayered.replace(/\s+/g, " ");
-
-  assert.match(
-    normalized,
-    /\[data-ui="true"\]\s*:is\(ul,\s*ol\)\[class\]\s*\{[^}]*padding:\s*revert-layer;[^}]*list-style:\s*revert-layer;/i,
-    "ui.css must have unlayered revert-layer override for [data-ui=\"true\"] :is(ul, ol)[class]"
-  );
-  assert.match(
-    normalized,
-    /\[data-ui="true"\]\s*:focus-visible\s*\{[^}]*outline:\s*revert-layer;[^}]*outline-offset:\s*revert-layer;/i,
-    "ui.css must have unlayered revert-layer override for [data-ui=\"true\"] :focus-visible"
-  );
-  assert.match(
-    normalized,
-    /\[data-ui="true"\]\s*tbody\s+tr:last-child\s+td\s*\{[^}]*border-bottom:\s*revert-layer;/i,
-    "ui.css must have unlayered revert-layer override for [data-ui=\"true\"] tbody tr:last-child td"
-  );
-});
-
-test("ui.css is imported in design layout, not root layout, and globals pins layer order", () => {
-  const rootLayout = readCss("../app/layout.tsx");
-  const designLayout = readCss("../app/(design)/design/layout.tsx");
-  const globalsCss = readCss("./globals.css");
-
-  assert.equal(
-    rootLayout.includes("ui.css"),
-    false,
-    "src/app/layout.tsx must not import ui.css globally"
-  );
-  assert.equal(
-    designLayout.includes("@/styles/ui.css"),
-    true,
-    "src/app/(design)/design/layout.tsx must import @/styles/ui.css"
-  );
-  assert.match(
-    stripComments(globalsCss).trimStart(),
-    /^@layer\s+theme,\s*base,\s*components,\s*utilities;/,
-    "src/styles/globals.css must declare @layer theme, base, components, utilities; as its first statement"
+    `Unexpected @keyframes name collisions: ${collisions.join(", ")}`
   );
 });

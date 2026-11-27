@@ -1,5 +1,6 @@
 @layer theme, base, components, utilities;
 @import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
 @import "tailwindcss/utilities.css" layer(utilities) source(none);
 @import "tw-animate-css";
 @source "../";
@@ -57,8 +58,6 @@
   --color-badge-neutral-ink: var(--ui-badge-neutral-ink);
 
   --font-sans: var(--ui-font), ui-sans-serif, system-ui, sans-serif;
-  --ease-out: cubic-bezier(0, 0, 0.2, 1);
-  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
 
   --radius-sm: max(0px, calc(var(--ui-radius) - 6px));
   --radius-md: max(0px, calc(var(--ui-radius) - 4px));
@@ -145,100 +144,343 @@
 }
 
 @layer base {
-  [data-ui="true"] {
-    font-family: var(--ui-font), ui-sans-serif, system-ui, sans-serif;
+  *,
+  ::before,
+  ::after {
+    border-color: var(--ui-border);
+  }
+
+  html {
+    text-size-adjust: 100%;
+    scrollbar-gutter: stable;
+    background: #f7f9fa;
     color: var(--ui-foreground);
+  }
+
+  /* Match dark storefronts on the root canvas & scrollbar gutter via pure CSS :has (zero JS). */
+  html:has([data-site-root][data-site-theme-mode="dark"]) {
+    color-scheme: dark;
+    background: #12161b;
+    color: #f3f6f9;
+  }
+
+  html:has([data-site-root][data-site-theme-mode="dark"]) body {
+    background: #12161b;
+    color: #f3f6f9;
+  }
+
+  html:has([data-site-root][data-site-theme-mode="dark"][data-site-header="maison-centered"]) {
+    background: #151314;
+    color: #f5f2ec;
+  }
+
+  html:has([data-site-root][data-site-theme-mode="dark"][data-site-header="maison-centered"]) body {
+    background: #151314;
+    color: #f5f2ec;
+  }
+
+  body {
+    min-height: 100svh;
+    background: #f7f9fa;
+    color: var(--ui-foreground);
+    font-family: var(--ui-font), ui-sans-serif, system-ui, sans-serif;
+    font-size: clamp(1rem, 0.98rem + 0.18vw, 1.125rem);
+    font-weight: 400;
+    line-height: 1.55;
+    font-kerning: normal;
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
 
-  [data-ui="true"] :where(*, ::before, ::after) {
-    box-sizing: border-box;
-    border: 0 solid var(--ui-border);
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+    hyphens: none;
   }
 
-  [data-ui="true"] :where(h1, h2, h3, h4, h5, h6, p, figure, blockquote, dl, dd, ul, ol, pre) {
-    margin: 0;
-  }
-
-  [data-ui="true"] :where(h1, h2, h3, h4, h5, h6) {
-    font-size: inherit;
-    font-weight: inherit;
+  kbd {
     font-family: inherit;
   }
 
-  [data-ui="true"] :where(ul, ol, menu) {
-    list-style: none;
-    padding: 0;
+  button,
+  [role="button"] {
+    cursor: pointer;
   }
 
-  [data-ui="true"] :where(a) {
-    color: inherit;
-    text-decoration: inherit;
+  svg,
+  canvas {
+    max-width: 100%;
   }
 
-  [data-ui="true"] :where(button, input, select, textarea, optgroup) {
-    font: inherit;
-    letter-spacing: inherit;
-    color: inherit;
-    background-color: transparent;
-    padding: 0;
-    margin: 0;
-    border-radius: 0;
-  }
-
-  [data-ui="true"] :where(kbd) {
-    font-family: inherit;
-  }
-
-  [data-ui="true"] :where(th) {
-    text-align: inherit;
-    font-weight: inherit;
-    color: inherit;
-  }
-
-  [data-ui="true"] :where(td) {
-    vertical-align: inherit;
-  }
-
-  [data-ui="true"] ::selection {
+  ::selection {
     background: var(--ui-brand);
     color: var(--ui-brand-foreground);
   }
 
-  [data-ui="true"] :where(button, [role="button"]) {
-    cursor: pointer;
-  }
-
-  [data-ui="true"] :where(img, svg, video, canvas) {
-    display: block;
-    max-width: 100%;
-  }
-
-  [data-ui="true"] :where(img, video) {
-    height: auto;
-  }
-
-  [data-ui="true"] :where(table) {
-    border-collapse: collapse;
-  }
-
-  [data-ui="true"] :focus-visible {
+  :focus-visible {
     outline: 2px solid var(--ui-ring);
     outline-offset: 2px;
   }
 }
 
-/* Return control to layers inside UiScope for the 3 unlayered legacy rules in globals.css. */
-[data-ui="true"] :is(ul, ol)[class] {
-  padding: revert-layer;
-  list-style: revert-layer;
+/* Masked line wrappers · 0.14em vertical clearance protects Vietnamese two-tier diacritics */
+.lines .line,
+[data-reveal="lines"] .line {
+  display: block;
+  overflow: hidden;
+  padding-block: 0.14em;
+  margin-block: -0.14em;
 }
 
-[data-ui="true"] :focus-visible {
-  outline: revert-layer;
-  outline-offset: revert-layer;
+.lines [data-line],
+[data-reveal="lines"] [data-line] {
+  display: block;
 }
 
-[data-ui="true"] tbody tr:last-child td {
-  border-bottom: revert-layer;
+/* ---------------------------------------------------------------------------
+   Motion recipes · strictly guarded by `html.js` + `screen` + `prefers-reduced-motion: no-preference`.
+   - One-shot scroll reveal (`[data-reveal]`): driven exclusively by the
+     root `RevealObserver` setting `data-shown` (never touched by React className re-renders).
+   - Without JS (SSR HTML), when printing, or with reduced motion, all content renders immediately in final state.
+   --------------------------------------------------------------------------- */
+@media screen and (prefers-reduced-motion: no-preference) {
+  /* Route transition wrapper (template.tsx): opacity only so position:fixed children never jump */
+  html.js .nm-page-enter {
+    animation: nm-page-in 320ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  }
+
+  html.js .nm-page-enter-fast {
+    animation-duration: 140ms;
+  }
+
+  /* Above-the-fold immediate load recipes */
+  html.js .lines [data-line] {
+    animation: nm-line-rise 800ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+    animation-delay: calc(var(--i, 0) * 80ms + 80ms);
+  }
+
+  html.js [data-rise] {
+    animation: nm-fade-rise 800ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+    animation-delay: calc(var(--i, 0) * 80ms + 90ms);
+  }
+
+  /* 1) data-reveal="lines": masked headline line rise */
+  html.js [data-reveal="lines"]:not([data-shown]) [data-line] {
+    transform: translateY(112%);
+  }
+
+  html.js [data-reveal="lines"] [data-line] {
+    transition: transform 800ms cubic-bezier(0.16, 1, 0.3, 1);
+    transition-delay: calc(var(--i, 0) * 80ms);
+  }
+
+  html.js [data-reveal="lines"][data-shown] [data-line] {
+    transform: none;
+  }
+
+  html.js [data-reveal="lines"]:not(:has([data-line])):not([data-shown]) {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+
+  html.js [data-reveal="lines"]:not(:has([data-line])) {
+    transition:
+      opacity 540ms cubic-bezier(0.22, 1, 0.36, 1),
+      transform 800ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  html.js [data-reveal="lines"]:not(:has([data-line]))[data-shown] {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* 2) data-reveal="clip": curtain clip-path reveal for photography, video, or colour bands */
+  html.js [data-reveal="clip"]:not([data-shown]) {
+    clip-path: inset(12% 0 0 0);
+  }
+
+  html.js [data-reveal="clip"] {
+    transition: clip-path 800ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  html.js [data-reveal="clip"]:not([data-shown]) > img,
+  html.js [data-reveal="clip"]:not([data-shown]) > video {
+    transform: scale(1.04);
+  }
+
+  html.js [data-reveal="clip"] > img,
+  html.js [data-reveal="clip"] > video {
+    transition: transform 1200ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  html.js [data-reveal="clip"][data-shown] {
+    clip-path: inset(0 0 0 0);
+  }
+
+  html.js [data-reveal="clip"][data-shown] > img,
+  html.js [data-reveal="clip"][data-shown] > video {
+    transform: none;
+  }
+
+  /* 3) data-reveal="rows": sequential row entrance for lists, grids, and tables */
+  html.js [data-reveal="rows"]:not([data-shown]) > * {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+
+  html.js [data-reveal="rows"] > * {
+    transition:
+      opacity 520ms cubic-bezier(0.22, 1, 0.36, 1),
+      transform 800ms cubic-bezier(0.22, 1, 0.36, 1);
+    transition-delay: calc(var(--i, 0) * 80ms);
+  }
+
+  html.js [data-reveal="rows"] > :nth-child(2) {
+    --i: 1;
+  }
+  html.js [data-reveal="rows"] > :nth-child(3) {
+    --i: 2;
+  }
+  html.js [data-reveal="rows"] > :nth-child(4) {
+    --i: 3;
+  }
+  html.js [data-reveal="rows"] > :nth-child(5) {
+    --i: 4;
+  }
+  html.js [data-reveal="rows"] > :nth-child(6) {
+    --i: 5;
+  }
+  html.js [data-reveal="rows"] > :nth-child(7) {
+    --i: 6;
+  }
+  html.js [data-reveal="rows"] > :nth-child(8) {
+    --i: 7;
+  }
+  html.js [data-reveal="rows"] > :nth-child(9) {
+    --i: 8;
+  }
+  html.js [data-reveal="rows"] > :nth-child(10) {
+    --i: 9;
+  }
+  html.js [data-reveal="rows"] > :nth-child(11) {
+    --i: 10;
+  }
+  html.js [data-reveal="rows"] > :nth-child(12) {
+    --i: 11;
+  }
+
+  html.js [data-reveal="rows"][data-shown] > * {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* 4) data-reveal="scale": subtle focal frame settle */
+  html.js [data-reveal="scale"]:not([data-shown]) {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+
+  html.js [data-reveal="scale"] {
+    transition:
+      opacity 560ms cubic-bezier(0.22, 1, 0.36, 1),
+      transform 800ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  html.js [data-reveal="scale"][data-shown] {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* 5) data-reveal="count": metric/KPI container paired with one-shot JS counter */
+  html.js [data-reveal="count"]:not([data-shown]) {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  html.js [data-reveal="count"] {
+    transition:
+      opacity 480ms cubic-bezier(0.22, 1, 0.36, 1),
+      transform 620ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  html.js [data-reveal="count"][data-shown] {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* 6) Legacy bare [data-reveal=""] compatibility */
+  html.js [data-reveal=""]:not([data-shown]) {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+
+  html.js [data-reveal=""] {
+    transition:
+      opacity 560ms cubic-bezier(0.22, 1, 0.36, 1),
+      transform 800ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  html.js [data-reveal=""][data-shown] {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media print {
+  [data-reveal],
+  [data-reveal="rows"] > *,
+  [data-reveal="lines"] [data-line],
+  [data-reveal="clip"] > img,
+  [data-reveal="clip"] > video,
+  [data-rise],
+  .lines [data-line],
+  .nm-page-enter {
+    opacity: 1 !important;
+    transform: none !important;
+    clip-path: none !important;
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+@keyframes nm-page-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes nm-line-rise {
+  from {
+    transform: translateY(112%);
+  }
+  to {
+    transform: none;
+  }
+}
+
+@keyframes nm-fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
 }

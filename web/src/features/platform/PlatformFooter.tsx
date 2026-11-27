@@ -4,7 +4,7 @@ import { NexusMark } from "@/components/Icons";
 import { UiScope } from "@/components/ui/ui-scope";
 
 const LINK_CLASS =
-  "inline-flex min-h-[var(--space-6)] items-center text-[length:var(--home-fs-small)] leading-[1.4] font-[420] [overflow-wrap:anywhere] text-[var(--home-ink-3)] transition-colors duration-200 hover:text-[var(--home-ink)]";
+  "inline-flex min-h-6 items-center text-[length:var(--home-fs-small)] leading-[1.4] font-[420] [overflow-wrap:anywhere] text-[var(--home-ink-3)] transition-colors duration-200 hover:text-[var(--home-ink)]";
 
 const COL_TITLE_CLASS =
   "text-[length:var(--home-fs-h3)] leading-[1.3] font-[450] tracking-[-0.01em] text-[var(--home-ink)]";
@@ -12,13 +12,13 @@ const COL_TITLE_CLASS =
 export function PlatformFooter() {
   return (
     <UiScope>
-      <footer className="w-full bg-[var(--home-bg)] pt-[var(--space-9)] pb-[var(--space-7)] font-[family-name:var(--home-font)] text-[var(--home-ink)] min-[601px]:pt-[var(--home-space-section)] min-[601px]:pb-[var(--space-8)] [&_:focus-visible]:outline-2 [&_:focus-visible]:outline-offset-2 [&_:focus-visible]:outline-[var(--home-accent)]">
-        <div className="mx-auto flex w-[min(var(--home-max),calc(100%-2*var(--home-gutter)))] flex-col gap-[var(--space-8)] min-[601px]:gap-[var(--home-space-head)]">
-          <div className="grid grid-cols-1 items-start gap-[var(--space-8)] min-[901px]:grid-cols-[minmax(120px,1.15fr)_minmax(0,3.85fr)] min-[901px]:gap-x-[var(--home-gap)] min-[901px]:gap-y-[var(--space-8)]">
+      <footer className="w-full bg-[var(--home-bg)] pt-[72px] pb-8 font-[family-name:var(--home-font)] text-[var(--home-ink)] min-[601px]:pt-[var(--home-space-section)] min-[601px]:pb-12 [&_:focus-visible]:outline-2 [&_:focus-visible]:outline-offset-2 [&_:focus-visible]:outline-[var(--home-accent)]">
+        <div className="mx-auto flex w-[min(var(--home-max),calc(100%-2*var(--home-gutter)))] flex-col gap-12 min-[601px]:gap-[var(--home-space-head)]">
+          <div className="grid grid-cols-1 items-start gap-12 min-[901px]:grid-cols-[minmax(120px,1.15fr)_minmax(0,3.85fr)] min-[901px]:gap-x-[var(--home-gap)] min-[901px]:gap-y-12">
             <div className="flex items-start">
               <Link
                 href="/"
-                className="inline-flex min-h-[var(--space-8)] min-w-[var(--space-8)] items-center justify-center text-[var(--home-ink)] transition-opacity duration-200 hover:opacity-[0.78]"
+                className="inline-flex min-h-12 min-w-12 items-center justify-center text-[var(--home-ink)] transition-opacity duration-200 hover:opacity-[0.78]"
                 aria-label="NexusMart trang chủ"
               >
                 <NexusMark size={32} accentColor="var(--home-ink)" />
@@ -26,12 +26,12 @@ export function PlatformFooter() {
             </div>
 
             <nav
-              className="grid grid-cols-2 gap-x-[var(--space-4)] gap-y-[var(--space-7)] min-[601px]:gap-x-[var(--space-5)] min-[901px]:grid-cols-4 min-[901px]:gap-x-[var(--home-gap)]"
+              className="grid grid-cols-2 gap-x-4 gap-y-8 min-[601px]:gap-x-5 min-[901px]:grid-cols-4 min-[901px]:gap-x-[var(--home-gap)]"
               aria-label="Liên kết chân trang"
             >
-              <div className="flex min-w-0 flex-col gap-[var(--space-4)]">
+              <div className="flex min-w-0 flex-col gap-4">
                 <p className={COL_TITLE_CLASS}>NexusMart</p>
-                <ul className="flex flex-col gap-[var(--space-3)]">
+                <ul className="flex flex-col gap-3">
                   <li>
                     <Link href="/ve-nexusmart" className={LINK_CLASS}>
                       Về NexusMart
@@ -45,9 +45,9 @@ export function PlatformFooter() {
                 </ul>
               </div>
 
-              <div className="flex min-w-0 flex-col gap-[var(--space-4)]">
+              <div className="flex min-w-0 flex-col gap-4">
                 <p className={COL_TITLE_CLASS}>Người bán</p>
-                <ul className="flex flex-col gap-[var(--space-3)]">
+                <ul className="flex flex-col gap-3">
                   <li>
                     <Link href="/dang-ky?role=seller" className={LINK_CLASS}>
                       Mở gian hàng
@@ -66,9 +66,9 @@ export function PlatformFooter() {
                 </ul>
               </div>
 
-              <div className="flex min-w-0 flex-col gap-[var(--space-4)]">
+              <div className="flex min-w-0 flex-col gap-4">
                 <p className={COL_TITLE_CLASS}>Mua sắm</p>
-                <ul className="flex flex-col gap-[var(--space-3)]">
+                <ul className="flex flex-col gap-3">
                   <li>
                     <Link href="/#danh-ba-gian-hang" className={LINK_CLASS}>
                       Các cửa hàng
@@ -77,9 +77,9 @@ export function PlatformFooter() {
                 </ul>
               </div>
 
-              <div className="flex min-w-0 flex-col gap-[var(--space-4)]">
+              <div className="flex min-w-0 flex-col gap-4">
                 <p className={COL_TITLE_CLASS}>Liên hệ</p>
-                <ul className="flex flex-col gap-[var(--space-3)]">
+                <ul className="flex flex-col gap-3">
                   <li>
                     <a href="mailto:hotro@nexusmart.vn" className={LINK_CLASS}>
                       hotro@nexusmart.vn
@@ -90,7 +90,7 @@ export function PlatformFooter() {
             </nav>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-x-[var(--space-6)] gap-y-[var(--space-3)] border-t border-[var(--home-border)] pt-[var(--space-7)]">
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 border-t border-[var(--home-border)] pt-8">
             <p className="text-[length:var(--home-fs-small)] leading-[1.5] font-[420] text-[var(--home-ink-3)] tabular-nums">
               © 2026 NexusMart · Nền tảng cửa hàng độc lập
             </p>

@@ -16,7 +16,6 @@ import {
 } from "@/features/seller/sellerServer";
 import { loadSellerSiteSummaryServer } from "@/features/seller/site/siteServer";
 import { summarizeSellerSite } from "@/features/seller/site/siteSummary";
-import "@/styles/ui.css";
 
 export const dynamic = "force-dynamic";
 

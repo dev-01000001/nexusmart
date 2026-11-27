@@ -3,7 +3,6 @@ import Link from "next/link";
 import { NexusMark } from "@/components/Icons";
 import { Button } from "@/components/ui/button";
 import { UiScope } from "@/components/ui/ui-scope";
-import "@/styles/ui.css";
 
 export function NotFoundView() {
   return (

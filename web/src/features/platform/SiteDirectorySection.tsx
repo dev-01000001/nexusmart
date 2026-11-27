@@ -22,22 +22,22 @@ const MOSAIC_TEMPLATES = [
 ] as const;
 
 const MOSAIC_ROWS_CLS =
-  "flex flex-col gap-[var(--home-gap)] [@media(max-width:960px)]:mr-[calc(var(--home-gutter)*-1)] [@media(max-width:960px)]:flex-row [@media(max-width:960px)]:gap-[var(--space-3)] [@media(max-width:960px)]:overflow-x-auto [@media(max-width:960px)]:pb-[var(--space-1)] [@media(max-width:960px)]:pr-[var(--home-gutter)] [@media(max-width:960px)]:[scroll-snap-type:x_mandatory] [@media(max-width:960px)]:[scrollbar-width:none] [@media(max-width:960px)]:[&::-webkit-scrollbar]:hidden";
+  "flex flex-col gap-[var(--home-gap)] [@media(max-width:960px)]:mr-[calc(var(--home-gutter)*-1)] [@media(max-width:960px)]:flex-row [@media(max-width:960px)]:gap-3 [@media(max-width:960px)]:overflow-x-auto [@media(max-width:960px)]:pb-1 [@media(max-width:960px)]:pr-[var(--home-gutter)] [@media(max-width:960px)]:[scroll-snap-type:x_mandatory] [@media(max-width:960px)]:[scrollbar-width:none] [@media(max-width:960px)]:[&::-webkit-scrollbar]:hidden";
 
 const CARD_MEDIA_CLS =
   "relative h-[clamp(300px,26.5vw,381px)] w-full overflow-hidden rounded-[var(--home-radius-media)] [border:1px_solid_var(--home-border)] bg-[var(--home-card)] [@media(max-width:960px)]:h-[300px]";
 
 const EMPTY_BAR_CLS =
-  "flex flex-wrap items-center justify-between gap-x-[var(--space-6)] gap-y-[var(--space-4)] rounded-[var(--home-radius-card)] [border:1px_solid_var(--home-border)] bg-[var(--home-card)] px-[var(--space-6)] py-[var(--space-5)]";
+  "flex flex-wrap items-center justify-between gap-x-6 gap-y-4 rounded-[var(--home-radius-card)] [border:1px_solid_var(--home-border)] bg-[var(--home-card)] px-6 py-5";
 
 const EMPTY_CTA_CLS =
-  "inline-flex min-h-[var(--home-btn-header-h)] items-center justify-center whitespace-nowrap rounded-[var(--radius-pill)] bg-[var(--home-ink)] px-[var(--space-5)] py-0 text-[length:var(--home-fs-small)] font-[550] text-[var(--home-bg)] [transition:background-color_var(--t-hover)_var(--ease-out)] hover:bg-[var(--bg-2)]";
+  "inline-flex min-h-[var(--home-btn-header-h)] items-center justify-center whitespace-nowrap rounded-full bg-[var(--home-ink)] px-5 py-0 text-[length:var(--home-fs-small)] font-[550] text-[var(--home-bg)] [transition:background-color_200ms_cubic-bezier(0.22,1,0.36,1)] hover:bg-[#eff3f5]";
 
 const PAGE_BTN_CLS =
-  "inline-flex min-h-[var(--home-btn-header-h)] min-w-[var(--home-btn-header-h)] items-center justify-center rounded-[var(--radius-pill)] [border:1px_solid_var(--home-border)] bg-[var(--home-card)] px-[var(--space-4)] py-0 text-[length:var(--home-fs-small)] font-medium text-[var(--home-ink)] [transition:border-color_var(--t-hover)_var(--ease-out)] hover:border-[color:var(--home-border-strong)]";
+  "inline-flex min-h-[var(--home-btn-header-h)] min-w-[var(--home-btn-header-h)] items-center justify-center rounded-full [border:1px_solid_var(--home-border)] bg-[var(--home-card)] px-4 py-0 text-[length:var(--home-fs-small)] font-medium text-[var(--home-ink)] [transition:border-color_200ms_cubic-bezier(0.22,1,0.36,1)] hover:border-[color:var(--home-border-strong)]";
 
 const PAGE_BTN_DISABLED_CLS =
-  "inline-flex min-h-[var(--home-btn-header-h)] min-w-[var(--home-btn-header-h)] items-center justify-center rounded-[var(--radius-pill)] [border:1px_solid_var(--home-border)] bg-[var(--home-glass)] px-[var(--space-4)] py-0 text-[length:var(--home-fs-small)] font-medium text-[var(--home-ink-dim)]";
+  "inline-flex min-h-[var(--home-btn-header-h)] min-w-[var(--home-btn-header-h)] items-center justify-center rounded-full [border:1px_solid_var(--home-border)] bg-[var(--home-glass)] px-4 py-0 text-[length:var(--home-fs-small)] font-medium text-[var(--home-ink-dim)]";
 
 function mosaicRowGridCols(cols: number): string {
   if (cols === 1) return "grid-cols-[minmax(0,1fr)]";
@@ -63,7 +63,7 @@ function TemplateShowcaseMosaic() {
         {MOSAIC_TEMPLATES.map(({ template, variant }) => (
           <article
             key={template.key}
-            className={`flex min-w-0 flex-col gap-[var(--space-3)] text-[var(--home-ink)] [@media(max-width:960px)]:[scroll-snap-align:start] ${
+            className={`flex min-w-0 flex-col gap-3 text-[var(--home-ink)] [@media(max-width:960px)]:[scroll-snap-align:start] ${
               variant === "mobile"
                 ? "[@media(max-width:960px)]:flex-[0_0_60%]"
                 : "[@media(max-width:960px)]:flex-[0_0_78%]"
@@ -77,7 +77,7 @@ function TemplateShowcaseMosaic() {
               />
             </div>
 
-            <div className="flex min-w-0 flex-col gap-[var(--space-1)]">
+            <div className="flex min-w-0 flex-col gap-1">
               <p className="text-[length:var(--home-fs-small)] font-[420] leading-[1.4] text-[var(--home-ink-3)]">
                 Mẫu giao diện · {template.label}
               </p>
@@ -116,7 +116,7 @@ function RealSiteMosaic({ doors, extra }: { doors: DirectorySite[]; extra: Direc
                 <a
                   key={site.siteId}
                   href={site.origin}
-                  className={`group flex min-w-0 flex-col gap-[var(--space-3)] text-[var(--home-ink)] [@media(max-width:960px)]:[scroll-snap-align:start] ${mobileWidthCls}`}
+                  className={`group flex min-w-0 flex-col gap-3 text-[var(--home-ink)] [@media(max-width:960px)]:[scroll-snap-align:start] ${mobileWidthCls}`}
                 >
                   <div className={CARD_MEDIA_CLS}>
                     {site.coverUrl ? (
@@ -126,7 +126,7 @@ function RealSiteMosaic({ doors, extra }: { doors: DirectorySite[]; extra: Direc
                         width={960}
                         height={720}
                         loading="lazy"
-                        className="h-full w-full object-cover object-[center_20%] [transition:transform_var(--t-page)_var(--ease-expo)] group-hover:[transform:scale(1.03)] group-focus-visible:[transform:scale(1.03)]"
+                        className="h-full w-full object-cover object-[center_20%] [transition:transform_320ms_cubic-bezier(0.16,1,0.3,1)] group-hover:[transform:scale(1.03)] group-focus-visible:[transform:scale(1.03)]"
                       />
                     ) : (
                       <StorefrontStageMini
@@ -140,9 +140,9 @@ function RealSiteMosaic({ doors, extra }: { doors: DirectorySite[]; extra: Direc
                     )}
                   </div>
 
-                  <div className="flex min-w-0 flex-col gap-[var(--space-1)]">
-                    <div className="flex items-center justify-between gap-[var(--space-3)]">
-                      <div className="inline-flex min-w-0 items-center gap-[var(--space-2)]">
+                  <div className="flex min-w-0 flex-col gap-1">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="inline-flex min-w-0 items-center gap-2">
                         {site.logoUrl && (
                           <img
                             src={site.logoUrl}
@@ -150,7 +150,7 @@ function RealSiteMosaic({ doors, extra }: { doors: DirectorySite[]; extra: Direc
                             width={22}
                             height={22}
                             loading="lazy"
-                            className="h-[var(--space-5)] w-[var(--space-5)] flex-none rounded-[var(--home-radius-media)] bg-[var(--home-ink)] object-cover"
+                            className="h-5 w-5 flex-none rounded-[var(--home-radius-media)] bg-[var(--home-ink)] object-cover"
                             aria-hidden="true"
                           />
                         )}
@@ -159,7 +159,7 @@ function RealSiteMosaic({ doors, extra }: { doors: DirectorySite[]; extra: Direc
                         </h3>
                       </div>
                       <span
-                        className="inline-flex flex-none text-[var(--home-ink-3)] [transition:transform_var(--t-hover)_var(--ease-expo),color_var(--t-hover)_var(--ease-out)] group-hover:[transform:translate(2px,-2px)] group-hover:text-[var(--home-accent)] group-focus-visible:[transform:translate(2px,-2px)] group-focus-visible:text-[var(--home-accent)]"
+                        className="inline-flex flex-none text-[var(--home-ink-3)] [transition:transform_200ms_cubic-bezier(0.16,1,0.3,1),color_200ms_cubic-bezier(0.22,1,0.36,1)] group-hover:[transform:translate(2px,-2px)] group-hover:text-[var(--home-accent)] group-focus-visible:[transform:translate(2px,-2px)] group-focus-visible:text-[var(--home-accent)]"
                         aria-hidden="true"
                       >
                         <IconArrowUpRight size={16} />
@@ -177,14 +177,14 @@ function RealSiteMosaic({ doors, extra }: { doors: DirectorySite[]; extra: Direc
       </div>
 
       {extra.length > 0 && (
-        <ul className="flex flex-col gap-[var(--space-2)]" data-reveal="rows">
+        <ul className="flex flex-col gap-2" data-reveal="rows">
           {extra.map((site) => (
             <li key={site.siteId}>
               <a
                 href={site.origin}
-                className="group flex items-center justify-between gap-[var(--space-4)] rounded-[var(--home-radius-card)] [border:1px_solid_var(--home-border)] bg-[var(--home-card)] px-[var(--space-5)] py-[var(--space-4)] text-[var(--home-ink)] [transition:border-color_var(--t-hover)_var(--ease-out)] hover:border-[color:var(--home-border-strong)] focus-visible:border-[color:var(--home-border-strong)] [@media(max-width:960px)]:flex-col [@media(max-width:960px)]:items-start [@media(max-width:960px)]:gap-[var(--space-2)]"
+                className="group flex items-center justify-between gap-4 rounded-[var(--home-radius-card)] [border:1px_solid_var(--home-border)] bg-[var(--home-card)] px-5 py-4 text-[var(--home-ink)] [transition:border-color_200ms_cubic-bezier(0.22,1,0.36,1)] hover:border-[color:var(--home-border-strong)] focus-visible:border-[color:var(--home-border-strong)] [@media(max-width:960px)]:flex-col [@media(max-width:960px)]:items-start [@media(max-width:960px)]:gap-2"
               >
-                <div className="flex min-w-0 flex-1 flex-col gap-[var(--space-1)]">
+                <div className="flex min-w-0 flex-1 flex-col gap-1">
                   <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[length:var(--home-fs-body)] font-medium text-[var(--home-ink)]">
                     {site.name}
                   </span>
@@ -195,13 +195,13 @@ function RealSiteMosaic({ doors, extra }: { doors: DirectorySite[]; extra: Direc
                   )}
                 </div>
 
-                <div className="inline-flex flex-none items-center gap-[var(--space-3)]">
+                <div className="inline-flex flex-none items-center gap-3">
                   <span className="text-[length:var(--home-fs-small)] text-[var(--home-ink-3)]">
                     {site.host}
                   </span>
                   <IconArrowUpRight
                     size={16}
-                    className="text-[var(--home-accent)] [transition:transform_var(--t-hover)_var(--ease-expo)] group-hover:[transform:translate(2px,-2px)] group-focus-visible:[transform:translate(2px,-2px)]"
+                    className="text-[var(--home-accent)] [transition:transform_200ms_cubic-bezier(0.16,1,0.3,1)] group-hover:[transform:translate(2px,-2px)] group-focus-visible:[transform:translate(2px,-2px)]"
                   />
                 </div>
               </a>
@@ -222,11 +222,11 @@ export function SiteDirectorySection({ directory }: SiteDirectorySectionProps) {
   return (
     <section
       id="danh-ba-gian-hang"
-      className="relative z-[2] mt-[calc(var(--home-radius-band)*-1)] w-full scroll-mt-[var(--home-header-h)] rounded-t-[var(--home-radius-band)] bg-[var(--home-band)] pb-0 pt-[clamp(56px,7vw,96px)] text-[var(--home-ink)] [@media(max-width:960px)]:mt-[calc(var(--home-radius-band-sm)*-1)] [@media(max-width:960px)]:rounded-t-[var(--home-radius-band-sm)] [@media(max-width:960px)]:pt-[var(--space-8)]"
+      className="relative z-[2] mt-[calc(var(--home-radius-band)*-1)] w-full scroll-mt-[var(--home-header-h)] rounded-t-[var(--home-radius-band)] bg-[var(--home-band)] pb-0 pt-[clamp(56px,7vw,96px)] text-[var(--home-ink)] [@media(max-width:960px)]:mt-[calc(var(--home-radius-band-sm)*-1)] [@media(max-width:960px)]:rounded-t-[var(--home-radius-band-sm)] [@media(max-width:960px)]:pt-12"
       aria-labelledby="platform-directory-heading"
     >
       <div className="mx-auto flex w-[min(var(--home-max),100%_-_2_*_var(--home-gutter))] flex-col gap-[var(--home-space-head)]">
-        <div className="flex flex-wrap items-end justify-between gap-x-[var(--space-7)] gap-y-[var(--space-4)]">
+        <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-4">
           <h2
             id="platform-directory-heading"
             className="max-w-[1080px] font-[family-name:var(--home-font)] text-[length:var(--home-fs-h2)] font-light leading-[1.1] tracking-[-0.025em] [text-wrap:pretty]"
@@ -239,7 +239,7 @@ export function SiteDirectorySection({ directory }: SiteDirectorySectionProps) {
           </h2>
 
           {directory.ok && directory.total > 0 && (
-            <p className="num whitespace-nowrap text-[length:var(--home-fs-small)] font-[450] text-[var(--home-ink-2)]">
+            <p className="tabular-nums whitespace-nowrap text-[length:var(--home-fs-small)] font-[450] text-[var(--home-ink-2)]">
               {directory.total} gian hàng
             </p>
           )}
@@ -277,7 +277,7 @@ export function SiteDirectorySection({ directory }: SiteDirectorySectionProps) {
 
             {directory.totalPages > 1 && (
               <nav
-                className="flex flex-wrap items-center justify-between gap-[var(--space-3)] pt-[var(--space-2)]"
+                className="flex flex-wrap items-center justify-between gap-3 pt-2"
                 aria-label="Phân trang danh bạ gian hàng"
               >
                 {directory.page > 1 ? (
@@ -290,12 +290,12 @@ export function SiteDirectorySection({ directory }: SiteDirectorySectionProps) {
                   </span>
                 )}
 
-                <div className="flex flex-wrap items-center gap-[var(--space-2)]">
+                <div className="flex flex-wrap items-center gap-2">
                   {buildPageList(directory.page, directory.totalPages).map((item, idx) =>
                     item === null ? (
                       <span
                         key={`gap-${idx}`}
-                        className="px-[var(--space-2)] py-0 text-[length:var(--home-fs-small)] text-[var(--home-ink-3)]"
+                        className="px-2 py-0 text-[length:var(--home-fs-small)] text-[var(--home-ink-3)]"
                         aria-hidden="true"
                       >
                         …
@@ -303,13 +303,17 @@ export function SiteDirectorySection({ directory }: SiteDirectorySectionProps) {
                     ) : item === directory.page ? (
                       <span
                         key={item}
-                        className="num inline-flex min-h-[var(--home-btn-header-h)] min-w-[var(--home-btn-header-h)] items-center justify-center rounded-[var(--radius-pill)] bg-[var(--home-ink)] px-[var(--space-4)] py-0 text-[length:var(--home-fs-small)] font-semibold text-[var(--home-bg)]"
+                        className="tabular-nums inline-flex min-h-[var(--home-btn-header-h)] min-w-[var(--home-btn-header-h)] items-center justify-center rounded-full bg-[var(--home-ink)] px-4 py-0 text-[length:var(--home-fs-small)] font-semibold text-[var(--home-bg)]"
                         aria-current="page"
                       >
                         {item}
                       </span>
                     ) : (
-                      <Link key={item} href={pageHref(item)} className={`${PAGE_BTN_CLS} num`}>
+                      <Link
+                        key={item}
+                        href={pageHref(item)}
+                        className={`${PAGE_BTN_CLS} tabular-nums`}
+                      >
                         {item}
                       </Link>
                     )

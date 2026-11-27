@@ -8,7 +8,6 @@ import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
 import { requireRole, type Session } from "@/lib/server/session";
 import { AdminShell } from "@/features/admin/AdminShell";
-import "@/styles/ui.css";
 
 export const dynamic = "force-dynamic";
 

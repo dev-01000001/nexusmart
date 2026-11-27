@@ -82,7 +82,7 @@ export function enrichCartGroups(
       shopShortName: shop?.shortName || group.shop_name || "Gian hàng",
       shopSlug: shop?.slug || group.shop_id,
       shopCity: shop?.city || "",
-      accentDot: shop?.accentDot || "var(--accent)",
+      accentDot: shop?.accentDot || "var(--ui-brand)",
       freeShipThreshold: shop?.freeShipThreshold ?? 199000,
       items,
     };

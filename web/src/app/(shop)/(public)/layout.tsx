@@ -1,6 +1,7 @@
 import { Inter } from "next/font/google";
 import React from "react";
 import "@/features/platform/home/home-keyframes.css";
+import "@/features/platform/home/home-tokens.css";
 import { PlatformFooter } from "@/features/platform/PlatformFooter";
 import { PlatformHeader } from "@/features/platform/PlatformHeader";
 
@@ -16,12 +17,8 @@ const homeInter = Inter({
 export default function PlatformPublicLayout({ children }: { children: React.ReactNode }) {
   return (
     <div
+      data-platform-public="true"
       className={`${homeInter.variable} flex min-h-svh flex-col bg-background text-foreground`}
-      style={
-        {
-          "--home-font": "var(--font-inter), system-ui, -apple-system, sans-serif",
-        } as React.CSSProperties
-      }
     >
       <PlatformHeader />
       <main id="main-content" tabIndex={-1} className="w-full min-w-0 flex-1 focus:outline-none">

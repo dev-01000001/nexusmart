@@ -149,8 +149,6 @@ export function sanitizeSafeHref(raw: string | undefined | null, fallback = ""):
   return clean || fallback;
 }
 
-export const SITE_FONT_STACK = "var(--font-archivo), system-ui, sans-serif";
-
 export function resolveSiteFontStack(fontFamily?: SiteFontFamily | string): string {
   return resolveSiteUiFontStack(fontFamily);
 }

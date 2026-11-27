@@ -28,7 +28,7 @@ const baseProps = (size: number, className?: string) => ({
 export function NexusMark({
   size = 20,
   className,
-  accentColor = "var(--accent)",
+  accentColor = "var(--ui-brand)",
 }: IconProps & { accentColor?: string }) {
   return (
     <svg

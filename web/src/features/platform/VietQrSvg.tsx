@@ -28,16 +28,16 @@ export function VietQrSvg({ size = 148, className, decorative = false }: VietQrS
       aria-label={decorative ? undefined : "Mã VietQR thanh toán đơn hàng"}
       aria-hidden={decorative ? true : undefined}
     >
-      <rect width="210" height="210" fill="var(--bg-0)" />
+      <rect width="210" height="210" fill="#ffffff" />
       {[
         [12, 12],
         [138, 12],
         [12, 138],
       ].map(([x, y]) => (
         <g key={`${x}-${y}`}>
-          <rect x={x} y={y} width="60" height="60" fill="var(--ink-1)" />
-          <rect x={x + 9} y={y + 9} width="42" height="42" fill="var(--bg-0)" />
-          <rect x={x + 18} y={y + 18} width="24" height="24" fill="var(--ink-1)" />
+          <rect x={x} y={y} width="60" height="60" fill="#152229" />
+          <rect x={x + 9} y={y + 9} width="42" height="42" fill="#ffffff" />
+          <rect x={x + 18} y={y + 18} width="24" height="24" fill="#152229" />
         </g>
       ))}
       {cells.map(([r, c]) => (
@@ -47,7 +47,7 @@ export function VietQrSvg({ size = 148, className, decorative = false }: VietQrS
           y={12 + r * 9}
           width="7.6"
           height="7.6"
-          fill="var(--ink-1)"
+          fill="#152229"
         />
       ))}
     </svg>

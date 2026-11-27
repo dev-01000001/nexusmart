@@ -18,7 +18,6 @@ import {
 import { validateCustomHostname } from "./domains.ts";
 import { createSiteHostCache } from "./cache.ts";
 import {
-  SITE_FONT_STACK,
   SITE_UI_FONT_STACKS,
   buildSiteThemeVars,
   checkThemeContrast,
@@ -960,12 +959,17 @@ test("WCAG contrast, safe URL sanitization, and CSS theme vars enforce security 
   // resolveSiteFontStack maps each allowed font to its real next/font variable stack,
   // and falls back safely to the default site font for invalid or unknown inputs.
   const defaultStack = SITE_UI_FONT_STACKS[DEFAULT_SITE_THEME.font_family];
-  assert.equal(SITE_FONT_STACK, "var(--font-archivo), system-ui, sans-serif");
+  assert.equal(defaultStack.includes("--font-archivo"), false);
   for (const fontEnum of ALLOWED_SITE_FONTS) {
     assert.equal(
       resolveSiteFontStack(fontEnum),
       SITE_UI_FONT_STACKS[fontEnum],
       `expected real font stack for enum ${fontEnum}`
+    );
+    assert.equal(
+      SITE_UI_FONT_STACKS[fontEnum].includes("--font-archivo"),
+      false,
+      `site font stack ${fontEnum} must not reference removed --font-archivo`
     );
     assert.ok(
       typeof SITE_FONT_LABELS[fontEnum] === "string" && SITE_FONT_LABELS[fontEnum].length > 0,

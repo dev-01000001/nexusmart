@@ -150,7 +150,7 @@ export function PlatformHeader() {
           className={cn(
             "mx-auto grid h-full items-center",
             isHome
-              ? "w-[min(var(--home-max),calc(100%-2*var(--home-gutter)))] grid-cols-[auto_1fr] gap-[var(--space-3)] px-0 min-[961px]:grid-cols-[auto_1fr_auto] min-[961px]:gap-[var(--space-8)]"
+              ? "w-[min(var(--home-max),calc(100%-2*var(--home-gutter)))] grid-cols-[auto_1fr] gap-3 px-0 min-[961px]:grid-cols-[auto_1fr_auto] min-[961px]:gap-12"
               : "w-full grid-cols-[auto_1fr] gap-4 px-4 sm:px-6 min-[961px]:grid-cols-[1fr_auto_1fr] lg:px-8"
           )}
         >
@@ -158,7 +158,7 @@ export function PlatformHeader() {
             href="/"
             className={cn(
               "inline-flex min-h-[36px] w-fit items-center py-1 transition-opacity duration-200 hover:opacity-[0.78]",
-              isHome ? "gap-[var(--space-2)] text-[var(--home-ink)]" : "gap-2.5 text-foreground"
+              isHome ? "gap-2 text-[var(--home-ink)]" : "gap-2.5 text-foreground"
             )}
             aria-label="NexusMart trang chủ"
           >
@@ -181,7 +181,7 @@ export function PlatformHeader() {
           <nav
             className={cn(
               "hidden items-center min-[961px]:flex",
-              isHome ? "justify-start gap-[var(--space-7)]" : "justify-center gap-7"
+              isHome ? "justify-start gap-8" : "justify-center gap-7"
             )}
             aria-label="Điều hướng nền tảng"
           >
@@ -195,7 +195,7 @@ export function PlatformHeader() {
                     "relative whitespace-nowrap transition-colors duration-200",
                     isHome
                       ? cn(
-                          "px-[var(--space-1)] py-[var(--space-2)] text-[length:var(--home-fs-body)] font-[450] text-[var(--home-ink)] hover:opacity-100",
+                          "px-1 py-2 text-[length:var(--home-fs-body)] font-[450] text-[var(--home-ink)] hover:opacity-100",
                           active ? "opacity-100" : "opacity-[0.92]"
                         )
                       : cn(
@@ -213,7 +213,7 @@ export function PlatformHeader() {
           <div
             className={cn(
               "hidden items-center justify-end min-[961px]:flex",
-              isHome ? "gap-[var(--space-5)]" : "gap-3"
+              isHome ? "gap-5" : "gap-3"
             )}
           >
             {isAuthenticated && user ? (
@@ -222,7 +222,7 @@ export function PlatformHeader() {
                   (isHome ? (
                     <Link
                       href="/seller"
-                      className="rounded-full px-[var(--space-3)] py-[var(--space-2)] text-[length:var(--home-fs-body)] font-[450] whitespace-nowrap text-[var(--home-ink)] transition-colors duration-200 hover:bg-[var(--home-glass-strong)]"
+                      className="rounded-full px-3 py-2 text-[length:var(--home-fs-body)] font-[450] whitespace-nowrap text-[var(--home-ink)] transition-colors duration-200 hover:bg-[var(--home-glass-strong)]"
                     >
                       Kênh người bán
                     </Link>
@@ -235,7 +235,7 @@ export function PlatformHeader() {
                   (isHome ? (
                     <Link
                       href="/admin"
-                      className="rounded-full px-[var(--space-3)] py-[var(--space-2)] text-[length:var(--home-fs-body)] font-[450] whitespace-nowrap text-[var(--home-ink)] transition-colors duration-200 hover:bg-[var(--home-glass-strong)]"
+                      className="rounded-full px-3 py-2 text-[length:var(--home-fs-body)] font-[450] whitespace-nowrap text-[var(--home-ink)] transition-colors duration-200 hover:bg-[var(--home-glass-strong)]"
                     >
                       Cổng quản trị
                     </Link>
@@ -363,7 +363,7 @@ export function PlatformHeader() {
                   (isHome ? (
                     <Link
                       href="/dang-ky?role=seller"
-                      className="inline-flex min-h-[var(--home-btn-header-h)] items-center justify-center rounded-full bg-[var(--home-ink)] px-[var(--space-5)] py-[var(--space-2)] text-[length:var(--home-fs-body)] font-[550] whitespace-nowrap text-[var(--home-bg)] transition-[background-color,transform] duration-200 hover:bg-[var(--bg-2)] active:scale-[0.98]"
+                      className="inline-flex min-h-[var(--home-btn-header-h)] items-center justify-center rounded-full bg-[var(--home-ink)] px-5 py-2 text-[length:var(--home-fs-body)] font-[550] whitespace-nowrap text-[var(--home-bg)] transition-[background-color,transform] duration-200 hover:bg-[#eff3f5] active:scale-[0.98]"
                     >
                       Mở gian hàng
                     </Link>
@@ -377,13 +377,13 @@ export function PlatformHeader() {
               <>
                 <Link
                   href="/dang-nhap"
-                  className="rounded-full px-[var(--space-3)] py-[var(--space-2)] text-[length:var(--home-fs-body)] font-[450] whitespace-nowrap text-[var(--home-ink)] transition-colors duration-200 hover:bg-[var(--home-glass-strong)]"
+                  className="rounded-full px-3 py-2 text-[length:var(--home-fs-body)] font-[450] whitespace-nowrap text-[var(--home-ink)] transition-colors duration-200 hover:bg-[var(--home-glass-strong)]"
                 >
                   Đăng nhập
                 </Link>
                 <Link
                   href="/dang-ky?role=seller"
-                  className="inline-flex min-h-[var(--home-btn-header-h)] items-center justify-center rounded-full bg-[var(--home-ink)] px-[var(--space-5)] py-[var(--space-2)] text-[length:var(--home-fs-body)] font-[550] whitespace-nowrap text-[var(--home-bg)] transition-[background-color,transform] duration-200 hover:bg-[var(--bg-2)] active:scale-[0.98]"
+                  className="inline-flex min-h-[var(--home-btn-header-h)] items-center justify-center rounded-full bg-[var(--home-ink)] px-5 py-2 text-[length:var(--home-fs-body)] font-[550] whitespace-nowrap text-[var(--home-bg)] transition-[background-color,transform] duration-200 hover:bg-[#eff3f5] active:scale-[0.98]"
                 >
                   Mở gian hàng
                 </Link>
@@ -404,7 +404,7 @@ export function PlatformHeader() {
             {isHome ? (
               <Link
                 href="/dang-ky?role=seller"
-                className="inline-flex min-h-[44px] items-center justify-center rounded-[var(--radius-control)] bg-transparent px-[var(--space-2)] text-[length:var(--home-fs-small)] font-medium whitespace-nowrap text-[var(--home-ink)] underline underline-offset-[var(--space-1)] hover:bg-[var(--home-glass)]"
+                className="inline-flex min-h-[44px] items-center justify-center rounded-[6px] bg-transparent px-2 text-[length:var(--home-fs-small)] font-medium whitespace-nowrap text-[var(--home-ink)] underline underline-offset-4 hover:bg-[var(--home-glass)]"
               >
                 Mở gian hàng
               </Link>
@@ -514,7 +514,7 @@ export function PlatformHeader() {
                           className={cn(
                             "min-h-11 w-full",
                             isHome &&
-                              "rounded-full bg-[var(--home-ink)] text-[var(--home-bg)] hover:bg-[var(--bg-2)]"
+                              "rounded-full bg-[var(--home-ink)] text-[var(--home-bg)] hover:bg-[#eff3f5]"
                           )}
                           asChild
                         >
@@ -529,7 +529,7 @@ export function PlatformHeader() {
                           className={cn(
                             "min-h-11 w-full",
                             isHome &&
-                              "rounded-full bg-[var(--home-ink)] text-[var(--home-bg)] hover:bg-[var(--bg-2)]"
+                              "rounded-full bg-[var(--home-ink)] text-[var(--home-bg)] hover:bg-[#eff3f5]"
                           )}
                           asChild
                         >
@@ -560,7 +560,7 @@ export function PlatformHeader() {
                         className={cn(
                           "min-h-11 w-full",
                           isHome &&
-                            "rounded-full bg-[var(--home-ink)] text-[var(--home-bg)] hover:bg-[var(--bg-2)]"
+                            "rounded-full bg-[var(--home-ink)] text-[var(--home-bg)] hover:bg-[#eff3f5]"
                         )}
                         asChild
                       >

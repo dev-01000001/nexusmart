@@ -1,0 +1,87 @@
+/* Platform homepage & public shell tokens (scoped to `(shop)/(public)/layout.tsx`).
+   Exception (2026-11-26): Platform homepage `/` and `PlatformHeader[data-home="true"]`
+   use gradients, radial glows, `mask-image`, and `box-shadow` via `--home-*` tokens;
+   `(site)`, `(seller)`, `(admin)` and all other routes use `--ui-*` flat tokens only. */
+
+[data-platform-public="true"] {
+  --home-font: var(--font-inter), system-ui, -apple-system, sans-serif;
+
+  /* Band & card surfaces */
+  --home-bg: #000000;
+  --home-band: rgb(2 9 10);
+  --home-navy: rgb(0 10 30);
+  --home-pine: rgb(3 30 28);
+  --home-teal-deep: rgb(0 84 88);
+  --home-steps-bg: rgb(5 10 11);
+  --home-card: rgb(10 24 24);
+  --home-card-dark: rgb(5 12 16 / 0.78);
+  --home-card-navy: rgb(8 20 46);
+  --home-card-ai-start: rgb(6 44 46);
+  --home-card-ai-end: rgb(3 22 24);
+  --home-card-ship-start: rgb(5 24 26);
+  --home-card-ship-end: rgb(2 12 14);
+  --home-glass: rgb(255 255 255 / 0.06);
+  --home-glass-strong: rgb(255 255 255 / 0.12);
+  --home-pill-bg: rgb(11 26 52 / 0.88);
+  --home-mint: #e8f5f2;
+  --home-mint-border: #c5e3dd;
+  --home-border: rgb(255 255 255 / 0.12);
+  --home-border-strong: rgb(255 255 255 / 0.24);
+  --home-rule: rgb(255 255 255 / 0.16);
+  --home-window-dot-1: #ff5f57;
+  --home-window-dot-2: #febc2e;
+  --home-window-dot-3: #28c840;
+
+  /* Inks */
+  --home-ink: #ffffff;
+  --home-ink-2: rgb(157 171 173);
+  --home-ink-3: rgb(161 161 170);
+  --home-ink-dim: rgb(255 255 255 / 0.42);
+  --home-ink-dark: #061012;
+  --home-ink-dark-2: #4b5d63;
+
+  /* Accent, glows & elevation (homepage-only exception 2026-11-26) */
+  --home-accent: #66ccd7;
+  --home-accent-solid: #0d7480;
+  --home-glow: rgb(102 204 215 / 0.35);
+  --home-glow-soft: rgb(102 204 215 / 0.18);
+  --home-glow-navy: rgb(28 84 176 / 0.34);
+  --home-shadow-card: 0 24px 64px rgb(0 0 0 / 0.48);
+  --home-shadow-float: 0 14px 36px rgb(0 0 0 / 0.36);
+  --home-shadow-pill: 0 8px 24px rgb(0 0 0 / 0.32);
+
+  /* Radii */
+  --home-radius-band: 48px;
+  --home-radius-band-sm: 28px;
+  --home-radius-card: 8px;
+  --home-radius-media: 5px;
+  --home-radius-tile: 12px;
+  --home-radius-bubble: 18px;
+
+  /* Layout & spacing */
+  --home-max: 1260px;
+  --home-gutter: clamp(16px, 6.25vw, 90px);
+  --home-header-h: 72px;
+  --home-header-h-sm: 64px;
+  --home-space-section: clamp(64px, 9vw, 128px);
+  --home-space-head: clamp(32px, 4.5vw, 64px);
+  --home-space-band-gap: clamp(56px, 7vw, 108px);
+  --home-gap: 24px;
+  --home-gap-sm: 16px;
+  --home-btn-hero-h: 56px;
+  --home-btn-header-h: 44px;
+  --home-btn-mid-h: 48px;
+
+  /* Typography scale (1440 desktop -> 390 mobile) */
+  --home-fs-display: clamp(2.75rem, 1.25rem + 5.4vw, 6rem);
+  --home-fs-center: clamp(2.125rem, 1.2rem + 3.2vw, 4rem);
+  --home-fs-h2: clamp(2rem, 1.3rem + 2.5vw, 3.5rem);
+  --home-fs-sub: clamp(1.75rem, 1.2rem + 1.75vw, 2.75rem);
+  --home-fs-step: clamp(1.375rem, 1.05rem + 1vw, 2rem);
+  --home-fs-hero-lead: clamp(1.125rem, 0.85rem + 0.72vw, 1.5rem);
+  --home-fs-h3: 1.25rem;
+  --home-fs-lead: 1.125rem;
+  --home-fs-body: 1rem;
+  --home-fs-small: 0.875rem;
+  --home-fs-caption: 0.75rem;
+}

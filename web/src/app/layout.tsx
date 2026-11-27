@@ -1,19 +1,10 @@
 import type { Metadata } from "next";
-import { Archivo } from "next/font/google";
 import { RevealObserver } from "@/components/Reveal";
 import { SessionProvider } from "@/components/SessionProvider";
 import { StoreProvider } from "@/context/StoreContext";
 import { fontVariableClassNames } from "@/lib/fonts";
 import { getSession, type SessionUser } from "@/lib/server/session";
-import "@/styles/tokens.css";
-import "@/styles/globals.css";
-
-const archivo = Archivo({
-  subsets: ["latin", "vietnamese"],
-  axes: ["wdth"],
-  variable: "--font-archivo",
-  display: "swap",
-});
+import "@/styles/ui.css";
 
 export const metadata: Metadata = {
   title: {
@@ -39,11 +30,7 @@ export default async function RootLayout({
   }
 
   return (
-    <html
-      lang="vi"
-      className={`${archivo.variable} ${fontVariableClassNames}`}
-      suppressHydrationWarning
-    >
+    <html lang="vi" className={fontVariableClassNames} suppressHydrationWarning>
       <head>
         <script
           dangerouslySetInnerHTML={{

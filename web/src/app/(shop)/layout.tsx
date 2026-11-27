@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import React from "react";
 import { Toaster } from "@/components/ui/sonner";
-import "@/styles/ui.css";
 
 export const metadata: Metadata = {
   title: {
