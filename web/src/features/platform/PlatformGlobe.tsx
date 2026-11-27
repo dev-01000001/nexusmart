@@ -117,8 +117,10 @@ export function PlatformGlobe({ className }: { className?: string }) {
       />
       <canvas
         ref={canvasRef}
-        className={`pointer-events-none absolute inset-0 block h-full w-full [transition:opacity_320ms_ease-out] [-webkit-mask-image:linear-gradient(90deg,transparent_0%,#000_4.5%,#000_95.5%,transparent_100%),linear-gradient(180deg,transparent_0%,#000_3.5%,#000_94%,transparent_100%)] [-webkit-mask-composite:source-in] [mask-image:linear-gradient(90deg,transparent_0%,#000_4.5%,#000_95.5%,transparent_100%),linear-gradient(180deg,transparent_0%,#000_3.5%,#000_94%,transparent_100%)] [mask-composite:intersect] motion-reduce:transition-none ${
-          canvasReady ? "opacity-100" : "opacity-0"
+        className={`absolute inset-0 block h-full w-full touch-pan-y [transition:opacity_320ms_ease-out] [-webkit-mask-image:linear-gradient(90deg,transparent_0%,#000_4.5%,#000_95.5%,transparent_100%),linear-gradient(180deg,transparent_0%,#000_3.5%,#000_94%,transparent_100%)] [-webkit-mask-composite:source-in] [mask-image:linear-gradient(90deg,transparent_0%,#000_4.5%,#000_95.5%,transparent_100%),linear-gradient(180deg,transparent_0%,#000_3.5%,#000_94%,transparent_100%)] [mask-composite:intersect] motion-reduce:transition-none ${
+          canvasReady
+            ? "pointer-events-auto cursor-grab opacity-100"
+            : "pointer-events-none opacity-0"
         }`}
         aria-hidden="true"
       />
