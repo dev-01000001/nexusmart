@@ -6,6 +6,7 @@ import React from "react";
 import type { CategoryInfo, Product } from "@/data/products";
 import type { Voucher } from "@/data/vouchers";
 import { formatVnd } from "@/lib/format";
+import { formatVariantLabel } from "@/lib/formatVariant";
 import type { SitePublicShopDTO } from "@/lib/site/types";
 import { cn } from "@/lib/utils";
 import { SiteCatalogView, SitePdpView, SiteRenderer, SiteShell } from "@/features/site";
@@ -21,6 +22,7 @@ export interface SitePreviewContentProps {
   categories: CategoryInfo[];
   vouchers: Voucher[];
   platformOrigin: string;
+  skuAttributesById?: Record<string, Record<string, string>>;
 }
 
 function labelForOption<T extends string>(
@@ -38,6 +40,7 @@ export function SitePreviewContent({
   categories,
   vouchers,
   platformOrigin,
+  skuAttributesById,
 }: SitePreviewContentProps) {
   const brandName = config.theme.brand_name?.trim() || shop.name || "Cửa hàng của bạn";
   const primaryProduct = products[0];
@@ -92,7 +95,18 @@ export function SitePreviewContent({
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-semibold text-foreground">{item.name}</div>
                     <div className="text-[13px] text-muted-foreground">
-                      {item.colors[0]?.name || "Mặc định"}, Size {item.sizes[0] || "M"}, SL: {qty}
+                      {(() => {
+                        const firstSku = item.skus[0];
+                        const rawAttrs = firstSku
+                          ? (firstSku.skuId && skuAttributesById?.[firstSku.skuId]) ||
+                            skuAttributesById?.[firstSku.skuCode]
+                          : undefined;
+                        const variantText = formatVariantLabel({
+                          attributes: rawAttrs,
+                          fallback: "Mặc định",
+                        });
+                        return `${variantText} · SL: ${qty}`;
+                      })()}
                     </div>
                   </div>
                   <div className="text-sm font-semibold whitespace-nowrap text-foreground tabular-nums">
@@ -190,7 +204,7 @@ export function SitePreviewContent({
               <div className="mb-2 text-[13px] font-semibold text-foreground">Mục lục</div>
               <ul className="flex flex-col gap-1.5 text-[13px] text-muted-foreground">
                 <li>Câu chuyện thương hiệu</li>
-                {infoCfg.show_factory_profile && <li>Hồ sơ xưởng sản xuất</li>}
+                {infoCfg.show_factory_profile && <li>Thông tin cửa hàng</li>}
                 <li>Chính sách đổi trả &amp; giao hàng</li>
                 {infoCfg.show_showcase && <li>Sản phẩm tiêu biểu</li>}
               </ul>
@@ -203,7 +217,7 @@ export function SitePreviewContent({
                 <p className="text-[15px] leading-6 text-foreground">
                   {config.theme.tagline ||
                     shop.description ||
-                    `${brandName} cung cấp sản phẩm trực tiếp từ xưởng, minh bạch chất liệu và bảng cỡ.`}
+                    `${brandName} cung cấp sản phẩm chính hãng, minh bạch thông tin và tồn kho.`}
                 </p>
               </div>
               <img
@@ -238,21 +252,21 @@ export function SitePreviewContent({
             {infoCfg.show_factory_profile && (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div className="flex flex-col gap-1 rounded-lg border border-border bg-card p-3.5 text-[13px] text-card-foreground">
-                  <strong className="font-semibold text-foreground">Nguồn nguyên liệu</strong>
+                  <strong className="font-semibold text-foreground">Nguồn gốc rõ ràng</strong>
                   <span className="text-muted-foreground">
-                    Sợi bông chải kỹ &amp; chất liệu kiểm định độ co rút trước khi lên rập.
+                    Sản phẩm chọn lọc, minh bạch thông số và mô tả thực tế.
                   </span>
                 </div>
                 <div className="flex flex-col gap-1 rounded-lg border border-border bg-card p-3.5 text-[13px] text-card-foreground">
                   <strong className="font-semibold text-foreground">Kiểm soát chất lượng</strong>
                   <span className="text-muted-foreground">
-                    Soi mật độ mũi kim và kiểm phom từng thành phẩm trước đóng gói.
+                    Kiểm tra kỹ từng sản phẩm và đóng gói cẩn thận trước khi giao.
                   </span>
                 </div>
                 <div className="flex flex-col gap-1 rounded-lg border border-border bg-card p-3.5 text-[13px] text-card-foreground">
                   <strong className="font-semibold text-foreground">Hậu mãi minh bạch</strong>
                   <span className="text-muted-foreground">
-                    Hỗ trợ đổi cỡ tận nơi trong 45 ngày và đồng kiểm COD toàn quốc.
+                    Hỗ trợ đổi trả theo chính sách cửa hàng và đồng kiểm COD toàn quốc.
                   </span>
                 </div>
               </div>
@@ -346,6 +360,7 @@ export function SitePreviewContent({
           <SitePdpView
             brandName={brandName}
             product={primaryProduct}
+            skuAttributesById={skuAttributesById}
             shopVouchers={vouchers}
             relatedProducts={products.slice(1, 5)}
             pageConfig={config.pages.pdp}

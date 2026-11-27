@@ -228,17 +228,22 @@ test("directory response handles empty, out-of-range, and malformed gateway payl
   assert.equal(invalidRowsOnly.totalPages, 1);
 });
 
-test("buyerHref /cua-hang passes through resolvePostLoginPath and sanitizeNextPath intact", () => {
-  const destNoNext = resolvePostLoginPath("platform", "buyer", null, "/cua-hang");
-  const destWithNext = resolvePostLoginPath("platform", "buyer", "/seller", "/cua-hang");
-  assert.equal(destNoNext, "/cua-hang");
-  assert.equal(destWithNext, "/cua-hang");
-  assert.equal(sanitizeNextPath(destNoNext, "/"), "/cua-hang");
-  assert.equal(sanitizeNextPath(destWithNext, "/"), "/cua-hang");
+test("platform role redirects route buyers to '/' (or safe same-host next) and sellers/admins to their areas", () => {
+  const destNoNext = resolvePostLoginPath("platform", "buyer", null, "/");
+  const destWithSafeNext = resolvePostLoginPath("platform", "buyer", "/cua-hang", "/");
+  const destWithAdminNext = resolvePostLoginPath("platform", "buyer", "/admin/kiem-duyet", "/");
+  const destOnboardingSeller = resolvePostLoginPath("platform", "buyer", null, "/", {
+    hasShop: true,
+  });
+  assert.equal(destNoNext, "/");
+  assert.equal(destWithSafeNext, "/cua-hang");
+  assert.equal(destWithAdminNext, "/");
+  assert.equal(destOnboardingSeller, "/seller");
+  assert.equal(sanitizeNextPath(destWithSafeNext, "/"), "/cua-hang");
   assert.equal(sanitizeNextPath("/cua-hang?trang=2", "/"), "/cua-hang?trang=2");
 });
 
-test("platform navigation and auth links point to /cua-hang while homepage hero keeps in-page scroll", () => {
+test("platform navigation keeps /cua-hang directory links while auth pages route buyers to '/'", () => {
   const headerSrc = readFileSync(resolve(__dirname, "PlatformHeader.tsx"), "utf8");
   assert.ok(
     headerSrc.includes('{ label: "Cửa hàng", href: "/cua-hang", matchPath: "/cua-hang" }') &&
@@ -266,10 +271,10 @@ test("platform navigation and auth links point to /cua-hang while homepage hero 
 
   const authFrameSrc = readFileSync(resolve(__dirname, "auth/PlatformAuthFrame.tsx"), "utf8");
   assert.ok(
-    authFrameSrc.includes('buyerHref="/cua-hang"') &&
+    authFrameSrc.includes('buyerHref="/"') &&
       authFrameSrc.includes('href="/cua-hang"') &&
       !authFrameSrc.includes("/#danh-ba-gian-hang"),
-    "PlatformAuthFrame must point directory links and buyerHref to /cua-hang"
+    "PlatformAuthFrame must keep directory links to /cua-hang and route buyers to '/'"
   );
 
   const loginPageSrc = readFileSync(
@@ -277,8 +282,11 @@ test("platform navigation and auth links point to /cua-hang while homepage hero 
     "utf8"
   );
   assert.ok(
-    loginPageSrc.includes('buyerHref="/cua-hang"') && !loginPageSrc.includes("/#danh-ba-gian-hang"),
-    "/dang-nhap must pass buyerHref='/cua-hang' to LoginForm"
+    loginPageSrc.includes('buyerHref="/"') &&
+      loginPageSrc.includes("resolvePostLoginPath") &&
+      loginPageSrc.includes("redirect(") &&
+      !loginPageSrc.includes("/cua-hang"),
+    "/dang-nhap must redirect signed-in users by role and pass buyerHref='/' to LoginForm"
   );
 
   const homeSrc = readFileSync(resolve(__dirname, "PlatformHome.tsx"), "utf8");

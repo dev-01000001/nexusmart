@@ -105,6 +105,7 @@ test("maps a COD order with catalog presentation data", () => {
     productName: "Áo thun Cotton Compact 220gsm Trắng",
     colorName: "Trắng tinh",
     size: "L",
+    variantLabel: "Màu sắc: Trắng tinh · Kích cỡ: L",
     image: "/products/trang.png",
     unitPrice: 179000,
     quantity: 2,
@@ -129,8 +130,33 @@ test("falls back to backend names when the product is unknown to the catalog", (
   assert.equal(v.shopName, "Gian hàng NexusMart");
   assert.equal(v.items[0].productName, "Áo thun");
   assert.equal(v.items[0].colorName, "Trắng L");
+  assert.equal(v.items[0].variantLabel, "Trắng L");
   assert.equal(v.items[0].productSlug, "");
   assert.equal(v.items[0].image, "");
+});
+
+test("formats custom non-garment SKU attributes via shared variant formatter without uppercasing", () => {
+  const customLookups = {
+    product: () => undefined,
+    shop: () => ({ slug: "gom-bat-trang", name: "Gốm Bát Tràng" }),
+    skuAttributes: (skuId) =>
+      skuId === "s-ceramic" ? { "Màu men": "Men lam", "Quy cách": "Bộ 7 món" } : undefined,
+  };
+  const v = mapGatewayOrder(
+    gwOrder({
+      items: [
+        {
+          ...gwOrder().items[0],
+          sku_id: "s-ceramic",
+          product_id: "p-ceramic",
+          product_name: "Ấm trà gốm vẽ tay",
+          sku_name: "Men lam / Bộ 7 món",
+        },
+      ],
+    }),
+    customLookups
+  );
+  assert.equal(v.items[0].variantLabel, "Màu men: Men lam · Quy cách: Bộ 7 món");
 });
 
 test("subtotal shown excludes the flash sale discount already applied to line prices", () => {

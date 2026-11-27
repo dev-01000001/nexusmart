@@ -4,6 +4,49 @@ import { gw } from "@/lib/server/gateway";
 import { assertCapability } from "@/lib/server/session";
 import type { GwAdminProductExtended } from "@/features/admin/adminApiTypes";
 import { isValidAdminPathId } from "@/features/admin/AdminReturnsHelpers";
+import {
+  PRODUCT_MODERATION_STATUSES,
+  createEmptyProductTabCounts,
+  type ProductTabCounts,
+} from "@/app/(admin)/admin/kiem-duyet/moderationHelpers";
+
+interface GwAdminProductsPage {
+  items: GwAdminProductExtended[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+async function fetchProductTabCounts(filters: {
+  categoryId?: string;
+  shopId?: string;
+}): Promise<ProductTabCounts> {
+  const counts = createEmptyProductTabCounts();
+  const statusKeys = ["all", ...PRODUCT_MODERATION_STATUSES] as const;
+
+  const outcomes = await Promise.allSettled(
+    statusKeys.map((status) =>
+      gw<GwAdminProductsPage>("/api/v1/admin/products", {
+        query: {
+          status: status === "all" ? undefined : status,
+          category_id: filters.categoryId || undefined,
+          shop_id: filters.shopId || undefined,
+          page: 1,
+          page_size: 1,
+        },
+      })
+    )
+  );
+
+  outcomes.forEach((outcome, idx) => {
+    const key = statusKeys[idx];
+    if (outcome.status === "fulfilled" && typeof outcome.value?.total === "number") {
+      counts[key] = Math.max(0, Math.trunc(outcome.value.total));
+    }
+  });
+
+  return counts;
+}
 
 export const GET = apiRoute(
   async (req) => {
@@ -18,12 +61,12 @@ export const GET = apiRoute(
       throw new GatewayError("invalid", "INVALID_FILTER");
     }
 
-    const data = await gw<{
-      items: GwAdminProductExtended[];
-      page: number;
-      page_size: number;
-      total: number;
-    }>("/api/v1/admin/products", {
+    if (q.get("tab_counts_only") === "true") {
+      const tabCounts = await fetchProductTabCounts({ categoryId, shopId });
+      return Response.json({ tab_counts: tabCounts }, { headers: { "Cache-Control": "no-store" } });
+    }
+
+    const data = await gw<GwAdminProductsPage>("/api/v1/admin/products", {
       query: {
         status: (q.get("status") ?? "").trim() || undefined,
         keyword: (q.get("keyword") ?? "").trim().slice(0, 120) || undefined,

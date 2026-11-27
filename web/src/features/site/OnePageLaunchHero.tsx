@@ -70,28 +70,48 @@ export function OnePageLaunchHero({
     return [
       {
         key: "fit",
-        label: color0?.name || "Phom dáng",
-        detail: product?.fit ? `Phom ${product.fit}, đứng vai gọn gàng.` : "Tỷ lệ cắt may gọn vai.",
+        label:
+          color0 && color0.code !== "mac-dinh" && color0.name !== "Mặc định"
+            ? color0.name
+            : "Thiết kế",
+        detail: product?.fit
+          ? `Kiểu dáng ${product.fit}, hoàn thiện chỉn chu.`
+          : "Thiết kế tinh gọn, dễ ứng dụng hằng ngày.",
         image: sanitizeSafeImageUrl(img0) || fallbackImage,
-        swatchHex: color0?.hex,
+        swatchHex:
+          color0 && color0.code !== "mac-dinh" && color0.name !== "Mặc định"
+            ? color0.hex
+            : undefined,
       },
       {
         key: "fabric",
-        label: color1?.name || "Chất liệu",
+        label:
+          color1 && color1.code !== "mac-dinh" && color1.name !== "Mặc định"
+            ? color1.name
+            : "Chất liệu",
         detail: product?.fabric
-          ? `${product.fabric}${product.gsm > 0 ? ` ${product.gsm}gsm` : ""}, bền màu.`
-          : "Sợi tự nhiên thoáng khí, ít co rút.",
+          ? `${product.fabric}${product.gsm > 0 ? ` ${product.gsm}gsm` : ""}, bền đẹp.`
+          : "Chất liệu chọn lọc, hoàn thiện bền bỉ.",
         image: sanitizeSafeImageUrl(img1) || img0,
-        swatchHex: color1?.hex,
+        swatchHex:
+          color1 && color1.code !== "mac-dinh" && color1.name !== "Mặc định"
+            ? color1.hex
+            : undefined,
       },
       {
         key: "finish",
-        label: color2?.name || "Hoàn thiện",
+        label:
+          color2 && color2.code !== "mac-dinh" && color2.name !== "Mặc định"
+            ? color2.name
+            : "Hoàn thiện",
         detail: product?.origin
           ? `Hoàn thiện tại ${product.origin}.`
-          : "Đường may phẳng, đổi cỡ 45 ngày.",
+          : "Kiểm tra kỹ trước đóng gói, hỗ trợ đổi trả minh bạch.",
         image: sanitizeSafeImageUrl(img2) || img0,
-        swatchHex: color2?.hex,
+        swatchHex:
+          color2 && color2.code !== "mac-dinh" && color2.name !== "Mặc định"
+            ? color2.hex
+            : undefined,
       },
     ];
   }, [product, fallbackImage]);

@@ -64,10 +64,10 @@ export function SiteInfoView({
 
   const fallbackPolicies: PolicyItem[] = [
     {
-      heading: "Đổi size và đổi trả",
+      heading: "Đổi trả và hoàn tiền",
       detail:
         shopProfile?.returnPolicy ||
-        "Đổi size hoặc đổi trả trong 45 ngày với sản phẩm còn nguyên tem mác.",
+        "Hỗ trợ đổi trả trong thời hạn quy định với sản phẩm còn nguyên vẹn bao bì và phụ kiện.",
     },
     {
       heading: "Giao hàng và đồng kiểm",
@@ -97,8 +97,8 @@ export function SiteInfoView({
       ? templateConfig.theme.tagline?.trim() ||
         shop.description ||
         shopProfile?.story ||
-        `${brandName} cung cấp sản phẩm trực tiếp từ xưởng.`
-      : `Giao nhận, đổi size và bảo vệ đơn hàng tại ${brandName}.`;
+        `${brandName} cung cấp sản phẩm chính hãng, minh bạch thông tin và tồn kho.`
+      : `Giao nhận, đổi trả và bảo vệ đơn hàng tại ${brandName}.`;
 
   const titleCopy = mode === "about" ? `Về ${brandName}` : `Chính sách ${brandName}`;
 
@@ -112,7 +112,7 @@ export function SiteInfoView({
           : null,
         shopProfile.specialty ? { heading: "Thế mạnh", detail: shopProfile.specialty } : null,
         shopProfile.factoryProfile?.fiberOrigin
-          ? { heading: "Nguồn sợi", detail: shopProfile.factoryProfile.fiberOrigin }
+          ? { heading: "Nguồn nguyên liệu", detail: shopProfile.factoryProfile.fiberOrigin }
           : null,
         shopProfile.returnPolicy ? { heading: "Hậu mãi", detail: shopProfile.returnPolicy } : null,
       ].filter((x): x is { heading: string; detail: string } => x !== null)
@@ -125,7 +125,7 @@ export function SiteInfoView({
       : []),
     ...(mode === "policies" ? [{ id: "info-policies", label: "Chi tiết" }] : []),
     ...(infoConfig.show_factory_profile && factoryEntries.length > 0
-      ? [{ id: "info-factory", label: "Hồ sơ xưởng" }]
+      ? [{ id: "info-factory", label: "Thông tin cửa hàng" }]
       : []),
     ...(infoConfig.show_showcase && showcaseProducts.length > 0
       ? [{ id: "info-showcase", label: "Tiêu biểu" }]
@@ -359,7 +359,7 @@ export function SiteInfoView({
         <div id="info-factory">
           <div className="mb-5">
             <h2 className={cn("text-[clamp(22px,2.6vw,34px)] text-foreground", titleTone)}>
-              Hồ sơ xưởng
+              Thông tin cửa hàng
             </h2>
           </div>
 

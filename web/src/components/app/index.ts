@@ -5,6 +5,7 @@ export * from "./EmptyState";
 export * from "./ErrorState";
 export * from "./IndexTable";
 export * from "./KpiChartCard";
+export * from "./MediaUploader";
 export * from "./MetricStrip";
 export * from "./Money";
 export * from "./navMatch";

@@ -2,7 +2,15 @@
 
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, ChevronLeft, ChevronRight, PackageSearch, Search } from "lucide-react";
+import {
+  AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
+  Package,
+  PackageSearch,
+  Search,
+} from "lucide-react";
 import {
   EmptyState,
   ErrorState,
@@ -37,6 +45,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, getErrorMessage } from "@/lib/api";
 import { roleHasCapability } from "@/lib/admin-rbac";
 import { formatDateTimeVi, formatInt, formatVnd } from "@/lib/format";
+import { formatVariantLabel } from "@/lib/formatVariant";
 import type { PaginatedResponse } from "@/lib/gateway-types";
 import {
   getProductReviewStatusMeta,
@@ -54,14 +63,23 @@ import {
   hasOpenRadixDialog,
   isEditableTarget,
 } from "@/features/admin/ops/AdminOpsPrimitives";
+import {
+  ADMIN_MODERATION_PAGE_SIZE,
+  buildAdminProductsQuery,
+  clampModerationPage,
+  createEmptyProductTabCounts,
+  normalizeProductTabCounts,
+  pickNextProductIdOnPage,
+  type ProductStatusFilter,
+  type ProductTabCounts,
+} from "./moderationHelpers";
 
 type ModerationSection = "products" | "banned_keywords";
-type ProductStatusFilter = "all" | "PENDING" | "APPROVED" | "REJECTED" | "HIDDEN" | "OUT_OF_STOCK";
-
-const PRODUCTS_PAGE_SIZE = 15;
 
 export interface AdminModerationClientProps {
   initialProducts: GwAdminProductExtended[];
+  initialTotal?: number;
+  initialTabCounts?: ProductTabCounts;
   initialBannedCount?: number;
   loadError: string | null;
 }
@@ -71,14 +89,42 @@ type PendingProductDecisionConfirm = {
   decision: "APPROVE" | "REJECT";
 };
 
+function ProductThumb({ src, alt, size }: { src?: string; alt: string; size: "sm" | "lg" }) {
+  const cleanSrc = (src ?? "").trim();
+  const dimCls = size === "lg" ? "size-24 rounded-lg" : "size-11 rounded-md";
+  if (!cleanSrc) {
+    return (
+      <div
+        className={`flex shrink-0 items-center justify-center border border-border bg-muted text-muted-foreground ${dimCls}`}
+        aria-hidden="true"
+      >
+        <Package className={size === "lg" ? "size-8" : "size-5"} />
+      </div>
+    );
+  }
+  return (
+    <img
+      src={cleanSrc}
+      alt={alt}
+      width={size === "lg" ? 96 : 44}
+      height={size === "lg" ? 96 : 44}
+      className={`shrink-0 border border-border bg-muted object-cover ${dimCls}`}
+    />
+  );
+}
+
 function ModerationContent({
   initialProducts,
+  initialTotal,
+  initialTabCounts,
   initialBannedCount = 0,
   loadError,
   initialQuery,
   initialSelected,
 }: {
   initialProducts: GwAdminProductExtended[];
+  initialTotal: number;
+  initialTabCounts: ProductTabCounts;
   initialBannedCount: number;
   loadError: string | null;
   initialQuery: string;
@@ -96,13 +142,21 @@ function ModerationContent({
   const [bannedCount, setBannedCount] = useState(initialBannedCount);
 
   const [products, setProducts] = useState<GwAdminProductExtended[]>(initialProducts);
+  const [totalItems, setTotalItems] = useState<number>(initialTotal);
+  const [tabCounts, setTabCounts] = useState<ProductTabCounts>(initialTabCounts);
   const [productStatusFilter, setProductStatusFilter] = useState<ProductStatusFilter>("all");
   const [query, setQuery] = useState(initialQuery);
+  const [debouncedQuery, setDebouncedQuery] = useState(initialQuery.trim());
   const [page, setPage] = useState(1);
+  const [loadingProducts, setLoadingProducts] = useState(false);
+  const [listError, setListError] = useState<string | null>(loadError);
+
   const [selectedProductId, setSelectedProductId] = useState<string | null>(initialSelected);
-  const [drawerOpen, setDrawerOpen] = useState(
-    Boolean(initialSelected && initialProducts.some((p) => p.id === initialSelected))
-  );
+  const [selectedProductSnapshot, setSelectedProductSnapshot] =
+    useState<GwAdminProductExtended | null>(() =>
+      initialSelected ? (initialProducts.find((p) => p.id === initialSelected) ?? null) : null
+    );
+  const [drawerOpen, setDrawerOpen] = useState(Boolean(initialSelected));
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
   const [productErrorId, setProductErrorId] = useState<string | null>(null);
   const [busyProductId, setBusyProductId] = useState<string | null>(null);
@@ -112,18 +166,121 @@ function ModerationContent({
   );
 
   const fetchedDetailIdsRef = useRef<Set<string>>(new Set());
+  const fetchSeqRef = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const didSkipInitialFetchRef = useRef(false);
+  const pendingEdgeSelectRef = useRef<"first" | "last" | null>(null);
 
-  const reloadProducts = useCallback(async () => {
+  // Debounce server-side keyword search to avoid excessive gateway requests while typing.
+  useEffect(() => {
+    const clean = query.trim();
+    if (clean === debouncedQuery) return;
+    const timer = window.setTimeout(() => {
+      setDebouncedQuery(clean);
+      setPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [query, debouncedQuery]);
+
+  const reloadTabCounts = useCallback(async () => {
     if (!canReadProducts) return;
     try {
-      const res = await api<PaginatedResponse<GwAdminProductExtended>>(
-        "/api/admin/products?page=1&page_size=100"
+      const res = await api<{ tab_counts?: Partial<ProductTabCounts> }>(
+        "/api/admin/products?tab_counts_only=true"
       );
-      setProducts(res.items ?? []);
+      if (res?.tab_counts) {
+        setTabCounts((prev) => normalizeProductTabCounts(res.tab_counts, prev));
+      }
     } catch {
-      // Non-fatal refresh after keyword mutation.
+      // Non-fatal tab badge refresh failure.
     }
   }, [canReadProducts]);
+
+  const fetchProductsPage = useCallback(
+    async (opts: {
+      status: ProductStatusFilter;
+      keyword: string;
+      page: number;
+      selectEdge?: "first" | "last" | null;
+    }): Promise<GwAdminProductExtended[] | null> => {
+      if (!canReadProducts) return null;
+      abortControllerRef.current?.abort();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      const seq = ++fetchSeqRef.current;
+
+      setLoadingProducts(true);
+      setListError(null);
+      try {
+        const qs = buildAdminProductsQuery({
+          status: opts.status,
+          keyword: opts.keyword,
+          page: opts.page,
+          pageSize: ADMIN_MODERATION_PAGE_SIZE,
+        });
+        const res = await api<PaginatedResponse<GwAdminProductExtended>>(
+          `/api/admin/products?${qs}`,
+          { signal: controller.signal }
+        );
+        if (seq !== fetchSeqRef.current) return null;
+
+        const nextItems = res.items ?? [];
+        const nextTotal = typeof res.total === "number" ? Math.max(0, res.total) : nextItems.length;
+        setProducts(nextItems);
+        setTotalItems(nextTotal);
+        if (!opts.keyword) {
+          setTabCounts((prev) => ({ ...prev, [opts.status]: nextTotal }));
+        }
+
+        const edge = opts.selectEdge ?? pendingEdgeSelectRef.current;
+        if (edge) {
+          pendingEdgeSelectRef.current = null;
+          if (nextItems.length > 0) {
+            const target = edge === "first" ? nextItems[0] : nextItems[nextItems.length - 1];
+            setSelectedProductId(target.id);
+            setSelectedProductSnapshot(target);
+          }
+        }
+        return nextItems;
+      } catch (err) {
+        if (controller.signal.aborted || seq !== fetchSeqRef.current) return null;
+        setListError(getErrorMessage(err, "Không thể tải danh sách sản phẩm kiểm duyệt lúc này."));
+        return null;
+      } finally {
+        if (seq === fetchSeqRef.current) {
+          setLoadingProducts(false);
+        }
+      }
+    },
+    [canReadProducts]
+  );
+
+  // Trigger server fetch whenever status tab, debounced search keyword, or page changes.
+  // Skip redundant mount fetch when default state matches SSR payload.
+  useEffect(() => {
+    if (!canReadProducts) return;
+    if (
+      !didSkipInitialFetchRef.current &&
+      productStatusFilter === "all" &&
+      debouncedQuery === "" &&
+      page === 1
+    ) {
+      didSkipInitialFetchRef.current = true;
+      return;
+    }
+    didSkipInitialFetchRef.current = true;
+    void fetchProductsPage({
+      status: productStatusFilter,
+      keyword: debouncedQuery,
+      page,
+    });
+  }, [canReadProducts, productStatusFilter, debouncedQuery, page, fetchProductsPage]);
+
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+    };
+  }, []);
 
   const reloadBannedCount = useCallback(async () => {
     if (!canReadBanned) return;
@@ -137,113 +294,81 @@ function ModerationContent({
     }
   }, [canReadBanned]);
 
-  const counts = useMemo(() => {
-    const map: Record<ProductStatusFilter, number> = {
-      all: products.length,
-      PENDING: 0,
-      APPROVED: 0,
-      REJECTED: 0,
-      OUT_OF_STOCK: 0,
-      HIDDEN: 0,
-    };
-    for (const p of products) {
-      const st = p.status.toUpperCase() as ProductStatusFilter;
-      if (st in map) map[st] += 1;
-    }
-    return map;
-  }, [products]);
-
-  const filteredProducts = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const list = products.filter((item) => {
-      if (productStatusFilter !== "all" && item.status.toUpperCase() !== productStatusFilter) {
-        return false;
-      }
-      if (!q) return true;
-      return (
-        item.name.toLowerCase().includes(q) ||
-        item.id.toLowerCase().includes(q) ||
-        item.shop_id.toLowerCase().includes(q) ||
-        (item.flagged_keywords ?? []).some((kw) => kw.toLowerCase().includes(q)) ||
-        item.skus.some(
-          (sku) => sku.sku_code.toLowerCase().includes(q) || sku.name.toLowerCase().includes(q)
-        )
-      );
-    });
-
-    const rank = (status: string) => {
-      const st = status.toUpperCase();
-      if (st === "PENDING") return 0;
-      if (st === "REJECTED") return 1;
-      if (st === "APPROVED") return 2;
-      return 3;
-    };
-    return [...list].sort((a, b) => rank(a.status) - rank(b.status));
-  }, [products, productStatusFilter, query]);
-
-  const totalPages = Math.max(1, Math.ceil(filteredProducts.length / PRODUCTS_PAGE_SIZE));
-  const safePage = Math.min(page, totalPages);
-  const pagedProducts = useMemo(() => {
-    const start = (safePage - 1) * PRODUCTS_PAGE_SIZE;
-    return filteredProducts.slice(start, start + PRODUCTS_PAGE_SIZE);
-  }, [filteredProducts, safePage]);
+  const { page: safePage, totalPages } = useMemo(
+    () => clampModerationPage(page, totalItems, ADMIN_MODERATION_PAGE_SIZE),
+    [page, totalItems]
+  );
 
   const activeIndex = useMemo(() => {
     if (!selectedProductId) return -1;
-    return filteredProducts.findIndex((p) => p.id === selectedProductId);
-  }, [filteredProducts, selectedProductId]);
+    return products.findIndex((p) => p.id === selectedProductId);
+  }, [products, selectedProductId]);
 
   const activeProduct = useMemo(() => {
     if (!selectedProductId) return null;
-    return (
-      filteredProducts.find((p) => p.id === selectedProductId) ??
-      products.find((p) => p.id === selectedProductId) ??
-      null
-    );
-  }, [filteredProducts, products, selectedProductId]);
+    const fromPage = products.find((p) => p.id === selectedProductId);
+    if (fromPage) return fromPage;
+    if (selectedProductSnapshot?.id === selectedProductId) return selectedProductSnapshot;
+    return null;
+  }, [products, selectedProductId, selectedProductSnapshot]);
 
+  // Fetch full product details when drawer opens (or when deep-linked ?selected=<id> isn't on page 1).
   useEffect(() => {
-    if (!canReadProducts || !drawerOpen || !activeProduct) return;
-    if (fetchedDetailIdsRef.current.has(activeProduct.id)) return;
-    fetchedDetailIdsRef.current.add(activeProduct.id);
+    if (!canReadProducts || !drawerOpen || !selectedProductId) return;
+    if (fetchedDetailIdsRef.current.has(selectedProductId) && activeProduct) return;
+    fetchedDetailIdsRef.current.add(selectedProductId);
     void api<{ product: GwAdminProductExtended }>(
-      `/api/admin/products/${encodeURIComponent(activeProduct.id)}`
+      `/api/admin/products/${encodeURIComponent(selectedProductId)}`
     )
       .then((res) => {
         if (!res?.product) return;
+        setSelectedProductSnapshot(res.product);
         setProducts((prev) =>
-          prev.map((p) => (p.id === activeProduct.id ? { ...p, ...res.product } : p))
+          prev.map((p) => (p.id === selectedProductId ? { ...p, ...res.product } : p))
         );
       })
       .catch(() => {
-        // Keep list-level product payload.
+        // Keep list-level product payload or close drawer if deep-linked ID not found.
       });
-  }, [activeProduct, drawerOpen, canReadProducts]);
-
-  useEffect(() => {
-    if (!activeProduct && drawerOpen) {
-      setDrawerOpen(false);
-    }
-  }, [activeProduct, drawerOpen]);
+  }, [selectedProductId, activeProduct, drawerOpen, canReadProducts]);
 
   const openProductSheet = useCallback((item: GwAdminProductExtended) => {
     setProductErrorId(null);
     setSelectedProductId(item.id);
+    setSelectedProductSnapshot(item);
     setDrawerOpen(true);
   }, []);
 
   const stepSelection = useCallback(
     (delta: 1 | -1) => {
-      if (section !== "products" || filteredProducts.length === 0) return;
-      const cur = activeIndex >= 0 ? activeIndex : 0;
-      const nextIdx = Math.max(0, Math.min(filteredProducts.length - 1, cur + delta));
-      const nextItem = filteredProducts[nextIdx];
-      if (!nextItem) return;
-      setProductErrorId(null);
-      setSelectedProductId(nextItem.id);
-      setPage(Math.floor(nextIdx / PRODUCTS_PAGE_SIZE) + 1);
+      if (section !== "products" || products.length === 0) return;
+      if (activeIndex < 0) {
+        const first = products[0];
+        if (!first) return;
+        setProductErrorId(null);
+        setSelectedProductId(first.id);
+        setSelectedProductSnapshot(first);
+        return;
+      }
+      const nextIdx = activeIndex + delta;
+      if (nextIdx >= 0 && nextIdx < products.length) {
+        const nextItem = products[nextIdx];
+        setProductErrorId(null);
+        setSelectedProductId(nextItem.id);
+        setSelectedProductSnapshot(nextItem);
+        return;
+      }
+      if (delta === 1 && safePage < totalPages) {
+        pendingEdgeSelectRef.current = "first";
+        setProductErrorId(null);
+        setPage(safePage + 1);
+      } else if (delta === -1 && safePage > 1) {
+        pendingEdgeSelectRef.current = "last";
+        setProductErrorId(null);
+        setPage(safePage - 1);
+      }
     },
-    [section, filteredProducts, activeIndex]
+    [section, products, activeIndex, safePage, totalPages]
   );
 
   useEffect(() => {
@@ -272,35 +397,6 @@ function ModerationContent({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [section, stepSelection]);
-
-  const pickNextAfterDecision = (
-    currentId: string,
-    updatedProduct?: GwAdminProductExtended
-  ): string | null => {
-    const currentIdx = filteredProducts.findIndex((p) => p.id === currentId);
-    const resolveItem = (p: GwAdminProductExtended) =>
-      updatedProduct && p.id === updatedProduct.id ? updatedProduct : p;
-    const remaining = filteredProducts
-      .map(resolveItem)
-      .filter(
-        (p) => productStatusFilter === "all" || p.status.toUpperCase() === productStatusFilter
-      );
-
-    if (remaining.length === 0) return null;
-
-    for (let i = Math.max(0, currentIdx + 1); i < filteredProducts.length; i++) {
-      const cand = resolveItem(filteredProducts[i]);
-      if (cand.id !== currentId && cand.status.toUpperCase() === "PENDING") {
-        return cand.id;
-      }
-    }
-    const afterSame = filteredProducts[currentIdx + 1];
-    if (afterSame && remaining.some((p) => p.id === afterSame.id)) {
-      return afterSame.id;
-    }
-    const other = remaining.find((p) => p.id !== currentId);
-    return other?.id ?? remaining[0].id;
-  };
 
   const handleRequestDecision = (item: GwAdminProductExtended, decision: "APPROVE" | "REJECT") => {
     if (busyProductId || !canReviewProducts) return;
@@ -336,18 +432,43 @@ function ModerationContent({
         }
       );
       const mergedItem = { ...item, ...res.product };
-      setProducts((prev) => prev.map((p) => (p.id === item.id ? mergedItem : p)));
+      const optimisticItems = products.map((p) => (p.id === item.id ? mergedItem : p));
+      setProducts(optimisticItems);
+      setSelectedProductSnapshot(mergedItem);
       setNoteDrafts((prev) => ({ ...prev, [item.id]: "" }));
       setConfirmDecision(null);
-      const nextId = pickNextAfterDecision(item.id, mergedItem);
-      if (nextId) {
-        setSelectedProductId(nextId);
-      }
+
       showToast(
         decision === "APPROVE"
           ? `Đã duyệt đăng bán "${item.name}".`
           : `Đã từ chối sản phẩm "${item.name}".`
       );
+
+      const [refreshedItems] = await Promise.all([
+        fetchProductsPage({
+          status: productStatusFilter,
+          keyword: debouncedQuery,
+          page: safePage,
+        }),
+        reloadTabCounts(),
+      ]);
+
+      const sourceList = refreshedItems ?? optimisticItems;
+      const nextId = pickNextProductIdOnPage(sourceList, item.id, productStatusFilter);
+      if (nextId) {
+        const nextItem = sourceList.find((p) => p.id === nextId) ?? null;
+        setSelectedProductId(nextId);
+        if (nextItem) setSelectedProductSnapshot(nextItem);
+      } else if (sourceList.length === 0 && safePage > 1) {
+        pendingEdgeSelectRef.current = "last";
+        setPage(safePage - 1);
+      } else if (productStatusFilter !== "all" && sourceList.length === 0) {
+        setDrawerOpen(false);
+        setSelectedProductId(null);
+        setSelectedProductSnapshot(null);
+      }
+
+      // Sync AdminLayout sidebar PENDING badge with the backend.
       router.refresh();
     } catch (err) {
       setConfirmDecision(null);
@@ -363,7 +484,6 @@ function ModerationContent({
     const isThisBusy = busyProductId === item.id;
     const noteInputId = `prod-note-drawer-${item.id}`;
     const totalStock = item.skus.reduce((sum, sku) => sum + sku.available_stock, 0);
-    const thumb = item.images[0] || "/products/ao-thun-cotton-trang.png";
     const flaggedKeywords = item.flagged_keywords ?? [];
 
     return (
@@ -385,13 +505,7 @@ function ModerationContent({
         )}
 
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-          <img
-            src={thumb}
-            alt={item.name}
-            width={96}
-            height={96}
-            className="size-24 shrink-0 rounded-lg border border-border bg-muted object-cover"
-          />
+          <ProductThumb src={item.images[0]} alt={item.name} size="lg" />
           <AdminDetailGrid className="min-w-0 flex-1">
             <AdminDetailField label="Khoảng giá bán" mono>
               {item.min_price_vnd === item.max_price_vnd
@@ -436,7 +550,14 @@ function ModerationContent({
                   {item.skus.map((sku) => (
                     <TableRow key={sku.id}>
                       <TableCell className="font-mono text-xs">{sku.sku_code}</TableCell>
-                      <TableCell>{sku.name}</TableCell>
+                      <TableCell>
+                        {formatVariantLabel({
+                          attributes: (sku as { attributes?: Record<string, string> | null })
+                            .attributes,
+                          skuName: sku.name,
+                          fallback: "Mặc định",
+                        })}
+                      </TableCell>
                       <TableCell className="text-right">
                         <Money vnd={sku.price_vnd} size="sm" />
                       </TableCell>
@@ -508,21 +629,32 @@ function ModerationContent({
   };
 
   const statusTabs = [
-    { key: "all", label: "Tất cả", count: counts.all },
-    { key: "PENDING", label: "Chờ duyệt", count: counts.PENDING },
-    { key: "APPROVED", label: "Đã duyệt bán", count: counts.APPROVED },
-    { key: "REJECTED", label: "Đã từ chối", count: counts.REJECTED },
-    { key: "OUT_OF_STOCK", label: "Hết hàng", count: counts.OUT_OF_STOCK },
-    { key: "HIDDEN", label: "Đang ẩn", count: counts.HIDDEN },
+    { key: "all", label: "Tất cả", count: tabCounts.all },
+    { key: "PENDING", label: "Chờ duyệt", count: tabCounts.PENDING },
+    { key: "APPROVED", label: "Đã duyệt bán", count: tabCounts.APPROVED },
+    { key: "REJECTED", label: "Đã từ chối", count: tabCounts.REJECTED },
+    { key: "OUT_OF_STOCK", label: "Hết hàng", count: tabCounts.OUT_OF_STOCK },
+    { key: "HIDDEN", label: "Đang ẩn", count: tabCounts.HIDDEN },
   ];
+
+  const canStepPrev = activeIndex > 0 || safePage > 1;
+  const canStepNext =
+    (activeIndex >= 0 && activeIndex < products.length - 1) || safePage < totalPages;
 
   const renderProductsPanel = () => (
     <>
-      {loadError ? (
+      {listError && products.length === 0 ? (
         <ErrorState
           title="Không thể tải danh sách sản phẩm"
-          description={loadError}
-          onRetry={() => router.refresh()}
+          description={listError}
+          onRetry={() => {
+            void fetchProductsPage({
+              status: productStatusFilter,
+              keyword: debouncedQuery,
+              page: safePage,
+            });
+            void reloadTabCounts();
+          }}
         />
       ) : (
         <IndexTable
@@ -535,19 +667,22 @@ function ModerationContent({
           toolbar={
             <div className="flex items-center gap-3">
               <AdminKbdHint label="chuyển sản phẩm" />
-              <span className="text-xs text-muted-foreground tabular-nums">
-                {formatInt(filteredProducts.length)} sản phẩm
+              <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
+                {loadingProducts && (
+                  <Loader2 className="size-3.5 animate-spin text-brand" aria-hidden="true" />
+                )}
+                <span>{formatInt(totalItems)} sản phẩm</span>
               </span>
             </div>
           }
           footer={
-            filteredProducts.length > 0 ? (
+            totalItems > 0 ? (
               <AdminPaginationBar
                 page={safePage}
                 totalPages={totalPages}
-                totalItems={filteredProducts.length}
+                totalItems={totalItems}
                 itemLabel="sản phẩm"
-                onPageChange={setPage}
+                onPageChange={(nextPage) => setPage(nextPage)}
               />
             ) : undefined
           }
@@ -563,26 +698,40 @@ function ModerationContent({
                 value={query}
                 onChange={(e) => {
                   setQuery(e.target.value);
-                  setPage(1);
                 }}
-                placeholder="Tìm tên sản phẩm, SKU, từ khoá gắn cờ, mã shop..."
+                placeholder="Tìm tên sản phẩm, mô tả..."
                 aria-label="Tìm kiếm trong hàng đợi duyệt sản phẩm"
                 className="h-9 bg-card pl-8"
               />
             </div>
+            {listError && products.length > 0 && (
+              <span className="text-xs text-destructive" role="alert">
+                {listError}
+              </span>
+            )}
           </div>
 
-          {filteredProducts.length === 0 ? (
+          {products.length === 0 ? (
             <div className="p-4">
-              <EmptyState
-                icon={PackageSearch}
-                title="Không có sản phẩm nào khớp với bộ lọc"
-                description="Thử đổi trạng thái kiểm duyệt hoặc xóa từ khóa tìm kiếm."
-                className="shadow-none"
-              />
+              {loadingProducts ? (
+                <div
+                  className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground"
+                  role="status"
+                >
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                  <span>Đang tải danh sách sản phẩm...</span>
+                </div>
+              ) : (
+                <EmptyState
+                  icon={PackageSearch}
+                  title="Không có sản phẩm nào khớp với bộ lọc"
+                  description="Thử đổi trạng thái kiểm duyệt hoặc xóa từ khóa tìm kiếm."
+                  className="shadow-none"
+                />
+              )}
             </div>
           ) : (
-            <>
+            <div className={loadingProducts ? "opacity-60 transition-opacity" : undefined}>
               <div className="hidden md:block">
                 <Table aria-label="Danh sách sản phẩm kiểm duyệt">
                   <TableHeader>
@@ -595,11 +744,10 @@ function ModerationContent({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {pagedProducts.map((item) => {
+                    {products.map((item) => {
                       const meta = getProductReviewStatusMeta(item.status);
                       const isSelected = drawerOpen && activeProduct?.id === item.id;
                       const totalStock = item.skus.reduce((sum, s) => sum + s.available_stock, 0);
-                      const thumb = item.images[0] || "/products/ao-thun-cotton-trang.png";
                       const flagged = item.flagged_keywords ?? [];
                       return (
                         <TableRow
@@ -610,13 +758,7 @@ function ModerationContent({
                         >
                           <TableCell className="max-w-[340px] whitespace-normal">
                             <div className="flex items-center gap-3">
-                              <img
-                                src={thumb}
-                                alt=""
-                                width={44}
-                                height={44}
-                                className="size-11 shrink-0 rounded-md border border-border bg-muted object-cover"
-                              />
+                              <ProductThumb src={item.images[0]} alt="" size="sm" />
                               <div className="min-w-0 flex-1">
                                 <div className="line-clamp-2 font-medium text-foreground">
                                   {item.name}
@@ -679,23 +821,14 @@ function ModerationContent({
               </div>
 
               <div className="md:hidden">
-                {pagedProducts.map((item) => {
+                {products.map((item) => {
                   const meta = getProductReviewStatusMeta(item.status);
                   const totalStock = item.skus.reduce((sum, s) => sum + s.available_stock, 0);
-                  const thumb = item.images[0] || "/products/ao-thun-cotton-trang.png";
                   const flagged = item.flagged_keywords ?? [];
                   return (
                     <IndexRowCard
                       key={item.id}
-                      media={
-                        <img
-                          src={thumb}
-                          alt=""
-                          width={44}
-                          height={44}
-                          className="size-11 rounded-md border border-border bg-muted object-cover"
-                        />
-                      }
+                      media={<ProductThumb src={item.images[0]} alt="" size="sm" />}
                       title={item.name}
                       badge={
                         <StatusBadge tone={productStatusTone(item.status)}>
@@ -721,7 +854,7 @@ function ModerationContent({
                   );
                 })}
               </div>
-            </>
+            </div>
           )}
         </IndexTable>
       )}
@@ -741,13 +874,13 @@ function ModerationContent({
                   <SheetDescription className="tabular-nums">
                     Mã {activeProduct.id.slice(0, 8)} · Shop {activeProduct.shop_id.slice(0, 8)}
                   </SheetDescription>
-                  {activeIndex >= 0 && (
+                  {products.length > 0 && (
                     <div className="flex items-center gap-1">
                       <Button
                         type="button"
                         variant="outline"
                         size="icon-xs"
-                        disabled={activeIndex <= 0}
+                        disabled={!canStepPrev || loadingProducts}
                         onClick={() => stepSelection(-1)}
                         aria-label="Sản phẩm trước (K)"
                       >
@@ -757,7 +890,7 @@ function ModerationContent({
                         type="button"
                         variant="outline"
                         size="icon-xs"
-                        disabled={activeIndex >= filteredProducts.length - 1}
+                        disabled={!canStepNext || loadingProducts}
                         onClick={() => stepSelection(1)}
                         aria-label="Sản phẩm tiếp theo (J)"
                       >
@@ -827,7 +960,7 @@ function ModerationContent({
             <TabsTrigger value="products" className="gap-1.5">
               <span>Sản phẩm</span>
               <Badge variant="neutral" className="px-1.5 py-0 text-[11px] tabular-nums">
-                {formatInt(counts.PENDING)}
+                {formatInt(tabCounts.PENDING)}
               </Badge>
             </TabsTrigger>
             <TabsTrigger value="banned_keywords" className="gap-1.5">
@@ -846,7 +979,13 @@ function ModerationContent({
             <AdminBannedKeywordsTab
               onMutated={() => {
                 void reloadBannedCount();
-                void reloadProducts();
+                void fetchProductsPage({
+                  status: productStatusFilter,
+                  keyword: debouncedQuery,
+                  page: safePage,
+                });
+                void reloadTabCounts();
+                router.refresh();
               }}
             />
           </TabsContent>
@@ -855,7 +994,13 @@ function ModerationContent({
         <AdminBannedKeywordsTab
           onMutated={() => {
             void reloadBannedCount();
-            void reloadProducts();
+            void fetchProductsPage({
+              status: productStatusFilter,
+              keyword: debouncedQuery,
+              page: safePage,
+            });
+            void reloadTabCounts();
+            router.refresh();
           }}
         />
       ) : (
@@ -867,9 +1012,21 @@ function ModerationContent({
 
 function AdminModerationRoute({
   initialProducts,
+  initialTotal,
+  initialTabCounts,
   initialBannedCount,
   loadError,
 }: AdminModerationClientProps) {
+  const resolvedTotal = initialTotal ?? initialProducts.length;
+  const resolvedTabCounts = useMemo(
+    () =>
+      initialTabCounts ?? {
+        ...createEmptyProductTabCounts(),
+        all: resolvedTotal,
+      },
+    [initialTabCounts, resolvedTotal]
+  );
+
   return (
     <AdminStateGate
       title="Kiểm duyệt nội dung"
@@ -882,6 +1039,8 @@ function AdminModerationRoute({
       {({ initialQuery, initialSelected }) => (
         <ModerationContent
           initialProducts={initialProducts}
+          initialTotal={resolvedTotal}
+          initialTabCounts={resolvedTabCounts}
           initialBannedCount={initialBannedCount ?? 0}
           loadError={loadError}
           initialQuery={initialQuery}

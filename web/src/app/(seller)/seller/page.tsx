@@ -18,12 +18,21 @@ import {
 
 export const dynamic = "force-dynamic";
 
-export default async function SellerOverviewPage() {
-  const session = await requireSellerPortalSession("/seller");
+export default async function SellerOverviewPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ approved?: string }>;
+}) {
+  const [session, sp] = await Promise.all([
+    requireSellerPortalSession("/seller"),
+    searchParams ?? Promise.resolve<{ approved?: string }>({}),
+  ]);
 
   const myShopRes = await loadMyShop();
   const shop = myShopRes.data;
+  const justApproved = sp?.approved === "1" && shop?.status === "ACTIVE";
   const needsOnboarding =
+    justApproved ||
     session.user.role !== "seller" ||
     !session.user.shopId ||
     !shop ||
@@ -31,7 +40,9 @@ export default async function SellerOverviewPage() {
     shop.status === "REJECTED";
 
   if (needsOnboarding) {
-    const addressesRes = await loadSellerAddresses();
+    const addressesRes = justApproved
+      ? { data: [] as Awaited<ReturnType<typeof loadSellerAddresses>>["data"] }
+      : await loadSellerAddresses();
     return (
       <SellerSuspense>
         <SellerShopOnboarding

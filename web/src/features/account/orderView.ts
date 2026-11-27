@@ -12,6 +12,7 @@ import type {
 } from "../../data/orders";
 import type { GatewayOrderStatus } from "../../lib/gateway-types";
 import { formatCarrierLabel } from "../../lib/format.ts";
+import { formatVariantLabel } from "../../lib/formatVariant.ts";
 import { formatAddressLine } from "../commerce/cartEnrich.ts";
 import {
   normalizeSalesChannel,
@@ -112,10 +113,17 @@ export interface ShopCatalog {
 export interface OrderLookups {
   product(backendId: string): LineCatalog | undefined;
   shop(backendId: string): ShopCatalog | undefined;
+  skuAttributes?(skuId: string): Record<string, string> | undefined;
+}
+
+export interface OrderViewLineItem extends OrderLineItem {
+  /** Shared industry-agnostic variant label ("Tên: giá trị · Tên: giá trị"). */
+  variantLabel: string;
 }
 
 /** `Order` của UI cộng các trường chỉ có ở backend để quyết định nút thao tác. */
-export interface OrderView extends Omit<Order, "carrier"> {
+export interface OrderView extends Omit<Order, "carrier" | "items"> {
+  items: OrderViewLineItem[];
   carrier?: string;
   carrierCode: string;
   checkoutGroupId: string;
@@ -357,17 +365,34 @@ function timelineText(
   }
 }
 
-function mapLine(item: GwOrderItem, lookups: OrderLookups): OrderLineItem {
+function mapLine(item: GwOrderItem, lookups: OrderLookups): OrderViewLineItem {
   const product = lookups.product(item.product_id);
   const sku = product?.skus.find((s) => s.skuId === item.sku_id);
   const color = sku ? product?.colors.find((c) => c.code === sku.colorCode) : undefined;
+  const isSyntheticColor = !color || color.code === "mac-dinh" || color.name === "Mặc định";
+  const explicitAttrs = lookups.skuAttributes?.(item.sku_id);
+  const inferredAttrs =
+    explicitAttrs !== undefined
+      ? explicitAttrs
+      : !isSyntheticColor
+        ? {
+            color: color.name,
+            ...(sku?.size && sku.size !== "Mặc định" ? { size: sku.size } : {}),
+          }
+        : undefined;
+  const variantLabel = formatVariantLabel({
+    attributes: inferredAttrs,
+    skuName: item.sku_name,
+    fallback: "Mặc định",
+  });
   return {
     skuCode: sku?.skuCode ?? item.sku_id,
     productId: item.product_id,
     productSlug: product?.slug ?? "",
     productName: product?.name ?? item.product_name,
-    colorName: color?.name ?? item.sku_name,
-    size: sku?.size ?? "",
+    colorName: !isSyntheticColor ? color.name : item.sku_name,
+    size: !isSyntheticColor && sku?.size && sku.size !== "Mặc định" ? sku.size : "",
+    variantLabel,
     image: color?.image ?? product?.image ?? "",
     unitPrice: item.effective_unit_price_vnd || item.unit_price_vnd,
     quantity: item.quantity,

@@ -52,8 +52,16 @@ export function SiteProductCard({
   const stockNotice =
     totalStock <= 0 ? "Tạm hết hàng" : totalStock <= 5 ? `Còn ${formatInt(totalStock)}` : "";
 
+  const realColors = product.colors.filter((c) => c.code !== "mac-dinh" && c.name !== "Mặc định");
   const availableSizes = Array.from(
-    new Set(product.skus.filter((s) => s.stock > 0).map((s) => s.size))
+    new Set(
+      product.skus
+        .filter((s) => {
+          const sz = String(s.size ?? "").trim();
+          return s.stock > 0 && Boolean(sz) && sz !== "Mặc định";
+        })
+        .map((s) => s.size)
+    )
   );
   const href = `/san-pham/${encodeURIComponent(product.slug)}`;
   const isSingleWide = layoutMode === "single-wide";
@@ -187,7 +195,7 @@ export function SiteProductCard({
               : "text-[15px] leading-snug font-medium"
   );
 
-  const hasMetaRow = product.colors.length > 0 || (isCompactRow && Boolean(promoBadge));
+  const hasMetaRow = realColors.length > 0 || (isCompactRow && Boolean(promoBadge));
 
   return (
     <article
@@ -211,12 +219,12 @@ export function SiteProductCard({
               isLuxury ? "justify-center" : "justify-between"
             )}
           >
-            {product.colors.length > 0 && (
+            {realColors.length > 0 && (
               <div
                 className="inline-flex items-center gap-1.5"
-                aria-label={`${product.colors.length} màu`}
+                aria-label={`${realColors.length} màu`}
               >
-                {product.colors.slice(0, 5).map((c) => (
+                {realColors.slice(0, 5).map((c) => (
                   <span
                     key={c.code}
                     className="size-2.5 shrink-0 rounded-full border border-foreground/25"
@@ -224,9 +232,9 @@ export function SiteProductCard({
                     title={c.name}
                   />
                 ))}
-                {product.colors.length > 5 && (
+                {realColors.length > 5 && (
                   <span className="text-xs text-muted-foreground tabular-nums">
-                    +{product.colors.length - 5}
+                    +{realColors.length - 5}
                   </span>
                 )}
               </div>

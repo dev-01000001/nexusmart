@@ -791,3 +791,66 @@ test("middleware does NOT www-redirect root host, shop subdomain, wwww., www.evi
     publishedSiteHostCache.clear();
   }
 });
+
+test("middleware passes /media/* straight through on root host and published tenant hosts without rewriting to /s/[host]", async () => {
+  const { publishedSiteHostCache } = await import("./lib/server/siteLookup.ts");
+  publishedSiteHostCache.clear();
+  const origFetch = globalThis.fetch;
+  const mediaPath = `/media/shops/shop-bd/${"a".repeat(64)}.webp`;
+
+  globalThis.fetch = async (rawUrl) => {
+    const url = new URL(String(rawUrl));
+    if (
+      url.pathname === "/api/v1/sites/by-host" &&
+      url.searchParams.get("host") === "bach-dang.nexusmart.localhost"
+    ) {
+      return new Response(
+        JSON.stringify({
+          site: {
+            id: "site-bd",
+            shop_id: "shop-bd",
+            status: "PUBLISHED",
+            primary_host: "shop.bachdang.vn",
+          },
+          shop: { status: "ACTIVE" },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    return new Response(JSON.stringify({ error: { code: "NOT_FOUND", message: "not found" } }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    // 1. Root host /media/* -> NextResponse.next (not rewritten, no redirect)
+    const rootRes = await middleware(
+      makeNextRequest(`http://nexusmart.localhost${mediaPath}`, "nexusmart.localhost")
+    );
+    assert.equal(rootRes._action, "next");
+    assert.equal(rootRes.status, 200);
+
+    // 2. Published tenant site host /media/* -> NextResponse.next (not rewritten to /s/[host] and not 308 redirected to primary_host)
+    const siteRes = await middleware(
+      makeNextRequest(
+        `http://bach-dang.nexusmart.localhost${mediaPath}`,
+        "bach-dang.nexusmart.localhost"
+      )
+    );
+    assert.equal(siteRes._action, "next");
+    assert.equal(siteRes.status, 200);
+
+    // 3. Unknown tenant site host /media/* -> 404
+    const missingRes = await middleware(
+      makeNextRequest(
+        `http://unknown-shop.nexusmart.localhost${mediaPath}`,
+        "unknown-shop.nexusmart.localhost"
+      )
+    );
+    assert.equal(missingRes.status, 404);
+  } finally {
+    globalThis.fetch = origFetch;
+    publishedSiteHostCache.clear();
+  }
+});

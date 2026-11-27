@@ -27,8 +27,27 @@ test("platform variant routes all 6 admin staff roles and sellers to their own a
   assert.equal(resolvePostLoginPath("platform", "seller", "//evil.example/seller"), "/seller");
 });
 
-test("platform variant sends buyers to the shop directory whatever next says", () => {
+test("platform variant routes onboarding buyers with a shop to /seller", () => {
+  assert.equal(resolvePostLoginPath("platform", "buyer", null, "/", { hasShop: true }), "/seller");
+  assert.equal(
+    resolvePostLoginPath("platform", "buyer", "/seller/site", "/", { hasShop: true }),
+    "/seller/site"
+  );
+  assert.equal(
+    resolvePostLoginPath("platform", "buyer", "/admin", "/", { hasShop: true }),
+    "/seller"
+  );
+});
+
+test("platform variant sends buyers to valid same-host root next or home '/' instead of /cua-hang", () => {
+  assert.equal(resolvePostLoginPath("platform", "buyer", null), "/");
   assert.equal(resolvePostLoginPath("platform", "buyer", "/tai-khoan"), "/");
-  assert.equal(resolvePostLoginPath("platform", "buyer", "/seller"), "/");
+  assert.equal(resolvePostLoginPath("platform", "buyer", "/admin/kiem-duyet"), "/");
+  assert.equal(resolvePostLoginPath("platform", "buyer", "/seller/san-pham"), "/");
+  assert.equal(resolvePostLoginPath("platform", "buyer", "https://evil.example"), "/");
+  assert.equal(resolvePostLoginPath("platform", "buyer", "//evil.example"), "/");
+  assert.equal(resolvePostLoginPath("platform", "buyer", "/cua-hang"), "/cua-hang");
+  assert.equal(resolvePostLoginPath("platform", "buyer", "/ve-nexusmart"), "/ve-nexusmart");
+  assert.equal(resolvePostLoginPath("platform", "buyer", "/seller"), "/seller");
   assert.equal(resolvePostLoginPath("platform", "buyer", null, "/#cua-hang"), "/#cua-hang");
 });

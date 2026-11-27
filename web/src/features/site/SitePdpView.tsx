@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Minus, Plus, ShoppingBag, Star } from "lucide-react";
 import type { FlashSaleItem } from "@/data/flash-sale";
-import type { Product, SizeCode } from "@/data/products";
+import type { Product } from "@/data/products";
 import type { Voucher } from "@/data/vouchers";
 import type {
   GatewayActiveShopDiscount,
@@ -54,6 +54,7 @@ import {
   formatRatingFromX100,
   formatVnd,
 } from "@/lib/format";
+import { buildDynamicOptionGroups, formatVariantLabel, getSkuOptionMap } from "@/lib/formatVariant";
 import type { SitePublicShopDTO } from "@/lib/site/types";
 import { cn } from "@/lib/utils";
 import { ProductReviewSummary } from "@/features/assistant/ProductReviewSummary";
@@ -80,6 +81,7 @@ const PdpShippingSelects = dynamic(
 export interface SitePdpViewProps {
   brandName: string;
   product: Product;
+  skuAttributesById?: Record<string, Record<string, string>>;
   shopVouchers: Voucher[];
   relatedProducts: Product[];
   liveFlashItem?: FlashSaleItem | SiteFlashSaleItem | null;
@@ -95,6 +97,7 @@ export interface SitePdpViewProps {
 export function SitePdpView({
   brandName,
   product,
+  skuAttributesById,
   shopVouchers,
   relatedProducts,
   liveFlashItem = null,
@@ -146,16 +149,65 @@ export function SitePdpView({
     return unique.length > 0 ? unique : ["/banners/fabric-closeup.jpg"];
   }, [product]);
 
-  const defaultSku = useMemo(
-    () => product.skus.find((s) => s.stock > 0) ?? product.skus[0],
-    [product.skus]
+  const colorNameMap = useMemo(
+    () => new Map(product.colors.map((c) => [c.code, c])),
+    [product.colors]
   );
 
-  const [selectedColor, setSelectedColor] = useState<string>(
-    defaultSku?.colorCode ?? product.colors[0]?.code ?? ""
+  const skuMetaList = useMemo(() => {
+    return product.skus.map((sku) => {
+      const color = colorNameMap.get(sku.colorCode);
+      const hasById =
+        Boolean(sku.skuId) &&
+        Boolean(skuAttributesById) &&
+        Object.prototype.hasOwnProperty.call(skuAttributesById, sku.skuId as string);
+      const hasByCode =
+        !hasById &&
+        Boolean(sku.skuCode) &&
+        Boolean(skuAttributesById) &&
+        Object.prototype.hasOwnProperty.call(skuAttributesById, sku.skuCode);
+
+      let attributes: Record<string, string>;
+      if ((hasById || hasByCode) && skuAttributesById) {
+        const raw = skuAttributesById[hasById ? (sku.skuId as string) : sku.skuCode] ?? {};
+        const hasColorKey = Object.keys(raw).some((k) => {
+          const kl = k.trim().toLowerCase();
+          return kl === "color" || kl === "color_name";
+        });
+        const hasColorHex = Object.keys(raw).some((k) => k.trim().toLowerCase() === "color_hex");
+        attributes =
+          hasColorKey && !hasColorHex && color?.hex ? { ...raw, color_hex: color.hex } : raw;
+      } else {
+        attributes = {};
+        if (color && color.code !== "mac-dinh" && color.name !== "Mặc định") {
+          attributes.color = color.name;
+          if (color.hex) attributes.color_hex = color.hex;
+        }
+        const skuSize = String(sku.size ?? "").trim();
+        if (skuSize && skuSize !== "Mặc định") {
+          attributes.size = skuSize;
+        }
+      }
+      const image = sanitizeSafeImageUrl(color?.image);
+      return {
+        sku,
+        attributes,
+        optionMap: getSkuOptionMap(attributes),
+        image,
+        label: formatVariantLabel({ attributes, fallback: "Mặc định" }),
+      };
+    });
+  }, [product.skus, colorNameMap, skuAttributesById]);
+
+  const optionGroups = useMemo(() => buildDynamicOptionGroups(skuMetaList), [skuMetaList]);
+
+  const defaultSkuMeta = useMemo(
+    () => skuMetaList.find((m) => m.sku.stock > 0) ?? skuMetaList[0],
+    [skuMetaList]
   );
-  const [selectedSize, setSelectedSize] = useState<SizeCode | string>(
-    defaultSku?.size ?? product.sizes[0] ?? ""
+
+  const [selectedOptions, setSelectedOptions] = useState<Record<string, string>>(
+    () => defaultSkuMeta?.optionMap ?? {}
   );
   const [activeImage, setActiveImage] = useState<string>(gallery[0]);
   const [qty, setQty] = useState<number>(1);
@@ -164,14 +216,23 @@ export function SitePdpView({
   const [drawerMounted, setDrawerMounted] = useState(false);
   const [addedNotice, setAddedNotice] = useState<string | null>(null);
 
-  const selectedSku = useMemo(() => {
-    return (
-      product.skus.find((s) => s.colorCode === selectedColor && s.size === selectedSize) ??
-      product.skus.find((s) => s.size === selectedSize) ??
-      product.skus.find((s) => s.colorCode === selectedColor) ??
-      product.skus[0]
+  const selectedSkuMeta = useMemo(() => {
+    if (skuMetaList.length === 0) return undefined;
+    if (optionGroups.length === 0) return defaultSkuMeta;
+    const exactMatch = skuMetaList.find((m) =>
+      optionGroups.every((g) => m.optionMap[g.key] === selectedOptions[g.key])
     );
-  }, [product.skus, selectedColor, selectedSize]);
+    if (exactMatch) return exactMatch;
+    const partialMatch = skuMetaList.find((m) =>
+      optionGroups.some(
+        (g) => Boolean(selectedOptions[g.key]) && m.optionMap[g.key] === selectedOptions[g.key]
+      )
+    );
+    return partialMatch ?? defaultSkuMeta;
+  }, [skuMetaList, optionGroups, selectedOptions, defaultSkuMeta]);
+
+  const selectedSku = selectedSkuMeta?.sku;
+  const effectiveSelectedOptions = selectedSkuMeta?.optionMap ?? selectedOptions;
 
   const maxStock = Math.max(0, selectedSku?.stock ?? 0);
   const clampedQty = maxStock > 0 ? Math.min(qty, maxStock) : 1;
@@ -320,20 +381,33 @@ export function SitePdpView({
     [shopVouchers]
   );
 
-  const colorNameMap = useMemo(
-    () => new Map(product.colors.map((c) => [c.code, c])),
-    [product.colors]
-  );
-
-  const handleSelectColor = (colorCode: string, colorImgRaw?: string) => {
-    setSelectedColor(colorCode);
-    const colorImg = sanitizeSafeImageUrl(colorImgRaw);
-    if (colorImg) {
-      setActiveImage(colorImg);
+  const handleSelectOption = (groupKey: string, value: string, valueImage?: string) => {
+    const candidate = { ...effectiveSelectedOptions, [groupKey]: value };
+    const exact =
+      skuMetaList.find(
+        (m) => m.sku.stock > 0 && optionGroups.every((g) => m.optionMap[g.key] === candidate[g.key])
+      ) ??
+      skuMetaList.find((m) => optionGroups.every((g) => m.optionMap[g.key] === candidate[g.key]));
+    const fallback =
+      exact ??
+      skuMetaList.find((m) => m.sku.stock > 0 && m.optionMap[groupKey] === value) ??
+      skuMetaList.find((m) => m.optionMap[groupKey] === value);
+    setSelectedOptions(fallback ? fallback.optionMap : candidate);
+    const nextImg = sanitizeSafeImageUrl(fallback?.image || valueImage);
+    if (nextImg) {
+      setActiveImage(nextImg);
     }
     setQty(1);
     setAddedNotice(null);
   };
+
+  const selectedVariantLabel = useMemo(
+    () =>
+      selectedSkuMeta
+        ? formatVariantLabel({ attributes: selectedSkuMeta.attributes, fallback: "" })
+        : "",
+    [selectedSkuMeta]
+  );
 
   const handleCartAction = async (mode: "add" | "buy") => {
     if (previewMode) {
@@ -353,7 +427,7 @@ export function SitePdpView({
         quantity: clampedQty,
         flashSaleItemId,
         productName: product.shortName || product.name,
-        size: String(selectedSize),
+        size: selectedVariantLabel || undefined,
       });
       if (res.unauthenticated) {
         router.push(`/dang-nhap?next=${encodeURIComponent(pathname || "/san-pham")}`);
@@ -502,7 +576,7 @@ export function SitePdpView({
 
   const renderSkuMatrixTable = () => {
     if (!showSkuTable && layout !== "sku-order-matrix") return null;
-    if (product.skus.length === 0) return null;
+    if (skuMetaList.length === 0) return null;
     return (
       <section className="mt-8 flex flex-col gap-3" aria-labelledby="pdp-sku-matrix-heading">
         <h2
@@ -516,43 +590,34 @@ export function SitePdpView({
             <TableHeader>
               <TableRow className="bg-muted/50 hover:bg-muted/50">
                 <TableHead>Mã SKU</TableHead>
-                <TableHead>Màu</TableHead>
-                <TableHead>Size</TableHead>
+                <TableHead>Phân loại</TableHead>
                 <TableHead>Giá</TableHead>
                 <TableHead>Tồn</TableHead>
                 <TableHead>Chọn</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {product.skus.map((sku) => {
-                const color = colorNameMap.get(sku.colorCode);
-                const isSelected = sku.colorCode === selectedColor && sku.size === selectedSize;
+              {skuMetaList.map((meta) => {
+                const { sku } = meta;
+                const isSelected = selectedSkuMeta?.sku === sku;
                 const available = sku.stock > 0;
                 return (
                   <TableRow
-                    key={`${sku.skuCode}-${sku.colorCode}-${sku.size}`}
+                    key={sku.skuId || sku.skuCode}
                     data-state={isSelected ? "selected" : undefined}
                     className={cn(available && "cursor-pointer")}
                     onClick={() => {
                       if (!available) return;
-                      handleSelectColor(sku.colorCode, color?.image);
-                      setSelectedSize(sku.size);
+                      setSelectedOptions(meta.optionMap);
+                      if (meta.image) setActiveImage(meta.image);
+                      setQty(1);
+                      setAddedNotice(null);
                     }}
                   >
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {sku.skuCode}
                     </TableCell>
-                    <TableCell>
-                      <span className="inline-flex items-center gap-2">
-                        <span
-                          className="size-3 shrink-0 rounded-full border border-foreground/25"
-                          style={{ backgroundColor: color?.hex ?? "#1F3038" }}
-                          aria-hidden="true"
-                        />
-                        <span>{color?.name ?? sku.colorCode}</span>
-                      </span>
-                    </TableCell>
-                    <TableCell>{sku.size}</TableCell>
+                    <TableCell>{meta.label}</TableCell>
                     <TableCell>
                       <Money vnd={sku.price} size="sm" />
                     </TableCell>
@@ -633,7 +698,7 @@ export function SitePdpView({
           className="rounded-lg border border-border bg-background px-4 last:border-b"
         >
           <AccordionTrigger className="min-h-12 py-3.5 text-[15px] font-semibold text-foreground hover:no-underline">
-            Thông số &amp; chất liệu
+            Thông tin sản phẩm
           </AccordionTrigger>
           <AccordionContent className="space-y-3 pb-4 text-sm leading-6 text-foreground/90">
             {descriptionText && <p className="max-w-[66ch]">{descriptionText}</p>}
@@ -674,8 +739,8 @@ export function SitePdpView({
         </AccordionTrigger>
         <AccordionContent className="space-y-3.5 pb-4 text-sm leading-6 text-foreground/90">
           <p className="max-w-[66ch]">
-            Đổi size tận nhà trong 45 ngày. Hỗ trợ COD, chuyển khoản VietQR hoặc Ví ZaloPay trực
-            tiếp tại {brandName}.
+            Hỗ trợ đổi trả theo chính sách cửa hàng. Thanh toán linh hoạt qua COD, chuyển khoản
+            VietQR hoặc Ví ZaloPay trực tiếp tại {brandName}.
           </p>
 
           {!previewMode && provinces.length > 0 && skuId && (
@@ -942,18 +1007,20 @@ export function SitePdpView({
 
       {layout === "sport-telemetry" && (
         <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-          <div className="flex flex-col gap-1 rounded-lg border border-border bg-background px-3.5 py-3">
-            <span className="text-xs text-muted-foreground">Định lượng</span>
-            <span className="text-[15px] font-semibold text-foreground tabular-nums">
-              {product.gsm > 0 ? `${product.gsm}gsm` : "Siêu nhẹ"}
-            </span>
-          </div>
-          <div className="flex flex-col gap-1 rounded-lg border border-border bg-background px-3.5 py-3">
-            <span className="text-xs text-muted-foreground">Phom dáng</span>
-            <span className="text-[15px] font-semibold text-foreground">
-              {product.fit || "Athletic"}
-            </span>
-          </div>
+          {product.gsm > 0 && (
+            <div className="flex flex-col gap-1 rounded-lg border border-border bg-background px-3.5 py-3">
+              <span className="text-xs text-muted-foreground">Định lượng</span>
+              <span className="text-[15px] font-semibold text-foreground tabular-nums">
+                {`${product.gsm}gsm`}
+              </span>
+            </div>
+          )}
+          {product.fit?.trim() && (
+            <div className="flex flex-col gap-1 rounded-lg border border-border bg-background px-3.5 py-3">
+              <span className="text-xs text-muted-foreground">Phom dáng</span>
+              <span className="text-[15px] font-semibold text-foreground">{product.fit}</span>
+            </div>
+          )}
           <div className="flex flex-col gap-1 rounded-lg border border-border bg-background px-3.5 py-3">
             <span className="text-xs text-muted-foreground">Sẵn kho</span>
             <span className="text-[15px] font-semibold text-foreground tabular-nums">
@@ -963,87 +1030,69 @@ export function SitePdpView({
         </div>
       )}
 
-      {product.colors.length > 0 && (
-        <div className="flex flex-col gap-2">
-          <span className="text-[13px] font-semibold text-muted-foreground">
-            Màu sắc:{" "}
-            <span className="text-foreground">
-              {colorNameMap.get(selectedColor)?.name ?? selectedColor}
+      {/* CRITICAL E2E INVARIANT: option label span ("<Label>: <value>") and ToggleGroup buttons share the same parent container */}
+      {optionGroups.map((group, groupIdx) => {
+        const currentValue = effectiveSelectedOptions[group.key] ?? group.values[0]?.value ?? "";
+        const isPrimaryVisual = group.isColorSwatch;
+        return (
+          <div key={group.key} className="flex flex-col gap-2">
+            <span className="text-[13px] font-semibold text-muted-foreground">
+              {group.label}: <span className="text-foreground">{currentValue}</span>
             </span>
-          </span>
-          <ToggleGroup
-            type="single"
-            variant="outline"
-            spacing={2}
-            value={selectedColor}
-            onValueChange={(nextColor) => {
-              if (!nextColor) return;
-              const match = colorNameMap.get(nextColor);
-              handleSelectColor(nextColor, match?.image);
-            }}
-            className="flex w-full flex-wrap justify-start gap-2"
-            aria-label="Chọn màu sắc"
-          >
-            {product.colors.map((color) => (
-              <ToggleGroupItem
-                key={color.code}
-                value={color.code}
-                className="min-h-11 gap-2 rounded-md border border-border bg-background px-3.5 text-sm font-medium text-foreground shadow-none data-[state=on]:border-primary data-[state=on]:bg-accent data-[state=on]:font-semibold data-[state=on]:text-accent-foreground"
-              >
-                <span
-                  className="size-3.5 shrink-0 rounded-full border border-foreground/25"
-                  style={{ backgroundColor: color.hex }}
-                  aria-hidden="true"
-                />
-                <span>{color.name}</span>
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
-        </div>
-      )}
-
-      {/* CRITICAL E2E INVARIANT: span "Kích cỡ: ..." and size buttons MUST share the same parent container */}
-      {product.sizes.length > 0 && (
-        <div className="flex flex-col gap-2">
-          <span className="text-[13px] font-semibold text-muted-foreground">
-            Kích cỡ: <span className="text-foreground">{selectedSize}</span>
-          </span>
-          <ToggleGroup
-            type="single"
-            variant="outline"
-            spacing={2}
-            value={String(selectedSize)}
-            onValueChange={(nextSize) => {
-              if (!nextSize) return;
-              setSelectedSize(nextSize);
-              setQty(1);
-              setAddedNotice(null);
-            }}
-            className="flex w-full flex-wrap justify-start gap-2"
-            aria-label="Chọn kích cỡ"
-          >
-            {product.sizes.map((size) => {
-              const skuMatch = product.skus.find(
-                (s) => s.colorCode === selectedColor && s.size === size
-              );
-              const available = (skuMatch?.stock ?? 0) > 0;
-              return (
-                <ToggleGroupItem
-                  key={size}
-                  value={size}
-                  disabled={!available}
-                  className={cn(
-                    "min-h-11 min-w-[60px] rounded-md border border-border bg-background px-3.5 text-sm font-medium text-foreground shadow-none data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:font-semibold data-[state=on]:text-primary-foreground",
-                    !available && "cursor-not-allowed line-through opacity-40"
-                  )}
-                >
-                  {size}
-                </ToggleGroupItem>
-              );
-            })}
-          </ToggleGroup>
-        </div>
-      )}
+            <ToggleGroup
+              type="single"
+              variant="outline"
+              spacing={2}
+              value={currentValue}
+              onValueChange={(nextVal) => {
+                if (!nextVal) return;
+                const matchedOpt = group.values.find((v) => v.value === nextVal);
+                handleSelectOption(group.key, nextVal, matchedOpt?.image);
+              }}
+              className="flex w-full flex-wrap justify-start gap-2"
+              aria-label={`Chọn ${group.label.toLowerCase()}`}
+            >
+              {group.values.map((opt) => {
+                const available =
+                  groupIdx === 0 && (group.isColorSwatch || optionGroups.length > 1)
+                    ? true
+                    : skuMetaList.some(
+                        (m) =>
+                          m.sku.stock > 0 &&
+                          m.optionMap[group.key] === opt.value &&
+                          optionGroups
+                            .slice(0, groupIdx)
+                            .every(
+                              (prev) => m.optionMap[prev.key] === effectiveSelectedOptions[prev.key]
+                            )
+                      );
+                return (
+                  <ToggleGroupItem
+                    key={opt.value}
+                    value={opt.value}
+                    disabled={!available}
+                    className={cn(
+                      isPrimaryVisual
+                        ? "min-h-11 gap-2 rounded-md border border-border bg-background px-3.5 text-sm font-medium text-foreground shadow-none data-[state=on]:border-primary data-[state=on]:bg-accent data-[state=on]:font-semibold data-[state=on]:text-accent-foreground"
+                        : "min-h-11 min-w-[60px] rounded-md border border-border bg-background px-3.5 text-sm font-medium text-foreground shadow-none data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:font-semibold data-[state=on]:text-primary-foreground",
+                      !available && "cursor-not-allowed line-through opacity-40"
+                    )}
+                  >
+                    {isPrimaryVisual && opt.hex && (
+                      <span
+                        className="size-3.5 shrink-0 rounded-full border border-foreground/25"
+                        style={{ backgroundColor: opt.hex }}
+                        aria-hidden="true"
+                      />
+                    )}
+                    <span>{opt.value}</span>
+                  </ToggleGroupItem>
+                );
+              })}
+            </ToggleGroup>
+          </div>
+        );
+      })}
 
       <div className="flex flex-wrap items-center gap-3.5">
         <div className="inline-flex items-center rounded-md border border-border bg-background">
@@ -1180,15 +1229,8 @@ export function SitePdpView({
           ? "grid grid-cols-2 gap-4 lg:grid-cols-3 lg:gap-6"
           : "grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4 lg:gap-6";
 
-  const activeColorName = colorNameMap.get(selectedColor)?.name ?? selectedColor;
-  const mobileVariantLabel = [activeColorName, selectedSize].filter(Boolean).join(", ");
-  const drawerVariantLabel = [
-    activeColorName,
-    selectedSize ? `Size ${selectedSize}` : "",
-    `SL ${clampedQty}`,
-  ]
-    .filter(Boolean)
-    .join(", ");
+  const mobileVariantLabel = selectedVariantLabel;
+  const drawerVariantLabel = [selectedVariantLabel, `SL ${clampedQty}`].filter(Boolean).join(" · ");
 
   const storyColsClass =
     storySpecs.length === 1

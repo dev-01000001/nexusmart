@@ -1,7 +1,17 @@
 // Run: node --test web/src/features/account/orderReturnSync.test.mjs
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveListMutation, resolveReturnRequest, upsertItem } from "./orderReturnSync.ts";
+import {
+  resolveListMutation,
+  resolveReturnRequest,
+  resolveReturnWizardSubmitAction,
+  upsertItem,
+} from "./orderReturnSync.ts";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function sampleReturnRequest(overrides = {}) {
   return {
@@ -140,4 +150,28 @@ test("resolveListMutation updates inline, falls back when omitted, and keeps cur
     }
   );
   assert.deepEqual(failedFallback, initial);
+});
+
+test("resolveReturnWizardSubmitAction only permits submission on step 3 (Xác nhận)", () => {
+  assert.equal(resolveReturnWizardSubmitAction(1), "advance");
+  assert.equal(resolveReturnWizardSubmitAction(2), "advance");
+  assert.equal(resolveReturnWizardSubmitAction(3), "submit");
+
+  const src = readFileSync(resolve(__dirname, "OrderDetailClientView.tsx"), "utf8");
+  assert.ok(
+    src.includes('key="return-wizard-next"') && src.includes('key="return-wizard-submit"'),
+    "Return wizard next & submit buttons must use distinct React keys to prevent DOM button reuse"
+  );
+  assert.ok(
+    src.includes('resolveReturnWizardSubmitAction(returnWizardStep) !== "submit"'),
+    "handleReturnSubmit must block submission before step 3"
+  );
+  assert.ok(
+    src.includes('"Sản phẩm lỗi hoặc hư hỏng"') &&
+      src.includes('"Giao sai sản phẩm hoặc phân loại"') &&
+      src.includes('"Không đúng mô tả"') &&
+      src.includes('"Thiếu hàng hoặc phụ kiện"') &&
+      src.includes('"Lý do khác"'),
+    "Return reasons must be industry-neutral"
+  );
 });

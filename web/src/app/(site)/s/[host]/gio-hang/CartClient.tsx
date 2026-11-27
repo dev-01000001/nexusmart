@@ -72,6 +72,7 @@ export interface CartClientProps {
   brandName: string;
   catalogProducts: Product[];
   catalogShops: Shop[];
+  skuAttributesById?: Record<string, Record<string, string>>;
   initialVouchers: GwVoucher[];
   initialFlashSales?: GatewayFlashSale[];
   cartConfig?: CartPageConfig;
@@ -132,6 +133,7 @@ export function CartClient({
   brandName,
   catalogProducts,
   catalogShops,
+  skuAttributesById,
   initialVouchers,
   initialFlashSales = [],
   cartConfig,
@@ -201,8 +203,9 @@ export function CartClient({
   }, []);
 
   const enrichedGroups = useMemo(
-    () => enrichCartGroups(cart?.shop_groups ?? [], catalogProducts, catalogShops),
-    [cart?.shop_groups, catalogProducts, catalogShops]
+    () =>
+      enrichCartGroups(cart?.shop_groups ?? [], catalogProducts, catalogShops, skuAttributesById),
+    [cart?.shop_groups, catalogProducts, catalogShops, skuAttributesById]
   );
   const activeGroup = enrichedGroups[0] ?? null;
   const cartItems = useMemo(() => activeGroup?.items ?? [], [activeGroup]);

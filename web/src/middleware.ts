@@ -30,6 +30,7 @@ import {
   isBlockedSitePath,
   isBuyerApiPath,
   isDirectInternalSitePath,
+  isMediaPath,
   isProtectedPagePath,
   isSiteApiPath,
   isSiteMetadataPath,
@@ -232,9 +233,9 @@ export async function middleware(req: NextRequest) {
     headers.set("x-site-id", lookup.siteId);
     headers.set("x-site-shop-id", lookup.shopId);
 
-    // Buyer + auth BFF APIs: route handlers re-derive the shop from Host and refresh tokens on 401.
-    // Robots/sitemap are host-aware route files. Never 308 APIs or robots/sitemap.
-    if (isSiteApiPath(pathname) || isSiteMetadataPath(pathname)) {
+    // Buyer + auth BFF APIs, public shop media, and robots/sitemap are host-aware route files.
+    // Never rewrite them to `/s/[host]` or 308-redirect them.
+    if (isSiteApiPath(pathname) || isSiteMetadataPath(pathname) || isMediaPath(pathname)) {
       return NextResponse.next({ request: { headers } });
     }
 
@@ -266,7 +267,7 @@ export async function middleware(req: NextRequest) {
 
   // Root (platform) host: buyer commerce APIs do not exist here.
   if (isBuyerApiPath(pathname)) return notFoundResponse();
-  if (isApiPath(pathname) || isSiteMetadataPath(pathname)) {
+  if (isApiPath(pathname) || isSiteMetadataPath(pathname) || isMediaPath(pathname)) {
     return NextResponse.next({ request: { headers } });
   }
   return withPageCsp(

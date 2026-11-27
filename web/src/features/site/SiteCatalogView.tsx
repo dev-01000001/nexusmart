@@ -37,6 +37,7 @@ import {
 } from "@/components/ui/table";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { formatInt } from "@/lib/format";
+import { formatVariantLabel } from "@/lib/formatVariant";
 import type { SitePublicShopDTO } from "@/lib/site/types";
 import { cn } from "@/lib/utils";
 import { CatalogFilterControls, type CatalogSortKey } from "./catalog/CatalogFilterControls";
@@ -258,12 +259,26 @@ export function SiteCatalogView({
       const colorMap = new Map(product.colors.map((c) => [c.code, c]));
       return product.skus.map((sku) => {
         const color = colorMap.get(sku.colorCode);
+        const isRealColor = Boolean(
+          color && color.code !== "mac-dinh" && color.name !== "Mặc định"
+        );
+        const skuSize = String(sku.size ?? "").trim();
+        const attrs = isRealColor
+          ? {
+              color: color!.name,
+              ...(skuSize && skuSize !== "Mặc định" ? { size: skuSize } : {}),
+            }
+          : undefined;
+        const variantLabel = formatVariantLabel({
+          attributes: attrs,
+          skuName: skuSize && skuSize !== "Mặc định" ? skuSize : "",
+          fallback: "Mặc định",
+        });
         return {
           key: `${product.id}-${sku.skuCode}-${sku.colorCode}-${sku.size}`,
           product,
           sku,
-          colorName: color?.name ?? sku.colorCode,
-          colorHex: color?.hex ?? "#1F3038",
+          variantLabel,
         };
       });
     });
@@ -426,8 +441,7 @@ export function SiteCatalogView({
           <TableRow className="bg-muted/50 hover:bg-muted/50">
             <TableHead>Sản phẩm</TableHead>
             <TableHead>SKU</TableHead>
-            <TableHead>Màu</TableHead>
-            <TableHead>Size</TableHead>
+            <TableHead>Phân loại</TableHead>
             <TableHead>Đơn giá</TableHead>
             <TableHead>Tồn</TableHead>
             <TableHead>Đặt mua</TableHead>
@@ -442,17 +456,7 @@ export function SiteCatalogView({
               <TableCell className="font-mono text-xs text-muted-foreground">
                 {row.sku.skuCode}
               </TableCell>
-              <TableCell>
-                <span className="inline-flex items-center gap-2">
-                  <span
-                    className="size-3 shrink-0 rounded-full border border-foreground/25"
-                    style={{ backgroundColor: row.colorHex }}
-                    aria-hidden="true"
-                  />
-                  <span>{row.colorName}</span>
-                </span>
-              </TableCell>
-              <TableCell>{row.sku.size}</TableCell>
+              <TableCell>{row.variantLabel}</TableCell>
               <TableCell>
                 <Money vnd={row.sku.price} size="sm" />
               </TableCell>

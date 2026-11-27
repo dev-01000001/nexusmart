@@ -170,10 +170,63 @@ test("enrichCartGroups pairs backend cart groups with catalog presentation while
   assert.equal(groups.length, 1);
   assert.equal(groups[0].shopSlug, "xuong-det-bach-dang");
   assert.equal(groups[0].items[0].productSlug, "ao-thun-cotton-compact-trang");
-  assert.equal(groups[0].items[0].variantLabel, "Màu: Trắng tinh · Size L");
+  assert.equal(groups[0].items[0].variantLabel, "Màu sắc: Trắng tinh · Kích cỡ: L");
   assert.equal(groups[0].items[0].image, "/products/ao-thun-cotton-trang.png");
   assert.equal(groups[0].items[0].exceedsStock, true);
   assert.equal(groups[0].items[0].isOutOfStock, false);
+});
+
+test("enrichCartGroups formats custom non-garment SKU attributes and empty default SKUs cleanly", () => {
+  const groups = enrichCartGroups(
+    [
+      {
+        shop_id: "shop-gom",
+        shop_name: "Gốm Bát Tràng",
+        subtotal_vnd: 450000,
+        total_weight_grams: 1200,
+        items: [
+          {
+            sku_id: "sku-gom-1",
+            product_id: "prod-gom-1",
+            shop_id: "shop-gom",
+            product_name: "Ấm trà gốm vẽ tay",
+            sku_name: "Màu men: Men lam · Quy cách: Bộ 7 món",
+            image_url: "",
+            price_vnd: 450000,
+            added_price_vnd: 450000,
+            price_changed: false,
+            quantity: 1,
+            available_stock: 5,
+            weight_grams: 1200,
+            selected: true,
+          },
+          {
+            sku_id: "sku-gom-2",
+            product_id: "prod-gom-2",
+            shop_id: "shop-gom",
+            product_name: "Lọ hoa đơn",
+            sku_name: "",
+            image_url: "",
+            price_vnd: 220000,
+            added_price_vnd: 220000,
+            price_changed: false,
+            quantity: 1,
+            available_stock: 3,
+            weight_grams: 800,
+            selected: true,
+          },
+        ],
+      },
+    ],
+    [],
+    [],
+    {
+      "sku-gom-1": { "Màu men": "Men lam", "Quy cách": "Bộ 7 món" },
+      "sku-gom-2": {},
+    }
+  );
+  assert.equal(groups[0].items[0].variantLabel, "Màu men: Men lam · Quy cách: Bộ 7 món");
+  assert.equal(groups[0].items[1].variantLabel, "Mặc định");
 });
 
 test("voucher formatting and eligibility reasons handle fixed, percent, exhausted, and min-order shop vouchers", () => {

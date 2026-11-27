@@ -153,8 +153,10 @@ function LoginFormInner({ variant, buyerHref = "/", registerHref = "/dang-ky" }:
     }
   }, [errorPulse]);
 
-  const destinationFor = (u: SessionUser) =>
-    resolvePostLoginPath(variant, u.role, nextParam, buyerHref);
+  const destinationFor = (u: SessionUser, hasShop?: boolean) =>
+    resolvePostLoginPath(variant, u.role, nextParam, buyerHref, {
+      hasShop: hasShop ?? Boolean(u.shopId),
+    });
 
   const clearFieldError = (key: LoginFieldKey) => {
     setFieldErrors((prev) => {
@@ -195,7 +197,16 @@ function LoginFormInner({ variant, buyerHref = "/", registerHref = "/dang-ky" }:
         body: { email: cleanEmail, password },
       });
       setUser(res.user);
-      const dest = safeNextPath(destinationFor(res.user), "/");
+      let hasShop = Boolean(res.user.shopId);
+      if (variant === "platform" && !hasShop && res.user.role === "buyer") {
+        const myShop = await api<{ shop?: { id?: string } | null }>("/api/shops/me", {
+          retryOn401: false,
+        })
+          .then((r) => r.shop ?? null)
+          .catch(() => null);
+        hasShop = Boolean(myShop?.id);
+      }
+      const dest = safeNextPath(destinationFor(res.user, hasShop), "/");
       navigating = true;
       window.location.assign(dest);
       return;

@@ -52,3 +52,15 @@ export async function resolveListMutation<T>(
   }
   return [...current];
 }
+
+export type ReturnWizardStep = 1 | 2 | 3;
+
+/**
+ * Pure guard for the 3-step return wizard form submission:
+ * Only step 3 ("Xác nhận") is allowed to submit the return request to the backend;
+ * any earlier form submit (e.g. pressing Enter or browser click-to-submit race)
+ * advances to the next step instead of skipping confirmation.
+ */
+export function resolveReturnWizardSubmitAction(step: ReturnWizardStep): "advance" | "submit" {
+  return step === 3 ? "submit" : "advance";
+}

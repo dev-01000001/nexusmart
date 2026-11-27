@@ -355,6 +355,11 @@ export function isSiteMetadataPath(pathname: string): boolean {
   return pathname === "/robots.txt" || pathname === "/sitemap.xml";
 }
 
+/** Public uploaded shop media (`/media/...`): served directly on both root and published site hosts. */
+export function isMediaPath(pathname: string): boolean {
+  return matchesPrefix(pathname, "/media");
+}
+
 function formatHostWithPort(hostname: string, port: string): string {
   const formattedHost = isIpv6Literal(hostname) ? `[${hostname}]` : hostname;
   return port ? `${formattedHost}:${port}` : formattedHost;
@@ -426,7 +431,8 @@ export function resolveCanonicalHostRedirect(opts: CanonicalHostRedirectInput): 
   if (
     isApiPath(opts.pathname) ||
     isBlockedSitePath(opts.pathname) ||
-    isSiteMetadataPath(opts.pathname)
+    isSiteMetadataPath(opts.pathname) ||
+    isMediaPath(opts.pathname)
   ) {
     return null;
   }

@@ -62,16 +62,16 @@ import {
 
 const QUICK_REPLIES = [
   {
-    label: "Tư vấn chọn size",
-    text: "Chào anh/chị, vui lòng gửi chiều cao và cân nặng để gian hàng tư vấn đúng size theo bảng đo thực tế ạ.",
+    label: "Tư vấn sản phẩm",
+    text: "Chào anh/chị, vui lòng cho gian hàng biết nhu cầu sử dụng hoặc phân loại anh/chị quan tâm để tư vấn chi tiết ạ.",
   },
   {
     label: "Xác nhận giao trong ngày",
     text: "Đơn hàng của anh/chị đã đủ hàng và sẽ được đóng gói bàn giao vận chuyển trong chuyến hôm nay ạ.",
   },
   {
-    label: "Chính sách đổi size 45 ngày",
-    text: "Gian hàng hỗ trợ đổi size 2 chiều trong 45 ngày với sản phẩm còn nguyên tem mác và chưa qua sử dụng ạ.",
+    label: "Chính sách đổi trả",
+    text: "Gian hàng hỗ trợ đổi trả theo chính sách công bố khi sản phẩm còn nguyên vẹn bao bì và chưa qua sử dụng ạ.",
   },
 ];
 
@@ -928,7 +928,7 @@ function SellerChatContent({ sellerUserId }: SellerChatClientProps) {
         <EmptyState
           icon={MessageSquare}
           title="Chưa có tin nhắn khách hàng"
-          description="Khi người mua nhắn hỏi về sản phẩm, kích cỡ hoặc đơn hàng, hội thoại sẽ hiển thị tại đây."
+          description="Khi người mua nhắn hỏi về sản phẩm, phân loại hoặc đơn hàng, hội thoại sẽ hiển thị tại đây."
           action={
             <Button size="sm" asChild>
               <Link href="/seller/don-hang">Xem đơn hàng</Link>

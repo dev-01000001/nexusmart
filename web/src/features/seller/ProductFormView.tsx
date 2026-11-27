@@ -3,16 +3,30 @@
 import React, { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Check, CheckCircle2, Package, Plus, Sparkles, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Image as ImageIcon,
+  Package,
+  Plus,
+  Sparkles,
+  Trash2,
+  X,
+} from "lucide-react";
 import {
   DetailLayout,
   EmptyState,
   ErrorState,
+  MediaUploader,
   PageHeader,
   SaveBar,
   StatusBadge,
   productStatusTone,
 } from "@/components/app";
+import { MEDIA_MAX_PRODUCT_IMAGES, appendUniqueMediaUrl } from "@/components/app/mediaUploadUtils";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -56,12 +70,26 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError, getErrorMessage } from "@/lib/api";
 import { formatInt, formatVnd } from "@/lib/format";
+import { formatVariantLabel, normalizeVariantEntries } from "@/lib/formatVariant";
 import { cn } from "@/lib/utils";
 import {
   normalizeDescribeProduct,
   type DescribeProductResult,
 } from "@/features/assistant/assistantTypes";
 import { useSellerContext } from "./SellerShell";
+import {
+  buildSkuPayloadName,
+  clampWeightGrams,
+  DEFAULT_VARIANT_NAME,
+  generateVariantCombinations,
+  MAX_VARIANT_COMBINATIONS,
+  MAX_VARIANT_OPTIONS,
+  OPTION_NAME_SUGGESTIONS,
+  parseOptionValuesInput,
+  toEditableFormState,
+  type EditableSkuRow,
+  type VariantOptionDraft,
+} from "./ProductFormView.variants";
 import {
   getSellerProductStatusMeta,
   type GwCategory,
@@ -70,25 +98,25 @@ import {
 } from "./sellerApiTypes";
 import { EMPTY_DASH, getAllowedSellerStatuses } from "./types";
 
-const GALLERY_CHOICES = [
-  { label: "Áo thun Trắng", path: "/products/ao-thun-cotton-trang.png" },
-  { label: "Áo thun Xám đá", path: "/products/ao-thun-cotton-xam-da.png" },
-  { label: "Áo thun Xanh than", path: "/products/ao-thun-cotton-xanh-than.png" },
-  { label: "Áo thun Dry-Fit", path: "/products/ao-thun-dryfit-co-vit.png" },
-  { label: "Áo Polo Kem", path: "/products/ao-polo-pique-kem.png" },
-  { label: "Áo Polo Xanh đá", path: "/products/ao-polo-pique-xanh-da.png" },
-  { label: "Quần Short Be", path: "/products/quan-short-daily-be.png" },
-  { label: "Quần Short Linen", path: "/products/quan-short-linen-xam-da.png" },
-  { label: "Jogger Xám", path: "/products/quan-jogger-terry-xam.png" },
-  { label: "Boxer Modal", path: "/products/do-lot-boxer-modal-3.png" },
-  { label: "Tất cổ trung", path: "/products/tat-cotton-co-trung-5.png" },
-  { label: "Áo khoác Gió", path: "/products/ao-khoac-gio-xam-tro.png" },
+const SAMPLE_GALLERY_CHOICES = [
+  { label: "Mẫu minh họa 1", path: "/products/ao-thun-cotton-trang.png" },
+  { label: "Mẫu minh họa 2", path: "/products/ao-thun-cotton-xam-da.png" },
+  { label: "Mẫu minh họa 3", path: "/products/ao-thun-cotton-xanh-than.png" },
+  { label: "Mẫu minh họa 4", path: "/products/ao-thun-dryfit-co-vit.png" },
+  { label: "Mẫu minh họa 5", path: "/products/ao-polo-pique-kem.png" },
+  { label: "Mẫu minh họa 6", path: "/products/ao-polo-pique-xanh-da.png" },
+  { label: "Mẫu minh họa 7", path: "/products/quan-short-daily-be.png" },
+  { label: "Mẫu minh họa 8", path: "/products/quan-short-linen-xam-da.png" },
+  { label: "Mẫu minh họa 9", path: "/products/quan-jogger-terry-xam.png" },
+  { label: "Mẫu minh họa 10", path: "/products/do-lot-boxer-modal-3.png" },
+  { label: "Mẫu minh họa 11", path: "/products/tat-cotton-co-trung-5.png" },
+  { label: "Mẫu minh họa 12", path: "/products/ao-khoac-gio-xam-tro.png" },
 ];
 
 const AI_TONE_OPTIONS = [
   { value: "practical", label: "Gọn gàng, thực tế" },
-  { value: "material", label: "Chi tiết chất liệu" },
-  { value: "active", label: "Năng động, thể thao" },
+  { value: "material", label: "Chi tiết chất liệu & thông số" },
+  { value: "active", label: "Nổi bật công dụng & trải nghiệm" },
 ] as const;
 
 function buildDraftCopy(draft: DescribeProductResult): string {
@@ -113,33 +141,7 @@ function slugifyUrl(input: string): string {
     .toLowerCase();
 }
 
-const DEFAULT_WEIGHT_GRAMS = 250;
-const MIN_WEIGHT_GRAMS = 1;
-
-function clampWeightGrams(raw: string | number): number {
-  const trimmed = typeof raw === "number" ? String(raw) : raw.trim();
-  if (!trimmed) return DEFAULT_WEIGHT_GRAMS;
-  const parsed = Number(trimmed);
-  if (!Number.isFinite(parsed)) return DEFAULT_WEIGHT_GRAMS;
-  return Math.max(MIN_WEIGHT_GRAMS, Math.trunc(parsed));
-}
-
-interface EditableSkuRow {
-  localKey: string;
-  id?: string;
-  version?: number;
-  reservedStock: number;
-  skuCode: string;
-  name: string;
-  color: string;
-  colorName: string;
-  colorHex: string;
-  size: string;
-  priceVnd: number;
-  stock: number;
-  weightGrams: string;
-  imageUrl: string;
-}
+const SKU_IMAGE_PRIMARY_VALUE = "__primary__";
 
 interface ProductFormSnapshot {
   productStatus: string;
@@ -147,52 +149,9 @@ interface ProductFormSnapshot {
   slug: string;
   categoryId: string;
   description: string;
-  selectedImage: string;
+  images: string[];
+  options: VariantOptionDraft[];
   skuRows: EditableSkuRow[];
-}
-
-function toEditableRows(
-  product?: GwSellerProduct | null,
-  defaultSkuStamp?: string
-): EditableSkuRow[] {
-  if (product && product.skus?.length > 0) {
-    const activeSkus = product.skus.filter((s) => s.is_active);
-    const sourceSkus = activeSkus.length > 0 ? activeSkus : product.skus;
-    return sourceSkus.map((s) => ({
-      localKey: s.id,
-      id: s.id,
-      version: s.version,
-      reservedStock: s.reserved_stock,
-      skuCode: s.sku_code,
-      name: s.name || `${s.attributes?.color_name ?? "Mặc định"} / ${s.attributes?.size ?? "L"}`,
-      color: s.attributes?.color ?? "mac-dinh",
-      colorName: s.attributes?.color_name ?? s.attributes?.color ?? "Tiêu chuẩn",
-      colorHex: s.attributes?.color_hex ?? "#9aa5ac",
-      size: s.attributes?.size ?? "L",
-      priceVnd: s.price_vnd,
-      stock: s.stock,
-      weightGrams: String(
-        s.weight_grams > 0 ? clampWeightGrams(s.weight_grams) : DEFAULT_WEIGHT_GRAMS
-      ),
-      imageUrl: s.image_url || product.images?.[0] || GALLERY_CHOICES[0].path,
-    }));
-  }
-  const sizes = ["S", "M", "L", "XL"];
-  const stamp = defaultSkuStamp?.trim() || "1001";
-  return sizes.map((sz) => ({
-    localKey: `new-trang-${sz}`,
-    reservedStock: 0,
-    skuCode: `NM-${stamp}-TRANG-${sz}`,
-    name: `Trắng tinh / ${sz}`,
-    color: "trang",
-    colorName: "Trắng tinh",
-    colorHex: "#f4f6f7",
-    size: sz,
-    priceVnd: 189000,
-    stock: 20,
-    weightGrams: String(DEFAULT_WEIGHT_GRAMS),
-    imageUrl: GALLERY_CHOICES[0].path,
-  }));
 }
 
 function serializeSnapshot(snap: ProductFormSnapshot): string {
@@ -202,12 +161,17 @@ function serializeSnapshot(snap: ProductFormSnapshot): string {
     slug: snap.slug,
     categoryId: snap.categoryId,
     description: snap.description,
-    selectedImage: snap.selectedImage,
+    images: snap.images,
+    options: snap.options.map((o) => ({
+      name: o.name,
+      storageKey: o.storageKey ?? "",
+      values: o.values,
+    })),
     skuRows: snap.skuRows.map((r) => ({
       id: r.id ?? "",
       skuCode: r.skuCode,
-      colorName: r.colorName,
-      size: r.size,
+      name: r.name,
+      attributes: r.attributes,
       priceVnd: r.priceVnd,
       stock: r.stock,
       weightGrams: r.weightGrams,
@@ -234,6 +198,7 @@ export function ProductFormView({
   const router = useRouter();
   const { shop, showToast } = useSellerContext();
   const formRef = useRef<HTMLFormElement | null>(null);
+  const skuStamp = defaultSkuStamp?.trim() || "1001";
 
   const initialCategoryId = useMemo(() => {
     if (initialProduct?.category_id) return initialProduct.category_id;
@@ -241,20 +206,28 @@ export function ProductFormView({
     return firstAllowed?.id ?? categories[0]?.id ?? "";
   }, [initialProduct?.category_id, categories]);
 
-  const initialSnapshot = useMemo<ProductFormSnapshot>(
-    () => ({
+  const initialSnapshot = useMemo<ProductFormSnapshot>(() => {
+    const { options, skuRows } = toEditableFormState(initialProduct, skuStamp);
+    const initialImages = Array.isArray(initialProduct?.images)
+      ? Array.from(
+          new Set(
+            initialProduct.images
+              .filter((u): u is string => typeof u === "string" && u.trim() !== "")
+              .map((u) => u.trim())
+          )
+        ).slice(0, MEDIA_MAX_PRODUCT_IMAGES)
+      : [];
+    return {
       productStatus: initialProduct?.status ?? "PENDING",
       name: initialProduct?.name ?? "",
       slug: initialProduct?.slug ?? "",
       categoryId: initialCategoryId,
-      description:
-        initialProduct?.description ??
-        "Sản phẩm đồ mặc hằng ngày hoàn thiện tại xưởng, kiểm soát độ co rút và giữ phom sau nhiều lần giặt.",
-      selectedImage: initialProduct?.images?.[0] ?? GALLERY_CHOICES[0].path,
-      skuRows: toEditableRows(initialProduct, defaultSkuStamp),
-    }),
-    [initialProduct, initialCategoryId, defaultSkuStamp]
-  );
+      description: initialProduct?.description ?? "",
+      images: initialImages,
+      options,
+      skuRows,
+    };
+  }, [initialProduct, initialCategoryId, skuStamp]);
 
   const [savedSnapshot, setSavedSnapshot] = useState<ProductFormSnapshot>(initialSnapshot);
   const [currentProduct, setCurrentProduct] = useState<GwSellerProduct | null>(
@@ -265,15 +238,19 @@ export function ProductFormView({
   const [slug, setSlug] = useState(initialSnapshot.slug);
   const [categoryId, setCategoryId] = useState(initialSnapshot.categoryId);
   const [description, setDescription] = useState(initialSnapshot.description);
-  const [selectedImage, setSelectedImage] = useState(initialSnapshot.selectedImage);
+  const [images, setImages] = useState<string[]>(initialSnapshot.images);
+  const primaryImage = images[0] ?? "";
+  const [showSampleGallery, setShowSampleGallery] = useState(false);
+  const [options, setOptions] = useState<VariantOptionDraft[]>(initialSnapshot.options);
+  const [optionValueInputs, setOptionValueInputs] = useState<Record<string, string>>({});
   const [skuRows, setSkuRows] = useState<EditableSkuRow[]>(initialSnapshot.skuRows);
+  const [combinationsTruncated, setCombinationsTruncated] = useState(false);
 
-  const [bulkPriceStr, setBulkPriceStr] = useState(() =>
-    String(initialSnapshot.skuRows[0]?.priceVnd ?? 189000)
-  );
-  const [bulkStockStr, setBulkStockStr] = useState("20");
-  const [newSkuSize, setNewSkuSize] = useState("2XL");
-  const [newSkuColorName, setNewSkuColorName] = useState("Xám đá");
+  const [bulkPriceStr, setBulkPriceStr] = useState(() => {
+    const firstPrice = initialSnapshot.skuRows[0]?.priceVnd ?? 0;
+    return firstPrice > 0 ? String(firstPrice) : "";
+  });
+  const [bulkStockStr, setBulkStockStr] = useState("");
   const [saving, setSaving] = useState(false);
   const [busyStockId, setBusyStockId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -282,7 +259,7 @@ export function ProductFormView({
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
 
-  // AI description helper state (phase-0b)
+  // AI description helper state
   const [aiTone, setAiTone] = useState<string>("practical");
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -295,11 +272,12 @@ export function ProductFormView({
       slug,
       categoryId,
       description,
-      selectedImage,
+      images,
+      options,
       skuRows,
     };
     return serializeSnapshot(current) !== serializeSnapshot(savedSnapshot);
-  }, [productStatus, name, slug, categoryId, description, selectedImage, skuRows, savedSnapshot]);
+  }, [productStatus, name, slug, categoryId, description, images, options, skuRows, savedSnapshot]);
 
   const totalStock = useMemo(
     () => skuRows.reduce((s, r) => s + Math.max(0, Math.trunc(r.stock)), 0),
@@ -310,9 +288,10 @@ export function ProductFormView({
     [skuRows]
   );
   const priceRangeLabel = useMemo(() => {
-    if (skuRows.length === 0) return EMPTY_DASH;
-    const minP = Math.min(...skuRows.map((r) => r.priceVnd));
-    const maxP = Math.max(...skuRows.map((r) => r.priceVnd));
+    const validPrices = skuRows.map((r) => r.priceVnd).filter((p) => p > 0);
+    if (validPrices.length === 0) return EMPTY_DASH;
+    const minP = Math.min(...validPrices);
+    const maxP = Math.max(...validPrices);
     return minP === maxP ? formatVnd(minP) : `${formatVnd(minP)} đến ${formatVnd(maxP)}`;
   }, [skuRows]);
 
@@ -321,26 +300,28 @@ export function ProductFormView({
     [categories, categoryId]
   );
 
-  const activeImageLabel = useMemo(
-    () => GALLERY_CHOICES.find((g) => g.path === selectedImage)?.label ?? "Ảnh sản phẩm",
-    [selectedImage]
-  );
+  const activeImageLabel = useMemo(() => {
+    if (images.length === 0) return "Tải tối đa 9 ảnh (JPEG, PNG, WebP ≤ 5 MB)";
+    return `${formatInt(images.length)}/${MEDIA_MAX_PRODUCT_IMAGES} ảnh · Ảnh đầu tiên là ảnh chính hiển thị trên gian hàng`;
+  }, [images]);
 
-  const previewColors = useMemo(() => {
-    const map = new Map<string, string>();
+  const previewOptionSummary = useMemo(() => {
+    const byLabel = new Map<string, Set<string>>();
     for (const row of skuRows) {
-      const label = row.colorName.trim();
-      if (label && !map.has(label)) {
-        map.set(label, row.colorHex || "#9aa5ac");
+      for (const entry of normalizeVariantEntries(row.attributes)) {
+        let vals = byLabel.get(entry.label);
+        if (!vals) {
+          vals = new Set<string>();
+          byLabel.set(entry.label, vals);
+        }
+        vals.add(entry.value);
       }
     }
-    return Array.from(map.entries()).map(([label, hex]) => ({ label, hex }));
+    return Array.from(byLabel.entries()).map(([label, vals]) => ({
+      label,
+      values: Array.from(vals),
+    }));
   }, [skuRows]);
-
-  const previewSizes = useMemo(
-    () => Array.from(new Set(skuRows.map((r) => r.size.trim()).filter(Boolean))),
-    [skuRows]
-  );
 
   const allowedStatuses = useMemo(
     () => getAllowedSellerStatuses(currentProduct?.status ?? productStatus),
@@ -409,6 +390,90 @@ export function ProductFormView({
     );
   }
 
+  const handleImagesChange = (nextImages: string[]) => {
+    const kept = new Set(nextImages);
+    setImages(nextImages);
+    setSkuRows((prev) =>
+      prev.map((row) => (row.imageUrl && !kept.has(row.imageUrl) ? { ...row, imageUrl: "" } : row))
+    );
+  };
+
+  const handleToggleSampleImage = (samplePath: string) => {
+    if (images.includes(samplePath)) {
+      handleImagesChange(images.filter((u) => u !== samplePath));
+      return;
+    }
+    if (images.length >= MEDIA_MAX_PRODUCT_IMAGES) {
+      showToast(`Tối đa ${MEDIA_MAX_PRODUCT_IMAGES} ảnh cho mỗi sản phẩm.`);
+      return;
+    }
+    handleImagesChange(appendUniqueMediaUrl(images, samplePath, MEDIA_MAX_PRODUCT_IMAGES));
+  };
+
+  const regenerateRows = (nextOptions: VariantOptionDraft[], currentRows: EditableSkuRow[]) => {
+    const result = generateVariantCombinations({
+      options: nextOptions,
+      existingRows: currentRows,
+      skuStamp,
+      defaultImageUrl: primaryImage,
+    });
+    setSkuRows(result.rows);
+    setCombinationsTruncated(result.truncated);
+    clearFieldError("skus");
+  };
+
+  const handleAddOption = (presetName = "") => {
+    if (options.length >= MAX_VARIANT_OPTIONS) return;
+    const newId = `opt-${Date.now()}-${options.length}`;
+    const nextOptions: VariantOptionDraft[] = [
+      ...options,
+      { id: newId, name: presetName, values: [] },
+    ];
+    setOptions(nextOptions);
+  };
+
+  const handleUpdateOptionName = (optId: string, nextName: string) => {
+    const nextOptions = options.map((opt) => (opt.id === optId ? { ...opt, name: nextName } : opt));
+    setOptions(nextOptions);
+    if (nextOptions.some((o) => o.id === optId && o.values.length > 0)) {
+      regenerateRows(nextOptions, skuRows);
+    }
+  };
+
+  const handleAddOptionValues = (optId: string) => {
+    const raw = (optionValueInputs[optId] ?? "").trim();
+    if (!raw) return;
+    const nextOptions = options.map((opt) => {
+      if (opt.id !== optId) return opt;
+      return {
+        ...opt,
+        values: parseOptionValuesInput(raw, opt.values),
+      };
+    });
+    setOptions(nextOptions);
+    setOptionValueInputs((prev) => ({ ...prev, [optId]: "" }));
+    regenerateRows(nextOptions, skuRows);
+  };
+
+  const handleRemoveOptionValue = (optId: string, valueToRemove: string) => {
+    const nextOptions = options.map((opt) =>
+      opt.id === optId ? { ...opt, values: opt.values.filter((v) => v !== valueToRemove) } : opt
+    );
+    setOptions(nextOptions);
+    regenerateRows(nextOptions, skuRows);
+  };
+
+  const handleRemoveOption = (optId: string) => {
+    const nextOptions = options.filter((opt) => opt.id !== optId);
+    setOptions(nextOptions);
+    setOptionValueInputs((prev) => {
+      const copy = { ...prev };
+      delete copy[optId];
+      return copy;
+    });
+    regenerateRows(nextOptions, skuRows);
+  };
+
   const updateRow = (localKey: string, patch: Partial<EditableSkuRow>) => {
     setSkuRows((prev) => prev.map((r) => (r.localKey === localKey ? { ...r, ...patch } : r)));
   };
@@ -419,44 +484,14 @@ export function ProductFormView({
     setSlug(savedSnapshot.slug);
     setCategoryId(savedSnapshot.categoryId);
     setDescription(savedSnapshot.description);
-    setSelectedImage(savedSnapshot.selectedImage);
+    setImages(savedSnapshot.images);
+    setOptions(savedSnapshot.options);
     setSkuRows(savedSnapshot.skuRows);
+    setOptionValueInputs({});
+    setCombinationsTruncated(false);
     setFieldErrors({});
     setErrorMsg(null);
     showToast("Đã hoàn tác các thay đổi chưa lưu.");
-  };
-
-  const handleAddSkuRow = () => {
-    const colorClean = newSkuColorName.trim() || "Mặc định";
-    const sizeClean = newSkuSize.trim().toUpperCase() || "L";
-    const colorSlug =
-      colorClean
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/đ/gi, "d")
-        .replace(/[^a-zA-Z0-9]+/g, "")
-        .toLowerCase()
-        .slice(0, 8) || "mau";
-    const baseCode = `NM-${String(Date.now()).slice(-4)}-${colorSlug.toUpperCase()}-${sizeClean}`;
-    const basePrice = skuRows[0]?.priceVnd ?? 189000;
-    setSkuRows((prev) => [
-      ...prev,
-      {
-        localKey: `new-${Date.now()}-${prev.length}`,
-        reservedStock: 0,
-        skuCode: baseCode,
-        name: `${colorClean} / ${sizeClean}`,
-        color: colorSlug,
-        colorName: colorClean,
-        colorHex: "#9aa5ac",
-        size: sizeClean,
-        priceVnd: basePrice,
-        stock: 15,
-        weightGrams: String(DEFAULT_WEIGHT_GRAMS),
-        imageUrl: selectedImage,
-      },
-    ]);
-    clearFieldError("skus");
   };
 
   const handleRemoveRow = (localKey: string) => {
@@ -489,7 +524,7 @@ export function ProductFormView({
   const handleBulkStock = () => {
     const val = Math.max(0, Math.trunc(Number(bulkStockStr) || 0));
     setSkuRows((prev) => prev.map((r) => ({ ...r, stock: Math.max(r.reservedStock, val) })));
-    showToast(`Đã đặt tồn kho ${formatInt(val)} chiếc cho ${skuRows.length} biến thể SKU.`);
+    showToast(`Đã đặt tồn kho ${formatInt(val)} sản phẩm cho ${skuRows.length} biến thể SKU.`);
   };
 
   const handleQuickSaveSkuStock = async (row: EditableSkuRow) => {
@@ -527,7 +562,7 @@ export function ProductFormView({
         ),
       }));
       showToast(
-        `Đã lưu tồn kho ${updated.sku_code}: ${formatInt(updated.available_stock)} chiếc khả dụng.`
+        `Đã lưu tồn kho ${updated.sku_code}: ${formatInt(updated.available_stock)} sản phẩm khả dụng.`
       );
     } catch (err) {
       const msg = getErrorMessage(err, "Không thể cập nhật tồn kho SKU.");
@@ -548,8 +583,16 @@ export function ProductFormView({
     setAiError(null);
     setAiLoading(true);
     try {
-      const colors = Array.from(new Set(skuRows.map((r) => r.colorName.trim()).filter(Boolean)));
-      const sizes = Array.from(new Set(skuRows.map((r) => r.size.trim()).filter(Boolean)));
+      const colors: string[] = [];
+      const sizes: string[] = [];
+      const attrSummary: Record<string, string> = { sku_count: String(skuRows.length) };
+
+      for (const opt of previewOptionSummary) {
+        attrSummary[opt.label] = opt.values.join(", ");
+        if (opt.label === "Màu sắc") colors.push(...opt.values);
+        if (opt.label === "Kích cỡ") sizes.push(...opt.values);
+      }
+
       const prices = skuRows.map((r) => Math.trunc(r.priceVnd)).filter((p) => p > 0);
       const minPrice = prices.length > 0 ? Math.min(...prices) : 0;
 
@@ -558,9 +601,7 @@ export function ProductFormView({
         body: {
           name: cleanName,
           category_name: categories.find((c) => c.id === categoryId)?.name ?? "",
-          attributes: {
-            sku_count: String(skuRows.length),
-          },
+          attributes: attrSummary,
           colors,
           sizes,
           price_vnd: minPrice,
@@ -693,29 +734,25 @@ export function ProductFormView({
     setSaving(true);
     try {
       const cleanSlug = slug.trim();
+      const imageList = Array.from(
+        new Set([...images, ...normalizedRows.map((r) => r.imageUrl)].filter(Boolean))
+      );
       const payload = {
         category_id: categoryId,
         name: cleanName,
         ...(cleanSlug ? { slug: cleanSlug } : {}),
-        description: description.trim() || cleanName,
-        images: Array.from(
-          new Set([selectedImage, ...normalizedRows.map((r) => r.imageUrl).filter(Boolean)])
-        ),
+        description: description.trim(),
+        images: imageList,
         status: mode === "edit" ? productStatus : undefined,
         skus: normalizedRows.map((r) => ({
           id: r.id,
           sku_code: r.skuCode.trim(),
-          name: r.name.trim() || `${r.colorName} / ${r.size}`,
-          attributes: {
-            color: r.color,
-            color_name: r.colorName,
-            color_hex: r.colorHex,
-            size: r.size,
-          },
+          name: buildSkuPayloadName(r.attributes, r.name),
+          attributes: r.attributes,
           price_vnd: Math.trunc(r.priceVnd),
           stock: Math.max(0, Math.trunc(r.stock)),
           weight_grams: clampWeightGrams(r.weightGrams),
-          image_url: r.imageUrl || selectedImage,
+          image_url: r.imageUrl || primaryImage || "",
         })),
       };
 
@@ -736,25 +773,30 @@ export function ProductFormView({
             body: payload,
           }
         );
-        const nextRows = toEditableRows(res.product);
+        const hydrated = toEditableFormState(res.product, skuStamp);
+        const savedImages = Array.isArray(res.product.images)
+          ? res.product.images.filter((u): u is string => typeof u === "string" && u.trim() !== "")
+          : [];
         const nextSnap: ProductFormSnapshot = {
           productStatus: res.product.status,
           name: res.product.name,
           slug: res.product.slug ?? "",
           categoryId: res.product.category_id,
           description: res.product.description ?? "",
-          selectedImage: res.product.images?.[0] ?? selectedImage,
-          skuRows: nextRows,
+          images: savedImages,
+          options: hydrated.options,
+          skuRows: hydrated.skuRows,
         };
         setCurrentProduct(res.product);
         setSavedSnapshot(nextSnap);
-        setSkuRows(nextRows);
+        setOptions(nextSnap.options);
+        setSkuRows(nextSnap.skuRows);
         setProductStatus(nextSnap.productStatus);
         setName(nextSnap.name);
         setSlug(nextSnap.slug);
         setCategoryId(nextSnap.categoryId);
         setDescription(nextSnap.description);
-        setSelectedImage(nextSnap.selectedImage);
+        setImages(nextSnap.images);
         const msg = `Đã lưu cập nhật "${res.product.name}" (${formatInt(totalStock)} tồn kho).`;
         showToast(msg);
         setSavedNotice(msg);
@@ -776,6 +818,7 @@ export function ProductFormView({
   };
 
   const statusMeta = getSellerProductStatusMeta(productStatus);
+  const usedOptionNamesLower = new Set(options.map((o) => o.name.trim().toLowerCase()));
 
   return (
     <form ref={formRef} className="space-y-4" onSubmit={(e) => void handleSubmit(e)} noValidate>
@@ -874,7 +917,7 @@ export function ProductFormView({
               <CardHeader>
                 <CardTitle id="prod-info-heading">Thông tin</CardTitle>
                 <CardDescription>
-                  Tên hiển thị và mô tả chất liệu, hoàn thiện sản phẩm trên site gian hàng.
+                  Tên hiển thị và mô tả chi tiết sản phẩm trên site gian hàng.
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -891,14 +934,14 @@ export function ProductFormView({
                         clearFieldError("name");
                         if (errorMsg) setErrorMsg(null);
                       }}
-                      placeholder="Ví dụ: Áo thun Cotton Compact 220gsm Xanh đá"
+                      placeholder="Ví dụ: Bộ ấm trà gốm men lam, Kem dưỡng ẩm, Cà phê rang xay..."
                       aria-invalid={Boolean(fieldErrors.name)}
                     />
                     {fieldErrors.name ? <FieldError>{fieldErrors.name}</FieldError> : null}
                   </Field>
 
                   <Field>
-                    <FieldLabel htmlFor="prod-desc">Mô tả chất liệu &amp; hoàn thiện</FieldLabel>
+                    <FieldLabel htmlFor="prod-desc">Mô tả sản phẩm</FieldLabel>
 
                     <div className="space-y-2.5 rounded-lg border border-border bg-muted/40 p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -911,7 +954,7 @@ export function ProductFormView({
                             <SelectTrigger
                               size="sm"
                               aria-label="Chọn văn phong mô tả AI"
-                              className="w-44 bg-card"
+                              className="w-52 bg-card"
                             >
                               <SelectValue>
                                 {AI_TONE_OPTIONS.find((opt) => opt.value === aiTone)?.label ??
@@ -1006,6 +1049,7 @@ export function ProductFormView({
                       rows={4}
                       value={description}
                       onChange={(e) => setDescription(e.target.value)}
+                      placeholder="Nhập thông tin chi tiết về chất liệu, kích thước, công dụng và hướng dẫn sử dụng hoặc bảo quản..."
                     />
                   </Field>
                 </FieldGroup>
@@ -1016,51 +1060,102 @@ export function ProductFormView({
             <Card aria-labelledby="prod-images-heading">
               <CardHeader>
                 <CardTitle id="prod-images-heading">Hình ảnh</CardTitle>
-                <CardDescription>Đang chọn: {activeImageLabel}</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div
-                  className="grid grid-cols-3 gap-2.5 sm:grid-cols-4 md:grid-cols-6"
-                  role="radiogroup"
-                  aria-label="Chọn ảnh đại diện"
-                >
-                  {GALLERY_CHOICES.map((img) => {
-                    const active = selectedImage === img.path;
-                    return (
-                      <button
-                        key={img.path}
+                <CardDescription>{activeImageLabel}</CardDescription>
+                <CardAction>
+                  <div className="flex items-center gap-1.5">
+                    {images.length > 0 && (
+                      <Button
                         type="button"
-                        role="radio"
-                        aria-checked={active}
-                        onClick={() => setSelectedImage(img.path)}
-                        title={img.label}
-                        aria-label={`Chọn ảnh ${img.label}`}
-                        className={cn(
-                          "group relative aspect-[3/4] overflow-hidden rounded-lg border bg-muted transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                          active
-                            ? "border-brand ring-2 ring-brand"
-                            : "border-border hover:border-foreground/40"
-                        )}
+                        variant="ghost"
+                        size="xs"
+                        disabled={saving}
+                        onClick={() => handleImagesChange([])}
                       >
-                        <img
-                          src={img.path}
-                          alt={img.label}
-                          className="size-full object-cover"
-                          width={96}
-                          height={128}
-                        />
-                        {active && (
-                          <span
-                            className="absolute top-1.5 right-1.5 flex size-5 items-center justify-center rounded-full bg-brand text-white"
-                            aria-hidden="true"
+                        Xóa tất cả
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      onClick={() => setShowSampleGallery((v) => !v)}
+                    >
+                      {showSampleGallery ? (
+                        <>
+                          <ChevronUp className="size-3.5" aria-hidden="true" />
+                          <span>Thu gọn ảnh mẫu</span>
+                        </>
+                      ) : (
+                        <>
+                          <ChevronDown className="size-3.5" aria-hidden="true" />
+                          <span>Thư viện ảnh mẫu</span>
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                </CardAction>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <MediaUploader
+                  value={images}
+                  onChange={handleImagesChange}
+                  maxFiles={MEDIA_MAX_PRODUCT_IMAGES}
+                  disabled={saving}
+                />
+
+                {showSampleGallery && (
+                  <div className="space-y-2.5 border-t border-border pt-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium text-foreground">
+                        Thư viện ảnh mẫu (tùy chọn phụ)
+                      </span>
+                      <span className="text-[11px] text-muted-foreground">
+                        Bấm để thêm hoặc bỏ khỏi danh sách ảnh
+                      </span>
+                    </div>
+                    <div
+                      className="grid grid-cols-3 gap-2.5 sm:grid-cols-4 md:grid-cols-6"
+                      role="group"
+                      aria-label="Chọn ảnh mẫu minh họa (tùy chọn phụ)"
+                    >
+                      {SAMPLE_GALLERY_CHOICES.map((img) => {
+                        const active = images.includes(img.path);
+                        return (
+                          <button
+                            key={img.path}
+                            type="button"
+                            aria-pressed={active}
+                            onClick={() => handleToggleSampleImage(img.path)}
+                            title={img.label}
+                            aria-label={active ? `Bỏ chọn ${img.label}` : `Thêm ${img.label}`}
+                            className={cn(
+                              "group relative aspect-[3/4] overflow-hidden rounded-lg border bg-muted transition-all focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+                              active
+                                ? "border-brand ring-2 ring-brand"
+                                : "border-border hover:border-foreground/40"
+                            )}
                           >
-                            <Check className="size-3" />
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
+                            <img
+                              src={img.path}
+                              alt={img.label}
+                              className="size-full object-cover"
+                              width={96}
+                              height={128}
+                            />
+                            {active && (
+                              <span
+                                className="absolute top-1.5 right-1.5 flex size-5 items-center justify-center rounded-full bg-brand text-white"
+                                aria-hidden="true"
+                              >
+                                <Check className="size-3" />
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -1088,6 +1183,7 @@ export function ProductFormView({
                       type="number"
                       min={1000}
                       step={1}
+                      placeholder="Ví dụ: 250000"
                       value={bulkPriceStr}
                       onChange={(e) => {
                         setBulkPriceStr(e.target.value);
@@ -1109,7 +1205,7 @@ export function ProductFormView({
               </CardContent>
             </Card>
 
-            {/* Card 4: Biến thể & SKU */}
+            {/* Card 4: Tùy chọn & Biến thể SKU (Shopify-style) */}
             <Card aria-labelledby="prod-variants-heading">
               <CardHeader>
                 <CardTitle id="prod-variants-heading">Biến thể &amp; SKU</CardTitle>
@@ -1122,9 +1218,10 @@ export function ProductFormView({
                       type="number"
                       min={0}
                       step={1}
+                      placeholder="SL"
                       value={bulkStockStr}
                       onChange={(e) => setBulkStockStr(e.target.value)}
-                      aria-label="Số lượng áp dụng hàng loạt"
+                      aria-label="Số lượng tồn kho áp dụng hàng loạt"
                       className="h-8 w-20 text-right tabular-nums"
                     />
                     <Button type="button" variant="outline" size="sm" onClick={handleBulkStock}>
@@ -1134,9 +1231,154 @@ export function ProductFormView({
                 </CardAction>
               </CardHeader>
               <CardContent className="space-y-4">
+                {/* Shopify-style Option Builder (0..3 seller-defined options) */}
+                <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-[13px] font-semibold text-foreground">
+                        Tùy chọn phân loại (tối đa {MAX_VARIANT_OPTIONS})
+                      </h3>
+                      <p className="text-xs text-muted-foreground">
+                        Để trống nếu sản phẩm chỉ có 1 biến thể mặc định, hoặc tự đặt tên tùy chọn
+                        như &ldquo;Màu men&rdquo;, &ldquo;Quy cách&rdquo;, &ldquo;Dung tích&rdquo;.
+                      </p>
+                    </div>
+                    {options.length < MAX_VARIANT_OPTIONS && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="xs"
+                        onClick={() => handleAddOption("")}
+                      >
+                        <Plus className="size-3.5" aria-hidden="true" />
+                        <span>Thêm tùy chọn</span>
+                      </Button>
+                    )}
+                  </div>
+
+                  {options.length < MAX_VARIANT_OPTIONS && (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[11px] text-muted-foreground">Gợi ý nhanh:</span>
+                      {OPTION_NAME_SUGGESTIONS.filter(
+                        (s) => !usedOptionNamesLower.has(s.toLowerCase())
+                      ).map((suggestion) => (
+                        <Button
+                          key={suggestion}
+                          type="button"
+                          variant="secondary"
+                          size="xs"
+                          className="h-6 rounded-sm px-2 text-xs font-normal"
+                          onClick={() => handleAddOption(suggestion)}
+                        >
+                          + {suggestion}
+                        </Button>
+                      ))}
+                    </div>
+                  )}
+
+                  {options.length > 0 && (
+                    <div className="space-y-3">
+                      {options.map((opt, optIdx) => (
+                        <div
+                          key={opt.id}
+                          className="space-y-2.5 rounded-lg border border-border bg-card p-3"
+                        >
+                          <div className="flex items-end gap-2">
+                            <Field className="flex-1">
+                              <FieldLabel htmlFor={`opt-name-${opt.id}`} className="text-xs">
+                                Tên tùy chọn {optIdx + 1}
+                              </FieldLabel>
+                              <Input
+                                id={`opt-name-${opt.id}`}
+                                type="text"
+                                value={opt.name}
+                                onChange={(e) => handleUpdateOptionName(opt.id, e.target.value)}
+                                placeholder="Ví dụ: Màu men, Quy cách, Dung tích..."
+                                className="h-8 text-xs"
+                              />
+                            </Field>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-xs"
+                              aria-label={`Xóa tùy chọn ${opt.name || optIdx + 1}`}
+                              className="mb-0.5 text-muted-foreground hover:text-destructive"
+                              onClick={() => handleRemoveOption(opt.id)}
+                            >
+                              <Trash2 className="size-3.5" aria-hidden="true" />
+                            </Button>
+                          </div>
+
+                          <div className="space-y-2">
+                            <div className="flex gap-2">
+                              <Input
+                                type="text"
+                                value={optionValueInputs[opt.id] ?? ""}
+                                onChange={(e) =>
+                                  setOptionValueInputs((prev) => ({
+                                    ...prev,
+                                    [opt.id]: e.target.value,
+                                  }))
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    handleAddOptionValues(opt.id);
+                                  }
+                                }}
+                                placeholder="Nhập giá trị (có thể ngăn bằng dấu phẩy, vd: Men lam, Men ngọc)"
+                                aria-label={`Giá trị cho tùy chọn ${opt.name || optIdx + 1}`}
+                                className="h-8 flex-1 text-xs"
+                              />
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="xs"
+                                className="h-8 px-2.5"
+                                onClick={() => handleAddOptionValues(opt.id)}
+                              >
+                                Thêm giá trị
+                              </Button>
+                            </div>
+
+                            {opt.values.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5">
+                                {opt.values.map((val) => (
+                                  <Badge
+                                    key={val}
+                                    variant="secondary"
+                                    className="gap-1 rounded-sm pr-1 pl-2 text-xs font-normal"
+                                  >
+                                    <span>{val}</span>
+                                    <button
+                                      type="button"
+                                      aria-label={`Bỏ giá trị ${val}`}
+                                      className="rounded-sm p-0.5 text-muted-foreground hover:text-foreground"
+                                      onClick={() => handleRemoveOptionValue(opt.id, val)}
+                                    >
+                                      <X className="size-3" aria-hidden="true" />
+                                    </button>
+                                  </Badge>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {combinationsTruncated && (
+                    <p className="text-xs font-medium text-badge-warning-ink" role="status">
+                      Hệ thống giới hạn tối đa {formatInt(MAX_VARIANT_COMBINATIONS)} tổ hợp biến thể
+                      mỗi sản phẩm.
+                    </p>
+                  )}
+                </div>
+
                 {fieldErrors.skus ? <FieldError>{fieldErrors.skus}</FieldError> : null}
 
-                {/* Desktop SKU Table (5 compact columns fit 2/3 DetailLayout without clipping) */}
+                {/* Desktop SKU Table */}
                 <div className="hidden overflow-hidden rounded-lg border border-border lg:block">
                   <Table>
                     <TableHeader>
@@ -1154,10 +1396,27 @@ export function ProductFormView({
                         const codeErr = fieldErrors[`sku-code-${idx}`];
                         const priceErr = fieldErrors[`sku-price-${idx}`];
                         const stockErr = fieldErrors[`sku-stock-${idx}`];
+                        const variantDisplay = formatVariantLabel({
+                          attributes: row.attributes,
+                          skuName: row.name,
+                          fallback: DEFAULT_VARIANT_NAME,
+                        });
+                        const attrEntries = normalizeVariantEntries(row.attributes);
+                        const colorEntry = attrEntries.find((e) => e.hex);
                         return (
                           <TableRow key={row.localKey}>
                             <TableCell className="px-2 align-top whitespace-normal">
                               <div className="space-y-1.5">
+                                <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                                  {colorEntry?.hex ? (
+                                    <span
+                                      className="size-3 shrink-0 rounded-full border border-border"
+                                      style={{ backgroundColor: colorEntry.hex }}
+                                      aria-hidden="true"
+                                    />
+                                  ) : null}
+                                  <span className="[overflow-wrap:anywhere]">{variantDisplay}</span>
+                                </div>
                                 <Input
                                   type="text"
                                   data-error-key={`sku-code-${idx}`}
@@ -1166,44 +1425,56 @@ export function ProductFormView({
                                     updateRow(row.localKey, { skuCode: e.target.value });
                                     clearFieldError(`sku-code-${idx}`);
                                   }}
-                                  aria-label={`Mã SKU ${row.name}`}
+                                  aria-label={`Mã SKU ${variantDisplay}`}
                                   aria-invalid={Boolean(codeErr)}
                                   className="h-8 w-full min-w-[140px] px-2 font-mono text-xs"
                                 />
                                 {codeErr ? (
                                   <FieldError className="text-xs">{codeErr}</FieldError>
                                 ) : null}
-                                <div className="flex items-center gap-1.5">
-                                  <span
-                                    className="size-3.5 shrink-0 rounded-full border border-border"
-                                    style={{ backgroundColor: row.colorHex }}
-                                    aria-hidden="true"
-                                  />
-                                  <Input
-                                    type="text"
-                                    value={row.colorName}
-                                    onChange={(e) =>
-                                      updateRow(row.localKey, {
-                                        colorName: e.target.value,
-                                        name: `${e.target.value} / ${row.size}`,
-                                      })
-                                    }
-                                    aria-label={`Màu sắc ${row.skuCode}`}
-                                    className="h-7 min-w-0 flex-1 px-2 text-xs"
-                                  />
-                                  <Input
-                                    type="text"
-                                    value={row.size}
-                                    onChange={(e) =>
-                                      updateRow(row.localKey, {
-                                        size: e.target.value.toUpperCase(),
-                                        name: `${row.colorName} / ${e.target.value.toUpperCase()}`,
-                                      })
-                                    }
-                                    aria-label={`Kích cỡ ${row.skuCode}`}
-                                    className="h-7 w-12 px-1 text-center text-xs"
-                                  />
-                                </div>
+                                {images.length > 0 ? (
+                                  <div className="flex items-center gap-1.5">
+                                    <img
+                                      src={row.imageUrl || primaryImage}
+                                      alt={`Ảnh biến thể ${variantDisplay}`}
+                                      width={28}
+                                      height={28}
+                                      className="size-7 shrink-0 rounded-sm border border-border bg-muted object-cover"
+                                    />
+                                    <Select
+                                      value={
+                                        row.imageUrl && images.includes(row.imageUrl)
+                                          ? row.imageUrl
+                                          : SKU_IMAGE_PRIMARY_VALUE
+                                      }
+                                      onValueChange={(v) =>
+                                        updateRow(row.localKey, {
+                                          imageUrl: v === SKU_IMAGE_PRIMARY_VALUE ? "" : v,
+                                        })
+                                      }
+                                    >
+                                      <SelectTrigger
+                                        size="sm"
+                                        aria-label={`Chọn ảnh cho biến thể ${variantDisplay}`}
+                                        className="h-7 min-w-[120px] flex-1 bg-card px-2 text-xs"
+                                      >
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value={SKU_IMAGE_PRIMARY_VALUE}>
+                                          Theo ảnh chính
+                                        </SelectItem>
+                                        {images.map((imgUrl, imgIdx) => (
+                                          <SelectItem key={imgUrl} value={imgUrl}>
+                                            {imgIdx === 0
+                                              ? "Ảnh 1 (Ảnh chính)"
+                                              : `Ảnh ${imgIdx + 1}`}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                ) : null}
                               </div>
                             </TableCell>
                             <TableCell className="px-2 align-top text-right">
@@ -1211,17 +1482,21 @@ export function ProductFormView({
                                 type="number"
                                 min={1000}
                                 step={1}
+                                placeholder="150000"
                                 data-error-key={`sku-price-${idx}`}
-                                value={row.priceVnd}
+                                value={row.priceVnd > 0 ? row.priceVnd : ""}
                                 onChange={(e) => {
+                                  const rawVal = e.target.value.trim();
                                   updateRow(row.localKey, {
-                                    priceVnd: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                                    priceVnd: rawVal
+                                      ? Math.max(0, Math.trunc(Number(rawVal) || 0))
+                                      : 0,
                                   });
                                   clearFieldError(`sku-price-${idx}`);
                                 }}
                                 aria-label={`Đơn giá ${row.skuCode}`}
                                 aria-invalid={Boolean(priceErr)}
-                                className="ml-auto h-8 w-[84px] px-2 text-right text-xs tabular-nums"
+                                className="ml-auto h-8 w-[92px] px-2 text-right text-xs tabular-nums"
                               />
                               {priceErr ? (
                                 <FieldError className="mt-1 text-right text-xs">
@@ -1318,23 +1593,29 @@ export function ProductFormView({
                     const codeErr = fieldErrors[`sku-code-${idx}`];
                     const priceErr = fieldErrors[`sku-price-${idx}`];
                     const stockErr = fieldErrors[`sku-stock-${idx}`];
+                    const variantDisplay = formatVariantLabel({
+                      attributes: row.attributes,
+                      skuName: row.name,
+                      fallback: DEFAULT_VARIANT_NAME,
+                    });
+                    const colorEntry = normalizeVariantEntries(row.attributes).find((e) => e.hex);
                     return (
                       <div
                         key={row.localKey}
                         className="space-y-3 rounded-lg border border-border bg-muted/35 p-3"
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                            <span
-                              className="size-3.5 shrink-0 rounded-full border border-border"
-                              style={{ backgroundColor: row.colorHex }}
-                              aria-hidden="true"
-                            />
-                            <span>
-                              {row.colorName} / {row.size}
-                            </span>
+                          <div className="flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground">
+                            {colorEntry?.hex ? (
+                              <span
+                                className="size-3.5 shrink-0 rounded-full border border-border"
+                                style={{ backgroundColor: colorEntry.hex }}
+                                aria-hidden="true"
+                              />
+                            ) : null}
+                            <span className="truncate">{variantDisplay}</span>
                           </div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex shrink-0 items-center gap-2">
                             {mode === "edit" && row.id && row.version ? (
                               <Button
                                 type="button"
@@ -1378,50 +1659,21 @@ export function ProductFormView({
                             {codeErr ? <FieldError>{codeErr}</FieldError> : null}
                           </Field>
 
-                          <div className="grid grid-cols-2 gap-2">
-                            <Field>
-                              <FieldLabel>Màu sắc</FieldLabel>
-                              <Input
-                                type="text"
-                                value={row.colorName}
-                                onChange={(e) =>
-                                  updateRow(row.localKey, {
-                                    colorName: e.target.value,
-                                    name: `${e.target.value} / ${row.size}`,
-                                  })
-                                }
-                                aria-label={`Màu sắc ${row.skuCode}`}
-                                className="bg-card"
-                              />
-                            </Field>
-                            <Field>
-                              <FieldLabel>Cỡ</FieldLabel>
-                              <Input
-                                type="text"
-                                value={row.size}
-                                onChange={(e) =>
-                                  updateRow(row.localKey, {
-                                    size: e.target.value.toUpperCase(),
-                                    name: `${row.colorName} / ${e.target.value.toUpperCase()}`,
-                                  })
-                                }
-                                aria-label={`Kích cỡ ${row.skuCode}`}
-                                className="bg-card"
-                              />
-                            </Field>
-                          </div>
-
                           <Field data-invalid={Boolean(priceErr) || undefined}>
                             <FieldLabel>Giá (VND)</FieldLabel>
                             <Input
                               type="number"
                               min={1000}
                               step={1}
+                              placeholder="150000"
                               data-error-key={`sku-price-${idx}`}
-                              value={row.priceVnd}
+                              value={row.priceVnd > 0 ? row.priceVnd : ""}
                               onChange={(e) => {
+                                const rawVal = e.target.value.trim();
                                 updateRow(row.localKey, {
-                                  priceVnd: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                                  priceVnd: rawVal
+                                    ? Math.max(0, Math.trunc(Number(rawVal) || 0))
+                                    : 0,
                                 });
                                 clearFieldError(`sku-price-${idx}`);
                               }}
@@ -1431,7 +1683,7 @@ export function ProductFormView({
                             {priceErr ? <FieldError>{priceErr}</FieldError> : null}
                           </Field>
 
-                          <div className="grid grid-cols-2 gap-2">
+                          <div className="grid grid-cols-2 gap-2 sm:col-span-2">
                             <Field data-invalid={Boolean(stockErr) || undefined}>
                               <FieldLabel>Tồn (giữ: {formatInt(row.reservedStock)})</FieldLabel>
                               <Input
@@ -1474,38 +1726,54 @@ export function ProductFormView({
                               />
                             </Field>
                           </div>
+
+                          {images.length > 0 ? (
+                            <Field className="sm:col-span-2">
+                              <FieldLabel>Ảnh biến thể</FieldLabel>
+                              <div className="flex items-center gap-2">
+                                <img
+                                  src={row.imageUrl || primaryImage}
+                                  alt={`Ảnh biến thể ${variantDisplay}`}
+                                  width={36}
+                                  height={36}
+                                  className="size-9 shrink-0 rounded-md border border-border bg-muted object-cover"
+                                />
+                                <Select
+                                  value={
+                                    row.imageUrl && images.includes(row.imageUrl)
+                                      ? row.imageUrl
+                                      : SKU_IMAGE_PRIMARY_VALUE
+                                  }
+                                  onValueChange={(v) =>
+                                    updateRow(row.localKey, {
+                                      imageUrl: v === SKU_IMAGE_PRIMARY_VALUE ? "" : v,
+                                    })
+                                  }
+                                >
+                                  <SelectTrigger
+                                    aria-label={`Chọn ảnh cho biến thể ${variantDisplay}`}
+                                    className="min-h-10 flex-1 bg-card text-xs"
+                                  >
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value={SKU_IMAGE_PRIMARY_VALUE}>
+                                      Theo ảnh chính
+                                    </SelectItem>
+                                    {images.map((imgUrl, imgIdx) => (
+                                      <SelectItem key={imgUrl} value={imgUrl}>
+                                        {imgIdx === 0 ? "Ảnh 1 (Ảnh chính)" : `Ảnh ${imgIdx + 1}`}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            </Field>
+                          ) : null}
                         </div>
                       </div>
                     );
                   })}
-                </div>
-
-                {/* Add new SKU bar */}
-                <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
-                  <Input
-                    type="text"
-                    value={newSkuColorName}
-                    onChange={(e) => setNewSkuColorName(e.target.value)}
-                    placeholder="Tên màu mới"
-                    aria-label="Tên màu cho SKU mới"
-                    className="h-9 w-full sm:w-44"
-                  />
-                  <Select value={newSkuSize} onValueChange={setNewSkuSize}>
-                    <SelectTrigger aria-label="Chọn kích cỡ cho SKU mới" className="w-28 bg-card">
-                      <SelectValue>Size {newSkuSize}</SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {["S", "M", "L", "XL", "2XL"].map((sz) => (
-                        <SelectItem key={sz} value={sz}>
-                          Size {sz}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button type="button" variant="outline" size="sm" onClick={handleAddSkuRow}>
-                    <Plus className="size-4" aria-hidden="true" />
-                    <span>Thêm biến thể SKU</span>
-                  </Button>
                 </div>
               </CardContent>
               <CardFooter className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
@@ -1666,14 +1934,21 @@ export function ProductFormView({
               </CardHeader>
               <CardContent className="space-y-4">
                 <article className="overflow-hidden rounded-lg border border-border bg-card">
-                  <div className="relative aspect-[3/4] bg-muted">
-                    <img
-                      src={selectedImage}
-                      alt={name.trim() || "Ảnh sản phẩm"}
-                      className="size-full object-cover"
-                      width={320}
-                      height={426}
-                    />
+                  <div className="relative flex aspect-[3/4] items-center justify-center bg-muted">
+                    {primaryImage ? (
+                      <img
+                        src={primaryImage}
+                        alt={name.trim() || "Ảnh sản phẩm"}
+                        className="size-full object-cover"
+                        width={320}
+                        height={426}
+                      />
+                    ) : (
+                      <div className="flex flex-col items-center gap-2 px-4 text-center text-muted-foreground">
+                        <ImageIcon className="size-8 opacity-50" aria-hidden="true" />
+                        <span className="text-xs">Chưa có ảnh sản phẩm</span>
+                      </div>
+                    )}
                     {totalStock === 0 ? (
                       <Badge variant="critical" className="absolute top-2 left-2">
                         Hết hàng
@@ -1694,31 +1969,28 @@ export function ProductFormView({
                       {priceRangeLabel}
                     </div>
 
-                    {previewColors.length > 0 && (
-                      <div
-                        className="flex flex-wrap items-center gap-1.5"
-                        aria-label="Màu sắc hiển thị"
-                      >
-                        {previewColors.slice(0, 6).map((c) => (
-                          <span
-                            key={c.label}
-                            title={c.label}
-                            className="size-3.5 rounded-full border border-border"
-                            style={{ backgroundColor: c.hex }}
-                          />
-                        ))}
-                        <span className="text-xs text-muted-foreground">
-                          {formatInt(previewColors.length)} màu
-                        </span>
-                      </div>
-                    )}
-
-                    {previewSizes.length > 0 && (
-                      <div className="flex flex-wrap gap-1">
-                        {previewSizes.slice(0, 6).map((sz) => (
-                          <Badge key={sz} variant="secondary" className="rounded-sm px-1.5 py-0">
-                            {sz}
-                          </Badge>
+                    {previewOptionSummary.length > 0 && (
+                      <div className="space-y-1">
+                        {previewOptionSummary.map((opt) => (
+                          <div key={opt.label} className="flex flex-wrap items-center gap-1">
+                            <span className="text-[11px] font-medium text-muted-foreground">
+                              {opt.label}:
+                            </span>
+                            {opt.values.slice(0, 5).map((v) => (
+                              <Badge
+                                key={v}
+                                variant="secondary"
+                                className="rounded-sm px-1.5 py-0 text-[11px] font-normal"
+                              >
+                                {v}
+                              </Badge>
+                            ))}
+                            {opt.values.length > 5 && (
+                              <span className="text-[11px] text-muted-foreground tabular-nums">
+                                +{opt.values.length - 5}
+                              </span>
+                            )}
+                          </div>
                         ))}
                       </div>
                     )}
@@ -1738,7 +2010,9 @@ export function ProductFormView({
                   </div>
                   <div className="flex items-center justify-between gap-2">
                     <dt className="text-muted-foreground">Tổng tồn kho</dt>
-                    <dd className="font-medium text-foreground">{formatInt(totalStock)} chiếc</dd>
+                    <dd className="font-medium text-foreground">
+                      {formatInt(totalStock)} sản phẩm
+                    </dd>
                   </div>
                   <div className="flex items-center justify-between gap-2">
                     <dt className="text-muted-foreground">SKU dưới ngưỡng 5</dt>

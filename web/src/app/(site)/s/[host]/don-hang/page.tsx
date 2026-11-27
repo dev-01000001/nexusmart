@@ -7,7 +7,7 @@ import { loadPublicSitePageBundle } from "@/lib/server/sites";
 import { buildSiteMetadata } from "@/lib/site/seo";
 import { fetchBuyerOrders } from "@/features/account/orders.server";
 import { OrdersClientView } from "@/features/account/OrdersClientView";
-import { loadSiteContext } from "@/features/site/siteContext.server";
+import { loadShopSkuAttributesMap, loadSiteContext } from "@/features/site/siteContext.server";
 
 export const dynamic = "force-dynamic";
 
@@ -44,12 +44,14 @@ export default async function SiteOrdersPage({ params }: PageProps) {
   const shopId = bundle.payload.site.shop_id;
 
   try {
+    const skuAttributesById = await loadShopSkuAttributesMap(shopId);
     const res = await fetchBuyerOrders({
       storefrontShopId: shopId,
       page: 1,
       pageSize: 50,
       siteProducts: bundle.products,
       siteShop: bundle.shopProfile,
+      skuAttributesById,
     });
     return (
       <OrdersClientView

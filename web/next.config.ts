@@ -24,9 +24,9 @@ const nextConfig: NextConfig = {
         ],
       },
       {
-        // Apply site-wide minimal CSP only to non-/api routes so BFF routes such as
-        // /api/shipping/labels/:code preserve their own sandbox Content-Security-Policy.
-        source: "/((?!api(?:/|$)).*)",
+        // Apply site-wide minimal CSP only to non-/api and non-/media routes so BFF routes such as
+        // /api/shipping/labels/:code and /media/* preserve their own strict Content-Security-Policy.
+        source: "/((?!api(?:/|$)|media(?:/|$)).*)",
         headers: [
           {
             key: "Content-Security-Policy",

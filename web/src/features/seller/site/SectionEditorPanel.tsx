@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
+import { SingleMediaUploadButton } from "@/components/app/MediaUploader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -151,18 +152,34 @@ export function SectionEditorPanel({
         <FieldLabel htmlFor={id} className="text-xs font-medium text-foreground">
           {label}
         </FieldLabel>
-        <Input
-          id={id}
-          type="text"
-          value={value}
-          onChange={(e) => onUpdate(e.target.value)}
-          placeholder={
-            kind === "image" ? "/banners/campaign-everyday.jpg hoặc https://..." : "/san-pham"
-          }
-          maxLength={500}
-          aria-invalid={Boolean(err)}
-          className="h-8 bg-card text-[13px]"
-        />
+        <div className="flex items-center gap-2">
+          {kind === "image" && value.trim() && !err ? (
+            <img
+              src={value.trim()}
+              alt="Xem trước ảnh khối"
+              width={48}
+              height={32}
+              className="h-8 w-12 shrink-0 rounded-md border border-border bg-muted object-cover"
+            />
+          ) : null}
+          <Input
+            id={id}
+            type="text"
+            value={value}
+            onChange={(e) => onUpdate(e.target.value)}
+            placeholder={
+              kind === "image"
+                ? "/banners/campaign-everyday.jpg hoặc /media/shops/..."
+                : "/san-pham"
+            }
+            maxLength={500}
+            aria-invalid={Boolean(err)}
+            className="h-8 bg-card text-[13px]"
+          />
+        </div>
+        {kind === "image" ? (
+          <SingleMediaUploadButton label="Tải ảnh lên" onUploaded={(url) => onUpdate(url)} />
+        ) : null}
         {err ? (
           <FieldError className="text-xs">{err}</FieldError>
         ) : (
@@ -1506,8 +1523,9 @@ export function SectionEditorPanel({
                     const nextItems = [
                       ...section.props.items,
                       {
-                        heading: "Hỗ trợ tư vấn chọn cỡ",
-                        detail: "Đội ngũ gian hàng tư vấn theo chiều cao, cân nặng và phom mặc.",
+                        heading: "Hỗ trợ tư vấn sản phẩm",
+                        detail:
+                          "Đội ngũ gian hàng tư vấn chi tiết về phân loại, chất liệu và bảo quản.",
                       },
                     ];
                     onChange({ ...section, props: { ...section.props, items: nextItems } });

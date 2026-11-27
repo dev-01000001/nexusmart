@@ -347,21 +347,25 @@ function OrdersClientInner({
                       </div>
 
                       <ul className="space-y-1">
-                        {order.items.map((item) => (
-                          <li
-                            key={item.skuCode}
-                            className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-sm"
-                          >
-                            <span className="min-w-0 truncate font-medium text-foreground">
-                              {item.productName}
-                            </span>
-                            <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
-                              {item.colorName ? <span>{item.colorName}</span> : null}
-                              {item.size ? <span>Size {item.size}</span> : null}
-                              <span>×{item.quantity}</span>
-                            </span>
-                          </li>
-                        ))}
+                        {order.items.map((item) => {
+                          const variantText =
+                            item.variantLabel ||
+                            [item.colorName, item.size].filter(Boolean).join(" · ");
+                          return (
+                            <li
+                              key={item.skuCode}
+                              className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-sm"
+                            >
+                              <span className="min-w-0 truncate font-medium text-foreground">
+                                {item.productName}
+                              </span>
+                              <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
+                                {variantText ? <span>{variantText}</span> : null}
+                                <span>×{item.quantity}</span>
+                              </span>
+                            </li>
+                          );
+                        })}
                       </ul>
 
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">

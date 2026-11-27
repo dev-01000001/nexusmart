@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { buildSiteMetadata } from "@/lib/site/seo";
 import { loadShopLiveFlashSales } from "@/lib/server/sites";
 import {
+  loadShopSkuAttributesMap,
   loadSiteContext,
   loadSiteTemplateBundle,
   loadSiteVouchers,
@@ -44,7 +45,10 @@ export default async function SiteCartPage({ params }: PageProps) {
 
   const brandName = bundle.templateConfig.theme.brand_name?.trim() || bundle.payload.shop.name;
   const catalogShops = bundle.shopProfile ? [bundle.shopProfile] : [];
-  const liveFlashRes = await loadShopLiveFlashSales(bundle.payload.site.shop_id);
+  const [liveFlashRes, skuAttributesById] = await Promise.all([
+    loadShopLiveFlashSales(bundle.payload.site.shop_id),
+    loadShopSkuAttributesMap(bundle.payload.site.shop_id),
+  ]);
   const initialFlashSales = liveFlashRes.sales;
 
   return (
@@ -52,6 +56,7 @@ export default async function SiteCartPage({ params }: PageProps) {
       brandName={brandName}
       catalogProducts={bundle.products}
       catalogShops={catalogShops}
+      skuAttributesById={skuAttributesById}
       initialVouchers={voucherData?.rawVouchers ?? []}
       initialFlashSales={initialFlashSales}
       cartConfig={bundle.templateConfig.pages.cart}

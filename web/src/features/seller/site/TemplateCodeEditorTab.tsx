@@ -382,6 +382,7 @@ export function TemplateCodeEditorTab({
               products={previewDataset.products}
               categories={previewDataset.categories}
               vouchers={previewDataset.vouchers}
+              skuAttributesById={previewDataset.skuAttributesById}
               platformOrigin={platformOrigin}
             />
           </SitePreviewFrame>

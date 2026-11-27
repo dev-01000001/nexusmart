@@ -53,6 +53,9 @@ const KNOWN_PREFIXED_ERROR_CODES = new Set<string>([
   "VERSION_CONFLICT",
   "MAKER_CHECKER_CONFLICT",
   "REINDEX_ALREADY_RUNNING",
+  "INSUFFICIENT_BALANCE",
+  "PAYOUT_PENDING_EXISTS",
+  "BANK_ACCOUNT_NOT_READY",
 ]);
 
 function normalizeDomainErrorCode(rawCode: string, rawMessage: string): string {
@@ -83,6 +86,8 @@ function defaultCodeForStatus(status: number): string {
       return "NOT_FOUND";
     case 409:
       return "CONFLICT";
+    case 412:
+      return "FAILED_PRECONDITION";
     case 413:
       return "PAYLOAD_TOO_LARGE";
     case 429:
@@ -312,6 +317,15 @@ export function toSafeVietnameseMessage(status: number, code: string, rawMessage
     (lower.includes("24h") && lower.includes("bank"))
   ) {
     return "Tài khoản nhận tiền đang trong thời gian tạm khóa bảo mật 24 giờ sau khi thay đổi thông tin ngân hàng.";
+  }
+  if (code === "BANK_ACCOUNT_NOT_READY" || lower.includes("bank_account_not_ready")) {
+    return "Tài khoản ngân hàng nhận tiền chưa được xác minh hoặc đang trong thời gian khóa bảo mật 24 giờ.";
+  }
+  if (code === "PAYOUT_PENDING_EXISTS" || lower.includes("payout_pending_exists")) {
+    return "Gian hàng đang có một yêu cầu rút tiền chờ duyệt. Vui lòng chờ xử lý xong trước khi tạo yêu cầu mới.";
+  }
+  if (code === "INSUFFICIENT_BALANCE" || lower.includes("insufficient_balance")) {
+    return "Số dư khả dụng hiện không đủ cho số tiền rút bạn yêu cầu.";
   }
   if (lower.includes("bank_account_id is required")) {
     return "Thiếu mã bản ghi tài khoản ngân hàng cần thẩm định. Vui lòng tải lại trang và thử lại.";

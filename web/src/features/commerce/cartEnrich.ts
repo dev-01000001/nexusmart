@@ -3,6 +3,7 @@
 import type { Product } from "@/data/products";
 import type { Shop } from "@/data/shops";
 import { formatVnd } from "../../lib/format.ts";
+import { formatVariantLabel } from "../../lib/formatVariant.ts";
 import type { GwCartItem, GwCartShopGroup, GwVoucher } from "./types";
 
 export interface EnrichedCartItem {
@@ -48,7 +49,8 @@ export function findCatalogProductForCartItem(
 export function enrichCartGroups(
   groups: GwCartShopGroup[],
   products: Product[],
-  shops: Shop[]
+  shops: Shop[],
+  skuAttributesById?: Record<string, Record<string, string>>
 ): EnrichedCartShopGroup[] {
   return groups.map((group) => {
     const shop = findCatalogShop(shops, group.shop_id);
@@ -56,10 +58,25 @@ export function enrichCartGroups(
       const product = findCatalogProductForCartItem(products, item);
       const sku = product?.skus.find((s) => s.skuId === item.sku_id);
       const color = sku ? product?.colors.find((c) => c.code === sku.colorCode) : undefined;
-      const variantLabel =
-        color && sku
-          ? `Màu: ${color.name} · Size ${sku.size}`
-          : item.sku_name || "Phân loại tiêu chuẩn";
+      const explicitAttrs =
+        skuAttributesById && Object.prototype.hasOwnProperty.call(skuAttributesById, item.sku_id)
+          ? skuAttributesById[item.sku_id]
+          : undefined;
+      const skuSize = String(sku?.size ?? "").trim();
+      const inferredAttrs =
+        explicitAttrs !== undefined
+          ? explicitAttrs
+          : color && color.code !== "mac-dinh" && color.name !== "Mặc định"
+            ? {
+                color: color.name,
+                ...(skuSize && skuSize !== "Mặc định" ? { size: skuSize } : {}),
+              }
+            : undefined;
+      const variantLabel = formatVariantLabel({
+        attributes: inferredAttrs,
+        skuName: item.sku_name,
+        fallback: "Mặc định",
+      });
       const isUnavailable = Boolean(item.unavailable);
       return {
         raw: item,

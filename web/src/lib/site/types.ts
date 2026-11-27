@@ -261,8 +261,8 @@ export const SITE_THEME_PRESETS: readonly SiteThemePreset[] = [
   },
   {
     id: "forest-linen",
-    name: "Sợi mộc & Xanh rêu",
-    description: "Sắc xanh tự nhiên cho xưởng sợi và chất liệu hữu cơ.",
+    name: "Mộc & Xanh rêu",
+    description: "Sắc xanh tự nhiên cho cửa hàng thủ công và vật liệu hữu cơ.",
     colors: {
       bg_color: "#F4F6F4",
       surface_color: "#FFFFFF",
@@ -291,7 +291,7 @@ export function createDefaultSiteConfig(brandName = "Cửa hàng của bạn"): 
     theme: {
       ...DEFAULT_SITE_THEME,
       brand_name: brandName,
-      tagline: "Sản phẩm chính hãng trực tiếp từ xưởng may Việt Nam",
+      tagline: "Sản phẩm chính hãng, minh bạch thông tin và tồn kho",
     },
     sections: [
       {
@@ -300,8 +300,7 @@ export function createDefaultSiteConfig(brandName = "Cửa hàng của bạn"): 
         visible: true,
         props: {
           title: brandName,
-          subtitle:
-            "Khám phá các thiết kế cơ bản chất liệu chọn lọc và tồn kho cập nhật trực tiếp.",
+          subtitle: "Khám phá các sản phẩm tuyển chọn và tồn kho cập nhật trực tiếp tại cửa hàng.",
           image_url: "/banners/vietnam-workshop.jpg",
           cta_label: "Xem tất cả sản phẩm",
           cta_href: "/san-pham",
@@ -325,12 +324,12 @@ export function createDefaultSiteConfig(brandName = "Cửa hàng của bạn"): 
           title: "Cam kết của cửa hàng",
           items: [
             {
-              heading: "Đổi size 45 ngày",
-              detail: "Hỗ trợ đổi size hai chiều tận nơi nếu sản phẩm chưa qua sử dụng.",
+              heading: "Đổi trả minh bạch",
+              detail: "Hỗ trợ đổi trả nhanh chóng nếu sản phẩm lỗi hoặc chưa qua sử dụng.",
             },
             {
               heading: "Giao hàng đồng kiểm",
-              detail: "Kiểm tra đúng mẫu, đúng chất liệu và kích cỡ trước khi nhận hàng.",
+              detail: "Kiểm tra đúng sản phẩm, phân loại và số lượng trước khi nhận hàng.",
             },
           ],
         },

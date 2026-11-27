@@ -84,7 +84,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { ProductAddonStrip } from "@/features/commerce/ProductAddonStrip";
 import { RetryPaymentBox } from "@/features/commerce/RetryPaymentBox";
-import { formatAddressLine } from "@/features/commerce/cartEnrich";
+import { formatAddressLine, splitVariantParts } from "@/features/commerce/cartEnrich";
 import { usePageStateParam } from "@/features/commerce/usePageStateParam";
 import {
   MAX_REVIEW_COMMENT_LEN,
@@ -95,7 +95,11 @@ import {
   validateReviewImageUrls,
 } from "@/features/product/reviewHelpers";
 import { cn } from "@/lib/utils";
-import { resolveListMutation, resolveReturnRequest } from "./orderReturnSync";
+import {
+  resolveListMutation,
+  resolveReturnRequest,
+  resolveReturnWizardSubmitAction,
+} from "./orderReturnSync";
 import type { OrderView } from "./orderView";
 import {
   MAX_EVIDENCE_URLS,
@@ -170,17 +174,17 @@ function getOrderStepIndex(backendStatus: string): number {
 
 const CANCEL_REASONS = [
   "Đổi địa chỉ nhận hàng",
-  "Đổi size hoặc màu khác",
+  "Đổi phân loại hoặc số lượng khác",
   "Quên áp mã giảm giá",
   "Không còn nhu cầu mua",
 ];
 
 const RETURN_REASONS = [
-  "Đổi size khác",
-  "Sản phẩm có lỗi may hoặc bề mặt vải",
-  "Giao nhầm màu hoặc nhầm mẫu",
-  "Sản phẩm thiếu phụ kiện hoặc hư hại khi nhận",
-  "Chất liệu chưa phù hợp nhu cầu",
+  "Sản phẩm lỗi hoặc hư hỏng",
+  "Giao sai sản phẩm hoặc phân loại",
+  "Không đúng mô tả",
+  "Thiếu hàng hoặc phụ kiện",
+  "Lý do khác",
 ];
 
 const RETURN_WIZARD_STEPS = [
@@ -521,6 +525,10 @@ function OrderDetailInner({
   const handleReturnSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!order || submittingReturn) return;
+    if (resolveReturnWizardSubmitAction(returnWizardStep) !== "submit") {
+      handleAdvanceReturnStep();
+      return;
+    }
     const cleanNote = returnDetail.trim();
     if (cleanNote.length < 5) {
       setReturnError("Vui lòng mô tả tình trạng sản phẩm (tối thiểu 5 ký tự).");
@@ -1241,16 +1249,13 @@ function OrderDetailInner({
                     {item.productName}
                   </Link>
                   <div className="flex flex-wrap items-center gap-1.5">
-                    {item.colorName && (
-                      <Badge variant="secondary" className="rounded-sm">
-                        {item.colorName}
+                    {splitVariantParts(
+                      item.variantLabel || [item.colorName, item.size].filter(Boolean).join(" · ")
+                    ).map((part) => (
+                      <Badge key={part} variant="secondary" className="rounded-sm">
+                        {part}
                       </Badge>
-                    )}
-                    {item.size && (
-                      <Badge variant="secondary" className="rounded-sm">
-                        Size {item.size}
-                      </Badge>
-                    )}
+                    ))}
                     <span className="text-xs text-muted-foreground tabular-nums">
                       {formatVnd(item.unitPrice)} × {item.quantity}
                     </span>
@@ -1834,9 +1839,7 @@ function OrderDetailInner({
                       {item.productName}
                     </strong>
                     <span className="text-xs text-muted-foreground">
-                      {[item.colorName, item.size ? `Size ${item.size}` : ""]
-                        .filter(Boolean)
-                        .join(" · ")}
+                      {item.variantLabel || [item.colorName, item.size].filter(Boolean).join(" · ")}
                     </span>
                   </div>
 
@@ -1924,7 +1927,7 @@ function OrderDetailInner({
                               [orderItemId]: { ...draft, comment: e.target.value },
                             }))
                           }
-                          placeholder="Chất liệu, phom dáng, giao hàng..."
+                          placeholder="Chất lượng sản phẩm, đóng gói, giao hàng..."
                           disabled={submittingReviewItemId === orderItemId}
                           className="bg-card"
                         />
@@ -2586,13 +2589,13 @@ function OrderDetailInner({
                           setReturnDetail(e.target.value);
                           if (returnError) setReturnError(null);
                         }}
-                        placeholder="Áo còn nguyên tem mác, cần đổi trả do..."
+                        placeholder="Mô tả chi tiết tình trạng sản phẩm khi nhận và lý do đổi trả..."
                         disabled={submittingReturn}
                         className="bg-background"
                       />
                       <FieldDescription>
-                        Nêu rõ lỗi hoặc yêu cầu đổi size (tối thiểu 5 ký tự) để {brandName} phản hồi
-                        nhanh hơn.
+                        Nêu rõ tình trạng sản phẩm hoặc lý do đổi trả (tối thiểu 5 ký tự) để{" "}
+                        {brandName} phản hồi nhanh hơn.
                       </FieldDescription>
                     </Field>
                   </>
@@ -2600,6 +2603,7 @@ function OrderDetailInner({
 
                 {returnWizardStep === 2 && (
                   <Field>
+                    {/* ponytail: buyer direct media upload is deferred (current POST /api/v1/seller/media is seller-only; ceiling: return evidence accepts pasted https:// links until a dedicated buyer upload endpoint with quota/moderation is added). */}
                     <FieldLabel htmlFor="return-evidence-url">
                       Liên kết bằng chứng (tối đa {MAX_EVIDENCE_URLS})
                     </FieldLabel>
@@ -2763,6 +2767,7 @@ function OrderDetailInner({
                   )}
                   {returnWizardStep < 3 ? (
                     <Button
+                      key="return-wizard-next"
                       type="button"
                       onClick={handleAdvanceReturnStep}
                       className="min-h-10 shadow-none"
@@ -2771,6 +2776,7 @@ function OrderDetailInner({
                     </Button>
                   ) : (
                     <Button
+                      key="return-wizard-submit"
                       type="submit"
                       disabled={submittingReturn}
                       className="min-h-10 shadow-none"

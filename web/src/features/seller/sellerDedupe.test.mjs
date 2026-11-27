@@ -105,6 +105,9 @@ const VIRTUAL_MODULES = {
   "virtual:seller-shell": `
     export function SellerShell(props) { return { component: "SellerShell", props }; }
   `,
+  "virtual:seller-session-sync": `
+    export function SellerSessionSync(props) { return { component: "SellerSessionSync", props }; }
+  `,
   "virtual:seller-guard": `
     export function SellerSuspense(props) { return { component: "SellerSuspense", props }; }
   `,
@@ -143,6 +146,8 @@ registerHooks({
       return { shortCircuit: true, url: "virtual:ui-scope" };
     if (specifier === "@/features/seller/SellerShell")
       return { shortCircuit: true, url: "virtual:seller-shell" };
+    if (specifier === "@/features/seller/shell/SellerSessionSync")
+      return { shortCircuit: true, url: "virtual:seller-session-sync" };
     if (specifier === "@/features/seller/SellerStateGuard")
       return { shortCircuit: true, url: "virtual:seller-guard" };
     if (specifier === "@/features/seller/SellerOrdersClient")

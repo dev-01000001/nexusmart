@@ -400,6 +400,18 @@ export function formatCarrierLabel(
   return (carrierCode ?? "").trim() || "Đơn vị vận chuyển";
 }
 
+export {
+  buildDynamicOptionGroups,
+  formatSkuShortName,
+  formatVariantAttributes,
+  formatVariantLabel,
+  getSkuOptionMap,
+  normalizeVariantEntries,
+  type DynamicOptionGroup,
+  type DynamicOptionValue,
+  type VariantAttributeEntry,
+} from "./formatVariant.ts";
+
 export function formatVoucherBenefit(
   voucher: Pick<
     GatewayVoucher,

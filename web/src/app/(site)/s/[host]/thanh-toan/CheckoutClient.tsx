@@ -147,6 +147,7 @@ export interface CheckoutClientProps {
   initialIdempotencyKey: string;
   catalogProducts: Product[];
   catalogShops: Shop[];
+  skuAttributesById?: Record<string, Record<string, string>>;
   initialAddresses: GwAddress[];
   initialVouchers: GwVoucher[];
   initialPaymentMethods?: GatewayPaymentMethodConfig[];
@@ -172,6 +173,7 @@ export function CheckoutClient({
   initialIdempotencyKey,
   catalogProducts,
   catalogShops,
+  skuAttributesById,
   initialAddresses,
   initialVouchers,
   initialPaymentMethods = [],
@@ -283,8 +285,9 @@ export function CheckoutClient({
   }, [pendingKeySig]);
 
   const enrichedGroups = useMemo(
-    () => enrichCartGroups(cart?.shop_groups ?? [], catalogProducts, catalogShops),
-    [cart?.shop_groups, catalogProducts, catalogShops]
+    () =>
+      enrichCartGroups(cart?.shop_groups ?? [], catalogProducts, catalogShops, skuAttributesById),
+    [cart?.shop_groups, catalogProducts, catalogShops, skuAttributesById]
   );
   const activeGroup = enrichedGroups[0] ?? null;
   const allCartItems = useMemo(() => activeGroup?.items ?? [], [activeGroup]);

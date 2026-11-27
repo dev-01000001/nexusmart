@@ -286,7 +286,7 @@ export function PlatformRegisterFrame({
     >
       <RegisterForm
         variant="platform"
-        buyerHref="/cua-hang"
+        buyerHref="/"
         loginHref="/dang-nhap"
         afterRegisterHref={afterRegisterHref}
         onStepChange={handleStepChange}

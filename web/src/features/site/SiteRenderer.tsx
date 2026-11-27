@@ -14,6 +14,7 @@ import {
 import type { CategoryInfo, Product } from "@/data/products";
 import type { Voucher } from "@/data/vouchers";
 import { formatInt, formatVnd } from "@/lib/format";
+import { formatVariantLabel } from "@/lib/formatVariant";
 import { sanitizeSafeHref } from "@/lib/site/theme";
 import type { SiteConfig, SitePublicShopDTO } from "@/lib/site/types";
 import { cn } from "@/lib/utils";
@@ -1103,20 +1104,35 @@ function renderSkuMatrixSection(
     colorMapByProduct.set(p.id, m);
   }
 
+  const formatSkuRowVariant = (
+    productId: string,
+    sku: { colorCode: string; size: string; skuCode: string }
+  ): string => {
+    const color = colorMapByProduct.get(productId)?.get(sku.colorCode);
+    const isRealColor = Boolean(color && sku.colorCode !== "mac-dinh" && color.name !== "Mặc định");
+    const attrs = isRealColor
+      ? {
+          color: color!.name,
+          ...(sku.size && sku.size !== "Mặc định" ? { size: sku.size } : {}),
+        }
+      : undefined;
+    return formatVariantLabel({
+      attributes: attrs,
+      skuName: sku.size && sku.size !== "Mặc định" ? sku.size : "",
+      fallback: "Mặc định",
+    });
+  };
+
   const rows = matchingProducts
     .flatMap((p) =>
       p.skus
         .filter((s) => showOos || s.stock > 0)
-        .map((sku) => {
-          const color = colorMapByProduct.get(p.id)?.get(sku.colorCode);
-          return {
-            key: `${p.id}-${sku.skuCode}-${sku.colorCode}-${sku.size}`,
-            product: p,
-            sku,
-            colorName: color?.name ?? sku.colorCode,
-            colorHex: color?.hex ?? "currentColor",
-          };
-        })
+        .map((sku) => ({
+          key: `${p.id}-${sku.skuCode}-${sku.colorCode}-${sku.size}`,
+          product: p,
+          sku,
+          variantLabel: formatSkuRowVariant(p.id, sku),
+        }))
     )
     .slice(0, maxRows);
 
@@ -1192,23 +1208,18 @@ function renderSkuMatrixSection(
                     )}
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {skus.slice(0, 12).map((sku) => {
-                      const colorName =
-                        colorMapByProduct.get(product.id)?.get(sku.colorCode)?.name ??
-                        sku.colorCode;
-                      return (
-                        <Badge
-                          key={sku.skuCode}
-                          variant={sku.stock > 0 ? "secondary" : "outline"}
-                          className="gap-1.5 rounded-sm px-2.5 py-1 text-[13px] tabular-nums"
-                        >
-                          <strong className="font-semibold">
-                            {colorName} / {sku.size}
-                          </strong>
-                          <span>{sku.stock > 0 ? `Còn ${formatInt(sku.stock)}` : "Hết hàng"}</span>
-                        </Badge>
-                      );
-                    })}
+                    {skus.slice(0, 12).map((sku) => (
+                      <Badge
+                        key={sku.skuCode}
+                        variant={sku.stock > 0 ? "secondary" : "outline"}
+                        className="gap-1.5 rounded-sm px-2.5 py-1 text-[13px] tabular-nums"
+                      >
+                        <strong className="font-semibold">
+                          {formatSkuRowVariant(product.id, sku)}
+                        </strong>
+                        <span>{sku.stock > 0 ? `Còn ${formatInt(sku.stock)}` : "Hết hàng"}</span>
+                      </Badge>
+                    ))}
                   </div>
                 </article>
               );
@@ -1221,8 +1232,7 @@ function renderSkuMatrixSection(
                 <TableRow className="hover:bg-transparent">
                   <TableHead>Sản phẩm</TableHead>
                   <TableHead>SKU</TableHead>
-                  <TableHead>Màu</TableHead>
-                  <TableHead>Size</TableHead>
+                  <TableHead>Phân loại</TableHead>
                   <TableHead>Đơn giá</TableHead>
                   <TableHead>Tồn</TableHead>
                   <TableHead>Đặt nhanh</TableHead>
@@ -1237,17 +1247,7 @@ function renderSkuMatrixSection(
                     <TableCell className="text-[13px] text-muted-foreground">
                       {row.sku.skuCode}
                     </TableCell>
-                    <TableCell>
-                      <span className="inline-flex items-center gap-2">
-                        <span
-                          className="size-3 shrink-0 rounded-full border border-foreground/25"
-                          style={{ backgroundColor: row.colorHex }}
-                          aria-hidden="true"
-                        />
-                        <span>{row.colorName}</span>
-                      </span>
-                    </TableCell>
-                    <TableCell>{row.sku.size}</TableCell>
+                    <TableCell>{row.variantLabel}</TableCell>
                     <TableCell>{formatVnd(row.sku.price)}</TableCell>
                     <TableCell>
                       <Badge

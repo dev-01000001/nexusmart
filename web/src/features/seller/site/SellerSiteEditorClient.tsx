@@ -21,6 +21,7 @@ import {
   ErrorState,
   IndexRowCard,
   IndexTable,
+  SingleMediaUploadButton,
   StatusBadge,
   siteStatusTone,
 } from "@/components/app";
@@ -1163,7 +1164,7 @@ export function SellerSiteEditorClient({
                           value={config.theme.tagline ?? ""}
                           maxLength={160}
                           onChange={(e) => updateTheme({ tagline: e.target.value })}
-                          placeholder="Áo thun cotton 220gsm may trực tiếp tại xưởng"
+                          placeholder="Sản phẩm chính hãng, giao nhanh toàn quốc"
                           className="h-8 bg-card text-[13px]"
                         />
                         {taglineUnsafe ? (
@@ -1175,15 +1176,30 @@ export function SellerSiteEditorClient({
                         <FieldLabel htmlFor="site-logo-url" className="text-xs font-medium">
                           Ảnh logo
                         </FieldLabel>
-                        <Input
-                          id="site-logo-url"
-                          type="text"
-                          value={config.theme.logo_url ?? ""}
-                          maxLength={500}
-                          onChange={(e) => updateTheme({ logo_url: e.target.value })}
-                          placeholder="/banners/vietnam-workshop.jpg"
-                          aria-invalid={Boolean(logoUrlError)}
-                          className="h-8 bg-card text-[13px]"
+                        <div className="flex items-center gap-2">
+                          {config.theme.logo_url && !logoUrlError ? (
+                            <img
+                              src={config.theme.logo_url}
+                              alt="Xem trước logo gian hàng"
+                              width={32}
+                              height={32}
+                              className="size-8 shrink-0 rounded-md border border-border bg-muted object-cover"
+                            />
+                          ) : null}
+                          <Input
+                            id="site-logo-url"
+                            type="text"
+                            value={config.theme.logo_url ?? ""}
+                            maxLength={500}
+                            onChange={(e) => updateTheme({ logo_url: e.target.value })}
+                            placeholder="/banners/vietnam-workshop.jpg"
+                            aria-invalid={Boolean(logoUrlError)}
+                            className="h-8 bg-card text-[13px]"
+                          />
+                        </div>
+                        <SingleMediaUploadButton
+                          label="Tải ảnh lên"
+                          onUploaded={(url) => updateTheme({ logo_url: url })}
                         />
                         {logoUrlError ? (
                           <FieldError className="text-xs">{logoUrlError}</FieldError>
@@ -1215,15 +1231,30 @@ export function SellerSiteEditorClient({
                         <FieldLabel htmlFor="site-banner-url" className="text-xs font-medium">
                           Ảnh bìa mặc định
                         </FieldLabel>
-                        <Input
-                          id="site-banner-url"
-                          type="text"
-                          value={config.theme.banner_url ?? ""}
-                          maxLength={500}
-                          onChange={(e) => updateTheme({ banner_url: e.target.value })}
-                          placeholder="/banners/campaign-everyday.jpg"
-                          aria-invalid={Boolean(bannerUrlError)}
-                          className="h-8 bg-card text-[13px]"
+                        <div className="flex items-center gap-2">
+                          {config.theme.banner_url && !bannerUrlError ? (
+                            <img
+                              src={config.theme.banner_url}
+                              alt="Xem trước ảnh bìa gian hàng"
+                              width={48}
+                              height={32}
+                              className="h-8 w-12 shrink-0 rounded-md border border-border bg-muted object-cover"
+                            />
+                          ) : null}
+                          <Input
+                            id="site-banner-url"
+                            type="text"
+                            value={config.theme.banner_url ?? ""}
+                            maxLength={500}
+                            onChange={(e) => updateTheme({ banner_url: e.target.value })}
+                            placeholder="/banners/campaign-everyday.jpg"
+                            aria-invalid={Boolean(bannerUrlError)}
+                            className="h-8 bg-card text-[13px]"
+                          />
+                        </div>
+                        <SingleMediaUploadButton
+                          label="Tải ảnh lên"
+                          onUploaded={(url) => updateTheme({ banner_url: url })}
                         />
                         {bannerUrlError ? (
                           <FieldError className="text-xs">{bannerUrlError}</FieldError>
@@ -1419,7 +1450,7 @@ export function SellerSiteEditorClient({
                               value={config.layout.announcement_text ?? ""}
                               maxLength={140}
                               onChange={(e) => updateLayout({ announcement_text: e.target.value })}
-                              placeholder="Giao toàn quốc 1-3 ngày, đổi size 45 ngày"
+                              placeholder="Giao toàn quốc 1-3 ngày, hỗ trợ đổi trả minh bạch"
                               className="h-8 bg-card text-[13px]"
                             />
                             {announceUnsafe ? (
@@ -1470,7 +1501,7 @@ export function SellerSiteEditorClient({
                               Trợ lý AI tư vấn
                             </strong>
                             <small className="text-xs text-muted-foreground">
-                              Hỗ trợ chọn cỡ và chính sách
+                              Hỗ trợ tư vấn sản phẩm và chính sách
                             </small>
                           </span>
                           <Switch
@@ -1687,7 +1718,7 @@ export function SellerSiteEditorClient({
                                 updatePdpPage({ show_story_band: checked === true })
                               }
                             />
-                            <span>Hiện dải chất liệu &amp; xưởng</span>
+                            <span>Hiện dải thông tin sản phẩm</span>
                           </label>
                           <label className="flex cursor-pointer items-center gap-2 text-xs text-foreground">
                             <Checkbox
@@ -2048,6 +2079,7 @@ export function SellerSiteEditorClient({
                     products={previewDataset.products}
                     categories={previewDataset.categories}
                     vouchers={previewDataset.vouchers}
+                    skuAttributesById={previewDataset.skuAttributesById}
                     platformOrigin={platformOrigin}
                   />
                 </SitePreviewFrame>

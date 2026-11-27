@@ -9,7 +9,7 @@ import { loadPublicSiteProduct } from "@/lib/server/sites";
 import { buildSiteProductMetadata } from "@/lib/site/seo";
 import { SitePdpView } from "@/features/site/SitePdpView";
 import { SiteProductCard } from "@/features/site/SiteProductCard";
-import { loadSiteContext } from "@/features/site/siteContext.server";
+import { loadProductSkuAttributes, loadSiteContext } from "@/features/site/siteContext.server";
 
 interface PageProps {
   params: Promise<{ host: string; slug: string }>;
@@ -115,11 +115,13 @@ export default async function SubdomainSiteProductDetailPage({ params }: PagePro
     provinces,
   } = data;
   const { payload, vouchers } = bundle;
+  const skuAttributesById = await loadProductSkuAttributes(product.backendId || product.id);
 
   return (
     <SitePdpView
       brandName={brandName}
       product={product}
+      skuAttributesById={skuAttributesById}
       shopVouchers={vouchers}
       relatedProducts={relatedProducts}
       liveFlashItem={liveFlashItem}

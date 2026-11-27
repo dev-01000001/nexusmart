@@ -1402,3 +1402,35 @@ export interface GatewaySearchReindexStatusResponse {
   started_at?: string;
   finished_at?: string;
 }
+
+// --- Section 4.6: Seller Payouts (UC-PAY05) ---
+
+export type GatewaySellerPayoutStatus = "PENDING" | "COMPLETED" | "REJECTED";
+export type GatewaySellerPayoutDecision = "APPROVE" | "REJECT";
+
+export interface GatewaySellerPayout {
+  id: string;
+  shop_id: string;
+  amount_vnd: number;
+  status: GatewaySellerPayoutStatus | string;
+  bank_name: string;
+  bank_account_masked: string;
+  account_holder_name: string;
+  reject_reason: string;
+  transfer_ref: string;
+  requested_by: string;
+  decided_by: string;
+  created_at?: string;
+  decided_at?: string;
+}
+
+export interface GatewaySellerPayoutResponse {
+  payout: GatewaySellerPayout;
+}
+
+export interface GatewaySellerPayoutListResponse {
+  items: GatewaySellerPayout[];
+  page: number;
+  page_size: number;
+  total: number;
+}

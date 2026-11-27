@@ -34,6 +34,7 @@ export async function fetchBuyerOrders(opts: {
   includeExtras?: boolean;
   siteProducts?: Product[];
   siteShop?: Shop | null;
+  skuAttributesById?: Record<string, Record<string, string>>;
 }): Promise<BuyerOrdersResult> {
   const shopId = opts.storefrontShopId.trim();
   if (!shopId) {
@@ -70,10 +71,18 @@ export async function fetchBuyerOrders(opts: {
   }
 
   const shops = opts.siteShop ? [opts.siteShop] : [];
-  const lookups =
+  const baseLookups =
     opts.siteProducts && opts.siteProducts.length > 0
       ? buildCatalogLookups(opts.siteProducts, shops)
       : (await loadCatalogLookups()).lookups;
+  const skuAttrMap = opts.skuAttributesById;
+  const lookups = skuAttrMap
+    ? {
+        ...baseLookups,
+        skuAttributes: (skuId: string) =>
+          Object.prototype.hasOwnProperty.call(skuAttrMap, skuId) ? skuAttrMap[skuId] : undefined,
+      }
+    : baseLookups;
 
   const items = rawItems.map((o) => mapGatewayOrder(o, lookups));
   const total =
@@ -122,7 +131,11 @@ export async function fetchBuyerOrder(
   orderId: string,
   session: Session,
   storefrontShopId: string,
-  opts: { siteProducts?: Product[]; siteShop?: Shop | null } = {}
+  opts: {
+    siteProducts?: Product[];
+    siteShop?: Shop | null;
+    skuAttributesById?: Record<string, Record<string, string>>;
+  } = {}
 ): Promise<BuyerOrderDetailResult> {
   const cleanId = orderId.trim();
   const shopId = storefrontShopId.trim();
@@ -136,10 +149,18 @@ export async function fetchBuyerOrder(
   const raw = assertInStorefront(owned, shopId);
 
   const shops = opts.siteShop ? [opts.siteShop] : [];
-  const lookups =
+  const baseLookups =
     opts.siteProducts && opts.siteProducts.length > 0
       ? buildCatalogLookups(opts.siteProducts, shops)
       : (await loadCatalogLookups()).lookups;
+  const skuAttrMap = opts.skuAttributesById;
+  const lookups = skuAttrMap
+    ? {
+        ...baseLookups,
+        skuAttributes: (skuId: string) =>
+          Object.prototype.hasOwnProperty.call(skuAttrMap, skuId) ? skuAttrMap[skuId] : undefined,
+      }
+    : baseLookups;
 
   const order = mapGatewayOrder(raw, lookups);
   const suggestedProducts = (opts.siteProducts ?? []).slice(0, 4);

@@ -6,6 +6,12 @@ import { requireSession } from "@/lib/server/session";
 import type { GatewayBannedKeyword, PaginatedResponse } from "@/lib/gateway-types";
 import type { GwAdminProductExtended } from "@/features/admin/adminApiTypes";
 import AdminModerationClient from "./AdminModerationClient";
+import {
+  ADMIN_MODERATION_PAGE_SIZE,
+  PRODUCT_MODERATION_STATUSES,
+  createEmptyProductTabCounts,
+  type ProductTabCounts,
+} from "./moderationHelpers";
 
 export const dynamic = "force-dynamic";
 
@@ -18,21 +24,37 @@ export default async function AdminModerationPage() {
   const canReadProducts = roleHasCapability(session.user.role, "products.read");
   const canReadBanned = roleHasCapability(session.user.role, "banned_keywords.read");
 
-  let initialProducts: GwAdminProductExtended[] = [];
-  let loadError: string | null = null;
-  let initialBannedCount = 0;
+  const initialTabCounts: ProductTabCounts = createEmptyProductTabCounts();
 
-  const [productsOutcome, bannedOutcome] = await Promise.all([
+  const [productsOutcome, statusCountsOutcomes, bannedOutcome] = await Promise.all([
     canReadProducts
       ? gw<PaginatedResponse<GwAdminProductExtended>>("/api/v1/admin/products", {
-          query: { page: 1, page_size: 100 },
+          query: { page: 1, page_size: ADMIN_MODERATION_PAGE_SIZE },
         })
-          .then((res) => ({ items: res.items ?? [], error: null as string | null }))
+          .then((res) => ({
+            items: res.items ?? [],
+            total: typeof res.total === "number" ? res.total : (res.items ?? []).length,
+            error: null as string | null,
+          }))
           .catch(() => ({
             items: [] as GwAdminProductExtended[],
+            total: 0,
             error: "Không thể tải danh sách sản phẩm kiểm duyệt lúc này.",
           }))
-      : Promise.resolve({ items: [] as GwAdminProductExtended[], error: null as string | null }),
+      : Promise.resolve({
+          items: [] as GwAdminProductExtended[],
+          total: 0,
+          error: null as string | null,
+        }),
+    canReadProducts
+      ? Promise.allSettled(
+          PRODUCT_MODERATION_STATUSES.map((status) =>
+            gw<PaginatedResponse<GwAdminProductExtended>>("/api/v1/admin/products", {
+              query: { status, page: 1, page_size: 1 },
+            })
+          )
+        )
+      : Promise.resolve([]),
     canReadBanned
       ? gw<PaginatedResponse<GatewayBannedKeyword>>("/api/v1/admin/banned-keywords", {
           query: { page: 1, page_size: 1 },
@@ -42,15 +64,21 @@ export default async function AdminModerationPage() {
       : Promise.resolve(0),
   ]);
 
-  initialProducts = productsOutcome.items;
-  loadError = productsOutcome.error;
-  initialBannedCount = bannedOutcome;
+  initialTabCounts.all = Math.max(0, Math.trunc(productsOutcome.total));
+  statusCountsOutcomes.forEach((outcome, idx) => {
+    const statusKey = PRODUCT_MODERATION_STATUSES[idx];
+    if (outcome.status === "fulfilled" && typeof outcome.value?.total === "number") {
+      initialTabCounts[statusKey] = Math.max(0, Math.trunc(outcome.value.total));
+    }
+  });
 
   return (
     <AdminModerationClient
-      initialProducts={initialProducts}
-      initialBannedCount={initialBannedCount}
-      loadError={loadError}
+      initialProducts={productsOutcome.items}
+      initialTotal={productsOutcome.total}
+      initialTabCounts={initialTabCounts}
+      initialBannedCount={bannedOutcome}
+      loadError={productsOutcome.error}
     />
   );
 }

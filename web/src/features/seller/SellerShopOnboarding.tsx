@@ -1,9 +1,11 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AlertCircle, Check, Plus, RefreshCw } from "lucide-react";
+import { AlertCircle, ArrowRight, Check, CheckCircle2, Plus, RefreshCw } from "lucide-react";
 import { PageHeader, StatusBadge } from "@/components/app";
+import { useSession } from "@/components/SessionProvider";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -39,12 +41,16 @@ export interface SellerShopOnboardingProps {
   initialAddresses: SellerAddress[];
 }
 
+const APPROVAL_POLL_INTERVAL_MS = 30_000;
+const APPROVAL_FOCUS_THROTTLE_MS = 3_000;
+
 export function SellerShopOnboarding({
   user,
   initialShop,
   initialAddresses,
 }: SellerShopOnboardingProps) {
   const router = useRouter();
+  const { refreshSession } = useSession();
   const { showToast } = useSellerContext();
 
   const [shop, setShop] = useState<GwSellerShop | null>(initialShop);
@@ -80,24 +86,93 @@ export function SellerShopOnboarding({
   const [addrError, setAddrError] = useState<string | null>(null);
 
   const refreshedOnceRef = useRef(false);
+  const lastPollAtRef = useRef(0);
+  const syncInFlightRef = useRef(false);
 
-  // If shop is ACTIVE in backend but JWT still lacks shop_id / role=seller, refresh cookies once
-  useEffect(() => {
-    if (
-      shop?.status === "ACTIVE" &&
-      (user.role !== "seller" || !user.shopId) &&
-      !refreshedOnceRef.current
-    ) {
+  const syncApprovedSessionOnce = useCallback(
+    async (opts: { notify?: boolean } = {}) => {
+      if (refreshedOnceRef.current || syncInFlightRef.current) return;
       refreshedOnceRef.current = true;
-      void api("/api/auth/refresh", { method: "POST" })
-        .then(() => {
+      syncInFlightRef.current = true;
+      try {
+        await api("/api/auth/refresh", { method: "POST" });
+        await refreshSession().catch(() => null);
+        if (opts.notify) {
+          showToast("Gian hàng đã được duyệt. Đang cập nhật Kênh người bán...");
+        }
+        if (typeof window !== "undefined") {
+          window.location.replace("/seller?approved=1");
+        } else {
           router.refresh();
-        })
-        .catch(() => {
-          // User can click manual button below
-        });
+        }
+      } catch {
+        // Keep the approved card visible so user can retry via "Bắt đầu bán hàng".
+      } finally {
+        syncInFlightRef.current = false;
+      }
+    },
+    [refreshSession, router, showToast]
+  );
+
+  // If shop is ACTIVE in backend but JWT/session still lacks seller claims, refresh cookies once
+  useEffect(() => {
+    if (shop?.status === "ACTIVE" && (user.role !== "seller" || !user.shopId)) {
+      void syncApprovedSessionOnce();
     }
-  }, [shop?.status, user.role, user.shopId, router]);
+  }, [shop?.status, user.role, user.shopId, syncApprovedSessionOnce]);
+
+  // Lightweight polling while awaiting admin approval (30s interval + tab focus/visibility)
+  useEffect(() => {
+    if (shop?.status !== "PENDING") return;
+    let active = true;
+
+    const pollShopStatus = async (force: boolean) => {
+      if (!active || syncInFlightRef.current) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      const now = Date.now();
+      if (!force && now - lastPollAtRef.current < APPROVAL_FOCUS_THROTTLE_MS) return;
+      lastPollAtRef.current = now;
+      try {
+        const res = await api<{ shop: GwSellerShop | null }>("/api/shops/me");
+        if (!active) return;
+        const nextShop = res.shop ?? null;
+        if (!nextShop) return;
+        if (
+          nextShop.status !== shop.status ||
+          nextShop.rejection_reason !== shop.rejection_reason
+        ) {
+          setShop(nextShop);
+        }
+        if (nextShop.status === "ACTIVE") {
+          await syncApprovedSessionOnce({ notify: true });
+        }
+      } catch {
+        // Silent background check — user can still click manual refresh.
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      void pollShopStatus(true);
+    }, APPROVAL_POLL_INTERVAL_MS);
+
+    const onFocus = () => {
+      void pollShopStatus(false);
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void pollShopStatus(false);
+      }
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [shop?.status, shop?.rejection_reason, syncApprovedSessionOnce]);
 
   // Load provinces when address creation form opens
   useEffect(() => {
@@ -237,9 +312,8 @@ export function SellerShopOnboarding({
         }
       }
       if (nextShop?.status === "ACTIVE") {
-        await api("/api/auth/refresh", { method: "POST" }).catch(() => {});
-        showToast("Gian hàng đã được duyệt. Đang mở Kênh người bán...");
-        router.refresh();
+        refreshedOnceRef.current = false;
+        await syncApprovedSessionOnce({ notify: true });
       } else {
         showToast("Đã cập nhật trạng thái hồ sơ gian hàng.");
       }
@@ -252,7 +326,19 @@ export function SellerShopOnboarding({
     } finally {
       setCheckingStatus(false);
     }
-  }, [checkingStatus, router, showToast]);
+  }, [checkingStatus, showToast, syncApprovedSessionOnce]);
+
+  const handleStartSelling = async () => {
+    if (user.role !== "seller" || !user.shopId) {
+      await api("/api/auth/refresh", { method: "POST" }).catch(() => {});
+      await refreshSession().catch(() => null);
+    }
+    if (typeof window !== "undefined") {
+      window.location.assign("/seller");
+    } else {
+      router.push("/seller");
+    }
+  };
 
   const infoRequested = isShopInfoRequested(shop);
   const canSubmit = canSubmitShopApplication(shop);
@@ -267,13 +353,33 @@ export function SellerShopOnboarding({
   return (
     <div className="mx-auto max-w-[820px] space-y-6">
       <PageHeader
-        title={shop ? "Hồ sơ gian hàng" : "Đăng ký mở gian hàng"}
-        subtitle="Hoàn tất thông tin gian hàng và địa chỉ kho lấy hàng để quản trị viên duyệt mở bán."
+        title={
+          isActive ? "Gian hàng đã được duyệt" : shop ? "Hồ sơ gian hàng" : "Đăng ký mở gian hàng"
+        }
+        subtitle={
+          isActive
+            ? "Gian hàng của bạn đã sẵn sàng hoạt động trên NexusMart."
+            : "Hoàn tất thông tin gian hàng và địa chỉ kho lấy hàng để quản trị viên duyệt mở bán."
+        }
         badges={
           shop && statusMeta ? <StatusBadge tone={shopTone}>{statusMeta.label}</StatusBadge> : null
         }
         primaryAction={
-          shop ? (
+          isActive ? (
+            user.role === "seller" && user.shopId ? (
+              <Button size="sm" asChild>
+                <Link href="/seller">
+                  <span>Bắt đầu bán hàng</span>
+                  <ArrowRight className="size-4" aria-hidden="true" />
+                </Link>
+              </Button>
+            ) : (
+              <Button type="button" size="sm" onClick={() => void handleStartSelling()}>
+                <span>Bắt đầu bán hàng</span>
+                <ArrowRight className="size-4" aria-hidden="true" />
+              </Button>
+            )
+          ) : shop ? (
             <Button
               type="button"
               variant="outline"
@@ -293,6 +399,34 @@ export function SellerShopOnboarding({
 
       {shop && statusMeta ? (
         <section aria-label="Trạng thái phê duyệt gian hàng" className="space-y-4">
+          {isActive ? (
+            <Alert role="status" className="border-badge-success-ink/25 bg-badge-success-bg/50">
+              <CheckCircle2 className="size-4 text-badge-success-ink" aria-hidden="true" />
+              <AlertTitle>Gian hàng đã được duyệt</AlertTitle>
+              <AlertDescription className="space-y-3 text-foreground">
+                <p>
+                  Gian hàng <strong>{shop.name}</strong> đã kích hoạt thành công. Bạn có thể bắt đầu
+                  đăng sản phẩm, thiết lập site bán hàng và xử lý đơn ngay bây giờ.
+                </p>
+                <div>
+                  {user.role === "seller" && user.shopId ? (
+                    <Button size="sm" asChild>
+                      <Link href="/seller">
+                        <span>Bắt đầu bán hàng</span>
+                        <ArrowRight className="size-4" aria-hidden="true" />
+                      </Link>
+                    </Button>
+                  ) : (
+                    <Button type="button" size="sm" onClick={() => void handleStartSelling()}>
+                      <span>Bắt đầu bán hàng</span>
+                      <ArrowRight className="size-4" aria-hidden="true" />
+                    </Button>
+                  )}
+                </div>
+              </AlertDescription>
+            </Alert>
+          ) : null}
+
           {infoRequested ? (
             <Alert variant="destructive">
               <AlertCircle className="size-4" aria-hidden="true" />
@@ -319,13 +453,15 @@ export function SellerShopOnboarding({
             <CardContent className="space-y-4">
               {isPlainPending ? (
                 <p className="text-[13px] leading-[18px] text-muted-foreground">
-                  Hồ sơ mở gian hàng đã được ghi nhận và đang chờ quản trị viên xét duyệt. Bạn có
-                  thể bấm Kiểm tra lại trạng thái sau khi nhận thông báo duyệt.
+                  Hồ sơ mở gian hàng đã được ghi nhận và đang chờ quản trị viên xét duyệt. Trang sẽ
+                  tự động cập nhật khi gian hàng được duyệt, hoặc bạn có thể bấm Kiểm tra lại trạng
+                  thái.
                 </p>
               ) : null}
               {isActive ? (
                 <p className="text-[13px] leading-[18px] text-muted-foreground">
-                  Gian hàng đã hoạt động. Nhấn nút bên trên để đồng bộ phiên và vào bảng điều khiển.
+                  Gian hàng đã được duyệt và sẵn sàng hoạt động. Nhấn Bắt đầu bán hàng để vào bảng
+                  điều khiển Kênh người bán.
                 </p>
               ) : null}
 
@@ -403,7 +539,7 @@ export function SellerShopOnboarding({
                           type="text"
                           value={name}
                           onChange={(e) => setName(e.target.value)}
-                          placeholder="Ví dụ: Xưởng May Bạch Đằng"
+                          placeholder="Ví dụ: Gốm Sứ Bát Tràng, Tiệm Cà Phê Mộc"
                           maxLength={120}
                           required
                         />
@@ -432,7 +568,7 @@ export function SellerShopOnboarding({
                           type="text"
                           value={slug}
                           onChange={(e) => setSlug(e.target.value)}
-                          placeholder="xuong-may-bach-dang"
+                          placeholder="cua-hang-cua-ban"
                           maxLength={80}
                         />
                       </Field>

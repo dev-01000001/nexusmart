@@ -14,7 +14,7 @@ import type {
   GatewayPaymentMethodConfig,
 } from "@/lib/gateway-types";
 import type { GwAddress, GwVoucher } from "@/features/commerce/types";
-import { loadSiteContext } from "@/features/site/siteContext.server";
+import { loadShopSkuAttributesMap, loadSiteContext } from "@/features/site/siteContext.server";
 import { CheckoutClient } from "./CheckoutClient";
 
 export const dynamic = "force-dynamic";
@@ -66,14 +66,16 @@ export default async function SiteCheckoutPage({ params }: PageProps) {
   let initialShopDiscounts: GatewayActiveShopDiscount[] = [];
   let initialFlashSales: GatewayFlashSale[] = [];
 
-  const [pmRes, sdRes, fsRes] = await Promise.allSettled([
+  const [pmRes, sdRes, fsRes, skuAttrsRes] = await Promise.allSettled([
     gw<{ methods?: GatewayPaymentMethodConfig[] }>("/api/v1/payment-methods", { auth: "none" }),
     gw<{ discounts?: GatewayActiveShopDiscount[] }>("/api/v1/shop-discounts/active", {
       auth: "none",
       query: { shop_id: shopId },
     }),
     loadShopLiveFlashSales(shopId),
+    loadShopSkuAttributesMap(shopId),
   ]);
+  const skuAttributesById = skuAttrsRes.status === "fulfilled" ? skuAttrsRes.value : {};
   if (pmRes.status === "fulfilled" && Array.isArray(pmRes.value.methods)) {
     initialPaymentMethods = pmRes.value.methods;
   }
@@ -112,6 +114,7 @@ export default async function SiteCheckoutPage({ params }: PageProps) {
       initialIdempotencyKey={initialIdempotencyKey}
       catalogProducts={bundle.products}
       catalogShops={catalogShops}
+      skuAttributesById={skuAttributesById}
       initialAddresses={initialAddresses}
       initialVouchers={initialVouchers}
       initialPaymentMethods={initialPaymentMethods}

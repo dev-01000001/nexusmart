@@ -360,3 +360,69 @@ export async function loadSiteVouchers(hostParam: string): Promise<{
     };
   }
 }
+
+/**
+ * Fetches raw SKU `attributes` maps for a single product (`sku.id` and `sku.sku_code` keys)
+ * so PDP dynamic option selectors render arbitrary seller-defined option names verbatim.
+ */
+export const loadProductSkuAttributes = cache(
+  async (productId: string): Promise<Record<string, Record<string, string>>> => {
+    const cleanId = productId.trim();
+    if (!cleanId) return {};
+    try {
+      const res = await gw<{ product?: GwProduct | null }>(
+        `/api/v1/products/${encodeURIComponent(cleanId)}`,
+        {
+          auth: "none",
+          revalidate: SITE_REVALIDATE_SECONDS,
+        }
+      );
+      const out: Record<string, Record<string, string>> = {};
+      for (const sku of res.product?.skus ?? []) {
+        const attrs = sku.attributes && typeof sku.attributes === "object" ? sku.attributes : {};
+        if (sku.id) out[sku.id] = attrs;
+        if (sku.sku_code) out[sku.sku_code] = attrs;
+      }
+      return out;
+    } catch {
+      return {};
+    }
+  }
+);
+
+/**
+ * Fetches raw SKU `attributes` maps across a shop's active catalog (`sku.id` -> `attributes`),
+ * used by Cart, Checkout, and Buyer Orders to format custom & legacy variants consistently.
+ */
+export const loadShopSkuAttributesMap = cache(
+  async (shopId: string): Promise<Record<string, Record<string, string>>> => {
+    const cleanShopId = shopId.trim();
+    if (!cleanShopId) return {};
+    const out: Record<string, Record<string, string>> = {};
+    const PAGE_SIZE = 100;
+    const MAX_PAGES = 5;
+    try {
+      for (let page = 1; page <= MAX_PAGES; page++) {
+        const res = await gw<{ items?: GwProduct[] | null; total?: number }>("/api/v1/products", {
+          auth: "none",
+          query: { shop_id: cleanShopId, page, page_size: PAGE_SIZE },
+          revalidate: SITE_REVALIDATE_SECONDS,
+        });
+        const items = res.items ?? [];
+        for (const p of items) {
+          for (const sku of p.skus ?? []) {
+            const attrs =
+              sku.attributes && typeof sku.attributes === "object" ? sku.attributes : {};
+            if (sku.id) out[sku.id] = attrs;
+            if (sku.sku_code && !(sku.sku_code in out)) out[sku.sku_code] = attrs;
+          }
+        }
+        const total = typeof res.total === "number" ? res.total : items.length;
+        if (items.length < PAGE_SIZE || page * PAGE_SIZE >= total) break;
+      }
+    } catch {
+      // Best-effort enrichment; UI falls back gracefully to sku_name.
+    }
+    return out;
+  }
+);

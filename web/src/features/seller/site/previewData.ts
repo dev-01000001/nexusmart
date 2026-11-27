@@ -12,12 +12,12 @@ import {
   type SizeCode,
 } from "@/data/products";
 import { VOUCHERS, type Voucher } from "@/data/vouchers";
+import { formatVariantAttributes } from "@/lib/formatVariant";
 import type { SitePublicShopDTO } from "@/lib/site/types";
 import { sanitizeSafeImageUrl } from "@/features/site/templateValidator";
 import type { GwCategory, GwSellerProduct } from "@/features/seller/sellerApiTypes";
 
 const VALID_CATEGORY_SLUGS = new Set<string>(CATEGORIES.map((c) => c.slug));
-const VALID_SIZES: readonly SizeCode[] = ["S", "M", "L", "XL", "2XL"];
 
 const COLOR_HEX_FALLBACK: ReadonlyArray<{ name: string; hex: string }> = [
   { name: "Đen", hex: "#1F262C" },
@@ -39,25 +39,19 @@ function slugifyAscii(input: string): string {
   );
 }
 
-function normalizeSizeCode(raw: string | undefined): SizeCode {
-  const upper = (raw ?? "").trim().toUpperCase();
-  if ((VALID_SIZES as readonly string[]).includes(upper)) return upper as SizeCode;
-  if (upper === "XXL") return "2XL";
-  return "M";
-}
-
 function mapSellerProductToStorefront(
   prod: GwSellerProduct,
   idx: number,
   categoryMap: Map<string, GwCategory>,
-  shopId: string
+  shopId: string,
+  skuAttributesById: Record<string, Record<string, string>>
 ): Product {
   const cat = categoryMap.get(prod.category_id);
   const rawSlug = cat?.slug ?? "ao-thun";
   const categorySlug: CategorySlug = VALID_CATEGORY_SLUGS.has(rawSlug)
     ? (rawSlug as CategorySlug)
     : "ao-thun";
-  const categoryName = cat?.name ?? "Trang phục cơ bản";
+  const categoryName = cat?.name ?? "Sản phẩm cửa hàng";
 
   const safeImages = (prod.images ?? []).map((u) => sanitizeSafeImageUrl(u)).filter(Boolean);
   const fallbackImg =
@@ -68,26 +62,27 @@ function mapSellerProductToStorefront(
 
   for (let sIdx = 0; sIdx < (prod.skus ?? []).length; sIdx++) {
     const sku = prod.skus[sIdx];
-    const attrs = sku.attributes ?? {};
-    const colorName =
-      attrs.color ||
-      attrs.mau ||
-      attrs["màu"] ||
-      COLOR_HEX_FALLBACK[sIdx % COLOR_HEX_FALLBACK.length].name;
-    const colorCode = slugifyAscii(colorName);
-    const size = normalizeSizeCode(attrs.size || attrs.co || attrs["cỡ"] || sku.name);
+    const attrs = sku.attributes && typeof sku.attributes === "object" ? sku.attributes : {};
+    const rawColor = attrs.color_name || attrs.color || "";
+    const colorCode = rawColor ? slugifyAscii(rawColor) : "mac-dinh";
+    const colorName = rawColor || "Mặc định";
+    const rawSize = attrs.size || attrs.Size || "";
+    const size = (rawSize || formatVariantAttributes(attrs) || sku.name || "Mặc định") as SizeCode;
     const skuImg = sanitizeSafeImageUrl(sku.image_url) || fallbackImg;
     if (!colorLookup.has(colorCode)) {
       const palette = COLOR_HEX_FALLBACK[colorLookup.size % COLOR_HEX_FALLBACK.length];
       colorLookup.set(colorCode, {
         code: colorCode,
         name: colorName,
-        hex: palette.hex,
+        hex: attrs.color_hex || palette.hex,
         image: skuImg,
       });
     }
+    const skuCode = sku.sku_code || `${slugifyAscii(prod.name)}-${sIdx + 1}`;
+    if (sku.id) skuAttributesById[sku.id] = attrs;
+    skuAttributesById[skuCode] = attrs;
     skus.push({
-      skuCode: sku.sku_code || `${slugifyAscii(prod.name)}-${colorCode}-${size}`,
+      skuCode,
       colorCode,
       size,
       stock: Math.max(0, Math.trunc(sku.available_stock ?? sku.stock ?? 0)),
@@ -97,23 +92,28 @@ function mapSellerProductToStorefront(
   }
 
   if (skus.length === 0) {
-    colorLookup.set("den", { code: "den", name: "Đen", hex: "#1F262C", image: fallbackImg });
-    for (const sz of ["S", "M", "L", "XL"] as const) {
-      skus.push({
-        skuCode: `${slugifyAscii(prod.name)}-den-${sz}`,
-        colorCode: "den",
-        size: sz,
-        stock: 25,
-        price: Math.max(0, Math.trunc(prod.min_price_vnd || 249000)),
-      });
-    }
+    const fallbackCode = `${slugifyAscii(prod.name)}-default`;
+    colorLookup.set("mac-dinh", {
+      code: "mac-dinh",
+      name: "Mặc định",
+      hex: "#9aa5ac",
+      image: fallbackImg,
+    });
+    skuAttributesById[fallbackCode] = {};
+    skus.push({
+      skuCode: fallbackCode,
+      colorCode: "mac-dinh",
+      size: "Mặc định" as SizeCode,
+      stock: 10,
+      price: Math.max(0, Math.trunc(prod.min_price_vnd || 199000)),
+    });
   }
 
   const colors = Array.from(colorLookup.values());
   const sizes = Array.from(new Set(skus.map((s) => s.size)));
   const minPrice = Math.max(
     0,
-    Math.trunc(prod.min_price_vnd || Math.min(...skus.map((s) => s.price)) || 249000)
+    Math.trunc(prod.min_price_vnd || Math.min(...skus.map((s) => s.price)) || 199000)
   );
   const maxPrice = Math.max(minPrice, Math.trunc(prod.max_price_vnd || minPrice));
 
@@ -135,21 +135,14 @@ function mapSellerProductToStorefront(
     colors,
     sizes,
     skus,
-    fabric: "Cotton Compact 220gsm",
-    gsm: 220,
-    fit: "Regular chuẩn phom",
-    origin: "Xưởng may Việt Nam",
-    careGuide: ["Giặt máy nước mát 30°C", "Không dùng thuốc tẩy mạnh", "Phơi nơi thoáng mát"],
-    highlights: ["Chất vải thoáng khí, giữ phom ổn định", "Đồng kiểm khi nhận hàng"],
-    description:
-      prod.description?.trim() ||
-      "Sản phẩm sản xuất và kiểm định trực tiếp tại xưởng gian hàng, minh bạch chất liệu và kích cỡ.",
-    sizeChart: [
-      { size: "S", heightCm: "158-166", weightKg: "50-58", chestOrWaistCm: "94", lengthCm: "66" },
-      { size: "M", heightCm: "165-173", weightKg: "58-66", chestOrWaistCm: "100", lengthCm: "69" },
-      { size: "L", heightCm: "172-179", weightKg: "66-75", chestOrWaistCm: "106", lengthCm: "72" },
-      { size: "XL", heightCm: "177-185", weightKg: "75-85", chestOrWaistCm: "112", lengthCm: "74" },
-    ],
+    fabric: "",
+    gsm: 0,
+    fit: "",
+    origin: "",
+    careGuide: [],
+    highlights: ["Đồng kiểm khi nhận hàng"],
+    description: prod.description?.trim() || "",
+    sizeChart: [],
     collectionSlugs: ["co-ban-hang-ngay"],
   };
 }
@@ -159,6 +152,7 @@ export interface PreviewStorefrontDataset {
   products: Product[];
   categories: CategoryInfo[];
   vouchers: Voucher[];
+  skuAttributesById: Record<string, Record<string, string>>;
 }
 
 export function buildPreviewStorefrontDataset(opts: {
@@ -175,7 +169,7 @@ export function buildPreviewStorefrontDataset(opts: {
     name: shopName,
     description:
       opts.shopDescription?.trim() ||
-      "Cửa hàng chính thức trên NexusMart, sản phẩm trực tiếp từ xưởng, minh bạch chất liệu và tồn kho.",
+      "Cửa hàng chính thức trên NexusMart, minh bạch thông tin sản phẩm và tồn kho.",
     status: "ACTIVE",
   };
 
@@ -184,10 +178,11 @@ export function buildPreviewStorefrontDataset(opts: {
     catMap.set(c.id, c);
   }
 
+  const skuAttributesById: Record<string, Record<string, string>> = {};
   const mappedSellerProducts = opts.sellerProducts
     .filter((p) => p.status?.toUpperCase() !== "REJECTED")
     .slice(0, 12)
-    .map((p, idx) => mapSellerProductToStorefront(p, idx, catMap, shopId));
+    .map((p, idx) => mapSellerProductToStorefront(p, idx, catMap, shopId, skuAttributesById));
 
   const products: Product[] =
     mappedSellerProducts.length > 0
@@ -211,5 +206,6 @@ export function buildPreviewStorefrontDataset(opts: {
     products,
     categories: resolvedCategories,
     vouchers: sampleShopVouchers,
+    skuAttributesById,
   };
 }

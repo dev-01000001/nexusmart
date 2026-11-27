@@ -132,12 +132,12 @@ export const THEME_PRESETS: readonly ThemePalettePreset[] = [
 ];
 
 export const QUICK_MEDIA_ASSETS: ReadonlyArray<{ label: string; url: string }> = [
-  { label: "Xưởng dệt Việt Nam", url: "/banners/vietnam-workshop.jpg" },
-  { label: "Cơ bản hằng ngày", url: "/banners/campaign-everyday.jpg" },
-  { label: "Công sở gọn gàng", url: "/banners/campaign-office.jpg" },
-  { label: "Chạy bộ & Tập luyện", url: "/banners/campaign-running.jpg" },
-  { label: "Sợi Xanh Nexus", url: "/banners/campaign-green-fiber.jpg" },
-  { label: "Cận cảnh chất vải", url: "/banners/fabric-closeup.jpg" },
+  { label: "Không gian xưởng", url: "/banners/vietnam-workshop.jpg" },
+  { label: "Bộ sưu tập hằng ngày", url: "/banners/campaign-everyday.jpg" },
+  { label: "Phong cách thanh lịch", url: "/banners/campaign-office.jpg" },
+  { label: "Năng động & Tiện ích", url: "/banners/campaign-running.jpg" },
+  { label: "Vật liệu tự nhiên", url: "/banners/campaign-green-fiber.jpg" },
+  { label: "Cận cảnh bề mặt", url: "/banners/fabric-closeup.jpg" },
 ];
 
 export const SECTION_TYPE_META: Record<SiteSectionType, { label: string; description: string }> = {
@@ -155,7 +155,7 @@ export const SECTION_TYPE_META: Record<SiteSectionType, { label: string; descrip
   },
   text: {
     label: "Khối câu chuyện",
-    description: "Giới thiệu xưởng may, chất liệu hoặc thông điệp thương hiệu.",
+    description: "Giới thiệu thương hiệu, quy trình làm hàng hoặc thông điệp cửa hàng.",
   },
   banner: {
     label: "Dải quảng bá",
@@ -192,11 +192,11 @@ export const SECTION_V2_TYPE_META: Record<
   },
   metrics_strip: {
     label: "Dải chỉ số & thông số",
-    description: "Nêu bật định lượng GSM, độ co rút, thời gian giao hàng qua block thông số.",
+    description: "Nêu bật thông số sản phẩm, tiêu chuẩn kiểm định, thời gian giao hàng.",
   },
   sku_matrix: {
     label: "Bảng ma trận SKU",
-    description: "Liệt kê nhanh các biến thể màu, size, giá VND và tồn kho thực tế.",
+    description: "Liệt kê nhanh các phân loại, giá VND và tồn kho thực tế.",
   },
   testimonials: {
     label: "Đánh giá khách hàng",
@@ -221,7 +221,7 @@ export const SECTION_V2_TYPE_ORDER: readonly SiteSectionV2Type[] = [
 export const BLOCK_TYPE_META: Record<SiteBlockType, { label: string; description: string }> = {
   heading: { label: "Tiêu đề phụ", description: "Tiêu đề cấp H2 hoặc H3 bên trong khối." },
   paragraph: { label: "Đoạn văn", description: "Đoạn văn bản thuần bổ sung thông tin." },
-  badge: { label: "Nhãn ngắn", description: "Nhãn chất liệu, định lượng hoặc điểm nhấn." },
+  badge: { label: "Nhãn ngắn", description: "Nhãn nổi bật, chứng nhận hoặc điểm nhấn." },
   cta: { label: "Nút liên kết", description: "Nút điều hướng nội bộ hoặc https://." },
   image: { label: "Ảnh minh họa", description: "Khung ảnh có chú thích và tỷ lệ cố định." },
   stat: { label: "Chỉ số số liệu", description: "Con số nổi bật kèm nhãn và ghi chú." },
@@ -307,9 +307,9 @@ export const CONTAINER_WIDTH_OPTIONS: ReadonlyArray<{ value: SiteContainerWidth;
 
 export const CARD_STYLE_OPTIONS: ReadonlyArray<{ value: SiteCardStyle; label: string }> = [
   { value: "minimal", label: "Tối giản không viền nặng" },
-  { value: "editorial", label: "Editorial kèm ghi chú chất liệu" },
+  { value: "editorial", label: "Editorial kèm mô tả ngắn" },
   { value: "dense", label: "Mật độ cao kèm tồn kho" },
-  { value: "atelier", label: "Xưởng may kèm thông số GSM" },
+  { value: "atelier", label: "Thủ công kèm khung viền nhẹ" },
   { value: "sport", label: "Thể thao tương phản mạnh" },
   { value: "luxury", label: "Khung phòng trưng bày Maison" },
   { value: "compact-row", label: "Hàng ngang tóm tắt SKU" },
@@ -362,7 +362,7 @@ export const CART_LAYOUT_OPTIONS: ReadonlyArray<{ value: SiteCartLayout; label: 
   { value: "split-summary", label: "Chia đôi + tóm tắt bên phải" },
   { value: "compact-table", label: "Bảng gọn mật độ cao" },
   { value: "editorial-ledger", label: "Phiếu đơn kiểu tạp chí" },
-  { value: "atelier-bag", label: "Túi hàng xưởng may" },
+  { value: "atelier-bag", label: "Giỏ hàng xưởng thủ công" },
   { value: "express-bar", label: "Thanh xác nhận nhanh" },
   { value: "luxury-folio", label: "Folio cao cấp" },
 ];
@@ -664,7 +664,7 @@ export function createDefaultSiteConfig(shopName: string, shopDescription = ""):
   const brand = shopName.trim() || "Gian hàng NexusMart";
   const tagline =
     shopDescription.trim().slice(0, 150) ||
-    "Sản phẩm cơ bản may trực tiếp tại xưởng Việt Nam, minh bạch chất liệu và bảng size.";
+    "Sản phẩm chính hãng, minh bạch thông tin và tồn kho trực tiếp từ cửa hàng.";
   const preset = THEME_PRESETS[0].colors;
 
   return {
@@ -696,7 +696,7 @@ export function createDefaultSiteConfig(shopName: string, shopDescription = ""):
         visible: true,
         props: {
           title: "Sản phẩm nổi bật",
-          subtitle: "Những mẫu bán chạy và sẵn đủ size trực tiếp từ kho xưởng.",
+          subtitle: "Những sản phẩm bán chạy và sẵn giao ngay tại kho.",
           product_ids: [],
           limit: 8,
         },
@@ -719,17 +719,18 @@ export function createDefaultSiteConfig(shopName: string, shopDescription = ""):
           title: "Cam kết phục vụ từ gian hàng",
           items: [
             {
-              heading: "Đổi trả linh hoạt 45 ngày",
-              detail: "Hỗ trợ đổi size nhanh khi sản phẩm còn nguyên tem mác và chưa qua sử dụng.",
+              heading: "Đổi trả linh hoạt",
+              detail:
+                "Hỗ trợ đổi trả nhanh chóng khi sản phẩm lỗi hoặc còn nguyên vẹn bao bì và chưa qua sử dụng.",
             },
             {
               heading: "Kiểm tra hàng khi nhận",
               detail:
-                "Cho phép đồng kiểm đúng mẫu, đúng cỡ và đúng chất liệu vải trước khi thanh toán.",
+                "Cho phép đồng kiểm đúng sản phẩm, đúng phân loại và số lượng trước khi thanh toán.",
             },
             {
               heading: "Giao hàng toàn quốc",
-              detail: "Đóng gói chuẩn xưởng, bàn giao vận chuyển trong ngày làm việc.",
+              detail: "Đóng gói cẩn thận, bàn giao vận chuyển trong ngày làm việc.",
             },
           ],
         },
@@ -767,8 +768,8 @@ export function createSectionTemplate(type: SiteSectionType, existingCount: numb
         visible: true,
         props: {
           eyebrow: "Bộ sưu tập mới",
-          title: "Trang phục cơ bản chuẩn phom xưởng Việt",
-          subtitle: "Chọn lọc chất liệu thoáng mát, bền màu sau nhiều lần giặt.",
+          title: "Sản phẩm tuyển chọn cho nhu cầu hằng ngày",
+          subtitle: "Hoàn thiện chỉn chu, thông số rõ ràng và tồn kho cập nhật trực tiếp.",
           image_url: "/banners/campaign-everyday.jpg",
           cta_label: "Khám phá ngay",
           cta_href: "/san-pham",
@@ -781,7 +782,7 @@ export function createSectionTemplate(type: SiteSectionType, existingCount: numb
         visible: true,
         props: {
           title: "Sản phẩm tiêu biểu",
-          subtitle: "Các thiết kế được người mua chọn nhiều nhất tuần này.",
+          subtitle: "Các sản phẩm được người mua chọn nhiều nhất tuần này.",
           product_ids: [],
           limit: 8,
         },
@@ -793,7 +794,7 @@ export function createSectionTemplate(type: SiteSectionType, existingCount: numb
         visible: true,
         props: {
           title: "Dòng sản phẩm chủ lực",
-          subtitle: "Nhóm sản phẩm cùng chất liệu, dễ phối mặc mỗi ngày.",
+          subtitle: "Nhóm sản phẩm nổi bật của gian hàng, sẵn sàng giao ngay.",
           collection_slug: "co-ban-hang-ngay",
           category_slug: "",
           image_url: "/banners/fabric-closeup.jpg",
@@ -806,8 +807,8 @@ export function createSectionTemplate(type: SiteSectionType, existingCount: numb
         type: "text",
         visible: true,
         props: {
-          title: "Câu chuyện từ xưởng may",
-          body: "Từng lô vải được kiểm định định lượng GSM và độ co rút trước khi lên rập, giúp người mặc luôn thoải mái và giữ phom ổn định qua thời gian.",
+          title: "Câu chuyện thương hiệu",
+          body: "Từng sản phẩm đều được chọn lọc kỹ lưỡng về nguyên liệu và kiểm tra chất lượng trước khi đóng gói, mang lại trải nghiệm bền bỉ và nhất quán cho khách hàng.",
           align: "left",
         },
       };
@@ -817,9 +818,8 @@ export function createSectionTemplate(type: SiteSectionType, existingCount: numb
         type: "banner",
         visible: true,
         props: {
-          title: "Ưu đãi mua theo bộ tiết kiệm hơn",
-          subtitle:
-            "Kết hợp áo thun, polo và quần short từ cùng một xưởng để tối ưu phí giao hàng.",
+          title: "Ưu đãi mua kèm tiết kiệm hơn",
+          subtitle: "Kết hợp nhiều sản phẩm trong cùng một đơn hàng để tối ưu chi phí vận chuyển.",
           image_url: "/banners/vietnam-workshop.jpg",
           cta_label: "Xem danh mục",
           cta_href: "/san-pham",
@@ -845,12 +845,12 @@ export function createSectionTemplate(type: SiteSectionType, existingCount: numb
           title: "Chính sách gian hàng",
           items: [
             {
-              heading: "Đổi size tận nơi",
-              detail: "Hỗ trợ đổi cỡ nhanh chóng trong vòng 45 ngày kể từ khi nhận hàng.",
+              heading: "Hỗ trợ đổi trả minh bạch",
+              detail: "Xử lý nhanh chóng nếu sản phẩm lỗi hoặc sai phân loại khi nhận hàng.",
             },
             {
-              heading: "Bảo hành đường may",
-              detail: "Kiểm tra QC kỹ lưỡng từng sản phẩm trước khi đóng gói.",
+              heading: "Kiểm tra kỹ trước giao",
+              detail: "Đóng gói chắc chắn và kiểm tra chất lượng từng sản phẩm trước khi gửi.",
             },
           ],
         },
@@ -865,21 +865,21 @@ export function createBlockTemplate(type: SiteBlockType, existingCount: number):
       return {
         id,
         type: "heading",
-        props: { text: "Điểm nhấn chất liệu xưởng", level: "h3" },
+        props: { text: "Điểm nhấn sản phẩm", level: "h3" },
       };
     case "paragraph":
       return {
         id,
         type: "paragraph",
         props: {
-          text: "Chất liệu được dệt và kiểm định độ bền màu trực tiếp tại xưởng trước khi đưa vào sản xuất.",
+          text: "Sản phẩm được kiểm tra chất lượng và hoàn thiện đồng đều trước khi xuất kho.",
         },
       };
     case "badge":
       return {
         id,
         type: "badge",
-        props: { label: "Cotton Compact 220gsm", tone: "neutral" },
+        props: { label: "Hàng chính hãng", tone: "neutral" },
       };
     case "cta":
       return {
@@ -893,8 +893,8 @@ export function createBlockTemplate(type: SiteBlockType, existingCount: number):
         type: "image",
         props: {
           image_url: "/banners/fabric-closeup.jpg",
-          alt: "Cận cảnh chất liệu vải",
-          caption: "Bề mặt sợi mịn thoáng khí",
+          alt: "Cận cảnh hoàn thiện sản phẩm",
+          caption: "Chi tiết bề mặt hoàn thiện sắc nét",
           aspect: "4:3",
         },
       };
@@ -902,15 +902,15 @@ export function createBlockTemplate(type: SiteBlockType, existingCount: number):
       return {
         id,
         type: "stat",
-        props: { value: "220gsm", label: "Định lượng vải", note: "Đứng phom, không xù lông" },
+        props: { value: "100%", label: "Kiểm hàng trước giao", note: "Đóng gói cẩn thận" },
       };
     case "policy":
       return {
         id,
         type: "policy",
         props: {
-          heading: "Đổi size trong 45 ngày",
-          detail: "Hỗ trợ đổi cỡ tận nơi khi sản phẩm còn nguyên tem mác.",
+          heading: "Đổi trả rõ ràng",
+          detail: "Hỗ trợ đổi trả theo chính sách cửa hàng khi sản phẩm còn nguyên bao bì.",
         },
       };
     case "quote":
@@ -918,7 +918,7 @@ export function createBlockTemplate(type: SiteBlockType, existingCount: number):
         id,
         type: "quote",
         props: {
-          body: "Mặc rất thoáng mát, giặt máy nhiều lần cổ áo vẫn giữ phom phẳng.",
+          body: "Sản phẩm hoàn thiện đẹp, đóng gói cẩn thận và giao đúng hẹn.",
           author: "Khách hàng đã mua",
           role: "Đơn hàng xác thực",
         },
@@ -928,9 +928,9 @@ export function createBlockTemplate(type: SiteBlockType, existingCount: number):
         id,
         type: "feature",
         props: {
-          title: "Xử lý chống co rút trước khi may",
-          detail: "Giữ ổn định số đo vai và chiều dài áo qua nhiều chu kỳ giặt.",
-          tag: "Chuẩn xưởng",
+          title: "Kiểm định kỹ trước khi xuất kho",
+          detail: "Đảm bảo chất lượng đồng đều và đúng thông số mô tả trên cửa hàng.",
+          tag: "Cam kết",
         },
       };
   }
@@ -966,7 +966,7 @@ export function createSectionV2Template(
         settings: { surface: "surface", padding: "normal" },
         props: {
           title: "Khung hình Lookbook mới",
-          subtitle: "Trưng bày cận cảnh phom dáng và kết cấu sợi vải.",
+          subtitle: "Trưng bày cận cảnh chi tiết hoàn thiện và không gian sử dụng sản phẩm.",
           cta_label: "Xem danh mục",
           cta_href: "/san-pham",
         },
@@ -977,7 +977,7 @@ export function createSectionV2Template(
             props: {
               image_url: "/banners/campaign-office.jpg",
               alt: "Khung hình bộ sưu tập",
-              caption: "Phom mặc hằng ngày gọn gàng",
+              caption: "Sản phẩm ứng dụng hằng ngày",
               aspect: "3:4",
             },
           },
@@ -986,8 +986,8 @@ export function createSectionV2Template(
             type: "image",
             props: {
               image_url: "/banners/fabric-closeup.jpg",
-              alt: "Cận cảnh bề mặt vải",
-              caption: "Chi tiết bề mặt dệt thoáng mịn",
+              alt: "Cận cảnh bề mặt hoàn thiện",
+              caption: "Chi tiết bề mặt hoàn thiện tinh tế",
               aspect: "4:3",
             },
           },
@@ -1002,23 +1002,27 @@ export function createSectionV2Template(
         settings: { surface: "surface", padding: "normal", columns: 3 },
         props: {
           title: "Thông số nổi bật của gian hàng",
-          subtitle: "Minh bạch tiêu chuẩn chất liệu và dịch vụ giao nhận.",
+          subtitle: "Minh bạch tiêu chuẩn chất lượng và dịch vụ giao nhận.",
         },
         blocks: [
           {
             id: `${id}-s1`,
             type: "stat",
-            props: { value: "220gsm", label: "Định lượng vải", note: "Dày dặn, thoáng mát" },
+            props: { value: "24h", label: "Xác nhận & đóng gói", note: "Bàn giao đúng hẹn" },
           },
           {
             id: `${id}-s2`,
             type: "stat",
-            props: { value: "45 ngày", label: "Đổi size tận nơi", note: "Thủ tục đơn giản" },
+            props: { value: "100%", label: "Kiểm tra trước giao", note: "Đóng gói chống sốc" },
           },
           {
             id: `${id}-s3`,
             type: "stat",
-            props: { value: "100%", label: "Đồng kiểm COD", note: "Kiểm hàng trước thanh toán" },
+            props: {
+              value: "COD",
+              label: "Đồng kiểm toàn quốc",
+              note: "Kiểm hàng trước thanh toán",
+            },
           },
         ],
       };
@@ -1031,7 +1035,7 @@ export function createSectionV2Template(
         settings: { surface: "surface", padding: "normal", max_items: 12 },
         props: {
           title: "Bảng tồn kho nhanh theo SKU",
-          subtitle: "Tra cứu trực tiếp màu sắc, kích cỡ và số lượng sẵn kho.",
+          subtitle: "Tra cứu trực tiếp phân loại, đơn giá và số lượng sẵn kho.",
           category_slug: "",
           limit: 12,
           show_out_of_stock: true,
@@ -1046,15 +1050,15 @@ export function createSectionV2Template(
         variant: "grid-3",
         settings: { surface: "surface", padding: "normal", columns: 3 },
         props: {
-          title: "Phản hồi từ người mặc",
-          subtitle: "Đánh giá thực tế sau quá trình sử dụng và giặt giũ.",
+          title: "Phản hồi từ khách hàng",
+          subtitle: "Đánh giá thực tế sau quá trình nhận hàng và sử dụng.",
         },
         blocks: [
           {
             id: `${id}-q1`,
             type: "quote",
             props: {
-              body: "Chất vải mịn, thấm mồ hôi tốt và giao hàng rất đúng hẹn.",
+              body: "Sản phẩm đúng mô tả, hoàn thiện chắc chắn và giao hàng rất đúng hẹn.",
               author: "Nguyễn Minh Quân",
               role: "Khách mua tại Hà Nội",
             },
@@ -1063,7 +1067,7 @@ export function createSectionV2Template(
             id: `${id}-q2`,
             type: "quote",
             props: {
-              body: "Đổi size rất nhanh, đóng gói gọn gàng đúng như mô tả trên cửa hàng.",
+              body: "Đóng gói cẩn thận, hỗ trợ tư vấn và đổi trả rất nhanh gọn.",
               author: "Trần Hải Anh",
               role: "Khách mua tại TP.HCM",
             },

@@ -4,7 +4,7 @@ import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { SearchX } from "lucide-react";
-import type { CategoryInfo, Product, SizeCode } from "@/data/products";
+import type { CategoryInfo, Product } from "@/data/products";
 import { EmptyState } from "@/components/app/EmptyState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -37,7 +37,6 @@ export interface SiteSearchViewProps {
 
 type SortKey = "relevance" | "price_asc" | "price_desc";
 const PAGE_SIZE = 12;
-const SIZES: SizeCode[] = ["S", "M", "L", "XL", "2XL"];
 
 export function SiteSearchView({
   brandName,
@@ -61,14 +60,16 @@ export function SiteSearchView({
     const found: string[] = [];
     const seen = new Set<string>();
     for (const p of products) {
+      const hasRealColor = p.colors.some((c) => c.code !== "mac-dinh" && c.name !== "Mặc định");
+      if (!hasRealColor) continue;
       for (const sz of p.sizes) {
         const clean = String(sz ?? "").trim();
-        if (!clean || seen.has(clean)) continue;
+        if (!clean || clean === "Mặc định" || seen.has(clean)) continue;
         seen.add(clean);
         found.push(clean);
       }
     }
-    return found.length > 0 ? found : SIZES;
+    return found;
   }, [products]);
 
   const matched = useMemo(() => {
@@ -224,39 +225,41 @@ export function SiteSearchView({
             ))}
           </div>
 
-          <div
-            className="flex flex-wrap items-center gap-2"
-            role="group"
-            aria-label="Lọc theo kích cỡ sẵn hàng"
-          >
-            <Button
-              type="button"
-              size="sm"
-              variant={selectedSize === "" ? "default" : "outline"}
-              className="min-h-9 shadow-none"
-              onClick={() => {
-                setSelectedSize("");
-                setPage(1);
-              }}
+          {availableSizes.length > 0 && (
+            <div
+              className="flex flex-wrap items-center gap-2"
+              role="group"
+              aria-label="Lọc theo phân loại sẵn hàng"
             >
-              Mọi size
-            </Button>
-            {availableSizes.map((sz) => (
               <Button
-                key={sz}
                 type="button"
                 size="sm"
-                variant={selectedSize === sz ? "default" : "outline"}
-                className="min-h-9 min-w-10 shadow-none"
+                variant={selectedSize === "" ? "default" : "outline"}
+                className="min-h-9 shadow-none"
                 onClick={() => {
-                  setSelectedSize(selectedSize === sz ? "" : sz);
+                  setSelectedSize("");
                   setPage(1);
                 }}
               >
-                {sz}
+                Tất cả phân loại
               </Button>
-            ))}
-          </div>
+              {availableSizes.map((sz) => (
+                <Button
+                  key={sz}
+                  type="button"
+                  size="sm"
+                  variant={selectedSize === sz ? "default" : "outline"}
+                  className="min-h-9 min-w-10 shadow-none"
+                  onClick={() => {
+                    setSelectedSize(selectedSize === sz ? "" : sz);
+                    setPage(1);
+                  }}
+                >
+                  {sz}
+                </Button>
+              ))}
+            </div>
+          )}
         </div>
 
         {suggestion && (

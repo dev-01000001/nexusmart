@@ -3,7 +3,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { AlertTriangle, BookOpen, Lock, RefreshCw, Wallet } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowUpRight,
+  Banknote,
+  BookOpen,
+  Lock,
+  RefreshCw,
+  Wallet,
+} from "lucide-react";
 import {
   EmptyState,
   ErrorState,
@@ -22,6 +30,14 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
@@ -44,6 +60,11 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, getErrorMessage } from "@/lib/api";
+import type {
+  GatewaySellerPayout,
+  GatewaySellerPayoutListResponse,
+  GatewaySellerPayoutResponse,
+} from "@/lib/gateway-types";
 import {
   formatDateTimeVi,
   formatDateVi,
@@ -64,6 +85,13 @@ import {
   type GwSellerLedgerEntry,
   type GwSellerOrder,
 } from "./sellerApiTypes";
+import {
+  evaluateSellerPayoutReadiness,
+  getSellerPayoutStatusMeta,
+  mintClientPayoutIdempotencyKey,
+  parseWithdrawAmountVnd,
+  validateWithdrawAmountInput,
+} from "./SellerFinancePayoutHelpers";
 import {
   BANK_ACCOUNT_STATUS_META,
   EMPTY_DASH,
@@ -101,11 +129,16 @@ function resolveOrderTone(order: GwSellerOrder): StatusTone {
   return orderStatusTone(order.status);
 }
 
+type SellerBalanceWithPayout = GwSellerBalance & { payout_pending_vnd?: number };
+
 export interface SellerFinanceClientProps {
-  initialBalance: GwSellerBalance | null;
+  initialBalance: SellerBalanceWithPayout | null;
   balanceError?: string | null;
   initialBankAccount: GwSellerBankAccount | null;
   initialOrders: GwSellerOrder[];
+  initialPayouts?: GatewaySellerPayout[];
+  initialPayoutsTotal?: number;
+  payoutsLoadError?: string | null;
   loadError: string | null;
 }
 
@@ -114,6 +147,9 @@ export function SellerFinanceClient({
   balanceError = null,
   initialBankAccount,
   initialOrders,
+  initialPayouts = [],
+  initialPayoutsTotal = 0,
+  payoutsLoadError = null,
   loadError,
 }: SellerFinanceClientProps) {
   const router = useRouter();
@@ -125,10 +161,24 @@ export function SellerFinanceClient({
   const [activeTab, setActiveTab] = useState<FinanceTab>(
     tabParam === "bank" || tabParam === "ngan-hang" ? "bank" : "ledger"
   );
-  const [balance, setBalance] = useState<GwSellerBalance | null>(initialBalance);
+  const [balance, setBalance] = useState<SellerBalanceWithPayout | null>(initialBalance);
   const [bankAccount, setBankAccount] = useState<GwSellerBankAccount | null>(initialBankAccount);
   const [orderFilter, setOrderFilter] = useState<OrderFilter>("all");
   const [refreshing, setRefreshing] = useState(false);
+
+  // Seller payout history & withdraw dialog state (UC-PAY05)
+  const [payouts, setPayouts] = useState<GatewaySellerPayout[]>(initialPayouts);
+  const [payoutsTotal, setPayoutsTotal] = useState<number>(initialPayoutsTotal);
+  const [payoutsPage, setPayoutsPage] = useState(1);
+  const [payoutsLoading, setPayoutsLoading] = useState(false);
+  const [payoutsError, setPayoutsError] = useState<string | null>(payoutsLoadError);
+  const payoutsSeqRef = useRef(0);
+
+  const [withdrawOpen, setWithdrawOpen] = useState(false);
+  const [withdrawAmountRaw, setWithdrawAmountRaw] = useState("");
+  const [withdrawError, setWithdrawError] = useState<string | null>(null);
+  const [withdrawSubmitting, setWithdrawSubmitting] = useState(false);
+  const withdrawIdemKeyRef = useRef<string>("");
 
   // Bank account form & Email OTP state
   const [showBankForm, setShowBankForm] = useState(false);
@@ -187,16 +237,43 @@ export function SellerFinanceClient({
     }
   }, [uiState, loadError, loadLedger]);
 
+  const loadPayouts = useCallback(async (page: number) => {
+    const seq = ++payoutsSeqRef.current;
+    setPayoutsLoading(true);
+    setPayoutsError(null);
+    try {
+      const qs = new URLSearchParams({
+        page: String(page),
+        page_size: "20",
+      });
+      const res = await api<GatewaySellerPayoutListResponse>(
+        `/api/seller/payouts?${qs.toString()}`
+      );
+      if (payoutsSeqRef.current !== seq) return;
+      const items = res.items ?? [];
+      setPayouts(items);
+      setPayoutsTotal(Math.max(0, Math.trunc(res.total ?? items.length)));
+    } catch (err) {
+      if (payoutsSeqRef.current !== seq) return;
+      setPayoutsError(getErrorMessage(err, "Không thể tải lịch sử rút tiền lúc này."));
+    } finally {
+      if (payoutsSeqRef.current === seq) {
+        setPayoutsLoading(false);
+      }
+    }
+  }, []);
+
   const handleRefreshAll = async () => {
     if (refreshing) return;
     setRefreshing(true);
     try {
       const [balRes, bankRes] = await Promise.all([
-        api<GwSellerBalance>("/api/seller/balance").catch(() => null),
+        api<SellerBalanceWithPayout>("/api/seller/balance").catch(() => null),
         api<{ bank_account?: GwSellerBankAccount | null }>("/api/seller/bank-account").catch(
           () => null
         ),
         loadLedger(),
+        loadPayouts(payoutsPage),
       ]);
       if (balRes) setBalance(balRes);
       if (bankRes) setBankAccount(bankRes.bank_account ?? null);
@@ -332,6 +409,7 @@ export function SellerFinanceClient({
 
   const availableVnd = balance?.available_vnd ?? 0;
   const pendingVnd = balance?.pending_vnd ?? 0;
+  const payoutPendingVnd = balance?.payout_pending_vnd ?? 0;
   const totalEarnedVnd = balance?.total_earned_vnd ?? 0;
 
   const bankStatusMeta = bankAccount
@@ -347,27 +425,97 @@ export function SellerFinanceClient({
     return Number.isFinite(ms) && ms > Date.now();
   }, [bankAccount?.payout_locked_until]);
 
+  const hasPendingPayoutRow = useMemo(
+    () => payouts.some((p) => p.status.toUpperCase() === "PENDING"),
+    [payouts]
+  );
+
+  const payoutReadiness = useMemo(
+    () =>
+      evaluateSellerPayoutReadiness({
+        bankAccountStatus: bankAccount?.status,
+        isPayoutLocked,
+        availableVnd,
+        payoutPendingVnd,
+        hasPendingPayoutRow,
+      }),
+    [bankAccount?.status, isPayoutLocked, availableVnd, payoutPendingVnd, hasPendingPayoutRow]
+  );
+
+  const openWithdrawDialog = () => {
+    withdrawIdemKeyRef.current = mintClientPayoutIdempotencyKey();
+    setWithdrawAmountRaw(availableVnd > 0 ? String(availableVnd) : "");
+    setWithdrawError(null);
+    setWithdrawOpen(true);
+  };
+
+  const handleSubmitWithdraw = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (withdrawSubmitting || !payoutReadiness.ready) return;
+    const validation = validateWithdrawAmountInput(withdrawAmountRaw, availableVnd);
+    if (!validation.ok) {
+      setWithdrawError(validation.message);
+      return;
+    }
+
+    if (!withdrawIdemKeyRef.current) {
+      withdrawIdemKeyRef.current = mintClientPayoutIdempotencyKey();
+    }
+    setWithdrawError(null);
+    setWithdrawSubmitting(true);
+    try {
+      await api<GatewaySellerPayoutResponse>("/api/seller/payouts", {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": withdrawIdemKeyRef.current,
+        },
+        body: { amount_vnd: validation.amountVnd },
+      });
+      setWithdrawOpen(false);
+      showToast("Đã gửi yêu cầu rút tiền. Quản trị viên sẽ kiểm tra và duyệt chi trả.");
+      setPayoutsPage(1);
+      const [freshBal] = await Promise.all([
+        api<SellerBalanceWithPayout>("/api/seller/balance").catch(() => null),
+        loadPayouts(1),
+        loadLedger(),
+      ]);
+      if (freshBal) setBalance(freshBal);
+    } catch (err) {
+      setWithdrawError(getErrorMessage(err, "Không thể tạo yêu cầu rút tiền lúc này."));
+    } finally {
+      setWithdrawSubmitting(false);
+    }
+  };
+
   const ledgerTotalPages = Math.max(1, Math.ceil(ledgerTotal / 20));
+  const payoutsTotalPages = Math.max(1, Math.ceil(payoutsTotal / 20));
+  const parsedWithdrawPreview = parseWithdrawAmountVnd(withdrawAmountRaw);
 
   return (
     <div className="space-y-5">
       <PageHeader
         title="Tài chính"
-        subtitle="Theo dõi số dư khả dụng, bút toán sổ cái và tài khoản ngân hàng nhận giải ngân."
+        subtitle="Theo dõi số dư chờ đối soát, khả dụng, yêu cầu rút tiền và tài khoản ngân hàng nhận giải ngân."
         primaryAction={
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={refreshing}
-            onClick={() => void handleRefreshAll()}
-          >
-            <RefreshCw
-              className={cn("size-3.5", refreshing && "animate-spin")}
-              aria-hidden="true"
-            />
-            <span>{refreshing ? "Đang tải..." : "Làm mới"}</span>
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={refreshing}
+              onClick={() => void handleRefreshAll()}
+            >
+              <RefreshCw
+                className={cn("size-3.5", refreshing && "animate-spin")}
+                aria-hidden="true"
+              />
+              <span>{refreshing ? "Đang tải..." : "Làm mới"}</span>
+            </Button>
+            <Button type="button" size="sm" onClick={openWithdrawDialog}>
+              <Banknote className="size-3.5" aria-hidden="true" />
+              <span>Rút tiền</span>
+            </Button>
+          </div>
         }
       />
 
@@ -428,30 +576,34 @@ export function SellerFinanceClient({
             <MetricStrip
               items={[
                 {
-                  label: "Khả dụng rút ngay",
-                  value: balance ? <Money vnd={availableVnd} size="lg" /> : EMPTY_DASH,
-                  hint: balance ? (
-                    <span>
-                      Tổng số dư:{" "}
-                      <strong className="font-medium text-foreground tabular-nums">
-                        {formatVnd(availableVnd + pendingVnd)}
-                      </strong>
-                    </span>
-                  ) : (
-                    "Chờ đồng bộ từ dịch vụ thanh toán"
-                  ),
+                  label: "Chờ đối soát",
+                  value: balance ? <Money vnd={pendingVnd} size="lg" /> : EMPTY_DASH,
+                  hint: "Đơn hoàn tất đang giữ tiền 72 giờ trước khi mở rút",
                 },
                 {
-                  label: "Đang tạm giữ (72 giờ)",
-                  value: balance ? <Money vnd={pendingVnd} size="lg" /> : EMPTY_DASH,
+                  label: "Khả dụng",
+                  value: balance ? <Money vnd={availableVnd} size="lg" /> : EMPTY_DASH,
+                  hint: balance
+                    ? "Có thể tạo lệnh rút về ngân hàng"
+                    : "Chờ đồng bộ từ dịch vụ thanh toán",
+                },
+                {
+                  label: "Đang rút",
+                  value: balance ? <Money vnd={payoutPendingVnd} size="lg" /> : EMPTY_DASH,
+                  hint:
+                    payoutPendingVnd > 0
+                      ? "Đang chờ quản trị viên duyệt chi trả"
+                      : "Chưa có yêu cầu rút đang chờ",
                 },
                 {
                   label: "Tổng thu tích lũy",
                   value: balance ? <Money vnd={totalEarnedVnd} size="lg" /> : EMPTY_DASH,
-                },
-                {
-                  label: `Chiết khấu & phí (${formatInt(nonCancelledOrders.length)} đơn)`,
-                  value: <Money vnd={totalDeductionsAll} size="lg" />,
+                  hint: (
+                    <span className="tabular-nums">
+                      Chiết khấu &amp; phí ({formatInt(nonCancelledOrders.length)} đơn):{" "}
+                      {formatVnd(totalDeductionsAll)}
+                    </span>
+                  ),
                 },
               ]}
             />
@@ -481,6 +633,201 @@ export function SellerFinanceClient({
             </TabsList>
 
             <TabsContent value="ledger" className="space-y-6">
+              {/* Seller Payout History (/api/seller/payouts) */}
+              <section aria-labelledby="seller-payouts-heading" className="space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h2
+                      id="seller-payouts-heading"
+                      className="text-sm font-semibold text-foreground"
+                    >
+                      Lịch sử rút tiền ({formatInt(payoutsTotal)})
+                    </h2>
+                    <p className="text-[13px] text-muted-foreground">
+                      Theo dõi trạng thái các lệnh rút tiền về tài khoản ngân hàng của gian hàng.
+                    </p>
+                  </div>
+                  <Button type="button" variant="outline" size="sm" onClick={openWithdrawDialog}>
+                    <Banknote className="size-3.5" aria-hidden="true" />
+                    <span>Tạo yêu cầu rút tiền</span>
+                  </Button>
+                </div>
+
+                <IndexTable
+                  footer={
+                    payoutsTotalPages > 1 ? (
+                      <>
+                        <span className="tabular-nums">
+                          Trang {formatInt(payoutsPage)} / {formatInt(payoutsTotalPages)}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={payoutsPage <= 1 || payoutsLoading}
+                            onClick={() => {
+                              const next = Math.max(1, payoutsPage - 1);
+                              setPayoutsPage(next);
+                              void loadPayouts(next);
+                            }}
+                          >
+                            Trang trước
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={payoutsPage >= payoutsTotalPages || payoutsLoading}
+                            onClick={() => {
+                              const next = Math.min(payoutsTotalPages, payoutsPage + 1);
+                              setPayoutsPage(next);
+                              void loadPayouts(next);
+                            }}
+                          >
+                            Trang sau
+                          </Button>
+                        </div>
+                      </>
+                    ) : undefined
+                  }
+                >
+                  {payoutsLoading ? (
+                    <div
+                      className="space-y-3 p-4"
+                      role="status"
+                      aria-label="Đang tải lịch sử rút tiền..."
+                    >
+                      {Array.from({ length: 3 }).map((_, idx) => (
+                        <Skeleton key={idx} className="h-10 w-full" />
+                      ))}
+                    </div>
+                  ) : payoutsError ? (
+                    <div className="p-4">
+                      <ErrorState
+                        title="Không thể tải lịch sử rút tiền"
+                        description={payoutsError}
+                        onRetry={() => void loadPayouts(payoutsPage)}
+                        className="shadow-none"
+                      />
+                    </div>
+                  ) : payouts.length === 0 ? (
+                    <div className="p-4">
+                      <EmptyState
+                        icon={Banknote}
+                        title="Chưa có yêu cầu rút tiền nào"
+                        description="Khi có số dư khả dụng và tài khoản ngân hàng đã xác minh, bạn có thể tạo yêu cầu rút tiền về ngân hàng."
+                        className="shadow-none"
+                      />
+                    </div>
+                  ) : (
+                    <>
+                      <div className="hidden md:block">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Thời gian</TableHead>
+                              <TableHead className="text-right">Số tiền</TableHead>
+                              <TableHead>Tài khoản nhận</TableHead>
+                              <TableHead>Trạng thái</TableHead>
+                              <TableHead>Lý do từ chối / Ghi chú</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {payouts.map((po) => {
+                              const stMeta = getSellerPayoutStatusMeta(po.status);
+                              const statusUpper = po.status.toUpperCase();
+                              return (
+                                <TableRow key={po.id}>
+                                  <TableCell className="text-muted-foreground tabular-nums">
+                                    <div>
+                                      {po.created_at ? formatDateTimeVi(po.created_at) : EMPTY_DASH}
+                                    </div>
+                                    {po.decided_at ? (
+                                      <div className="text-xs text-muted-foreground">
+                                        Xử lý: {formatDateTimeVi(po.decided_at)}
+                                      </div>
+                                    ) : null}
+                                  </TableCell>
+                                  <TableCell className="text-right font-semibold tabular-nums">
+                                    {formatVnd(po.amount_vnd)}
+                                  </TableCell>
+                                  <TableCell className="whitespace-normal">
+                                    <div className="font-medium text-foreground">
+                                      {po.bank_name || EMPTY_DASH} ·{" "}
+                                      <span className="tabular-nums">
+                                        {po.bank_account_masked || EMPTY_DASH}
+                                      </span>
+                                    </div>
+                                    {po.account_holder_name ? (
+                                      <div className="text-xs text-muted-foreground">
+                                        {po.account_holder_name}
+                                      </div>
+                                    ) : null}
+                                  </TableCell>
+                                  <TableCell>
+                                    <StatusBadge tone={stMeta.tone}>{stMeta.label}</StatusBadge>
+                                  </TableCell>
+                                  <TableCell className="max-w-[260px] whitespace-normal">
+                                    {statusUpper === "REJECTED" ? (
+                                      <span className="text-destructive">
+                                        {po.reject_reason || EMPTY_DASH}
+                                      </span>
+                                    ) : statusUpper === "COMPLETED" && po.transfer_ref ? (
+                                      <span className="text-xs text-muted-foreground tabular-nums">
+                                        Mã chuyển khoản: {po.transfer_ref}
+                                      </span>
+                                    ) : (
+                                      <span className="text-muted-foreground">{EMPTY_DASH}</span>
+                                    )}
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                      </div>
+
+                      <div className="md:hidden">
+                        {payouts.map((po) => {
+                          const stMeta = getSellerPayoutStatusMeta(po.status);
+                          const statusUpper = po.status.toUpperCase();
+                          return (
+                            <IndexRowCard
+                              key={po.id}
+                              title={formatVnd(po.amount_vnd)}
+                              badge={<StatusBadge tone={stMeta.tone}>{stMeta.label}</StatusBadge>}
+                              meta={
+                                <>
+                                  <span>
+                                    {po.bank_name || EMPTY_DASH} · {po.bank_account_masked}
+                                  </span>
+                                  <span>·</span>
+                                  <span>
+                                    {po.created_at ? formatDateTimeVi(po.created_at) : EMPTY_DASH}
+                                  </span>
+                                  {statusUpper === "REJECTED" && po.reject_reason ? (
+                                    <>
+                                      <span>·</span>
+                                      <span className="text-destructive">{po.reject_reason}</span>
+                                    </>
+                                  ) : statusUpper === "COMPLETED" && po.transfer_ref ? (
+                                    <>
+                                      <span>·</span>
+                                      <span className="tabular-nums">{po.transfer_ref}</span>
+                                    </>
+                                  ) : null}
+                                </>
+                              }
+                            />
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                </IndexTable>
+              </section>
+
               {/* Real Seller Double-Entry Ledger (/api/seller/ledger) */}
               <section aria-labelledby="seller-ledger-heading" className="space-y-2.5">
                 <div>
@@ -1097,6 +1444,186 @@ export function SellerFinanceClient({
               </div>
             </TabsContent>
           </Tabs>
+
+          {/* Withdraw Dialog (UC-PAY05) */}
+          <Dialog
+            open={withdrawOpen}
+            onOpenChange={(open) => {
+              if (!withdrawSubmitting) {
+                setWithdrawOpen(open);
+              }
+            }}
+          >
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Rút tiền về tài khoản ngân hàng</DialogTitle>
+                <DialogDescription>
+                  Số tiền yêu cầu sẽ chuyển sang trạng thái chờ duyệt cho đến khi quản trị viên xác
+                  nhận chi trả.
+                </DialogDescription>
+              </DialogHeader>
+
+              {!payoutReadiness.ready ? (
+                <div className="space-y-4">
+                  {payoutReadiness.reason === "no_bank" ||
+                  payoutReadiness.reason === "bank_unverified" ? (
+                    <Alert>
+                      <AlertTriangle className="size-4" aria-hidden="true" />
+                      <AlertTitle>Chưa có tài khoản ngân hàng được xác minh</AlertTitle>
+                      <AlertDescription className="space-y-2">
+                        <p>
+                          {payoutReadiness.reason === "no_bank"
+                            ? "Bạn cần khai báo và xác thực OTP tài khoản ngân hàng nhận tiền trước khi tạo yêu cầu rút tiền."
+                            : "Tài khoản ngân hàng hiện chưa ở trạng thái đã xác minh. Vui lòng hoàn tất xác thực OTP hoặc chờ quản trị viên duyệt."}
+                        </p>
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          <Button
+                            type="button"
+                            size="sm"
+                            asChild
+                            onClick={() => {
+                              setWithdrawOpen(false);
+                              setActiveTab("bank");
+                              setShowBankForm(payoutReadiness.reason === "no_bank");
+                            }}
+                          >
+                            <Link href="/seller/tai-chinh?tab=bank">
+                              <span>Khai báo tài khoản ngân hàng</span>
+                              <ArrowUpRight className="size-3.5" aria-hidden="true" />
+                            </Link>
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            asChild
+                            onClick={() => setWithdrawOpen(false)}
+                          >
+                            <Link href="/seller/ho-so">Xem hồ sơ gian hàng</Link>
+                          </Button>
+                        </div>
+                      </AlertDescription>
+                    </Alert>
+                  ) : payoutReadiness.reason === "bank_locked" ? (
+                    <Alert>
+                      <Lock className="size-4" aria-hidden="true" />
+                      <AlertTitle>Tài khoản đang tạm khóa bảo mật 24 giờ</AlertTitle>
+                      <AlertDescription>
+                        Tài khoản ngân hàng vừa thay đổi nên tạm khóa rút tiền đến{" "}
+                        <strong className="font-medium text-foreground tabular-nums">
+                          {bankAccount?.payout_locked_until
+                            ? formatDateTimeVi(bankAccount.payout_locked_until)
+                            : EMPTY_DASH}
+                        </strong>
+                        .
+                      </AlertDescription>
+                    </Alert>
+                  ) : payoutReadiness.reason === "pending_exists" ? (
+                    <Alert>
+                      <AlertTriangle className="size-4" aria-hidden="true" />
+                      <AlertTitle>Đang có yêu cầu rút tiền chờ duyệt</AlertTitle>
+                      <AlertDescription>
+                        Mỗi gian hàng chỉ tạo tối đa một yêu cầu rút tiền đang chờ duyệt. Vui lòng
+                        chờ quản trị viên xử lý xong lệnh hiện tại.
+                      </AlertDescription>
+                    </Alert>
+                  ) : (
+                    <Alert>
+                      <Wallet className="size-4" aria-hidden="true" />
+                      <AlertTitle>Chưa có số dư khả dụng để rút</AlertTitle>
+                      <AlertDescription>
+                        Số dư khả dụng hiện tại là{" "}
+                        <strong className="font-medium text-foreground tabular-nums">0₫</strong>.
+                        Doanh thu sẽ chuyển sang khả dụng sau khi đơn hàng hoàn tất chu kỳ đối soát.
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  <DialogFooter>
+                    <Button type="button" variant="outline" onClick={() => setWithdrawOpen(false)}>
+                      Đóng
+                    </Button>
+                  </DialogFooter>
+                </div>
+              ) : (
+                <form
+                  onSubmit={(e) => void handleSubmitWithdraw(e)}
+                  className="space-y-4"
+                  noValidate
+                >
+                  <div className="space-y-1.5 rounded-lg border border-border bg-muted/50 p-3 text-[13px]">
+                    <div className="text-xs text-muted-foreground">
+                      Tài khoản ngân hàng nhận tiền
+                    </div>
+                    <div className="font-semibold text-foreground">
+                      {bankAccount?.bank_name} ·{" "}
+                      <span className="tabular-nums">{bankAccount?.account_number_masked}</span>
+                    </div>
+                    <div className="text-muted-foreground">
+                      Chủ tài khoản:{" "}
+                      <strong className="font-medium text-foreground">
+                        {bankAccount?.account_holder_name}
+                      </strong>
+                    </div>
+                  </div>
+
+                  <FieldGroup className="gap-3">
+                    <Field data-invalid={Boolean(withdrawError) || undefined}>
+                      <div className="flex items-center justify-between gap-2">
+                        <FieldLabel htmlFor="withdraw-amount-vnd">
+                          Số tiền muốn rút (VND)
+                        </FieldLabel>
+                        <button
+                          type="button"
+                          className="text-xs font-medium text-brand hover:underline"
+                          onClick={() => {
+                            setWithdrawAmountRaw(String(availableVnd));
+                            setWithdrawError(null);
+                          }}
+                        >
+                          Khả dụng: {formatVnd(availableVnd)}
+                        </button>
+                      </div>
+                      <Input
+                        id="withdraw-amount-vnd"
+                        type="text"
+                        inputMode="numeric"
+                        value={withdrawAmountRaw}
+                        disabled={withdrawSubmitting}
+                        onChange={(e) => {
+                          setWithdrawAmountRaw(e.target.value.replace(/\D/g, ""));
+                          setWithdrawError(null);
+                        }}
+                        placeholder="Nhập số nguyên VND"
+                        className="tabular-nums"
+                        aria-invalid={Boolean(withdrawError)}
+                      />
+                      <p className="text-xs text-muted-foreground tabular-nums">
+                        {parsedWithdrawPreview
+                          ? `Số tiền sẽ rút: ${formatVnd(parsedWithdrawPreview)}`
+                          : "Nhập số nguyên VND (không dùng số thập phân)."}
+                      </p>
+                      {withdrawError ? <FieldError>{withdrawError}</FieldError> : null}
+                    </Field>
+                  </FieldGroup>
+
+                  <DialogFooter>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={withdrawSubmitting}
+                      onClick={() => setWithdrawOpen(false)}
+                    >
+                      Hủy
+                    </Button>
+                    <Button type="submit" disabled={withdrawSubmitting}>
+                      {withdrawSubmitting ? "Đang gửi yêu cầu..." : "Gửi yêu cầu rút tiền"}
+                    </Button>
+                  </DialogFooter>
+                </form>
+              )}
+            </DialogContent>
+          </Dialog>
         </>
       )}
     </div>

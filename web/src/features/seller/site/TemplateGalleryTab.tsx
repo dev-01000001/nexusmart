@@ -63,7 +63,7 @@ const TEMPLATE_SHORT_NOTES: Record<string, string> = {
   "minimal-fashion": "Lưới 3 cột so le, chữ tinh gọn",
   editorial: "Đầu trang tạp chí, ảnh lệch tầng",
   "dense-grid": "Thanh lọc dính, lưới 5 cột dày",
-  "craft-atelier": "Ảnh chất vải tràn màn, dải công đoạn",
+  "craft-atelier": "Ảnh thủ công tràn màn, dải công đoạn",
   "sport-active": "Nền tối tương phản, ảnh cắt chéo",
   "luxury-maison": "Khung ảnh thoáng rộng, lưới 2 cột",
   "one-page-launch": "Tập trung một sản phẩm, chốt đơn nhanh",
@@ -314,6 +314,7 @@ export function TemplateGalleryTab({
                     products={previewDataset.products}
                     categories={previewDataset.categories}
                     vouchers={previewDataset.vouchers}
+                    skuAttributesById={previewDataset.skuAttributesById}
                     platformOrigin={platformOrigin}
                   />
                 </SitePreviewFrame>

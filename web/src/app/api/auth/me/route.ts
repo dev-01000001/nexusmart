@@ -2,7 +2,13 @@ import { cookies } from "next/headers";
 import { ACCESS_COOKIE, REFRESH_COOKIE } from "@/lib/server/config";
 import { gw } from "@/lib/server/gateway";
 import { apiRoute, readJson } from "@/lib/server/http";
-import { type GatewayUser, assertSession, getSession, toSessionUser } from "@/lib/server/session";
+import {
+  type GatewayUser,
+  assertSession,
+  getSession,
+  refreshStaleSessionCookiesOnce,
+  toSessionUser,
+} from "@/lib/server/session";
 import { clearAuthCookies } from "@/lib/server/tokens";
 
 interface UpdateMeInput {
@@ -19,6 +25,8 @@ export const GET = apiRoute(async () => {
   const session = await getSession();
   if (!session && hadCookies) {
     clearAuthCookies(store);
+  } else if (session) {
+    await refreshStaleSessionCookiesOnce(session.user);
   }
   return Response.json(
     { user: session?.user ?? null },

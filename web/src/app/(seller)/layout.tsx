@@ -4,8 +4,9 @@ import { UiScope } from "@/components/ui/ui-scope";
 import { SELLER_ORDERS_PAGE_SIZE, resolveSellerPendingOrdersCount } from "@/lib/a8-types";
 import { GatewayError, SAFE_MESSAGES } from "@/lib/server/errors";
 import { gw } from "@/lib/server/gateway";
-import type { Session } from "@/lib/server/session";
+import { isCurrentAccessTokenStale, type Session } from "@/lib/server/session";
 import { SellerShell } from "@/features/seller/SellerShell";
+import { SellerSessionSync } from "@/features/seller/shell/SellerSessionSync";
 import { extractSellerUnreadChatCount } from "@/features/seller/sellerApiTypes";
 import {
   loadMyShop,
@@ -54,6 +55,13 @@ export default async function SellerLayout({ children }: { children: React.React
 
   if (!hasActiveSellerShop) {
     const myShopRes = await loadMyShop();
+    if (await isCurrentAccessTokenStale(session.user, myShopRes.data?.status)) {
+      return (
+        <UiScope className="min-h-svh bg-background text-sm text-foreground">
+          <SellerSessionSync userId={session.user.id} shopName={myShopRes.data?.name} />
+        </UiScope>
+      );
+    }
     const fallbackSite = summarizeSellerSite(null, null, null);
     return (
       <SellerShell
@@ -66,6 +74,15 @@ export default async function SellerLayout({ children }: { children: React.React
       >
         {children}
       </SellerShell>
+    );
+  }
+
+  if (await isCurrentAccessTokenStale(session.user, "ACTIVE")) {
+    const myShopRes = await loadMyShop();
+    return (
+      <UiScope className="min-h-svh bg-background text-sm text-foreground">
+        <SellerSessionSync userId={session.user.id} shopName={myShopRes.data?.name} />
+      </UiScope>
     );
   }
 
