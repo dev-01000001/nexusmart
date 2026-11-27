@@ -12,23 +12,7 @@ ALTER TABLE seller_payouts
     ADD COLUMN IF NOT EXISTS transfer_ref TEXT NOT NULL DEFAULT '',
     ADD COLUMN IF NOT EXISTS decided_at TIMESTAMPTZ NULL;
 
-DO $$
-DECLARE
-    con_name TEXT;
-BEGIN
-    FOR con_name IN
-        SELECT c.conname
-        FROM pg_constraint c
-        JOIN pg_class t ON t.oid = c.conrelid
-        JOIN pg_namespace n ON n.oid = t.relnamespace
-        WHERE t.relname = 'seller_payouts'
-          AND n.nspname = current_schema()
-          AND c.contype = 'c'
-          AND pg_get_constraintdef(c.oid) ILIKE '%status%'
-    LOOP
-        EXECUTE format('ALTER TABLE seller_payouts DROP CONSTRAINT IF EXISTS %I', con_name);
-    END LOOP;
-END $$;
+ALTER TABLE seller_payouts DROP CONSTRAINT IF EXISTS seller_payouts_status_check;
 
 -- Normalize legacy lowercase statuses ('pending', 'completed', 'rejected') to UPPERCASE.
 UPDATE seller_payouts
