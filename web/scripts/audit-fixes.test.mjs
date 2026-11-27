@@ -878,11 +878,14 @@ describe("Wave 1 web audit fixes — unit tests", () => {
     const middlewareSrc = readFileSync(resolve(WEB_SRC, "middleware.ts"), "utf8");
     assert.match(middlewareSrc, /runtime:\s*["']nodejs["']/);
 
-    // W5: data files & ProductCard do not leak legacy fake promo copy onto PDP/storefront
+    // W5: data files & SiteProductCard do not leak legacy fake promo copy onto PDP/storefront
     const productsDataSrc = readFileSync(resolve(WEB_SRC, "data/products.ts"), "utf8");
     const vouchersDataSrc = readFileSync(resolve(WEB_SRC, "data/vouchers.ts"), "utf8");
     const flashDataSrc = readFileSync(resolve(WEB_SRC, "data/flash-sale.ts"), "utf8");
-    const productCardSrc = readFileSync(resolve(WEB_SRC, "components/ProductCard.tsx"), "utf8");
+    const productCardSrc = readFileSync(
+      resolve(WEB_SRC, "features/site/SiteProductCard.tsx"),
+      "utf8"
+    );
     assert.equal(productsDataSrc.includes("tierDiscounts"), false);
     assert.equal(productsDataSrc.includes("Mua 2 giảm"), false);
     assert.equal(productsDataSrc.includes("giftThreshold"), false);

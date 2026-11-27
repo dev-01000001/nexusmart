@@ -31,7 +31,7 @@ test("isNavItemActive matches exact home, prefix paths, and query parameters acc
 });
 
 test("resolveActiveNav highlights exactly one top-level item across all SELLER_NAV_GROUPS hrefs", () => {
-  // Exact items from SELLER_NAV_GROUPS in web/src/app/(design)/design/app/DesignAppClient.tsx
+  // Representative seller nav group items with query-param variants
   const sellerDemoItems = [
     { href: "/design/app?kieu=a9", match: "exact" },
     { href: "/design/app?kieu=a2" },

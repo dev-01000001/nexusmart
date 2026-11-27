@@ -149,18 +149,23 @@ describe("Wave 2b web features — unit tests", () => {
     );
     assert.equal(withBoth.originalUnitPriceVnd, 179000);
 
-    // Price.tsx supports maxAmount & ProductCard.tsx passes maxAmount for price range
-    const priceSrc = readFileSync(resolve(WEB_SRC, "components/Price.tsx"), "utf8");
-    assert.ok(priceSrc.includes("maxAmount"), "Price.tsx must support maxAmount price range");
-    const cardSrc = readFileSync(resolve(WEB_SRC, "components/ProductCard.tsx"), "utf8");
+    // Money.tsx renders strikethrough compareAtVnd only when > vnd; SiteProductCard passes real comparePrice/discount and never fabricates ratings
+    const moneySrc = readFileSync(resolve(WEB_SRC, "components/app/Money.tsx"), "utf8");
     assert.ok(
-      cardSrc.includes("maxAmount"),
-      "ProductCard.tsx must pass maxAmount for multi-price SKUs"
+      moneySrc.includes("compareAtVnd") &&
+        moneySrc.includes("compareAtVnd > vnd") &&
+        moneySrc.includes("line-through"),
+      "Money.tsx must render strikethrough compareAtVnd only when compareAtVnd > vnd"
+    );
+    const cardSrc = readFileSync(resolve(WEB_SRC, "features/site/SiteProductCard.tsx"), "utf8");
+    assert.ok(
+      cardSrc.includes("compareAtVnd") && cardSrc.includes("formatDiscountPercent"),
+      "SiteProductCard.tsx must pass compareAtVnd and compute real discount label"
     );
     assert.equal(
       cardSrc.includes("getFallbackSampleRating"),
       false,
-      "ProductCard.tsx must not fabricate fallback star ratings on real products"
+      "SiteProductCard.tsx must not fabricate fallback star ratings on real products"
     );
   });
 

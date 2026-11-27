@@ -133,7 +133,7 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
       "MockStoreContext.tsx dead mock file must be removed"
     );
 
-    const cardSrc = readSrc("components/ProductCard.tsx");
+    const cardSrc = readSrc("features/site/SiteProductCard.tsx");
     assert.equal(cardSrc.includes("computeReviewSummary"), false);
     assert.equal(/\breviews\b/.test(cardSrc), false);
 
@@ -914,12 +914,17 @@ describe("Wave 3b-1 web — behavioral tests (A–N)", () => {
       assert.equal(carriersSrc.includes(forbiddenDefault), false);
     }
 
-    const adminSharedCss = readSrc("features/admin/adminShared.module.css");
-    assert.ok(
-      adminSharedCss.includes(".detailField select.toolbarSelect") &&
-        adminSharedCss.includes("width: 100%"),
-      "detailField selects must span 100% width on mobile"
-    );
+    for (const [rel, triggerPattern] of [
+      ["features/admin/AdminReturnsClient.tsx", 'id={feeId} className="w-full'],
+      ["features/admin/AdminUsersPanel.tsx", 'id="usr-role-sel" className="w-full'],
+      ["features/admin/AdminReconciliationClient.tsx", 'id="q-action" className="w-full'],
+    ]) {
+      const src = readSrc(rel);
+      assert.ok(
+        src.includes(triggerPattern),
+        `${rel} detail panel SelectTrigger must span 100% width (w-full) on mobile`
+      );
+    }
 
     const filesToCheckStep = [
       "features/admin/AdminBannedKeywordsTab.tsx",

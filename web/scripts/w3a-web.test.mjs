@@ -1282,10 +1282,10 @@ describe("Wave 3a web requirements — unit tests", () => {
   });
 
   test("17. [P2-14, P2-15, ponytail] Strikethrough rules and cart flash-to-shop-discount fallback", () => {
-    const priceSrc = readFileSync(resolve(WEB_SRC, "components/Price.tsx"), "utf8");
+    const moneySrc = readFileSync(resolve(WEB_SRC, "components/app/Money.tsx"), "utf8");
     assert.ok(
-      priceSrc.includes("upperDisplayed") || priceSrc.includes("originalAmount > maxAmount"),
-      "Price.tsx must only show strikethrough when originalAmount > max displayed price"
+      moneySrc.includes("compareAtVnd > vnd") && moneySrc.includes("line-through"),
+      "Money.tsx must only show strikethrough when compareAtVnd > vnd"
     );
 
     // P2-15: shared resolveDisplayedLinePricing falls back from flashShortfall to active shop discount
