@@ -96,15 +96,31 @@ Cả hai bản build cùng dùng `First Load JS shared by all = 103 kB` (đo t�
 
 ### 3.2 Số liệu nghiệm thu cuối Phase 5
 
-<!-- P5 -->
+- **Mốc đo & commit Phase 5**: HEAD đo `a3e5e75` (mã) + `2288bad` (tài liệu). Các commit Phase 5 gồm `00af733` (xoá component cũ, 11 CSS Module, `/design`, toast site tối), `08b5983` (`tests/ui-flows/states.mjs`), `a3e5e75` (preflight toàn cục, bỏ `globals.css`/`tokens.css`/Archivo/plugin PostCSS cũ), `2288bad` (tài liệu), và viết lại test E2E `tests/e2e-web/03_isolation_and_security.test.mjs` (commit sau `2288bad`).
+- **Cổng tĩnh & build**: `tsc` **0 lỗi** (mã nguồn), `npm run lint` **0**, `npm run format:check` **sạch**, `npm run test:unit` **507/507**, `npm run check:data` **11/11**, `next build` **xanh** (có kiểm types, **0 cảnh báo**; 3 cảnh báo `autoprefixer` `"outdated direction syntax"` của Phase 1–4 đã hết).
+- **First Load JS (bảng `next build`, mốc Phase 0 `c265058` → sau Phase 5)**:
 
-Mục này chờ điền số liệu nghiệm thu cuối sau khi hoàn tất S9d, build production HEAD cuối và `make e2e-web`:
+| Route                             | Mốc `c265058` | Sau Phase 5 | Ghi chú                                                                         |
+| --------------------------------- | ------------: | ----------: | ------------------------------------------------------------------------------- |
+| `/` (Trang chủ nền tảng)          |        124 kB |  **118 kB** | Giảm 6 kB                                                                       |
+| `/s/[host]` (Trang chủ site)      |        258 kB |  **230 kB** | **Đạt trần ≤ 296 kB**                                                           |
+| `/s/[host]/san-pham/[slug]` (PDP) |        258 kB |  **267 kB** | **Đạt trần ≤ 296 kB**                                                           |
+| `/seller`                         |        206 kB |  **267 kB** | Spec không đặt trần; phần tăng do `AppShell` + import barrel `@/components/app` |
+| `/admin`                          |        199 kB |  **287 kB** | Spec không đặt trần; phần tăng do `AppShell` + import barrel `@/components/app` |
 
-- **Cổng tĩnh & test tự động:** <!-- P5: `tsc --noEmit` (0 lỗi `web/src`), `npm run lint`, `npm run format:check`, `npm run test:unit`, `npm run check:data`, `next build` -->
-- **First Load JS sau Phase 5:** <!-- P5: cập nhật bảng `/`, `/s/[host]`, `/s/[host]/san-pham/[slug]`, `/s/[host]/gio-hang`, `/seller`, `/admin` so với mốc `c265058` và Phase 1–4 -->
-- **Đối chiếu pixel production HEAD cuối vs mốc `43102` (6 khu) & `/` vs `43101`:** <!-- P5: số `SAME / DIFF / SIZE`, phân loại (a)/(b)/(c), xác nhận 0 hồi quy loại (c) -->
-- **Trạng thái tương tác (`tests/ui-flows/states.mjs`):** <!-- P5: kết quả chụp & so pixel overlay mở (`⌘K`, `Dialog`, `Sheet`, `Popover`, `DropdownMenu`, `Tooltip`, `Sonner`), vòng Tab focus và `Reveal` -->
-- **Luồng UI & E2E BFF:** <!-- P5: kết quả `tests/ui-flows/run.mjs` (`platform`, `admin`, `seller`, `site`, `templates`) và `make e2e-web` -->
+- **Đối chiếu pixel production HEAD (`43120`) vs production cuối Phase 1–4 (`43102`), khổ `390` + `1440` — `0` hồi quy**:
+  - `bach-dang`: **50/50** giống hệt.
+  - `sai-gon`: **50/50** giống hệt.
+  - `ha-noi`: **50/50** giống hệt.
+  - `da-nang`: **49/50** (nút "Bộ lọc" `/san-pham` ở `1440` rộng hơn `1 px` do preflight `button { font: inherit }`, chấp nhận).
+  - `admin`: **17/18** và `seller`: **28/32** (phần còn lại do 429 của gateway — chụp lại riêng thì giống hệt —, mã SKU ngẫu nhiên, và lệch `≤ 5/255`).
+  - Nền tảng (`platform`): **11/14** (`/tro-giup`: ảnh mốc chụp trước khi Inter tải xong, đo sau `document.fonts.ready` cả `43101`/`43102`/`43120` đều `40 px`; trang chủ: ảnh lazy).
+- **Trạng thái tương tác (`tests/ui-flows/states.mjs`)**: **20/23** ảnh tĩnh giống hệt; **2** toast đổi theo theme tối của site (chủ đích); **1** vòng focus lệch `5/255`; **27** khung chuyển động lệch tự nhiên.
+- **Trang chủ `/` so bản gốc `c265058` (`43101`), `.agents/tools/scroll-shots.mjs` 41 khung**: lệch **`≤ 2/255`** (trước Phase 5 là `≤ 6/255`), trừ icon `☰` (`lucide-react`, từ Phase 3) và vài pixel góc logo site thứ 5 trong danh bạ (`53/255`, khử răng cưa).
+- **Luồng UI (`tests/ui-flows/run.mjs`) trên `43120`**: `platform` **5/5**, `admin` **6/6**, `seller` **12/12**, `site` **36/36**, `templates` **8/8** (8 mẫu × COD).
+- **`make e2e-web` (stack `nexusmart-audit`)**: **88** test, **86** pass, **2** fail ở lượt chạy đầu:
+  - `tests/e2e-web/03_isolation_and_security.test.mjs:190` bám độ dài markup (`≤ 120` ký tự) — đã viết lại, chạy lại **11/11 PASS**.
+  - `tests/e2e-web/01_root_platform.test.mjs:99` (`"root must not render prices"`) **đỏ từ trước redesign**: trang chủ có giá minh hoạ `249.000₫`/`299.000₫`/`22.000₫` trong khung xem trước mẫu từ commit `04fec00f` / `a9a4b1fa`; bản gốc `43101` hiện y hệt. Chưa xử lý, chờ chủ dự án quyết (bỏ giá minh hoạ sẽ đổi hình trang chủ, hay nới test).
 
 ---
 
@@ -112,12 +128,13 @@ Mục này chờ điền số liệu nghiệm thu cuối sau khi hoàn tất S9d
 
 ### 4.1 Phần chưa đạt / chờ quyết định sản phẩm
 
-1. **Lệch pixel trang chủ `/` trên bản production**: ở Phase 1–4 lệch tới `YMAX ≤ 6/255` do Lightning CSS ép alpha sang hex 8-bit; **đã giảm xuống `≤ 1/255`** ở Phase 5 (P5a `a3e5e75`) bằng `"@tailwindcss/postcss": { optimize: false }` (còn lệch nhỏ `≤ 1/255` do làm tròn phối màu trình duyệt + icon `☰` `lucide-react` ở `390px`/`768px`, 0 hồi quy hình).
-2. **First Load JS khu Kênh người bán (+21% đến +30%) và Cổng quản trị (+26% đến +46%)**: tăng do nhiều màn hình vẫn import qua barrel `@/components/app`. Spec §15 chỉ đặt trần +15% (≤ 296 kB) cho trang chủ site và PDP (cả hai đều đạt); việc tách import từng file ở hai khu nội bộ để lại là tối ưu tuỳ chọn sau redesign.
-3. **Tìm nhanh theo tiền tố mã ở Cổng quản trị (`DS-`, `KN-`, `SP-/SKU-/NM-`, `FS-`, `site:`)**: ở `AppShell` mới, `⌘K` tìm trực tiếp danh sách mục điều hướng theo quyền RBAC (đúng spec §8.1), không tự suy luận chuyển hướng theo mã như shell cũ. Nếu muốn khôi phục cần bổ sung prop fallback cho `AppShell` (chờ chủ dự án chốt).
-4. **3 cảnh báo build `autoprefixer` ("outdated direction syntax") ở Phase 1–4**: **đã hết** sau khi P5a (`a3e5e75`) gỡ `postcss-preset-env` khỏi `web/postcss.config.mjs`.
-5. **Tự thử lại khi gặp HTTP 429 trong `tests/ui-flows/lib.mjs`**: `.agents/tools/ui-shots.mjs` và `tests/ui-flows/templates.mjs` đã tự chờ 60s khi chạm giới hạn tần suất; `tests/ui-flows/lib.mjs` chưa có cơ chế chờ 429 cho luồng site dài (lượt cuối `ha-noi` đôi khi cần chạy lại riêng).
-6. **Site thử nghiệm `kho-dai-ly-nexusmart` để lại sau S9c**: giao diện `/seller/site` và BFF `web/src/app/api/seller/site/*` chưa có thao tác "Gỡ xuất bản", nên site dùng chạy 8 mẫu trên shop `seller-catalog` giữ nguyên trạng thái `PUBLISHED` v8 (4 site seed `bach-dang`, `sai-gon`, `da-nang`, `ha-noi` còn nguyên vẹn).
+1. **Test E2E `tests/e2e-web/01_root_platform.test.mjs:99` (`"root must not render prices"`)**: đỏ từ trước đợt redesign do trang chủ `/` hiển thị giá minh hoạ `249.000₫`/`299.000₫`/`22.000₫` trong khung xem trước mẫu từ commit `04fec00f` / `a9a4b1fa` (bản gốc `43101` hiện y hệt). Chưa xử lý, chờ chủ dự án quyết định bỏ giá minh hoạ (sẽ đổi hình trang chủ) hay nới assertion của test.
+2. **Lệch pixel trang chủ `/` trên bản production**: ở Phase 1–4 lệch tới `YMAX ≤ 6/255` do Lightning CSS ép alpha sang hex 8-bit; ở Phase 5 (P5a `a3e5e75`, `"@tailwindcss/postcss": { optimize: false }`) đo lại 41 khung so `43101` giảm xuống **`≤ 2/255`** (trừ icon `☰` `lucide-react` từ Phase 3 và vài pixel góc logo site thứ 5 `53/255` do khử răng cưa; 0 hồi quy hình).
+3. **First Load JS khu Kênh người bán (`/seller` `206 → 267 kB`) và Cổng quản trị (`/admin` `199 → 287 kB`)**: tăng do `AppShell` và nhiều màn hình vẫn import qua barrel `@/components/app`. Spec §15 chỉ đặt trần +15% (`≤ 296 kB`) cho trang chủ site (`230 kB`) và PDP (`267 kB`) — cả hai đều đạt; việc tách import từng file ở hai khu nội bộ để lại là tối ưu tuỳ chọn sau redesign.
+4. **Tìm nhanh theo tiền tố mã ở Cổng quản trị (`DS-`, `KN-`, `SP-/SKU-/NM-`, `FS-`, `site:`)**: ở `AppShell` mới, `⌘K` tìm trực tiếp danh sách mục điều hướng theo quyền RBAC (đúng spec §8.1), không tự suy luận chuyển hướng theo mã như shell cũ. Nếu muốn khôi phục cần bổ sung prop fallback cho `AppShell` (chờ chủ dự án chốt).
+5. **3 cảnh báo build `autoprefixer` (`"outdated direction syntax"`) ở Phase 1–4**: **đã hết** sau khi P5a (`a3e5e75`) gỡ `postcss-preset-env` khỏi `web/postcss.config.mjs` (`next build` 0 cảnh báo).
+6. **Tự thử lại khi gặp HTTP 429 trong `tests/ui-flows/lib.mjs`**: `.agents/tools/ui-shots.mjs` và `tests/ui-flows/templates.mjs` đã tự chờ 60s khi chạm giới hạn tần suất; `tests/ui-flows/lib.mjs` chưa có cơ chế chờ 429 cho luồng site dài (lượt cuối `ha-noi` đôi khi cần chạy lại riêng).
+7. **Site thử nghiệm `kho-dai-ly-nexusmart` để lại sau S9c**: giao diện `/seller/site` và BFF `web/src/app/api/seller/site/*` chưa có thao tác "Gỡ xuất bản", nên site dùng chạy 8 mẫu trên shop `seller-catalog` giữ nguyên trạng thái `PUBLISHED` v8 (4 site seed `bach-dang`, `sai-gon`, `da-nang`, `ha-noi` còn nguyên vẹn).
 
 ### 4.2 Điểm làm khác spec có lý do
 
