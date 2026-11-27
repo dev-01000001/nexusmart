@@ -29,7 +29,7 @@ export default async function AboutNexusMartPage({ searchParams }: AboutNexusMar
   const rawTab = Array.isArray(params.tab) ? params.tab[0] : params.tab;
   const tab = rawTab?.trim().toLowerCase() ?? "";
   if (tab === "stores") {
-    redirect("/#danh-ba-gian-hang");
+    redirect("/cua-hang");
   }
   if (tab === "onboarding") {
     redirect("/dang-ky?role=seller");
@@ -140,7 +140,7 @@ export default async function AboutNexusMartPage({ searchParams }: AboutNexusMar
                 <Link href="/dang-ky?role=seller" className={PLATFORM_BTN_PRIMARY}>
                   Mở gian hàng
                 </Link>
-                <Link href="/#danh-ba-gian-hang" className={PLATFORM_BTN_OUTLINE}>
+                <Link href="/cua-hang" className={PLATFORM_BTN_OUTLINE}>
                   Xem danh bạ
                 </Link>
                 <Link href="/tro-giup" className={PLATFORM_BTN_GLASS}>

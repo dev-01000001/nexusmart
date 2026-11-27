@@ -26,7 +26,7 @@ interface NavItem {
 }
 
 const NAV_ITEMS: readonly NavItem[] = [
-  { label: "Cửa hàng", href: "/#danh-ba-gian-hang" },
+  { label: "Cửa hàng", href: "/cua-hang", matchPath: "/cua-hang" },
   { label: "Về NexusMart", href: "/ve-nexusmart", matchPath: "/ve-nexusmart" },
   { label: "Trợ giúp", href: "/tro-giup", matchPath: "/tro-giup" },
 ];
@@ -262,7 +262,7 @@ export function PlatformHeader() {
                       asChild
                       className="cursor-pointer text-[var(--home-ink)] focus:bg-[var(--home-glass-strong)] focus:text-[var(--home-accent)]"
                     >
-                      <Link href="/#danh-ba-gian-hang">
+                      <Link href="/cua-hang">
                         <Store className="size-4" aria-hidden="true" />
                         Danh bạ gian hàng
                       </Link>

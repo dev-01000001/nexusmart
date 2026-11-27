@@ -182,7 +182,7 @@ export function PlatformAuthFrame({
                       <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--home-border)] bg-[var(--home-glass)] px-4 py-3 text-xs text-[var(--home-ink-2)]">
                         <span>Mỗi cửa hàng giữ giỏ hàng và đơn hàng riêng.</span>
                         <Link
-                          href="/#danh-ba-gian-hang"
+                          href="/cua-hang"
                           className="inline-flex items-center gap-1 font-medium text-[var(--home-accent)] hover:underline"
                         >
                           Vào danh bạ gian hàng
@@ -205,7 +205,7 @@ export function PlatformAuthFrame({
 
             <div className="mx-auto mt-8 flex w-full max-w-[440px] flex-wrap items-center justify-between gap-2 border-t border-[var(--home-border)] pt-5 text-xs text-[var(--home-ink-3)]">
               <Link
-                href="/#danh-ba-gian-hang"
+                href="/cua-hang"
                 className="transition-colors hover:text-[var(--home-ink)] hover:underline motion-reduce:transition-none"
               >
                 Danh bạ gian hàng
@@ -286,7 +286,7 @@ export function PlatformRegisterFrame({
     >
       <RegisterForm
         variant="platform"
-        buyerHref="/#danh-ba-gian-hang"
+        buyerHref="/cua-hang"
         loginHref="/dang-nhap"
         afterRegisterHref={afterRegisterHref}
         onStepChange={handleStepChange}

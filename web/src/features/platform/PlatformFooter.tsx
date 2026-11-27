@@ -70,7 +70,7 @@ export function PlatformFooter() {
                 <p className={COL_TITLE_CLASS}>Mua sắm</p>
                 <ul className="flex flex-col gap-3">
                   <li>
-                    <Link href="/#danh-ba-gian-hang" className={LINK_CLASS}>
+                    <Link href="/cua-hang" className={LINK_CLASS}>
                       Các cửa hàng
                     </Link>
                   </li>

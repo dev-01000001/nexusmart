@@ -10,6 +10,9 @@ import {
   normalizeDirectorySite,
   parseDirectoryPage,
 } from "./directoryModel.ts";
+import { homeDirectoryPageHref, storesDirectoryPageHref } from "./directoryHref.ts";
+import { resolvePostLoginPath } from "../account/authRedirect.ts";
+import { sanitizeNextPath } from "../../lib/redirect.ts";
 import { checkSubdomain, resolveAfterRegisterHref, suggestSubdomain } from "./subdomain.ts";
 import { legacySiteTarget, shopMatchesLegacySlug } from "./legacyModel.ts";
 import { legacyNotFound, legacyRedirect, safeDecode } from "./legacyResponse.ts";
@@ -187,5 +190,100 @@ test("platform seller registration routes /dang-ky?role=seller -> OTP -> /seller
     regPageSrc.includes('roleParam !== "buyer"') &&
       regPageSrc.includes('initialRole={isSellerIntent ? "seller" : "buyer"}'),
     "/dang-ky?role=seller must pass initialRole='seller' to PlatformRegisterFrame"
+  );
+});
+
+test("directory pagination hrefs keep /#danh-ba-gian-hang on home and /cua-hang on directory page", () => {
+  assert.equal(homeDirectoryPageHref(0), "/#danh-ba-gian-hang");
+  assert.equal(homeDirectoryPageHref(1), "/#danh-ba-gian-hang");
+  assert.equal(homeDirectoryPageHref(2), "/?trang=2#danh-ba-gian-hang");
+  assert.equal(homeDirectoryPageHref(5), "/?trang=5#danh-ba-gian-hang");
+
+  assert.equal(storesDirectoryPageHref(0), "/cua-hang");
+  assert.equal(storesDirectoryPageHref(1), "/cua-hang");
+  assert.equal(storesDirectoryPageHref(2), "/cua-hang?trang=2");
+  assert.equal(storesDirectoryPageHref(5), "/cua-hang?trang=5");
+});
+
+test("directory response handles empty, out-of-range, and malformed gateway payloads safely", () => {
+  const outOfRange = normalizeDirectoryResponse(
+    { sites: [], total: 5, page: 2, page_size: 24 },
+    ctx,
+    { page: 2, pageSize: 24 }
+  );
+  assert.deepEqual(outOfRange, { sites: [], total: 5, page: 2, pageSize: 24, totalPages: 1 });
+
+  const malformed = normalizeDirectoryResponse(undefined, ctx, { page: 3, pageSize: 24 });
+  assert.deepEqual(malformed, { sites: [], total: 0, page: 3, pageSize: 24, totalPages: 1 });
+
+  const invalidRowsOnly = normalizeDirectoryResponse(
+    {
+      sites: [row({ shop_name: "" }), row({ primary_host: "localhost", subdomain: "" })],
+      total: 0,
+    },
+    ctx,
+    { page: 1, pageSize: 24 }
+  );
+  assert.equal(invalidRowsOnly.sites.length, 0);
+  assert.equal(invalidRowsOnly.totalPages, 1);
+});
+
+test("buyerHref /cua-hang passes through resolvePostLoginPath and sanitizeNextPath intact", () => {
+  const destNoNext = resolvePostLoginPath("platform", "buyer", null, "/cua-hang");
+  const destWithNext = resolvePostLoginPath("platform", "buyer", "/seller", "/cua-hang");
+  assert.equal(destNoNext, "/cua-hang");
+  assert.equal(destWithNext, "/cua-hang");
+  assert.equal(sanitizeNextPath(destNoNext, "/"), "/cua-hang");
+  assert.equal(sanitizeNextPath(destWithNext, "/"), "/cua-hang");
+  assert.equal(sanitizeNextPath("/cua-hang?trang=2", "/"), "/cua-hang?trang=2");
+});
+
+test("platform navigation and auth links point to /cua-hang while homepage hero keeps in-page scroll", () => {
+  const headerSrc = readFileSync(resolve(__dirname, "PlatformHeader.tsx"), "utf8");
+  assert.ok(
+    headerSrc.includes('{ label: "Cửa hàng", href: "/cua-hang", matchPath: "/cua-hang" }') &&
+      headerSrc.includes('<Link href="/cua-hang">') &&
+      !headerSrc.includes("/#danh-ba-gian-hang"),
+    "PlatformHeader must point Cửa hàng and user menu directory link to /cua-hang"
+  );
+
+  const footerSrc = readFileSync(resolve(__dirname, "PlatformFooter.tsx"), "utf8");
+  assert.ok(
+    footerSrc.includes('href="/cua-hang"') && !footerSrc.includes("/#danh-ba-gian-hang"),
+    "PlatformFooter must point Các cửa hàng to /cua-hang"
+  );
+
+  const aboutSrc = readFileSync(
+    resolve(__dirname, "../../app/(shop)/(public)/ve-nexusmart/page.tsx"),
+    "utf8"
+  );
+  assert.ok(
+    aboutSrc.includes('redirect("/cua-hang")') &&
+      aboutSrc.includes('href="/cua-hang"') &&
+      !aboutSrc.includes("/#danh-ba-gian-hang"),
+    "/ve-nexusmart must redirect ?tab=stores and link Xem danh bạ to /cua-hang"
+  );
+
+  const authFrameSrc = readFileSync(resolve(__dirname, "auth/PlatformAuthFrame.tsx"), "utf8");
+  assert.ok(
+    authFrameSrc.includes('buyerHref="/cua-hang"') &&
+      authFrameSrc.includes('href="/cua-hang"') &&
+      !authFrameSrc.includes("/#danh-ba-gian-hang"),
+    "PlatformAuthFrame must point directory links and buyerHref to /cua-hang"
+  );
+
+  const loginPageSrc = readFileSync(
+    resolve(__dirname, "../../app/(shop)/dang-nhap/page.tsx"),
+    "utf8"
+  );
+  assert.ok(
+    loginPageSrc.includes('buyerHref="/cua-hang"') && !loginPageSrc.includes("/#danh-ba-gian-hang"),
+    "/dang-nhap must pass buyerHref='/cua-hang' to LoginForm"
+  );
+
+  const homeSrc = readFileSync(resolve(__dirname, "PlatformHome.tsx"), "utf8");
+  assert.ok(
+    homeSrc.includes('href="#danh-ba-gian-hang"'),
+    "PlatformHome hero CTA must keep in-page scroll to #danh-ba-gian-hang"
   );
 });

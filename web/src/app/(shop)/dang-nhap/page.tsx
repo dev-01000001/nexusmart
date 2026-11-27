@@ -12,11 +12,7 @@ export const metadata: Metadata = {
 export default function PlatformLoginPage() {
   return (
     <PlatformAuthFrame mode="login" title="Đăng nhập" initialRole="seller">
-      <LoginForm
-        variant="platform"
-        buyerHref="/#danh-ba-gian-hang"
-        registerHref="/dang-ky?role=seller"
-      />
+      <LoginForm variant="platform" buyerHref="/cua-hang" registerHref="/dang-ky?role=seller" />
     </PlatformAuthFrame>
   );
 }

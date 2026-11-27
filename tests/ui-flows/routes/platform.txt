@@ -1,5 +1,7 @@
-# Platform root host — đủ 7 trang (chạy không đăng nhập trên nexusmart.localhost)
+# Platform root host — đủ 8 trang (+ phân trang /cua-hang?trang=2, chạy không đăng nhập trên nexusmart.localhost)
 /
+/cua-hang
+/cua-hang?trang=2
 /ve-nexusmart
 /tro-giup
 /dang-nhap
