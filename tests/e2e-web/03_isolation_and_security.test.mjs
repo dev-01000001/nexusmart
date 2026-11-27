@@ -187,7 +187,11 @@ describe("03. Cross-site isolation, IDOR, 401 guards, CSRF across hosts, body ta
       const home = await new Browser(`theme-${shop.sub}`).at(host).page("/");
       expectStatus(home, 200, `GET ${host}/`);
       assert.ok(home.text.includes(shop.shopName), `${host}/ must render ${shop.shopName}`);
-      assert.match(home.text, /Vận hành trên[\s\S]{0,120}NexusMart/, `${host}/ must display NexusMart attribution`);
+      assert.match(
+        home.text,
+        /Vận hành trên(?:<!--\s*-->|\s)*(?:<a\b[^>]*>)?NexusMart/,
+        `${host}/ must display NexusMart attribution`
+      );
       assert.ok(
         home.text.includes(`data-site-theme-mode="${shop.theme.mode}"`) &&
           home.text.includes(shop.theme.bg) &&
