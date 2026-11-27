@@ -84,6 +84,12 @@ const problems = [];
 const lines = [];
 page.on("console", (m) => m.type() === "error" && problems.push(`${current}: console ${m.text().slice(0, 200)}`));
 page.on("pageerror", (e) => problems.push(`${current}: pageerror ${e.message.slice(0, 200)}`));
+// The audit gateway rate-limits (~48 loads in a burst). A throttled load shows "Bạn thao tác hơi nhanh" or gets a 429:
+// wait 60 s and load again (max 3 retries), dropping the problems logged by the throttled attempt.
+let saw429 = false;
+page.on("response", (r) => r.status() === 429 && (saw429 = true));
+const throttled = async () =>
+  saw429 || (await page.evaluate(() => document.body?.innerText.includes("Bạn thao tác hơi nhanh")).catch(() => false));
 
 for (const route of routes) {
   const slug = (site ? `${site}-` : "") + (route.replace(/^\/|\/$/g, "").replace(/[^\w-]+/g, "_") || "home");
@@ -91,13 +97,21 @@ for (const route of routes) {
     current = `${route} @${w}`;
     await page.setViewportSize({ width: w, height: 900 });
     let status = 0;
-    try {
-      const res = await page.goto(origin + route, { waitUntil: "networkidle", timeout: 45000 });
-      status = res?.status() ?? 0;
-    } catch (e) {
-      problems.push(`${current}: navigation ${e.message.slice(0, 120)}`);
+    for (let attempt = 0; ; attempt++) {
+      const mark = problems.length;
+      saw429 = false;
+      try {
+        const res = await page.goto(origin + route, { waitUntil: "networkidle", timeout: 45000 });
+        status = res?.status() ?? 0;
+      } catch (e) {
+        problems.push(`${current}: navigation ${e.message.slice(0, 120)}`);
+      }
+      await page.waitForTimeout(300);
+      if (attempt >= 3 || !(await throttled())) break;
+      problems.length = mark;
+      console.error(`${current}: rate-limited, waiting 60 s (retry ${attempt + 1}/3)`);
+      await page.waitForTimeout(60_000);
     }
-    await page.waitForTimeout(300);
     const info = await page.evaluate(() => ({
       overflow: document.documentElement.scrollWidth - window.innerWidth,
       h1: document.querySelectorAll("h1").length,
@@ -106,6 +120,7 @@ for (const route of routes) {
     if (status >= 400 || status === 0) problems.push(`${current}: HTTP ${status}`);
     if (info.overflow > 1) problems.push(`${current}: horizontal overflow ${info.overflow}px`);
     if (info.h1 !== 1) problems.push(`${current}: ${info.h1} <h1>`);
+    if (await throttled()) problems.push(`${current}: still rate-limited after 3 retries`);
     // caret "initial": the default ("hide") writes caret-color onto inputs, and a late dev-mode hydration then reports
     // a false "A tree hydrated but some attributes ... didn't match" warning.
     await page.screenshot({ path: path.join(out, `${slug}-${w}.png`), fullPage: !flag("viewport"), caret: "initial" });
